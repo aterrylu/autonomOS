@@ -9,7 +9,7 @@ Document all research findings here. Link sources. Include your assessment of re
 - [x] **dimensionalOS** — Agent-native robotics OS (Apache 2.0). Module graph architecture, MCP-based agent↔robot bridge, OpenClaw plugin. Full analysis: [`docs/research/dimensionalOS/`](research/dimensionalOS/)
 - [x] **OpenClaw internals** — Runtime architecture, session model, cron system, memory layer, plugin SDK, gateway RPC surface. Full analysis: [`docs/research/openclaw/`](research/openclaw/)
 - [ ] **Claude Code hooks & workflows** — Terry's custom setup in `aterrylu-dev/claude`. Understand what conventions/patterns could be integrated.
-- [ ] **Existing agent orchestration platforms** — LangGraph, CrewAI, AutoGen, etc. What do they get right/wrong?
+- [x] **Agent frameworks & SDKs** — LangGraph, Claude Agent SDK, Claude Code, Gemini ADK, AN SDK (21st.dev), n8n. Comparison, integration points, patterns. Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
 - [ ] **Robot middleware** — ROS2, micro-ROS, foxglove. How do they handle observability and control?
 
 ---
@@ -54,3 +54,41 @@ Full analysis: [`docs/research/dimensionalOS/`](research/dimensionalOS/) — inc
 **Relevance: CRITICAL** — This is the substrate we build on. Integration strategy: WebSocket client (Phase 1) + OpenClaw plugin (Phase 2) + autonomOS DB for aggregation/features OpenClaw doesn't have.
 
 Full analysis: [`docs/research/openclaw/`](research/openclaw/)
+
+### Agent Frameworks & SDKs (2026-03-04)
+
+**What:** Landscape analysis of 6 agent frameworks/SDKs — LangGraph, Claude Agent SDK, Claude Code, Gemini ADK (Google), AN SDK (21st.dev), and n8n. Focused on understanding integration points, patterns, and how autonomOS relates to each.
+
+**Key findings:**
+- **These operate at different stack layers** — autonomOS doesn't compete with any of them, it sits at the control plane layer above them all.
+- **LangGraph**: Most mature orchestration framework. Graph-based, model-agnostic, verbose. Rich callback system for observability. Good for complex multi-agent workflows.
+- **Claude Agent SDK**: Minimal (~500 LOC), Claude-only. Clean hooks system. Best fit for autonomOS's own internal agents.
+- **Claude Code**: Product, not framework. First agent autonomOS should observe. Hooks + MCP are the integration surface.
+- **Gemini ADK**: Google's framework. Hierarchical multi-agent, multi-modal (audio/video). Heavier. Relevant for robot path (camera/voice).
+- **AN SDK**: Agent-native UI components (React). Novel — makes UIs agent-interactable. Could make autonomOS dashboard agent-controllable.
+- **n8n**: Automation platform with 400+ integrations. Best as a glue layer — route agent events to Slack, databases, etc. without building integrations ourselves.
+- **Common integration pattern**: All frameworks expose lifecycle hooks/callbacks. autonomOS adapters should follow a consistent hook-based pattern.
+- **License note**: n8n uses Sustainable Use License (not true open-source; commercial restrictions above $40k revenue).
+
+**Relevance: HIGH** — Directly informs integration strategy and `packages/core` abstraction design.
+
+Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
+
+### Zo Computer (2026-03-05)
+
+**What:** Personal AI cloud server platform by Zo Inc. (ex-Venmo/Substack/Stripe founders). Each user gets a dedicated containerized Linux server with AI agent capabilities, 50+ built-in tools, integrations (Gmail, Notion, Linear, etc.), and web hosting. Users interact via web UI, desktop app, SMS, or email. Backed by Lightspeed, South Park Commons, Craft Ventures. Closed-source core; skills registry is MIT.
+
+**Key findings:**
+- **Different layer than autonomOS.** Zo is infrastructure + runtime (where agents run); autonomOS is the control plane (observing/orchestrating agents). Complementary, not competitive.
+- **MCP server** at `api.zo.computer/mcp` exposes 50+ tools via standard MCP protocol. autonomOS could connect as an MCP client to access Zo's cloud compute and integrations without custom code.
+- **Skills registry** (60+ skills, MIT) uses `SKILL.md` format — markdown frontmatter + natural language instructions. Clean, portable pattern for defining agent capabilities.
+- **Agent scheduling** — built-in cron-like scheduler for background agent execution. Simple time-based only, no workflow DAGs or multi-agent coordination.
+- **Claude Code on Zo** — runs Claude Code directly on Zo servers with persistent storage, always-on compute, and access to all Zo integrations.
+- **REST API** with 50+ endpoints across 10 domains, SSE streaming, Bearer auth, OpenAPI spec.
+- **No real-time agent observability** — polling-based API for agent status. No WebSocket/SSE for live execution monitoring.
+- **Closed-source core** — cannot study internals. Only skills registry and utilities are open.
+- **UX reference** — clean web UI with chat interface, file browser, terminal, agent management, and integrations dashboard. Good reference for autonomOS dashboard design.
+
+**Relevance: MEDIUM** — Not a reference implementation we can study deeply (closed-source), but a valuable UX reference and potential infrastructure provider. MCP integration is the concrete opportunity; skills registry pattern is worth adopting.
+
+Full analysis: [`docs/research/zo-computer/`](research/zo-computer/)
