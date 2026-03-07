@@ -35,7 +35,7 @@ Priorities shift as we learn — this is a living document, not a contract.
 ## F-001: Desktop Application Shell
 
 **Priority:** P0
-**Status:** Research / Decision needed
+**Status:** Decided (ADR-005: Web-first, Electron later)
 **Depends on:** Nothing (everything depends on this)
 
 ### What
@@ -132,17 +132,48 @@ This is the core of autonomOS. The terminal is not a side panel or an afterthoug
 +-----------------------------------------------------------+
 ```
 
+### Quality Target: iTerm2 Visual Experience
+
+The terminal must feel premium — not a "web terminal." The benchmark is iTerm2's look and feel brought into a web context. Specific targets:
+
+- **GPU-accelerated rendering** via `@xterm/addon-webgl` (WebGL). Smooth scrolling, no flicker, no tearing.
+- **Font rendering:** High-quality monospace with ligature support. JetBrains Mono (default), Fira Code, SF Mono, MesloLGS. Configurable per profile.
+- **Color schemes:** Ship with curated themes (Catppuccin, Dracula, Solarized, One Dark, Rosé Pine, etc.). Import iTerm2 `.itermcolors` files.
+- **Cursor styles:** Block, underline, bar. Blinking configurable. Cursor color customizable.
+- **True color (24-bit):** Full 16.7M color support, not just 256-color.
+- **Unicode & emoji:** Proper wide character handling, emoji rendering, CJK support.
+- **Selection:** Rectangle/block selection (Alt+drag), double-click word select, triple-click line select.
+- **Smooth scrolling:** Not the janky line-by-line jump. Pixel-level smooth scroll like iTerm2.
+- **Padding & spacing:** Configurable terminal padding, line height, letter spacing. Breathing room like iTerm2's margin settings.
+
 ### Requirements
 
-- **Terminal emulator:** xterm.js (proven in VSCode, Hyper, Theia). Full VT100/VT220/xterm emulation.
+- **Terminal emulator:** xterm.js with addons: `@xterm/addon-webgl` (GPU rendering), `@xterm/addon-fit` (auto-resize), `@xterm/addon-search`, `@xterm/addon-image` (Sixel/image display), `@xterm/addon-unicode11`, `@xterm/addon-ligatures`.
 - **Claude Code integration:** Spawn `claude` CLI as subprocess with `--output-format stream-json --input-format stream-json`. Parse the JSON stream to extract structured data (tool calls, token usage, context window) while still rendering the terminal output.
-- **Tabs:** Multiple terminal sessions in tabs, like iTerm2 or VSCode's terminal.
-- **Split panes:** Horizontal/vertical splits to view multiple sessions simultaneously.
-- **Search:** Search within terminal output (Cmd+F).
+- **Tabs:** Multiple terminal sessions in tabs, like iTerm2.
+- **Split panes:** Horizontal/vertical splits to view multiple sessions simultaneously. Drag to resize. Cmd+D / Cmd+Shift+D to split (iTerm2 convention).
+- **Search:** Search within terminal output (Cmd+F). Regex support. Highlight all matches.
 - **Copy/paste:** Proper clipboard integration, including block selection.
-- **Scrollback:** Large scrollback buffer with efficient rendering.
-- **Profiles:** Terminal appearance profiles (font, colors, cursor style). Default to a good monospace font (JetBrains Mono, like CC-Insights uses).
-- **Keyboard shortcuts:** Ctrl+C (interrupt), Ctrl+D (EOF), and all standard terminal keybindings must work perfectly.
+- **Scrollback:** Large scrollback buffer (configurable, default 10K lines) with efficient rendering via WebGL.
+- **Profiles:** Named terminal profiles (font, colors, cursor style, keybindings, shell). Switch per-session. Default profile ships looking great out of the box.
+- **Keyboard shortcuts:** Full terminal keybinding pass-through. Ctrl+C, Ctrl+D, Ctrl+Z, etc. must work perfectly. No browser shortcut conflicts stealing keystrokes.
+- **Triggers (future):** Regex-matched patterns in output fire callbacks — similar to iTerm2 triggers. Example: highlight error patterns, auto-dismiss permission prompts matching a pattern.
+
+### Terminal Architecture (Web-First)
+
+```
+Browser                              Server (Node.js)
++------------------+                 +------------------+
+| xterm.js         |                 | node-pty         |
+| + addon-webgl    | <-- WebSocket -->| PTY instance     |
+| + addon-search   |   (binary)      | (claude process) |
+| + addon-fit      |                 |                  |
+| + addon-image    |                 | Event parser     |
++------------------+                 | (stream-json)    |
+                                     +------------------+
+```
+
+Data flows as raw bytes over WebSocket for terminal rendering. In parallel, the server parses the `stream-json` structured output to extract events for the dashboard. Both paths operate on the same PTY stream — the terminal view gets the raw bytes, the chat view and dashboard get parsed events.
 
 ### Permission Handling
 
@@ -168,12 +199,24 @@ The terminal view shows raw Claude Code output. But behind the scenes, autonomOS
 
 This structured data feeds the dashboard, cost tracking, and session history features.
 
+### Deep Dive Topics (for future research)
+
+- xterm.js addon ecosystem and custom addon development
+- WebGL rendering pipeline and performance tuning
+- iTerm2 `.itermcolors` theme import/export format
+- Terminal image protocols (Sixel, Kitty graphics, iTerm2 inline images)
+- Keyboard shortcut conflict resolution (browser vs terminal)
+- Scrollback buffer memory management for long-running sessions
+
 ### Reference Implementations
 
+- **iTerm2:** Visual quality benchmark. Profiles, triggers, GPU rendering, split panes.
 - **CC-Insights:** Spawns Claude CLI as subprocess, parses InsightsEvent stream. Best reference for the data extraction layer.
 - **YepAnywhere:** Uses Claude Agent SDK `query()` which also spawns CLI. Has the `Supervisor` + `Process` model for managing multiple sessions.
-- **VSCode terminal:** xterm.js integration in Electron. Reference for terminal quality in a desktop app.
+- **VSCode terminal:** xterm.js + node-pty integration. Reference for xterm.js addon usage and PTY Host architecture.
+- **code-server:** xterm.js over WebSocket in browser. Validates the exact streaming pattern we'll use.
 - **Warp:** Block-based terminal output. Inspiration for treating Claude's turns as visual blocks.
+- **Hyper:** Electron + xterm.js terminal emulator. Reference for making xterm.js feel like a native app.
 
 ---
 

@@ -18,7 +18,7 @@ Detailed feature specs with priorities, design notes, and critical path in **[do
 
 | Priority | Feature | Description |
 |----------|---------|-------------|
-| **P0** | [Desktop Shell](docs/FEATURES.md#f-001-desktop-application-shell) | Application container — Electron vs Tauri vs web. **Decision needed first.** |
+| **P0** | [Desktop Shell](docs/FEATURES.md#f-001-desktop-application-shell) | Web-first, Electron later (ADR-005) |
 | **P0** | [Terminal View](docs/FEATURES.md#f-002-terminal-view) | High-quality xterm.js terminal as the primary Claude Code interface |
 | **P0** | [Real-Time Streaming](docs/FEATURES.md#f-016-real-time-streaming) | Event infrastructure — Claude CLI subprocess to UI |
 | **P1** | [Chat View](docs/FEATURES.md#f-003-chat-view) | Structured conversation view of the same session (alternative to terminal) |
@@ -46,7 +46,7 @@ Both paths share the same core: persistent agents, orchestration, and observabil
 
 ## Status
 
-Research and architecture phase. Next blocker: **[F-001 Desktop Shell decision](docs/FEATURES.md#f-001-desktop-application-shell)**.
+Research and architecture phase. Key decisions made (ADR-005, ADR-006). Next: build the server + terminal view.
 
 ## Docs
 
