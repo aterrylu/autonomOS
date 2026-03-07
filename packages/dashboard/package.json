@@ -1,0 +1,18 @@
+{
+  "name": "@autonomos/dashboard",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-webgl": "^0.18",
+    "@xterm/xterm": "^5"
+  },
+  "devDependencies": {
+    "vite": "^6",
+    "typescript": "^5"
+  }
+}

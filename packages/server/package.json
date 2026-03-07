@@ -1,0 +1,21 @@
+{
+  "name": "@autonomos/server",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "test": "tsx --test src/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@autonomos/core": "workspace:*",
+    "@hono/node-server": "^1.19.11",
+    "@hono/node-ws": "^1.3.0",
+    "hono": "^4",
+    "node-pty": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/ws": "^8",
+    "tsx": "^4.21.0"
+  }
+}
