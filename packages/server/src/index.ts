@@ -1,0 +1,28 @@
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { serve } from "@hono/node-server";
+import { createNodeWebSocket } from "@hono/node-ws";
+import { sessionRouter } from "./routes/sessions";
+import { terminalRouter } from "./routes/terminal";
+
+const app = new Hono();
+
+const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
+
+app.use("*", cors({ origin: "http://localhost:5173" }));
+
+app.get("/", (c) => c.json({ name: "autonomos", version: "0.0.1" }));
+
+// REST API
+app.route("/api/sessions", sessionRouter);
+
+// WebSocket — terminal PTY streaming
+app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
+
+const port = Number(process.env.PORT) || 3000;
+
+const server = serve({ fetch: app.fetch, port }, () => {
+  console.log(`autonomOS server listening on http://localhost:${port}`);
+});
+
+injectWebSocket(server);

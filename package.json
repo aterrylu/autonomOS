@@ -1,0 +1,10 @@
+{
+  "name": "autonomos",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "dev:server": "bun run --filter @autonomos/server dev",
+    "dev:dashboard": "bun run --filter @autonomos/dashboard dev"
+  }
+}
