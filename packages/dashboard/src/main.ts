@@ -30,6 +30,7 @@ const container = document.getElementById("terminal-container")!;
 let terminal: Terminal | null = null;
 let ws: WebSocket | null = null;
 let fitAddon: FitAddon | null = null;
+let resizeObserver: ResizeObserver | null = null;
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -138,7 +139,8 @@ function connectTerminal(sessionId: string): void {
     }
   });
 
-  const resizeObserver = new ResizeObserver(() => {
+  resizeObserver?.disconnect();
+  resizeObserver = new ResizeObserver(() => {
     if (fitAddon && terminal) {
       fitAddon.fit();
       sendResize();

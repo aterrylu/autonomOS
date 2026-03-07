@@ -2,6 +2,7 @@ import type { Session, SpawnOptions } from "@autonomos/core";
 import { spawn } from "node-pty";
 import type { IPty } from "node-pty";
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 export interface ManagedSession {
   session: Session;
@@ -15,9 +16,12 @@ let claudePath: string | null = null;
 /** Resolve claude binary at startup so we fail fast with a clear message. */
 export function resolveClaudePath(): string {
   if (claudePath) return claudePath;
+
+  // Try well-known paths first, then fall back to PATH lookup
   const candidates = [
     `${process.env.HOME}/.local/bin/claude`,
     "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
   ];
   for (const p of candidates) {
     if (existsSync(p)) {
@@ -25,8 +29,19 @@ export function resolveClaudePath(): string {
       return p;
     }
   }
+
+  try {
+    const which = execFileSync("which", ["claude"], { encoding: "utf-8" }).trim();
+    if (which) {
+      claudePath = which;
+      return which;
+    }
+  } catch {
+    // not in PATH
+  }
+
   throw new Error(
-    `Claude binary not found. Searched: ${candidates.join(", ")}`
+    `Claude binary not found. Searched: ${candidates.join(", ")} and PATH`
   );
 }
 
@@ -39,7 +54,10 @@ export function getAllSessions(): Session[] {
 }
 
 export function expandPath(path: string): string {
-  return path.replace(/^~/, process.env.HOME || "/tmp");
+  if (path.startsWith("~") && !process.env.HOME) {
+    throw new Error("HOME environment variable is not set");
+  }
+  return path.replace(/^~/, process.env.HOME || "");
 }
 
 export function createSession(options: SpawnOptions): ManagedSession {

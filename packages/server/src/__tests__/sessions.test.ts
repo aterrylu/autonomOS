@@ -26,6 +26,18 @@ describe("expandPath", () => {
   it("expands bare ~ to HOME", () => {
     assert.equal(expandPath("~"), process.env.HOME);
   });
+
+  it("throws when HOME is unset and path starts with ~", () => {
+    const origHome = process.env.HOME;
+    try {
+      delete process.env.HOME;
+      assert.throws(() => expandPath("~/projects"), {
+        message: "HOME environment variable is not set",
+      });
+    } finally {
+      process.env.HOME = origHome;
+    }
+  });
 });
 
 describe("session map operations", () => {
