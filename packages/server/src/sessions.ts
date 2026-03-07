@@ -1,6 +1,7 @@
-import type { Session, SessionStatus } from "@autonomos/core";
+import type { Session, SpawnOptions } from "@autonomos/core";
 import { spawn } from "node-pty";
 import type { IPty } from "node-pty";
+import { existsSync } from "node:fs";
 
 export interface ManagedSession {
   session: Session;
@@ -17,36 +18,35 @@ export function getAllSessions(): Session[] {
   return Array.from(sessions.values()).map((s) => s.session);
 }
 
-export function createSession(options: {
-  workingDirectory: string;
-  prompt?: string;
-  cols?: number;
-  rows?: number;
-}): ManagedSession {
+function resolveClaudePath(): string {
+  const candidates = [
+    `${process.env.HOME}/.local/bin/claude`,
+    "/usr/local/bin/claude",
+  ];
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
+  }
+  throw new Error(
+    `Claude binary not found. Searched: ${candidates.join(", ")}`
+  );
+}
+
+export function createSession(options: SpawnOptions): ManagedSession {
   const id = crypto.randomUUID();
   const cols = options.cols ?? 120;
   const rows = options.rows ?? 40;
-  const cwd = options.workingDirectory.replace(/^~/, process.env.HOME || "/tmp");
+  const cwd = options.workingDirectory.replace(
+    /^~/,
+    process.env.HOME || "/tmp"
+  );
 
-  // Build env with full PATH — Bun's process.env may not include
-  // shell profile paths like ~/.local/bin where claude lives
-  const env = { ...process.env } as Record<string, string>;
-  const extraPaths = [
-    `${process.env.HOME}/.local/bin`,
-    `${process.env.HOME}/.bun/bin`,
-    "/usr/local/bin",
-  ];
-  env.PATH = [...extraPaths, env.PATH].join(":");
+  const env = buildEnv();
+  const claudePath = resolveClaudePath();
 
-  // Remove CLAUDECODE env var — prevents "nested session" detection
-  // when autonomOS server itself runs inside a Claude Code session
-  delete env.CLAUDECODE;
+  // Prevent prompt from being interpreted as CLI flags
+  const args = options.prompt ? ["--", options.prompt] : [];
 
-  // Resolve claude binary — node-pty needs the full path when running under Bun
-  const claudePath = `${process.env.HOME}/.local/bin/claude`;
-
-  // Spawn Claude Code as a PTY subprocess
-  const pty = spawn(claudePath, options.prompt ? [options.prompt] : [], {
+  const pty = spawn(claudePath, args, {
     name: "xterm-256color",
     cols,
     rows,
@@ -67,7 +67,7 @@ export function createSession(options: {
   const managed: ManagedSession = { session, pty };
   sessions.set(id, managed);
 
-  pty.onExit(({ exitCode }) => {
+  pty.onExit(() => {
     session.status = "stopped";
     session.updatedAt = Date.now();
   });
@@ -78,8 +78,35 @@ export function createSession(options: {
 export function killSession(id: string): boolean {
   const managed = sessions.get(id);
   if (!managed) return false;
-  managed.pty.kill();
+  try {
+    managed.pty.kill();
+  } catch (err) {
+    console.error(`Failed to kill PTY for session ${id}:`, err);
+  }
   managed.session.status = "stopped";
   managed.session.updatedAt = Date.now();
+  sessions.delete(id);
   return true;
+}
+
+export function killAllSessions(): void {
+  for (const [id] of sessions) {
+    killSession(id);
+  }
+}
+
+/**
+ * Build environment with full PATH and strip CLAUDECODE
+ * to prevent nested-session detection.
+ */
+function buildEnv(): Record<string, string> {
+  const env = { ...process.env } as Record<string, string>;
+  const extraPaths = [
+    `${process.env.HOME}/.local/bin`,
+    `${process.env.HOME}/.bun/bin`,
+    "/usr/local/bin",
+  ];
+  env.PATH = [...extraPaths, env.PATH].join(":");
+  delete env.CLAUDECODE;
+  return env;
 }

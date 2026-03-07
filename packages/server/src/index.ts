@@ -2,14 +2,15 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
-import { sessionRouter } from "./routes/sessions";
-import { terminalRouter } from "./routes/terminal";
+import { sessionRouter } from "./routes/sessions.js";
+import { terminalRouter } from "./routes/terminal.js";
+import { killAllSessions } from "./sessions.js";
 
 const app = new Hono();
 
 const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
-app.use("*", cors({ origin: "http://localhost:5173" }));
+app.use("*", cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }));
 
 app.get("/", (c) => c.json({ name: "autonomos", version: "0.0.1" }));
 
@@ -26,3 +27,12 @@ const server = serve({ fetch: app.fetch, port }, () => {
 });
 
 injectWebSocket(server);
+
+// Clean up all PTY processes on shutdown
+function shutdown() {
+  console.log("Shutting down — killing all sessions...");
+  killAllSessions();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

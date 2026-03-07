@@ -1,15 +1,23 @@
-import type { UpgradeWebSocket } from "hono/ws";
-import { getSession } from "../sessions";
+import type { UpgradeWebSocket, WSContext } from "hono/ws";
+import type { IDisposable } from "node-pty";
+import { getSession, killSession } from "../sessions.js";
+
+interface PtyBinding {
+  sessionId: string;
+  disposable: IDisposable;
+}
+
+const bindings = new WeakMap<WSContext, PtyBinding>();
 
 /**
  * WebSocket endpoint for terminal streaming.
  *
- * The flow:
+ * Flow:
  * 1. Client connects to /ws/terminal/:sessionId
  * 2. Server attaches to the session's PTY
- * 3. PTY output → WebSocket → xterm.js (binary stream)
- * 4. xterm.js keystrokes → WebSocket → PTY input
- * 5. Resize messages from client → PTY resize
+ * 3. PTY output -> WebSocket -> xterm.js
+ * 4. xterm.js keystrokes -> WebSocket -> PTY input
+ * 5. Resize messages from client -> PTY resize
  */
 export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
@@ -23,45 +31,73 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           return;
         }
 
-        const { pty } = managed;
-
-        // PTY output → WebSocket
-        const disposable = pty.onData((data: string) => {
-          ws.send(data);
+        const disposable = managed.pty.onData((data: string) => {
+          try {
+            ws.send(data);
+          } catch {
+            disposable.dispose();
+          }
         });
 
-        // Store cleanup reference on the ws object
-        (ws as any)._ptyDisposable = disposable;
-        (ws as any)._sessionId = sessionId;
+        bindings.set(ws, { sessionId, disposable });
       },
 
       onMessage(event, ws) {
-        const managed = getSession((ws as any)._sessionId);
+        const binding = bindings.get(ws);
+        if (!binding) return;
+
+        const managed = getSession(binding.sessionId);
         if (!managed) return;
 
-        const msg = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
+        const msg =
+          typeof event.data === "string"
+            ? event.data
+            : new TextDecoder().decode(event.data as ArrayBuffer);
 
         // Handle resize messages (JSON with type: "resize")
         if (msg.startsWith("{")) {
+          let parsed: Record<string, unknown> | null = null;
           try {
-            const parsed = JSON.parse(msg);
-            if (parsed.type === "resize" && parsed.cols && parsed.rows) {
-              managed.pty.resize(parsed.cols, parsed.rows);
-              return;
-            }
+            parsed = JSON.parse(msg);
           } catch {
-            // Not JSON — treat as regular input
+            // Not valid JSON -- fall through to pty.write()
+          }
+          if (parsed?.type === "resize" && parsed.cols && parsed.rows) {
+            try {
+              managed.pty.resize(
+                parsed.cols as number,
+                parsed.rows as number
+              );
+            } catch (err) {
+              console.error(`Resize failed for session ${binding.sessionId}:`, err);
+            }
+            return;
           }
         }
 
-        // Regular input → PTY
-        managed.pty.write(msg);
+        try {
+          managed.pty.write(msg);
+        } catch (err) {
+          console.error(`PTY write failed for session ${binding.sessionId}:`, err);
+          ws.close(4001, "PTY write failed");
+        }
       },
 
       onClose(_event, ws) {
-        const disposable = (ws as any)._ptyDisposable;
-        if (disposable?.dispose) disposable.dispose();
+        cleanupBinding(ws);
+      },
+
+      onError(_event, ws) {
+        cleanupBinding(ws);
       },
     };
   });
+}
+
+function cleanupBinding(ws: WSContext): void {
+  const binding = bindings.get(ws);
+  if (!binding) return;
+  binding.disposable.dispose();
+  bindings.delete(ws);
+  killSession(binding.sessionId);
 }
