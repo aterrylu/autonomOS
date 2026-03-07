@@ -40,53 +40,53 @@ Priorities shift as we learn — this is a living document, not a contract.
 
 ### What
 
-The container that holds everything. This is the single most important architectural decision — it determines the tech stack, dev experience, distribution model, and what's possible for every other feature.
+The container that holds everything. The single most important architectural decision — determines tech stack, dev experience, distribution model, and what's possible for every other feature.
 
-### The Question
+### Decision: Web-First, Electron Later (ADR-005)
 
-What kind of application is autonomOS?
+**Architecture:** A Bun server (Hono) that spawns and manages Claude Code subprocesses, serves a web dashboard, and exposes REST + WebSocket APIs. Package as Electron desktop app later when the web experience is solid.
 
-| Option | Example | Pros | Cons |
-|--------|---------|------|------|
-| **Electron app (VSCode-style)** | VSCode, Cursor, LM Studio | Rich, familiar, mature ecosystem. Full Node.js backend in-process. Native menus, tabs, window management. Proven at scale. | Heavy (~200MB+). Chromium overhead. But every serious dev tool uses it. |
-| **Tauri app** | YepAnywhere desktop | Tiny binary (~5MB). Rust backend. Native webview. | Less mature. Rust toolchain required. Webview quirks across platforms. No embedded Node.js (need sidecar). |
-| **Web app (browser)** | Mission Control, Zo | Zero install. Any device. | No native integration. Can't spawn subprocesses directly. Needs separate server process. |
-| **Web app + native wrapper later** | Start web, add Tauri/Electron | Flexible. Ship fast. | Two codebases eventually. Deferred decision isn't free. |
+**Stack (ADR-007, ADR-009):**
+- **Runtime:** Bun (Anthropic-backed, Claude Code runs on it, uWebSockets C++ under the hood)
+- **Server:** Hono (multi-runtime, 25K+ stars, native WebSocket/SSE, Cloudflare uses internally)
+- **Language:** TypeScript everywhere (server, dashboard, core types — zero serialization layer)
+- **Terminal:** xterm.js in browser, server-side PTY streamed over WebSocket
+- **Data:** SQLite for v0 (abstract for future PostgreSQL swap)
 
-### Research Needed
+**Why web-first:**
+- Fastest path to v0 — no Electron boilerplate, IPC wiring, or native packaging
+- The server IS the product — CLI, web dashboard, and future Electron wrapper are all clients
+- Mobile/remote access for free — approve tools from phone, check on agents remotely
+- YepAnywhere and amux both validate web-first works for this exact use case
+- LM Studio pattern: separate the backend daemon from the UI shell
 
-Before deciding, study how these apps handle the shell:
+**Why not Electron-first:**
+- Adds boilerplate upfront with no mobile story
+- The "real app" packaging can be added later — xterm.js + node-pty is not exclusive to Electron
+- Zo Computer's 505 MB Electron wrapper is a cautionary tale
 
-1. **VSCode / Cursor** — Electron. How they handle multi-window, terminal integration, extension webviews. The gold standard for developer desktop apps.
-2. **LM Studio** — Electron. How they handle model management UI + inference in one app. Relevant because it's AI tooling in Electron.
-3. **Zo Computer desktop app** — Appears to be Electron. How they handle the cloud-server-in-a-desktop-app pattern.
-4. **iTerm2** — Native macOS (Objective-C/Swift). The gold standard for terminal UX. Not adoptable as tech but study the UX patterns: tabs, split panes, profiles, search, hotkey window.
-5. **Warp** — Rust + native rendering. Modern terminal that treats output as blocks. Relevant for the "terminal but smarter" concept.
+**Why not Tauri:**
+- Rust PTY libs less proven than node-pty
+- WebView inconsistencies across OS
+- Good future option for lightweight packaging
 
-### Design Intent
+**Why not pure TUI:**
+- Cost analytics need real charts, session replay needs rich rendering
+- amux proves the pattern: tmux for process management, web dashboard for the UI
 
-The app should feel like a **developer tool**, not a web app in a frame. Think:
-- VSCode's tab/panel system for organizing views
-- iTerm2's terminal quality (proper xterm emulation, profiles, split panes)
-- Fast, keyboard-driven, minimal chrome
+**Key insight:** tmux, Electron, and web are all just process management + UI. The server that spawns Claude Code, parses events, tracks costs, and manages sessions is the core product. The UI layer is swappable.
 
 ### Key Constraints
 
-- Must be able to spawn Claude Code as a subprocess (stdin/stdout JSON streaming)
-- Must embed a real terminal emulator (xterm.js or equivalent)
-- Must support multiple tabs/panes (at least: multiple sessions + dashboard views)
+- Spawn Claude Code as subprocess via node-pty (stdin/stdout JSON streaming)
+- xterm.js terminal emulator with WebGL rendering, true color, ligatures (iTerm2-quality visuals)
+- Multiple tabs/panes for sessions + dashboard views
 - macOS first, Linux later, Windows eventually
-- Should feel native — proper menubar, keyboard shortcuts, window management
+- Keyboard-driven, minimal chrome
 
-### Notes
+### Research
 
-Leaning toward Electron (VSCode-style) based on:
-- Every successful dev tool desktop app uses Electron (VSCode, Cursor, Windsurf, LM Studio, Slack, Discord)
-- Tauri's webview limitations may bite us for terminal emulation and complex layouts
-- Electron gives us Node.js in-process — can spawn Claude Code subprocesses directly, no sidecar needed
-- The "Electron is heavy" argument matters less for a developer tool that's always running
-
-But this needs more research before committing. See research targets above.
+Full analysis in `docs/research/desktop-shells/` — 5 research documents covering VSCode/Electron, LM Studio, Zo Computer, TUI frameworks, and a synthesis with side-by-side comparisons.
 
 ---
 
