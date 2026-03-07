@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "test": "tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@autonomos/core": "workspace:*",

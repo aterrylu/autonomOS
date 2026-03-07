@@ -4,7 +4,16 @@ import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
-import { killAllSessions } from "./sessions.js";
+import { killAllSessions, resolveClaudePath } from "./sessions.js";
+
+// Validate claude binary exists at startup — fail fast with a clear message
+try {
+  const path = resolveClaudePath();
+  console.log(`Claude binary found: ${path}`);
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
 
 const app = new Hono();
 

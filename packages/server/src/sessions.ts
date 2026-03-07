@@ -10,6 +10,26 @@ export interface ManagedSession {
 
 const sessions = new Map<string, ManagedSession>();
 
+let claudePath: string | null = null;
+
+/** Resolve claude binary at startup so we fail fast with a clear message. */
+export function resolveClaudePath(): string {
+  if (claudePath) return claudePath;
+  const candidates = [
+    `${process.env.HOME}/.local/bin/claude`,
+    "/usr/local/bin/claude",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      claudePath = p;
+      return p;
+    }
+  }
+  throw new Error(
+    `Claude binary not found. Searched: ${candidates.join(", ")}`
+  );
+}
+
 export function getSession(id: string): ManagedSession | undefined {
   return sessions.get(id);
 }
@@ -18,35 +38,23 @@ export function getAllSessions(): Session[] {
   return Array.from(sessions.values()).map((s) => s.session);
 }
 
-function resolveClaudePath(): string {
-  const candidates = [
-    `${process.env.HOME}/.local/bin/claude`,
-    "/usr/local/bin/claude",
-  ];
-  for (const path of candidates) {
-    if (existsSync(path)) return path;
-  }
-  throw new Error(
-    `Claude binary not found. Searched: ${candidates.join(", ")}`
-  );
+export function expandPath(path: string): string {
+  return path.replace(/^~/, process.env.HOME || "/tmp");
 }
 
 export function createSession(options: SpawnOptions): ManagedSession {
   const id = crypto.randomUUID();
   const cols = options.cols ?? 120;
   const rows = options.rows ?? 40;
-  const cwd = options.workingDirectory.replace(
-    /^~/,
-    process.env.HOME || "/tmp"
-  );
+  const cwd = expandPath(options.workingDirectory);
+  const binary = resolveClaudePath();
 
   const env = buildEnv();
-  const claudePath = resolveClaudePath();
 
   // Prevent prompt from being interpreted as CLI flags
   const args = options.prompt ? ["--", options.prompt] : [];
 
-  const pty = spawn(claudePath, args, {
+  const pty = spawn(binary, args, {
     name: "xterm-256color",
     cols,
     rows,
@@ -58,7 +66,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
     id,
     name: `Session ${sessions.size + 1}`,
     status: "running",
-    workingDirectory: options.workingDirectory,
+    workingDirectory: cwd,
     provider: "claude-code",
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -70,6 +78,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
   pty.onExit(() => {
     session.status = "stopped";
     session.updatedAt = Date.now();
+    sessions.delete(id);
   });
 
   return managed;
@@ -93,6 +102,12 @@ export function killAllSessions(): void {
   for (const [id] of sessions) {
     killSession(id);
   }
+}
+
+/** For testing — reset internal state */
+export function _resetForTesting(): void {
+  sessions.clear();
+  claudePath = null;
 }
 
 /**

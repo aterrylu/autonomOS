@@ -33,8 +33,9 @@ sessionRouter.post("/", async (c) => {
     });
     return c.json(managed.session, 201);
   } catch (err) {
-    console.error("Failed to create session:", err);
-    return c.json({ error: "Failed to spawn agent process" }, 500);
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Failed to create session:", message);
+    return c.json({ error: "Failed to spawn agent process", detail: message }, 500);
   }
 });
 

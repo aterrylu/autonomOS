@@ -1,4 +1,4 @@
-.PHONY: dev dev-server dev-dashboard install setup clean kill
+.PHONY: dev dev-server dev-dashboard install setup clean kill test
 
 BUN := $(HOME)/.bun/bin/bun
 
@@ -30,6 +30,10 @@ setup: install
 		node_modules/node-pty/ 2>/dev/null || true
 	@rm -rf /tmp/autonomos-pty-build
 	@echo "Setup complete. Run 'make dev' to start."
+
+# Run tests
+test:
+	cd packages/server && npx tsx --test src/__tests__/*.test.ts
 
 # Kill any running dev servers
 kill:

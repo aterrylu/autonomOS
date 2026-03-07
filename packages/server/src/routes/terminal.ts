@@ -1,6 +1,6 @@
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import type { IDisposable } from "node-pty";
-import { getSession, killSession } from "../sessions.js";
+import { getSession } from "../sessions.js";
 
 interface PtyBinding {
   sessionId: string;
@@ -8,6 +8,11 @@ interface PtyBinding {
 }
 
 const bindings = new WeakMap<WSContext, PtyBinding>();
+
+const MIN_COLS = 2;
+const MAX_COLS = 500;
+const MIN_ROWS = 1;
+const MAX_ROWS = 200;
 
 /**
  * WebSocket endpoint for terminal streaming.
@@ -18,6 +23,9 @@ const bindings = new WeakMap<WSContext, PtyBinding>();
  * 3. PTY output -> WebSocket -> xterm.js
  * 4. xterm.js keystrokes -> WebSocket -> PTY input
  * 5. Resize messages from client -> PTY resize
+ *
+ * WebSocket disconnect does NOT kill the session — sessions
+ * persist independently and can be reconnected to.
  */
 export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
@@ -60,16 +68,21 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           try {
             parsed = JSON.parse(msg);
           } catch {
-            // Not valid JSON -- fall through to pty.write()
+            // Not valid JSON — fall through to pty.write()
           }
-          if (parsed?.type === "resize" && parsed.cols && parsed.rows) {
-            try {
-              managed.pty.resize(
-                parsed.cols as number,
-                parsed.rows as number
-              );
-            } catch (err) {
-              console.error(`Resize failed for session ${binding.sessionId}:`, err);
+          if (parsed?.type === "resize") {
+            const cols = Number(parsed.cols);
+            const rows = Number(parsed.rows);
+            if (
+              Number.isInteger(cols) && Number.isInteger(rows) &&
+              cols >= MIN_COLS && cols <= MAX_COLS &&
+              rows >= MIN_ROWS && rows <= MAX_ROWS
+            ) {
+              try {
+                managed.pty.resize(cols, rows);
+              } catch (err) {
+                console.error(`Resize failed for session ${binding.sessionId}:`, err);
+              }
             }
             return;
           }
@@ -99,5 +112,5 @@ function cleanupBinding(ws: WSContext): void {
   if (!binding) return;
   binding.disposable.dispose();
   bindings.delete(ws);
-  killSession(binding.sessionId);
+  // Session stays alive — can be reconnected or killed via API
 }

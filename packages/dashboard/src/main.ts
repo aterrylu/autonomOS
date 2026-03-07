@@ -4,6 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 
+// Empty string = same origin. Vite proxy routes /api/* and /ws/* to the server.
 const API_URL = "";
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
 
