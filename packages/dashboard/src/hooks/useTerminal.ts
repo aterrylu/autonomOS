@@ -19,7 +19,6 @@ export function useTerminal(
 ) {
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const observerRef = useRef<ResizeObserver | null>(null);
 
   const sessionId = useStore((s) => s.sessionId);
   const theme = useStore((s) => s.theme);
@@ -27,16 +26,9 @@ export function useTerminal(
   const themeRef = useRef(theme);
   themeRef.current = theme;
 
-  // Connect terminal when sessionId changes
   useEffect(() => {
     const container = containerRef.current;
     if (!sessionId || !container) return;
-
-    // Cleanup previous
-    termRef.current?.dispose();
-    container.replaceChildren();
-    wsRef.current?.close();
-    observerRef.current?.disconnect();
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -65,9 +57,9 @@ export function useTerminal(
 
     fitAddon.fit();
 
-    terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-      return handleKeyEvent(event, terminal, wsRef);
-    });
+    terminal.attachCustomKeyEventHandler((event) =>
+      handleKeyEvent(event, terminal, wsRef),
+    );
 
     const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`);
 
@@ -76,9 +68,7 @@ export function useTerminal(
       sendResize(ws, terminal);
     };
 
-    ws.onmessage = (event) => {
-      terminal.write(event.data);
-    };
+    ws.onmessage = (event) => terminal.write(event.data);
 
     ws.onclose = () => setStatus("disconnected");
     ws.onerror = () => setStatus("connection error");
@@ -97,12 +87,12 @@ export function useTerminal(
 
     termRef.current = terminal;
     wsRef.current = ws;
-    observerRef.current = resizeObserver;
 
     return () => {
       resizeObserver.disconnect();
       ws.close();
       terminal.dispose();
+      container.replaceChildren();
     };
   }, [sessionId, setStatus, containerRef]);
 

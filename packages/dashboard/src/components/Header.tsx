@@ -1,7 +1,5 @@
 import { THEMES, useStore } from "../store";
 
-const API_URL = "";
-
 export function Header() {
   const theme = useStore((s) => s.theme);
   const status = useStore((s) => s.status);
@@ -10,17 +8,19 @@ export function Header() {
   const setSessionId = useStore((s) => s.setSessionId);
   const page = THEMES[theme].page;
 
+  const isSpawning = status === "spawning...";
+
   async function createSession() {
+    if (isSpawning) return;
     setStatus("spawning...");
 
-    let res: Response;
-    try {
-      res = await fetch(`${API_URL}/api/sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workingDirectory: "~" }),
-      });
-    } catch {
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workingDirectory: "~" }),
+    }).catch(() => null);
+
+    if (!res) {
       setStatus("server unreachable");
       return;
     }
@@ -55,7 +55,8 @@ export function Header() {
         <button
           type="button"
           onClick={createSession}
-          className="rounded-md bg-[#238636] px-4 py-1.5 text-sm text-white cursor-pointer hover:bg-[#2ea043]"
+          disabled={isSpawning}
+          className="rounded-md bg-[#238636] px-4 py-1.5 text-sm text-white cursor-pointer hover:bg-[#2ea043] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           New Session
         </button>

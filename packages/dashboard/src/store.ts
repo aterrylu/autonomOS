@@ -78,9 +78,13 @@ export const THEMES: Record<ThemeName, AppTheme> = {
 
 const THEME_ORDER: ThemeName[] = ["midnight", "daylight", "void"];
 
+function isThemeName(value: string | null): value is ThemeName {
+  return value !== null && value in THEMES;
+}
+
 function loadTheme(): ThemeName {
   const stored = localStorage.getItem("theme");
-  return stored && stored in THEMES ? (stored as ThemeName) : "midnight";
+  return isThemeName(stored) ? stored : "midnight";
 }
 
 interface AppState {
