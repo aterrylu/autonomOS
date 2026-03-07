@@ -84,8 +84,11 @@ const THEMES: Record<ThemeName, AppTheme> = {
   },
 };
 
+const THEME_ORDER: ThemeName[] = ["midnight", "daylight", "void"];
+
+const stored = localStorage.getItem("theme");
 let currentTheme: ThemeName =
-  (localStorage.getItem("theme") as ThemeName) || "midnight";
+  stored && stored in THEMES ? (stored as ThemeName) : "midnight";
 
 const statusEl = document.getElementById("status")!;
 const btnNew = document.getElementById("btn-new") as HTMLButtonElement;
@@ -111,12 +114,7 @@ function applyTheme(name: ThemeName): void {
   document.querySelector("header")!.style.borderBottomColor = theme.page.border;
   statusEl.style.color = theme.page.statusFg;
 
-  const labels: Record<ThemeName, string> = {
-    midnight: "Midnight",
-    daylight: "Daylight",
-    void: "Void",
-  };
-  btnTheme.textContent = labels[name];
+  btnTheme.textContent = name[0].toUpperCase() + name.slice(1);
 
   if (terminal) {
     terminal.options.theme = theme.terminal;
@@ -292,8 +290,8 @@ function sendToWs(data: string): void {
 
 btnNew.addEventListener("click", createSession);
 btnTheme.addEventListener("click", () => {
-  const order: ThemeName[] = ["midnight", "daylight", "void"];
-  const next = order[(order.indexOf(currentTheme) + 1) % order.length];
+  const next =
+    THEME_ORDER[(THEME_ORDER.indexOf(currentTheme) + 1) % THEME_ORDER.length];
   applyTheme(next);
 });
 applyTheme(currentTheme);
