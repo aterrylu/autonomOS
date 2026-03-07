@@ -4,65 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>autonomOS</title>
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      body {
-        background: #0a0e14;
-        color: #b3b1ad;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
-      }
-      header {
-        padding: 12px 20px;
-        border-bottom: 1px solid #1c2433;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-      }
-      header h1 {
-        font-size: 16px;
-        font-weight: 600;
-      }
-      #status {
-        font-size: 13px;
-        color: #626a73;
-      }
-      #controls {
-        display: flex;
-        gap: 8px;
-        margin-left: auto;
-      }
-      button {
-        background: #238636;
-        color: #fff;
-        border: none;
-        padding: 6px 16px;
-        border-radius: 6px;
-        font-size: 13px;
-        cursor: pointer;
-      }
-      button:hover { background: #2ea043; }
-      button:disabled { opacity: 0.5; cursor: not-allowed; }
-      #btn-theme { background: #30363d; }
-      #btn-theme:hover { background: #484f58; }
-      #terminal-container {
-        flex: 1;
-        padding: 4px;
-      }
-    </style>
   </head>
   <body>
-    <header>
-      <h1>autonomOS</h1>
-      <span id="status">disconnected</span>
-      <div id="controls">
-        <button id="btn-theme">Midnight</button>
-        <button id="btn-new">New Session</button>
-      </div>
-    </header>
-    <div id="terminal-container"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
