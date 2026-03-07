@@ -6,5 +6,8 @@
     "dev": "bun run --filter '*' dev",
     "dev:server": "bun run --filter @autonomos/server dev",
     "dev:dashboard": "bun run --filter @autonomos/dashboard dev"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.6"
   }
 }

@@ -1,8 +1,8 @@
-import type { Session, SpawnOptions } from "@autonomos/core";
-import { spawn } from "node-pty";
-import type { IPty } from "node-pty";
-import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import type { Session, SpawnOptions } from "@autonomos/core";
+import type { IPty } from "node-pty";
+import { spawn } from "node-pty";
 
 export interface ManagedSession {
   session: Session;
@@ -31,7 +31,9 @@ export function resolveClaudePath(): string {
   }
 
   try {
-    const which = execFileSync("which", ["claude"], { encoding: "utf-8" }).trim();
+    const which = execFileSync("which", ["claude"], {
+      encoding: "utf-8",
+    }).trim();
     if (which) {
       claudePath = which;
       return which;
@@ -41,7 +43,7 @@ export function resolveClaudePath(): string {
   }
 
   throw new Error(
-    `Claude binary not found. Searched: ${candidates.join(", ")} and PATH`
+    `Claude binary not found. Searched: ${candidates.join(", ")} and PATH`,
   );
 }
 

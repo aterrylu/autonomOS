@@ -1,5 +1,10 @@
 import { Hono } from "hono";
-import { getAllSessions, createSession, getSession, killSession } from "../sessions.js";
+import {
+  createSession,
+  getAllSessions,
+  getSession,
+  killSession,
+} from "../sessions.js";
 
 export const sessionRouter = new Hono();
 
@@ -35,7 +40,10 @@ sessionRouter.post("/", async (c) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Failed to create session:", message);
-    return c.json({ error: "Failed to spawn agent process", detail: message }, 500);
+    return c.json(
+      { error: "Failed to spawn agent process", detail: message },
+      500,
+    );
   }
 });
 

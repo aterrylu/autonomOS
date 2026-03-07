@@ -29,7 +29,7 @@ const MAX_ROWS = 200;
  */
 export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
-    const sessionId = c.req.param("sessionId");
+    const sessionId = c.req.param("sessionId")!;
 
     return {
       onOpen(_event, ws) {
@@ -74,14 +74,20 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
             const cols = Number(parsed.cols);
             const rows = Number(parsed.rows);
             if (
-              Number.isInteger(cols) && Number.isInteger(rows) &&
-              cols >= MIN_COLS && cols <= MAX_COLS &&
-              rows >= MIN_ROWS && rows <= MAX_ROWS
+              Number.isInteger(cols) &&
+              Number.isInteger(rows) &&
+              cols >= MIN_COLS &&
+              cols <= MAX_COLS &&
+              rows >= MIN_ROWS &&
+              rows <= MAX_ROWS
             ) {
               try {
                 managed.pty.resize(cols, rows);
               } catch (err) {
-                console.error(`Resize failed for session ${binding.sessionId}:`, err);
+                console.error(
+                  `Resize failed for session ${binding.sessionId}:`,
+                  err,
+                );
               }
             }
             return;
@@ -91,7 +97,10 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         try {
           managed.pty.write(msg);
         } catch (err) {
-          console.error(`PTY write failed for session ${binding.sessionId}:`, err);
+          console.error(
+            `PTY write failed for session ${binding.sessionId}:`,
+            err,
+          );
           ws.close(4001, "PTY write failed");
         }
       },

@@ -1,7 +1,7 @@
-import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { killAllSessions, resolveClaudePath } from "./sessions.js";
@@ -19,7 +19,10 @@ const app = new Hono();
 
 const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
-app.use("*", cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }));
+app.use(
+  "*",
+  cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }),
+);
 
 app.get("/", (c) => c.json({ name: "autonomos", version: "0.0.1" }));
 

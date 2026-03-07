@@ -1,8 +1,8 @@
-import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
 import { Hono } from "hono";
 import { sessionRouter } from "../routes/sessions.js";
-import { killAllSessions, _resetForTesting } from "../sessions.js";
+import { _resetForTesting, killAllSessions } from "../sessions.js";
 
 // Create a test app with just the session routes (no WebSocket needed)
 function createApp() {
@@ -15,7 +15,7 @@ async function req(
   app: Hono,
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
 ): Promise<{ status: number; json: any }> {
   const init: RequestInit = { method };
   if (body) {
@@ -46,7 +46,12 @@ describe("POST /api/sessions — validation", () => {
   });
 
   it("rejects missing workingDirectory", async () => {
-    const { status, json } = await req(createApp(), "POST", "/api/sessions", {});
+    const { status, json } = await req(
+      createApp(),
+      "POST",
+      "/api/sessions",
+      {},
+    );
     assert.equal(status, 400);
     assert.equal(json.error, "workingDirectory is required");
   });
@@ -97,7 +102,10 @@ describe("POST /api/sessions — validation", () => {
       assert.equal(json.status, "running");
       assert.equal(json.provider, "claude-code");
       // workingDirectory should be expanded
-      assert.ok(!json.workingDirectory.startsWith("~"), "workingDirectory should be expanded");
+      assert.ok(
+        !json.workingDirectory.startsWith("~"),
+        "workingDirectory should be expanded",
+      );
     } else {
       // 500 = claude binary not found, which is fine in CI
       assert.equal(status, 500);
@@ -125,7 +133,7 @@ describe("GET /api/sessions/:id", () => {
     const { status, json } = await req(
       createApp(),
       "GET",
-      "/api/sessions/nonexistent"
+      "/api/sessions/nonexistent",
     );
     assert.equal(status, 404);
     assert.equal(json.error, "Session not found");
@@ -137,7 +145,7 @@ describe("DELETE /api/sessions/:id", () => {
     const { status, json } = await req(
       createApp(),
       "DELETE",
-      "/api/sessions/nonexistent"
+      "/api/sessions/nonexistent",
     );
     assert.equal(status, 404);
     assert.equal(json.error, "Session not found");

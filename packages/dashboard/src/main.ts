@@ -1,7 +1,7 @@
-import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
+import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 // Empty string = same origin. Vite proxy routes /api/* and /ws/* to the server.
@@ -38,11 +38,13 @@ function setStatus(text: string): void {
 
 function sendResize(): void {
   if (ws?.readyState === WebSocket.OPEN && terminal) {
-    ws.send(JSON.stringify({
-      type: "resize",
-      cols: terminal.cols,
-      rows: terminal.rows,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "resize",
+        cols: terminal.cols,
+        rows: terminal.rows,
+      }),
+    );
   }
 }
 
@@ -84,7 +86,8 @@ function connectTerminal(sessionId: string): void {
     cursorBlink: true,
     macOptionIsMeta: true,
     fontSize: 14,
-    fontFamily: '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+    fontFamily:
+      '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
     theme: TERMINAL_THEME,
     allowProposedApi: true,
   });
@@ -106,7 +109,10 @@ function connectTerminal(sessionId: string): void {
 
   fitAddon.fit();
 
-  const isMac = /mac/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? "");
+  const nav = navigator as Navigator & { userAgentData?: { platform: string } };
+  const isMac = /mac/i.test(
+    nav.userAgentData?.platform ?? navigator.platform ?? "",
+  );
   terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
     return handleKeyEvent(event, isMac);
   });
@@ -162,7 +168,8 @@ function handleKeyEvent(event: KeyboardEvent, isMac: boolean): boolean {
 
   // Let browser handle copy/paste natively
   if (event.key === "c" || event.key === "v") return true;
-  if (!isMac && event.shiftKey && (event.key === "C" || event.key === "V")) return true;
+  if (!isMac && event.shiftKey && (event.key === "C" || event.key === "V"))
+    return true;
 
   switch (event.key) {
     case "k":

@@ -1,12 +1,12 @@
-import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
 import {
-  getSession,
-  getAllSessions,
-  killSession,
-  killAllSessions,
-  expandPath,
   _resetForTesting,
+  expandPath,
+  getAllSessions,
+  getSession,
+  killAllSessions,
+  killSession,
 } from "../sessions.js";
 
 describe("expandPath", () => {
