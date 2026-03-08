@@ -1,39 +1,37 @@
 # Roadmap
 
-Last updated: 2026-03-03
+Last updated: 2026-03-08
 
-## 🔴 Now (Active)
+## Done
 
-### Research & Orient
-- [x] Set up repo and project structure
-- [x] Establish development conventions (CLAUDE.md, DECISIONS.md)
-- [ ] Research existing platforms and approaches (dimensionalOS, etc.)
-- [ ] Define core abstractions (what is an "agent" in autonomOS?)
-- [ ] Decide tech stack for dashboard
+- [x] Repo structure, conventions, CLAUDE.md
+- [x] Research: dimensionalOS, Zo Computer, Mission Control, LM Studio, YepAnywhere, amux
+- [x] Tech stack decided: React + Zustand + Tailwind + Hono + node-pty (ADR-007–010)
+- [x] Server: Hono + node-pty, spawns Claude Code sessions via PTY
+- [x] Dashboard: xterm.js terminal view with WebSocket streaming
+- [x] Session management: sidebar, create/switch/kill, auto-reconnect with output buffer replay
+- [x] Themes: Midnight, Daylight, Void (Pitch Black)
+- [x] Zustand persist, single store (ADR-011)
+- [x] CI: GitHub Actions, Biome, TypeScript project references
 
-## 🟡 Next
+## Now — Core Loop
 
-### Dashboard MVP (Observability)
-- [ ] Connect to OpenClaw — read agent status, sessions, cron jobs
-- [ ] Display agent activity (what's running, what failed, token spend)
-- [ ] Memory state viewer (what do agents remember?)
-- [ ] Session/log viewer
+The demo: open autonomOS, spawn a Claude Code session, use it in the browser.
 
-### Dev Path Integration
-- [ ] Claude Code session awareness
-- [ ] OpenClaw config viewer
-- [ ] Cron job monitoring
+- [ ] Verify the core loop works end-to-end (spawn → interact → reconnect)
+- [ ] Fix any rough edges blocking daily use
+- [ ] Multi-terminal support (P1 — view multiple sessions at once)
 
-## 🟢 Later
+## Next — Make It Useful
 
-### Dashboard v2 (Control)
+- [ ] Session naming / labeling
+- [ ] OpenClaw integration — read agent status, cron jobs
+- [ ] Token spend / cost tracking per session
+- [ ] Mobile-responsive layout
+
+## Later
+
+- [ ] Agent activity dashboard (what's running, what failed)
+- [ ] Memory state viewer
 - [ ] Configure agents from the dashboard
-- [ ] Create/edit cron jobs
-- [ ] Manage agent memory
-- [ ] Start/stop agents
-
-### Robot Path (Aspirational)
-- [ ] Define robot agent abstractions (topics, sensors, actuators)
-- [ ] Research dimensionalOS and similar platforms
-- [ ] Prototype persistent agent on hardware
-- [ ] Joint control and sensor input interfaces
+- [ ] Robot path (aspirational)

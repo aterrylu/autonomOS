@@ -1,11 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import type { ProjectInfo } from "../store";
 import { THEMES, useStore } from "../store";
 
 export function Sidebar() {
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
+  const projects = useStore((s) => s.projects);
   const sessionId = useStore((s) => s.sessionId);
   const fetchSessions = useStore((s) => s.fetchSessions);
+  const fetchProjects = useStore((s) => s.fetchProjects);
   const createSession = useStore((s) => s.createSession);
   const killSession = useStore((s) => s.killSession);
   const switchSession = useStore((s) => s.switchSession);
@@ -14,18 +17,27 @@ export function Sidebar() {
 
   const isSpawning = status === "spawning...";
 
-  // Poll sessions every 5s
+  // Poll live sessions every 5s, projects every 30s (heavier operation)
   useEffect(() => {
     fetchSessions();
-    const interval = setInterval(fetchSessions, 5000);
-    return () => clearInterval(interval);
-  }, [fetchSessions]);
+    fetchProjects();
+    const sessionsInterval = setInterval(fetchSessions, 5000);
+    const projectsInterval = setInterval(fetchProjects, 30000);
+    return () => {
+      clearInterval(sessionsInterval);
+      clearInterval(projectsInterval);
+    };
+  }, [fetchSessions, fetchProjects]);
 
   return (
     <aside
-      className="flex w-56 shrink-0 flex-col overflow-y-auto"
-      style={{ borderRight: `1px solid ${page.border}` }}
+      className="absolute inset-y-0 left-0 z-20 flex w-56 shrink-0 flex-col overflow-y-auto md:relative md:w-64"
+      style={{
+        borderRight: `1px solid ${page.border}`,
+        background: page.bg,
+      }}
     >
+      {/* Live Sessions Section */}
       <div
         className="flex items-center justify-between px-3 py-2"
         style={{ borderBottom: `1px solid ${page.border}` }}
@@ -34,7 +46,7 @@ export function Sidebar() {
           className="text-xs font-medium uppercase"
           style={{ color: page.statusFg }}
         >
-          Sessions
+          Live Sessions
         </span>
         <button
           type="button"
@@ -48,10 +60,10 @@ export function Sidebar() {
         </button>
       </div>
 
-      <div className="flex-1 py-1">
+      <div className="py-1">
         {sessions.length === 0 && (
           <p
-            className="px-3 py-4 text-center text-xs"
+            className="px-3 py-3 text-center text-xs"
             style={{ color: page.statusFg }}
           >
             No active sessions
@@ -103,12 +115,102 @@ export function Sidebar() {
           );
         })}
       </div>
+
+      {/* Projects Section */}
+      <div
+        className="flex items-center px-3 py-2"
+        style={{
+          borderTop: `1px solid ${page.border}`,
+          borderBottom: `1px solid ${page.border}`,
+        }}
+      >
+        <span
+          className="text-xs font-medium uppercase"
+          style={{ color: page.statusFg }}
+        >
+          Projects
+        </span>
+      </div>
+
+      <div className="flex-1 py-1">
+        {projects.length === 0 && (
+          <p
+            className="px-3 py-3 text-center text-xs"
+            style={{ color: page.statusFg }}
+          >
+            No projects found
+          </p>
+        )}
+
+        {projects.map((project) => (
+          <ProjectItem key={project.path} project={project} page={page} />
+        ))}
+      </div>
     </aside>
   );
 }
 
-function formatAge(createdAt: number): string {
-  const seconds = Math.floor((Date.now() - createdAt) / 1000);
+function ProjectItem({
+  project,
+  page,
+}: {
+  project: ProjectInfo;
+  page: { bg: string; fg: string; border: string; statusFg: string };
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="text-[10px] shrink-0" style={{ color: page.statusFg }}>
+          {expanded ? "▼" : "▶"}
+        </span>
+        <span className="flex-1 truncate text-xs font-medium">
+          {project.name}
+        </span>
+        <span className="shrink-0 text-[10px]" style={{ color: page.statusFg }}>
+          {project.sessions.length}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="pl-4">
+          {project.sessions.map((s) => (
+            <div
+              key={s.sessionId}
+              className="flex items-start gap-2 px-3 py-1 text-xs"
+              style={{ color: page.fg }}
+            >
+              <div className="flex-1 min-w-0">
+                <p className="truncate">{s.summary}</p>
+                <div
+                  className="flex items-center gap-2 mt-0.5"
+                  style={{ color: page.statusFg }}
+                >
+                  {s.gitBranch && (
+                    <span className="text-[10px] truncate max-w-[120px]">
+                      {s.gitBranch}
+                    </span>
+                  )}
+                  <span className="text-[10px]">
+                    {formatAge(s.lastModified)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatAge(timestamp: number): string {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
   if (seconds < 60) return "now";
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;

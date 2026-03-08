@@ -18,6 +18,23 @@ export interface SessionInfo {
   updatedAt: number;
 }
 
+/** A Claude Code session from the SDK's listSessions() */
+export interface ProjectSession {
+  sessionId: string;
+  summary: string;
+  lastModified: number;
+  gitBranch?: string;
+  firstPrompt?: string;
+}
+
+/** A project directory with its Claude Code sessions */
+export interface ProjectInfo {
+  path: string;
+  name: string;
+  sessions: ProjectSession[];
+  lastActive: number;
+}
+
 export const THEMES: Record<ThemeName, AppTheme> = {
   midnight: {
     terminal: {
@@ -101,12 +118,16 @@ interface AppState {
   // Transient
   status: string;
   sessions: SessionInfo[];
+  projects: ProjectInfo[];
+  sidebarOpen: boolean;
 
   // Actions
   cycleTheme: () => void;
+  toggleSidebar: () => void;
   setStatus: (status: string) => void;
   setSessionId: (id: string | null) => void;
   fetchSessions: () => Promise<void>;
+  fetchProjects: () => Promise<void>;
   createSession: () => Promise<void>;
   killSession: (id: string) => Promise<void>;
   switchSession: (id: string) => void;
@@ -119,6 +140,8 @@ export const useStore = create<AppState>()(
       sessionId: null,
       status: "disconnected",
       sessions: [],
+      projects: [],
+      sidebarOpen: false,
 
       cycleTheme: () => {
         const current = get().theme;
@@ -126,6 +149,7 @@ export const useStore = create<AppState>()(
           THEME_ORDER[(THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length];
         set({ theme: next });
       },
+      toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
       setStatus: (status) => set({ status }),
       setSessionId: (id) => set({ sessionId: id }),
 
@@ -139,6 +163,12 @@ export const useStore = create<AppState>()(
         if (sessionId && !sessions.some((s) => s.id === sessionId)) {
           set({ sessionId: null, status: "disconnected" });
         }
+      },
+      fetchProjects: async () => {
+        const res = await fetch("/api/projects").catch(() => null);
+        if (!res?.ok) return;
+        const projects: ProjectInfo[] = await res.json();
+        set({ projects });
       },
       createSession: async () => {
         if (get().status === "spawning...") return;

@@ -1,6 +1,13 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
+/* Lock the page — prevent body/html scrolling on mobile */
+html,
+body {
+  overflow: hidden;
+  height: 100dvh;
+}
+
 /* Hide scrollbars globally — only the terminal should scroll */
 ::-webkit-scrollbar {
   width: 0;

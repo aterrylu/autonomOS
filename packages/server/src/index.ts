@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { killAllSessions, resolveClaudePath } from "./sessions.js";
@@ -27,6 +28,7 @@ app.use(
 app.get("/", (c) => c.json({ name: "autonomos", version: "0.0.1" }));
 
 // REST API
+app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
 
 // WebSocket — terminal PTY streaming
