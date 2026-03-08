@@ -61,16 +61,17 @@ export function Sidebar() {
         {sessions.map((s) => {
           const isActive = s.id === sessionId;
           return (
-            <button
-              type="button"
+            // biome-ignore lint/a11y/useSemanticElements: contains nested button for kill action
+            <div
               key={s.id}
+              role="button"
+              tabIndex={0}
               className="group flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left"
               style={{
                 background: isActive ? page.border : "transparent",
-                color: "inherit",
-                border: "none",
               }}
               onClick={() => switchSession(s.id)}
+              onKeyDown={(e) => e.key === "Enter" && switchSession(s.id)}
             >
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -98,7 +99,7 @@ export function Sidebar() {
               >
                 x
               </button>
-            </button>
+            </div>
           );
         })}
       </div>

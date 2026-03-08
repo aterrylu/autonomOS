@@ -160,7 +160,7 @@ export const useStore = create<AppState>()(
         }
 
         const session: SessionInfo = await res.json();
-        set({ sessionId: session.id });
+        set({ sessionId: session.id, status: "connected" });
         await get().fetchSessions();
       },
       killSession: async (id) => {
