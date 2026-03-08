@@ -4,9 +4,13 @@ import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 
+const OUTPUT_BUFFER_LIMIT = 100 * 1024; // 100KB scrollback per session
+
 export interface ManagedSession {
   session: Session;
   pty: IPty;
+  outputBuffer: string[];
+  outputSize: number;
 }
 
 const sessions = new Map<string, ManagedSession>();
@@ -92,8 +96,25 @@ export function createSession(options: SpawnOptions): ManagedSession {
     updatedAt: Date.now(),
   };
 
-  const managed: ManagedSession = { session, pty };
+  const managed: ManagedSession = {
+    session,
+    pty,
+    outputBuffer: [],
+    outputSize: 0,
+  };
   sessions.set(id, managed);
+
+  pty.onData((data: string) => {
+    managed.outputBuffer.push(data);
+    managed.outputSize += data.length;
+    // Trim buffer when it exceeds the limit
+    while (
+      managed.outputSize > OUTPUT_BUFFER_LIMIT &&
+      managed.outputBuffer.length > 1
+    ) {
+      managed.outputSize -= managed.outputBuffer.shift()!.length;
+    }
+  });
 
   pty.onExit(() => {
     session.status = "stopped";

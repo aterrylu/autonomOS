@@ -5,6 +5,8 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    host: "0.0.0.0",
+    allowedHosts: ["aterrylu-macbook-pro"],
     proxy: {
       "/api": "http://localhost:3000",
       "/ws": {

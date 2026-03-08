@@ -1,33 +1,13 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
-/* VSCode-style scrollbar: visible on hover, hidden otherwise */
+/* Hide scrollbars globally — only the terminal should scroll */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 0;
+  height: 0;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: transparent;
-}
-
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-*:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-*:hover::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
-}
-
-/* xterm.js terminal scrollbar */
+/* xterm.js terminal scrollbar — visible on hover */
 .xterm-viewport::-webkit-scrollbar {
   width: 10px;
 }
