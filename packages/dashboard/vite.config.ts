@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     host: "0.0.0.0",
-    allowedHosts: ["aterrylu-macbook-pro"],
+    allowedHosts: true,
     proxy: {
       "/api": "http://localhost:3000",
       "/ws": {

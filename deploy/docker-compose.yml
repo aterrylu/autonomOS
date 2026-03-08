@@ -20,6 +20,8 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     dns:
       - 100.100.100.100
     dns_search:
