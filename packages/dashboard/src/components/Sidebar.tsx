@@ -160,6 +160,9 @@ function ProjectItem({
   page: PageTheme;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const resumeSession = useStore((s) => s.resumeSession);
+  const status = useStore((s) => s.status);
+  const isBusy = status === "resuming..." || status === "spawning...";
 
   return (
     <div>
@@ -182,10 +185,14 @@ function ProjectItem({
       {expanded && (
         <div className="pl-4">
           {project.sessions.map((s) => (
-            <div
+            <button
+              type="button"
               key={s.sessionId}
-              className="flex items-start gap-2 px-3 py-1 text-xs"
+              disabled={isBusy}
+              className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
               style={{ color: page.fg }}
+              onClick={() => resumeSession(s.sessionId, project.path)}
+              title="Resume this session"
             >
               <div className="flex-1 min-w-0">
                 <p className="truncate">{s.summary}</p>
@@ -203,7 +210,7 @@ function ProjectItem({
                   </span>
                 </div>
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}

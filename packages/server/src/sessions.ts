@@ -75,8 +75,13 @@ export function createSession(options: SpawnOptions): ManagedSession {
 
   const env = buildEnv();
 
-  // Prevent prompt from being interpreted as CLI flags
-  const args = options.prompt ? ["--", options.prompt] : [];
+  const args: string[] = [];
+  if (options.resumeSessionId) {
+    args.push("--resume", options.resumeSessionId);
+  }
+  if (options.prompt) {
+    args.push("--", options.prompt);
+  }
 
   const pty = spawn(binary, args, {
     name: "xterm-256color",
@@ -92,6 +97,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
     status: "running",
     workingDirectory: cwd,
     provider: "claude-code",
+    claudeSessionId: options.resumeSessionId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };

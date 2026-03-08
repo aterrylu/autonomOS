@@ -24,6 +24,8 @@ export interface AgentProvider {
 export interface SpawnOptions {
   workingDirectory: string;
   prompt?: string;
+  /** Claude Code session ID to resume (passed as --resume <id>) */
+  resumeSessionId?: string;
   cols?: number;
   rows?: number;
 }
