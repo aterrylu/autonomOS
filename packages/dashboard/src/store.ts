@@ -1,10 +1,21 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 export type ThemeName = "midnight" | "daylight" | "void";
 
 interface AppTheme {
   terminal: Record<string, string>;
   page: { bg: string; fg: string; border: string; statusFg: string };
+}
+
+export interface SessionInfo {
+  id: string;
+  name: string;
+  status: string;
+  workingDirectory: string;
+  provider: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export const THEMES: Record<ThemeName, AppTheme> = {
@@ -78,35 +89,105 @@ export const THEMES: Record<ThemeName, AppTheme> = {
 
 const THEME_ORDER: ThemeName[] = ["midnight", "daylight", "void"];
 
-function isThemeName(value: string | null): value is ThemeName {
-  return value !== null && value in THEMES;
-}
-
-function loadTheme(): ThemeName {
-  const stored = localStorage.getItem("theme");
-  return isThemeName(stored) ? stored : "midnight";
+function isThemeName(value: unknown): value is ThemeName {
+  return typeof value === "string" && value in THEMES;
 }
 
 interface AppState {
+  // Persisted
   theme: ThemeName;
-  status: string;
   sessionId: string | null;
+
+  // Transient
+  status: string;
+  sessions: SessionInfo[];
+
+  // Actions
   cycleTheme: () => void;
   setStatus: (status: string) => void;
   setSessionId: (id: string | null) => void;
+  fetchSessions: () => Promise<void>;
+  createSession: () => Promise<void>;
+  killSession: (id: string) => Promise<void>;
+  switchSession: (id: string) => void;
 }
 
-export const useStore = create<AppState>((set, get) => ({
-  theme: loadTheme(),
-  status: "disconnected",
-  sessionId: null,
-  cycleTheme: () => {
-    const current = get().theme;
-    const next =
-      THEME_ORDER[(THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length];
-    localStorage.setItem("theme", next);
-    set({ theme: next });
-  },
-  setStatus: (status) => set({ status }),
-  setSessionId: (sessionId) => set({ sessionId }),
-}));
+export const useStore = create<AppState>()(
+  persist(
+    (set, get) => ({
+      theme: "midnight",
+      sessionId: null,
+      status: "disconnected",
+      sessions: [],
+
+      cycleTheme: () => {
+        const current = get().theme;
+        const next =
+          THEME_ORDER[(THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length];
+        set({ theme: next });
+      },
+      setStatus: (status) => set({ status }),
+      setSessionId: (id) => set({ sessionId: id }),
+
+      fetchSessions: async () => {
+        const res = await fetch("/api/sessions").catch(() => null);
+        if (!res?.ok) return;
+        const sessions: SessionInfo[] = await res.json();
+        set({ sessions });
+
+        const { sessionId } = get();
+        if (sessionId && !sessions.some((s) => s.id === sessionId)) {
+          set({ sessionId: null, status: "disconnected" });
+        }
+      },
+      createSession: async () => {
+        if (get().status === "spawning...") return;
+        set({ status: "spawning..." });
+
+        const res = await fetch("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workingDirectory: "~" }),
+        }).catch(() => null);
+
+        if (!res) {
+          set({ status: "server unreachable" });
+          return;
+        }
+        if (!res.ok) {
+          set({ status: "failed to create session" });
+          return;
+        }
+
+        const session: SessionInfo = await res.json();
+        set({ sessionId: session.id });
+        await get().fetchSessions();
+      },
+      killSession: async (id) => {
+        await fetch(`/api/sessions/${id}`, { method: "DELETE" }).catch(
+          () => null,
+        );
+        if (get().sessionId === id) {
+          set({ sessionId: null, status: "disconnected" });
+        }
+        await get().fetchSessions();
+      },
+      switchSession: (id) => set({ sessionId: id }),
+    }),
+    {
+      name: "autonomos",
+      partialize: (state) => ({
+        theme: state.theme,
+        sessionId: state.sessionId,
+      }),
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as Partial<AppState>),
+        // Validate persisted theme
+        theme: isThemeName((persisted as Partial<AppState>)?.theme)
+          ? ((persisted as Partial<AppState>).theme as ThemeName)
+          : current.theme,
+      }),
+    },
+  ),
+);
