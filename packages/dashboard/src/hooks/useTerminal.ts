@@ -70,7 +70,14 @@ export function useTerminal(
 
     ws.onmessage = (event) => terminal.write(event.data);
 
-    ws.onclose = () => setStatus("disconnected");
+    ws.onclose = (event) => {
+      // 4010 = PTY exited (session ended)
+      if (event.code === 4010) {
+        useStore.getState().setSessionId(null);
+        useStore.getState().fetchSessions();
+      }
+      setStatus("disconnected");
+    };
     ws.onerror = () => setStatus("connection error");
 
     terminal.onData((data) => {

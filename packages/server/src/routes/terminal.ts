@@ -9,6 +9,12 @@ interface PtyBinding {
 
 const bindings = new WeakMap<WSContext, PtyBinding>();
 
+/** Track all WebSocket clients per session so we can notify on PTY exit */
+const sessionClients = new Map<string, Set<WSContext>>();
+
+/** Sessions that already have an onExit handler registered */
+const exitHandlerRegistered = new Set<string>();
+
 const MIN_COLS = 2;
 const MAX_COLS = 500;
 const MIN_ROWS = 1;
@@ -58,6 +64,30 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         });
 
         bindings.set(ws, { sessionId, disposable });
+
+        // Track this client for PTY exit notification
+        const clients = sessionClients.get(sessionId) ?? new Set<WSContext>();
+        if (clients.size === 0) sessionClients.set(sessionId, clients);
+        clients.add(ws);
+
+        // Register onExit once per session to avoid duplicate handlers
+        if (!exitHandlerRegistered.has(sessionId)) {
+          exitHandlerRegistered.add(sessionId);
+          managed.pty.onExit(() => {
+            const tracked = sessionClients.get(sessionId);
+            if (tracked) {
+              for (const client of tracked) {
+                try {
+                  client.close(4010, "Session ended");
+                } catch {
+                  // Client already gone
+                }
+              }
+            }
+            sessionClients.delete(sessionId);
+            exitHandlerRegistered.delete(sessionId);
+          });
+        }
       },
 
       onMessage(event, ws) {
@@ -131,5 +161,6 @@ function cleanupBinding(ws: WSContext): void {
   if (!binding) return;
   binding.disposable.dispose();
   bindings.delete(ws);
-  // Session stays alive — can be reconnected or killed via API
+  // Remove from session client tracking
+  sessionClients.get(binding.sessionId)?.delete(ws);
 }
