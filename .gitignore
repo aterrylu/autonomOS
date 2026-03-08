@@ -7,3 +7,4 @@ build/
 *.tsbuildinfo
 .vite/
 .mcp.json
+deploy/serve.json

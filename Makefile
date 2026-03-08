@@ -1,41 +1,47 @@
-.PHONY: dev setup check fmt clean
+.PHONY: up down check
 
 BUN := $(HOME)/.bun/bin/bun
+MODE ?= dev
 
-# Start server + dashboard
-dev:
+# ── up: start autonomOS + Tailscale sidecar ──────
+#
+#   make up          → dev mode  (Vite HMR on :5173, API on :3000)
+#   make up MODE=prod → prod mode (built dashboard served from :3000)
+#
+#   Both modes expose http://autonomos via Tailscale.
+up:
 	@lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+ifeq ($(MODE),prod)
+	@echo "Building dashboard..."
+	@cd packages/dashboard && $(BUN) vite build
+	@$(call serve_json,3000)
+	@cd deploy && docker compose up -d
+	@echo "Starting server on :3000 (serving dashboard)..."
+	@cd packages/server && npx tsx src/index.ts
+else
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
+	@$(call serve_json,5173)
+	@cd deploy && docker compose up -d
 	@echo "Starting server on :3000 and dashboard on :5173..."
 	@cd packages/server && npx tsx watch src/index.ts &
 	@sleep 2
-	@cd packages/dashboard && $(BUN) vite
+	@cd packages/dashboard && $(BUN) vite --host 0.0.0.0
+endif
 
-# Install deps + build node-pty native addon
-setup:
-	$(BUN) install
-	@echo "Building node-pty native addon..."
-	@mkdir -p /tmp/autonomos-pty-build
-	cd /tmp/autonomos-pty-build && npm init -y > /dev/null 2>&1 && npm install node-pty@1.0.0 --silent
-	@cp -r /tmp/autonomos-pty-build/node_modules/node-pty/build \
-		node_modules/.bun/node-pty@1.0.0/node_modules/node-pty/ 2>/dev/null || \
-		cp -r /tmp/autonomos-pty-build/node_modules/node-pty/build \
-		node_modules/node-pty/ 2>/dev/null || true
-	@rm -rf /tmp/autonomos-pty-build
-	@echo "Setup complete. Run 'make dev' to start."
+# ── down: stop everything ────────────────────────
+down:
+	@lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
+	@cd deploy && docker compose down
+	@echo "Stopped."
 
-# Lint + typecheck + test
+# ── check: lint + typecheck + test ───────────────
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
 	cd packages/server && npx tsx --test src/__tests__/*.test.ts
 
-# Auto-fix formatting and lint
-fmt:
-	npx biome check --write packages/
-
-# Remove everything
-clean:
-	@lsof -ti:3000 | xargs kill -9 2>/dev/null || true
-	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
-	rm -rf node_modules packages/*/node_modules
+# ── helper: generate serve.json for Tailscale ────
+define serve_json
+	@printf '{\n  "TCP": {\n    "80": { "HTTP": true },\n    "443": { "HTTPS": true }\n  },\n  "Web": {\n    "$${TS_CERT_DOMAIN}:80": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    },\n    "$${TS_CERT_DOMAIN}:443": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    }\n  }\n}\n' > deploy/serve.json
+endef

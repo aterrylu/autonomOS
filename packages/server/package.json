@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
     "test": "tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {

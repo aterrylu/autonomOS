@@ -1,0 +1,48 @@
+## ═══════════════════════════════════════════════════
+##  autonomOS — Tailscale Sidecar
+## ═══════════════════════════════════════════════════
+##
+##  Exposes the autonomOS server (running on host)
+##  as a dedicated Tailscale node: http://autonomos
+##
+##  The app runs on the host (needs node-pty + claude).
+##  This sidecar only proxies port 80/443 → host.
+##
+##  Usage: managed by `make up` / `make down`
+## ═══════════════════════════════════════════════════
+
+services:
+  tailscale:
+    container_name: autonomos-ts
+    image: tailscale/tailscale:latest
+    hostname: autonomos
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    dns:
+      - 100.100.100.100
+    dns_search:
+      - serval-snapper.ts.net
+    dns_opt:
+      - ndots:1
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    env_file:
+      - ../.env
+    environment:
+      - TS_EXTRA_ARGS=--advertise-tags=tag:homelab
+      - TS_ACCEPT_DNS=true
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_SERVE_CONFIG=/config/serve.json
+    healthcheck:
+      test: ["CMD", "tailscale", "status", "--peers=false"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  ts-state:
