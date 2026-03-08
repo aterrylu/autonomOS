@@ -1,4 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -20,12 +23,7 @@ const app = new Hono();
 
 const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
-app.use(
-  "*",
-  cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }),
-);
-
-app.get("/", (c) => c.json({ name: "autonomos", version: "0.0.1" }));
+app.use("*", cors({ origin: process.env.CORS_ORIGIN || "*" }));
 
 // REST API
 app.route("/api/projects", projectRouter);
@@ -33,6 +31,17 @@ app.route("/api/sessions", sessionRouter);
 
 // WebSocket — terminal PTY streaming
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
+
+// Serve dashboard static files in production
+const dashboardDist = resolve(import.meta.dirname, "../../dashboard/dist");
+if (existsSync(dashboardDist)) {
+  console.log(`Serving dashboard from ${dashboardDist}`);
+  app.use("/*", serveStatic({ root: dashboardDist }));
+
+  // SPA fallback — serve index.html for non-API/WS routes
+  const indexHtml = readFileSync(resolve(dashboardDist, "index.html"), "utf-8");
+  app.get("*", (c) => c.html(indexHtml));
+}
 
 const port = Number(process.env.PORT) || 3000;
 
