@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { ProjectInfo } from "../store";
 import { THEMES, useStore } from "../store";
 
+type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+
 export function Sidebar() {
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
@@ -155,7 +157,7 @@ function ProjectItem({
   page,
 }: {
   project: ProjectInfo;
-  page: { bg: string; fg: string; border: string; statusFg: string };
+  page: PageTheme;
 }) {
   const [expanded, setExpanded] = useState(false);
 

@@ -114,12 +114,12 @@ interface AppState {
   // Persisted
   theme: ThemeName;
   sessionId: string | null;
+  sidebarOpen: boolean;
 
   // Transient
   status: string;
   sessions: SessionInfo[];
   projects: ProjectInfo[];
-  sidebarOpen: boolean;
 
   // Actions
   cycleTheme: () => void;
@@ -141,7 +141,7 @@ export const useStore = create<AppState>()(
       status: "disconnected",
       sessions: [],
       projects: [],
-      sidebarOpen: false,
+      sidebarOpen: true,
 
       cycleTheme: () => {
         const current = get().theme;
@@ -209,15 +209,16 @@ export const useStore = create<AppState>()(
       partialize: (state) => ({
         theme: state.theme,
         sessionId: state.sessionId,
+        sidebarOpen: state.sidebarOpen,
       }),
-      merge: (persisted, current) => ({
-        ...current,
-        ...(persisted as Partial<AppState>),
-        // Validate persisted theme
-        theme: isThemeName((persisted as Partial<AppState>)?.theme)
-          ? ((persisted as Partial<AppState>).theme as ThemeName)
-          : current.theme,
-      }),
+      merge: (persisted, current) => {
+        const saved = persisted as Partial<AppState>;
+        return {
+          ...current,
+          ...saved,
+          theme: isThemeName(saved?.theme) ? saved.theme : current.theme,
+        };
+      },
     },
   ),
 );
