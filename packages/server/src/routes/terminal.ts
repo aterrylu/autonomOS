@@ -39,6 +39,16 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           return;
         }
 
+        // Replay buffered output so reconnecting clients see scrollback
+        for (const chunk of managed.outputBuffer) {
+          try {
+            ws.send(chunk);
+          } catch {
+            // Client disconnected during replay
+            return;
+          }
+        }
+
         const disposable = managed.pty.onData((data: string) => {
           try {
             ws.send(data);
