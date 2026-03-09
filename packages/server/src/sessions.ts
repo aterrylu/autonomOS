@@ -106,9 +106,13 @@ export function createSession(options: SpawnOptions): ManagedSession {
     env,
   });
 
+  const basename = cwd.split("/").pop() || cwd;
+  const shortId = id.slice(0, 4);
+  const defaultName = options.name || `${basename} · ${shortId}`;
+
   const session: Session = {
     id,
-    name: `Session ${sessions.size + 1}`,
+    name: defaultName,
     status: "running",
     workingDirectory: cwd,
     provider: "claude-code",

@@ -43,6 +43,7 @@ sessionRouter.post("/", async (c) => {
   try {
     const managed = createSession({
       workingDirectory: body.workingDirectory,
+      name: typeof body.name === "string" ? body.name : undefined,
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
       resumeSessionId:
         typeof body.resumeSessionId === "string"

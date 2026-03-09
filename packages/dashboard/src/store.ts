@@ -26,6 +26,8 @@ export interface ProjectSession {
   lastModified: number;
   gitBranch?: string;
   firstPrompt?: string;
+  /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
+  customTitle?: string;
 }
 
 /** A project directory with its Claude Code sessions */
@@ -130,7 +132,11 @@ interface AppState {
   fetchSessions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
   createSession: () => Promise<void>;
-  resumeSession: (claudeSessionId: string, cwd: string) => Promise<void>;
+  resumeSession: (
+    claudeSessionId: string,
+    cwd: string,
+    name?: string,
+  ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
   switchSession: (id: string) => void;
 }
@@ -221,7 +227,7 @@ export const useStore = create<AppState>()(
           },
         );
       },
-      resumeSession: async (claudeSessionId, cwd) => {
+      resumeSession: async (claudeSessionId, cwd, name) => {
         // If a live session already exists for this Claude session, just switch to it
         const existing = get().sessions.find(
           (s) => s.claudeSessionId === claudeSessionId,
@@ -238,6 +244,7 @@ export const useStore = create<AppState>()(
           {
             workingDirectory: cwd,
             resumeSessionId: claudeSessionId,
+            name,
           },
         );
       },
