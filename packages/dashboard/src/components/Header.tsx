@@ -4,8 +4,10 @@ export function Header() {
   const theme = useStore((s) => s.theme);
   const status = useStore((s) => s.status);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const autonomousMode = useStore((s) => s.autonomousMode);
   const cycleTheme = useStore((s) => s.cycleTheme);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
   const page = THEMES[theme].page;
 
   return (
@@ -26,7 +28,23 @@ export function Header() {
       <span className="text-sm" style={{ color: page.statusFg }}>
         {status}
       </span>
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleAutonomousMode}
+          className="rounded-md px-3 py-1.5 text-sm cursor-pointer"
+          style={{
+            background: autonomousMode ? "#22863a" : page.border,
+            color: autonomousMode ? "#fff" : page.statusFg,
+          }}
+          title={
+            autonomousMode
+              ? "Autonomous mode: ON — sessions skip permission prompts"
+              : "Autonomous mode: OFF — sessions require permission approval"
+          }
+        >
+          Autonomous
+        </button>
         <button
           type="button"
           onClick={cycleTheme}

@@ -118,6 +118,7 @@ interface AppState {
   theme: ThemeName;
   sessionId: string | null;
   sidebarOpen: boolean;
+  autonomousMode: boolean;
 
   // Transient
   status: string;
@@ -127,6 +128,7 @@ interface AppState {
   // Actions
   cycleTheme: () => void;
   toggleSidebar: () => void;
+  toggleAutonomousMode: () => void;
   setStatus: (status: string) => void;
   setSessionId: (id: string | null) => void;
   fetchSessions: () => Promise<void>;
@@ -188,6 +190,7 @@ export const useStore = create<AppState>()(
       sessions: [],
       projects: [],
       sidebarOpen: true,
+      autonomousMode: true,
 
       cycleTheme: () => {
         const current = get().theme;
@@ -196,6 +199,8 @@ export const useStore = create<AppState>()(
         set({ theme: next });
       },
       toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
+      toggleAutonomousMode: () =>
+        set({ autonomousMode: !get().autonomousMode }),
       setStatus: (status) => set({ status }),
       setSessionId: (id) => set({ sessionId: id }),
 
@@ -224,6 +229,7 @@ export const useStore = create<AppState>()(
           "failed to create session",
           {
             workingDirectory: "~",
+            autonomousMode: get().autonomousMode,
           },
         );
       },
@@ -245,6 +251,7 @@ export const useStore = create<AppState>()(
             workingDirectory: cwd,
             resumeSessionId: claudeSessionId,
             name,
+            autonomousMode: get().autonomousMode,
           },
         );
       },
@@ -265,6 +272,7 @@ export const useStore = create<AppState>()(
         theme: state.theme,
         sessionId: state.sessionId,
         sidebarOpen: state.sidebarOpen,
+        autonomousMode: state.autonomousMode,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Partial<AppState>;
