@@ -1,7 +1,7 @@
 .PHONY: up down check deploy
 
 BUN := $(HOME)/.bun/bin/bun
-MODE ?= dev
+MODE ?= prod
 DEPLOY_HOST ?= dev-server-terry
 DEPLOY_PATH ?= ~/autonomOS
 

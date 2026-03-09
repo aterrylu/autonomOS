@@ -90,7 +90,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
 
   const env = buildEnv();
 
-  const args: string[] = [];
+  const args: string[] = ["--dangerously-skip-permissions"];
   if (options.resumeSessionId) {
     args.push("--resume", options.resumeSessionId);
   }
