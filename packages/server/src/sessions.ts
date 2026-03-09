@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
@@ -67,10 +67,25 @@ export function expandPath(path: string): string {
 }
 
 export function createSession(options: SpawnOptions): ManagedSession {
+  if (
+    options.resumeSessionId &&
+    !/^[a-zA-Z0-9_-]+$/.test(options.resumeSessionId)
+  ) {
+    throw new Error("Invalid resumeSessionId format");
+  }
+
   const id = crypto.randomUUID();
   const cols = options.cols ?? 120;
   const rows = options.rows ?? 40;
   const cwd = expandPath(options.workingDirectory);
+
+  try {
+    const stat = statSync(cwd);
+    if (!stat.isDirectory()) throw new Error("not a directory");
+  } catch {
+    throw new Error(`Invalid working directory: ${cwd}`);
+  }
+
   const binary = resolveClaudePath();
 
   const env = buildEnv();
