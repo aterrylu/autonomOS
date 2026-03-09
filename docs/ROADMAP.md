@@ -13,25 +13,35 @@ Last updated: 2026-03-08
 - [x] Themes: Midnight, Daylight, Void (Pitch Black)
 - [x] Zustand persist, single store (ADR-011)
 - [x] CI: GitHub Actions, Biome, TypeScript project references
+- [x] Mobile-responsive layout (100dvh, responsive sidebar overlay)
+- [x] Project browser — Claude SDK listSessions() grouped by directory
+- [x] Resume existing sessions — click project session to resume or switch to live
+- [x] Auto-expand active project in sidebar
+- [x] Tailscale sidecar deployment (Docker + serve.json)
+- [x] Production serving — Hono serves built dashboard with SPA fallback
+- [x] Security hardening — CORS, input validation, path traversal checks
+- [x] Core loop verified (spawn → interact → reconnect → resume)
 
-## Now — Core Loop
+## Now — Daily Driver
 
-The demo: open autonomOS, spawn a Claude Code session, use it in the browser.
+Make it good enough to use every day instead of raw terminal.
 
-- [ ] Verify the core loop works end-to-end (spawn → interact → reconnect)
-- [ ] Fix any rough edges blocking daily use
-- [ ] Multi-terminal support (P1 — view multiple sessions at once)
+- [x] Session naming — `basename · shortId` default, `customTitle > summary` for project sessions
+  - Note: SDK `listSessions()` has a bug where `customTitle` returns `undefined` (v0.2.71). We pass it through so it works when fixed. Rename via `/rename` in terminal for now.
+- [ ] Conversation view — structured chat UI alternative to raw terminal (F-003)
+- [ ] Multi-terminal — view multiple sessions side by side (split panes)
+- [ ] Fix rough edges blocking daily use
 
 ## Next — Make It Useful
 
-- [ ] Session naming / labeling
+- [ ] Session rename from dashboard (blocked by SDK `customTitle` bug, or needs own metadata file)
 - [ ] OpenClaw integration — read agent status, cron jobs
 - [ ] Token spend / cost tracking per session
-- [ ] Mobile-responsive layout
+- [ ] Agent activity dashboard (what's running, what failed)
 
 ## Later
 
-- [ ] Agent activity dashboard (what's running, what failed)
 - [ ] Memory state viewer
 - [ ] Configure agents from the dashboard
+- [ ] Move shared types (ProjectInfo, ProjectSession) to @autonomos/core
 - [ ] Robot path (aspirational)

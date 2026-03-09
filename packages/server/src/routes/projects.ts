@@ -17,6 +17,8 @@ export interface ProjectSession {
   lastModified: number;
   gitBranch?: string;
   firstPrompt?: string;
+  /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
+  customTitle?: string;
 }
 
 export const projectRouter = new Hono();
@@ -42,10 +44,11 @@ projectRouter.get("/", async (c) => {
     if (!projectMap.has(cwd)) projectMap.set(cwd, []);
     projectMap.get(cwd)!.push({
       sessionId: s.sessionId,
-      summary: s.summary,
+      summary: s.customTitle || s.summary,
       lastModified: s.lastModified,
       gitBranch: s.gitBranch,
       firstPrompt: s.firstPrompt,
+      customTitle: s.customTitle,
     });
   }
 

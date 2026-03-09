@@ -204,7 +204,9 @@ function ProjectItem({ project, page }: ProjectItemProps) {
               disabled={isBusy}
               className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
               style={{ color: page.fg }}
-              onClick={() => resumeSession(s.sessionId, project.path)}
+              onClick={() =>
+                resumeSession(s.sessionId, project.path, s.summary)
+              }
               title="Resume this session"
             >
               <div className="flex-1 min-w-0">
