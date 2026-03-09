@@ -1,15 +1,23 @@
 # autonomOS
 
-A mission control platform for autonomous agents — observe, configure, and orchestrate agents across development tools and robotics.
+An orchestrator agent for autonomous development — manage projects, coordinate agents across workspaces, and observe everything from one place.
 
 ## What is this?
 
-autonomOS is a control plane that sits above agent runtimes (like Claude Code, [OpenClaw](https://github.com/openclaw/openclaw), and others) to provide:
+autonomOS is an **agent that manages agents**. The main interface is a PM-style orchestrator that understands your projects, delegates tasks to workspace agents (Claude Code sessions), and tracks progress across repositories.
 
-- **Terminal-first** — Claude Code sessions in high-quality embedded terminals
-- **Project browser** — all your Claude Code sessions grouped by project via the Agent SDK
-- **Session management** — create, switch, kill, auto-reconnect with output replay
-- **Observability** — see what your agents are doing across projects
+### Core Concepts
+
+- **Orchestrator** — The PM agent. Your main interface. It understands project goals, delegates work, and coordinates across workspaces.
+- **Projects** — Logical goals with roadmaps. A project can span multiple workspaces (e.g., "Add auth" touches `api` + `dashboard` repos). Multiple projects can live under the same workspace.
+- **Workspaces** — Physical repositories, auto-discovered from your machine. Each workspace can have active agent sessions running in it.
+
+### What's Built
+
+- **Terminal-first** — Claude Code sessions in high-quality embedded terminals (xterm.js)
+- **Workspace browser** — all your Claude Code sessions grouped by repository via the Agent SDK
+- **Session management** — create, switch, resume, kill, auto-reconnect with output replay
+- **Observability** — see what your agents are doing across workspaces
 - **Themes** — Midnight, Daylight, Void (Pitch Black)
 
 ## Quick Start

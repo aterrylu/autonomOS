@@ -9,11 +9,16 @@
 
 ## Project Vision
 
-autonomOS is a **mission control platform for autonomous agents** — observe, configure, and orchestrate agents across development tools and robotics.
+autonomOS is an **orchestrator agent for autonomous development** — an agent that manages agents across workspaces and projects.
+
+**Core concepts:**
+- **Orchestrator** — PM agent, the main interface. Understands project goals, delegates to workspace agents, tracks progress.
+- **Projects** — Logical goals with roadmaps. Can span multiple workspaces. Multiple projects per workspace.
+- **Workspaces** — Physical repositories, auto-discovered. Each has active agent sessions.
 
 Two paths that share a common core:
-- **💻 Dev Path** — control plane for agent tools (OpenClaw, Claude Code, etc.)
-- **🤖 Robot Path** — persistent agent platform for robotics (aspirational, future)
+- **Dev Path** — orchestrator for agent tools (Claude Code, OpenClaw, etc.)
+- **Robot Path** — persistent agent platform for robotics (aspirational, future)
 
 ## Monorepo Structure
 
