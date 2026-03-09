@@ -49,6 +49,7 @@ sessionRouter.post("/", async (c) => {
         typeof body.resumeSessionId === "string"
           ? body.resumeSessionId
           : undefined,
+      autonomousMode: body.autonomousMode === true,
       cols: body.cols as number | undefined,
       rows: body.rows as number | undefined,
     });

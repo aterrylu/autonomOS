@@ -28,6 +28,8 @@ export interface SpawnOptions {
   name?: string;
   /** Claude Code session ID to resume (passed as --resume <id>) */
   resumeSessionId?: string;
+  /** Skip permission prompts (--dangerously-skip-permissions) */
+  autonomousMode?: boolean;
   cols?: number;
   rows?: number;
 }

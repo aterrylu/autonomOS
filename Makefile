@@ -2,29 +2,30 @@
 
 BUN := $(HOME)/.bun/bin/bun
 MODE ?= prod
+PORT ?= 3100
 DEPLOY_HOST ?= dev-server-terry
 DEPLOY_PATH ?= ~/autonomOS
 
 # ── up: start autonomOS (+ Tailscale sidecar if .env exists) ──
 #
-#   make up          → dev mode  (Vite HMR on :5173, API on :3000)
-#   make up MODE=prod → prod mode (built dashboard served from :3000)
+#   make up          → dev mode  (Vite HMR on :5173, API on :$(PORT))
+#   make up MODE=prod → prod mode (built dashboard served from :$(PORT))
 #
 #   Tailscale sidecar only starts if .env is present.
 up:
-	@lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+	@lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true
 ifeq ($(MODE),prod)
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@if [ -f .env ]; then \
 		echo "Found .env — starting Tailscale sidecar..."; \
-		$(call serve_json,3000); \
+		$(call serve_json,$(PORT)); \
 		cd deploy && docker compose up -d; \
 	else \
 		echo "No .env found — skipping Tailscale sidecar."; \
 	fi
-	@echo "Starting server on :3000 (serving dashboard)..."
-	@cd packages/server && npx tsx src/index.ts
+	@echo "Starting server on :$(PORT) (serving dashboard)..."
+	@cd packages/server && PORT=$(PORT) npx tsx src/index.ts
 else
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
 	@if [ -f .env ]; then \
@@ -34,15 +35,15 @@ else
 	else \
 		echo "No .env found — skipping Tailscale sidecar."; \
 	fi
-	@echo "Starting server on :3000 and dashboard on :5173..."
-	@cd packages/server && npx tsx watch src/index.ts &
+	@echo "Starting server on :$(PORT) and dashboard on :5173..."
+	@cd packages/server && PORT=$(PORT) npx tsx watch src/index.ts &
 	@sleep 2
 	@cd packages/dashboard && $(BUN) vite --host 0.0.0.0
 endif
 
 # ── down: stop everything ────────────────────────
 down:
-	@lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+	@lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
 	@if docker ps -q -f name=autonomos-ts 2>/dev/null | grep -q .; then \
 		echo "Stopping Tailscale sidecar..."; \
@@ -70,7 +71,7 @@ deploy:
 	@echo "Installing dependencies..."
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.bun/bin:$$PATH && bun install'
 	@echo "Deployed. Run on server:"
-	@echo "  ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && make up MODE=prod'"
+	@echo "  ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && make up MODE=prod PORT=$(PORT)'"
 
 # ── check: lint + typecheck + test ───────────────
 check:
