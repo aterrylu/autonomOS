@@ -152,14 +152,30 @@ export function Sidebar() {
   );
 }
 
-function ProjectItem({
-  project,
-  page,
-}: {
+interface ProjectItemProps {
   project: ProjectInfo;
   page: PageTheme;
-}) {
-  const [expanded, setExpanded] = useState(false);
+}
+
+function ProjectItem({ project, page }: ProjectItemProps) {
+  const resumeSession = useStore((s) => s.resumeSession);
+  const status = useStore((s) => s.status);
+  const sessions = useStore((s) => s.sessions);
+  const sessionId = useStore((s) => s.sessionId);
+  const isBusy = status === "resuming..." || status === "spawning...";
+
+  // Auto-expand if the active live session belongs to this project
+  const activeSession = sessions.find((s) => s.id === sessionId);
+  const hasActiveSession =
+    activeSession?.claudeSessionId != null &&
+    project.sessions.some(
+      (ps) => ps.sessionId === activeSession.claudeSessionId,
+    );
+  const [expanded, setExpanded] = useState(hasActiveSession);
+
+  useEffect(() => {
+    if (hasActiveSession) setExpanded(true);
+  }, [hasActiveSession]);
 
   return (
     <div>
@@ -182,10 +198,14 @@ function ProjectItem({
       {expanded && (
         <div className="pl-4">
           {project.sessions.map((s) => (
-            <div
+            <button
+              type="button"
               key={s.sessionId}
-              className="flex items-start gap-2 px-3 py-1 text-xs"
+              disabled={isBusy}
+              className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
               style={{ color: page.fg }}
+              onClick={() => resumeSession(s.sessionId, project.path)}
+              title="Resume this session"
             >
               <div className="flex-1 min-w-0">
                 <p className="truncate">{s.summary}</p>
@@ -203,7 +223,7 @@ function ProjectItem({
                   </span>
                 </div>
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}

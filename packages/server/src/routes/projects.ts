@@ -39,9 +39,8 @@ projectRouter.get("/", async (c) => {
   const projectMap = new Map<string, ProjectSession[]>();
   for (const s of sessions) {
     const cwd = s.cwd || "unknown";
-    const group = projectMap.get(cwd) ?? [];
-    if (group.length === 0) projectMap.set(cwd, group);
-    group.push({
+    if (!projectMap.has(cwd)) projectMap.set(cwd, []);
+    projectMap.get(cwd)!.push({
       sessionId: s.sessionId,
       summary: s.summary,
       lastModified: s.lastModified,

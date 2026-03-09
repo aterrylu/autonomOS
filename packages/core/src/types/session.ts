@@ -11,6 +11,8 @@ export interface Session {
   status: SessionStatus;
   workingDirectory: string;
   provider: string;
+  /** Claude Code session ID when this was started via --resume */
+  claudeSessionId?: string;
   createdAt: number;
   updatedAt: number;
 }

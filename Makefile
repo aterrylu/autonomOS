@@ -42,6 +42,7 @@ check:
 	cd packages/server && npx tsx --test src/__tests__/*.test.ts
 
 # ── helper: generate serve.json for Tailscale ────
+# Note: ${TS_CERT_DOMAIN} is interpolated by Tailscale at runtime, not by the shell.
 define serve_json
 	@printf '{\n  "TCP": {\n    "80": { "HTTP": true },\n    "443": { "HTTPS": true }\n  },\n  "Web": {\n    "$${TS_CERT_DOMAIN}:80": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    },\n    "$${TS_CERT_DOMAIN}:443": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    }\n  }\n}\n' > deploy/serve.json
 endef

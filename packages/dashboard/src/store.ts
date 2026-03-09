@@ -14,6 +14,7 @@ export interface SessionInfo {
   status: string;
   workingDirectory: string;
   provider: string;
+  claudeSessionId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -129,8 +130,47 @@ interface AppState {
   fetchSessions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
   createSession: () => Promise<void>;
+  resumeSession: (claudeSessionId: string, cwd: string) => Promise<void>;
   killSession: (id: string) => Promise<void>;
   switchSession: (id: string) => void;
+}
+
+type SetState = (partial: Partial<AppState>) => void;
+type GetState = () => AppState;
+
+/**
+ * Shared logic for createSession and resumeSession.
+ * Guards against concurrent spawns and handles fetch errors uniformly.
+ */
+async function spawnSession(
+  set: SetState,
+  get: GetState,
+  pendingStatus: string,
+  failureStatus: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const { status } = get();
+  if (status === "spawning..." || status === "resuming...") return;
+  set({ status: pendingStatus });
+
+  const res = await fetch("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => null);
+
+  if (!res) {
+    set({ status: "server unreachable" });
+    return;
+  }
+  if (!res.ok) {
+    set({ status: failureStatus });
+    return;
+  }
+
+  const session: SessionInfo = await res.json();
+  set({ sessionId: session.id, status: "connected" });
+  await get().fetchSessions();
 }
 
 export const useStore = create<AppState>()(
@@ -171,27 +211,35 @@ export const useStore = create<AppState>()(
         set({ projects });
       },
       createSession: async () => {
-        if (get().status === "spawning...") return;
-        set({ status: "spawning..." });
-
-        const res = await fetch("/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workingDirectory: "~" }),
-        }).catch(() => null);
-
-        if (!res) {
-          set({ status: "server unreachable" });
+        await spawnSession(
+          set,
+          get,
+          "spawning...",
+          "failed to create session",
+          {
+            workingDirectory: "~",
+          },
+        );
+      },
+      resumeSession: async (claudeSessionId, cwd) => {
+        // If a live session already exists for this Claude session, just switch to it
+        const existing = get().sessions.find(
+          (s) => s.claudeSessionId === claudeSessionId,
+        );
+        if (existing) {
+          set({ sessionId: existing.id, status: "connected" });
           return;
         }
-        if (!res.ok) {
-          set({ status: "failed to create session" });
-          return;
-        }
-
-        const session: SessionInfo = await res.json();
-        set({ sessionId: session.id, status: "connected" });
-        await get().fetchSessions();
+        await spawnSession(
+          set,
+          get,
+          "resuming...",
+          "failed to resume session",
+          {
+            workingDirectory: cwd,
+            resumeSessionId: claudeSessionId,
+          },
+        );
       },
       killSession: async (id) => {
         await fetch(`/api/sessions/${id}`, { method: "DELETE" }).catch(

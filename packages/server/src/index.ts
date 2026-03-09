@@ -23,7 +23,18 @@ const app = new Hono();
 
 const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
-app.use("*", cors({ origin: process.env.CORS_ORIGIN || "*" }));
+// Serve dashboard static files in production
+const dashboardDist = resolve(import.meta.dirname, "../../dashboard/dist");
+const isProduction = existsSync(dashboardDist);
+
+// In production (serving dashboard from same origin), CORS is unnecessary.
+// In dev, allow the Vite dev server origin.
+const corsOrigin =
+  process.env.CORS_ORIGIN ||
+  (isProduction ? undefined : "http://localhost:5173");
+if (corsOrigin) {
+  app.use("*", cors({ origin: corsOrigin }));
+}
 
 // REST API
 app.route("/api/projects", projectRouter);
@@ -32,9 +43,7 @@ app.route("/api/sessions", sessionRouter);
 // WebSocket — terminal PTY streaming
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
 
-// Serve dashboard static files in production
-const dashboardDist = resolve(import.meta.dirname, "../../dashboard/dist");
-if (existsSync(dashboardDist)) {
+if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
   app.use("/*", serveStatic({ root: dashboardDist }));
 
