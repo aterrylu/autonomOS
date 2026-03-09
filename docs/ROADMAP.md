@@ -22,26 +22,30 @@ Last updated: 2026-03-08
 - [x] Security hardening — CORS, input validation, path traversal checks
 - [x] Core loop verified (spawn → interact → reconnect → resume)
 
-## Now — Daily Driver
+## Now — Orchestrator Foundation
 
-Make it good enough to use every day instead of raw terminal.
+Evolve from passive dashboard to orchestrator-first platform (ADR-012).
 
 - [x] Session naming — `basename · shortId` default, `customTitle > summary` for project sessions
   - Note: SDK `listSessions()` has a bug where `customTitle` returns `undefined` (v0.2.71). We pass it through so it works when fixed. Rename via `/rename` in terminal for now.
 - [ ] Conversation view — structured chat UI alternative to raw terminal (F-003)
-- [ ] Multi-terminal — view multiple sessions side by side (split panes)
+- [ ] Rename "Projects" → "Workspaces" in UI (repos are workspaces, not projects)
+- [ ] Project model — logical goals with status, roadmap, linked workspaces
+- [ ] Orchestrator chat — main page becomes a conversation with the PM agent
 - [ ] Fix rough edges blocking daily use
 
 ## Next — Make It Useful
 
-- [ ] Session rename from dashboard (blocked by SDK `customTitle` bug, or needs own metadata file)
-- [ ] OpenClaw integration — read agent status, cron jobs
+- [ ] Multi-terminal — view multiple sessions side by side (split panes)
 - [ ] Token spend / cost tracking per session
 - [ ] Agent activity dashboard (what's running, what failed)
+- [ ] Session rename from dashboard (blocked by SDK `customTitle` bug, or needs own metadata file)
+- [ ] OpenClaw integration — read agent status, cron jobs
 
 ## Later
 
 - [ ] Memory state viewer
 - [ ] Configure agents from the dashboard
+- [ ] Cross-workspace project tracking (project spans multiple repos)
 - [ ] Move shared types (ProjectInfo, ProjectSession) to @autonomos/core
 - [ ] Robot path (aspirational)
