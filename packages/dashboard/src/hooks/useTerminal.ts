@@ -61,43 +61,78 @@ export function useTerminal(
       handleKeyEvent(event, terminal, wsRef),
     );
 
-    const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`);
+    let disposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 1000;
+    const MAX_RETRY_DELAY = 10000;
 
-    ws.onopen = () => {
-      setStatus(`connected: ${sessionId.slice(0, 8)}`);
-      sendResize(ws, terminal);
-    };
+    function connect() {
+      if (disposed) return;
 
-    ws.onmessage = (event) => terminal.write(event.data);
+      const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`);
 
-    ws.onclose = (event) => {
-      // 4010 = PTY exited (session ended)
-      if (event.code === 4010) {
-        useStore.getState().setSessionId(null);
-        useStore.getState().fetchSessions();
-      }
-      setStatus("disconnected");
-    };
-    ws.onerror = () => setStatus("connection error");
+      ws.onopen = () => {
+        retryDelay = 1000;
+        setStatus(`connected: ${sessionId.slice(0, 8)}`);
+        sendResize(ws, terminal);
+      };
+
+      ws.onmessage = (event) => terminal.write(event.data);
+
+      ws.onclose = (event) => {
+        if (disposed) return;
+        // 4010 = PTY exited (session ended)
+        if (event.code === 4010) {
+          useStore.getState().setSessionId(null);
+          useStore.getState().fetchSessions();
+          return;
+        }
+        setStatus("reconnecting...");
+        reconnectTimer = setTimeout(() => {
+          retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+          connect();
+        }, retryDelay);
+      };
+      ws.onerror = () => {};
+
+      wsRef.current = ws;
+    }
+
+    connect();
 
     terminal.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(data);
       }
     });
 
+    // Reconnect when tab regains focus (browser may have killed the WS)
+    const handleVisibility = () => {
+      if (
+        document.visibilityState === "visible" &&
+        wsRef.current?.readyState !== WebSocket.OPEN &&
+        wsRef.current?.readyState !== WebSocket.CONNECTING
+      ) {
+        retryDelay = 1000;
+        connect();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
-      sendResize(ws, terminal);
+      if (wsRef.current) sendResize(wsRef.current, terminal);
     });
     resizeObserver.observe(container);
 
     termRef.current = terminal;
-    wsRef.current = ws;
 
     return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      document.removeEventListener("visibilitychange", handleVisibility);
       resizeObserver.disconnect();
-      ws.close();
+      wsRef.current?.close();
       terminal.dispose();
       container.replaceChildren();
     };
@@ -158,6 +193,13 @@ function handleKeyEvent(
       return false;
     case "a":
       terminal.selectAll();
+      return false;
+    case "b":
+      // Let App-level handler toggle sidebar
+      return false;
+    case "o":
+      // Pass Ctrl+O through to Claude Code (show details)
+      sendToWs("\x0f");
       return false;
     default:
       return true;

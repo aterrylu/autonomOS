@@ -1,13 +1,34 @@
+import { useEffect } from "react";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
 import { THEMES, useStore } from "./store";
+
+const isMac = /mac/i.test(
+  (navigator as Navigator & { userAgentData?: { platform: string } })
+    .userAgentData?.platform ??
+    navigator.platform ??
+    "",
+);
 
 export function App() {
   const theme = useStore((s) => s.theme);
   const sessionId = useStore((s) => s.sessionId);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const page = THEMES[theme].page;
+
+  // Ctrl+B (or Cmd+B on Mac) toggles sidebar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.key === "b") {
+        e.preventDefault();
+        useStore.getState().toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   return (
     <div

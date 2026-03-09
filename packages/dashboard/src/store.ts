@@ -133,7 +133,7 @@ interface AppState {
   setSessionId: (id: string | null) => void;
   fetchSessions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
-  createSession: () => Promise<void>;
+  createSession: (workingDirectory?: string) => Promise<void>;
   resumeSession: (
     claudeSessionId: string,
     cwd: string,
@@ -221,14 +221,14 @@ export const useStore = create<AppState>()(
         const projects: ProjectInfo[] = await res.json();
         set({ projects });
       },
-      createSession: async () => {
+      createSession: async (workingDirectory = "~") => {
         await spawnSession(
           set,
           get,
           "spawning...",
           "failed to create session",
           {
-            workingDirectory: "~",
+            workingDirectory,
             autonomousMode: get().autonomousMode,
           },
         );

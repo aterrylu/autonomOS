@@ -159,6 +159,7 @@ interface ProjectItemProps {
 
 function ProjectItem({ project, page }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
+  const createSession = useStore((s) => s.createSession);
   const status = useStore((s) => s.status);
   const sessions = useStore((s) => s.sessions);
   const sessionId = useStore((s) => s.sessionId);
@@ -179,21 +180,39 @@ function ProjectItem({ project, page }: ProjectItemProps) {
 
   return (
     <div>
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="text-[10px] shrink-0" style={{ color: page.statusFg }}>
-          {expanded ? "▼" : "▶"}
-        </span>
-        <span className="flex-1 truncate text-xs font-medium">
-          {project.name}
-        </span>
-        <span className="shrink-0 text-[10px]" style={{ color: page.statusFg }}>
-          {project.sessions.length}
-        </span>
-      </button>
+      <div className="group flex items-center">
+        <button
+          type="button"
+          className="flex flex-1 items-center gap-2 px-3 py-1.5 cursor-pointer text-left min-w-0"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <span
+            className="text-[10px] shrink-0"
+            style={{ color: page.statusFg }}
+          >
+            {expanded ? "▼" : "▶"}
+          </span>
+          <span className="flex-1 truncate text-xs font-medium">
+            {project.name}
+          </span>
+          <span
+            className="shrink-0 text-[10px]"
+            style={{ color: page.statusFg }}
+          >
+            {project.sessions.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          disabled={isBusy}
+          className="shrink-0 rounded px-1.5 mr-2 text-xs opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer disabled:opacity-50"
+          style={{ color: "#238636" }}
+          title={`New session in ${project.name}`}
+          onClick={() => createSession(project.path)}
+        >
+          +
+        </button>
+      </div>
 
       {expanded && (
         <div className="pl-4">
