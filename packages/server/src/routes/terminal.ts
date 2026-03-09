@@ -66,9 +66,9 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         bindings.set(ws, { sessionId, disposable });
 
         // Track this client for PTY exit notification
-        const clients = sessionClients.get(sessionId) ?? new Set<WSContext>();
-        if (clients.size === 0) sessionClients.set(sessionId, clients);
-        clients.add(ws);
+        if (!sessionClients.has(sessionId))
+          sessionClients.set(sessionId, new Set());
+        sessionClients.get(sessionId)!.add(ws);
 
         // Register onExit once per session to avoid duplicate handlers
         if (!exitHandlerRegistered.has(sessionId)) {

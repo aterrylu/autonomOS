@@ -34,7 +34,10 @@ sessionRouter.post("/", async (c) => {
     (typeof body.resumeSessionId !== "string" ||
       !/^[a-zA-Z0-9_-]+$/.test(body.resumeSessionId))
   ) {
-    return c.json({ error: "resumeSessionId must be alphanumeric" }, 400);
+    return c.json(
+      { error: "resumeSessionId must be alphanumeric (a-z, 0-9, -, _)" },
+      400,
+    );
   }
 
   try {

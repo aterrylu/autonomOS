@@ -152,13 +152,12 @@ export function Sidebar() {
   );
 }
 
-function ProjectItem({
-  project,
-  page,
-}: {
+interface ProjectItemProps {
   project: ProjectInfo;
   page: PageTheme;
-}) {
+}
+
+function ProjectItem({ project, page }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const status = useStore((s) => s.status);
   const sessions = useStore((s) => s.sessions);
