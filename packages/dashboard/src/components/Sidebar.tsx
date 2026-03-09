@@ -159,10 +159,24 @@ function ProjectItem({
   project: ProjectInfo;
   page: PageTheme;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const resumeSession = useStore((s) => s.resumeSession);
   const status = useStore((s) => s.status);
+  const sessions = useStore((s) => s.sessions);
+  const sessionId = useStore((s) => s.sessionId);
   const isBusy = status === "resuming..." || status === "spawning...";
+
+  // Auto-expand if the active live session belongs to this project
+  const activeSession = sessions.find((s) => s.id === sessionId);
+  const hasActiveSession =
+    activeSession?.claudeSessionId != null &&
+    project.sessions.some(
+      (ps) => ps.sessionId === activeSession.claudeSessionId,
+    );
+  const [expanded, setExpanded] = useState(hasActiveSession);
+
+  useEffect(() => {
+    if (hasActiveSession) setExpanded(true);
+  }, [hasActiveSession]);
 
   return (
     <div>
