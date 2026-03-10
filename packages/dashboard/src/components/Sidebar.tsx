@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ProjectInfo } from "../store";
 import { THEMES, useStore } from "../store";
 
@@ -18,6 +18,18 @@ export function Sidebar() {
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
+
+  // Build a lookup map from claudeSessionId → project session summary.
+  // Avoids O(L*P) flatMap+find per render in the live sessions list.
+  const projectTitleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of projects) {
+      for (const ps of p.sessions) {
+        if (ps.summary) map.set(ps.sessionId, ps.summary);
+      }
+    }
+    return map;
+  }, [projects]);
 
   // Poll live sessions every 5s, projects every 30s (heavier operation)
   useEffect(() => {
@@ -74,14 +86,9 @@ export function Sidebar() {
 
         {sessions.map((s) => {
           const isActive = s.id === sessionId;
-          // Prefer the project session's title (kept fresh via JSONL title cache)
-          // over the static name set at spawn time.
-          const projectTitle = s.claudeSessionId
-            ? projects
-                .flatMap((p) => p.sessions)
-                .find((ps) => ps.sessionId === s.claudeSessionId)?.summary
-            : undefined;
-          const displayName = projectTitle || s.name;
+          const displayName =
+            (s.claudeSessionId && projectTitleMap.get(s.claudeSessionId)) ||
+            s.name;
           return (
             // biome-ignore lint/a11y/useSemanticElements: contains nested button for kill action
             <div

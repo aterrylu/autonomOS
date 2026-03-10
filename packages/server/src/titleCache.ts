@@ -13,6 +13,11 @@
 import { opendir, open, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+const TITLE_MARKERS = [
+  '"type":"custom-title"',
+  '"type": "custom-title"',
+] as const;
+
 /** Cached entry: the resolved title and the file mtime when we last parsed. */
 interface CacheEntry {
   title: string;
@@ -20,6 +25,9 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+
+/** Cache for resolveProjectDir — avoids repeated stat() for the same cwd. */
+const projectDirCache = new Map<string, string | null>();
 
 /** ~/.claude/projects/ base directory */
 function projectsDir(): string {
@@ -29,7 +37,7 @@ function projectsDir(): string {
 }
 
 /**
- * Replicate the SDK's path-to-dirname transform (d4 function).
+ * Replicate the SDK's path-to-dirname transform (d4 function in sdk.mjs v0.2.71).
  * Replaces all non-alphanumeric chars with '-', truncates at 200 chars,
  * and appends a hash suffix if truncated.
  */
@@ -48,9 +56,13 @@ function cwdToDirName(cwd: string): string {
 
 /**
  * Resolve the project directory for a given cwd.
- * Handles the SDK's truncated-name-with-hash-suffix convention.
+ * Results are cached in memory to avoid repeated stat() calls
+ * when multiple sessions share the same working directory.
  */
 async function resolveProjectDir(cwd: string): Promise<string | null> {
+  const cached = projectDirCache.get(cwd);
+  if (cached !== undefined) return cached;
+
   const base = projectsDir();
   const dirName = cwdToDirName(cwd);
 
@@ -58,94 +70,92 @@ async function resolveProjectDir(cwd: string): Promise<string | null> {
   const exact = join(base, dirName);
   try {
     await stat(exact);
+    projectDirCache.set(cwd, exact);
     return exact;
   } catch {
     // If the dirname was truncated, look for prefix match
-    if (dirName.length <= 200) return null;
+    if (dirName.length <= 200) {
+      projectDirCache.set(cwd, null);
+      return null;
+    }
     const prefix = dirName.slice(0, 200);
     try {
       const dir = await opendir(base);
       for await (const entry of dir) {
         if (entry.isDirectory() && entry.name.startsWith(`${prefix}-`)) {
-          return join(base, entry.name);
+          const result = join(base, entry.name);
+          projectDirCache.set(cwd, result);
+          return result;
         }
       }
     } catch {
       // projects dir doesn't exist
     }
+    projectDirCache.set(cwd, null);
     return null;
   }
 }
 
 /**
- * Extract the last custom-title from a JSONL file by reading from the end.
+ * Extract the last custom-title from a JSONL file.
  *
- * Strategy: read the last TAIL_SIZE bytes, split into lines, scan backwards
- * for a line containing "custom-title". This avoids reading multi-MB files
- * while catching titles that the SDK's 64KB window misses.
- *
- * If the title isn't in the tail, we do a targeted forward scan of just
- * the lines containing "custom-title" (using readline for efficiency).
+ * Strategy: read tail first (most renames are recent), then head,
+ * then stream the middle gap for very large files. Uses a pre-opened
+ * file handle and known size to avoid redundant stat() calls.
  */
-const TAIL_SIZE = 256 * 1024; // 256KB tail — covers most renames
+const TAIL_SIZE = 256 * 1024; // 256KB — covers most renames
 
-async function extractTitle(filePath: string): Promise<string | null> {
-  let fh: import("node:fs/promises").FileHandle | null = null;
-  try {
-    fh = await open(filePath, "r");
-    const stats = await fh.stat();
-    const size = stats.size;
+function containsTitleMarker(s: string): boolean {
+  return TITLE_MARKERS.some((m) => s.includes(m));
+}
 
-    if (size === 0) return null;
+async function extractTitle(
+  fh: import("node:fs/promises").FileHandle,
+  size: number,
+): Promise<string | null> {
+  if (size === 0) return null;
 
-    // Phase 1: scan tail (fast path — covers recent renames)
-    const tailOffset = Math.max(0, size - TAIL_SIZE);
-    const readSize = Math.min(size, TAIL_SIZE);
-    const buf = Buffer.allocUnsafe(readSize);
-    const { bytesRead } = await fh.read(buf, 0, readSize, tailOffset);
-    const tail = buf.toString("utf8", 0, bytesRead);
+  // Phase 1: scan tail (fast path — covers recent renames)
+  const tailOffset = Math.max(0, size - TAIL_SIZE);
+  const readSize = Math.min(size, TAIL_SIZE);
+  const buf = Buffer.allocUnsafe(readSize);
+  const { bytesRead } = await fh.read(buf, 0, readSize, tailOffset);
+  const tail = buf.toString("utf8", 0, bytesRead);
 
-    const tailTitle = scanForTitle(tail);
-    if (tailTitle) return tailTitle;
+  const tailTitle = scanForTitle(tail);
+  if (tailTitle) return tailTitle;
 
-    // Phase 2: if file is larger than tail and title wasn't found,
-    // scan the head portion (title might be written early in session)
-    if (tailOffset > 0) {
-      const headSize = Math.min(size, TAIL_SIZE);
-      const headBuf = Buffer.allocUnsafe(headSize);
-      const headResult = await fh.read(headBuf, 0, headSize, 0);
-      const head = headBuf.toString("utf8", 0, headResult.bytesRead);
-      const headTitle = scanForTitle(head);
-      if (headTitle) return headTitle;
-    }
-
-    // Phase 3: for very large files where title is in the middle,
-    // do a streaming scan. This is rare but handles edge cases.
-    if (size > TAIL_SIZE * 2) {
-      return await streamScanForTitle(fh, size);
-    }
-
-    return null;
-  } catch {
-    return null;
-  } finally {
-    await fh?.close();
+  // Phase 2: if file is larger than tail, scan head
+  if (tailOffset > 0) {
+    const headSize = Math.min(size, TAIL_SIZE);
+    const headBuf = Buffer.allocUnsafe(headSize);
+    const headResult = await fh.read(headBuf, 0, headSize, 0);
+    const head = headBuf.toString("utf8", 0, headResult.bytesRead);
+    const headTitle = scanForTitle(head);
+    if (headTitle) return headTitle;
   }
+
+  // Phase 3: for files > 512KB, head+tail leave a gap in the middle.
+  // Stream only the unscanned region [TAIL_SIZE, size - TAIL_SIZE].
+  if (size > TAIL_SIZE * 2) {
+    return await streamScanForTitle(fh, TAIL_SIZE, size - TAIL_SIZE);
+  }
+
+  return null;
 }
 
 /**
- * Scan a string buffer for the LAST custom-title entry.
- * Returns the title string or null.
+ * Scan a string buffer for the LAST custom-title entry (backwards).
  */
 function scanForTitle(content: string): string | null {
-  // Scan backwards through lines for the last custom-title entry
-  let lastTitle: string | null = null;
   let searchFrom = content.length;
 
   while (searchFrom > 0) {
-    const idx = content.lastIndexOf('"type":"custom-title"', searchFrom);
-    const idx2 = content.lastIndexOf('"type": "custom-title"', searchFrom);
-    const pos = Math.max(idx, idx2);
+    let pos = -1;
+    for (const marker of TITLE_MARKERS) {
+      const idx = content.lastIndexOf(marker, searchFrom);
+      if (idx > pos) pos = idx;
+    }
     if (pos === -1) break;
 
     // Find the line boundaries
@@ -156,51 +166,44 @@ function scanForTitle(content: string): string | null {
     const line = content.slice(lineStart, lineEnd);
     try {
       const parsed = JSON.parse(line);
-      if (parsed.customTitle) {
-        lastTitle = parsed.customTitle;
-        break; // We found the last one (scanning backwards)
-      }
+      if (parsed.customTitle) return parsed.customTitle;
     } catch {
       // Truncated line at buffer boundary — try next
     }
     searchFrom = pos - 1;
   }
 
-  return lastTitle;
+  return null;
 }
 
 /**
- * Streaming scan for very large files — reads in chunks looking for
- * custom-title entries. Only used when head+tail scan both miss.
+ * Streaming scan for the middle gap of very large files.
+ * Reads in chunks, only parses chunks containing title markers.
+ * Forward iteration + per-chunk backward scan = globally last title.
  */
 async function streamScanForTitle(
   fh: import("node:fs/promises").FileHandle,
-  size: number,
+  startOffset: number,
+  endOffset: number,
 ): Promise<string | null> {
   const CHUNK = 256 * 1024;
   let lastTitle: string | null = null;
-  let offset = 0;
-  // Keep a small overlap to handle lines split across chunks
+  let offset = startOffset;
   let leftover = "";
 
-  while (offset < size) {
-    const readSize = Math.min(CHUNK, size - offset);
+  while (offset < endOffset) {
+    const readSize = Math.min(CHUNK, endOffset - offset);
     const buf = Buffer.allocUnsafe(readSize);
     const { bytesRead } = await fh.read(buf, 0, readSize, offset);
     if (bytesRead === 0) break;
 
     const chunk = leftover + buf.toString("utf8", 0, bytesRead);
 
-    // Quick check: does this chunk even contain custom-title?
-    if (
-      chunk.includes('"type":"custom-title"') ||
-      chunk.includes('"type": "custom-title"')
-    ) {
+    if (containsTitleMarker(chunk)) {
       const title = scanForTitle(chunk);
       if (title) lastTitle = title;
     }
 
-    // Keep the last partial line for the next chunk
     const lastNewline = chunk.lastIndexOf("\n");
     leftover = lastNewline >= 0 ? chunk.slice(lastNewline + 1) : chunk;
     offset += bytesRead;
@@ -211,61 +214,86 @@ async function streamScanForTitle(
 
 /**
  * Look up the custom title for a session, using mtime-based caching.
- *
- * @param sessionId - The Claude session UUID
- * @param cwd - The working directory (used to locate the project dir)
- * @returns The custom title, or null if none found
+ * Uses a single file handle for both stat and read to avoid redundant syscalls.
  */
-export async function getCachedTitle(
+async function getCachedTitle(
   sessionId: string,
-  cwd: string,
+  projectDir: string,
 ): Promise<string | null> {
-  const projectDir = await resolveProjectDir(cwd);
-  if (!projectDir) return null;
-
   const filePath = join(projectDir, `${sessionId}.jsonl`);
 
-  let mtimeMs: number;
+  let fh: import("node:fs/promises").FileHandle | null = null;
   try {
-    const stats = await stat(filePath);
-    mtimeMs = stats.mtimeMs;
+    fh = await open(filePath, "r");
+    const stats = await fh.stat();
+    const { mtimeMs, size } = stats;
+
+    // Check cache — if mtime matches, return cached title
+    const cached = cache.get(sessionId);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      return cached.title;
+    }
+
+    // Parse the file using the already-open handle
+    const title = await extractTitle(fh, size);
+    if (title) {
+      cache.set(sessionId, { title, mtimeMs });
+    } else {
+      cache.delete(sessionId);
+    }
+    return title;
   } catch {
-    return null; // File doesn't exist
+    return null;
+  } finally {
+    await fh?.close();
   }
-
-  // Check cache — if mtime matches, return cached title
-  const cached = cache.get(sessionId);
-  if (cached && cached.mtimeMs === mtimeMs) {
-    return cached.title;
-  }
-
-  // Parse the file
-  const title = await extractTitle(filePath);
-  if (title) {
-    cache.set(sessionId, { title, mtimeMs });
-  } else {
-    // Remove stale cache entry if title was removed (unlikely but safe)
-    cache.delete(sessionId);
-  }
-
-  return title;
 }
 
 /**
  * Batch-resolve titles for multiple sessions.
- * Runs all lookups concurrently for efficiency.
+ * Groups by cwd to resolve each project directory once,
+ * then looks up individual session files concurrently.
+ * Prunes cache entries for sessions not in the current batch.
  */
 export async function batchGetTitles(
   sessions: Array<{ sessionId: string; cwd: string }>,
 ): Promise<Map<string, string>> {
   const results = new Map<string, string>();
 
-  await Promise.all(
-    sessions.map(async ({ sessionId, cwd }) => {
-      const title = await getCachedTitle(sessionId, cwd);
-      if (title) results.set(sessionId, title);
-    }),
-  );
+  // Group sessions by cwd to avoid repeated resolveProjectDir calls
+  const byCwd = new Map<string, string[]>();
+  for (const { sessionId, cwd } of sessions) {
+    let list = byCwd.get(cwd);
+    if (!list) {
+      list = [];
+      byCwd.set(cwd, list);
+    }
+    list.push(sessionId);
+  }
+
+  // Resolve each unique cwd once, then look up sessions concurrently
+  const lookups: Promise<void>[] = [];
+  for (const [cwd, sessionIds] of byCwd) {
+    lookups.push(
+      (async () => {
+        const projectDir = await resolveProjectDir(cwd);
+        if (!projectDir) return;
+        await Promise.all(
+          sessionIds.map(async (sessionId) => {
+            const title = await getCachedTitle(sessionId, projectDir);
+            if (title) results.set(sessionId, title);
+          }),
+        );
+      })(),
+    );
+  }
+  await Promise.all(lookups);
+
+  // Prune cache entries for sessions no longer in the batch
+  const knownIds = new Set(sessions.map((s) => s.sessionId));
+  for (const key of cache.keys()) {
+    if (!knownIds.has(key)) cache.delete(key);
+  }
 
   return results;
 }
