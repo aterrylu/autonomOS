@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type ThemeName = "midnight" | "daylight" | "void";
+export type ViewMode = "terminal" | "conversation";
 
 interface AppTheme {
   terminal: Record<string, string>;
@@ -119,6 +120,7 @@ interface AppState {
   sessionId: string | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
+  viewMode: ViewMode;
 
   // Transient
   status: string;
@@ -129,6 +131,7 @@ interface AppState {
   cycleTheme: () => void;
   toggleSidebar: () => void;
   toggleAutonomousMode: () => void;
+  toggleViewMode: () => void;
   setStatus: (status: string) => void;
   setSessionId: (id: string | null) => void;
   fetchSessions: () => Promise<void>;
@@ -191,6 +194,7 @@ export const useStore = create<AppState>()(
       projects: [],
       sidebarOpen: true,
       autonomousMode: true,
+      viewMode: "terminal" as ViewMode,
 
       cycleTheme: () => {
         const current = get().theme;
@@ -201,6 +205,10 @@ export const useStore = create<AppState>()(
       toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
       toggleAutonomousMode: () =>
         set({ autonomousMode: !get().autonomousMode }),
+      toggleViewMode: () =>
+        set({
+          viewMode: get().viewMode === "terminal" ? "conversation" : "terminal",
+        }),
       setStatus: (status) => set({ status }),
       setSessionId: (id) => set({ sessionId: id }),
 
@@ -273,6 +281,7 @@ export const useStore = create<AppState>()(
         sessionId: state.sessionId,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,
+        viewMode: state.viewMode,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Partial<AppState>;

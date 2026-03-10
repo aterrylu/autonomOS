@@ -52,7 +52,7 @@ export function Sidebar() {
         </span>
         <button
           type="button"
-          onClick={createSession}
+          onClick={() => createSession()}
           disabled={isSpawning}
           className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: "#238636", color: "#fff" }}

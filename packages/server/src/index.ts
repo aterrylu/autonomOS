@@ -5,6 +5,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { conversationRouter } from "./routes/conversation.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
@@ -37,6 +38,7 @@ if (corsOrigin) {
 }
 
 // REST API
+app.route("/api/conversation", conversationRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
 

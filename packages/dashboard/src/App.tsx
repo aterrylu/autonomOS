@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { ConversationView } from "./components/conversation/ConversationView";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
@@ -15,6 +16,7 @@ export function App() {
   const theme = useStore((s) => s.theme);
   const sessionId = useStore((s) => s.sessionId);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const viewMode = useStore((s) => s.viewMode);
   const page = THEMES[theme].page;
 
   // Ctrl+B (or Cmd+B on Mac) toggles sidebar
@@ -49,7 +51,11 @@ export function App() {
           </>
         )}
         {sessionId ? (
-          <TerminalView key={sessionId} />
+          viewMode === "terminal" ? (
+            <TerminalView key={sessionId} />
+          ) : (
+            <ConversationView key={`conv-${sessionId}`} />
+          )
         ) : (
           <div
             className="flex flex-1 items-center justify-center text-sm"

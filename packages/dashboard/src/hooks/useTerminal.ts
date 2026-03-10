@@ -73,7 +73,7 @@ export function useTerminal(
 
       ws.onopen = () => {
         retryDelay = 1000;
-        setStatus(`connected: ${sessionId.slice(0, 8)}`);
+        setStatus(`connected: ${sessionId!.slice(0, 8)}`);
         sendResize(ws, terminal);
       };
 

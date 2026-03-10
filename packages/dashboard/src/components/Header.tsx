@@ -5,9 +5,12 @@ export function Header() {
   const status = useStore((s) => s.status);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const autonomousMode = useStore((s) => s.autonomousMode);
+  const viewMode = useStore((s) => s.viewMode);
+  const sessionId = useStore((s) => s.sessionId);
   const cycleTheme = useStore((s) => s.cycleTheme);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
+  const toggleViewMode = useStore((s) => s.toggleViewMode);
   const page = THEMES[theme].page;
 
   return (
@@ -29,6 +32,17 @@ export function Header() {
         {status}
       </span>
       <div className="ml-auto flex items-center gap-2">
+        {sessionId && (
+          <button
+            type="button"
+            onClick={toggleViewMode}
+            className="rounded-md px-3 py-1.5 text-sm cursor-pointer"
+            style={{ background: page.border, color: page.fg }}
+            title={`Switch to ${viewMode === "terminal" ? "conversation" : "terminal"} view`}
+          >
+            {viewMode === "terminal" ? "Chat" : "Term"}
+          </button>
+        )}
         <button
           type="button"
           onClick={toggleAutonomousMode}
