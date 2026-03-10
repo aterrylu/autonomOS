@@ -4,15 +4,10 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
+import { isMac } from "../utils/platform";
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
-
-const isMac = /mac/i.test(
-  (navigator as Navigator & { userAgentData?: { platform: string } })
-    .userAgentData?.platform ??
-    navigator.platform ??
-    "",
-);
+const MAX_RETRY_DELAY = 10000;
 
 export function useTerminal(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -37,6 +32,7 @@ export function useTerminal(
       fontFamily:
         '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
       theme: THEMES[themeRef.current].terminal,
+      scrollback: 10000,
       allowProposedApi: true,
     });
 
@@ -63,21 +59,50 @@ export function useTerminal(
 
     let disposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+    let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
     let retryDelay = 1000;
-    const MAX_RETRY_DELAY = 10000;
 
     function connect() {
       if (disposed) return;
+
+      // Cancel pending timers and close stale socket
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (scrollTimer) {
+        clearTimeout(scrollTimer);
+        scrollTimer = null;
+      }
+      if (nudgeTimer) {
+        clearTimeout(nudgeTimer);
+        nudgeTimer = null;
+      }
+      wsRef.current?.close();
 
       const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`);
 
       ws.onopen = () => {
         retryDelay = 1000;
         setStatus(`connected: ${sessionId.slice(0, 8)}`);
-        sendResize(ws, terminal);
+        // Nudge resize to force TUI apps (Claude Code) to fully redraw.
+        // Without this, reconnects can show the cursor below the TUI
+        // because the replayed buffer may be missing alternate-screen
+        // escape sequences that were truncated from the start.
+        nudgeTimer = nudgeResize(ws, terminal);
       };
 
-      ws.onmessage = (event) => terminal.write(event.data);
+      ws.onmessage = (event) => {
+        // Only auto-scroll if user is already at/near the bottom
+        const buf = terminal.buffer.active;
+        const atBottom = buf.viewportY >= buf.baseY - 1;
+        terminal.write(event.data);
+        if (atBottom) {
+          if (scrollTimer) clearTimeout(scrollTimer);
+          scrollTimer = setTimeout(() => terminal.scrollToBottom(), 100);
+        }
+      };
 
       ws.onclose = (event) => {
         if (disposed) return;
@@ -130,6 +155,8 @@ export function useTerminal(
     return () => {
       disposed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (scrollTimer) clearTimeout(scrollTimer);
+      if (nudgeTimer) clearTimeout(nudgeTimer);
       document.removeEventListener("visibilitychange", handleVisibility);
       resizeObserver.disconnect();
       wsRef.current?.close();
@@ -144,6 +171,21 @@ export function useTerminal(
       termRef.current.options.theme = THEMES[theme].terminal;
     }
   }, [theme]);
+}
+
+/**
+ * Briefly resize the PTY then restore, forcing full-screen TUI apps
+ * to redraw. This fixes cursor-below-rendering after buffer replay.
+ * Returns the restore timer handle for cleanup.
+ */
+function nudgeResize(
+  ws: WebSocket,
+  terminal: Terminal,
+): ReturnType<typeof setTimeout> | null {
+  if (ws.readyState !== WebSocket.OPEN) return null;
+  const { cols, rows } = terminal;
+  ws.send(JSON.stringify({ type: "resize", cols: cols - 1, rows }));
+  return setTimeout(() => sendResize(ws, terminal), 50);
 }
 
 function sendResize(ws: WebSocket, terminal: Terminal): void {
@@ -195,7 +237,8 @@ function handleKeyEvent(
       terminal.selectAll();
       return false;
     case "b":
-      // Let App-level handler toggle sidebar
+      // Toggle sidebar directly — don't rely on event bubbling to App handler
+      useStore.getState().toggleSidebar();
       return false;
     case "o":
       // Pass Ctrl+O through to Claude Code (show details)
