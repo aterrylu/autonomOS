@@ -3,13 +3,7 @@ import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
 import { THEMES, useStore } from "./store";
-
-const isMac = /mac/i.test(
-  (navigator as Navigator & { userAgentData?: { platform: string } })
-    .userAgentData?.platform ??
-    navigator.platform ??
-    "",
-);
+import { isMac } from "./utils/platform";
 
 export function App() {
   const theme = useStore((s) => s.theme);

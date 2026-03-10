@@ -4,7 +4,7 @@ import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 
-const OUTPUT_BUFFER_LIMIT = 100 * 1024; // 100KB scrollback per session
+const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
 export interface ManagedSession {
   session: Session;
@@ -135,12 +135,21 @@ export function createSession(options: SpawnOptions): ManagedSession {
   pty.onData((data: string) => {
     managed.outputBuffer.push(data);
     managed.outputSize += data.length;
-    // Trim buffer when it exceeds the limit
-    while (
-      managed.outputSize > OUTPUT_BUFFER_LIMIT &&
-      managed.outputBuffer.length > 1
-    ) {
-      managed.outputSize -= managed.outputBuffer.shift()!.length;
+    // Trim buffer when it exceeds the limit — bulk splice to avoid O(n²) shift()
+    if (managed.outputSize > OUTPUT_BUFFER_LIMIT) {
+      let drop = 0;
+      let freed = 0;
+      while (
+        drop < managed.outputBuffer.length - 1 &&
+        managed.outputSize - freed > OUTPUT_BUFFER_LIMIT
+      ) {
+        freed += managed.outputBuffer[drop].length;
+        drop++;
+      }
+      if (drop > 0) {
+        managed.outputBuffer.splice(0, drop);
+        managed.outputSize -= freed;
+      }
     }
   });
 
