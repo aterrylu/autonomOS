@@ -3,6 +3,7 @@ import {
   type SDKSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Hono } from "hono";
+import { batchGetTitles } from "../titleCache";
 
 export interface ProjectInfo {
   path: string;
@@ -37,18 +38,31 @@ projectRouter.get("/", async (c) => {
     );
   }
 
+  // Batch-resolve custom titles for sessions where SDK returns none.
+  // This reads the actual JSONL files (with mtime caching) to work around
+  // the SDK's 64KB head/tail buffer limitation.
+  const needsTitleLookup = sessions
+    .filter((s) => !s.customTitle && s.cwd)
+    .map((s) => ({ sessionId: s.sessionId, cwd: s.cwd! }));
+
+  const resolvedTitles =
+    needsTitleLookup.length > 0
+      ? await batchGetTitles(needsTitleLookup)
+      : new Map<string, string>();
+
   // Group sessions by project directory
   const projectMap = new Map<string, ProjectSession[]>();
   for (const s of sessions) {
     const cwd = s.cwd || "unknown";
+    const title = s.customTitle || resolvedTitles.get(s.sessionId);
     if (!projectMap.has(cwd)) projectMap.set(cwd, []);
     projectMap.get(cwd)!.push({
       sessionId: s.sessionId,
-      summary: s.customTitle || s.summary,
+      summary: title || s.summary,
       lastModified: s.lastModified,
       gitBranch: s.gitBranch,
       firstPrompt: s.firstPrompt,
-      customTitle: s.customTitle,
+      customTitle: title,
     });
   }
 

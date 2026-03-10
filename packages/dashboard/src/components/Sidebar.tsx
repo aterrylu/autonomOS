@@ -74,6 +74,14 @@ export function Sidebar() {
 
         {sessions.map((s) => {
           const isActive = s.id === sessionId;
+          // Prefer the project session's title (kept fresh via JSONL title cache)
+          // over the static name set at spawn time.
+          const projectTitle = s.claudeSessionId
+            ? projects
+                .flatMap((p) => p.sessions)
+                .find((ps) => ps.sessionId === s.claudeSessionId)?.summary
+            : undefined;
+          const displayName = projectTitle || s.name;
           return (
             // biome-ignore lint/a11y/useSemanticElements: contains nested button for kill action
             <div
@@ -94,7 +102,7 @@ export function Sidebar() {
                     s.status === "running" ? "#238636" : page.statusFg,
                 }}
               />
-              <span className="flex-1 truncate text-xs">{s.name}</span>
+              <span className="flex-1 truncate text-xs">{displayName}</span>
               <span
                 className="shrink-0 text-[10px]"
                 style={{ color: page.statusFg }}
@@ -216,7 +224,11 @@ function ProjectItem({ project, page }: ProjectItemProps) {
 
       {expanded && (
         <div className="pl-4">
-          {project.sessions.map((s) => (
+          {project.sessions.map((s) => {
+            const isLive = sessions.some(
+              (ls) => ls.claudeSessionId === s.sessionId,
+            );
+            return (
             <button
               type="button"
               key={s.sessionId}
@@ -226,8 +238,14 @@ function ProjectItem({ project, page }: ProjectItemProps) {
               onClick={() =>
                 resumeSession(s.sessionId, project.path, s.summary)
               }
-              title="Resume this session"
+              title={isLive ? "Switch to live session" : "Resume this session"}
             >
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full mt-1"
+                style={{
+                  background: isLive ? "#238636" : "transparent",
+                }}
+              />
               <div className="flex-1 min-w-0">
                 <p className="truncate">{s.summary}</p>
                 <div
@@ -245,7 +263,8 @@ function ProjectItem({ project, page }: ProjectItemProps) {
                 </div>
               </div>
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
