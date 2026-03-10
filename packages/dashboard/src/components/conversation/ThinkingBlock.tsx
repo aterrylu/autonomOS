@@ -11,31 +11,43 @@ export function ThinkingBlock({ item }: ThinkingBlockProps) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
+  const bubbleBg =
+    theme === "daylight" ? "#f0f0ee" : `${page.border}cc`;
+
   return (
-    <div className="my-0.5">
+    <div
+      className="rounded-2xl rounded-bl-sm overflow-hidden"
+      style={{ background: bubbleBg }}
+    >
       <button
         type="button"
-        className="flex items-center gap-2 text-xs cursor-pointer select-none bg-transparent border-none p-0"
+        className="flex items-center gap-2 px-3.5 py-2 text-xs cursor-pointer select-none bg-transparent border-none"
         onClick={() => setExpanded(!expanded)}
         style={{ color: page.statusFg }}
       >
         <span
-          className="inline-block h-1.5 w-1.5 rounded-full"
-          style={{ background: page.statusFg }}
+          className="inline-block h-2 w-2 rounded-full shrink-0"
+          style={{ background: page.statusFg, opacity: 0.5 }}
         />
         <span className="italic">Thinking{expanded ? "" : "..."}</span>
         <span className="text-[10px]">{expanded ? "▾" : "▸"}</span>
       </button>
       {expanded && (
-        <pre
-          className="mt-2 whitespace-pre-wrap text-xs leading-relaxed rounded-lg p-3 max-h-80 overflow-y-auto"
-          style={{
-            color: page.statusFg,
-            background: theme === "daylight" ? "#f5f5f3" : `${page.border}44`,
-          }}
+        <div
+          className="px-3.5 py-2.5"
+          style={{ borderTop: `1px solid ${page.border}` }}
         >
-          {item.content}
-        </pre>
+          <pre
+            className="whitespace-pre-wrap text-[11px] leading-relaxed font-mono max-h-80 overflow-y-auto rounded-lg p-2.5"
+            style={{
+              color: page.statusFg,
+              background:
+                theme === "daylight" ? "#e8e8e6" : `${page.border}88`,
+            }}
+          >
+            {item.content}
+          </pre>
+        </div>
       )}
     </div>
   );

@@ -1,9 +1,13 @@
-import type { Turn } from "@autonomos/core";
-import { useEffect, useRef, useState } from "react";
+import type { RenderItem, Turn } from "@autonomos/core";
+import {
+  type ThreadMessageLike,
+  AuiProvider,
+  AssistantRuntimeProvider,
+  useExternalStoreRuntime,
+} from "@assistant-ui/react";
+import { useEffect, useState } from "react";
+import { Thread } from "@/components/assistant-ui/thread";
 import { THEMES, useStore } from "../../store";
-import { RenderItemView } from "./RenderItemView";
-import { ThinkingBlock } from "./ThinkingBlock";
-import { ToolCallBlock } from "./ToolCallBlock";
 
 interface ConversationData {
   sessionId: string;
@@ -12,11 +16,82 @@ interface ConversationData {
   entryCount: number;
 }
 
+/** Convert our Turn[] into ThreadMessageLike[] for assistant-ui */
+function turnsToMessages(turns: Turn[]): ThreadMessageLike[] {
+  const messages: ThreadMessageLike[] = [];
+
+  for (const turn of turns) {
+    if (turn.role === "user") {
+      const text = turn.items
+        .filter((i): i is RenderItem & { type: "user_prompt" | "text" } =>
+          i.type === "user_prompt" || i.type === "text",
+        )
+        .map((i) => i.content)
+        .join("\n");
+
+      if (text) {
+        messages.push({
+          role: "user",
+          content: [{ type: "text", text }],
+        });
+      }
+    } else if (turn.role === "assistant") {
+      const parts: Array<
+        | { type: "text"; text: string }
+        | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown>; result?: unknown }
+      > = [];
+
+      for (const item of turn.items) {
+        if (item.type === "text" && item.content) {
+          parts.push({ type: "text", text: item.content });
+        } else if (item.type === "tool_call") {
+          parts.push({
+            type: "tool-call",
+            toolCallId: item.id,
+            toolName: item.toolName,
+            args: item.input,
+            result: item.result
+              ? { result: item.result, isError: item.isError }
+              : undefined,
+          });
+        }
+      }
+
+      if (parts.length > 0) {
+        messages.push({
+          role: "assistant",
+          content: parts as ThreadMessageLike["content"],
+        });
+      }
+    }
+  }
+
+  return messages;
+}
+
+function ConversationRuntime({
+  messages,
+}: { messages: ThreadMessageLike[] }) {
+  const runtime = useExternalStoreRuntime({
+    isRunning: false,
+    messages,
+    convertMessage: (msg) => msg,
+    onNew: async () => {
+      // Read-only transcript — no new messages
+    },
+  });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  );
+}
+
 export function ConversationView() {
   const [data, setData] = useState<ConversationData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
@@ -48,11 +123,6 @@ export function ConversationView() {
       .then((d: ConversationData) => {
         setData(d);
         setLoading(false);
-        requestAnimationFrame(() => {
-          scrollRef.current?.scrollTo({
-            top: scrollRef.current.scrollHeight,
-          });
-        });
       })
       .catch((err) => {
         setError(err.message);
@@ -93,87 +163,11 @@ export function ConversationView() {
     );
   }
 
+  const messages = turnsToMessages(data.turns);
+
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-4 py-6">
-        {data.turns.map((turn) => (
-          <TurnView
-            key={turn.items[0]?.id ?? crypto.randomUUID()}
-            turn={turn}
-          />
-        ))}
-        <div className="h-8" />
-      </div>
+    <div className="flex-1 overflow-hidden">
+      <ConversationRuntime messages={messages} />
     </div>
   );
-}
-
-function TurnView({ turn }: { turn: Turn }) {
-  const theme = useStore((s) => s.theme);
-  const page = THEMES[theme].page;
-
-  if (turn.role === "user") {
-    return (
-      <div className="mb-6 flex justify-end">
-        {turn.items.map((item) => (
-          <div
-            key={item.id}
-            className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm"
-            style={{
-              background: theme === "daylight" ? "#e8e8e6" : `${page.border}cc`,
-              color: page.fg,
-            }}
-          >
-            <RenderItemView item={item} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (turn.role === "assistant") {
-    return (
-      <div className="mb-6">
-        <div className="flex items-start gap-3">
-          {/* Assistant avatar */}
-          <div
-            className="shrink-0 mt-0.5 h-6 w-6 rounded-full flex items-center justify-center text-[11px] font-semibold"
-            style={{
-              background: theme === "daylight" ? "#d4a27f" : "#e6b450",
-              color: theme === "daylight" ? "#fff" : "#0a0e14",
-            }}
-          >
-            C
-          </div>
-          <div className="min-w-0 flex-1 space-y-2">
-            <div
-              className="text-xs font-semibold mb-1"
-              style={{ color: page.fg }}
-            >
-              Claude
-            </div>
-            {turn.items.map((item) => {
-              if (item.type === "thinking") {
-                return <ThinkingBlock key={item.id} item={item} />;
-              }
-              if (item.type === "tool_call") {
-                return <ToolCallBlock key={item.id} item={item} />;
-              }
-              return (
-                <div
-                  key={item.id}
-                  className="text-sm leading-relaxed"
-                  style={{ color: page.fg }}
-                >
-                  <RenderItemView item={item} />
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return null;
 }

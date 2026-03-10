@@ -1,8 +1,10 @@
+import { AuiProvider } from "@assistant-ui/react";
 import { useEffect } from "react";
 import { ConversationView } from "./components/conversation/ConversationView";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { THEMES, useStore } from "./store";
 
 const isMac = /mac/i.test(
@@ -33,8 +35,11 @@ export function App() {
   }, []);
 
   return (
+    <AuiProvider>
+    <TooltipProvider>
     <div
       className="flex flex-col font-sans"
+      data-theme={theme}
       style={{ background: page.bg, color: page.fg, height: "100dvh" }}
     >
       <Header />
@@ -66,5 +71,7 @@ export function App() {
         )}
       </div>
     </div>
+    </TooltipProvider>
+    </AuiProvider>
   );
 }
