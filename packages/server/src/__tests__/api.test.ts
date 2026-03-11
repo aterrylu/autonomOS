@@ -103,7 +103,7 @@ describe("POST /api/sessions — validation", () => {
       assert.equal(json.provider, "claude-code");
       // workingDirectory should be expanded
       assert.ok(
-        !json.workingDirectory.startsWith("~"),
+        !(json.workingDirectory as string).startsWith("~"),
         "workingDirectory should be expanded",
       );
     } else {
