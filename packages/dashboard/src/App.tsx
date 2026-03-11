@@ -11,7 +11,7 @@ export function App() {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const page = THEMES[theme].page;
 
-  // Ctrl+B (or Cmd+B on Mac) toggles sidebar
+  // Cmd/Ctrl+B toggles sidebar (global handler — works even without a terminal)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;

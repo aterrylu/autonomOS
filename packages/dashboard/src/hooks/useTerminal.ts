@@ -237,8 +237,7 @@ function handleKeyEvent(
       terminal.selectAll();
       return false;
     case "b":
-      // Toggle sidebar directly — don't rely on event bubbling to App handler
-      useStore.getState().toggleSidebar();
+      // Suppress terminal input — App-level handler toggles the sidebar
       return false;
     case "o":
       // Pass Ctrl+O through to Claude Code (show details)

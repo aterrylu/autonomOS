@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
@@ -67,12 +68,7 @@ export function expandPath(path: string): string {
 }
 
 export function createSession(options: SpawnOptions): ManagedSession {
-  if (
-    options.resumeSessionId &&
-    !/^[a-zA-Z0-9_-]+$/.test(options.resumeSessionId)
-  ) {
-    throw new Error("Invalid resumeSessionId format");
-  }
+  // resumeSessionId is validated at the route boundary (routes/sessions.ts)
 
   const id = crypto.randomUUID();
   const cols = options.cols ?? 120;
@@ -109,9 +105,9 @@ export function createSession(options: SpawnOptions): ManagedSession {
     env,
   });
 
-  const basename = cwd.split("/").pop() || cwd;
+  const dirName = basename(cwd) || cwd;
   const shortId = id.slice(0, 4);
-  const defaultName = options.name || `${basename} · ${shortId}`;
+  const defaultName = options.name || `${dirName} · ${shortId}`;
 
   const session: Session = {
     id,
@@ -190,9 +186,13 @@ export function _resetForTesting(): void {
 
 /**
  * Build environment with full PATH and strip CLAUDECODE
- * to prevent nested-session detection.
+ * to prevent nested-session detection. Computed once since
+ * process.env doesn't change at runtime.
  */
+let cachedEnv: Record<string, string> | null = null;
+
 function buildEnv(): Record<string, string> {
+  if (cachedEnv) return cachedEnv;
   const env = { ...process.env } as Record<string, string>;
   const extraPaths = [
     `${process.env.HOME}/.local/bin`,
@@ -201,5 +201,6 @@ function buildEnv(): Record<string, string> {
   ];
   env.PATH = [...extraPaths, env.PATH].join(":");
   delete env.CLAUDECODE;
+  cachedEnv = env;
   return env;
 }

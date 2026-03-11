@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import {
   listSessions,
   type SDKSessionInfo,
@@ -73,7 +74,7 @@ projectRouter.get("/", async (c) => {
       projectSessions.sort((a, b) => b.lastModified - a.lastModified);
       return {
         path,
-        name: path === "unknown" ? "Unknown" : path.split("/").pop() || path,
+        name: path === "unknown" ? "Unknown" : basename(path) || path,
         sessions: projectSessions,
         lastActive: projectSessions[0].lastModified,
       };
