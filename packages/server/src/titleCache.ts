@@ -10,7 +10,7 @@
  *   SDK customTitle → mtime-validated cache → JSONL fallback → SDK summary
  */
 
-import { opendir, open, stat } from "node:fs/promises";
+import { open, opendir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 const TITLE_MARKERS = [
@@ -26,8 +26,10 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-/** Cache for resolveProjectDir — avoids repeated stat() for the same cwd. */
-const projectDirCache = new Map<string, string | null>();
+/** Cache for resolveProjectDir — avoids repeated stat() for the same cwd.
+ *  Negative results (null) expire after 5 minutes so new projects are discovered. */
+const projectDirCache = new Map<string, { path: string | null; at: number }>();
+const PROJECT_DIR_NEGATIVE_TTL = 5 * 60 * 1000;
 
 /** ~/.claude/projects/ base directory */
 function projectsDir(): string {
@@ -61,21 +63,26 @@ function cwdToDirName(cwd: string): string {
  */
 async function resolveProjectDir(cwd: string): Promise<string | null> {
   const cached = projectDirCache.get(cwd);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // Positive results are cached forever; negative results expire
+    if (cached.path !== null) return cached.path;
+    if (Date.now() - cached.at < PROJECT_DIR_NEGATIVE_TTL) return null;
+  }
 
   const base = projectsDir();
   const dirName = cwdToDirName(cwd);
+  const now = Date.now();
 
   // Try exact match first
   const exact = join(base, dirName);
   try {
     await stat(exact);
-    projectDirCache.set(cwd, exact);
+    projectDirCache.set(cwd, { path: exact, at: now });
     return exact;
   } catch {
     // If the dirname was truncated, look for prefix match
     if (dirName.length <= 200) {
-      projectDirCache.set(cwd, null);
+      projectDirCache.set(cwd, { path: null, at: now });
       return null;
     }
     const prefix = dirName.slice(0, 200);
@@ -84,14 +91,14 @@ async function resolveProjectDir(cwd: string): Promise<string | null> {
       for await (const entry of dir) {
         if (entry.isDirectory() && entry.name.startsWith(`${prefix}-`)) {
           const result = join(base, entry.name);
-          projectDirCache.set(cwd, result);
+          projectDirCache.set(cwd, { path: result, at: now });
           return result;
         }
       }
     } catch {
       // projects dir doesn't exist
     }
-    projectDirCache.set(cwd, null);
+    projectDirCache.set(cwd, { path: null, at: now });
     return null;
   }
 }

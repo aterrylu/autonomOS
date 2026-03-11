@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { ProjectInfo } from "../store";
 import { THEMES, useStore } from "../store";
 
@@ -30,6 +30,16 @@ export function Sidebar() {
     }
     return map;
   }, [projects]);
+
+  // Set of claudeSessionIds that have active live sessions.
+  // Passed to ProjectItem to avoid each item subscribing to sessions independently.
+  const liveSessionIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of sessions) {
+      if (s.claudeSessionId) set.add(s.claudeSessionId);
+    }
+    return set;
+  }, [sessions]);
 
   // Poll live sessions every 5s, projects every 30s (heavier operation)
   useEffect(() => {
@@ -160,7 +170,15 @@ export function Sidebar() {
         )}
 
         {projects.map((project) => (
-          <ProjectItem key={project.path} project={project} page={page} />
+          <ProjectItem
+            key={project.path}
+            project={project}
+            page={page}
+            liveSessionIds={liveSessionIds}
+            activeClaude={
+              sessions.find((s) => s.id === sessionId)?.claudeSessionId
+            }
+          />
         ))}
       </div>
     </aside>
@@ -170,23 +188,25 @@ export function Sidebar() {
 interface ProjectItemProps {
   project: ProjectInfo;
   page: PageTheme;
+  liveSessionIds: Set<string>;
+  activeClaude?: string;
 }
 
-function ProjectItem({ project, page }: ProjectItemProps) {
+const ProjectItem = React.memo(function ProjectItem({
+  project,
+  page,
+  liveSessionIds,
+  activeClaude,
+}: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const createSession = useStore((s) => s.createSession);
   const status = useStore((s) => s.status);
-  const sessions = useStore((s) => s.sessions);
-  const sessionId = useStore((s) => s.sessionId);
   const isBusy = status === "resuming..." || status === "spawning...";
 
   // Auto-expand if the active live session belongs to this project
-  const activeSession = sessions.find((s) => s.id === sessionId);
   const hasActiveSession =
-    activeSession?.claudeSessionId != null &&
-    project.sessions.some(
-      (ps) => ps.sessionId === activeSession.claudeSessionId,
-    );
+    activeClaude != null &&
+    project.sessions.some((ps) => ps.sessionId === activeClaude);
   const [expanded, setExpanded] = useState(hasActiveSession);
 
   useEffect(() => {
@@ -232,51 +252,51 @@ function ProjectItem({ project, page }: ProjectItemProps) {
       {expanded && (
         <div className="pl-4">
           {project.sessions.map((s) => {
-            const isLive = sessions.some(
-              (ls) => ls.claudeSessionId === s.sessionId,
-            );
+            const isLive = liveSessionIds.has(s.sessionId);
             return (
-            <button
-              type="button"
-              key={s.sessionId}
-              disabled={isBusy}
-              className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
-              style={{ color: page.fg }}
-              onClick={() =>
-                resumeSession(s.sessionId, project.path, s.summary)
-              }
-              title={isLive ? "Switch to live session" : "Resume this session"}
-            >
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full mt-1"
-                style={{
-                  background: isLive ? "#238636" : "transparent",
-                }}
-              />
-              <div className="flex-1 min-w-0">
-                <p className="truncate">{s.summary}</p>
-                <div
-                  className="flex items-center gap-2 mt-0.5"
-                  style={{ color: page.statusFg }}
-                >
-                  {s.gitBranch && (
-                    <span className="text-[10px] truncate max-w-[120px]">
-                      {s.gitBranch}
+              <button
+                type="button"
+                key={s.sessionId}
+                disabled={isBusy}
+                className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
+                style={{ color: page.fg }}
+                onClick={() =>
+                  resumeSession(s.sessionId, project.path, s.summary)
+                }
+                title={
+                  isLive ? "Switch to live session" : "Resume this session"
+                }
+              >
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full mt-1"
+                  style={{
+                    background: isLive ? "#238636" : "transparent",
+                  }}
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="truncate">{s.summary}</p>
+                  <div
+                    className="flex items-center gap-2 mt-0.5"
+                    style={{ color: page.statusFg }}
+                  >
+                    {s.gitBranch && (
+                      <span className="text-[10px] truncate max-w-[120px]">
+                        {s.gitBranch}
+                      </span>
+                    )}
+                    <span className="text-[10px]">
+                      {formatAge(s.lastModified)}
                     </span>
-                  )}
-                  <span className="text-[10px]">
-                    {formatAge(s.lastModified)}
-                  </span>
+                  </div>
                 </div>
-              </div>
-            </button>
+              </button>
             );
           })}
         </div>
       )}
     </div>
   );
-}
+});
 
 function formatAge(timestamp: number): string {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
