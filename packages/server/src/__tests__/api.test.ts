@@ -16,7 +16,7 @@ async function req(
   method: string,
   path: string,
   body?: unknown,
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: unknown }> {
   const init: RequestInit = { method };
   if (body) {
     init.headers = { "Content-Type": "application/json" };
