@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-03-08
+Last updated: 2026-03-10
 
 ## Done
 
@@ -21,6 +21,10 @@ Last updated: 2026-03-08
 - [x] Production serving — Hono serves built dashboard with SPA fallback
 - [x] Security hardening — CORS, input validation, path traversal checks
 - [x] Core loop verified (spawn → interact → reconnect → resume)
+- [x] JSONL title cache — workaround for SDK `customTitle` 64KB bug (mtime-cached JSONL parsing)
+- [x] Live/project session sync — green dots, name propagation
+- [x] Plugin system — modular architecture with VSCode-style status bar (ADR-013)
+- [x] Claude Usage plugin — token usage aggregation from JSONL with mtime caching
 
 ## Now — Orchestrator Foundation
 
@@ -37,7 +41,7 @@ Evolve from passive dashboard to orchestrator-first platform (ADR-012).
 ## Next — Make It Useful
 
 - [ ] Multi-terminal — view multiple sessions side by side (split panes)
-- [ ] Token spend / cost tracking per session
+- [ ] Token spend / cost tracking per session (extend claude-usage plugin)
 - [ ] Agent activity dashboard (what's running, what failed)
 - [ ] Session rename from dashboard (blocked by SDK `customTitle` bug, or needs own metadata file)
 - [ ] OpenClaw integration — read agent status, cron jobs

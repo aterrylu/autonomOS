@@ -5,6 +5,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
@@ -39,6 +40,7 @@ if (corsOrigin) {
 // REST API
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
+app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
 // WebSocket — terminal PTY streaming
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));

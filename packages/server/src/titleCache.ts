@@ -32,7 +32,7 @@ const projectDirCache = new Map<string, { path: string | null; at: number }>();
 const PROJECT_DIR_NEGATIVE_TTL = 5 * 60 * 1000;
 
 /** ~/.claude/projects/ base directory */
-function projectsDir(): string {
+export function projectsDir(): string {
   const home = process.env.HOME;
   if (!home) throw new Error("HOME environment variable is not set");
   return join(home, ".claude", "projects");
@@ -43,7 +43,7 @@ function projectsDir(): string {
  * Replaces all non-alphanumeric chars with '-', truncates at 200 chars,
  * and appends a hash suffix if truncated.
  */
-function cwdToDirName(cwd: string): string {
+export function cwdToDirName(cwd: string): string {
   const MAX = 200;
   const replaced = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   if (replaced.length <= MAX) return replaced;

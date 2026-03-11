@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
+import { StatusBar } from "./components/StatusBar";
 import { TerminalView } from "./components/TerminalView";
 import { THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
@@ -53,6 +54,7 @@ export function App() {
           </div>
         )}
       </div>
+      <StatusBar />
     </div>
   );
 }
