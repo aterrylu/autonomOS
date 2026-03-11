@@ -16,7 +16,7 @@ async function req(
   method: string,
   path: string,
   body?: unknown,
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: Record<string, unknown> }> {
   const init: RequestInit = { method };
   if (body) {
     init.headers = { "Content-Type": "application/json" };
@@ -103,7 +103,7 @@ describe("POST /api/sessions — validation", () => {
       assert.equal(json.provider, "claude-code");
       // workingDirectory should be expanded
       assert.ok(
-        !json.workingDirectory.startsWith("~"),
+        !(json.workingDirectory as string).startsWith("~"),
         "workingDirectory should be expanded",
       );
     } else {

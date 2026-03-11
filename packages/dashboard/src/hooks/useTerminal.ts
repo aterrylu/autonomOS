@@ -85,7 +85,7 @@ export function useTerminal(
 
       ws.onopen = () => {
         retryDelay = 1000;
-        setStatus(`connected: ${sessionId.slice(0, 8)}`);
+        setStatus(`connected: ${sessionId!.slice(0, 8)}`);
         // Nudge resize to force TUI apps (Claude Code) to fully redraw.
         // Without this, reconnects can show the cursor below the TUI
         // because the replayed buffer may be missing alternate-screen
