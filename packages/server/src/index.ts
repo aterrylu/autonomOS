@@ -6,8 +6,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
-import { cors } from "hono/cors";
 import { getCookie, setCookie } from "hono/cookie";
+import { cors } from "hono/cors";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
@@ -45,7 +45,9 @@ const AUTH_TOKEN = process.env.AUTONOMOS_TOKEN?.trim() || undefined;
 if (process.env.AUTONOMOS_TOKEN && !AUTH_TOKEN) {
   console.warn("AUTONOMOS_TOKEN is empty/whitespace — auth is DISABLED.");
 } else if (AUTH_TOKEN && AUTH_TOKEN.length < 8) {
-  console.warn(`AUTONOMOS_TOKEN is only ${AUTH_TOKEN.length} chars — consider using a longer token.`);
+  console.warn(
+    `AUTONOMOS_TOKEN is only ${AUTH_TOKEN.length} chars — consider using a longer token.`,
+  );
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -86,7 +88,10 @@ if (AUTH_TOKEN) {
   const requireAuth: MiddlewareHandler = async (c, next) => {
     const token = extractToken(c);
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
-    return c.json({ error: "Unauthorized — visit /auth?token=YOUR_TOKEN to authenticate" }, 401);
+    return c.json(
+      { error: "Unauthorized — visit /auth?token=YOUR_TOKEN to authenticate" },
+      401,
+    );
   };
 
   app.use("/api/*", requireAuth);
