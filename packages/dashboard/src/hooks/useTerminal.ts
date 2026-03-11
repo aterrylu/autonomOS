@@ -9,21 +9,31 @@ import { isMac } from "../utils/platform";
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
 const MAX_RETRY_DELAY = 10000;
 
+/**
+ * Manages a single terminal instance for a given sessionId.
+ * Unlike the old hook, this does NOT read sessionId from the store —
+ * it receives it as a parameter so multiple instances can coexist.
+ */
 export function useTerminal(
   containerRef: React.RefObject<HTMLDivElement | null>,
+  sessionId: string,
 ) {
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const sessionId = useStore((s) => s.sessionId);
   const theme = useStore((s) => s.theme);
   const setStatus = useStore((s) => s.setStatus);
   const themeRef = useRef(theme);
   themeRef.current = theme;
 
+  // Track whether this session is the active one, so we can update status
+  const activeSessionId = useStore((s) => s.sessionId);
+  const isActiveRef = useRef(activeSessionId === sessionId);
+  isActiveRef.current = activeSessionId === sessionId;
+
   useEffect(() => {
     const container = containerRef.current;
-    if (!sessionId || !container) return;
+    if (!container) return;
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -66,7 +76,6 @@ export function useTerminal(
     function connect() {
       if (disposed) return;
 
-      // Cancel pending timers and close stale socket
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -85,16 +94,13 @@ export function useTerminal(
 
       ws.onopen = () => {
         retryDelay = 1000;
-        setStatus(`connected: ${sessionId!.slice(0, 8)}`);
-        // Nudge resize to force TUI apps (Claude Code) to fully redraw.
-        // Without this, reconnects can show the cursor below the TUI
-        // because the replayed buffer may be missing alternate-screen
-        // escape sequences that were truncated from the start.
+        if (isActiveRef.current) {
+          setStatus(`connected: ${sessionId.slice(0, 8)}`);
+        }
         nudgeTimer = nudgeResize(ws, terminal);
       };
 
       ws.onmessage = (event) => {
-        // Only auto-scroll if user is already at/near the bottom
         const buf = terminal.buffer.active;
         const atBottom = buf.viewportY >= buf.baseY - 1;
         terminal.write(event.data);
@@ -108,11 +114,16 @@ export function useTerminal(
         if (disposed) return;
         // 4010 = PTY exited (session ended)
         if (event.code === 4010) {
-          useStore.getState().setSessionId(null);
-          useStore.getState().fetchSessions();
+          const store = useStore.getState();
+          if (store.sessionId === sessionId) {
+            store.setSessionId(null);
+          }
+          store.fetchSessions();
           return;
         }
-        setStatus("reconnecting...");
+        if (isActiveRef.current) {
+          setStatus("reconnecting...");
+        }
         reconnectTimer = setTimeout(() => {
           retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
           connect();
@@ -131,7 +142,6 @@ export function useTerminal(
       }
     });
 
-    // Reconnect when tab regains focus (browser may have killed the WS)
     const handleVisibility = () => {
       if (
         document.visibilityState === "visible" &&
@@ -173,11 +183,6 @@ export function useTerminal(
   }, [theme]);
 }
 
-/**
- * Briefly resize the PTY then restore, forcing full-screen TUI apps
- * to redraw. This fixes cursor-below-rendering after buffer replay.
- * Returns the restore timer handle for cleanup.
- */
 function nudgeResize(
   ws: WebSocket,
   terminal: Terminal,
