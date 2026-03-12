@@ -55,11 +55,8 @@ export function useTerminal(
 
     terminal.open(container);
 
-    try {
-      terminal.loadAddon(new WebglAddon());
-    } catch (err) {
-      console.warn("WebGL addon failed, falling back to canvas renderer:", err);
-    }
+    // WebGL is loaded/disposed dynamically — only the visible terminal holds a GPU context
+    let webglAddon: WebglAddon | null = null;
 
     fitAddon.fit();
 
@@ -155,6 +152,32 @@ export function useTerminal(
     document.addEventListener("visibilitychange", handleVisibility);
 
     const resizeObserver = new ResizeObserver(() => {
+      const { offsetWidth, offsetHeight } = container;
+      const isVisible = offsetWidth > 0 && offsetHeight > 0;
+
+      // Dispose WebGL when hidden to free GPU context for the active terminal
+      if (!isVisible) {
+        if (webglAddon) {
+          webglAddon.dispose();
+          webglAddon = null;
+        }
+        return;
+      }
+
+      // Load WebGL when becoming visible
+      if (!webglAddon) {
+        try {
+          webglAddon = new WebglAddon();
+          terminal.loadAddon(webglAddon);
+        } catch (err) {
+          console.warn(
+            "WebGL addon failed, falling back to canvas renderer:",
+            err,
+          );
+          webglAddon = null;
+        }
+      }
+
       fitAddon.fit();
       if (wsRef.current) sendResize(wsRef.current, terminal);
     });

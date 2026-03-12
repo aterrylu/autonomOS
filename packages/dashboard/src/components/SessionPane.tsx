@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import { useTerminal } from "../hooks/useTerminal";
 
 interface SessionPaneProps {
@@ -11,7 +11,10 @@ interface SessionPaneProps {
  * In the future, sessions may have additional views (VNC, camera, etc.)
  * alongside the terminal — this component is the mount point for all of them.
  */
-export function SessionPane({ sessionId, visible }: SessionPaneProps) {
+export const SessionPane = memo(function SessionPane({
+  sessionId,
+  visible,
+}: SessionPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   useTerminal(containerRef, sessionId);
 
@@ -22,4 +25,4 @@ export function SessionPane({ sessionId, visible }: SessionPaneProps) {
       style={{ display: visible ? "flex" : "none" }}
     />
   );
-}
+});
