@@ -55,8 +55,8 @@ export function useTerminal(
 
     terminal.open(container);
 
-    // Defer WebGL loading — only the visible terminal gets it (see ResizeObserver below)
-    let webglLoaded = false;
+    // WebGL is loaded/disposed dynamically — only the visible terminal holds a GPU context
+    let webglAddon: WebglAddon | null = null;
 
     fitAddon.fit();
 
@@ -153,17 +153,26 @@ export function useTerminal(
 
     const resizeObserver = new ResizeObserver(() => {
       const { offsetWidth, offsetHeight } = container;
-      // Skip fit when hidden (display:none gives 0×0) to avoid sending zero-size resize
-      if (offsetWidth === 0 || offsetHeight === 0) return;
+      const isVisible = offsetWidth > 0 && offsetHeight > 0;
 
-      // Lazily load WebGL only when the terminal becomes visible
-      if (!webglLoaded) {
+      // Dispose WebGL when hidden to free GPU context for the active terminal
+      if (!isVisible) {
+        if (webglAddon) {
+          webglAddon.dispose();
+          webglAddon = null;
+        }
+        return;
+      }
+
+      // Load WebGL when becoming visible
+      if (!webglAddon) {
         try {
-          terminal.loadAddon(new WebglAddon());
+          webglAddon = new WebglAddon();
+          terminal.loadAddon(webglAddon);
         } catch (err) {
           console.warn("WebGL addon failed, falling back to canvas renderer:", err);
+          webglAddon = null;
         }
-        webglLoaded = true;
       }
 
       fitAddon.fit();
