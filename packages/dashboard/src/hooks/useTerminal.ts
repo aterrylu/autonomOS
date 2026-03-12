@@ -31,6 +31,13 @@ export function useTerminal(
   const isActiveRef = useRef(activeSessionId === sessionId);
   isActiveRef.current = activeSessionId === sessionId;
 
+  // Focus terminal when it becomes the active session
+  useEffect(() => {
+    if (activeSessionId === sessionId && termRef.current) {
+      termRef.current.focus();
+    }
+  }, [activeSessionId, sessionId]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -99,7 +106,7 @@ export function useTerminal(
 
       ws.onmessage = (event) => {
         const buf = terminal.buffer.active;
-        const atBottom = buf.viewportY >= buf.baseY - 1;
+        const atBottom = buf.baseY - buf.viewportY <= 3;
         terminal.write(event.data);
         if (atBottom) {
           if (scrollTimer) clearTimeout(scrollTimer);
