@@ -55,11 +55,8 @@ export function useTerminal(
 
     terminal.open(container);
 
-    try {
-      terminal.loadAddon(new WebglAddon());
-    } catch (err) {
-      console.warn("WebGL addon failed, falling back to canvas renderer:", err);
-    }
+    // Defer WebGL loading — only the visible terminal gets it (see ResizeObserver below)
+    let webglLoaded = false;
 
     fitAddon.fit();
 
@@ -155,6 +152,20 @@ export function useTerminal(
     document.addEventListener("visibilitychange", handleVisibility);
 
     const resizeObserver = new ResizeObserver(() => {
+      const { offsetWidth, offsetHeight } = container;
+      // Skip fit when hidden (display:none gives 0×0) to avoid sending zero-size resize
+      if (offsetWidth === 0 || offsetHeight === 0) return;
+
+      // Lazily load WebGL only when the terminal becomes visible
+      if (!webglLoaded) {
+        try {
+          terminal.loadAddon(new WebglAddon());
+        } catch (err) {
+          console.warn("WebGL addon failed, falling back to canvas renderer:", err);
+        }
+        webglLoaded = true;
+      }
+
       fitAddon.fit();
       if (wsRef.current) sendResize(wsRef.current, terminal);
     });
