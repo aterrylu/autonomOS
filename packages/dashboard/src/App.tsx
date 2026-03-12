@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Header } from "./components/Header";
 import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar } from "./components/Sidebar";
@@ -9,6 +9,7 @@ export function App() {
   const theme = useStore((s) => s.theme);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const page = THEMES[theme].page;
+  const viewportHeight = useViewportHeight();
 
   // Cmd/Ctrl+B toggles sidebar (global handler — works even without a terminal)
   useEffect(() => {
@@ -26,7 +27,7 @@ export function App() {
   return (
     <div
       className="flex flex-col font-sans"
-      style={{ background: page.bg, color: page.fg, height: "100dvh" }}
+      style={{ background: page.bg, color: page.fg, height: viewportHeight }}
     >
       <Header />
       <div className="relative flex flex-1 overflow-hidden">
@@ -45,4 +46,25 @@ export function App() {
       </div>
     </div>
   );
+}
+
+/**
+ * Returns a CSS height string that tracks the visual viewport.
+ * On mobile, the visual viewport shrinks when the virtual keyboard opens,
+ * so this ensures the app resizes to fit above the keyboard.
+ * Falls back to "100dvh" on desktop or unsupported browsers.
+ */
+function useViewportHeight() {
+  const [height, setHeight] = useState("100dvh");
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const update = () => setHeight(`${vv.height}px`);
+    vv.addEventListener("resize", update);
+    return () => vv.removeEventListener("resize", update);
+  }, []);
+
+  return height;
 }
