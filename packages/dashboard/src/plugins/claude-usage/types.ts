@@ -1,23 +1,31 @@
-export interface ModelUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  requestCount: number;
+export interface RateLimitWindow {
+  utilization: number;
+  resetsAt: string;
 }
 
-export interface RateLimitInfo {
-  status: "allowed" | "allowed_warning" | "rejected";
-  utilization?: number;
-  resetsAt?: number;
-  type?: string;
+export interface ExtraUsage {
+  isEnabled: boolean;
+  monthlyLimit: number;
+  usedCredits: number;
+  utilization: number | null;
 }
 
-export interface UsageSummary {
-  models: Record<string, ModelUsage>;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalRequests: number;
-  rateLimit?: RateLimitInfo;
-  window: { start: number; end: number };
+export interface AccountInfo {
+  email?: string;
+  organization?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
 }
+
+export interface RateLimitData {
+  fiveHour: RateLimitWindow | null;
+  sevenDay: RateLimitWindow | null;
+  sevenDaySonnet: RateLimitWindow | null;
+  sevenDayOpus: RateLimitWindow | null;
+  extraUsage: ExtraUsage | null;
+  account: AccountInfo;
+  fetchedAt: string;
+  error?: string;
+}
+
+export type DisplayMode = "text" | "bar";

@@ -1,73 +1,148 @@
 import { useState } from "react";
 import { THEMES, useStore } from "../../store";
+import type { RateLimitWindow } from "./types";
 import { UsagePanel } from "./UsagePanel";
 import { useUsageData } from "./useUsageData";
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-  return String(n);
+function utilizationColor(pct: number): string {
+  if (pct >= 80) return "#ea6c73"; // red
+  if (pct >= 60) return "#e6b450"; // yellow
+  return "#238636"; // green
 }
 
-function formatModel(model: string): string {
-  // "claude-opus-4-6" → "opus", "claude-sonnet-4-6" → "sonnet"
-  const parts = model.replace("claude-", "").split("-");
-  return parts[0];
+function timeUntilReset(resetsAt: string): string {
+  if (!resetsAt) return "";
+  const resetDate = new Date(resetsAt);
+  const ms = resetDate.getTime() - Date.now();
+  if (ms <= 0) return "now";
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m`;
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const isTomorrow =
+    resetDate.getDate() === tomorrow.getDate() &&
+    resetDate.getMonth() === tomorrow.getMonth();
+  const time = resetDate.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  if (isTomorrow) return `Tomorrow ${time}`;
+  return resetDate.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function MiniBar({ pct }: { pct: number }) {
+  const color = utilizationColor(pct);
+  return (
+    <span
+      className="inline-block h-2 rounded-sm overflow-hidden align-middle"
+      style={{ width: 40, background: `${color}22` }}
+    >
+      <span
+        className="block h-full rounded-sm"
+        style={{ width: `${Math.min(pct, 100)}%`, background: color }}
+      />
+    </span>
+  );
+}
+
+function WindowLabel({
+  label,
+  window,
+  mode,
+}: {
+  label: string;
+  window: RateLimitWindow;
+  mode: "text" | "bar";
+}) {
+  const pct = Math.round(window.utilization);
+  const reset = timeUntilReset(window.resetsAt);
+  const title = `${label}: ${pct}% used${reset ? ` · resets in ${reset}` : ""}`;
+
+  if (mode === "bar") {
+    return (
+      <span className="inline-flex items-center gap-1" title={title}>
+        <span style={{ fontSize: 10, opacity: 0.85 }}>{label}</span>
+        <MiniBar pct={pct} />
+      </span>
+    );
+  }
+
+  return (
+    <span title={title}>
+      <span style={{ fontSize: 10, opacity: 0.85 }}>{label}</span>{" "}
+      <span style={{ color: utilizationColor(pct) }}>{pct}%</span>
+    </span>
+  );
 }
 
 export function UsageStatusBarItem() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const { data, error } = useUsageData();
+  const { data, error, displayMode, setDisplayMode } = useUsageData();
   const [panelOpen, setPanelOpen] = useState(false);
 
   if (error) {
     return (
       <span style={{ color: page.statusFg }} title={`Usage error: ${error}`}>
-        usage: –
+        limits: –
       </span>
     );
   }
 
   if (!data) {
-    return <span style={{ color: page.statusFg }}>usage: loading…</span>;
+    return <span style={{ color: page.statusFg }}>limits: …</span>;
   }
 
-  // Build compact summary: "opus: 1.2M / sonnet: 340K"
-  const modelSummaries = Object.entries(data.models)
-    .sort(([, a], [, b]) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
-    .slice(0, 3)
-    .map(([model, usage]) => {
-      const total = usage.inputTokens + usage.outputTokens;
-      return `${formatModel(model)}: ${formatTokens(total)}`;
-    });
+  if (data.error) {
+    return (
+      <span style={{ color: "#ea6c73" }} title={data.error}>
+        limits: err
+      </span>
+    );
+  }
 
-  const rateLimitColor =
-    data.rateLimit?.status === "rejected"
-      ? "#ea6c73"
-      : data.rateLimit?.status === "allowed_warning"
-        ? "#e6b450"
-        : undefined;
+  const hasData = data.fiveHour || data.sevenDay;
+  if (!hasData) {
+    return (
+      <span
+        style={{ color: page.statusFg }}
+        title="No rate limit data available"
+      >
+        limits: n/a
+      </span>
+    );
+  }
 
   return (
     <div className="relative">
       <button
         type="button"
-        className="cursor-pointer hover:opacity-80"
-        style={{ color: rateLimitColor ?? page.statusFg }}
+        className="inline-flex items-center gap-2 cursor-pointer hover:opacity-80"
+        style={{ color: page.fg }}
         onClick={() => setPanelOpen(!panelOpen)}
-        title="Click for usage details"
+        title="Click for rate limit details"
       >
-        {modelSummaries.join(" · ")}
-        {data.rateLimit && data.rateLimit.status !== "allowed" && (
-          <span>
-            {" "}
-            ⚠ {data.rateLimit.status.replace("_", " ")}
-          </span>
+        {data.fiveHour && (
+          <WindowLabel label="5h" window={data.fiveHour} mode={displayMode} />
+        )}
+        {data.sevenDay && (
+          <WindowLabel label="7d" window={data.sevenDay} mode={displayMode} />
         )}
       </button>
       {panelOpen && (
-        <UsagePanel data={data} onClose={() => setPanelOpen(false)} />
+        <UsagePanel
+          data={data}
+          displayMode={displayMode}
+          onDisplayModeChange={setDisplayMode}
+          onClose={() => setPanelOpen(false)}
+        />
       )}
     </div>
   );

@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
-import type { UsageSummary } from "./types";
+import type { DisplayMode, RateLimitData } from "./types";
 
-const POLL_INTERVAL = 30_000;
+const POLL_INTERVAL = 60_000;
+const DISPLAY_MODE_KEY = "claude-usage-display-mode";
 
 export function useUsageData() {
-  const [data, setData] = useState<UsageSummary | null>(null);
+  const [data, setData] = useState<RateLimitData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [displayMode, setDisplayModeState] = useState<DisplayMode>(
+    () => (localStorage.getItem(DISPLAY_MODE_KEY) as DisplayMode) || "text",
+  );
+
+  function setDisplayMode(mode: DisplayMode) {
+    setDisplayModeState(mode);
+    localStorage.setItem(DISPLAY_MODE_KEY, mode);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -29,5 +38,5 @@ export function useUsageData() {
     };
   }, []);
 
-  return { data, error };
+  return { data, error, displayMode, setDisplayMode };
 }

@@ -1,256 +1,306 @@
 /**
- * JSONL usage scanner — aggregates token usage from Claude Code session files.
+ * Rate limit fetcher — queries Claude's OAuth usage API.
  *
- * Scans ~/.claude/projects/ for assistant entries with message.usage fields.
- * Uses mtime-based caching per file so repeated polls are cheap.
+ * Reads OAuth credentials from macOS Keychain, refreshes the token
+ * if expired, and calls api.anthropic.com/api/oauth/usage for live
+ * rate limit data including 5h, 7d, model-specific, and extra usage.
  */
 
-import { open, opendir, stat } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { projectsDir } from "../../titleCache.js";
 
-export interface ModelUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  requestCount: number;
+export interface RateLimitWindow {
+  utilization: number;
+  resetsAt: string;
 }
 
-export interface RateLimitInfo {
-  status: "allowed" | "allowed_warning" | "rejected";
-  utilization?: number;
-  resetsAt?: number;
-  type?: string;
+export interface ExtraUsage {
+  isEnabled: boolean;
+  monthlyLimit: number;
+  usedCredits: number;
+  utilization: number | null;
 }
 
-export interface UsageSummary {
-  models: Record<string, ModelUsage>;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalRequests: number;
-  rateLimit?: RateLimitInfo;
-  window: { start: number; end: number };
+export interface AccountInfo {
+  email?: string;
+  organization?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
 }
 
-interface FileCacheEntry {
-  usage: Record<string, ModelUsage>;
-  rateLimit?: RateLimitInfo;
-  mtimeMs: number;
+export interface RateLimitData {
+  fiveHour: RateLimitWindow | null;
+  sevenDay: RateLimitWindow | null;
+  sevenDaySonnet: RateLimitWindow | null;
+  sevenDayOpus: RateLimitWindow | null;
+  extraUsage: ExtraUsage | null;
+  account: AccountInfo;
+  fetchedAt: string;
+  error?: string;
 }
 
-const fileCache = new Map<string, FileCacheEntry>();
+const USAGE_API = "https://api.anthropic.com/api/oauth/usage";
+const REFRESH_URL = "https://api.anthropic.com/v1/oauth/token";
+const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const KEYCHAIN_SERVICE = "Claude Code-credentials";
+const KEYCHAIN_ACCOUNT = "Claude Code";
+const CREDENTIALS_PATH = join(homedir(), ".claude", ".credentials.json");
 
-const CHUNK_SIZE = 256 * 1024;
+/** In-memory cache with adaptive TTL */
+let cached: { data: RateLimitData; expiresAt: number } | null = null;
+/** Last successful API response — survives cache expiry for 429 fallback */
+let lastGoodData: RateLimitData | null = null;
+const CACHE_TTL = 60_000; // 1 min default
+const CACHE_TTL_429 = 5 * 60_000; // 5 min backoff on rate limit
 
-/**
- * Scan a single JSONL file for assistant usage and rate_limit_event entries.
- * Streams in chunks to avoid loading large files into memory.
- */
-async function scanFile(filePath: string): Promise<FileCacheEntry | null> {
-  let fh: import("node:fs/promises").FileHandle | null = null;
+interface StoredCredentials {
+  claudeAiOauth: {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+    subscriptionType?: string;
+    rateLimitTier?: string;
+    email?: string;
+    organization?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+function readKeychainCredentials(): StoredCredentials | null {
+  if (process.platform !== "darwin") return null;
   try {
-    fh = await open(filePath, "r");
-    const stats = await fh.stat();
-    const { mtimeMs, size } = stats;
-
-    const cached = fileCache.get(filePath);
-    if (cached && cached.mtimeMs === mtimeMs) return cached;
-
-    if (size === 0) return null;
-
-    const usage: Record<string, ModelUsage> = {};
-    let rateLimit: RateLimitInfo | undefined;
-
-    let offset = 0;
-    let leftover = "";
-
-    while (offset < size) {
-      const readSize = Math.min(CHUNK_SIZE, size - offset);
-      const buf = Buffer.allocUnsafe(readSize);
-      const { bytesRead } = await fh.read(buf, 0, readSize, offset);
-      if (bytesRead === 0) break;
-
-      const chunk = leftover + buf.toString("utf8", 0, bytesRead);
-      const lines = chunk.split("\n");
-
-      // Last element may be incomplete — save as leftover
-      leftover = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (!line) continue;
-
-        // Fast filter: only parse lines with usage or rate_limit
-        if (!line.includes('"usage"') && !line.includes('"rate_limit_event"')) {
-          continue;
-        }
-
-        try {
-          const entry = JSON.parse(line);
-
-          if (entry.type === "assistant" && entry.message?.usage) {
-            const model: string = entry.message.model || "unknown";
-            // Skip synthetic/internal entries
-            if (model.startsWith("<")) continue;
-            const u = entry.message.usage;
-            if (!usage[model]) {
-              usage[model] = {
-                inputTokens: 0,
-                outputTokens: 0,
-                cacheReadTokens: 0,
-                cacheWriteTokens: 0,
-                requestCount: 0,
-              };
-            }
-            const m = usage[model];
-            m.inputTokens += u.input_tokens || 0;
-            m.outputTokens += u.output_tokens || 0;
-            m.cacheReadTokens += u.cache_read_input_tokens || 0;
-            m.cacheWriteTokens += u.cache_creation_input_tokens || 0;
-            m.requestCount += 1;
-          }
-
-          // Forward-compatible: capture rate_limit_event if present
-          if (entry.type === "rate_limit_event" && entry.rate_limit_info) {
-            const info = entry.rate_limit_info;
-            rateLimit = {
-              status: info.status,
-              utilization: info.utilization,
-              resetsAt: info.resetsAt,
-              type: info.rateLimitType,
-            };
-          }
-        } catch {
-          // Malformed line — skip
-        }
-      }
-
-      offset += bytesRead;
-    }
-
-    // Process leftover
-    if (leftover && (leftover.includes('"usage"') || leftover.includes('"rate_limit_event"'))) {
-      try {
-        const entry = JSON.parse(leftover);
-        if (entry.type === "assistant" && entry.message?.usage) {
-          const model: string = entry.message.model || "unknown";
-          if (!model.startsWith("<")) {
-            const u = entry.message.usage;
-            if (!usage[model]) {
-              usage[model] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requestCount: 0 };
-            }
-            const m = usage[model];
-            m.inputTokens += u.input_tokens || 0;
-            m.outputTokens += u.output_tokens || 0;
-            m.cacheReadTokens += u.cache_read_input_tokens || 0;
-            m.cacheWriteTokens += u.cache_creation_input_tokens || 0;
-            m.requestCount += 1;
-          }
-        }
-      } catch {
-        // skip
-      }
-    }
-
-    const result: FileCacheEntry = { usage, rateLimit, mtimeMs };
-    fileCache.set(filePath, result);
-    return result;
+    const raw = execFileSync(
+      "security",
+      [
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        KEYCHAIN_ACCOUNT,
+        "-w",
+      ],
+      { encoding: "utf8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] },
+    ).trim();
+    return JSON.parse(raw);
   } catch {
     return null;
-  } finally {
-    await fh?.close();
   }
 }
 
-/**
- * Scan all JSONL files across all project directories.
- * Only considers files modified within the given window (default 7 days).
- */
-export async function getUsageSummary(days = 7): Promise<UsageSummary> {
-  const windowEnd = Date.now();
-  const windowStart = windowEnd - days * 24 * 60 * 60 * 1000;
-
-  const base = projectsDir();
-  const models: Record<string, ModelUsage> = {};
-  let latestRateLimit: RateLimitInfo | undefined;
-
-  // Collect all JSONL files across project directories
-  const scanPromises: Promise<FileCacheEntry | null>[] = [];
-  const seenFiles = new Set<string>();
-
+function readFileCredentials(): StoredCredentials | null {
   try {
-    const projectDirs = await opendir(base);
-    for await (const projectEntry of projectDirs) {
-      if (!projectEntry.isDirectory()) continue;
-      const projectPath = join(base, projectEntry.name);
-
-      try {
-        const sessionDir = await opendir(projectPath);
-        for await (const sessionEntry of sessionDir) {
-          if (!sessionEntry.name.endsWith(".jsonl")) continue;
-          const filePath = join(projectPath, sessionEntry.name);
-
-          // Only scan files modified within the window
-          try {
-            const s = await stat(filePath);
-            if (s.mtimeMs < windowStart) continue;
-          } catch {
-            continue;
-          }
-
-          seenFiles.add(filePath);
-          scanPromises.push(scanFile(filePath));
-        }
-      } catch {
-        // Can't read project dir — skip
-      }
-    }
+    const raw = readFileSync(CREDENTIALS_PATH, "utf8");
+    return JSON.parse(raw);
   } catch {
-    // ~/.claude/projects doesn't exist
+    return null;
+  }
+}
+
+function writeKeychainCredentials(creds: StoredCredentials): void {
+  if (process.platform !== "darwin") return;
+  try {
+    const json = JSON.stringify(creds);
+    // Delete existing then add new
+    try {
+      execFileSync(
+        "security",
+        [
+          "delete-generic-password",
+          "-s",
+          KEYCHAIN_SERVICE,
+          "-a",
+          KEYCHAIN_ACCOUNT,
+        ],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      );
+    } catch {
+      // May not exist yet
+    }
+    execFileSync(
+      "security",
+      [
+        "add-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        KEYCHAIN_ACCOUNT,
+        "-w",
+        json,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+  } catch {
+    // Keychain write failed — not critical, token still works for this session
+  }
+}
+
+interface RefreshResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  organization?: { name: string };
+  account?: { email_address: string };
+}
+
+async function refreshToken(
+  refreshTk: string,
+): Promise<RefreshResponse | null> {
+  try {
+    const res = await fetch(REFRESH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshTk,
+        client_id: CLIENT_ID,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function parseWindow(
+  raw: { utilization?: number; resets_at?: string } | null | undefined,
+): RateLimitWindow | null {
+  if (!raw || raw.utilization == null) return null;
+  return { utilization: raw.utilization, resetsAt: raw.resets_at ?? "" };
+}
+
+interface UsageResult {
+  data: Record<string, unknown> | null;
+  rateLimited: boolean;
+}
+
+async function fetchUsageData(accessToken: string): Promise<UsageResult> {
+  try {
+    const res = await fetch(USAGE_API, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "claude-code/2.1.72",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 429) return { data: null, rateLimited: true };
+    if (!res.ok) return { data: null, rateLimited: false };
+    return { data: await res.json(), rateLimited: false };
+  } catch {
+    return { data: null, rateLimited: false };
+  }
+}
+
+export async function getRateLimits(): Promise<RateLimitData> {
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.data;
+
+  // Read credentials from keychain (primary) or file (fallback)
+  const creds = readKeychainCredentials() ?? readFileCredentials();
+  if (!creds?.claudeAiOauth) {
+    return errorResult("No Claude Code credentials found");
   }
 
-  const results = await Promise.all(scanPromises);
+  const oauth = creds.claudeAiOauth;
+  const account: AccountInfo = {
+    email: oauth.email,
+    organization: oauth.organization,
+    subscriptionType: oauth.subscriptionType,
+    rateLimitTier: oauth.rateLimitTier,
+  };
 
-  for (const entry of results) {
-    if (!entry) continue;
+  let accessToken = oauth.accessToken;
+  const tokenExpired = oauth.expiresAt && oauth.expiresAt < now;
 
-    for (const [model, usage] of Object.entries(entry.usage)) {
-      if (!models[model]) {
-        models[model] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requestCount: 0 };
-      }
-      const m = models[model];
-      m.inputTokens += usage.inputTokens;
-      m.outputTokens += usage.outputTokens;
-      m.cacheReadTokens += usage.cacheReadTokens;
-      m.cacheWriteTokens += usage.cacheWriteTokens;
-      m.requestCount += usage.requestCount;
+  // Refresh if expired
+  if (tokenExpired) {
+    const refreshed = await refreshToken(oauth.refreshToken);
+    if (!refreshed) {
+      return errorResult("Token expired and refresh failed");
+    }
+    accessToken = refreshed.access_token;
+
+    // Update account info from refresh response
+    if (refreshed.account?.email_address) {
+      account.email = refreshed.account.email_address;
+    }
+    if (refreshed.organization?.name) {
+      account.organization = refreshed.organization.name;
     }
 
-    if (entry.rateLimit) {
-      latestRateLimit = entry.rateLimit;
+    // Persist refreshed credentials (including email/org for next startup)
+    creds.claudeAiOauth = {
+      ...oauth,
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token,
+      expiresAt: now + refreshed.expires_in * 1000,
+      email: account.email,
+      organization: account.organization,
+    };
+    writeKeychainCredentials(creds);
+  }
+
+  // Fetch usage data (fall back to last good response on failure/429)
+  const { data: body, rateLimited } = await fetchUsageData(accessToken);
+  if (!body) {
+    const ttl = rateLimited ? CACHE_TTL_429 : CACHE_TTL;
+    if (lastGoodData) {
+      cached = { data: lastGoodData, expiresAt: now + ttl };
+      return lastGoodData;
     }
+    return errorResult("Usage API unavailable");
   }
 
-  // Prune cache entries for files no longer in scope
-  for (const key of fileCache.keys()) {
-    if (!seenFiles.has(key)) fileCache.delete(key);
-  }
+  const extra = body.extra_usage as {
+    is_enabled?: boolean;
+    monthly_limit?: number;
+    used_credits?: number;
+    utilization?: number | null;
+  } | null;
 
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalRequests = 0;
-  for (const m of Object.values(models)) {
-    totalInputTokens += m.inputTokens;
-    totalOutputTokens += m.outputTokens;
-    totalRequests += m.requestCount;
-  }
+  const data: RateLimitData = {
+    fiveHour: parseWindow(
+      body.five_hour as { utilization?: number; resets_at?: string },
+    ),
+    sevenDay: parseWindow(
+      body.seven_day as { utilization?: number; resets_at?: string },
+    ),
+    sevenDaySonnet: parseWindow(
+      body.seven_day_sonnet as { utilization?: number; resets_at?: string },
+    ),
+    sevenDayOpus: parseWindow(
+      body.seven_day_opus as { utilization?: number; resets_at?: string },
+    ),
+    extraUsage: extra?.is_enabled
+      ? {
+          isEnabled: true,
+          monthlyLimit: extra.monthly_limit ?? 0,
+          usedCredits: extra.used_credits ?? 0,
+          utilization: extra.utilization ?? null,
+        }
+      : null,
+    account,
+    fetchedAt: new Date().toISOString(),
+  };
 
+  lastGoodData = data;
+  cached = { data, expiresAt: now + CACHE_TTL };
+  return data;
+}
+
+function errorResult(error: string): RateLimitData {
   return {
-    models,
-    totalInputTokens,
-    totalOutputTokens,
-    totalRequests,
-    rateLimit: latestRateLimit,
-    window: { start: windowStart, end: windowEnd },
+    fiveHour: null,
+    sevenDay: null,
+    sevenDaySonnet: null,
+    sevenDayOpus: null,
+    extraUsage: null,
+    account: {},
+    fetchedAt: new Date().toISOString(),
+    error,
   };
 }
