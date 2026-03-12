@@ -170,7 +170,10 @@ export function useTerminal(
           webglAddon = new WebglAddon();
           terminal.loadAddon(webglAddon);
         } catch (err) {
-          console.warn("WebGL addon failed, falling back to canvas renderer:", err);
+          console.warn(
+            "WebGL addon failed, falling back to canvas renderer:",
+            err,
+          );
           webglAddon = null;
         }
       }
