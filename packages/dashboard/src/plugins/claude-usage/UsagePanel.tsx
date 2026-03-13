@@ -1,56 +1,12 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { THEMES, useStore } from "../../store";
 import type { DisplayMode, RateLimitData, RateLimitWindow } from "./types";
+import { useClickOutside } from "./useClickOutside";
+import { timeUntilReset, utilizationColor } from "./utils";
 
-function utilizationColor(pct: number): string {
-  if (pct >= 80) return "#ea6c73";
-  if (pct >= 60) return "#e6b450";
-  return "#238636";
-}
-
-function timeUntilReset(resetsAt: string): string {
-  if (!resetsAt) return "–";
-  const resetDate = new Date(resetsAt);
-  const ms = resetDate.getTime() - Date.now();
-  if (ms <= 0) return "now";
-  const mins = Math.floor(ms / 60_000);
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ${mins % 60}m`;
-  // For longer durations, show relative day + time
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const isTomorrow =
-    resetDate.getDate() === tomorrow.getDate() &&
-    resetDate.getMonth() === tomorrow.getMonth();
-  const time = resetDate.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  if (isTomorrow) return `Tomorrow ${time}`;
-  const day = resetDate.toLocaleDateString([], {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
-  return `${day} ${time}`;
-}
-
-function formatPlan(sub?: string, tier?: string): string {
-  const parts: string[] = [];
-  if (sub) {
-    parts.push(`Claude ${sub.charAt(0).toUpperCase()}${sub.slice(1)}`);
-  }
-  if (tier) {
-    // "default_claude_max_5x" → "Max 5x"
-    const clean = tier
-      .replace("default_claude_", "")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-    parts.push(clean);
-  }
-  return parts.join(" · ") || "Unknown";
+function formatPlan(sub?: string): string {
+  if (!sub) return "Unknown";
+  return `Claude ${sub.charAt(0).toUpperCase()}${sub.slice(1)}`;
 }
 
 function timeAgo(iso: string): string {
@@ -141,25 +97,7 @@ export function UsagePanel({
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      const target = e.target as Node;
-      if (toggleRef?.current?.contains(target)) return;
-      if (panelRef.current && !panelRef.current.contains(target)) {
-        onClose();
-      }
-    }
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [onClose]);
+  useClickOutside(panelRef, onClose, toggleRef);
 
   const acct = data.account;
 
@@ -176,12 +114,12 @@ export function UsagePanel({
       {/* Header */}
       <div className="mb-2 flex items-center justify-between">
         <span className="font-medium text-sm">Claude Rate Limits</span>
-        {(acct?.subscriptionType || acct?.rateLimitTier) && (
+        {acct?.subscriptionType && (
           <span
             className="rounded px-1.5 py-0.5"
             style={{ background: "#23863622", color: "#238636" }}
           >
-            {formatPlan(acct?.subscriptionType, acct?.rateLimitTier)}
+            {formatPlan(acct.subscriptionType)}
           </span>
         )}
       </div>

@@ -1,41 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { THEMES, useStore } from "../../store";
 import type { RateLimitWindow } from "./types";
 import { UsagePanel } from "./UsagePanel";
+import { useClickOutside } from "./useClickOutside";
 import { useUsageData } from "./useUsageData";
-
-function utilizationColor(pct: number): string {
-  if (pct >= 80) return "#ea6c73"; // red
-  if (pct >= 60) return "#e6b450"; // yellow
-  return "#238636"; // green
-}
-
-function timeUntilReset(resetsAt: string): string {
-  if (!resetsAt) return "";
-  const resetDate = new Date(resetsAt);
-  const ms = resetDate.getTime() - Date.now();
-  if (ms <= 0) return "now";
-  const mins = Math.floor(ms / 60_000);
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ${mins % 60}m`;
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const isTomorrow =
-    resetDate.getDate() === tomorrow.getDate() &&
-    resetDate.getMonth() === tomorrow.getMonth();
-  const time = resetDate.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  if (isTomorrow) return `Tomorrow ${time}`;
-  return resetDate.toLocaleDateString([], {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
-}
+import { timeUntilReset, utilizationColor } from "./utils";
 
 function MiniBar({ pct }: { pct: number }) {
   const color = utilizationColor(pct);
@@ -82,26 +51,6 @@ function WindowLabel({
   );
 }
 
-function useClickOutside(
-  ref: React.RefObject<HTMLElement | null>,
-  onClose: () => void,
-) {
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [ref, onClose]);
-}
-
 function FloatingPanel({
   onClose,
   children,
@@ -135,9 +84,7 @@ function SetupPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <FloatingPanel onClose={onClose}>
-      <div className="font-medium text-sm mb-2">
-        Claude Usage Setup
-      </div>
+      <div className="font-medium text-sm mb-2">Claude Usage Setup</div>
       <div className="mb-3" style={{ color: page.statusFg }}>
         To see your rate limits, add your Claude session cookie to{" "}
         <code

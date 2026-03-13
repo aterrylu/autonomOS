@@ -88,8 +88,7 @@ async function fetchOrgId(cookie: string): Promise<string | null> {
     const data = (await res.json()) as {
       account?: { memberships?: Array<{ organization?: { uuid?: string } }> };
     };
-    const orgId =
-      data?.account?.memberships?.[0]?.organization?.uuid ?? null;
+    const orgId = data?.account?.memberships?.[0]?.organization?.uuid ?? null;
     if (orgId) cachedOrgId = orgId;
     return orgId;
   } catch {
@@ -104,10 +103,11 @@ function parseWindow(
   return { utilization: raw.utilization, resetsAt: raw.resets_at ?? "" };
 }
 
+type UsageStatus = "ok" | "rate_limited" | "unauthorized" | "error";
+
 interface UsageResult {
   data: Record<string, unknown> | null;
-  rateLimited: boolean;
-  unauthorized: boolean;
+  status: UsageStatus;
 }
 
 async function fetchUsageData(
@@ -118,20 +118,18 @@ async function fetchUsageData(
     const res = await impit.fetch(`${USAGE_URL}/${orgId}/usage`, {
       headers: { Cookie: buildCookieHeader(cookie) },
     });
-    if (res.status === 429)
-      return { data: null, rateLimited: true, unauthorized: false };
+    if (res.status === 429) return { data: null, status: "rate_limited" };
     if (res.status === 401 || res.status === 403) {
       cachedOrgId = null;
-      return { data: null, rateLimited: false, unauthorized: true };
+      return { data: null, status: "unauthorized" };
     }
-    if (!res.ok) return { data: null, rateLimited: false, unauthorized: false };
+    if (!res.ok) return { data: null, status: "error" };
     return {
       data: (await res.json()) as Record<string, unknown>,
-      rateLimited: false,
-      unauthorized: false,
+      status: "ok",
     };
   } catch {
-    return { data: null, rateLimited: false, unauthorized: false };
+    return { data: null, status: "error" };
   }
 }
 
@@ -154,20 +152,16 @@ export async function getRateLimits(): Promise<RateLimitData> {
     );
   }
 
-  const {
-    data: body,
-    rateLimited,
-    unauthorized,
-  } = await fetchUsageData(cookie, orgId);
+  const { data: body, status } = await fetchUsageData(cookie, orgId);
 
-  if (unauthorized) {
+  if (status === "unauthorized") {
     return errorResult(
       "Session cookie expired or invalid — please update CLAUDE_SESSION_COOKIE in .env",
     );
   }
 
   if (!body) {
-    const ttl = rateLimited ? CACHE_TTL_429 : CACHE_TTL;
+    const ttl = status === "rate_limited" ? CACHE_TTL_429 : CACHE_TTL;
     if (lastGoodData) {
       cached = { data: lastGoodData, expiresAt: now + ttl };
       return lastGoodData;
