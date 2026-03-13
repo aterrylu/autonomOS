@@ -26,8 +26,12 @@ export function useUsageData() {
         setError(res ? `HTTP ${res.status}` : "unreachable");
         return;
       }
-      setError(null);
-      setData(await res.json());
+      try {
+        setData(await res.json());
+        setError(null);
+      } catch {
+        setError("Invalid response");
+      }
     }
 
     fetchUsage();
