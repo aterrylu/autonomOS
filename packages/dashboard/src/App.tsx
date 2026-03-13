@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Header } from "./components/Header";
 import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar } from "./components/Sidebar";
+import { StatusBar } from "./components/StatusBar";
 import { THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
 
@@ -44,6 +45,7 @@ export function App() {
         )}
         <SessionViewManager />
       </div>
+      <StatusBar />
     </div>
   );
 }

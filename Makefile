@@ -13,30 +13,34 @@ DEPLOY_PATH ?= ~/autonomOS
 #
 #   Tailscale sidecar only starts if .env is present.
 up:
-	@lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true
+	@lsof -ti:$(PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 ifeq ($(MODE),prod)
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@if [ -f .env ]; then \
-		echo "Found .env — starting Tailscale sidecar..."; \
-		$(call serve_json,$(PORT)); \
-		cd deploy && docker compose up -d; \
-	else \
-		echo "No .env found — skipping Tailscale sidecar."; \
+		if docker ps -q -f name=autonomos-ts 2>/dev/null | grep -q .; then \
+			echo "Tailscale sidecar already running."; \
+		else \
+			echo "Starting Tailscale sidecar..."; \
+			$(call serve_json,$(PORT)); \
+			cd deploy && docker compose up -d || echo "Warning: Docker not available — sidecar skipped"; \
+		fi; \
 	fi
 	@echo "Starting server on :$(PORT) (serving dashboard)..."
-	@cd packages/server && PORT=$(PORT) npx tsx src/index.ts
+	@cd packages/server && PORT=$(PORT) npx tsx --env-file=../../.env src/index.ts
 else
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
 	@if [ -f .env ]; then \
-		echo "Found .env — starting Tailscale sidecar..."; \
-		$(call serve_json,5173); \
-		cd deploy && docker compose up -d; \
-	else \
-		echo "No .env found — skipping Tailscale sidecar."; \
+		if docker ps -q -f name=autonomos-ts 2>/dev/null | grep -q .; then \
+			echo "Tailscale sidecar already running."; \
+		else \
+			echo "Starting Tailscale sidecar..."; \
+			$(call serve_json,5173); \
+			cd deploy && docker compose up -d || echo "Warning: Docker not available — sidecar skipped"; \
+		fi; \
 	fi
 	@echo "Starting server on :$(PORT) and dashboard on :5173..."
-	@cd packages/server && PORT=$(PORT) npx tsx watch src/index.ts &
+	@cd packages/server && PORT=$(PORT) npx tsx --env-file=../../.env watch src/index.ts &
 	@sleep 2
 	@cd packages/dashboard && $(BUN) vite --host 0.0.0.0
 endif
@@ -82,5 +86,5 @@ check:
 # ── helper: generate serve.json for Tailscale ────
 # Note: ${TS_CERT_DOMAIN} is interpolated by Tailscale at runtime, not by the shell.
 define serve_json
-	@printf '{\n  "TCP": {\n    "80": { "HTTP": true },\n    "443": { "HTTPS": true }\n  },\n  "Web": {\n    "$${TS_CERT_DOMAIN}:80": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    },\n    "$${TS_CERT_DOMAIN}:443": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    }\n  }\n}\n' > deploy/serve.json
+	printf '{\n  "TCP": {\n    "80": { "HTTP": true },\n    "443": { "HTTPS": true }\n  },\n  "Web": {\n    "$${TS_CERT_DOMAIN}:80": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    },\n    "$${TS_CERT_DOMAIN}:443": {\n      "Handlers": { "/": { "Proxy": "http://host.docker.internal:$(1)" } }\n    }\n  }\n}\n' > deploy/serve.json
 endef
