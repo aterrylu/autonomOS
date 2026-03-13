@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
+import { isPinned } from "./pinned.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
@@ -116,6 +117,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
     workingDirectory: cwd,
     provider: "claude-code",
     claudeSessionId: options.resumeSessionId,
+    pinned: !!options.resumeSessionId && isPinned(options.resumeSessionId),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };

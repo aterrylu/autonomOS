@@ -8,11 +8,16 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { getPinnedSessions } from "./pinned.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
-import { killAllSessions, resolveClaudePath } from "./sessions.js";
+import {
+  createSession,
+  killAllSessions,
+  resolveClaudePath,
+} from "./sessions.js";
 
 // Validate claude binary exists at startup — fail fast with a clear message
 try {
@@ -127,9 +132,42 @@ const server = serve({ fetch: app.fetch, port }, () => {
   } else {
     console.log(`Auth disabled — set AUTONOMOS_TOKEN to enable`);
   }
+
+  // Auto-resume pinned sessions after startup
+  resumePinnedSessions();
 });
 
 injectWebSocket(server);
+
+function resumePinnedSessions() {
+  const pinned = getPinnedSessions();
+  if (pinned.length === 0) return;
+
+  console.log(`Resuming ${pinned.length} pinned session(s)...`);
+  let resumed = 0;
+  for (const p of pinned) {
+    try {
+      createSession({
+        workingDirectory: p.workingDirectory,
+        resumeSessionId: p.claudeSessionId,
+        name: p.name,
+        autonomousMode: p.autonomousMode,
+      });
+      console.log(`  ✓ ${p.name} (${p.claudeSessionId.slice(0, 8)}...)`);
+      resumed++;
+    } catch (err) {
+      console.error(
+        `  ✗ Failed to resume ${p.name}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  if (resumed < pinned.length) {
+    console.warn(
+      `Resumed ${resumed} of ${pinned.length} pinned sessions`,
+    );
+  }
+}
 
 // Clean up all PTY processes on shutdown
 function shutdown() {

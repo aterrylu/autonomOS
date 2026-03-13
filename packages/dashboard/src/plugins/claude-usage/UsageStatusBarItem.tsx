@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import type { RateLimitWindow } from "./types";
 import { UsagePanel } from "./UsagePanel";
@@ -183,14 +184,25 @@ export function UsageStatusBarItem() {
 
   if (error) {
     return (
-      <span style={{ color: page.statusFg }} title={`Usage error: ${error}`}>
-        claude: –
+      <span
+        className="inline-flex items-center gap-1"
+        style={{ color: page.statusFg }}
+        title={`Usage error: ${error}`}
+      >
+        <Codicon name="claude" size={14} /> –
       </span>
     );
   }
 
   if (!data) {
-    return <span style={{ color: page.statusFg }}>claude: …</span>;
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        style={{ color: page.statusFg }}
+      >
+        <Codicon name="claude" size={14} /> …
+      </span>
+    );
   }
 
   if (data.needsSetup) {
@@ -198,12 +210,12 @@ export function UsageStatusBarItem() {
       <div className="relative">
         <button
           type="button"
-          className="cursor-pointer hover:opacity-80"
+          className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
           style={{ color: "#e6b450" }}
           onClick={() => setPanelOpen(!panelOpen)}
           title="Click to set up Claude usage tracking"
         >
-          claude: setup needed
+          <Codicon name="claude" size={14} /> setup needed
         </button>
         {panelOpen && <SetupPanel onClose={() => setPanelOpen(false)} />}
       </div>
@@ -215,12 +227,12 @@ export function UsageStatusBarItem() {
       <div className="relative">
         <button
           type="button"
-          className="cursor-pointer hover:opacity-80"
+          className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
           style={{ color: "#ea6c73" }}
           onClick={() => setPanelOpen(!panelOpen)}
           title={data.error}
         >
-          claude: err
+          <Codicon name="claude" size={14} /> err
         </button>
         {panelOpen && (
           <ErrorPanel error={data.error} onClose={() => setPanelOpen(false)} />
@@ -233,10 +245,11 @@ export function UsageStatusBarItem() {
   if (!hasData) {
     return (
       <span
+        className="inline-flex items-center gap-1"
         style={{ color: page.statusFg }}
         title="No rate limit data available"
       >
-        claude: n/a
+        <Codicon name="claude" size={14} /> n/a
       </span>
     );
   }
@@ -251,6 +264,7 @@ export function UsageStatusBarItem() {
         onClick={() => setPanelOpen(!panelOpen)}
         title="Click for rate limit details"
       >
+        <Codicon name="claude" size={14} />
         {data.fiveHour && (
           <WindowLabel label="5h" window={data.fiveHour} mode={displayMode} />
         )}
