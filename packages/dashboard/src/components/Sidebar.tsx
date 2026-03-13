@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectInfo } from "../store";
-import { THEMES, useStore } from "../store";
+import { sortSessions, THEMES, useStore } from "../store";
+import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
@@ -9,18 +10,26 @@ export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
   const projects = useStore((s) => s.projects);
   const sessionId = useStore((s) => s.sessionId);
+  const sessionOrder = useStore((s) => s.sessionOrder);
   const fetchSessions = useStore((s) => s.fetchSessions);
   const fetchProjects = useStore((s) => s.fetchProjects);
   const createSession = useStore((s) => s.createSession);
   const killSession = useStore((s) => s.killSession);
   const switchSession = useStore((s) => s.switchSession);
+  const pinSession = useStore((s) => s.pinSession);
+  const unpinSession = useStore((s) => s.unpinSession);
+  const reorderSessions = useStore((s) => s.reorderSessions);
   const status = useStore((s) => s.status);
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
 
+  const orderedSessions = useMemo(
+    () => sortSessions(sessions, sessionOrder),
+    [sessions, sessionOrder],
+  );
+
   // Build a lookup map from claudeSessionId → project session summary.
-  // Avoids O(L*P) flatMap+find per render in the live sessions list.
   const projectTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of projects) {
@@ -32,7 +41,6 @@ export function Sidebar() {
   }, [projects]);
 
   // Set of claudeSessionIds that have active live sessions.
-  // Passed to ProjectItem to avoid each item subscribing to sessions independently.
   const liveSessionIds = useMemo(() => {
     const set = new Set<string>();
     for (const s of sessions) {
@@ -52,6 +60,32 @@ export function Sidebar() {
       clearInterval(projectsInterval);
     };
   }, [fetchSessions, fetchProjects]);
+
+  // Drag state
+  const dragIdx = useRef<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+
+  function handleDragStart(idx: number) {
+    dragIdx.current = idx;
+  }
+
+  function handleDragOver(e: React.DragEvent, idx: number) {
+    e.preventDefault();
+    setDropIdx(idx);
+  }
+
+  function handleDrop(idx: number) {
+    if (dragIdx.current !== null && dragIdx.current !== idx) {
+      reorderSessions(dragIdx.current, idx);
+    }
+    dragIdx.current = null;
+    setDropIdx(null);
+  }
+
+  function handleDragEnd() {
+    dragIdx.current = null;
+    setDropIdx(null);
+  }
 
   return (
     <aside
@@ -85,7 +119,7 @@ export function Sidebar() {
       </div>
 
       <div className="py-1">
-        {sessions.length === 0 && (
+        {orderedSessions.length === 0 && (
           <p
             className="px-3 py-3 text-center text-xs"
             style={{ color: page.statusFg }}
@@ -94,20 +128,29 @@ export function Sidebar() {
           </p>
         )}
 
-        {sessions.map((s) => {
+        {orderedSessions.map((s, idx) => {
           const isActive = s.id === sessionId;
           const displayName =
             (s.claudeSessionId && projectTitleMap.get(s.claudeSessionId)) ||
             s.name;
+          const isDropTarget = dropIdx === idx;
           return (
             // biome-ignore lint/a11y/useSemanticElements: contains nested button for kill action
             <div
               key={s.id}
               role="button"
               tabIndex={0}
-              className="group flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left"
+              draggable
+              onDragStart={() => handleDragStart(idx)}
+              onDragOver={(e) => handleDragOver(e, idx)}
+              onDrop={() => handleDrop(idx)}
+              onDragEnd={handleDragEnd}
+              className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
               style={{
                 background: isActive ? page.border : "transparent",
+                ...(isDropTarget && {
+                  boxShadow: `inset 0 2px 0 ${page.fg}`,
+                }),
               }}
               onClick={() => switchSession(s.id)}
               onKeyDown={(e) => e.key === "Enter" && switchSession(s.id)}
@@ -126,6 +169,28 @@ export function Sidebar() {
               >
                 {formatAge(s.createdAt)}
               </span>
+              {s.claudeSessionId && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (s.pinned) {
+                      unpinSession(s.id);
+                    } else {
+                      pinSession(s.id);
+                    }
+                  }}
+                  className={`shrink-0 rounded cursor-pointer transition-opacity ${s.pinned ? "" : "opacity-0 group-hover:opacity-100"}`}
+                  style={{ color: s.pinned ? page.fg : page.statusFg }}
+                  title={
+                    s.pinned
+                      ? "Unpin session"
+                      : "Pin session (survives restart)"
+                  }
+                >
+                  <Codicon name={s.pinned ? "pinned" : "pin"} size={12} />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={(e) => {

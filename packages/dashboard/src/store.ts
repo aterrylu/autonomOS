@@ -15,6 +15,7 @@ export interface SessionInfo {
   workingDirectory: string;
   provider: string;
   claudeSessionId?: string;
+  pinned?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -113,12 +114,34 @@ function isThemeName(value: unknown): value is ThemeName {
   return typeof value === "string" && value in THEMES;
 }
 
+/**
+ * Sort sessions by user-defined order. Order is stored by claudeSessionId
+ * (stable across server restarts) with fallback to session id.
+ */
+export function sortSessions(
+  sessions: SessionInfo[],
+  order: string[],
+): SessionInfo[] {
+  if (order.length === 0) return sessions;
+  const indexMap = new Map(order.map((key, i) => [key, i]));
+  function indexOf(s: SessionInfo): number {
+    if (s.claudeSessionId) {
+      const idx = indexMap.get(s.claudeSessionId);
+      if (idx !== undefined) return idx;
+    }
+    return indexMap.get(s.id) ?? Number.MAX_SAFE_INTEGER;
+  }
+  return [...sessions].sort((a, b) => indexOf(a) - indexOf(b));
+}
+
 interface AppState {
   // Persisted
   theme: ThemeName;
   sessionId: string | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
+  /** User-defined session ordering (array of session IDs) */
+  sessionOrder: string[];
 
   // Transient
   status: string;
@@ -141,6 +164,9 @@ interface AppState {
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
   switchSession: (id: string) => void;
+  pinSession: (id: string) => Promise<void>;
+  unpinSession: (id: string) => Promise<void>;
+  reorderSessions: (fromIndex: number, toIndex: number) => void;
 }
 
 type SetState = (partial: Partial<AppState>) => void;
@@ -191,6 +217,7 @@ export const useStore = create<AppState>()(
       projects: [],
       sidebarOpen: true,
       autonomousMode: true,
+      sessionOrder: [],
 
       cycleTheme: () => {
         const current = get().theme;
@@ -265,6 +292,28 @@ export const useStore = create<AppState>()(
         await get().fetchSessions();
       },
       switchSession: (id) => set({ sessionId: id }),
+      pinSession: async (id) => {
+        const res = await fetch(`/api/sessions/${id}/pin`, {
+          method: "POST",
+        }).catch(() => null);
+        if (res?.ok) await get().fetchSessions();
+      },
+      unpinSession: async (id) => {
+        const res = await fetch(`/api/sessions/${id}/pin`, {
+          method: "DELETE",
+        }).catch(() => null);
+        if (res?.ok) await get().fetchSessions();
+      },
+      reorderSessions: (fromIndex, toIndex) => {
+        const { sessions, sessionOrder } = get();
+        // Use claudeSessionId (stable across restarts) when available, else id
+        const ordered = sortSessions(sessions, sessionOrder).map(
+          (s) => s.claudeSessionId || s.id,
+        );
+        const [moved] = ordered.splice(fromIndex, 1);
+        ordered.splice(toIndex, 0, moved);
+        set({ sessionOrder: ordered });
+      },
     }),
     {
       name: "autonomos",
@@ -273,6 +322,7 @@ export const useStore = create<AppState>()(
         sessionId: state.sessionId,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,
+        sessionOrder: state.sessionOrder,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Partial<AppState>;

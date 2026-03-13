@@ -7,6 +7,7 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.45",
     "@xterm/addon-fit": "^0.11",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-webgl": "^0.19",
