@@ -60,7 +60,7 @@ function readPinned(): PinnedSession[] {
 
 function writePinned(sessions: PinnedSession[]): void {
   ensureConfigDir();
-  writeFileSync(PINNED_FILE, JSON.stringify(sessions, null, 2) + "\n");
+  writeFileSync(PINNED_FILE, `${JSON.stringify(sessions, null, 2)}\n`);
 }
 
 export function getPinnedSessions(): PinnedSession[] {

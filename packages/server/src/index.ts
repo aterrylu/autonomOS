@@ -163,9 +163,7 @@ function resumePinnedSessions() {
     }
   }
   if (resumed < pinned.length) {
-    console.warn(
-      `Resumed ${resumed} of ${pinned.length} pinned sessions`,
-    );
+    console.warn(`Resumed ${resumed} of ${pinned.length} pinned sessions`);
   }
 }
 

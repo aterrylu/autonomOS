@@ -12,8 +12,12 @@ export function StatusBar() {
     for (const plugin of plugins) {
       if (plugin.statusBarItems) items.push(...plugin.statusBarItems);
     }
-    const left = items.filter((i) => i.align === "left").sort((a, b) => a.priority - b.priority);
-    const right = items.filter((i) => i.align === "right").sort((a, b) => a.priority - b.priority);
+    const left = items
+      .filter((i) => i.align === "left")
+      .sort((a, b) => a.priority - b.priority);
+    const right = items
+      .filter((i) => i.align === "right")
+      .sort((a, b) => a.priority - b.priority);
     return { left, right };
   }, []);
 

@@ -29,6 +29,8 @@ export function Codicon({
       viewBox="0 0 16 16"
       fill="currentColor"
       className="inline-block shrink-0"
+      role="img"
+      aria-hidden="true"
     >
       {paths.map((d) => (
         <path key={d} d={d} />
