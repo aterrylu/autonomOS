@@ -107,7 +107,8 @@ export function useTerminal(
       ws.onclose = (event) => {
         if (disposed) return;
         // 4010 = PTY exited (session ended)
-        if (event.code === 4010) {
+        // 4004 = session not found (stale persisted sessionId after server restart)
+        if (event.code === 4010 || event.code === 4004) {
           useStore.getState().setSessionId(null);
           useStore.getState().fetchSessions();
           return;

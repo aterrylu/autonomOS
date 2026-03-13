@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { THEMES, useStore } from "../../store";
 import type { RateLimitWindow } from "./types";
 import { UsagePanel } from "./UsagePanel";
@@ -42,7 +42,7 @@ function MiniBar({ pct }: { pct: number }) {
   return (
     <span
       className="inline-block h-2 rounded-sm overflow-hidden align-middle"
-      style={{ width: 40, background: `${color}22` }}
+      style={{ width: 28, background: `${color}22` }}
     >
       <span
         className="block h-full rounded-sm"
@@ -82,29 +82,203 @@ function WindowLabel({
   );
 }
 
+function useClickOutside(
+  ref: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+) {
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [ref, onClose]);
+}
+
+function FloatingPanel({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const theme = useStore((s) => s.theme);
+  const page = THEMES[theme].page;
+  const ref = useRef<HTMLDivElement>(null);
+  useClickOutside(ref, onClose);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute bottom-full right-0 mb-1 min-w-[340px] rounded-md p-3 text-xs shadow-lg"
+      style={{
+        background: page.bg,
+        border: `1px solid ${page.border}`,
+        color: page.fg,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SetupPanel({ onClose }: { onClose: () => void }) {
+  const theme = useStore((s) => s.theme);
+  const page = THEMES[theme].page;
+
+  return (
+    <FloatingPanel onClose={onClose}>
+      <div className="font-medium text-sm mb-2">
+        Claude Usage Setup
+      </div>
+      <div className="mb-3" style={{ color: page.statusFg }}>
+        To see your rate limits, add your Claude session cookie to{" "}
+        <code
+          className="rounded px-1 py-0.5"
+          style={{ background: page.border }}
+        >
+          .env
+        </code>
+      </div>
+      <ol
+        className="list-decimal list-inside space-y-2 mb-3"
+        style={{ color: page.statusFg }}
+      >
+        <li>
+          Go to{" "}
+          <a
+            href="https://claude.ai"
+            target="_blank"
+            rel="noreferrer"
+            className="underline"
+            style={{ color: page.fg }}
+          >
+            claude.ai
+          </a>
+        </li>
+        <li>
+          Open DevTools (<kbd>Cmd+Option+I</kbd>) &rarr;{" "}
+          <strong>Application</strong> &rarr; <strong>Cookies</strong>
+        </li>
+        <li>
+          Copy the{" "}
+          <code
+            className="rounded px-1 py-0.5"
+            style={{ background: page.border }}
+          >
+            sessionKey
+          </code>{" "}
+          value
+        </li>
+        <li>
+          Add to your <code>.env</code> file:
+        </li>
+      </ol>
+      <div
+        className="rounded p-2 font-mono text-[11px] mb-2 select-all"
+        style={{ background: page.border, wordBreak: "break-all" }}
+      >
+        CLAUDE_SESSION_COOKIE=sessionKey=sk-ant-...
+      </div>
+      <div style={{ color: page.statusFg }}>
+        Then restart the server (<code>make up</code>).
+      </div>
+    </FloatingPanel>
+  );
+}
+
+function ErrorPanel({
+  error,
+  onClose,
+}: {
+  error: string;
+  onClose: () => void;
+}) {
+  const theme = useStore((s) => s.theme);
+  const page = THEMES[theme].page;
+
+  return (
+    <FloatingPanel onClose={onClose}>
+      <div className="font-medium text-sm mb-2">Usage Error</div>
+      <div
+        className="rounded px-2 py-1.5 mb-3"
+        style={{ background: "#ea6c7315", color: "#ea6c73" }}
+      >
+        {error}
+      </div>
+      <div style={{ color: page.statusFg }}>
+        If your session cookie expired, update{" "}
+        <code
+          className="rounded px-1 py-0.5"
+          style={{ background: page.border }}
+        >
+          CLAUDE_SESSION_COOKIE
+        </code>{" "}
+        in <code>.env</code> and restart the server.
+      </div>
+    </FloatingPanel>
+  );
+}
+
 export function UsageStatusBarItem() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const { data, error, displayMode, setDisplayMode } = useUsageData();
   const [panelOpen, setPanelOpen] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
   if (error) {
     return (
       <span style={{ color: page.statusFg }} title={`Usage error: ${error}`}>
-        limits: –
+        claude: –
       </span>
     );
   }
 
   if (!data) {
-    return <span style={{ color: page.statusFg }}>limits: …</span>;
+    return <span style={{ color: page.statusFg }}>claude: …</span>;
+  }
+
+  if (data.needsSetup) {
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          className="cursor-pointer hover:opacity-80"
+          style={{ color: "#e6b450" }}
+          onClick={() => setPanelOpen(!panelOpen)}
+          title="Click to set up Claude usage tracking"
+        >
+          claude: setup needed
+        </button>
+        {panelOpen && <SetupPanel onClose={() => setPanelOpen(false)} />}
+      </div>
+    );
   }
 
   if (data.error) {
     return (
-      <span style={{ color: "#ea6c73" }} title={data.error}>
-        limits: err
-      </span>
+      <div className="relative">
+        <button
+          type="button"
+          className="cursor-pointer hover:opacity-80"
+          style={{ color: "#ea6c73" }}
+          onClick={() => setPanelOpen(!panelOpen)}
+          title={data.error}
+        >
+          claude: err
+        </button>
+        {panelOpen && (
+          <ErrorPanel error={data.error} onClose={() => setPanelOpen(false)} />
+        )}
+      </div>
     );
   }
 
@@ -115,7 +289,7 @@ export function UsageStatusBarItem() {
         style={{ color: page.statusFg }}
         title="No rate limit data available"
       >
-        limits: n/a
+        claude: n/a
       </span>
     );
   }
@@ -123,6 +297,7 @@ export function UsageStatusBarItem() {
   return (
     <div className="relative">
       <button
+        ref={toggleRef}
         type="button"
         className="inline-flex items-center gap-2 cursor-pointer hover:opacity-80"
         style={{ color: page.fg }}
@@ -142,6 +317,7 @@ export function UsageStatusBarItem() {
           displayMode={displayMode}
           onDisplayModeChange={setDisplayMode}
           onClose={() => setPanelOpen(false)}
+          toggleRef={toggleRef}
         />
       )}
     </div>

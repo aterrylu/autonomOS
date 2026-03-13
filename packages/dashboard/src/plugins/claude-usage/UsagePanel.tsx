@@ -128,6 +128,7 @@ interface UsagePanelProps {
   displayMode: DisplayMode;
   onDisplayModeChange: (mode: DisplayMode) => void;
   onClose: () => void;
+  toggleRef?: React.RefObject<HTMLElement | null>;
 }
 
 export function UsagePanel({
@@ -135,6 +136,7 @@ export function UsagePanel({
   displayMode,
   onDisplayModeChange,
   onClose,
+  toggleRef,
 }: UsagePanelProps) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -142,7 +144,9 @@ export function UsagePanel({
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (toggleRef?.current?.contains(target)) return;
+      if (panelRef.current && !panelRef.current.contains(target)) {
         onClose();
       }
     }
@@ -169,15 +173,17 @@ export function UsagePanel({
         color: page.fg,
       }}
     >
-      {/* Header — plan & account */}
+      {/* Header */}
       <div className="mb-2 flex items-center justify-between">
-        <span className="font-medium text-sm">Rate Limits</span>
-        <span
-          className="rounded px-1.5 py-0.5"
-          style={{ background: "#23863622", color: "#238636" }}
-        >
-          {formatPlan(acct?.subscriptionType, acct?.rateLimitTier)}
-        </span>
+        <span className="font-medium text-sm">Claude Rate Limits</span>
+        {(acct?.subscriptionType || acct?.rateLimitTier) && (
+          <span
+            className="rounded px-1.5 py-0.5"
+            style={{ background: "#23863622", color: "#238636" }}
+          >
+            {formatPlan(acct?.subscriptionType, acct?.rateLimitTier)}
+          </span>
+        )}
       </div>
 
       {acct?.email && (

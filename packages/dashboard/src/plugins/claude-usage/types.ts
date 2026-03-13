@@ -26,6 +26,8 @@ export interface RateLimitData {
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
+  /** True when CLAUDE_SESSION_COOKIE is not set */
+  needsSetup?: boolean;
 }
 
 export type DisplayMode = "text" | "bar";
