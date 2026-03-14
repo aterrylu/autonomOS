@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
+import type { IBufferLine, ILink, ILinkProvider } from "@xterm/xterm";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
@@ -27,16 +28,18 @@ export function useTerminal(
   themeRef.current = theme;
 
   // Track whether this session is the active one, so we can update status
-  const activeSessionId = useStore((s) => s.sessionId);
-  const isActiveRef = useRef(activeSessionId === sessionId);
-  isActiveRef.current = activeSessionId === sessionId;
+  const activePane = useStore((s) => s.activePane);
+  const isActive =
+    activePane?.type === "session" && activePane.id === sessionId;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   // Focus terminal when it becomes the active session
   useEffect(() => {
-    if (activeSessionId === sessionId && termRef.current) {
+    if (isActive && termRef.current) {
       termRef.current.focus();
     }
-  }, [activeSessionId, sessionId]);
+  }, [isActive]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -70,6 +73,8 @@ export function useTerminal(
     terminal.attachCustomKeyEventHandler((event) =>
       handleKeyEvent(event, terminal, wsRef),
     );
+
+    terminal.registerLinkProvider(new MarkdownLinkProvider(terminal));
 
     let disposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,8 +125,9 @@ export function useTerminal(
         // 4004 = session not found (stale persisted sessionId after server restart)
         if (event.code === 4010 || event.code === 4004) {
           const store = useStore.getState();
-          if (store.sessionId === sessionId) {
-            store.setSessionId(null);
+          const { activePane } = store;
+          if (activePane?.type === "session" && activePane.id === sessionId) {
+            store.switchPane(null);
           }
           store.fetchSessions();
           return;
@@ -233,6 +239,61 @@ function sendResize(ws: WebSocket, terminal: Terminal): void {
         rows: terminal.rows,
       }),
     );
+  }
+}
+
+/**
+ * Detects file paths ending in .md in terminal output.
+ * Ctrl+click opens them in the dashboard's /preview route.
+ */
+class MarkdownLinkProvider implements ILinkProvider {
+  private readonly pattern = /(?:^|[\s"'`(])(\/?(?:[\w.~-]+\/)*[\w.-]+\.md)\b/g;
+  private readonly terminal: Terminal;
+
+  constructor(terminal: Terminal) {
+    this.terminal = terminal;
+  }
+
+  provideLinks(
+    bufferLineNumber: number,
+    callback: (links: ILink[] | undefined) => void,
+  ): void {
+    let line: IBufferLine | undefined;
+    try {
+      line = this.terminal.buffer.active.getLine(bufferLineNumber - 1);
+    } catch {
+      callback(undefined);
+      return;
+    }
+
+    if (!line) {
+      callback(undefined);
+      return;
+    }
+
+    const text = line.translateToString(true);
+    const links: ILink[] = [];
+
+    let match: RegExpExecArray | null = null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: standard regex loop
+    while ((match = this.pattern.exec(text)) !== null) {
+      const filePath = match[1];
+      const startX = match.index + match[0].indexOf(filePath);
+
+      links.push({
+        range: {
+          start: { x: startX + 1, y: bufferLineNumber },
+          end: { x: startX + filePath.length + 1, y: bufferLineNumber },
+        },
+        text: filePath,
+        activate: (_event, linkText) => {
+          useStore.getState().openPreview(linkText);
+        },
+      });
+    }
+    this.pattern.lastIndex = 0;
+
+    callback(links.length > 0 ? links : undefined);
   }
 }
 

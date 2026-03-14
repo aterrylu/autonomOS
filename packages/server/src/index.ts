@@ -10,6 +10,7 @@ import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { getPinnedSessions } from "./pinned.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
+import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { terminalRouter } from "./routes/terminal.js";
@@ -105,12 +106,14 @@ if (AUTH_TOKEN) {
 }
 
 // REST API
+app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
-// WebSocket — terminal PTY streaming
+// WebSocket — terminal PTY streaming + file watching
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
+app.get("/ws/files/watch", fileWatchRouter(upgradeWebSocket));
 
 if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
