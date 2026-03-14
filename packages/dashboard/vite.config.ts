@@ -8,9 +8,9 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
     proxy: {
-      "/api": "http://localhost:3000",
+      "/api": "http://localhost:3101",
       "/ws": {
-        target: "ws://localhost:3000",
+        target: "ws://localhost:3101",
         ws: true,
       },
     },
