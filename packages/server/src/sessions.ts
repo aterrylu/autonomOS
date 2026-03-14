@@ -203,6 +203,7 @@ function buildEnv(): Record<string, string> {
   ];
   env.PATH = [...extraPaths, env.PATH].join(":");
   delete env.CLAUDECODE;
+  delete env.PORT;
   cachedEnv = env;
   return env;
 }

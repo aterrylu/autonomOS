@@ -44,6 +44,19 @@ autonomOS runs on your machine and is exposed as `http://autonomos` on your tail
 2. Add your Tailscale OAuth key (see `.env.example` for instructions)
 3. `make up` — the sidecar creates a dedicated Tailscale node
 
+### Claude Usage Tracking
+
+The status bar shows your Claude rate limits (5h rolling, 7d weekly, per-model breakdowns).
+
+1. Go to [claude.ai](https://claude.ai)
+2. Open DevTools → Application → Cookies → `.claude.ai`
+3. Copy `sessionKey` and `lastActiveOrg` values (use the `.claude.ai` domain, not `anthropic.com`)
+4. Add to `.env`:
+   ```
+   CLAUDE_SESSION_KEY=sk-ant-sid01-XXXX
+   CLAUDE_ORG_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ```
+
 ### Without Tailscale
 
 Just run the server directly:
