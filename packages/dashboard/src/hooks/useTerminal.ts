@@ -74,7 +74,9 @@ export function useTerminal(
       handleKeyEvent(event, terminal, wsRef),
     );
 
-    terminal.registerLinkProvider(new MarkdownLinkProvider(terminal));
+    terminal.registerLinkProvider(
+      new MarkdownLinkProvider(terminal, sessionId),
+    );
 
     let disposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -249,9 +251,11 @@ function sendResize(ws: WebSocket, terminal: Terminal): void {
 class MarkdownLinkProvider implements ILinkProvider {
   private readonly pattern = /(?:^|[\s"'`(])(\/?(?:[\w.~-]+\/)*[\w.-]+\.md)\b/g;
   private readonly terminal: Terminal;
+  private readonly sessionId: string;
 
-  constructor(terminal: Terminal) {
+  constructor(terminal: Terminal, sessionId: string) {
     this.terminal = terminal;
+    this.sessionId = sessionId;
   }
 
   provideLinks(
@@ -287,7 +291,16 @@ class MarkdownLinkProvider implements ILinkProvider {
         },
         text: filePath,
         activate: (_event, linkText) => {
-          useStore.getState().openPreview(linkText);
+          let resolved = linkText;
+          if (!linkText.startsWith("/")) {
+            const session = useStore
+              .getState()
+              .sessions.find((s) => s.id === this.sessionId);
+            if (session?.workingDirectory) {
+              resolved = `${session.workingDirectory}/${linkText}`;
+            }
+          }
+          useStore.getState().openPreview(resolved);
         },
       });
     }
