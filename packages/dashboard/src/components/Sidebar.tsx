@@ -14,7 +14,6 @@ export function Sidebar() {
   const fetchSessions = useStore((s) => s.fetchSessions);
   const fetchProjects = useStore((s) => s.fetchProjects);
   const createSession = useStore((s) => s.createSession);
-  const killSession = useStore((s) => s.killSession);
   const switchSession = useStore((s) => s.switchSession);
   const pinSession = useStore((s) => s.pinSession);
   const unpinSession = useStore((s) => s.unpinSession);
@@ -180,7 +179,7 @@ export function Sidebar() {
                       pinSession(s.id);
                     }
                   }}
-                  className={`shrink-0 rounded cursor-pointer transition-opacity ${s.pinned ? "" : "opacity-0 group-hover:opacity-100"}`}
+                  className={`ml-auto shrink-0 rounded cursor-pointer transition-opacity ${s.pinned ? "" : "opacity-0 group-hover:opacity-100"}`}
                   style={{ color: s.pinned ? page.fg : page.statusFg }}
                   title={
                     s.pinned
@@ -191,18 +190,6 @@ export function Sidebar() {
                   <Codicon name={s.pinned ? "pinned" : "pin"} size={12} />
                 </button>
               )}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  killSession(s.id);
-                }}
-                className="shrink-0 rounded px-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer"
-                style={{ color: "#ea6c73" }}
-                title="Kill session"
-              >
-                x
-              </button>
             </div>
           );
         })}
