@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { getPinnedSessions, pinSession, unpinSession } from "../pinned.js";
 import {
   createSession,
   getAllSessions,
@@ -65,11 +64,6 @@ sessionRouter.post("/", async (c) => {
   }
 });
 
-// Get all pinned sessions (for debugging/visibility)
-sessionRouter.get("/pinned", (c) => {
-  return c.json(getPinnedSessions());
-});
-
 sessionRouter.get("/:id", (c) => {
   const managed = getSession(c.req.param("id"));
   if (!managed) return c.json({ error: "Session not found" }, 404);
@@ -80,44 +74,4 @@ sessionRouter.delete("/:id", (c) => {
   const killed = killSession(c.req.param("id"));
   if (!killed) return c.json({ error: "Session not found" }, 404);
   return c.json({ ok: true });
-});
-
-// Pin a session — saves config so it auto-resumes on server restart
-sessionRouter.post("/:id/pin", (c) => {
-  const managed = getSession(c.req.param("id"));
-  if (!managed) return c.json({ error: "Session not found" }, 404);
-
-  const { session } = managed;
-  if (!session.claudeSessionId) {
-    return c.json(
-      { error: "Only sessions with a Claude session ID can be pinned" },
-      400,
-    );
-  }
-
-  pinSession({
-    claudeSessionId: session.claudeSessionId,
-    workingDirectory: session.workingDirectory,
-    name: session.name,
-    autonomousMode: true, // pinned sessions always resume in autonomous mode
-    pinnedAt: Date.now(),
-  });
-
-  session.pinned = true;
-  return c.json({ ok: true, pinned: true });
-});
-
-// Unpin a session
-sessionRouter.delete("/:id/pin", (c) => {
-  const managed = getSession(c.req.param("id"));
-  if (!managed) return c.json({ error: "Session not found" }, 404);
-
-  const { session } = managed;
-  if (!session.claudeSessionId) {
-    return c.json({ error: "Session has no Claude session ID" }, 400);
-  }
-
-  unpinSession(session.claudeSessionId);
-  session.pinned = false;
-  return c.json({ ok: true, pinned: false });
 });

@@ -1,39 +1,67 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectInfo } from "../store";
-import { sortSessions, THEMES, useStore } from "../store";
+import type { ActivePane, ProjectInfo } from "../store";
+import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+
+function DiffStat({
+  stat,
+}: {
+  stat: { insertions: number; deletions: number };
+}) {
+  return (
+    <span className="shrink-0 text-[10px]">
+      <span style={{ color: "#91b362" }}>+{stat.insertions}</span>{" "}
+      <span style={{ color: "#ea6c73" }}>-{stat.deletions}</span>
+    </span>
+  );
+}
 
 export function Sidebar() {
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
   const projects = useStore((s) => s.projects);
-  const sessionId = useStore((s) => s.sessionId);
-  const sessionOrder = useStore((s) => s.sessionOrder);
+  const activePane = useStore((s) => s.activePane);
+  const paneOrder = useStore((s) => s.paneOrder);
+  const previewPanes = useStore((s) => s.previewPanes);
   const fetchSessions = useStore((s) => s.fetchSessions);
   const fetchProjects = useStore((s) => s.fetchProjects);
   const createSession = useStore((s) => s.createSession);
-  const switchSession = useStore((s) => s.switchSession);
-  const pinSession = useStore((s) => s.pinSession);
-  const unpinSession = useStore((s) => s.unpinSession);
-  const reorderSessions = useStore((s) => s.reorderSessions);
+  const switchPane = useStore((s) => s.switchPane);
+  const closePreview = useStore((s) => s.closePreview);
+  const reorderPanes = useStore((s) => s.reorderPanes);
   const status = useStore((s) => s.status);
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
 
-  const orderedSessions = useMemo(
-    () => sortSessions(sessions, sessionOrder),
-    [sessions, sessionOrder],
+  const sidebarItems = useMemo(
+    () => buildSidebarItems(sessions, previewPanes, paneOrder),
+    [sessions, previewPanes, paneOrder],
   );
 
-  // Build a lookup map from claudeSessionId → project session summary.
-  const projectTitleMap = useMemo(() => {
-    const map = new Map<string, string>();
+  // Build a lookup map from claudeSessionId → enriched project session data.
+  const sessionMetaMap = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        summary?: string;
+        projectName?: string;
+        gitBranch?: string;
+        lastModified: number;
+        gitDiffStat?: { insertions: number; deletions: number };
+      }
+    >();
     for (const p of projects) {
       for (const ps of p.sessions) {
-        if (ps.summary) map.set(ps.sessionId, ps.summary);
+        map.set(ps.sessionId, {
+          summary: ps.summary,
+          projectName: p.name,
+          gitBranch: ps.gitBranch,
+          lastModified: ps.lastModified,
+          gitDiffStat: ps.gitDiffStat,
+        });
       }
     }
     return map;
@@ -75,7 +103,7 @@ export function Sidebar() {
 
   function handleDrop(idx: number) {
     if (dragIdx.current !== null && dragIdx.current !== idx) {
-      reorderSessions(dragIdx.current, idx);
+      reorderPanes(dragIdx.current, idx);
     }
     dragIdx.current = null;
     setDropIdx(null);
@@ -84,6 +112,11 @@ export function Sidebar() {
   function handleDragEnd() {
     dragIdx.current = null;
     setDropIdx(null);
+  }
+
+  function isPaneActive(pane: ActivePane): boolean {
+    if (!activePane) return false;
+    return activePane.type === pane.type && activePane.id === pane.id;
   }
 
   return (
@@ -118,7 +151,7 @@ export function Sidebar() {
       </div>
 
       <div className="py-1">
-        {orderedSessions.length === 0 && (
+        {sidebarItems.length === 0 && (
           <p
             className="px-3 py-3 text-center text-xs"
             style={{ color: page.statusFg }}
@@ -127,16 +160,77 @@ export function Sidebar() {
           </p>
         )}
 
-        {orderedSessions.map((s, idx) => {
-          const isActive = s.id === sessionId;
-          const displayName =
-            (s.claudeSessionId && projectTitleMap.get(s.claudeSessionId)) ||
-            s.name;
+        {sidebarItems.map((item, idx) => {
+          const pane = sidebarItemPane(item);
+          const isActive = isPaneActive(pane);
           const isDropTarget = dropIdx === idx;
+
+          if (item.type === "session") {
+            const s = item.data;
+            const meta = s.claudeSessionId
+              ? sessionMetaMap.get(s.claudeSessionId)
+              : undefined;
+            const displayName = meta?.summary || s.name;
+            const lastActive = meta?.lastModified ?? s.createdAt;
+
+            return (
+              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+              <div
+                key={`s-${s.id}`}
+                role="button"
+                tabIndex={0}
+                draggable
+                onDragStart={() => handleDragStart(idx)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDrop={() => handleDrop(idx)}
+                onDragEnd={handleDragEnd}
+                className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+                style={{
+                  background: isActive ? page.border : "transparent",
+                  ...(isDropTarget && {
+                    boxShadow: `inset 0 2px 0 ${page.fg}`,
+                  }),
+                }}
+                onClick={() => switchPane(pane)}
+                onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
+              >
+                <Codicon name="claude" size={12} />
+                <div className="flex-1 min-w-0">
+                  {/* Top row: title + git stats */}
+                  <div className="flex items-center gap-1">
+                    <span className="flex-1 truncate text-xs">
+                      {displayName}
+                    </span>
+                    {meta?.gitBranch && meta?.gitDiffStat && (
+                      <DiffStat stat={meta.gitDiffStat} />
+                    )}
+                  </div>
+                  {/* Bottom row: project/branch + time */}
+                  <div
+                    className="flex items-center text-[10px]"
+                    style={{ color: page.statusFg }}
+                  >
+                    <span className="min-w-0 truncate">
+                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
+                      {meta?.gitBranch &&
+                        meta.gitBranch !== "HEAD" &&
+                        ` · ${meta.gitBranch}`}
+                    </span>
+                    <span className="ml-1.5 shrink-0">
+                      {formatAge(lastActive)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // Preview pane row
+          const p = item.data;
           return (
-            // biome-ignore lint/a11y/useSemanticElements: contains nested button for kill action
+            // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
             <div
-              key={s.id}
+              key={`p-${p.id}`}
               role="button"
               tabIndex={0}
               draggable
@@ -151,45 +245,23 @@ export function Sidebar() {
                   boxShadow: `inset 0 2px 0 ${page.fg}`,
                 }),
               }}
-              onClick={() => switchSession(s.id)}
-              onKeyDown={(e) => e.key === "Enter" && switchSession(s.id)}
+              onClick={() => switchPane(pane)}
+              onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
             >
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{
-                  background:
-                    s.status === "running" ? "#238636" : page.statusFg,
+              <Codicon name="markdown" size={12} />
+              <span className="flex-1 truncate text-xs">{p.title}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closePreview(p.id);
                 }}
-              />
-              <span className="flex-1 truncate text-xs">{displayName}</span>
-              <span
-                className="shrink-0 text-[10px]"
+                className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
                 style={{ color: page.statusFg }}
+                title="Close preview"
               >
-                {formatAge(s.createdAt)}
-              </span>
-              {s.claudeSessionId && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (s.pinned) {
-                      unpinSession(s.id);
-                    } else {
-                      pinSession(s.id);
-                    }
-                  }}
-                  className={`ml-auto shrink-0 rounded cursor-pointer transition-opacity ${s.pinned ? "" : "opacity-0 group-hover:opacity-100"}`}
-                  style={{ color: s.pinned ? page.fg : page.statusFg }}
-                  title={
-                    s.pinned
-                      ? "Unpin session"
-                      : "Pin session (survives restart)"
-                  }
-                >
-                  <Codicon name={s.pinned ? "pinned" : "pin"} size={12} />
-                </button>
-              )}
+                <Codicon name="close" size={12} />
+              </button>
             </div>
           );
         })}
@@ -227,9 +299,8 @@ export function Sidebar() {
             project={project}
             page={page}
             liveSessionIds={liveSessionIds}
-            activeClaude={
-              sessions.find((s) => s.id === sessionId)?.claudeSessionId
-            }
+            activePane={activePane}
+            sessions={sessions}
           />
         ))}
       </div>
@@ -241,21 +312,28 @@ interface ProjectItemProps {
   project: ProjectInfo;
   page: PageTheme;
   liveSessionIds: Set<string>;
-  activeClaude?: string;
+  activePane: ActivePane | null;
+  sessions: { id: string; claudeSessionId?: string }[];
 }
 
 const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
   liveSessionIds,
-  activeClaude,
+  activePane,
+  sessions,
 }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const createSession = useStore((s) => s.createSession);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
 
-  // Auto-expand if the active live session belongs to this project
+  // Derive the active Claude session ID from the active pane
+  const activeClaude = useMemo(() => {
+    if (activePane?.type !== "session") return undefined;
+    return sessions.find((s) => s.id === activePane.id)?.claudeSessionId;
+  }, [activePane, sessions]);
+
   const hasActiveSession =
     activeClaude != null &&
     project.sessions.some((ps) => ps.sessionId === activeClaude);

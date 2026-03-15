@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DisplayMode, RateLimitData } from "./types";
 
 const POLL_INTERVAL = 60_000;
@@ -10,37 +10,37 @@ export function useUsageData() {
   const [displayMode, setDisplayModeState] = useState<DisplayMode>(
     () => (localStorage.getItem(DISPLAY_MODE_KEY) as DisplayMode) || "text",
   );
+  const cancelledRef = useRef(false);
 
   function setDisplayMode(mode: DisplayMode) {
     setDisplayModeState(mode);
     localStorage.setItem(DISPLAY_MODE_KEY, mode);
   }
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchUsage() {
-      const res = await fetch("/api/plugins/claude-usage").catch(() => null);
-      if (cancelled) return;
-      if (!res?.ok) {
-        setError(res ? `HTTP ${res.status}` : "unreachable");
-        return;
-      }
-      try {
-        setData(await res.json());
-        setError(null);
-      } catch {
-        setError("Invalid response");
-      }
+  const fetchUsage = useCallback(async () => {
+    const res = await fetch("/api/plugins/claude-usage").catch(() => null);
+    if (cancelledRef.current) return;
+    if (!res?.ok) {
+      setError(res ? `HTTP ${res.status}` : "unreachable");
+      return;
     }
+    try {
+      setData(await res.json());
+      setError(null);
+    } catch {
+      setError("Invalid response");
+    }
+  }, []);
 
+  useEffect(() => {
+    cancelledRef.current = false;
     fetchUsage();
     const interval = setInterval(fetchUsage, POLL_INTERVAL);
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [fetchUsage]);
 
-  return { data, error, displayMode, setDisplayMode };
+  return { data, error, displayMode, setDisplayMode, refetch: fetchUsage };
 }

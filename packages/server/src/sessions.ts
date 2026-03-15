@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { isPinned } from "./pinned.js";
+import { persistSession, removePersistedSession } from "./persisted.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
@@ -16,6 +16,7 @@ export interface ManagedSession {
 }
 
 const sessions = new Map<string, ManagedSession>();
+let shuttingDown = false;
 
 let claudePath: string | null = null;
 
@@ -117,7 +118,6 @@ export function createSession(options: SpawnOptions): ManagedSession {
     workingDirectory: cwd,
     provider: "claude-code",
     claudeSessionId: options.resumeSessionId,
-    pinned: !!options.resumeSessionId && isPinned(options.resumeSessionId),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -130,9 +130,39 @@ export function createSession(options: SpawnOptions): ManagedSession {
   };
   sessions.set(id, managed);
 
+  // Auto-persist sessions that have a Claude session ID
+  if (session.claudeSessionId) {
+    persistSession({
+      claudeSessionId: session.claudeSessionId,
+      workingDirectory: cwd,
+      name: defaultName,
+      autonomousMode: !!options.autonomousMode,
+      persistedAt: Date.now(),
+    });
+  }
+
   pty.onData((data: string) => {
     managed.outputBuffer.push(data);
     managed.outputSize += data.length;
+
+    // Detect Claude session ID from PTY output for fresh (non-resumed) sessions.
+    // Claude Code prints "Session: <uuid>" near the start of output.
+    if (!session.claudeSessionId) {
+      const match = data.match(
+        /Session:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+      );
+      if (match) {
+        session.claudeSessionId = match[1];
+        persistSession({
+          claudeSessionId: match[1],
+          workingDirectory: cwd,
+          name: defaultName,
+          autonomousMode: !!options.autonomousMode,
+          persistedAt: Date.now(),
+        });
+      }
+    }
+
     // Trim buffer when it exceeds the limit — bulk splice to avoid O(n²) shift()
     if (managed.outputSize > OUTPUT_BUFFER_LIMIT) {
       let drop = 0;
@@ -154,7 +184,12 @@ export function createSession(options: SpawnOptions): ManagedSession {
   pty.onExit(() => {
     session.status = "stopped";
     session.updatedAt = Date.now();
-    sessions.delete(id);
+    if (!shuttingDown) {
+      if (session.claudeSessionId) {
+        removePersistedSession(session.claudeSessionId);
+      }
+      sessions.delete(id);
+    }
   });
 
   return managed;
@@ -170,10 +205,33 @@ export function killSession(id: string): boolean {
   }
   managed.session.status = "stopped";
   managed.session.updatedAt = Date.now();
+  if (managed.session.claudeSessionId) {
+    removePersistedSession(managed.session.claudeSessionId);
+  }
   sessions.delete(id);
   return true;
 }
 
+/**
+ * Kill all PTY processes without removing them from persistence.
+ * Used during server shutdown so sessions survive reboots.
+ */
+export function shutdownAllSessions(): void {
+  shuttingDown = true;
+  for (const [, managed] of sessions) {
+    try {
+      managed.pty.kill();
+    } catch {
+      // best-effort during shutdown
+    }
+  }
+  sessions.clear();
+}
+
+/**
+ * Kill all sessions AND remove from persistence.
+ * Used when the user explicitly wants to clear everything.
+ */
 export function killAllSessions(): void {
   for (const [id] of sessions) {
     killSession(id);

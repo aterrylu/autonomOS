@@ -18,9 +18,16 @@ export function useClickOutside(
     function handleKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
+
+    // Delay listener registration so the opening click doesn't
+    // immediately trigger close via mousedown on the toggle button.
+    const timer = setTimeout(() => {
+      document.addEventListener("mousedown", handleClick);
+      document.addEventListener("keydown", handleKey);
+    }, 0);
+
     return () => {
+      clearTimeout(timer);
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleKey);
     };

@@ -370,3 +370,119 @@ resolveTitle?(nativeSessionId, cwd): Promise<string | null>
 - **Separate server per provider** — Too much infrastructure for a personal tool
 - **Generic CLI wrapper (just spawn any binary)** — Loses provider-specific features (session discovery, resume, autonomous mode mapping)
 - **Plugin-based providers** — The plugin system (ADR-013) is for dashboard features. Provider adapters are server-side infrastructure — different concern, different pattern
+
+---
+
+## ADR-015: VSCode-Style Session Lifecycle — Keep Terminals Alive
+**Date:** 2026-03-10
+**Decided by:** Terry
+**Source:** Claude Code session (terminal UX improvements, PRs #23, #24)
+
+**Context:** Switching between sessions destroyed the old terminal and created a new one. This caused visible flicker, lost scroll position, and required a full WebSocket reconnect on every switch. Users expect instant tab switching like VSCode or browser tabs.
+
+**Decision:** Keep all session terminals mounted in the DOM simultaneously. Hide inactive sessions with `display: none`. Only the visible terminal holds a WebGL GPU context — hidden terminals dispose their WebGL addon and re-acquire it when shown.
+
+**Implementation:**
+- `SessionViewManager` renders a `SessionPane` for every active session, not just the current one
+- `SessionPane` receives a `visible` prop that controls `display: none` vs `display: flex`
+- WebGL addon is loaded/disposed via `ResizeObserver` — when a container has zero dimensions (hidden), WebGL is disposed; when visible, it's re-acquired
+- WebSocket connections stay open for all sessions — no reconnect needed on switch
+
+**Rationale:**
+- Instant switching — no terminal creation, no WebSocket handshake, no flicker
+- VSCode uses the same pattern for editor tabs (mount once, toggle visibility)
+- WebGL context management prevents GPU memory leaks from hidden terminals
+- Scroll position, command history, and terminal state are preserved per session
+
+**Alternatives:**
+- **Destroy/recreate on switch** — What we had. Simple but causes visible flicker (200-500ms) and loses state.
+- **Offscreen canvas / terminal serialization** — Save terminal state and restore. Complex and xterm.js doesn't expose a clean serialize/restore API for full fidelity.
+
+---
+
+## ADR-016: Pinned Sessions with Stable Ordering
+**Date:** 2026-03-13
+**Decided by:** Terry
+**Source:** Claude Code session (session persistence feature, PR #26)
+
+**Context:** Sessions are ephemeral — they die on server restart. Users want certain sessions to survive restarts (e.g., long-running agents). Also, drag-to-reorder used ephemeral session IDs, so ordering reset on every restart.
+
+**Decision:** Two features: (1) Pin sessions to persist across restarts. (2) Store session order using `claudeSessionId` (Claude Code's stable session UUID) instead of the ephemeral server-assigned ID.
+
+**Pinning implementation:**
+- `POST /api/sessions/:id/pin` / `DELETE /api/sessions/:id/pin` — toggle pin state
+- Pinned sessions saved to `~/.autonomos/pinned-sessions.json` (validated on read)
+- Server auto-resumes pinned sessions on startup, logging success/failure counts
+- UI: pin icon (VSCode Codicon) appears on hover, stays visible when pinned
+
+**Ordering implementation:**
+- `sessionOrder` in Zustand store stores an array of `claudeSessionId || id` strings
+- `sortSessions()` resolves each session against the order map, using `claudeSessionId` first (stable) with fallback to ephemeral `id`
+- Fixed falsy-zero bug: `indexOf` returning `0` was treated as falsy by `&&` — switched to explicit `undefined` check
+
+**Rationale:**
+- `claudeSessionId` is assigned by Claude Code SDK and persists across server restarts — natural stable key
+- File-based persistence (`pinned-sessions.json`) is simpler than a database for a personal tool
+- Pin UX is familiar from browser tabs, IDE tabs, and chat apps
+
+**Alternatives:**
+- **Auto-persist all sessions** — Too aggressive. Most sessions are throwaway. Explicit pinning gives user control.
+- **Database-backed persistence** — Over-engineered for v0. File-based with JSON schema validation is sufficient.
+- **Session names as ordering key** — Names aren't unique and can change. `claudeSessionId` is a UUID.
+
+---
+
+## ADR-017: Simplified Deployment — Dev/Prod Split, No Tailscale Sidecar
+**Date:** 2026-03-13
+**Decided by:** Terry
+**Source:** Claude Code session (Makefile simplification, PR #28)
+
+**Context:** The Makefile had a single `make up MODE=dev|prod` command with embedded Docker Compose for a Tailscale sidecar container. This was complex, required Docker, and all development devices were already on the Tailscale network anyway. The prod instance on forge was also the development target, causing port conflicts.
+
+**Decision:** Split into `make dev` (port 3101 + Vite HMR on 5173) and `make prod` (port 3100, built dashboard). Remove Docker Compose and Tailscale sidecar entirely. `DEPLOY_HOST` is configurable via `.env` (gitignored, per-machine).
+
+**Key changes:**
+- `make dev` — server on `:3101`, Vite dev server on `:5173` with proxy to `:3101`
+- `make prod` — builds dashboard, serves everything on `:3100`
+- `make deploy` — rsync to remote host, `DEPLOY_HOST` read from `.env`
+- Deleted `deploy/` directory (docker-compose.yml, serve.json)
+- No more Docker dependency for development or deployment
+
+**Rationale:**
+- All devices are on Tailscale — the sidecar was unnecessary complexity
+- Separate ports (3100 prod, 3101 dev) allow running both simultaneously on the same machine
+- `.env` for per-machine config is a well-understood pattern (already gitignored)
+- Direct process management (`make prod`) is simpler than Docker for a single-binary server
+
+**Alternatives:**
+- **Keep Docker Compose** — Useful if deploying to machines without Tailscale, but adds Docker dependency for no current benefit.
+- **Single port with mode flag** — What we had. But can't run dev and prod simultaneously.
+- **Systemd service** — More robust for production, but premature for a personal tool. Can be added later.
+
+---
+
+## ADR-018: Dashboard-Hosted File Preview via URL Route
+**Date:** 2026-03-14
+**Decided by:** Terry
+**Source:** Claude Code session (markdown preview feature)
+
+**Context:** Claude Code terminal output is full of markdown file paths. No way to preview them without switching to VSCode or another tool. Considered multiple approaches: split pane in terminal, slide-over panel, and dashboard-hosted URL.
+
+**Decision:** Dashboard-hosted URL route (`/preview?file=/path/to/file.md`). The terminal detects `.md` paths via xterm.js `ILinkProvider` and opens them in a new browser tab. The dashboard serves a `/preview` route that fetches file content from the server and renders it with `react-markdown` + `remark-gfm` + `mermaid`.
+
+**Architecture (3 layers):**
+1. **Server endpoint** — `GET /api/files/read?path=...` returns file content as JSON (1MB limit)
+2. **Dashboard route** — `/preview` page, conditionally rendered in `main.tsx` based on URL path (no router library needed)
+3. **Terminal link provider** — `MarkdownLinkProvider` class registered on each terminal instance, regex-matches `.md` paths, ctrl+click opens preview URL
+
+**Rationale:**
+- Simplest approach — no split pane state, no resize handling, no WebGL context juggling
+- Reusable building blocks: `/api/files/read` is a general file API, `/preview` route can extend to other file types
+- Shareable URLs — can bookmark or share a preview link
+- The `/preview` route + file API naturally evolves into a general file viewer (syntax-highlighted code, images) without redesign
+- Mermaid support via fenced code blocks (`\`\`\`mermaid`) with DOMPurify sanitization
+
+**Alternatives:**
+- **Split pane in SessionPane** — IDE-like side-by-side terminal + preview. More complex (resize logic, per-session state, WebGL context management). Can be added later using the same renderer component.
+- **Slide-over overlay** — Middle ground between URL and split pane. But still covers the terminal and needs overlay state.
+- **External tool (VSCode preview)** — Already works but requires context-switching out of autonomOS.

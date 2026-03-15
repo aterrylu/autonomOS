@@ -15,7 +15,6 @@ export interface SessionInfo {
   workingDirectory: string;
   provider: string;
   claudeSessionId?: string;
-  pinned?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -29,6 +28,12 @@ export interface ProjectSession {
   firstPrompt?: string;
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
+  gitDiffStat?: GitDiffStat;
+}
+
+export interface GitDiffStat {
+  insertions: number;
+  deletions: number;
 }
 
 /** A project directory with its Claude Code sessions */
@@ -38,6 +43,21 @@ export interface ProjectInfo {
   sessions: ProjectSession[];
   lastActive: number;
 }
+
+export interface PreviewPaneInfo {
+  id: string;
+  filePath: string;
+  title: string;
+}
+
+export type ActivePane =
+  | { type: "session"; id: string }
+  | { type: "preview"; id: string };
+
+/** Sidebar item — unified type for sessions and previews */
+export type SidebarItem =
+  | { type: "session"; data: SessionInfo }
+  | { type: "preview"; data: PreviewPaneInfo };
 
 export const THEMES: Record<ThemeName, AppTheme> = {
   midnight: {
@@ -114,34 +134,78 @@ function isThemeName(value: unknown): value is ThemeName {
   return typeof value === "string" && value in THEMES;
 }
 
-/**
- * Sort sessions by user-defined order. Order is stored by claudeSessionId
- * (stable across server restarts) with fallback to session id.
- */
-export function sortSessions(
-  sessions: SessionInfo[],
-  order: string[],
-): SessionInfo[] {
-  if (order.length === 0) return sessions;
-  const indexMap = new Map(order.map((key, i) => [key, i]));
-  function indexOf(s: SessionInfo): number {
-    if (s.claudeSessionId) {
-      const idx = indexMap.get(s.claudeSessionId);
-      if (idx !== undefined) return idx;
-    }
-    return indexMap.get(s.id) ?? Number.MAX_SAFE_INTEGER;
-  }
-  return [...sessions].sort((a, b) => indexOf(a) - indexOf(b));
+// ── Pane ordering helpers ──────────────────────────────────────────────
+
+/** Key used in paneOrder for a session */
+function sessionOrderKey(s: SessionInfo): string {
+  return s.claudeSessionId || s.id;
 }
+
+/** Key used in paneOrder for a preview */
+function previewOrderKey(id: string): string {
+  return `preview:${id}`;
+}
+
+/**
+ * Build a unified, ordered list of sidebar items from sessions + previews.
+ * Items in paneOrder come first (in order), then remaining items at the end.
+ */
+export function buildSidebarItems(
+  sessions: SessionInfo[],
+  previews: PreviewPaneInfo[],
+  paneOrder: string[],
+): SidebarItem[] {
+  const itemsByKey = new Map<string, SidebarItem>();
+  for (const s of sessions) {
+    itemsByKey.set(sessionOrderKey(s), { type: "session", data: s });
+  }
+  for (const p of previews) {
+    itemsByKey.set(previewOrderKey(p.id), { type: "preview", data: p });
+  }
+
+  const result: SidebarItem[] = [];
+  const placed = new Set<string>();
+
+  // Place ordered items first
+  for (const key of paneOrder) {
+    const item = itemsByKey.get(key);
+    if (item) {
+      result.push(item);
+      placed.add(key);
+    }
+  }
+
+  // Append unordered items
+  for (const [key, item] of itemsByKey) {
+    if (!placed.has(key)) result.push(item);
+  }
+
+  return result;
+}
+
+/** Get the paneOrder key for a SidebarItem */
+export function sidebarItemKey(item: SidebarItem): string {
+  if (item.type === "session") return sessionOrderKey(item.data);
+  return previewOrderKey(item.data.id);
+}
+
+/** Get the ActivePane for a SidebarItem */
+export function sidebarItemPane(item: SidebarItem): ActivePane {
+  return item.type === "session"
+    ? { type: "session", id: item.data.id }
+    : { type: "preview", id: item.data.id };
+}
+
+// ── Store ──────────────────────────────────────────────────────────────
 
 interface AppState {
   // Persisted
   theme: ThemeName;
-  sessionId: string | null;
+  activePane: ActivePane | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
-  /** User-defined session ordering (array of session IDs) */
-  sessionOrder: string[];
+  paneOrder: string[];
+  previewPanes: PreviewPaneInfo[];
 
   // Transient
   status: string;
@@ -153,7 +217,7 @@ interface AppState {
   toggleSidebar: () => void;
   toggleAutonomousMode: () => void;
   setStatus: (status: string) => void;
-  setSessionId: (id: string | null) => void;
+  switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
   createSession: (workingDirectory?: string) => Promise<void>;
@@ -163,10 +227,9 @@ interface AppState {
     name?: string,
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
-  switchSession: (id: string) => void;
-  pinSession: (id: string) => Promise<void>;
-  unpinSession: (id: string) => Promise<void>;
-  reorderSessions: (fromIndex: number, toIndex: number) => void;
+  openPreview: (filePath: string) => void;
+  closePreview: (id: string) => void;
+  reorderPanes: (fromIndex: number, toIndex: number) => void;
 }
 
 type SetState = (partial: Partial<AppState>) => void;
@@ -203,21 +266,27 @@ async function spawnSession(
   }
 
   const session: SessionInfo = await res.json();
-  set({ sessionId: session.id, status: "connected" });
+  set({
+    activePane: { type: "session", id: session.id },
+    status: "connected",
+  });
   await get().fetchSessions();
 }
+
+let previewCounter = 0;
 
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
       theme: "midnight",
-      sessionId: null,
+      activePane: null,
       status: "disconnected",
       sessions: [],
       projects: [],
       sidebarOpen: true,
       autonomousMode: true,
-      sessionOrder: [],
+      paneOrder: [],
+      previewPanes: [],
 
       cycleTheme: () => {
         const current = get().theme;
@@ -229,7 +298,7 @@ export const useStore = create<AppState>()(
       toggleAutonomousMode: () =>
         set({ autonomousMode: !get().autonomousMode }),
       setStatus: (status) => set({ status }),
-      setSessionId: (id) => set({ sessionId: id }),
+      switchPane: (pane) => set({ activePane: pane }),
 
       fetchSessions: async () => {
         const res = await fetch("/api/sessions").catch(() => null);
@@ -237,9 +306,12 @@ export const useStore = create<AppState>()(
         const sessions: SessionInfo[] = await res.json();
         set({ sessions });
 
-        const { sessionId } = get();
-        if (sessionId && !sessions.some((s) => s.id === sessionId)) {
-          set({ sessionId: null, status: "disconnected" });
+        const { activePane } = get();
+        if (
+          activePane?.type === "session" &&
+          !sessions.some((s) => s.id === activePane.id)
+        ) {
+          set({ activePane: null, status: "disconnected" });
         }
       },
       fetchProjects: async () => {
@@ -261,12 +333,14 @@ export const useStore = create<AppState>()(
         );
       },
       resumeSession: async (claudeSessionId, cwd, name) => {
-        // If a live session already exists for this Claude session, just switch to it
         const existing = get().sessions.find(
           (s) => s.claudeSessionId === claudeSessionId,
         );
         if (existing) {
-          set({ sessionId: existing.id, status: "connected" });
+          set({
+            activePane: { type: "session", id: existing.id },
+            status: "connected",
+          });
           return;
         }
         await spawnSession(
@@ -286,51 +360,94 @@ export const useStore = create<AppState>()(
         await fetch(`/api/sessions/${id}`, { method: "DELETE" }).catch(
           () => null,
         );
-        if (get().sessionId === id) {
-          set({ sessionId: null, status: "disconnected" });
+        const { activePane } = get();
+        if (activePane?.type === "session" && activePane.id === id) {
+          set({ activePane: null, status: "disconnected" });
         }
         await get().fetchSessions();
       },
-      switchSession: (id) => set({ sessionId: id }),
-      pinSession: async (id) => {
-        const res = await fetch(`/api/sessions/${id}/pin`, {
-          method: "POST",
-        }).catch(() => null);
-        if (res?.ok) await get().fetchSessions();
+      openPreview: (filePath) => {
+        const { previewPanes } = get();
+        // If already open, just switch to it
+        const existing = previewPanes.find((p) => p.filePath === filePath);
+        if (existing) {
+          set({ activePane: { type: "preview", id: existing.id } });
+          return;
+        }
+        const id = `preview-${Date.now()}-${++previewCounter}`;
+        const title = filePath.split("/").pop() || filePath;
+        const pane: PreviewPaneInfo = { id, filePath, title };
+        const { paneOrder } = get();
+        set({
+          previewPanes: [...previewPanes, pane],
+          paneOrder: [...paneOrder, previewOrderKey(id)],
+          activePane: { type: "preview", id },
+        });
       },
-      unpinSession: async (id) => {
-        const res = await fetch(`/api/sessions/${id}/pin`, {
-          method: "DELETE",
-        }).catch(() => null);
-        if (res?.ok) await get().fetchSessions();
+
+      closePreview: (id) => {
+        const { previewPanes, paneOrder, activePane, sessions } = get();
+        const updated: Partial<AppState> = {
+          previewPanes: previewPanes.filter((p) => p.id !== id),
+          paneOrder: paneOrder.filter((k) => k !== previewOrderKey(id)),
+        };
+        // If closing the active pane, fall back to first session or null
+        if (activePane?.type === "preview" && activePane.id === id) {
+          if (sessions.length > 0) {
+            updated.activePane = { type: "session", id: sessions[0].id };
+          } else {
+            updated.activePane = null;
+          }
+        }
+        set(updated);
       },
-      reorderSessions: (fromIndex, toIndex) => {
-        const { sessions, sessionOrder } = get();
-        // Use claudeSessionId (stable across restarts) when available, else id
-        const ordered = sortSessions(sessions, sessionOrder).map(
-          (s) => s.claudeSessionId || s.id,
-        );
+
+      reorderPanes: (fromIndex, toIndex) => {
+        const { sessions, previewPanes, paneOrder } = get();
+        const items = buildSidebarItems(sessions, previewPanes, paneOrder);
+        const ordered = items.map(sidebarItemKey);
         const [moved] = ordered.splice(fromIndex, 1);
         ordered.splice(toIndex, 0, moved);
-        set({ sessionOrder: ordered });
+        set({ paneOrder: ordered });
       },
     }),
     {
       name: "autonomos",
       partialize: (state) => ({
         theme: state.theme,
-        sessionId: state.sessionId,
+        activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,
-        sessionOrder: state.sessionOrder,
+        paneOrder: state.paneOrder,
+        previewPanes: state.previewPanes,
       }),
       merge: (persisted, current) => {
-        const saved = persisted as Partial<AppState>;
-        return {
-          ...current,
-          ...saved,
-          theme: isThemeName(saved?.theme) ? saved.theme : current.theme,
-        };
+        const saved = persisted as Record<string, unknown>;
+        const merged = { ...current };
+
+        if (isThemeName(saved?.theme)) merged.theme = saved.theme;
+        if (typeof saved?.sidebarOpen === "boolean")
+          merged.sidebarOpen = saved.sidebarOpen;
+        if (typeof saved?.autonomousMode === "boolean")
+          merged.autonomousMode = saved.autonomousMode;
+        if (Array.isArray(saved?.previewPanes))
+          merged.previewPanes = saved.previewPanes as PreviewPaneInfo[];
+
+        // Migrate old sessionId → activePane
+        if (saved?.activePane && typeof saved.activePane === "object") {
+          merged.activePane = saved.activePane as ActivePane;
+        } else if (typeof saved?.sessionId === "string") {
+          merged.activePane = { type: "session", id: saved.sessionId };
+        }
+
+        // Migrate old sessionOrder → paneOrder
+        if (Array.isArray(saved?.paneOrder)) {
+          merged.paneOrder = saved.paneOrder as string[];
+        } else if (Array.isArray(saved?.sessionOrder)) {
+          merged.paneOrder = saved.sessionOrder as string[];
+        }
+
+        return merged;
       },
     },
   ),

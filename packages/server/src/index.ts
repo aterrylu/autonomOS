@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -8,15 +9,19 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
-import { getPinnedSessions } from "./pinned.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { getPersistedSessions } from "./persisted.js";
+import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
+import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
+import { settingsRouter } from "./routes/settings.js";
 import { terminalRouter } from "./routes/terminal.js";
 import {
   createSession,
-  killAllSessions,
   resolveClaudePath,
+  shutdownAllSessions,
 } from "./sessions.js";
 
 // Validate claude binary exists at startup — fail fast with a clear message
@@ -72,21 +77,29 @@ function extractToken(c: Context): string | undefined {
 }
 
 if (AUTH_TOKEN) {
-  // Token exchange: visiting /auth?token=xxx sets a cookie and redirects to /
-  app.get("/auth", (c) => {
-    const token = c.req.query("token");
+  // Token exchange: POST { token } sets a cookie and returns 200
+  app.post("/auth", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      return c.text("Invalid token", 401);
+      return c.json({ error: "Invalid token" }, 401);
     }
     const hostname = new URL(c.req.url).hostname;
+    const isLocal =
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname.endsWith(".local") ||
+      hostname.endsWith(".ts.net") ||
+      hostname.startsWith("10.") ||
+      hostname.startsWith("192.168.");
     setCookie(c, "autonomos_token", token, {
       httpOnly: true,
       sameSite: "Lax",
-      secure: hostname !== "localhost" && hostname !== "127.0.0.1",
+      secure: !isLocal,
       path: "/",
       maxAge: 60 * 60 * 24 * 365, // 1 year
     });
-    return c.redirect("/");
+    return c.json({ ok: true });
   });
 
   // Protect API and WS routes — static assets pass through so the
@@ -104,13 +117,41 @@ if (AUTH_TOKEN) {
   app.use("/ws/*", requireAuth);
 }
 
+// Server info — lightweight, no auth required for status bar
+app.get("/api/host", (c) => c.json({ hostname: hostname() }));
+
 // REST API
+app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
+app.route("/api/settings", settingsRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
-// WebSocket — terminal PTY streaming
+// MCP — Streamable HTTP transport for agent-to-agent communication
+app.post("/mcp", async (c) => {
+  const req = c.env.incoming as IncomingMessage;
+  const res = c.env.outgoing as ServerResponse;
+  const body = await c.req.json().catch(() => undefined);
+  await handleMcpRequest(req, res, body);
+  // Response already sent by MCP transport — return empty to avoid double-write
+  return new Response(null);
+});
+app.get("/mcp", async (c) => {
+  const req = c.env.incoming as IncomingMessage;
+  const res = c.env.outgoing as ServerResponse;
+  await handleMcpSessionRequest(req, res);
+  return new Response(null);
+});
+app.delete("/mcp", async (c) => {
+  const req = c.env.incoming as IncomingMessage;
+  const res = c.env.outgoing as ServerResponse;
+  await handleMcpSessionRequest(req, res);
+  return new Response(null);
+});
+
+// WebSocket — terminal PTY streaming + file watching
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
+app.get("/ws/files/watch", fileWatchRouter(upgradeWebSocket));
 
 if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
@@ -127,25 +168,24 @@ const server = serve({ fetch: app.fetch, port }, () => {
   const base = `http://localhost:${port}`;
   console.log(`autonomOS server listening on ${base}`);
   if (AUTH_TOKEN) {
-    console.log(`Auth enabled — authenticate at:`);
-    console.log(`  ${base}/auth?token=${AUTH_TOKEN}`);
+    console.log(`Auth enabled (token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)})`);
   } else {
     console.log(`Auth disabled — set AUTONOMOS_TOKEN to enable`);
   }
 
-  // Auto-resume pinned sessions after startup
-  resumePinnedSessions();
+  // Auto-resume persisted sessions after startup
+  resumePersistedSessions();
 });
 
 injectWebSocket(server);
 
-function resumePinnedSessions() {
-  const pinned = getPinnedSessions();
-  if (pinned.length === 0) return;
+function resumePersistedSessions() {
+  const persisted = getPersistedSessions();
+  if (persisted.length === 0) return;
 
-  console.log(`Resuming ${pinned.length} pinned session(s)...`);
+  console.log(`Resuming ${persisted.length} session(s)...`);
   let resumed = 0;
-  for (const p of pinned) {
+  for (const p of persisted) {
     try {
       createSession({
         workingDirectory: p.workingDirectory,
@@ -162,15 +202,17 @@ function resumePinnedSessions() {
       );
     }
   }
-  if (resumed < pinned.length) {
-    console.warn(`Resumed ${resumed} of ${pinned.length} pinned sessions`);
+  if (resumed < persisted.length) {
+    console.warn(`Resumed ${resumed} of ${persisted.length} sessions`);
   }
 }
 
 // Clean up all PTY processes on shutdown
 function shutdown() {
-  console.log("Shutting down — killing all sessions...");
-  killAllSessions();
+  console.log(
+    "Shutting down — killing PTYs (sessions will resume on next start)...",
+  );
+  shutdownAllSessions();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

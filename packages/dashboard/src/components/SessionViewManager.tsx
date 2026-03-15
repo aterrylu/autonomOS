@@ -1,21 +1,20 @@
 import { THEMES, useStore } from "../store";
+import { PreviewPane } from "./PreviewPane";
 import { SessionPane } from "./SessionPane";
 
 /**
- * Manages all active session views. Keeps terminal instances alive
- * across session switches — only toggles visibility (like VSCode tabs).
- *
- * Sessions are mounted when they appear in the live sessions list and
- * unmounted when they're removed (killed or PTY exited).
+ * Manages all active pane views. Keeps terminal instances alive
+ * across switches — only toggles visibility (like VSCode tabs).
+ * Also renders preview panes alongside sessions.
  */
 export function SessionViewManager() {
-  const sessionId = useStore((s) => s.sessionId);
+  const activePane = useStore((s) => s.activePane);
   const sessions = useStore((s) => s.sessions);
+  const previewPanes = useStore((s) => s.previewPanes);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
-  const liveIds = sessions.map((s) => s.id);
-  const hasSelection = sessionId !== null;
+  const hasSelection = activePane !== null;
 
   return (
     <>
@@ -27,8 +26,19 @@ export function SessionViewManager() {
           Create or select a session to start
         </div>
       )}
-      {liveIds.map((id) => (
-        <SessionPane key={id} sessionId={id} visible={id === sessionId} />
+      {sessions.map((s) => (
+        <SessionPane
+          key={s.id}
+          sessionId={s.id}
+          visible={activePane?.type === "session" && activePane.id === s.id}
+        />
+      ))}
+      {previewPanes.map((p) => (
+        <PreviewPane
+          key={p.id}
+          preview={p}
+          visible={activePane?.type === "preview" && activePane.id === p.id}
+        />
       ))}
     </>
   );
