@@ -197,38 +197,6 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             }}
           />
 
-          {/* Divider */}
-          <div style={{ borderTop: `1px solid ${page.border}` }} />
-
-          {/* Claude Usage section */}
-          <div
-            className="text-[10px] font-medium uppercase tracking-wide"
-            style={labelStyle}
-          >
-            Claude Usage (Session Cookie)
-          </div>
-          <SettingRow
-            label="Session Key"
-            value={settings?.claudeSessionKey ?? null}
-            placeholder="sk-ant-sid01-..."
-            secret
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => {
-              pending.current.claudeSessionKey = v;
-            }}
-          />
-          <SettingRow
-            label="Org ID"
-            value={settings?.claudeOrgId ?? null}
-            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => {
-              pending.current.claudeOrgId = v;
-            }}
-          />
-
           {error && (
             <div
               className="rounded px-2 py-1.5"
