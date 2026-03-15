@@ -5,6 +5,7 @@ import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { persistSession, removePersistedSession } from "./persisted.js";
+import { getSettings } from "./settings.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
@@ -245,14 +246,11 @@ export function _resetForTesting(): void {
 }
 
 /**
- * Build environment with full PATH and strip CLAUDECODE
- * to prevent nested-session detection. Computed once since
- * process.env doesn't change at runtime.
+ * Build environment with full PATH, strip CLAUDECODE to prevent
+ * nested-session detection, and inject settings as env vars.
+ * Not cached — settings can change between session spawns.
  */
-let cachedEnv: Record<string, string> | null = null;
-
 function buildEnv(): Record<string, string> {
-  if (cachedEnv) return cachedEnv;
   const env = { ...process.env } as Record<string, string>;
   const extraPaths = [
     `${process.env.HOME}/.local/bin`,
@@ -262,6 +260,15 @@ function buildEnv(): Record<string, string> {
   env.PATH = [...extraPaths, env.PATH].join(":");
   delete env.CLAUDECODE;
   delete env.PORT;
-  cachedEnv = env;
+
+  // Inject dashboard-configured settings as env vars
+  const settings = getSettings();
+  if (settings.anthropicBaseUrl) {
+    env.ANTHROPIC_BASE_URL = settings.anthropicBaseUrl;
+  }
+  if (settings.anthropicAuthToken) {
+    env.ANTHROPIC_AUTH_TOKEN = settings.anthropicAuthToken;
+  }
+
   return env;
 }

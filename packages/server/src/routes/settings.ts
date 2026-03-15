@@ -9,6 +9,8 @@ function maskSettings(settings: AppSettings) {
   return {
     claudeSessionKey: settings.claudeSessionKey ? "••••configured" : null,
     claudeOrgId: settings.claudeOrgId || null,
+    anthropicBaseUrl: settings.anthropicBaseUrl || null,
+    anthropicAuthToken: settings.anthropicAuthToken ? "••••configured" : null,
   };
 }
 
@@ -31,8 +33,21 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.claudeOrgId === "string") {
     partial.claudeOrgId = body.claudeOrgId.trim();
   }
+  if (typeof body.anthropicBaseUrl === "string") {
+    partial.anthropicBaseUrl = body.anthropicBaseUrl.trim();
+  }
+  if (typeof body.anthropicAuthToken === "string") {
+    partial.anthropicAuthToken = body.anthropicAuthToken.trim();
+  }
 
-  const updated = updateSettings(partial);
+  let updated: AppSettings;
+  try {
+    updated = updateSettings(partial);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Failed to save settings:", message);
+    return c.json({ error: "Failed to save settings" }, 500);
+  }
 
   // Invalidate usage cache so new credentials take effect immediately
   if (partial.claudeSessionKey || partial.claudeOrgId) {

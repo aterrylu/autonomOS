@@ -1,6 +1,7 @@
 import claudeSvg from "@vscode/codicons/src/icons/claude.svg?raw";
 import closeSvg from "@vscode/codicons/src/icons/close.svg?raw";
 import copySvg from "@vscode/codicons/src/icons/copy.svg?raw";
+import gearSvg from "@vscode/codicons/src/icons/gear.svg?raw";
 import linkExternalSvg from "@vscode/codicons/src/icons/link-external.svg?raw";
 import markdownSvg from "@vscode/codicons/src/icons/markdown.svg?raw";
 
@@ -12,6 +13,7 @@ const ICONS = {
   claude: extractPaths(claudeSvg),
   close: extractPaths(closeSvg),
   copy: extractPaths(copySvg),
+  gear: extractPaths(gearSvg),
   "link-external": extractPaths(linkExternalSvg),
   markdown: extractPaths(markdownSvg),
 } as const;
