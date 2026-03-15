@@ -156,13 +156,12 @@ const server = serve({ fetch: app.fetch, port }, () => {
   const base = `http://localhost:${port}`;
   console.log(`autonomOS server listening on ${base}`);
   if (AUTH_TOKEN) {
-    console.log(`Auth enabled — authenticate at:`);
-    console.log(`  ${base}/auth?token=${AUTH_TOKEN}`);
+    console.log(`Auth enabled (token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)})`);
   } else {
     console.log(`Auth disabled — set AUTONOMOS_TOKEN to enable`);
   }
 
-  // Auto-resume pinned sessions after startup
+  // Auto-resume persisted sessions after startup
   resumePersistedSessions();
 });
 

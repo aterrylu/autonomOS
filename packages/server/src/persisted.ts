@@ -7,8 +7,9 @@
  * Storage: ~/.autonomos/sessions.json
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CONFIG_DIR, ensureConfigDir } from "./configDir.js";
 
 export interface PersistedSession {
   claudeSessionId: string;
@@ -18,16 +19,9 @@ export interface PersistedSession {
   persistedAt: number;
 }
 
-const HOME = process.env.HOME;
-if (!HOME) throw new Error("HOME environment variable is not set");
-const CONFIG_DIR = join(HOME, ".autonomos");
 const SESSIONS_FILE = join(CONFIG_DIR, "sessions.json");
 
-function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-  }
-}
+let lastReadFailed = false;
 
 function readSessions(): PersistedSession[] {
   try {
@@ -35,8 +29,10 @@ function readSessions(): PersistedSession[] {
     const data = JSON.parse(raw);
     if (!Array.isArray(data)) {
       console.warn("Persisted sessions file is not an array, ignoring");
+      lastReadFailed = true;
       return [];
     }
+    lastReadFailed = false;
     return data.filter(
       (p): p is PersistedSession =>
         typeof p?.claudeSessionId === "string" &&
@@ -46,16 +42,28 @@ function readSessions(): PersistedSession[] {
     );
   } catch (err: unknown) {
     if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+      lastReadFailed = false;
       return [];
     }
-    console.warn(`Failed to read persisted sessions: ${err}`);
+    console.error(
+      `Failed to read persisted sessions (file will NOT be overwritten): ${err}`,
+    );
+    lastReadFailed = true;
     return [];
   }
 }
 
 function writeSessions(sessions: PersistedSession[]): void {
+  if (lastReadFailed) {
+    console.error(
+      "Refusing to write sessions — last read failed (would destroy data)",
+    );
+    return;
+  }
   ensureConfigDir();
-  writeFileSync(SESSIONS_FILE, `${JSON.stringify(sessions, null, 2)}\n`);
+  writeFileSync(SESSIONS_FILE, `${JSON.stringify(sessions, null, 2)}\n`, {
+    mode: 0o600,
+  });
 }
 
 export function getPersistedSessions(): PersistedSession[] {

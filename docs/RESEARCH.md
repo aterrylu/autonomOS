@@ -8,7 +8,8 @@ Document all research findings here. Link sources. Include your assessment of re
 
 - [x] **dimensionalOS** — Agent-native robotics OS (Apache 2.0). Module graph architecture, MCP-based agent↔robot bridge, OpenClaw plugin. Full analysis: [`docs/research/dimensionalOS/`](research/dimensionalOS/)
 - [x] **OpenClaw internals** — Runtime architecture, session model, cron system, memory layer, plugin SDK, gateway RPC surface. Full analysis: [`docs/research/openclaw/`](research/openclaw/)
-- [ ] **Claude Code hooks & workflows** — Terry's custom setup in `aterrylu-dev/claude`. Understand what conventions/patterns could be integrated.
+- [x] **Claude Code hooks & workflows** — Terry's custom setup in `aterrylu-dev/claude`. Understand what conventions/patterns could be integrated.
+- [x] **Multi-agent coordination** — Claude Code agent teams, `/loop`, `ralph-loop`, community orchestrators (Overstory, CC Mirror, gstack, Ruflo), fork+query pattern for non-blocking introspection. Full analysis: [`docs/research/multi-agent-coordination/`](research/multi-agent-coordination/)
 - [x] **Agent frameworks & SDKs** — LangGraph, Claude Agent SDK, Claude Code, Gemini ADK, AN SDK (21st.dev), n8n. Comparison, integration points, patterns. Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
 - [ ] **Robot middleware** — ROS2, micro-ROS, foxglove. How do they handle observability and control?
 
@@ -73,6 +74,23 @@ Full analysis: [`docs/research/openclaw/`](research/openclaw/)
 **Relevance: HIGH** — Directly informs integration strategy and `packages/core` abstraction design.
 
 Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
+
+### Multi-Agent Coordination (2026-03-14)
+
+**What:** Research into how Claude Code coordinates multiple agents (native agent teams, `/loop`, `ralph-loop`), community multi-agent projects (Overstory, CC Mirror, gstack, Ruflo), and the Agent SDK's session management capabilities. Focused on finding the right communication architecture for autonomOS's orchestrator.
+
+**Key findings:**
+- **Native agent teams** use a leader/teammate hierarchy with shared task lists and mailbox messaging. Not suitable for autonomOS because teammates are hidden inside the lead's PTY — we lose per-agent visibility.
+- **Fork + Query** is the preferred pattern for non-blocking coordinator introspection. Fork an idle session, ask the fork about status/progress, discard. Original agent is never disrupted. Requires session to be idle (cannot fork running sessions).
+- **Hook telemetry** (global `PreToolUse`/`PostToolUse` hooks POSTing to our server) gives real-time agent state for the dashboard — tool calls, idle detection, permission prompts.
+- **Three-layer architecture decided:** Hooks (always-on telemetry) → Fork+Query (on-demand deep introspection) → PTY stdin (direct intervention). Layers are complementary.
+- **Agent SDK V2** supports persistent multi-turn sessions via `unstable_v2_createSession()` + `send()`/`stream()`. Cleaner than node-pty for programmatic control, but node-pty gives us the terminal UI users expect.
+- **Community projects** (Overstory, CC Mirror) validate the worktree-isolation and task-dependency-graph patterns. Overstory's SQLite mail system and typed protocol messages are worth studying.
+- **JSONL direct read** is a zero-cost bonus — session transcripts are written incrementally and can be parsed at any time, even during active sessions.
+
+**Relevance: CRITICAL** — Directly defines the orchestrator architecture for autonomOS.
+
+Full analysis: [`docs/research/multi-agent-coordination/`](research/multi-agent-coordination/)
 
 ### Zo Computer (2026-03-05)
 

@@ -5,6 +5,19 @@ import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
+function DiffStat({
+  stat,
+}: {
+  stat: { insertions: number; deletions: number };
+}) {
+  return (
+    <span className="shrink-0 text-[10px]">
+      <span style={{ color: "#91b362" }}>+{stat.insertions}</span>{" "}
+      <span style={{ color: "#ea6c73" }}>-{stat.deletions}</span>
+    </span>
+  );
+}
+
 export function Sidebar() {
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
@@ -187,14 +200,7 @@ export function Sidebar() {
                       {displayName}
                     </span>
                     {meta?.gitBranch && meta?.gitDiffStat && (
-                      <span className="shrink-0 text-[10px]">
-                        <span style={{ color: "#91b362" }}>
-                          +{meta.gitDiffStat.insertions}
-                        </span>{" "}
-                        <span style={{ color: "#ea6c73" }}>
-                          -{meta.gitDiffStat.deletions}
-                        </span>
-                      </span>
+                      <DiffStat stat={meta.gitDiffStat} />
                     )}
                   </div>
                   {/* Bottom row: branch + time */}
@@ -351,16 +357,7 @@ const ProjectItem = React.memo(function ProjectItem({
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}
           </span>
-          {project.gitDiffStat && (
-            <span className="shrink-0 text-[10px]">
-              <span style={{ color: "#91b362" }}>
-                +{project.gitDiffStat.insertions}
-              </span>{" "}
-              <span style={{ color: "#ea6c73" }}>
-                -{project.gitDiffStat.deletions}
-              </span>
-            </span>
-          )}
+          {project.gitDiffStat && <DiffStat stat={project.gitDiffStat} />}
           <span
             className="shrink-0 text-[10px]"
             style={{ color: page.statusFg }}

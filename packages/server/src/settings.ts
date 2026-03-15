@@ -5,8 +5,9 @@
  * Plugins and features read from here, with env var fallback.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CONFIG_DIR, ensureConfigDir } from "./configDir.js";
 
 export interface AppSettings {
   /** Claude session key for usage plugin (sk-ant-sid01-...) */
@@ -15,16 +16,7 @@ export interface AppSettings {
   claudeOrgId?: string;
 }
 
-const HOME = process.env.HOME;
-if (!HOME) throw new Error("HOME environment variable is not set");
-const CONFIG_DIR = join(HOME, ".autonomos");
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
-
-function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-  }
-}
 
 export function getSettings(): AppSettings {
   try {
@@ -53,6 +45,8 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
     }
   }
   ensureConfigDir();
-  writeFileSync(SETTINGS_FILE, `${JSON.stringify(updated, null, 2)}\n`);
+  writeFileSync(SETTINGS_FILE, `${JSON.stringify(updated, null, 2)}\n`, {
+    mode: 0o600,
+  });
   return updated;
 }

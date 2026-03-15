@@ -1,16 +1,19 @@
 import { Hono } from "hono";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
-import { getSettings, updateSettings } from "../settings.js";
+import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
-settingsRouter.get("/", (c) => {
-  const settings = getSettings();
-  // Mask sensitive values — only expose whether they're set
-  return c.json({
+/** Mask sensitive values — only expose whether they're set */
+function maskSettings(settings: AppSettings) {
+  return {
     claudeSessionKey: settings.claudeSessionKey ? "••••configured" : null,
     claudeOrgId: settings.claudeOrgId || null,
-  });
+  };
+}
+
+settingsRouter.get("/", (c) => {
+  return c.json(maskSettings(getSettings()));
 });
 
 settingsRouter.put("/", async (c) => {
@@ -36,8 +39,5 @@ settingsRouter.put("/", async (c) => {
     invalidateCache();
   }
 
-  return c.json({
-    claudeSessionKey: updated.claudeSessionKey ? "••••configured" : null,
-    claudeOrgId: updated.claudeOrgId || null,
-  });
+  return c.json(maskSettings(updated));
 });

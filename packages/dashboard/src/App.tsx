@@ -6,7 +6,7 @@ import { StatusBar } from "./components/StatusBar";
 import { THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
 
-type AuthState = "checking" | "authenticated" | "unauthenticated";
+type AuthState = "checking" | "authenticated" | "unauthenticated" | "error";
 
 function LoginPage() {
   const theme = useStore((s) => s.theme);
@@ -88,7 +88,7 @@ export function App() {
       .then((res) => {
         setAuthState(res.status === 401 ? "unauthenticated" : "authenticated");
       })
-      .catch(() => setAuthState("authenticated")); // No server = skip auth
+      .catch(() => setAuthState("error"));
   }, []);
 
   // Cmd/Ctrl+B toggles sidebar (global handler — works even without a terminal)
@@ -117,6 +117,36 @@ export function App() {
 
   if (authState === "unauthenticated") {
     return <LoginPage />;
+  }
+
+  if (authState === "error") {
+    return (
+      <div
+        className="flex h-screen items-center justify-center font-sans"
+        style={{ background: page.bg, color: page.statusFg }}
+      >
+        <div className="text-center space-y-3">
+          <div>Cannot connect to server</div>
+          <button
+            type="button"
+            className="rounded px-3 py-1.5 text-xs cursor-pointer"
+            style={{ background: page.border, color: page.fg }}
+            onClick={() => {
+              setAuthState("checking");
+              fetch("/api/sessions")
+                .then((res) =>
+                  setAuthState(
+                    res.status === 401 ? "unauthenticated" : "authenticated",
+                  ),
+                )
+                .catch(() => setAuthState("error"));
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

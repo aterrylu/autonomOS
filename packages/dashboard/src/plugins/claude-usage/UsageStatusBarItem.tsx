@@ -93,12 +93,14 @@ function SetupPanel({
   const [orgId, setOrgId] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   async function handleSave() {
     if (!sessionKey.trim()) return;
     setSaving(true);
+    setSaveError("");
     try {
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -106,9 +108,15 @@ function SetupPanel({
           claudeOrgId: orgId.trim() || undefined,
         }),
       });
+      if (!res.ok) {
+        setSaveError(`Failed to save (HTTP ${res.status})`);
+        return;
+      }
       setSaved(true);
       onSaved();
       setTimeout(() => onClose(), 1500);
+    } catch {
+      setSaveError("Could not reach server");
     } finally {
       setSaving(false);
     }
@@ -200,6 +208,15 @@ function SetupPanel({
         </div>
       </div>
 
+      {saveError && (
+        <div
+          className="rounded px-2 py-1.5 text-xs"
+          style={{ background: "#ea6c7315", color: "#ea6c73" }}
+        >
+          {saveError}
+        </div>
+      )}
+
       <button
         type="button"
         onClick={handleSave}
@@ -210,7 +227,9 @@ function SetupPanel({
           color: "#fff",
         }}
       >
-        {saved ? "Saved!" : saving ? "Saving..." : "Save"}
+        {saved && "Saved!"}
+        {!saved && saving && "Saving..."}
+        {!saved && !saving && "Save"}
       </button>
     </FloatingPanel>
   );

@@ -63,7 +63,9 @@ function createMcpServer(): McpServer {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         return {
-          content: [{ type: "text", text: `Failed to create session: ${message}` }],
+          content: [
+            { type: "text", text: `Failed to create session: ${message}` },
+          ],
           isError: true,
         };
       }
@@ -102,12 +104,16 @@ function createMcpServer(): McpServer {
       const killed = killSession(args.sessionId);
       if (!killed) {
         return {
-          content: [{ type: "text", text: `Session ${args.sessionId} not found.` }],
+          content: [
+            { type: "text", text: `Session ${args.sessionId} not found.` },
+          ],
           isError: true,
         };
       }
       return {
-        content: [{ type: "text", text: `Session ${args.sessionId} terminated.` }],
+        content: [
+          { type: "text", text: `Session ${args.sessionId} terminated.` },
+        ],
       };
     },
   );
