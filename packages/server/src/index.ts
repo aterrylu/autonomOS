@@ -76,11 +76,12 @@ function extractToken(c: Context): string | undefined {
 }
 
 if (AUTH_TOKEN) {
-  // Token exchange: visiting /auth?token=xxx sets a cookie and redirects to /
-  app.get("/auth", (c) => {
-    const token = c.req.query("token");
+  // Token exchange: POST { token } sets a cookie and returns 200
+  app.post("/auth", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      return c.text("Invalid token", 401);
+      return c.json({ error: "Invalid token" }, 401);
     }
     const hostname = new URL(c.req.url).hostname;
     setCookie(c, "autonomos_token", token, {
@@ -90,7 +91,7 @@ if (AUTH_TOKEN) {
       path: "/",
       maxAge: 60 * 60 * 24 * 365, // 1 year
     });
-    return c.redirect("/");
+    return c.json({ ok: true });
   });
 
   // Protect API and WS routes — static assets pass through so the

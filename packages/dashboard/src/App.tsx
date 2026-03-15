@@ -18,14 +18,12 @@ function LoginPage() {
     e.preventDefault();
     if (!token.trim()) return;
     setError("");
-    const res = await fetch(`/auth?token=${encodeURIComponent(token.trim())}`, {
-      redirect: "manual",
+    const res = await fetch("/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: token.trim() }),
     }).catch(() => null);
-    // /auth redirects on success (302), returns 401 on bad token
-    if (
-      res &&
-      (res.status === 200 || res.status === 0 || res.type === "opaqueredirect")
-    ) {
+    if (res?.ok) {
       window.location.reload();
     } else {
       setError("Invalid token");
