@@ -47,6 +47,7 @@ export function Sidebar() {
       string,
       {
         summary?: string;
+        projectName?: string;
         gitBranch?: string;
         lastModified: number;
         gitDiffStat?: { insertions: number; deletions: number };
@@ -56,6 +57,7 @@ export function Sidebar() {
       for (const ps of p.sessions) {
         map.set(ps.sessionId, {
           summary: ps.summary,
+          projectName: p.name,
           gitBranch: ps.gitBranch,
           lastModified: ps.lastModified,
           gitDiffStat: ps.gitDiffStat,
@@ -203,16 +205,17 @@ export function Sidebar() {
                       <DiffStat stat={meta.gitDiffStat} />
                     )}
                   </div>
-                  {/* Bottom row: branch + time */}
+                  {/* Bottom row: project/branch + time */}
                   <div
                     className="flex items-center gap-2 text-[10px]"
                     style={{ color: page.statusFg }}
                   >
-                    {meta?.gitBranch && meta.gitBranch !== "HEAD" && (
-                      <span className="truncate max-w-[120px]">
-                        {meta.gitBranch}
-                      </span>
-                    )}
+                    <span className="truncate">
+                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
+                      {meta?.gitBranch &&
+                        meta.gitBranch !== "HEAD" &&
+                        ` · ${meta.gitBranch}`}
+                    </span>
                     <span className="ml-auto shrink-0">
                       {formatAge(lastActive)}
                     </span>
