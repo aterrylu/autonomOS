@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { plugins } from "../plugins/registry";
 import type { StatusBarItem } from "../plugins/types";
 import { THEMES, useStore } from "../store";
@@ -6,6 +6,14 @@ import { THEMES, useStore } from "../store";
 export function StatusBar() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const [host, setHost] = useState("");
+
+  useEffect(() => {
+    fetch("/api/host")
+      .then((r) => r.json())
+      .then((d) => setHost(d.hostname))
+      .catch(() => {});
+  }, []);
 
   const { left, right } = useMemo(() => {
     const items: StatusBarItem[] = [];
@@ -41,7 +49,7 @@ export function StatusBar() {
             height: 24,
           }}
         >
-          Host: {window.location.hostname}
+          {host || "..."}
         </span>
         {left.map((item) => {
           const Component = item.component;

@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -115,6 +116,9 @@ if (AUTH_TOKEN) {
   app.use("/api/*", requireAuth);
   app.use("/ws/*", requireAuth);
 }
+
+// Server info — lightweight, no auth required for status bar
+app.get("/api/host", (c) => c.json({ hostname: hostname() }));
 
 // REST API
 app.route("/api/files", fileRouter);
