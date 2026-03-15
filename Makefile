@@ -23,7 +23,7 @@ prod:
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@echo "Restarting server..."
-	@nohup sh -c '$(PM2) restart autonomos 2>/dev/null || $(PM2) start ecosystem.config.cjs; $(PM2) save' >/dev/null 2>&1 &
+	@nohup sh -c '$(PM2) delete autonomos 2>/dev/null; $(PM2) start ecosystem.config.cjs; $(PM2) save' >/dev/null 2>&1 &
 
 # ── stop / restart / logs ─────────────────────────
 stop:
