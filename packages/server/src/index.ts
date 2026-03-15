@@ -8,7 +8,9 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { getPersistedSessions } from "./persisted.js";
+import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { projectRouter } from "./routes/projects.js";
@@ -112,6 +114,28 @@ app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
 app.route("/api/settings", settingsRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
+
+// MCP — Streamable HTTP transport for agent-to-agent communication
+app.post("/mcp", async (c) => {
+  const req = c.env.incoming as IncomingMessage;
+  const res = c.env.outgoing as ServerResponse;
+  const body = await c.req.json().catch(() => undefined);
+  await handleMcpRequest(req, res, body);
+  // Response already sent by MCP transport — return empty to avoid double-write
+  return new Response(null);
+});
+app.get("/mcp", async (c) => {
+  const req = c.env.incoming as IncomingMessage;
+  const res = c.env.outgoing as ServerResponse;
+  await handleMcpSessionRequest(req, res);
+  return new Response(null);
+});
+app.delete("/mcp", async (c) => {
+  const req = c.env.incoming as IncomingMessage;
+  const res = c.env.outgoing as ServerResponse;
+  await handleMcpSessionRequest(req, res);
+  return new Response(null);
+});
 
 // WebSocket — terminal PTY streaming + file watching
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));

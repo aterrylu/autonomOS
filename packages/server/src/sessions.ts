@@ -144,6 +144,25 @@ export function createSession(options: SpawnOptions): ManagedSession {
   pty.onData((data: string) => {
     managed.outputBuffer.push(data);
     managed.outputSize += data.length;
+
+    // Detect Claude session ID from PTY output for fresh (non-resumed) sessions.
+    // Claude Code prints "Session: <uuid>" near the start of output.
+    if (!session.claudeSessionId) {
+      const match = data.match(
+        /Session:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+      );
+      if (match) {
+        session.claudeSessionId = match[1];
+        persistSession({
+          claudeSessionId: match[1],
+          workingDirectory: cwd,
+          name: defaultName,
+          autonomousMode: !!options.autonomousMode,
+          persistedAt: Date.now(),
+        });
+      }
+    }
+
     // Trim buffer when it exceeds the limit — bulk splice to avoid O(n²) shift()
     if (managed.outputSize > OUTPUT_BUFFER_LIMIT) {
       let drop = 0;

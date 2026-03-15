@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { createSession, getAllSessions, killSession } from "./sessions.js";
 
@@ -173,32 +173,15 @@ export async function handleMcpRequest(
 }
 
 /**
- * Handle SSE GET requests for existing MCP sessions.
+ * Handle SSE GET or DELETE requests for existing MCP sessions.
  */
-export async function handleMcpSse(
+export async function handleMcpSessionRequest(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (sessionId && transports.has(sessionId)) {
     await transports.get(sessionId)!.handleRequest(req, res);
-    return;
-  }
-  res.writeHead(400, { "Content-Type": "text/plain" });
-  res.end("Invalid or missing MCP session");
-}
-
-/**
- * Handle DELETE requests to close MCP sessions.
- */
-export async function handleMcpDelete(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  if (sessionId && transports.has(sessionId)) {
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
     return;
   }
   res.writeHead(400, { "Content-Type": "text/plain" });

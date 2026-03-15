@@ -3,6 +3,15 @@ import { resolve } from "node:path";
 import { Hono } from "hono";
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
 
+const HOME = process.env.HOME ?? "";
+
+/** Resolve and validate that a file path is within the user's home directory. */
+function safePath(filePath: string): string | null {
+  const resolved = resolve(filePath);
+  if (!HOME || !resolved.startsWith(`${HOME}/`)) return null;
+  return resolved;
+}
+
 export const fileRouter = new Hono();
 
 fileRouter.get("/read", (c) => {
@@ -11,7 +20,10 @@ fileRouter.get("/read", (c) => {
     return c.json({ error: "Missing ?path= parameter" }, 400);
   }
 
-  const resolved = resolve(filePath);
+  const resolved = safePath(filePath);
+  if (!resolved) {
+    return c.json({ error: "Access denied — path must be within home directory" }, 403);
+  }
 
   if (!existsSync(resolved)) {
     return c.json({ error: "File not found" }, 404);
@@ -46,9 +58,9 @@ export function fileWatchRouter(upgradeWebSocket: UpgradeWebSocket) {
           return;
         }
 
-        const resolved = resolve(filePath);
+        const resolved = safePath(filePath);
 
-        if (!existsSync(resolved) || !statSync(resolved).isFile()) {
+        if (!resolved || !existsSync(resolved) || !statSync(resolved).isFile()) {
           ws.close(4004, "File not found");
           return;
         }
