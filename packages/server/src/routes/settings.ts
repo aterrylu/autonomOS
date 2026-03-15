@@ -4,13 +4,19 @@ import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
-/** Mask sensitive values — only expose whether they're set */
+/** Show a prefix of secret values so the UI can display them */
+function redact(value: string | undefined, prefixLen = 6): string | null {
+  if (!value) return null;
+  if (value.length <= prefixLen + 4) return "••••";
+  return `${value.slice(0, prefixLen)}••••`;
+}
+
 function maskSettings(settings: AppSettings) {
   return {
-    claudeSessionKey: settings.claudeSessionKey ? "••••configured" : null,
+    claudeSessionKey: redact(settings.claudeSessionKey, 10),
     claudeOrgId: settings.claudeOrgId || null,
     anthropicBaseUrl: settings.anthropicBaseUrl || null,
-    anthropicAuthToken: settings.anthropicAuthToken ? "••••configured" : null,
+    anthropicAuthToken: redact(settings.anthropicAuthToken, 5),
   };
 }
 

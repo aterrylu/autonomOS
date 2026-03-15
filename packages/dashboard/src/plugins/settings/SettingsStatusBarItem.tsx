@@ -3,11 +3,90 @@ import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
 
-interface SettingsState {
+interface MaskedSettings {
   claudeSessionKey: string | null;
   claudeOrgId: string | null;
   anthropicBaseUrl: string | null;
   anthropicAuthToken: string | null;
+}
+
+/** A single setting row — shows saved value or edit input */
+function SettingRow({
+  label,
+  value,
+  placeholder,
+  secret,
+  inputStyle,
+  labelStyle,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  placeholder: string;
+  secret?: boolean;
+  inputStyle: React.CSSProperties;
+  labelStyle: React.CSSProperties;
+  onChange: (val: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  // If no saved value, always show input
+  const showInput = !value || editing;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-0.5">
+        <span className="text-[10px]" style={labelStyle}>
+          {label}
+        </span>
+        {value && !editing && (
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(true);
+              setDraft("");
+            }}
+            className="text-[10px] cursor-pointer hover:opacity-80"
+            style={{ color: "#16825d" }}
+          >
+            Change
+          </button>
+        )}
+        {editing && (
+          <button
+            type="button"
+            onClick={() => setEditing(false)}
+            className="text-[10px] cursor-pointer hover:opacity-80"
+            style={labelStyle}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      {showInput ? (
+        <input
+          type={secret ? "password" : "text"}
+          value={editing ? draft : ""}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (editing) setDraft(v);
+            onChange(v);
+          }}
+          placeholder={placeholder}
+          className="w-full rounded px-2 py-1.5 text-xs font-mono"
+          style={inputStyle}
+        />
+      ) : (
+        <div
+          className="rounded px-2 py-1.5 text-xs font-mono truncate"
+          style={{ ...inputStyle, opacity: 0.8 }}
+        >
+          {value}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SettingsPanel({ onClose }: { onClose: () => void }) {
@@ -20,52 +99,40 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [settings, setSettings] = useState<MaskedSettings | null>(null);
 
-  // Form fields
-  const [anthropicBaseUrl, setAnthropicBaseUrl] = useState("");
-  const [anthropicAuthToken, setAnthropicAuthToken] = useState("");
-  const [claudeSessionKey, setClaudeSessionKey] = useState("");
-  const [claudeOrgId, setClaudeOrgId] = useState("");
+  // Pending changes (only sent on save)
+  const pending = useRef<Record<string, string>>({});
 
-  // Load current settings on mount
   useEffect(() => {
     fetch("/api/settings")
       .then((r) => r.json())
-      .then((data: SettingsState) => {
-        // Non-secret fields get their actual values
-        if (data.anthropicBaseUrl) setAnthropicBaseUrl(data.anthropicBaseUrl);
-        if (data.claudeOrgId) setClaudeOrgId(data.claudeOrgId);
+      .then((data: MaskedSettings) => {
+        setSettings(data);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
   }, []);
 
   async function handleSave() {
+    if (Object.keys(pending.current).length === 0) return;
     setSaving(true);
     setError("");
     setSaved(false);
     try {
-      const body: Record<string, string> = {};
-      // Always send non-secret fields
-      body.anthropicBaseUrl = anthropicBaseUrl;
-      body.claudeOrgId = claudeOrgId;
-      // Only send secret fields if user typed a new value
-      if (anthropicAuthToken) body.anthropicAuthToken = anthropicAuthToken;
-      if (claudeSessionKey) body.claudeSessionKey = claudeSessionKey;
-
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(pending.current),
       });
       if (!res.ok) {
         setError(`Failed to save (HTTP ${res.status})`);
         return;
       }
+      const updated: MaskedSettings = await res.json();
+      setSettings(updated);
+      pending.current = {};
       setSaved(true);
-      // Clear secret fields after save
-      setAnthropicAuthToken("");
-      setClaudeSessionKey("");
       setTimeout(() => setSaved(false), 2000);
     } catch {
       setError("Could not reach server");
@@ -74,14 +141,15 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const inputStyle = {
+  const inputStyle: React.CSSProperties = {
     background: page.border,
     color: page.fg,
     border: "none",
     outline: "none",
   };
 
-  const labelStyle = { color: page.statusFg };
+  const labelStyle: React.CSSProperties = { color: page.statusFg };
+  const hasPending = Object.keys(pending.current).length > 0;
 
   return (
     <div
@@ -97,9 +165,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       <div className="font-medium text-sm mb-3">Settings</div>
 
       {!loaded ? (
-        <div style={{ color: page.statusFg }}>Loading...</div>
+        <div style={labelStyle}>Loading...</div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           {/* Anthropic / LiteLLM section */}
           <div
             className="text-[10px] font-medium uppercase tracking-wide"
@@ -107,42 +175,27 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           >
             Anthropic API
           </div>
-          <div>
-            <label
-              htmlFor="settings-anthropic-url"
-              className="block text-[10px] mb-0.5"
-              style={labelStyle}
-            >
-              Base URL
-            </label>
-            <input
-              id="settings-anthropic-url"
-              type="text"
-              value={anthropicBaseUrl}
-              onChange={(e) => setAnthropicBaseUrl(e.target.value)}
-              placeholder="https://api.anthropic.com (default)"
-              className="w-full rounded px-2 py-1.5 text-xs font-mono"
-              style={inputStyle}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="settings-anthropic-token"
-              className="block text-[10px] mb-0.5"
-              style={labelStyle}
-            >
-              Auth Token
-            </label>
-            <input
-              id="settings-anthropic-token"
-              type="password"
-              value={anthropicAuthToken}
-              onChange={(e) => setAnthropicAuthToken(e.target.value)}
-              placeholder="sk-... (leave blank to keep current)"
-              className="w-full rounded px-2 py-1.5 text-xs font-mono"
-              style={inputStyle}
-            />
-          </div>
+          <SettingRow
+            label="Base URL"
+            value={settings?.anthropicBaseUrl ?? null}
+            placeholder="https://api.anthropic.com (default)"
+            inputStyle={inputStyle}
+            labelStyle={labelStyle}
+            onChange={(v) => {
+              pending.current.anthropicBaseUrl = v;
+            }}
+          />
+          <SettingRow
+            label="Auth Token"
+            value={settings?.anthropicAuthToken ?? null}
+            placeholder="sk-..."
+            secret
+            inputStyle={inputStyle}
+            labelStyle={labelStyle}
+            onChange={(v) => {
+              pending.current.anthropicAuthToken = v;
+            }}
+          />
 
           {/* Divider */}
           <div style={{ borderTop: `1px solid ${page.border}` }} />
@@ -154,42 +207,27 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           >
             Claude Usage (Session Cookie)
           </div>
-          <div>
-            <label
-              htmlFor="settings-session-key"
-              className="block text-[10px] mb-0.5"
-              style={labelStyle}
-            >
-              Session Key
-            </label>
-            <input
-              id="settings-session-key"
-              type="password"
-              value={claudeSessionKey}
-              onChange={(e) => setClaudeSessionKey(e.target.value)}
-              placeholder="sk-ant-sid01-... (leave blank to keep current)"
-              className="w-full rounded px-2 py-1.5 text-xs font-mono"
-              style={inputStyle}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="settings-org-id"
-              className="block text-[10px] mb-0.5"
-              style={labelStyle}
-            >
-              Org ID
-            </label>
-            <input
-              id="settings-org-id"
-              type="text"
-              value={claudeOrgId}
-              onChange={(e) => setClaudeOrgId(e.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              className="w-full rounded px-2 py-1.5 text-xs font-mono"
-              style={inputStyle}
-            />
-          </div>
+          <SettingRow
+            label="Session Key"
+            value={settings?.claudeSessionKey ?? null}
+            placeholder="sk-ant-sid01-..."
+            secret
+            inputStyle={inputStyle}
+            labelStyle={labelStyle}
+            onChange={(v) => {
+              pending.current.claudeSessionKey = v;
+            }}
+          />
+          <SettingRow
+            label="Org ID"
+            value={settings?.claudeOrgId ?? null}
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            inputStyle={inputStyle}
+            labelStyle={labelStyle}
+            onChange={(v) => {
+              pending.current.claudeOrgId = v;
+            }}
+          />
 
           {error && (
             <div
@@ -203,7 +241,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || (!hasPending && !saved)}
             className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
               background: saved ? "#238636" : "#16825d",
@@ -216,7 +254,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           </button>
 
           <div className="text-[10px]" style={labelStyle}>
-            Settings are injected as env vars into new sessions.
+            Injected as env vars into new sessions.
           </div>
         </div>
       )}
