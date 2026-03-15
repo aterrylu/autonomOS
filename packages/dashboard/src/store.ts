@@ -28,6 +28,7 @@ export interface ProjectSession {
   firstPrompt?: string;
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
+  gitDiffStat?: GitDiffStat;
 }
 
 export interface GitDiffStat {
@@ -41,7 +42,6 @@ export interface ProjectInfo {
   name: string;
   sessions: ProjectSession[];
   lastActive: number;
-  gitDiffStat?: GitDiffStat;
 }
 
 export interface PreviewPaneInfo {

@@ -20,7 +20,6 @@ export interface ProjectInfo {
   name: string;
   sessions: ProjectSession[];
   lastActive: number;
-  gitDiffStat?: GitDiffStat;
 }
 
 export interface ProjectSession {
@@ -31,6 +30,7 @@ export interface ProjectSession {
   firstPrompt?: string;
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
+  gitDiffStat?: GitDiffStat;
 }
 
 export const projectRouter = new Hono();
@@ -91,11 +91,14 @@ projectRouter.get("/", async (c) => {
     },
   );
 
-  // Fetch git diff stats in parallel for all projects
+  // Fetch git diff stats per session (branch vs main) in parallel
+  const allSessions = projects.flatMap((p) =>
+    p.sessions.map((s) => ({ session: s, cwd: p.path })),
+  );
   await Promise.all(
-    projects.map(async (p) => {
-      if (p.path === "unknown") return;
-      p.gitDiffStat = await getGitDiffStat(p.path);
+    allSessions.map(async ({ session, cwd }) => {
+      if (cwd === "unknown" || !session.gitBranch) return;
+      session.gitDiffStat = await getGitDiffStat(cwd, session.gitBranch);
     }),
   );
 
@@ -103,15 +106,16 @@ projectRouter.get("/", async (c) => {
   return c.json(projects);
 });
 
-async function getGitDiffStat(cwd: string): Promise<GitDiffStat | undefined> {
+async function getGitDiffStat(
+  cwd: string,
+  branch: string,
+): Promise<GitDiffStat | undefined> {
   try {
+    // Diff branch against main (three-dot = changes since branch diverged)
     const { stdout } = await execFileAsync(
       "git",
-      ["diff", "HEAD", "--shortstat"],
-      {
-        cwd,
-        timeout: 5000,
-      },
+      ["diff", "main...HEAD", "--shortstat"],
+      { cwd, timeout: 5000 },
     );
     // Output: " 3 files changed, 101 insertions(+), 5 deletions(-)"
     const ins = stdout.match(/(\d+) insertion/);

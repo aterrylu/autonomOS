@@ -58,7 +58,7 @@ export function Sidebar() {
           summary: ps.summary,
           gitBranch: ps.gitBranch,
           lastModified: ps.lastModified,
-          gitDiffStat: p.gitDiffStat,
+          gitDiffStat: ps.gitDiffStat,
         });
       }
     }
@@ -357,7 +357,6 @@ const ProjectItem = React.memo(function ProjectItem({
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}
           </span>
-          {project.gitDiffStat && <DiffStat stat={project.gitDiffStat} />}
           <span
             className="shrink-0 text-[10px]"
             style={{ color: page.statusFg }}
