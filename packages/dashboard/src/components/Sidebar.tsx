@@ -207,16 +207,16 @@ export function Sidebar() {
                   </div>
                   {/* Bottom row: project/branch + time */}
                   <div
-                    className="flex items-center gap-2 text-[10px]"
+                    className="flex items-center text-[10px]"
                     style={{ color: page.statusFg }}
                   >
-                    <span className="truncate">
+                    <span className="min-w-0 truncate">
                       {meta?.projectName ?? s.workingDirectory.split("/").pop()}
                       {meta?.gitBranch &&
                         meta.gitBranch !== "HEAD" &&
                         ` · ${meta.gitBranch}`}
                     </span>
-                    <span className="ml-auto shrink-0">
+                    <span className="ml-1.5 shrink-0">
                       {formatAge(lastActive)}
                     </span>
                   </div>
