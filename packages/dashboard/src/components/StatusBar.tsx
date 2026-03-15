@@ -23,16 +23,26 @@ export function StatusBar() {
 
   return (
     <div
-      className="flex shrink-0 items-center justify-between px-3"
+      className="flex shrink-0 items-center justify-between"
       style={{
         height: 24,
         borderTop: `1px solid ${page.border}`,
         background: page.bg,
         color: page.statusFg,
-        fontSize: 11,
+        fontSize: 12,
       }}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 px-3">
+        <span
+          className="flex items-center gap-1.5 -ml-3 px-2.5 font-medium"
+          style={{
+            background: "#16825d",
+            color: "#fff",
+            height: 24,
+          }}
+        >
+          Host: {window.location.hostname}
+        </span>
         {left.map((item) => {
           const Component = item.component;
           return <Component key={item.id} />;

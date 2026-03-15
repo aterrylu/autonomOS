@@ -8,16 +8,17 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
-import { getPinnedSessions } from "./pinned.js";
+import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
+import { settingsRouter } from "./routes/settings.js";
 import { terminalRouter } from "./routes/terminal.js";
 import {
   createSession,
-  killAllSessions,
   resolveClaudePath,
+  shutdownAllSessions,
 } from "./sessions.js";
 
 // Validate claude binary exists at startup — fail fast with a clear message
@@ -109,6 +110,7 @@ if (AUTH_TOKEN) {
 app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
+app.route("/api/settings", settingsRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
 // WebSocket — terminal PTY streaming + file watching
@@ -137,18 +139,18 @@ const server = serve({ fetch: app.fetch, port }, () => {
   }
 
   // Auto-resume pinned sessions after startup
-  resumePinnedSessions();
+  resumePersistedSessions();
 });
 
 injectWebSocket(server);
 
-function resumePinnedSessions() {
-  const pinned = getPinnedSessions();
-  if (pinned.length === 0) return;
+function resumePersistedSessions() {
+  const persisted = getPersistedSessions();
+  if (persisted.length === 0) return;
 
-  console.log(`Resuming ${pinned.length} pinned session(s)...`);
+  console.log(`Resuming ${persisted.length} session(s)...`);
   let resumed = 0;
-  for (const p of pinned) {
+  for (const p of persisted) {
     try {
       createSession({
         workingDirectory: p.workingDirectory,
@@ -165,15 +167,17 @@ function resumePinnedSessions() {
       );
     }
   }
-  if (resumed < pinned.length) {
-    console.warn(`Resumed ${resumed} of ${pinned.length} pinned sessions`);
+  if (resumed < persisted.length) {
+    console.warn(`Resumed ${resumed} of ${persisted.length} sessions`);
   }
 }
 
 // Clean up all PTY processes on shutdown
 function shutdown() {
-  console.log("Shutting down — killing all sessions...");
-  killAllSessions();
+  console.log(
+    "Shutting down — killing PTYs (sessions will resume on next start)...",
+  );
+  shutdownAllSessions();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

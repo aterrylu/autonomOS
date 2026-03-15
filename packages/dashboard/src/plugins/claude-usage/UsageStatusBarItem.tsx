@@ -72,6 +72,7 @@ function FloatingPanel({
         background: page.bg,
         border: `1px solid ${page.border}`,
         color: page.fg,
+        zIndex: 50,
       }}
     >
       {children}
@@ -79,24 +80,52 @@ function FloatingPanel({
   );
 }
 
-function SetupPanel({ onClose }: { onClose: () => void }) {
+function SetupPanel({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const [sessionKey, setSessionKey] = useState("");
+  const [orgId, setOrgId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  async function handleSave() {
+    if (!sessionKey.trim()) return;
+    setSaving(true);
+    try {
+      await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claudeSessionKey: sessionKey.trim(),
+          claudeOrgId: orgId.trim() || undefined,
+        }),
+      });
+      setSaved(true);
+      onSaved();
+      setTimeout(() => onClose(), 1500);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputStyle = {
+    background: page.border,
+    color: page.fg,
+    border: "none",
+    outline: "none",
+  };
 
   return (
     <FloatingPanel onClose={onClose}>
       <div className="font-medium text-sm mb-2">Claude Usage Setup</div>
-      <div className="mb-3" style={{ color: page.statusFg }}>
-        To see your rate limits, add your Claude session cookie to{" "}
-        <code
-          className="rounded px-1 py-0.5"
-          style={{ background: page.border }}
-        >
-          .env
-        </code>
-      </div>
       <ol
-        className="list-decimal list-inside space-y-2 mb-3"
+        className="list-decimal list-inside space-y-1.5 mb-3"
         style={{ color: page.statusFg }}
       >
         <li>
@@ -112,32 +141,77 @@ function SetupPanel({ onClose }: { onClose: () => void }) {
           </a>
         </li>
         <li>
-          Open DevTools (<kbd>Cmd+Option+I</kbd>) &rarr;{" "}
-          <strong>Application</strong> &rarr; <strong>Cookies</strong>
+          DevTools (<kbd>Cmd+Opt+I</kbd>) {">"} Application {">"} Cookies
         </li>
         <li>
-          Copy the{" "}
+          Copy{" "}
           <code
             className="rounded px-1 py-0.5"
             style={{ background: page.border }}
           >
             sessionKey
           </code>{" "}
-          value
-        </li>
-        <li>
-          Add to your <code>.env</code> file:
+          and{" "}
+          <code
+            className="rounded px-1 py-0.5"
+            style={{ background: page.border }}
+          >
+            lastActiveOrg
+          </code>
         </li>
       </ol>
-      <div
-        className="rounded p-2 font-mono text-[11px] mb-2 select-all"
-        style={{ background: page.border, wordBreak: "break-all" }}
+
+      <div className="space-y-2 mb-3">
+        <div>
+          <label
+            htmlFor="claude-session-key"
+            className="block text-[10px] mb-0.5"
+            style={{ color: page.statusFg }}
+          >
+            Session Key *
+          </label>
+          <input
+            id="claude-session-key"
+            type="password"
+            value={sessionKey}
+            onChange={(e) => setSessionKey(e.target.value)}
+            placeholder="sk-ant-sid01-..."
+            className="w-full rounded px-2 py-1.5 text-xs font-mono"
+            style={inputStyle}
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="claude-org-id"
+            className="block text-[10px] mb-0.5"
+            style={{ color: page.statusFg }}
+          >
+            Org ID (optional)
+          </label>
+          <input
+            id="claude-org-id"
+            type="text"
+            value={orgId}
+            onChange={(e) => setOrgId(e.target.value)}
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            className="w-full rounded px-2 py-1.5 text-xs font-mono"
+            style={inputStyle}
+          />
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={handleSave}
+        disabled={!sessionKey.trim() || saving}
+        className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        style={{
+          background: saved ? "#238636" : "#16825d",
+          color: "#fff",
+        }}
       >
-        CLAUDE_SESSION_COOKIE=sessionKey=sk-ant-...
-      </div>
-      <div style={{ color: page.statusFg }}>
-        Then restart the server (<code>make up</code>).
-      </div>
+        {saved ? "Saved!" : saving ? "Saving..." : "Save"}
+      </button>
     </FloatingPanel>
   );
 }
@@ -162,14 +236,8 @@ function ErrorPanel({
         {error}
       </div>
       <div style={{ color: page.statusFg }}>
-        If your session cookie expired, update{" "}
-        <code
-          className="rounded px-1 py-0.5"
-          style={{ background: page.border }}
-        >
-          CLAUDE_SESSION_COOKIE
-        </code>{" "}
-        in <code>.env</code> and restart the server.
+        Session cookie may have expired. Click &ldquo;setup needed&rdquo; in the
+        status bar to reconfigure.
       </div>
     </FloatingPanel>
   );
@@ -178,7 +246,7 @@ function ErrorPanel({
 export function UsageStatusBarItem() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const { data, error, displayMode, setDisplayMode } = useUsageData();
+  const { data, error, displayMode, setDisplayMode, refetch } = useUsageData();
   const [panelOpen, setPanelOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
@@ -217,7 +285,9 @@ export function UsageStatusBarItem() {
         >
           <Codicon name="claude" size={14} /> setup needed
         </button>
-        {panelOpen && <SetupPanel onClose={() => setPanelOpen(false)} />}
+        {panelOpen && (
+          <SetupPanel onClose={() => setPanelOpen(false)} onSaved={refetch} />
+        )}
       </div>
     );
   }

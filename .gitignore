@@ -8,3 +8,4 @@ build/
 .vite/
 .mcp.json
 deploy/serve.json.deploy
+.playwright-mcp/

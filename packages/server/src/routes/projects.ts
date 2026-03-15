@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { basename } from "node:path";
+import { promisify } from "node:util";
 import {
   listSessions,
   type SDKSessionInfo,
@@ -6,11 +8,19 @@ import {
 import { Hono } from "hono";
 import { batchGetTitles } from "../titleCache";
 
+const execFileAsync = promisify(execFile);
+
+export interface GitDiffStat {
+  insertions: number;
+  deletions: number;
+}
+
 export interface ProjectInfo {
   path: string;
   name: string;
   sessions: ProjectSession[];
   lastActive: number;
+  gitDiffStat?: GitDiffStat;
 }
 
 export interface ProjectSession {
@@ -81,6 +91,36 @@ projectRouter.get("/", async (c) => {
     },
   );
 
+  // Fetch git diff stats in parallel for all projects
+  await Promise.all(
+    projects.map(async (p) => {
+      if (p.path === "unknown") return;
+      p.gitDiffStat = await getGitDiffStat(p.path);
+    }),
+  );
+
   projects.sort((a, b) => b.lastActive - a.lastActive);
   return c.json(projects);
 });
+
+async function getGitDiffStat(cwd: string): Promise<GitDiffStat | undefined> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["diff", "HEAD", "--shortstat"],
+      {
+        cwd,
+        timeout: 5000,
+      },
+    );
+    // Output: " 3 files changed, 101 insertions(+), 5 deletions(-)"
+    const ins = stdout.match(/(\d+) insertion/);
+    const del = stdout.match(/(\d+) deletion/);
+    const insertions = ins ? Number.parseInt(ins[1], 10) : 0;
+    const deletions = del ? Number.parseInt(del[1], 10) : 0;
+    if (insertions === 0 && deletions === 0) return undefined;
+    return { insertions, deletions };
+  } catch {
+    return undefined;
+  }
+}

@@ -13,6 +13,7 @@
  */
 
 import { Impit } from "impit";
+import { getSettings } from "../../settings.js";
 
 export interface RateLimitWindow {
   utilization: number;
@@ -61,15 +62,25 @@ const CACHE_TTL_429 = 5 * 60_000;
 let cachedOrgId: string | null = null;
 
 function getSessionCookie(): string | null {
-  // Prefer new separate env vars, fall back to combined CLAUDE_SESSION_COOKIE
-  const key = process.env.CLAUDE_SESSION_KEY?.trim();
+  // Priority: settings file > env vars > legacy env var
+  const settings = getSettings();
+  const key =
+    settings.claudeSessionKey?.trim() || process.env.CLAUDE_SESSION_KEY?.trim();
   if (key) {
-    const orgId = process.env.CLAUDE_ORG_ID?.trim();
+    const orgId =
+      settings.claudeOrgId?.trim() || process.env.CLAUDE_ORG_ID?.trim();
     const parts = [`sessionKey=${key}`];
     if (orgId) parts.push(`lastActiveOrg=${orgId}`);
     return parts.join(";");
   }
   return process.env.CLAUDE_SESSION_COOKIE?.trim() || null;
+}
+
+/** Clear cached data — call after settings change */
+export function invalidateCache(): void {
+  cached = null;
+  cachedOrgId = null;
+  lastGoodData = null;
 }
 
 function buildCookieHeader(cookie: string): string {

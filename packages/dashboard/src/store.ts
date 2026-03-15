@@ -15,7 +15,6 @@ export interface SessionInfo {
   workingDirectory: string;
   provider: string;
   claudeSessionId?: string;
-  pinned?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -31,12 +30,18 @@ export interface ProjectSession {
   customTitle?: string;
 }
 
+export interface GitDiffStat {
+  insertions: number;
+  deletions: number;
+}
+
 /** A project directory with its Claude Code sessions */
 export interface ProjectInfo {
   path: string;
   name: string;
   sessions: ProjectSession[];
   lastActive: number;
+  gitDiffStat?: GitDiffStat;
 }
 
 export interface PreviewPaneInfo {
@@ -222,8 +227,6 @@ interface AppState {
     name?: string,
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
-  pinSession: (id: string) => Promise<void>;
-  unpinSession: (id: string) => Promise<void>;
   openPreview: (filePath: string) => void;
   closePreview: (id: string) => void;
   reorderPanes: (fromIndex: number, toIndex: number) => void;
@@ -363,19 +366,6 @@ export const useStore = create<AppState>()(
         }
         await get().fetchSessions();
       },
-      pinSession: async (id) => {
-        const res = await fetch(`/api/sessions/${id}/pin`, {
-          method: "POST",
-        }).catch(() => null);
-        if (res?.ok) await get().fetchSessions();
-      },
-      unpinSession: async (id) => {
-        const res = await fetch(`/api/sessions/${id}/pin`, {
-          method: "DELETE",
-        }).catch(() => null);
-        if (res?.ok) await get().fetchSessions();
-      },
-
       openPreview: (filePath) => {
         const { previewPanes } = get();
         // If already open, just switch to it

@@ -1,7 +1,8 @@
-.PHONY: dev prod start stop restart logs down check deploy
+.PHONY: dev prod stop restart logs down check deploy
 
 BUN := $(HOME)/.bun/bin/bun
 PM2 := $(HOME)/.bun/bin/pm2
+TSX := packages/server/node_modules/.bin/tsx
 DEPLOY_HOST ?= $(shell grep -s '^DEPLOY_HOST=' .env | cut -d= -f2)
 DEPLOY_PATH ?= ~/autonomOS
 
@@ -10,34 +11,25 @@ dev:
 	@lsof -ti:3101 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
 	@echo "Starting server on :3101 and dashboard on :5173..."
-	@cd packages/server && PORT=3101 npx tsx --env-file=../../.env watch src/index.ts &
+	@cd packages/server && PORT=3101 ../../$(TSX) --env-file=../../.env watch src/index.ts &
 	@sleep 2
 	@cd packages/dashboard && $(BUN) vite --host 0.0.0.0
 
-# ── prod: built dashboard, foreground on :3100 ───
+# ── prod: build + pm2 daemon on :3100 ─────────────
+#   nohup + setsid detaches the restart so it survives even when
+#   triggered from a dashboard PTY session (which gets killed on restart).
 prod:
-	@lsof -ti:3100 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+	@$(BUN) install
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
-	@echo "Starting server on :3100 (serving dashboard)..."
-	@cd packages/server && PORT=3100 npx tsx --env-file=../../.env src/index.ts
-
-# ── start: build + pm2 daemon ─────────────────────
-start:
-	@echo "Building dashboard..."
-	@cd packages/dashboard && $(BUN) vite build
-	@$(PM2) delete autonomos 2>/dev/null || true
-	@$(PM2) start ecosystem.config.cjs
-	@$(PM2) save
+	@echo "Restarting server..."
+	@nohup sh -c '$(PM2) restart autonomos 2>/dev/null || $(PM2) start ecosystem.config.cjs; $(PM2) save' >/dev/null 2>&1 &
 
 # ── stop / restart / logs ─────────────────────────
 stop:
 	@$(PM2) stop autonomos 2>/dev/null || true
 
-restart:
-	@echo "Building dashboard..."
-	@cd packages/dashboard && $(BUN) vite build
-	@$(PM2) restart autonomos 2>/dev/null || $(PM2) start ecosystem.config.cjs && $(PM2) save
+restart: prod
 
 logs:
 	@$(PM2) logs autonomos --lines 50
@@ -49,7 +41,7 @@ down:
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
 	@echo "Stopped."
 
-# ── deploy: rsync + pm2 start on remote ──────────
+# ── deploy: rsync + prod on remote ───────────────
 #
 #   Configure per machine:
 #     .env: DEPLOY_HOST=forge
@@ -69,10 +61,10 @@ deploy:
 	@echo "Installing dependencies..."
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.bun/bin:$$PATH && bun install'
 	@echo "Building and starting on $(DEPLOY_HOST)..."
-	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.local/bin:$$HOME/.bun/bin:$$PATH && make start'
+	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.local/bin:$$HOME/.bun/bin:$$PATH && make prod'
 
 # ── check: lint + typecheck + test ───────────────
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	cd packages/server && npx tsx --test src/__tests__/*.test.ts
+	$(TSX) --test packages/server/src/__tests__/*.test.ts

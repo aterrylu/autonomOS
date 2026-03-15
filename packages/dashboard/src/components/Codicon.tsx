@@ -3,8 +3,6 @@ import closeSvg from "@vscode/codicons/src/icons/close.svg?raw";
 import copySvg from "@vscode/codicons/src/icons/copy.svg?raw";
 import linkExternalSvg from "@vscode/codicons/src/icons/link-external.svg?raw";
 import markdownSvg from "@vscode/codicons/src/icons/markdown.svg?raw";
-import pinSvg from "@vscode/codicons/src/icons/pin.svg?raw";
-import pinnedSvg from "@vscode/codicons/src/icons/pinned.svg?raw";
 
 function extractPaths(raw: string): string[] {
   return [...raw.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]);
@@ -16,8 +14,6 @@ const ICONS = {
   copy: extractPaths(copySvg),
   "link-external": extractPaths(linkExternalSvg),
   markdown: extractPaths(markdownSvg),
-  pin: extractPaths(pinSvg),
-  pinned: extractPaths(pinnedSvg),
 } as const;
 
 export type CodiconName = keyof typeof ICONS;

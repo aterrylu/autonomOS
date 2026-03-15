@@ -16,8 +16,6 @@ export function Sidebar() {
   const fetchProjects = useStore((s) => s.fetchProjects);
   const createSession = useStore((s) => s.createSession);
   const switchPane = useStore((s) => s.switchPane);
-  const pinSession = useStore((s) => s.pinSession);
-  const unpinSession = useStore((s) => s.unpinSession);
   const closePreview = useStore((s) => s.closePreview);
   const reorderPanes = useStore((s) => s.reorderPanes);
   const status = useStore((s) => s.status);
@@ -30,12 +28,25 @@ export function Sidebar() {
     [sessions, previewPanes, paneOrder],
   );
 
-  // Build a lookup map from claudeSessionId → project session summary.
-  const projectTitleMap = useMemo(() => {
-    const map = new Map<string, string>();
+  // Build a lookup map from claudeSessionId → enriched project session data.
+  const sessionMetaMap = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        summary?: string;
+        gitBranch?: string;
+        lastModified: number;
+        gitDiffStat?: { insertions: number; deletions: number };
+      }
+    >();
     for (const p of projects) {
       for (const ps of p.sessions) {
-        if (ps.summary) map.set(ps.sessionId, ps.summary);
+        map.set(ps.sessionId, {
+          summary: ps.summary,
+          gitBranch: ps.gitBranch,
+          lastModified: ps.lastModified,
+          gitDiffStat: p.gitDiffStat,
+        });
       }
     }
     return map;
@@ -141,9 +152,11 @@ export function Sidebar() {
 
           if (item.type === "session") {
             const s = item.data;
-            const displayName =
-              (s.claudeSessionId && projectTitleMap.get(s.claudeSessionId)) ||
-              s.name;
+            const meta = s.claudeSessionId
+              ? sessionMetaMap.get(s.claudeSessionId)
+              : undefined;
+            const displayName = meta?.summary || s.name;
+            const lastActive = meta?.lastModified ?? s.createdAt;
 
             return (
               // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -167,37 +180,38 @@ export function Sidebar() {
                 onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
               >
                 <Codicon name="claude" size={12} />
-                <span className="flex-1 truncate text-xs">{displayName}</span>
-                <span
-                  className="shrink-0 text-[10px]"
-                  style={{ color: page.statusFg }}
-                >
-                  {formatAge(s.createdAt)}
-                </span>
-                {s.claudeSessionId && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (s.pinned) {
-                        unpinSession(s.id);
-                      } else {
-                        pinSession(s.id);
-                      }
-                    }}
-                    className={`ml-auto shrink-0 rounded cursor-pointer transition-opacity ${s.pinned ? "" : "opacity-0 group-hover:opacity-100"}`}
-                    style={{
-                      color: s.pinned ? page.fg : page.statusFg,
-                    }}
-                    title={
-                      s.pinned
-                        ? "Unpin session"
-                        : "Pin session (survives restart)"
-                    }
+                <div className="flex-1 min-w-0">
+                  {/* Top row: title + git stats */}
+                  <div className="flex items-center gap-1">
+                    <span className="flex-1 truncate text-xs">
+                      {displayName}
+                    </span>
+                    {meta?.gitBranch && meta?.gitDiffStat && (
+                      <span className="shrink-0 text-[10px]">
+                        <span style={{ color: "#91b362" }}>
+                          +{meta.gitDiffStat.insertions}
+                        </span>{" "}
+                        <span style={{ color: "#ea6c73" }}>
+                          -{meta.gitDiffStat.deletions}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                  {/* Bottom row: branch + time */}
+                  <div
+                    className="flex items-center gap-2 text-[10px]"
+                    style={{ color: page.statusFg }}
                   >
-                    <Codicon name={s.pinned ? "pinned" : "pin"} size={12} />
-                  </button>
-                )}
+                    {meta?.gitBranch && meta.gitBranch !== "HEAD" && (
+                      <span className="truncate max-w-[120px]">
+                        {meta.gitBranch}
+                      </span>
+                    )}
+                    <span className="ml-auto shrink-0">
+                      {formatAge(lastActive)}
+                    </span>
+                  </div>
+                </div>
               </div>
             );
           }
@@ -337,6 +351,16 @@ const ProjectItem = React.memo(function ProjectItem({
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}
           </span>
+          {project.gitDiffStat && (
+            <span className="shrink-0 text-[10px]">
+              <span style={{ color: "#91b362" }}>
+                +{project.gitDiffStat.insertions}
+              </span>{" "}
+              <span style={{ color: "#ea6c73" }}>
+                -{project.gitDiffStat.deletions}
+              </span>
+            </span>
+          )}
           <span
             className="shrink-0 text-[10px]"
             style={{ color: page.statusFg }}
