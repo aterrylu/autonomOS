@@ -86,7 +86,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   return (
     <div
       ref={ref}
-      className="absolute bottom-full left-0 mb-1 w-[380px] rounded-md p-3 text-xs shadow-lg"
+      className="absolute bottom-full left-0 mb-1 w-[340px] rounded-md p-3 text-xs shadow-lg"
       style={{
         background: page.bg,
         border: `1px solid ${page.border}`,

@@ -7,8 +7,8 @@ export const settingsPlugin: DashboardPlugin = {
   statusBarItems: [
     {
       id: "settings-gear",
-      align: "right",
-      priority: 100, // far right, like VSCode
+      align: "left",
+      priority: 100, // far left after hostname, like VSCode
       component: SettingsStatusBarItem,
     },
   ],
