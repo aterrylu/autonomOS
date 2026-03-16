@@ -278,7 +278,7 @@ let previewCounter = 0;
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
-      theme: "midnight",
+      theme: "void",
       activePane: null,
       status: "disconnected",
       sessions: [],
