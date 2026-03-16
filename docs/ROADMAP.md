@@ -25,7 +25,7 @@ Last updated: 2026-03-15
 - [x] Plugin system — modular architecture with VSCode-style status bar (ADR-013)
 - [x] Claude Usage plugin — rate limit tracking via claude.ai API (ADR-013)
 - [x] Instant terminal switching — VSCode-style keep-alive, no flash on switch (ADR-015)
-- [x] xterm.js 6 upgrade — native DEC 2026 synchronized output (flicker-free rendering)
+- [x] xterm.js 6 upgrade — native synchronized output support (flicker-free rendering)
 - [x] Auto-persist sessions — survive server restarts, PM2 daemon mode
 - [x] Settings panel — configure API keys and provider settings from dashboard
 - [x] Markdown preview — Ctrl+click .md links in terminal, mermaid diagram support (ADR-018)

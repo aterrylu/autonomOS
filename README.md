@@ -14,7 +14,7 @@ autonomOS is an **agent that manages agents**. The main interface is a PM-style 
 
 ### What's Built
 
-- **Terminal-first** — Claude Code sessions in high-quality embedded terminals (xterm.js 6, WebGL, DEC 2026 flicker-free rendering)
+- **Terminal-first** — Claude Code sessions in high-quality embedded terminals (xterm.js 6, WebGL, synchronized output for flicker-free rendering)
 - **Workspace browser** — all your Claude Code sessions grouped by repository via the Agent SDK
 - **Session management** — create, switch, resume, kill, auto-reconnect with output replay, auto-persist across restarts
 - **Markdown preview** — Ctrl+click `.md` links in terminal to preview with mermaid diagram support
@@ -26,7 +26,7 @@ autonomOS is an **agent that manages agents**. The main interface is a PM-style 
 ## Quick Start
 
 ```bash
-cp .env.example .env     # Configure (see sections below)
+cp -n .env.example .env  # Create .env if it doesn't exist (edit to configure)
 bun install              # Install dependencies
 
 make dev                 # Dev mode — API on :3101, Vite HMR on :5173
@@ -82,6 +82,7 @@ Deploy to a remote server via rsync:
 1. Add to `.env`:
    ```
    DEPLOY_HOST=your-server-hostname
+   # DEPLOY_PATH=~/autonomOS    # optional, defaults to ~/autonomOS
    ```
 2. Run `make deploy` — rsyncs code, installs deps, builds, and starts PM2
 

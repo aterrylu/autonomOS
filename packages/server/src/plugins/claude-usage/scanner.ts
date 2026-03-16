@@ -2,7 +2,7 @@
  * Claude usage fetcher — queries claude.ai's internal usage API.
  *
  * Uses a session cookie (from browser) to authenticate. The cookie
- * is read from CLAUDE_SESSION_COOKIE env var set in .env.
+ * Reads CLAUDE_SESSION_KEY and CLAUDE_ORG_ID from settings or .env.
  *
  * Uses impit (Rust-based browser impersonation) to match Chrome's
  * TLS fingerprint so Cloudflare doesn't block the request.
@@ -42,7 +42,7 @@ export interface RateLimitData {
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
-  /** True when CLAUDE_SESSION_COOKIE is not set */
+  /** True when CLAUDE_SESSION_KEY is not set */
   needsSetup?: boolean;
 }
 
@@ -73,7 +73,7 @@ function getSessionCookie(): string | null {
     if (orgId) parts.push(`lastActiveOrg=${orgId}`);
     return parts.join(";");
   }
-  return process.env.CLAUDE_SESSION_COOKIE?.trim() || null;
+  return process.env.CLAUDE_SESSION_KEY?.trim() || null;
 }
 
 /** Clear cached data — call after settings change */
@@ -159,7 +159,7 @@ export async function getRateLimits(): Promise<RateLimitData> {
   const cookie = getSessionCookie();
   if (!cookie) {
     return {
-      ...errorResult("CLAUDE_SESSION_COOKIE not set"),
+      ...errorResult("CLAUDE_SESSION_KEY not set"),
       needsSetup: true,
     };
   }
@@ -175,7 +175,7 @@ export async function getRateLimits(): Promise<RateLimitData> {
 
   if (status === "unauthorized") {
     return errorResult(
-      "Session cookie expired or invalid — please update CLAUDE_SESSION_COOKIE in .env",
+      "Session cookie expired or invalid — please update CLAUDE_SESSION_KEY in .env",
     );
   }
 
