@@ -22,7 +22,10 @@ fileRouter.get("/read", (c) => {
 
   const resolved = safePath(filePath);
   if (!resolved) {
-    return c.json({ error: "Access denied — path must be within home directory" }, 403);
+    return c.json(
+      { error: "Access denied — path must be within home directory" },
+      403,
+    );
   }
 
   if (!existsSync(resolved)) {
@@ -60,7 +63,11 @@ export function fileWatchRouter(upgradeWebSocket: UpgradeWebSocket) {
 
         const resolved = safePath(filePath);
 
-        if (!resolved || !existsSync(resolved) || !statSync(resolved).isFile()) {
+        if (
+          !resolved ||
+          !existsSync(resolved) ||
+          !statSync(resolved).isFile()
+        ) {
           ws.close(4004, "File not found");
           return;
         }

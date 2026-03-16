@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
@@ -9,9 +10,8 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { getPersistedSessions } from "./persisted.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
+import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { projectRouter } from "./routes/projects.js";
@@ -84,7 +84,8 @@ if (AUTH_TOKEN) {
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
       return c.json({ error: "Invalid token" }, 401);
     }
-    const isHttps = c.req.url.startsWith("https://") ||
+    const isHttps =
+      c.req.url.startsWith("https://") ||
       c.req.header("x-forwarded-proto") === "https";
     setCookie(c, "autonomos_token", token, {
       httpOnly: true,
@@ -162,7 +163,9 @@ const server = serve({ fetch: app.fetch, port }, () => {
   const base = `http://localhost:${port}`;
   console.log(`autonomOS server listening on ${base}`);
   if (AUTH_TOKEN) {
-    console.log(`Auth enabled (token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)})`);
+    console.log(
+      `Auth enabled (token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)})`,
+    );
   } else {
     console.log(`Auth disabled — set AUTONOMOS_TOKEN to enable`);
   }
