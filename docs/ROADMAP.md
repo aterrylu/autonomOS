@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-03-10
+Last updated: 2026-03-15
 
 ## Done
 
@@ -13,18 +13,26 @@ Last updated: 2026-03-10
 - [x] Themes: Midnight, Daylight, Void (Pitch Black)
 - [x] Zustand persist, single store (ADR-011)
 - [x] CI: GitHub Actions, Biome, TypeScript project references
-- [x] Mobile-responsive layout (100dvh, responsive sidebar overlay)
+- [x] Mobile-responsive layout (visualViewport for keyboard handling, responsive sidebar overlay)
 - [x] Project browser — Claude SDK listSessions() grouped by directory
 - [x] Resume existing sessions — click project session to resume or switch to live
 - [x] Auto-expand active project in sidebar
-- [x] Tailscale sidecar deployment (Docker + serve.json)
 - [x] Production serving — Hono serves built dashboard with SPA fallback
-- [x] Security hardening — CORS, input validation, path traversal checks
+- [x] Security hardening — CORS, input validation, path traversal checks, optional token auth
 - [x] Core loop verified (spawn → interact → reconnect → resume)
 - [x] JSONL title cache — workaround for SDK `customTitle` 64KB bug (mtime-cached JSONL parsing)
 - [x] Live/project session sync — green dots, name propagation
 - [x] Plugin system — modular architecture with VSCode-style status bar (ADR-013)
-- [x] Claude Usage plugin — token usage aggregation from JSONL with mtime caching
+- [x] Claude Usage plugin — rate limit tracking via claude.ai API (ADR-013)
+- [x] Instant terminal switching — VSCode-style keep-alive, no flash on switch (ADR-015)
+- [x] xterm.js 6 upgrade — native synchronized output support (flicker-free rendering)
+- [x] Auto-persist sessions — survive server restarts, PM2 daemon mode
+- [x] Settings panel — configure API keys and provider settings from dashboard
+- [x] Markdown preview — Ctrl+click .md links in terminal, mermaid diagram support (ADR-018)
+- [x] Codicon icons — VSCode-style iconography throughout UI
+- [x] Drag-to-reorder — reorder sessions and preview panes in sidebar
+- [x] Simplified Makefile — dev/prod split, PM2 daemon, removed Tailscale sidecar (ADR-017)
+- [x] Remote deployment — `make deploy` with rsync + PM2
 
 ## Now — Orchestrator Foundation
 
