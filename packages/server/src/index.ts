@@ -33,7 +33,14 @@ try {
   process.exit(1);
 }
 
-const app = new Hono();
+type NodeEnv = {
+  Bindings: {
+    incoming: IncomingMessage;
+    outgoing: ServerResponse;
+  };
+};
+
+const app = new Hono<NodeEnv>();
 
 const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
