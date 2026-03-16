@@ -84,18 +84,12 @@ if (AUTH_TOKEN) {
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
       return c.json({ error: "Invalid token" }, 401);
     }
-    const hostname = new URL(c.req.url).hostname;
-    const isLocal =
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname.endsWith(".local") ||
-      hostname.endsWith(".ts.net") ||
-      hostname.startsWith("10.") ||
-      hostname.startsWith("192.168.");
+    const isHttps = c.req.url.startsWith("https://") ||
+      c.req.header("x-forwarded-proto") === "https";
     setCookie(c, "autonomos_token", token, {
       httpOnly: true,
       sameSite: "Lax",
-      secure: !isLocal,
+      secure: isHttps,
       path: "/",
       maxAge: 60 * 60 * 24 * 365, // 1 year
     });

@@ -56,7 +56,7 @@ export function StatusBar() {
           return <Component key={item.id} />;
         })}
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 px-3">
         {right.map((item) => {
           const Component = item.component;
           return <Component key={item.id} />;

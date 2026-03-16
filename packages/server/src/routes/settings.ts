@@ -4,11 +4,19 @@ import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
-/** Mask sensitive values — only expose whether they're set */
+/** Redact secrets — show only last 4 chars */
+function redact(value: string | undefined): string | null {
+  if (!value) return null;
+  if (value.length <= 8) return "••••";
+  return `••••${value.slice(-4)}`;
+}
+
 function maskSettings(settings: AppSettings) {
   return {
-    claudeSessionKey: settings.claudeSessionKey ? "••••configured" : null,
+    claudeSessionKey: redact(settings.claudeSessionKey),
     claudeOrgId: settings.claudeOrgId || null,
+    anthropicBaseUrl: settings.anthropicBaseUrl || null,
+    anthropicAuthToken: redact(settings.anthropicAuthToken),
   };
 }
 
@@ -24,15 +32,28 @@ settingsRouter.put("/", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const partial: Record<string, string | undefined> = {};
+  const partial: Partial<AppSettings> = {};
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
   if (typeof body.claudeOrgId === "string") {
     partial.claudeOrgId = body.claudeOrgId.trim();
   }
+  if (typeof body.anthropicBaseUrl === "string") {
+    partial.anthropicBaseUrl = body.anthropicBaseUrl.trim();
+  }
+  if (typeof body.anthropicAuthToken === "string") {
+    partial.anthropicAuthToken = body.anthropicAuthToken.trim();
+  }
 
-  const updated = updateSettings(partial);
+  let updated: AppSettings;
+  try {
+    updated = updateSettings(partial);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Failed to save settings:", message);
+    return c.json({ error: "Failed to save settings" }, 500);
+  }
 
   // Invalidate usage cache so new credentials take effect immediately
   if (partial.claudeSessionKey || partial.claudeOrgId) {

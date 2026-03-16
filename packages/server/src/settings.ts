@@ -14,6 +14,10 @@ export interface AppSettings {
   claudeSessionKey?: string;
   /** Claude organization ID (UUID) */
   claudeOrgId?: string;
+  /** Anthropic API base URL (e.g. http://litellm for proxy) */
+  anthropicBaseUrl?: string;
+  /** Anthropic API auth token */
+  anthropicAuthToken?: string;
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
