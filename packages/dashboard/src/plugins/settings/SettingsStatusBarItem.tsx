@@ -111,7 +111,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         setLoaded(true);
       })
       .catch((err) => {
-        setError(`Failed to load: ${err instanceof Error ? err.message : "unknown"}`);
+        setError(
+          `Failed to load: ${err instanceof Error ? err.message : "unknown"}`,
+        );
         setLoaded(true);
       });
   }, []);
