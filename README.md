@@ -23,26 +23,26 @@ autonomOS is an **agent that manages agents**. The main interface is a PM-style 
 ## Quick Start
 
 ```bash
-# Install dependencies + build node-pty native addon
-make setup       # or: bun install
+bun install          # Install dependencies
 
-# Dev mode (Vite HMR + API server + Tailscale sidecar)
-make up
-
-# Prod mode (built dashboard served from API server)
-make up MODE=prod
-
-# Stop everything
-make down
+make dev             # Dev mode — API on :3101, Vite HMR on :5173
+make prod            # Prod mode — build dashboard + PM2 daemon on :3100
+make down            # Stop everything
 ```
 
-### Tailscale Setup
+### All Make Targets
 
-autonomOS runs on your machine and is exposed as `http://autonomos` on your tailnet via a Docker sidecar.
-
-1. Copy `.env.example` → `.env`
-2. Add your Tailscale OAuth key (see `.env.example` for instructions)
-3. `make up` — the sidecar creates a dedicated Tailscale node
+| Target | Description |
+|--------|-------------|
+| `make dev` | Start API server (watch mode, :3101) + Vite HMR (:5173) |
+| `make prod` | Build dashboard + start/restart PM2 daemon on :3100 |
+| `make stop` | Stop PM2 daemon |
+| `make restart` | Alias for `make prod` |
+| `make logs` | Tail PM2 logs (last 50 lines) |
+| `make check` | Lint (Biome) + typecheck (tsc) + tests |
+| `make fmt` | Auto-fix lint + formatting issues |
+| `make deploy` | Rsync to remote + `make prod` (set `DEPLOY_HOST` in `.env`) |
+| `make down` | Stop everything and kill all server processes |
 
 ### Claude Usage Tracking
 
@@ -57,16 +57,6 @@ The status bar shows your Claude rate limits (5h rolling, 7d weekly, per-model b
    CLAUDE_ORG_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
    ```
 
-### Without Tailscale
-
-Just run the server directly:
-
-```bash
-cd packages/server && npx tsx src/index.ts        # API only
-cd packages/server && npx tsx watch src/index.ts   # API with watch
-cd packages/dashboard && bun vite                  # Dashboard with HMR
-```
-
 ## Structure
 
 ```
@@ -74,8 +64,6 @@ packages/
   dashboard/    # React + Zustand + Tailwind — web UI
   server/       # Hono + node-pty — API, WebSocket, PTY management
   core/         # Shared types
-deploy/
-  docker-compose.yml   # Tailscale sidecar
 docs/
   DECISIONS.md  # Architectural decisions (append-only)
   ROADMAP.md    # Current priorities
@@ -86,8 +74,7 @@ docs/
 
 - **Frontend**: React 19, Zustand, Tailwind CSS 4, xterm.js
 - **Backend**: Hono, node-pty, Claude Agent SDK
-- **Infra**: Tailscale sidecar, Docker Compose
-- **Tooling**: Bun, Biome, TypeScript project references
+- **Tooling**: Bun, Biome, PM2, TypeScript project references
 
 ## Docs
 
