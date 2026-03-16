@@ -4,19 +4,19 @@ import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
-/** Show a prefix of secret values so the UI can display them */
-function redact(value: string | undefined, prefixLen = 6): string | null {
+/** Redact secrets — show only last 4 chars */
+function redact(value: string | undefined): string | null {
   if (!value) return null;
-  if (value.length <= prefixLen + 4) return "••••";
-  return `${value.slice(0, prefixLen)}••••`;
+  if (value.length <= 8) return "••••";
+  return `••••${value.slice(-4)}`;
 }
 
 function maskSettings(settings: AppSettings) {
   return {
-    claudeSessionKey: redact(settings.claudeSessionKey, 10),
+    claudeSessionKey: redact(settings.claudeSessionKey),
     claudeOrgId: settings.claudeOrgId || null,
     anthropicBaseUrl: settings.anthropicBaseUrl || null,
-    anthropicAuthToken: redact(settings.anthropicAuthToken, 5),
+    anthropicAuthToken: redact(settings.anthropicAuthToken),
   };
 }
 
@@ -32,7 +32,7 @@ settingsRouter.put("/", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const partial: Record<string, string | undefined> = {};
+  const partial: Partial<AppSettings> = {};
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }

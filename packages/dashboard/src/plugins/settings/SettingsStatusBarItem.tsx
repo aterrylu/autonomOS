@@ -10,7 +10,6 @@ interface MaskedSettings {
   anthropicAuthToken: string | null;
 }
 
-/** A single setting row — shows saved value or edit input */
 function SettingRow({
   label,
   value,
@@ -31,7 +30,6 @@ function SettingRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
 
-  // If no saved value, always show input
   const showInput = !value || editing;
 
   return (
@@ -101,21 +99,26 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState("");
   const [settings, setSettings] = useState<MaskedSettings | null>(null);
 
-  // Pending changes (only sent on save)
-  const pending = useRef<Record<string, string>>({});
+  const [pending, setPending] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetch("/api/settings")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data: MaskedSettings) => {
         setSettings(data);
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch((err) => {
+        setError(`Failed to load: ${err instanceof Error ? err.message : "unknown"}`);
+        setLoaded(true);
+      });
   }, []);
 
   async function handleSave() {
-    if (Object.keys(pending.current).length === 0) return;
+    if (Object.keys(pending).length === 0) return;
     setSaving(true);
     setError("");
     setSaved(false);
@@ -123,7 +126,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pending.current),
+        body: JSON.stringify(pending),
       });
       if (!res.ok) {
         setError(`Failed to save (HTTP ${res.status})`);
@@ -131,7 +134,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       }
       const updated: MaskedSettings = await res.json();
       setSettings(updated);
-      pending.current = {};
+      setPending({});
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -149,7 +152,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   };
 
   const labelStyle: React.CSSProperties = { color: page.statusFg };
-  const hasPending = Object.keys(pending.current).length > 0;
+  const hasPending = Object.keys(pending).length > 0;
 
   return (
     <div
@@ -168,7 +171,6 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         <div style={labelStyle}>Loading...</div>
       ) : (
         <div className="space-y-2.5">
-          {/* Anthropic / LiteLLM section */}
           <div
             className="text-[10px] font-medium uppercase tracking-wide"
             style={labelStyle}
@@ -182,7 +184,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             inputStyle={inputStyle}
             labelStyle={labelStyle}
             onChange={(v) => {
-              pending.current.anthropicBaseUrl = v;
+              setPending((p) => ({ ...p, anthropicBaseUrl: v }));
             }}
           />
           <SettingRow
@@ -193,7 +195,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             inputStyle={inputStyle}
             labelStyle={labelStyle}
             onChange={(v) => {
-              pending.current.anthropicAuthToken = v;
+              setPending((p) => ({ ...p, anthropicAuthToken: v }));
             }}
           />
 
@@ -216,9 +218,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
               color: "#fff",
             }}
           >
-            {saved && "Saved!"}
-            {!saved && saving && "Saving..."}
-            {!saved && !saving && "Save"}
+            {saved ? "Saved!" : saving ? "Saving..." : "Save"}
           </button>
 
           <div className="text-[10px]" style={labelStyle}>
@@ -234,12 +234,10 @@ export function SettingsStatusBarItem() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const [open, setOpen] = useState(false);
-  const toggleRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative">
       <button
-        ref={toggleRef}
         type="button"
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1 cursor-pointer hover:opacity-80"
