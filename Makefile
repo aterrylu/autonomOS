@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check deploy
+.PHONY: dev prod stop restart logs down check fmt deploy
 
 BUN := $(HOME)/.bun/bin/bun
 PM2 := $(HOME)/.bun/bin/pm2
@@ -62,6 +62,10 @@ deploy:
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.bun/bin:$$PATH && bun install'
 	@echo "Building and starting on $(DEPLOY_HOST)..."
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.local/bin:$$HOME/.bun/bin:$$PATH && make prod'
+
+# ── fmt: auto-fix lint + formatting ─────────────
+fmt:
+	npx biome check --write --unsafe packages/
 
 # ── check: lint + typecheck + test ───────────────
 check:

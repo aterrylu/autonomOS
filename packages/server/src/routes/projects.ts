@@ -108,7 +108,7 @@ projectRouter.get("/", async (c) => {
 
 async function getGitDiffStat(
   cwd: string,
-  branch: string,
+  _branch: string,
 ): Promise<GitDiffStat | undefined> {
   try {
     // Diff branch against main (three-dot = changes since branch diverged)

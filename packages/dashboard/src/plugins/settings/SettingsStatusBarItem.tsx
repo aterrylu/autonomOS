@@ -27,10 +27,9 @@ function SettingRow({
   labelStyle: React.CSSProperties;
   onChange: (val: string) => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  const isNew = !value;
+  const [editing, setEditing] = useState(isNew);
   const [draft, setDraft] = useState("");
-
-  const showInput = !value || editing;
 
   return (
     <div>
@@ -51,7 +50,7 @@ function SettingRow({
             Change
           </button>
         )}
-        {editing && (
+        {editing && !isNew && (
           <button
             type="button"
             onClick={() => setEditing(false)}
@@ -62,13 +61,13 @@ function SettingRow({
           </button>
         )}
       </div>
-      {showInput ? (
+      {editing ? (
         <input
           type={secret ? "password" : "text"}
-          value={editing ? draft : ""}
+          value={draft}
           onChange={(e) => {
             const v = e.target.value;
-            if (editing) setDraft(v);
+            setDraft(v);
             onChange(v);
           }}
           placeholder={placeholder}
@@ -112,7 +111,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         setLoaded(true);
       })
       .catch((err) => {
-        setError(`Failed to load: ${err instanceof Error ? err.message : "unknown"}`);
+        setError(
+          `Failed to load: ${err instanceof Error ? err.message : "unknown"}`,
+        );
         setLoaded(true);
       });
   }, []);
