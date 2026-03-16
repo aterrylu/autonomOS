@@ -26,12 +26,12 @@ Two paths that share a common core:
 autonomOS/
 ├── packages/
 │   ├── dashboard/          # Web UI — observability & control
+│   ├── server/             # Hono + node-pty — API, WebSocket, PTY management
 │   └── core/               # Shared agent abstractions & types
 ├── docs/
 │   ├── DECISIONS.md        # Architectural Decision Records (append-only)
 │   ├── ROADMAP.md          # Current priorities
-│   ├── RESEARCH.md         # Research findings & competitor analysis
-│   └── architecture.md     # Technical architecture (when ready)
+│   └── RESEARCH.md         # Research findings & competitor analysis
 ├── CLAUDE.md               # This file — agent development guide
 └── README.md               # Project overview
 ```
