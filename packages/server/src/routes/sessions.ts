@@ -5,10 +5,45 @@ import {
   getSession,
   killSession,
 } from "../sessions.js";
+import { batchGetTitles } from "../titleCache.js";
 
 export const sessionRouter = new Hono();
 
-sessionRouter.get("/", (c) => c.json(getAllSessions()));
+sessionRouter.get("/", async (c) => {
+  const sessions = getAllSessions();
+
+  // Enrich session names with latest JSONL titles (picks up /rename).
+  // Returns new objects to avoid mutating the in-memory session store.
+  const sessionsWithClaude = sessions
+    .filter((s) => s.claudeSessionId)
+    .map((s) => ({
+      sessionId: s.claudeSessionId!,
+      cwd: s.workingDirectory,
+    }));
+
+  if (sessionsWithClaude.length === 0) return c.json(sessions);
+
+  // Best-effort title enrichment — never block session list on title failures
+  let titles = new Map<string, string>();
+  try {
+    titles = await batchGetTitles(sessionsWithClaude);
+  } catch (err) {
+    console.warn(
+      "Failed to enrich session titles:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  const enriched = sessions.map((s) => {
+    if (s.claudeSessionId) {
+      const title = titles.get(s.claudeSessionId);
+      if (title) return { ...s, name: title };
+    }
+    return s;
+  });
+
+  return c.json(enriched);
+});
 
 sessionRouter.post("/", async (c) => {
   let body: Record<string, unknown>;
