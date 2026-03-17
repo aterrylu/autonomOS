@@ -19,6 +19,7 @@ dev:
 #   nohup + setsid detaches the restart so it survives even when
 #   triggered from a dashboard PTY session (which gets killed on restart).
 prod:
+	@command -v $(PM2) >/dev/null || { echo "Installing pm2..."; $(BUN) add -g pm2; }
 	@$(BUN) install
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
