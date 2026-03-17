@@ -159,7 +159,12 @@ if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
   app.use("/*", serveStatic({ root: dashboardDist }));
 
-  // SPA fallback — serve index.html for non-API/WS routes
+  // JSON 404 for unmatched API/WS/MCP routes (all methods)
+  app.all("/api/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+  app.all("/ws/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+  app.all("/mcp", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+
+  // SPA fallback — serve index.html for page routes
   const indexHtml = readFileSync(resolve(dashboardDist, "index.html"), "utf-8");
   app.get("*", (c) => c.html(indexHtml));
 }
