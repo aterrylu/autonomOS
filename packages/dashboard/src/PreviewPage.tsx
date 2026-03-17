@@ -52,11 +52,17 @@ export function PreviewPage() {
   useEffect(() => {
     if (!filePath) return;
     fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        return res.json();
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+        }
+        const data = await res.json();
+        if (typeof data?.content !== "string") {
+          throw new Error("Invalid response: missing content");
+        }
+        setContent(data.content);
       })
-      .then((data) => setContent(data.content))
       .catch((err) => setError(err.message));
   }, [filePath]);
 
