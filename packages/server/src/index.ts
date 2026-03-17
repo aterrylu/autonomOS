@@ -159,9 +159,15 @@ if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
   app.use("/*", serveStatic({ root: dashboardDist }));
 
-  // SPA fallback — serve index.html for non-API/WS routes
+  // SPA fallback — serve index.html for non-API/WS/MCP routes
   const indexHtml = readFileSync(resolve(dashboardDist, "index.html"), "utf-8");
-  app.get("*", (c) => c.html(indexHtml));
+  app.get("*", (c) => {
+    const path = c.req.path;
+    if (path.startsWith("/api/") || path.startsWith("/ws/") || path === "/mcp") {
+      return c.json({ error: "Not found" }, 404);
+    }
+    return c.html(indexHtml);
+  });
 }
 
 const port = Number(process.env.PORT) || 3000;
