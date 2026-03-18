@@ -201,9 +201,19 @@ function CompactionDivider({ item }: { item: SystemItem }) {
 function AssistantTurn({ turn }: { turn: Turn }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const hasContent = turn.items.some(
+    (i) => i.type === "text" || i.type === "tool_call" || i.type === "thinking"
+  );
+  if (!hasContent) return null;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
+      <div
+        className="text-[10px] font-mono font-semibold uppercase tracking-wider select-none"
+        style={{ color: page.statusFg }}
+      >
+        claude
+      </div>
       {turn.items.map((item) => {
         if (item.type === "thinking") {
           return <ThinkingBlock key={item.id} content={item.content} />;
@@ -227,6 +237,7 @@ function AssistantTurn({ turn }: { turn: Turn }) {
 function UserTurn({ turn }: { turn: Turn }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const green = THEMES[theme].terminal.green;
 
   const text = turn.items
     .filter((i): i is RenderItem & { type: "user_prompt"; content: string } => i.type === "user_prompt")
@@ -235,11 +246,24 @@ function UserTurn({ turn }: { turn: Turn }) {
 
   if (!text.trim()) return null;
 
+  const userBg = theme === "daylight"
+    ? "rgba(34, 134, 58, 0.06)"
+    : `${green}0f`;
+
   return (
-    <div className="flex gap-2">
-      <span className="shrink-0 font-mono text-sm font-semibold select-none" style={{ color: "#16825d" }}>
-        &gt;
-      </span>
+    <div
+      className="rounded px-3 py-2.5"
+      style={{
+        background: userBg,
+        borderLeft: `2px solid ${green}`,
+      }}
+    >
+      <div
+        className="text-[10px] font-mono font-semibold mb-1.5 select-none uppercase tracking-wider"
+        style={{ color: green }}
+      >
+        you
+      </div>
       <span className="text-sm font-mono whitespace-pre-wrap" style={{ color: page.fg }}>
         {text}
       </span>
@@ -260,7 +284,7 @@ function TUIThread({ turns }: { turns: Turn[] }) {
 
   return (
     <div
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4 font-mono text-sm"
+      className="flex-1 overflow-y-auto px-4 py-4 space-y-5 font-mono text-sm"
       style={{ color: page.fg }}
     >
       {turns.map((turn, i) => {
