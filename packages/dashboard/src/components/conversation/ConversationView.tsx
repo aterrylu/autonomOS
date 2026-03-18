@@ -207,13 +207,7 @@ function AssistantTurn({ turn }: { turn: Turn }) {
   if (!hasContent) return null;
 
   return (
-    <div className="space-y-1.5">
-      <div
-        className="text-[10px] font-mono font-semibold uppercase tracking-wider select-none"
-        style={{ color: page.statusFg }}
-      >
-        claude
-      </div>
+    <div className="space-y-1">
       {turn.items.map((item) => {
         if (item.type === "thinking") {
           return <ThinkingBlock key={item.id} content={item.content} />;
@@ -246,24 +240,9 @@ function UserTurn({ turn }: { turn: Turn }) {
 
   if (!text.trim()) return null;
 
-  const userBg = theme === "daylight"
-    ? "rgba(34, 134, 58, 0.06)"
-    : `${green}0f`;
-
   return (
-    <div
-      className="rounded px-3 py-2.5"
-      style={{
-        background: userBg,
-        borderLeft: `2px solid ${green}`,
-      }}
-    >
-      <div
-        className="text-[10px] font-mono font-semibold mb-1.5 select-none uppercase tracking-wider"
-        style={{ color: green }}
-      >
-        you
-      </div>
+    <div className="flex gap-2">
+      <span className="shrink-0 select-none font-semibold" style={{ color: green }}>›</span>
       <span className="text-sm font-mono whitespace-pre-wrap" style={{ color: page.fg }}>
         {text}
       </span>
@@ -273,10 +252,17 @@ function UserTurn({ turn }: { turn: Turn }) {
 
 // ── Main conversation view ───────────────────────────────────────────────────
 
+// Sub-agent color palette — cycles for each distinct sidechain agent
+const SIDECHAIN_COLORS = ["#53bdfa", "#fae38e", "#90e1c6", "#ea6c73", "#c792ea"];
+
 function TUIThread({ turns }: { turns: Turn[] }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Assign a stable color per sidechain "block" (each contiguous sidechain run)
+  let sidechainIndex = -1;
+  let lastWasSidechain = false;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
@@ -284,12 +270,16 @@ function TUIThread({ turns }: { turns: Turn[] }) {
 
   return (
     <div
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-5 font-mono text-sm"
+      className="flex-1 overflow-y-auto px-4 py-3 space-y-2 font-mono text-sm"
       style={{ color: page.fg }}
     >
       {turns.map((turn, i) => {
-        if (turn.role === "user") return <UserTurn key={i} turn={turn} />;
-        if (turn.role === "assistant") return <AssistantTurn key={i} turn={turn} />;
+        // Track sidechain color assignment
+        if (turn.isSidechain && !lastWasSidechain) sidechainIndex++;
+        lastWasSidechain = !!turn.isSidechain;
+
+        const sidechainColor = SIDECHAIN_COLORS[sidechainIndex % SIDECHAIN_COLORS.length];
+
         if (turn.role === "system") {
           return turn.items
             .filter((item): item is SystemItem =>
@@ -297,7 +287,31 @@ function TUIThread({ turns }: { turns: Turn[] }) {
             )
             .map((item) => <CompactionDivider key={item.id} item={item} />);
         }
-        return null;
+
+        const content = turn.role === "user"
+          ? <UserTurn turn={turn} />
+          : <AssistantTurn turn={turn} />;
+
+        if (!turn.isSidechain) return <div key={i}>{content}</div>;
+
+        // Sidechain: indent + colored left border
+        return (
+          <div
+            key={i}
+            className="pl-3 ml-2"
+            style={{ borderLeft: `2px solid ${sidechainColor}44` }}
+          >
+            {i === 0 || !turns[i - 1]?.isSidechain ? (
+              <div
+                className="text-[10px] uppercase tracking-wider mb-1 select-none"
+                style={{ color: sidechainColor }}
+              >
+                sub-agent
+              </div>
+            ) : null}
+            {content}
+          </div>
+        );
       })}
       <div ref={bottomRef} />
     </div>

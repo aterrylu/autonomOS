@@ -49,6 +49,7 @@ interface AssistantEntry {
   type: "assistant";
   uuid: string;
   timestamp: string;
+  isSidechain?: boolean;
   message: {
     role: "assistant";
     content: AssistantContentBlock[];
@@ -59,6 +60,7 @@ interface UserEntry {
   type: "user";
   uuid: string;
   timestamp: string;
+  isSidechain?: boolean;
   /** True on the compacted summary block that follows a compact_boundary */
   isCompactSummary?: boolean;
   message: {
@@ -94,6 +96,7 @@ interface PendingToolCall {
   toolUseId: string;
   input: Record<string, unknown>;
   id: string;
+  isSidechain?: boolean;
 }
 
 /**
@@ -152,8 +155,9 @@ export class ClaudeCodeParser implements SessionParser {
             ? "system"
             : "assistant";
 
-      if (!current || current.role !== role) {
-        current = { role, items: [] };
+      const isSidechain = (item as { isSidechain?: boolean }).isSidechain ?? false;
+      if (!current || current.role !== role || current.isSidechain !== isSidechain) {
+        current = { role, items: [], isSidechain };
         turns.push(current);
       }
       current.items.push(item);
@@ -175,6 +179,7 @@ export class ClaudeCodeParser implements SessionParser {
               type: "text",
               content: block.text,
               id: `${entry.uuid}-text-${items.length}`,
+              isSidechain: entry.isSidechain,
             } satisfies TextItem);
           }
           break;
@@ -185,6 +190,7 @@ export class ClaudeCodeParser implements SessionParser {
               type: "thinking",
               content: block.thinking,
               id: `${entry.uuid}-thinking-${items.length}`,
+              isSidechain: entry.isSidechain,
             } satisfies ThinkingItem);
           }
           break;
@@ -196,6 +202,7 @@ export class ClaudeCodeParser implements SessionParser {
             toolUseId: block.id,
             input: block.input,
             id: `${entry.uuid}-tool-${block.id}`,
+            isSidechain: entry.isSidechain,
           });
           break;
         }
@@ -222,6 +229,7 @@ export class ClaudeCodeParser implements SessionParser {
           type: "user_prompt",
           content: cleaned,
           id: `${entry.uuid}-user`,
+          isSidechain: entry.isSidechain,
         } satisfies UserPromptItem);
       }
       return;
@@ -243,6 +251,7 @@ export class ClaudeCodeParser implements SessionParser {
             isError: block.is_error ?? false,
             status: block.is_error ? "error" : "complete",
             id: pending.id,
+            isSidechain: pending.isSidechain,
           } satisfies ToolCallItem);
         }
       } else if (block.type === "text" && block.text) {
@@ -253,6 +262,7 @@ export class ClaudeCodeParser implements SessionParser {
             type: "user_prompt",
             content: cleaned,
             id: `${entry.uuid}-user`,
+            isSidechain: entry.isSidechain,
           } satisfies UserPromptItem);
         }
       }

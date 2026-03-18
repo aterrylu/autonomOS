@@ -12,6 +12,7 @@ export interface TextItem {
   content: string;
   /** Unique ID for keying in React */
   id: string;
+  isSidechain?: boolean;
 }
 
 /** A thinking/reasoning block from extended thinking */
@@ -19,6 +20,7 @@ export interface ThinkingItem {
   type: "thinking";
   content: string;
   id: string;
+  isSidechain?: boolean;
 }
 
 /** A tool invocation paired with its result */
@@ -31,6 +33,7 @@ export interface ToolCallItem {
   isError: boolean;
   status: "pending" | "complete" | "error";
   id: string;
+  isSidechain?: boolean;
 }
 
 /** A user message */
@@ -38,6 +41,7 @@ export interface UserPromptItem {
   type: "user_prompt";
   content: string;
   id: string;
+  isSidechain?: boolean;
 }
 
 /** A system event (init, compact, status, etc.) */
@@ -46,6 +50,7 @@ export interface SystemItem {
   subtype: string;
   content?: string;
   id: string;
+  isSidechain?: boolean;
 }
 
 export type RenderItem =
@@ -64,4 +69,6 @@ export interface Turn {
   role: "user" | "assistant" | "system";
   items: RenderItem[];
   timestamp?: string;
+  /** True when this turn is from a sub-agent (isSidechain JSONL entries) */
+  isSidechain?: boolean;
 }
