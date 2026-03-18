@@ -157,12 +157,15 @@ app.get("/ws/files/watch", fileWatchRouter(upgradeWebSocket));
 
 if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
-  app.use("/*", serveStatic({ root: dashboardDist }));
 
-  // JSON 404 for unmatched API/WS/MCP routes (all methods)
+  // JSON 404 for unmatched API/WS/MCP routes (all methods).
+  // Must be registered BEFORE serveStatic so it takes priority.
   app.all("/api/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
   app.all("/ws/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
   app.all("/mcp", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+
+  // Serve static dashboard assets (JS, CSS, images)
+  app.use("/*", serveStatic({ root: dashboardDist }));
 
   // SPA fallback — serve index.html for page routes
   const indexHtml = readFileSync(resolve(dashboardDist, "index.html"), "utf-8");
