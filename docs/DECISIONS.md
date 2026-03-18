@@ -486,3 +486,39 @@ resolveTitle?(nativeSessionId, cwd): Promise<string | null>
 - **Split pane in SessionPane** — IDE-like side-by-side terminal + preview. More complex (resize logic, per-session state, WebGL context management). Can be added later using the same renderer component.
 - **Slide-over overlay** — Middle ground between URL and split pane. But still covers the terminal and needs overlay state.
 - **External tool (VSCode preview)** — Already works but requires context-switching out of autonomOS.
+
+---
+
+## ADR-019: Plugin System Evolution — Notifications, Cost Tracking, and Session Enrichment
+**Date:** 2026-03-18
+**Decided by:** Terry + Claude
+**Source:** Claude Code session (plugin system research and planning)
+
+**Context:** The plugin system (ADR-013) ships with two plugins: Claude Usage (rate limits) and Settings. With the move toward orchestrator-first (ADR-012), the dashboard needs richer observability. A review of VSCode extension patterns identified features that translate to an agent orchestration dashboard.
+
+**Decisions (3 items):**
+
+### 1. Notification system is core infrastructure, not a plugin
+Notifications (toasts, event history, badges) will be a standalone core system — not a status bar plugin. Plugins and core features both publish to it via a `notify()` API. A status bar plugin can't handle toast stacking, history persistence, or the event bus architecture this requires.
+
+### 2. Cost tracking is a separate plugin from Claude Usage
+The current `claude-usage` plugin scrapes claude.ai's usage API for account-wide rate limit utilization. Cost tracking parses Claude Code's JSONL session files in `~/.claude/projects/` for per-session token counts and computes dollar costs by model pricing. Separate plugins because:
+- Different data sources (claude.ai API vs. local JSONL files)
+- Different granularity (account-wide vs. per-session)
+- Different auth (session cookie vs. filesystem access)
+
+### 3. PR status is per-session metadata, not a global plugin
+PR/CI status attaches to individual sessions, not a global status bar widget. One session may produce multiple PRs; different sessions have unrelated PRs. Data flow: agent creates PR → autonomOS detects (via git remote or GitHub API) → PR reference attached to session metadata → session UI shows PR badge with status.
+
+**Rationale:**
+- Notifications are cross-cutting infrastructure — every plugin and core feature needs to push status. A plugin can't own infrastructure that other plugins depend on.
+- Cost tracking and rate-limit tracking serve different users at different granularities. Conflating them creates a confusing "usage" plugin that does two unrelated things.
+- PRs only make sense in the context of the session that created them. A global PR widget loses the "which agent did this?" context that the orchestrator needs.
+
+**Alternatives considered:**
+- **Notification as a plugin** — Simpler to implement but wrong abstraction. Plugins shouldn't own cross-cutting infrastructure.
+- **Extend claude-usage for cost tracking** — Data sources are completely different. Would create a confusing plugin doing two unrelated things.
+- **Global PR dashboard plugin** — Shows all PRs in one panel. Rejected because PRs are meaningless without session context in an orchestrator. A global view could be added later as an optional panel.
+- **Proxy-based cost tracking** — Run a proxy between Claude Code and the API to capture token counts. Over-engineered; JSONL files already contain the data. Only needed for API-key users (not the current use case with Claude Max/Pro).
+
+---
