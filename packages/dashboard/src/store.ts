@@ -201,6 +201,7 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
 interface AppState {
   // Persisted
   theme: ThemeName;
+  viewMode: "terminal" | "conversation";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
@@ -216,6 +217,7 @@ interface AppState {
   cycleTheme: () => void;
   toggleSidebar: () => void;
   toggleAutonomousMode: () => void;
+  toggleViewMode: () => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -279,6 +281,7 @@ export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
       theme: "void",
+      viewMode: "terminal",
       activePane: null,
       status: "disconnected",
       sessions: [],
@@ -297,6 +300,8 @@ export const useStore = create<AppState>()(
       toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
       toggleAutonomousMode: () =>
         set({ autonomousMode: !get().autonomousMode }),
+      toggleViewMode: () =>
+        set({ viewMode: get().viewMode === "terminal" ? "conversation" : "terminal" }),
       setStatus: (status) => set({ status }),
       switchPane: (pane) => set({ activePane: pane }),
 
@@ -415,6 +420,7 @@ export const useStore = create<AppState>()(
       name: "autonomos",
       partialize: (state) => ({
         theme: state.theme,
+        viewMode: state.viewMode,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,

@@ -1,4 +1,5 @@
 import { THEMES, useStore } from "../store";
+import { ConversationView } from "./conversation/ConversationView";
 import { PreviewPane } from "./PreviewPane";
 import { SessionPane } from "./SessionPane";
 
@@ -9,6 +10,7 @@ import { SessionPane } from "./SessionPane";
  */
 export function SessionViewManager() {
   const activePane = useStore((s) => s.activePane);
+  const viewMode = useStore((s) => s.viewMode);
   const sessions = useStore((s) => s.sessions);
   const previewPanes = useStore((s) => s.previewPanes);
   const theme = useStore((s) => s.theme);
@@ -26,11 +28,14 @@ export function SessionViewManager() {
           Create or select a session to start
         </div>
       )}
+      {viewMode === "conversation" && activePane?.type === "session" && (
+        <ConversationView key={activePane.id} />
+      )}
       {sessions.map((s) => (
         <SessionPane
           key={s.id}
           sessionId={s.id}
-          visible={activePane?.type === "session" && activePane.id === s.id}
+          visible={viewMode === "terminal" && activePane?.type === "session" && activePane.id === s.id}
         />
       ))}
       {previewPanes.map((p) => (
