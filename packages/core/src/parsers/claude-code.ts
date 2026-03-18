@@ -292,6 +292,12 @@ export class ClaudeCodeParser implements SessionParser {
   private cleanUserContent(text: string): string {
     return text
       .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+      .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, "")
+      .replace(/<command-name>[\s\S]*?<\/command-name>/g, "")
+      .replace(/<command-message>[\s\S]*?<\/command-message>/g, "")
+      .replace(/<command-args>[\s\S]*?<\/command-args>/g, "")
+      .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, "")
+      .replace(/^No response requested\.$/m, "")
       .trim();
   }
 }
