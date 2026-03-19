@@ -1,45 +1,46 @@
+import { SplitLayout } from "../layout/SplitLayout";
 import { THEMES, useStore } from "../store";
-import { PreviewPane } from "./PreviewPane";
-import { SessionPane } from "./SessionPane";
+import { ConversationView } from "./conversation/ConversationView";
 
 /**
- * Manages all active pane views. Keeps terminal instances alive
- * across switches — only toggles visibility (like VSCode tabs).
- * Also renders preview panes alongside sessions.
+ * SessionViewManager — renders the main content area.
+ *
+ * In terminal mode: SplitLayout renders the pane tree chrome, and
+ * SessionMountLayer (in App.tsx) absolutely positions all terminals/previews
+ * into their slot rects.
+ *
+ * In conversation mode: the conversation view overlays the active session's
+ * chat transcript. Splits are still supported in terminal mode.
  */
 export function SessionViewManager() {
+  const layout = useStore((s) => s.layout);
   const activePane = useStore((s) => s.activePane);
-  const sessions = useStore((s) => s.sessions);
-  const previewPanes = useStore((s) => s.previewPanes);
+  const viewMode = useStore((s) => s.viewMode);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
-  const hasSelection = activePane !== null;
+  if (!activePane) {
+    return (
+      <div
+        className="flex flex-1 items-center justify-center text-sm"
+        style={{ color: page.statusFg }}
+      >
+        Create or select a session to start
+      </div>
+    );
+  }
+
+  if (viewMode === "conversation" && activePane.type === "session") {
+    return (
+      <div className="relative z-10 flex flex-1 overflow-hidden">
+        <ConversationView key={activePane.id} />
+      </div>
+    );
+  }
 
   return (
-    <>
-      {!hasSelection && (
-        <div
-          className="flex flex-1 items-center justify-center text-sm"
-          style={{ color: page.statusFg }}
-        >
-          Create or select a session to start
-        </div>
-      )}
-      {sessions.map((s) => (
-        <SessionPane
-          key={s.id}
-          sessionId={s.id}
-          visible={activePane?.type === "session" && activePane.id === s.id}
-        />
-      ))}
-      {previewPanes.map((p) => (
-        <PreviewPane
-          key={p.id}
-          preview={p}
-          visible={activePane?.type === "preview" && activePane.id === p.id}
-        />
-      ))}
-    </>
+    <div className="flex flex-1 overflow-hidden">
+      <SplitLayout node={layout} />
+    </div>
   );
 }

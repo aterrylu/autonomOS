@@ -7,7 +7,11 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.12.17",
+    "@assistant-ui/react-streamdown": "^0.1.5",
+    "@autonomos/core": "workspace:*",
     "@types/dompurify": "^3.2.0",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@vscode/codicons": "^0.0.45",
     "@xterm/addon-fit": "^0.11",
     "@xterm/addon-unicode11": "^0.9.0",
@@ -18,6 +22,8 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.7.3",
+    "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
     "zustand": "^5.0.11"
   },

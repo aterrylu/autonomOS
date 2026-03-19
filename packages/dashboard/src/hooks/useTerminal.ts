@@ -317,6 +317,15 @@ function handleKeyEvent(
 ): boolean {
   if (event.type !== "keydown") return true;
 
+  // On macOS, primaryMod = metaKey, so Ctrl+D/W/B would slip through the
+  // primaryMod check below. xterm would then send EOF (Ctrl+D) to the PTY and
+  // call stopPropagation(), preventing our App-level capture handler. Suppress
+  // these before primaryMod so the App-level shortcuts always take precedence.
+  if (event.ctrlKey) {
+    const k = event.key.toLowerCase();
+    if (k === "d" || k === "w" || k === "b") return false;
+  }
+
   const primaryMod = isMac ? event.metaKey : event.ctrlKey;
   if (!primaryMod) return true;
 
@@ -347,7 +356,10 @@ function handleKeyEvent(
       terminal.selectAll();
       return false;
     case "b":
-      // Suppress terminal input — App-level handler toggles the sidebar
+      return false;
+    case "d":
+      return false;
+    case "w":
       return false;
     case "o":
       // Pass Ctrl+O through to Claude Code (show details)

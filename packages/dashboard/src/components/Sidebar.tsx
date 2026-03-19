@@ -1,6 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  DRAG_TYPE,
+  encodeDragData,
+  useDragContext,
+} from "../layout/DragContext";
 import type { ActivePane, ProjectInfo } from "../store";
-import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
+import {
+  buildSidebarItems,
+  getGroupForPane,
+  sidebarItemPane,
+  THEMES,
+  useStore,
+} from "../store";
 import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -32,9 +43,12 @@ export function Sidebar() {
   const closePreview = useStore((s) => s.closePreview);
   const reorderPanes = useStore((s) => s.reorderPanes);
   const status = useStore((s) => s.status);
+  const groups = useStore((s) => s.groups);
+  const activeGroupId = useStore((s) => s.activeGroupId);
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
+  const { startDrag, endDrag } = useDragContext();
 
   const sidebarItems = useMemo(
     () => buildSidebarItems(sessions, previewPanes, paneOrder),
@@ -92,8 +106,12 @@ export function Sidebar() {
   const dragIdx = useRef<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
 
-  function handleDragStart(idx: number) {
+  function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
     dragIdx.current = idx;
+    const data = { pane };
+    e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
+    e.dataTransfer.effectAllowed = "move";
+    startDrag(data);
   }
 
   function handleDragOver(e: React.DragEvent, idx: number) {
@@ -112,6 +130,7 @@ export function Sidebar() {
   function handleDragEnd() {
     dragIdx.current = null;
     setDropIdx(null);
+    endDrag();
   }
 
   function isPaneActive(pane: ActivePane): boolean {
@@ -172,6 +191,8 @@ export function Sidebar() {
               : undefined;
             const displayName = meta?.summary || s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
+            const group = getGroupForPane(groups, s.id);
+            const isInActiveGroup = !!group && group.id === activeGroupId;
 
             return (
               // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -180,13 +201,22 @@ export function Sidebar() {
                 role="button"
                 tabIndex={0}
                 draggable
-                onDragStart={() => handleDragStart(idx)}
+                onDragStart={(e) => handleDragStart(e, idx, pane)}
                 onDragOver={(e) => handleDragOver(e, idx)}
                 onDrop={() => handleDrop(idx)}
                 onDragEnd={handleDragEnd}
-                className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+                className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                 style={{
-                  background: isActive ? page.border : "transparent",
+                  borderLeft: group
+                    ? `3px solid ${group.color}`
+                    : "3px solid transparent",
+                  paddingLeft: "9px",
+                  paddingRight: "12px",
+                  background: isActive
+                    ? page.border
+                    : isInActiveGroup
+                      ? `${group!.color}18`
+                      : "transparent",
                   ...(isDropTarget && {
                     boxShadow: `inset 0 2px 0 ${page.fg}`,
                   }),
@@ -234,7 +264,7 @@ export function Sidebar() {
               role="button"
               tabIndex={0}
               draggable
-              onDragStart={() => handleDragStart(idx)}
+              onDragStart={(e) => handleDragStart(e, idx, pane)}
               onDragOver={(e) => handleDragOver(e, idx)}
               onDrop={() => handleDrop(idx)}
               onDragEnd={handleDragEnd}

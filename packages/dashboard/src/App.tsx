@@ -3,6 +3,10 @@ import { Header } from "./components/Header";
 import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
+import { DragProvider } from "./layout/DragContext";
+import { LayoutProvider } from "./layout/LayoutContext";
+import { allLeafIds, findLeaf } from "./layout/layoutTree";
+import { SessionMountLayer } from "./layout/SessionMountLayer";
 import { THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
 
@@ -89,17 +93,64 @@ export function App() {
       .catch(() => setAuthState("error"));
   }, []);
 
-  // Cmd/Ctrl+B toggles sidebar (global handler — works even without a terminal)
+  // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
+
+      // Cmd/Ctrl+B — toggle sidebar
       if (mod && e.key === "b") {
         e.preventDefault();
         useStore.getState().toggleSidebar();
+        return;
+      }
+
+      // Ctrl+D — split focused pane vertically (side-by-side), new session
+      if (e.ctrlKey && !e.shiftKey && e.key === "d") {
+        e.preventDefault();
+        const { focusedLeafId, layout, sessions } = useStore.getState();
+        const leaf = findLeaf(layout, focusedLeafId);
+        const cwd =
+          leaf?.pane?.type === "session"
+            ? (sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ??
+              "~")
+            : "~";
+        useStore
+          .getState()
+          .createSessionIntoLeaf(focusedLeafId, "vertical", "second", cwd);
+        return;
+      }
+
+      // Ctrl+Shift+D — split focused pane horizontally (top/bottom), new session
+      if (e.ctrlKey && e.shiftKey && e.key === "D") {
+        e.preventDefault();
+        const { focusedLeafId, layout, sessions } = useStore.getState();
+        const leaf = findLeaf(layout, focusedLeafId);
+        const cwd =
+          leaf?.pane?.type === "session"
+            ? (sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ??
+              "~")
+            : "~";
+        useStore
+          .getState()
+          .createSessionIntoLeaf(focusedLeafId, "horizontal", "second", cwd);
+        return;
+      }
+
+      // Ctrl+W — close focused pane
+      if (e.ctrlKey && !e.shiftKey && e.key === "w") {
+        const { focusedLeafId, layout } = useStore.getState();
+        if (allLeafIds(layout).length > 1) {
+          e.preventDefault();
+          useStore.getState().closeLeaf(focusedLeafId);
+        }
+        return;
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    // Use capture phase so App shortcuts fire even when xterm.js has focus
+    // (xterm calls stopPropagation in the bubble phase, blocking window listeners)
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, []);
 
   if (authState === "checking") {
@@ -148,27 +199,37 @@ export function App() {
   }
 
   return (
-    <div
-      className="flex flex-col font-sans"
-      style={{ background: page.bg, color: page.fg, height: viewportHeight }}
-    >
-      <Header />
-      <div className="relative flex flex-1 overflow-hidden">
-        {sidebarOpen && (
-          <>
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop dismiss */}
-            <div
-              className="absolute inset-0 z-10 md:hidden"
-              onClick={() => useStore.getState().toggleSidebar()}
-            />
-            <Sidebar />
-          </>
-        )}
-        <SessionViewManager />
-      </div>
-      <StatusBar />
-    </div>
+    <DragProvider>
+      <LayoutProvider>
+        <div
+          className="flex flex-col font-sans"
+          style={{
+            background: page.bg,
+            color: page.fg,
+            height: viewportHeight,
+          }}
+        >
+          <Header />
+          <div className="relative flex flex-1 overflow-hidden">
+            {sidebarOpen && (
+              <>
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop dismiss */}
+                <div
+                  className="absolute inset-0 z-10 md:hidden"
+                  onClick={() => useStore.getState().toggleSidebar()}
+                />
+                <Sidebar />
+              </>
+            )}
+            <SessionViewManager />
+            {/* Absolutely positions all session/preview instances into their slot rects */}
+            <SessionMountLayer />
+          </div>
+          <StatusBar />
+        </div>
+      </LayoutProvider>
+    </DragProvider>
   );
 }
 

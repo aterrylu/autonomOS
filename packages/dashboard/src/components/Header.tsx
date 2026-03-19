@@ -5,9 +5,11 @@ export function Header() {
   const status = useStore((s) => s.status);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const autonomousMode = useStore((s) => s.autonomousMode);
+  const viewMode = useStore((s) => s.viewMode);
   const cycleTheme = useStore((s) => s.cycleTheme);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
+  const toggleViewMode = useStore((s) => s.toggleViewMode);
   const page = THEMES[theme].page;
 
   return (
@@ -29,6 +31,18 @@ export function Header() {
         {status}
       </span>
       <div className="ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleViewMode}
+          className="rounded-md px-3 py-1.5 text-sm cursor-pointer font-mono"
+          style={{
+            background: page.border,
+            color: viewMode === "conversation" ? page.fg : page.statusFg,
+          }}
+          title="Toggle between terminal and conversation view"
+        >
+          {viewMode === "terminal" ? "> terminal" : "≡ chat"}
+        </button>
         <button
           type="button"
           onClick={toggleAutonomousMode}

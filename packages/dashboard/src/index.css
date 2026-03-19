@@ -162,3 +162,87 @@ body {
   max-width: 100%;
   border-radius: 6px;
 }
+
+/* TUI conversation view — react-markdown container */
+.prose-tui {
+  line-height: 1.6;
+}
+.prose-tui p {
+  margin: 0.25em 0;
+}
+.prose-tui p:first-child {
+  margin-top: 0;
+}
+.prose-tui p:last-child {
+  margin-bottom: 0;
+}
+.prose-tui strong {
+  font-weight: 700;
+}
+.prose-tui em {
+  font-style: italic;
+}
+.prose-tui a {
+  text-decoration: underline;
+  opacity: 0.85;
+}
+.prose-tui a:hover {
+  opacity: 1;
+}
+.prose-tui ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  margin: 0.25em 0;
+}
+.prose-tui ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+  margin: 0.25em 0;
+}
+.prose-tui li {
+  margin: 0.1em 0;
+}
+.prose-tui code {
+  font-family: inherit;
+  font-size: 0.9em;
+  background: rgba(128, 128, 128, 0.15);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+.prose-tui pre {
+  margin: 0.5em 0;
+}
+.prose-tui h1,
+.prose-tui h2,
+.prose-tui h3 {
+  font-weight: 600;
+  margin: 0.75em 0 0.25em;
+}
+.prose-tui h1 {
+  font-size: 1.1em;
+}
+.prose-tui h2 {
+  font-size: 1em;
+}
+.prose-tui h3 {
+  font-size: 0.95em;
+}
+.prose-tui blockquote {
+  border-left: 2px solid currentColor;
+  padding-left: 0.75em;
+  opacity: 0.7;
+  margin: 0.25em 0;
+}
+.prose-tui table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+.prose-tui th,
+.prose-tui td {
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  padding: 0.25em 0.6em;
+}
+.prose-tui th {
+  font-weight: 600;
+}

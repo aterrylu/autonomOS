@@ -8,6 +8,7 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
     proxy: {
+      "/auth": "http://localhost:3101",
       "/api": "http://localhost:3101",
       "/ws": {
         target: "ws://localhost:3101",
