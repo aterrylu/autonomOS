@@ -1,13 +1,21 @@
 import { THEMES, useStore } from "../store";
+import { ConversationView } from "./conversation/ConversationView";
 import { SplitLayout } from "../layout/SplitLayout";
 
 /**
- * SessionViewManager — thin wrapper around SplitLayout.
- * All session/preview mounting is handled by SessionMountLayer in App.tsx.
+ * SessionViewManager — renders the main content area.
+ *
+ * In terminal mode: SplitLayout renders the pane tree chrome, and
+ * SessionMountLayer (in App.tsx) absolutely positions all terminals/previews
+ * into their slot rects.
+ *
+ * In conversation mode: the conversation view overlays the active session's
+ * chat transcript. Splits are still supported in terminal mode.
  */
 export function SessionViewManager() {
   const layout = useStore((s) => s.layout);
   const activePane = useStore((s) => s.activePane);
+  const viewMode = useStore((s) => s.viewMode);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
@@ -18,6 +26,14 @@ export function SessionViewManager() {
         style={{ color: page.statusFg }}
       >
         Create or select a session to start
+      </div>
+    );
+  }
+
+  if (viewMode === "conversation" && activePane.type === "session") {
+    return (
+      <div className="flex flex-1 overflow-hidden">
+        <ConversationView key={activePane.id} />
       </div>
     );
   }

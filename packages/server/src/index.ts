@@ -13,6 +13,7 @@ import { cors } from "hono/cors";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
+import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
@@ -123,6 +124,7 @@ if (AUTH_TOKEN) {
 app.get("/api/host", (c) => c.json({ hostname: hostname() }));
 
 // REST API
+app.route("/api/conversation", conversationRouter);
 app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
