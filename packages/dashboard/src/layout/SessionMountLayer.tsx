@@ -61,6 +61,7 @@ export function SessionMountLayer() {
               rect
                 ? {
                     position: "absolute",
+                    display: "flex",
                     left: rect.left,
                     top: rect.top,
                     width: rect.width,
@@ -83,6 +84,7 @@ export function SessionMountLayer() {
               rect
                 ? {
                     position: "absolute",
+                    display: "flex",
                     left: rect.left,
                     top: rect.top,
                     width: rect.width,

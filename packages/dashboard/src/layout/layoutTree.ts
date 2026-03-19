@@ -191,6 +191,20 @@ export function nextLeafId(root: LayoutNode, currentLeafId: string): string {
   return ids[(idx + 1) % ids.length];
 }
 
+/** Find the leaf whose pane matches a given pane id. */
+export function findLeafByPaneId(
+  node: LayoutNode,
+  paneId: string,
+): LayoutLeaf | null {
+  if (node.kind === "leaf") {
+    return node.pane?.id === paneId ? node : null;
+  }
+  return (
+    findLeafByPaneId(node.first, paneId) ??
+    findLeafByPaneId(node.second, paneId)
+  );
+}
+
 /** Create an initial single-leaf root from an optional active pane. */
 export function makeRootLeaf(pane: ActivePane | null): LayoutLeaf {
   return { kind: "leaf", id: newLeafId(), pane };

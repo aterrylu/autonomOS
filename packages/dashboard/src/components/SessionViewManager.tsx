@@ -32,14 +32,14 @@ export function SessionViewManager() {
 
   if (viewMode === "conversation" && activePane.type === "session") {
     return (
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative z-10 flex flex-1 overflow-hidden">
         <ConversationView key={activePane.id} />
       </div>
     );
   }
 
   return (
-    <div className="flex flex-1 overflow-hidden relative">
+    <div className="flex flex-1 overflow-hidden">
       <SplitLayout node={layout} />
     </div>
   );

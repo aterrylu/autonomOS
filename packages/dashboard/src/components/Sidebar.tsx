@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { DRAG_TYPE, encodeDragData, useDragContext } from "../layout/DragContext";
 import type { ActivePane, ProjectInfo } from "../store";
-import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
+import { buildSidebarItems, getGroupForPane, sidebarItemPane, THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -33,6 +33,8 @@ export function Sidebar() {
   const closePreview = useStore((s) => s.closePreview);
   const reorderPanes = useStore((s) => s.reorderPanes);
   const status = useStore((s) => s.status);
+  const groups = useStore((s) => s.groups);
+  const activeGroupId = useStore((s) => s.activeGroupId);
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
@@ -179,6 +181,8 @@ export function Sidebar() {
               : undefined;
             const displayName = meta?.summary || s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
+            const group = getGroupForPane(groups, s.id);
+            const isInActiveGroup = !!group && group.id === activeGroupId;
 
             return (
               // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -191,9 +195,16 @@ export function Sidebar() {
                 onDragOver={(e) => handleDragOver(e, idx)}
                 onDrop={() => handleDrop(idx)}
                 onDragEnd={handleDragEnd}
-                className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+                className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                 style={{
-                  background: isActive ? page.border : "transparent",
+                  borderLeft: group ? `3px solid ${group.color}` : "3px solid transparent",
+                  paddingLeft: "9px",
+                  paddingRight: "12px",
+                  background: isActive
+                    ? page.border
+                    : isInActiveGroup
+                      ? `${group!.color}18`
+                      : "transparent",
                   ...(isDropTarget && {
                     boxShadow: `inset 0 2px 0 ${page.fg}`,
                   }),

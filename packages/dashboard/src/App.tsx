@@ -139,8 +139,10 @@ export function App() {
         return;
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    // Use capture phase so App shortcuts fire even when xterm.js has focus
+    // (xterm calls stopPropagation in the bubble phase, blocking window listeners)
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, []);
 
   if (authState === "checking") {

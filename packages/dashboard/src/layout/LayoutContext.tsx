@@ -17,6 +17,8 @@ export interface SlotRect {
 interface LayoutContextValue {
   /** Register or update the bounding rect of a leaf slot. */
   registerSlot: (leafId: string, rect: SlotRect) => void;
+  /** Remove a leaf slot (called on PaneSlot unmount so stale rects don't linger). */
+  unregisterSlot: (leafId: string) => void;
   /** Get the current rect for a leaf slot (may be undefined if not yet registered). */
   getSlotRect: (leafId: string) => SlotRect | undefined;
   /** Get a snapshot of all registered slots (for SessionMountLayer). */
@@ -32,6 +34,10 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     slotsRef.current.set(leafId, rect);
   }, []);
 
+  const unregisterSlot = useCallback((leafId: string) => {
+    slotsRef.current.delete(leafId);
+  }, []);
+
   const getSlotRect = useCallback((leafId: string) => {
     return slotsRef.current.get(leafId);
   }, []);
@@ -41,7 +47,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <LayoutContext.Provider value={{ registerSlot, getSlotRect, getAllSlots }}>
+    <LayoutContext.Provider value={{ registerSlot, unregisterSlot, getSlotRect, getAllSlots }}>
       {children}
     </LayoutContext.Provider>
   );

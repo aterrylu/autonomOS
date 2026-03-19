@@ -58,10 +58,10 @@ function BranchNode({ branch }: { branch: LayoutBranch }) {
       </Panel>
       <PanelResizeHandle
         style={{
-          width: direction === "horizontal" ? "4px" : "100%",
-          height: direction === "vertical" ? "4px" : "100%",
+          width: orientation === "horizontal" ? "4px" : "100%",
+          height: orientation === "vertical" ? "4px" : "100%",
           background: page.border,
-          cursor: direction === "horizontal" ? "col-resize" : "row-resize",
+          cursor: orientation === "horizontal" ? "col-resize" : "row-resize",
           flexShrink: 0,
         }}
       />

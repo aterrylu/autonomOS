@@ -20,7 +20,7 @@ interface PaneSlotProps {
  */
 export function PaneSlot({ leafId, focused }: PaneSlotProps) {
   const slotRef = useRef<HTMLDivElement>(null);
-  const { registerSlot } = useLayoutContext();
+  const { registerSlot, unregisterSlot } = useLayoutContext();
   const layout = useStore((s) => s.layout);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -31,8 +31,8 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
   const leafCount = allLeafIds(layout).length;
 
   // Register slot rect + keep it updated via ResizeObserver.
-  // Coords are relative to the nearest "relative flex-1 overflow-hidden" container
-  // (the div wrapping SessionViewManager + SessionMountLayer in App.tsx).
+  // Coords are relative to the App-level "relative flex flex-1 overflow-hidden" div
+  // (the same ancestor that SessionMountLayer's absolute children are positioned within).
   useEffect(() => {
     const el = slotRef.current;
     if (!el) return;
@@ -60,8 +60,12 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
     updateRect();
     const ro = new ResizeObserver(updateRect);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [leafId, registerSlot]);
+    return () => {
+      ro.disconnect();
+      unregisterSlot(leafId);
+      notifySlotUpdate();
+    };
+  }, [leafId, registerSlot, unregisterSlot]);
 
   return (
     <div

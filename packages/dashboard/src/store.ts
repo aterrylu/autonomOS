@@ -4,7 +4,9 @@ import {
   type LayoutNode,
   type SplitDirection,
   type SplitSide,
+  allPanes,
   derivedActivePane,
+  findLeafByPaneId,
   insertLeaf,
   makeRootLeaf,
   nextLeafId,
@@ -65,6 +67,141 @@ export interface PreviewPaneInfo {
 export type ActivePane =
   | { type: "session"; id: string }
   | { type: "preview"; id: string };
+
+// ── Pane Groups ───────────────────────────────────────────────────────
+
+export const GROUP_COLORS = [
+  "#53bdfa", // blue
+  "#91b362", // green
+  "#e6b450", // yellow
+  "#ea6c73", // red
+  "#90e1c6", // cyan
+  "#fae38e", // magenta
+];
+
+let _groupCounter = 0;
+
+export interface PaneGroup {
+  id: string;
+  color: string;
+  memberPaneIds: string[];
+  savedLayout: LayoutNode;
+  savedFocusedLeafId: string;
+}
+
+/** Find which group a pane belongs to (if any). */
+export function getGroupForPane(
+  groups: Record<string, PaneGroup>,
+  paneId: string,
+): PaneGroup | null {
+  for (const g of Object.values(groups)) {
+    if (g.memberPaneIds.includes(paneId)) return g;
+  }
+  return null;
+}
+
+/** Pick the next unused group color, cycling through GROUP_COLORS. */
+function nextGroupColor(groups: Record<string, PaneGroup>): string {
+  const usedColors = new Set(Object.values(groups).map((g) => g.color));
+  return GROUP_COLORS.find((c) => !usedColors.has(c))
+    ?? GROUP_COLORS[_groupCounter % GROUP_COLORS.length];
+}
+
+/**
+ * Extend the active group with a new pane, or create a new group from
+ * the existing layout panes plus the new pane. Returns the updated groups
+ * record and the new active group id.
+ */
+function addPaneToGroup(
+  groups: Record<string, PaneGroup>,
+  activeGroupId: string | null,
+  existingPanes: ActivePane[],
+  newPaneId: string,
+  newLayout: LayoutNode,
+  newFocusedLeafId: string,
+): { groups: Record<string, PaneGroup>; activeGroupId: string } {
+  const updated = { ...groups };
+
+  if (activeGroupId && updated[activeGroupId]) {
+    updated[activeGroupId] = {
+      ...updated[activeGroupId],
+      memberPaneIds: [...updated[activeGroupId].memberPaneIds, newPaneId],
+      savedLayout: newLayout,
+      savedFocusedLeafId: newFocusedLeafId,
+    };
+    return { groups: updated, activeGroupId };
+  }
+
+  const memberIds = [...existingPanes.map((p) => p.id), newPaneId];
+  const color = nextGroupColor(updated);
+  _groupCounter++;
+  const groupId = `group-${Date.now()}-${_groupCounter}`;
+  updated[groupId] = {
+    id: groupId,
+    color,
+    memberPaneIds: memberIds,
+    savedLayout: newLayout,
+    savedFocusedLeafId: newFocusedLeafId,
+  };
+  return { groups: updated, activeGroupId: groupId };
+}
+
+/**
+ * After removing a leaf, prune the active group's member list.
+ * Dissolves the group if only 0-1 members remain.
+ */
+function syncGroupAfterRemoval(
+  groups: Record<string, PaneGroup>,
+  activeGroupId: string | null,
+  newLayout: LayoutNode,
+  newFocusedLeafId: string,
+): { groups: Record<string, PaneGroup>; activeGroupId: string | null } {
+  const updated = { ...groups };
+  let newActiveGroupId = activeGroupId;
+
+  if (activeGroupId && updated[activeGroupId]) {
+    const group = updated[activeGroupId];
+    const remainingIds = new Set(allPanes(newLayout).map((p) => p.id));
+    const updatedMembers = group.memberPaneIds.filter((id) => remainingIds.has(id));
+
+    if (updatedMembers.length <= 1) {
+      delete updated[activeGroupId];
+      newActiveGroupId = null;
+    } else {
+      updated[activeGroupId] = {
+        ...group,
+        memberPaneIds: updatedMembers,
+        savedLayout: newLayout,
+        savedFocusedLeafId: newFocusedLeafId,
+      };
+    }
+  }
+
+  return { groups: updated, activeGroupId: newActiveGroupId };
+}
+
+/**
+ * Save a layout + focus snapshot into the active group (if one exists).
+ * Returns a partial state update for `groups`, or an empty object if no group is active.
+ */
+function saveGroupSnapshot(
+  groups: Record<string, PaneGroup>,
+  activeGroupId: string | null,
+  layout: LayoutNode,
+  focusedLeafId: string,
+): Partial<Pick<AppState, "groups">> {
+  if (!activeGroupId || !groups[activeGroupId]) return {};
+  return {
+    groups: {
+      ...groups,
+      [activeGroupId]: {
+        ...groups[activeGroupId],
+        savedLayout: layout,
+        savedFocusedLeafId: focusedLeafId,
+      },
+    },
+  };
+}
 
 /** Sidebar item — unified type for sessions and previews */
 export type SidebarItem =
@@ -221,6 +358,8 @@ interface AppState {
   previewPanes: PreviewPaneInfo[];
   layout: LayoutNode;
   focusedLeafId: string;
+  groups: Record<string, PaneGroup>;
+  activeGroupId: string | null;
 
   // Transient
   status: string;
@@ -264,6 +403,11 @@ interface AppState {
   setLeafSizes: (branchId: string, sizes: [number, number]) => void;
   setFocusedLeaf: (leafId: string) => void;
   closeLeaf: (leafId: string) => void;
+  movePaneToLeaf: (
+    paneId: string,
+    targetLeafId: string,
+    zone: "center" | "north" | "south" | "east" | "west",
+  ) => void;
 }
 
 type SetState = (partial: Partial<AppState>) => void;
@@ -305,10 +449,10 @@ async function spawnSession(
   if (onSuccess) {
     onSuccess(session);
   } else {
-    set({
-      activePane: { type: "session", id: session.id },
-      status: "connected",
-    });
+    const pane: ActivePane = { type: "session", id: session.id };
+    // Use switchPane to properly exit any active group
+    get().switchPane(pane);
+    set({ status: "connected" });
   }
   await get().fetchSessions();
 }
@@ -333,6 +477,8 @@ export const useStore = create<AppState>()(
       previewPanes: [],
       layout: _initialRoot,
       focusedLeafId: _initialRoot.id,
+      groups: {},
+      activeGroupId: null,
 
       cycleTheme: () => {
         const current = get().theme;
@@ -346,7 +492,70 @@ export const useStore = create<AppState>()(
       toggleViewMode: () =>
         set({ viewMode: get().viewMode === "terminal" ? "conversation" : "terminal" }),
       setStatus: (status) => set({ status }),
-      switchPane: (pane) => set({ activePane: pane }),
+      switchPane: (pane) => {
+        if (!pane) {
+          set({ activePane: null });
+          return;
+        }
+        const { layout, focusedLeafId, groups, activeGroupId } = get();
+
+        // Case 1: pane is in the currently active group — just focus it
+        if (activeGroupId && groups[activeGroupId]?.memberPaneIds.includes(pane.id)) {
+          const leaf = findLeafByPaneId(layout, pane.id);
+          if (leaf) {
+            set({
+              focusedLeafId: leaf.id,
+              activePane: pane,
+            });
+            return;
+          }
+          // Stale memberPaneIds — pane listed but not in layout tree. Clean it up.
+          const group = groups[activeGroupId];
+          const cleaned = group.memberPaneIds.filter((id) => id !== pane.id);
+          set({
+            groups: {
+              ...groups,
+              [activeGroupId]: { ...group, memberPaneIds: cleaned },
+            },
+          });
+          // Fall through to Case 2/3/4 to navigate normally
+        }
+
+        // Case 2: navigating away — save current group snapshot if active
+        const updatedGroups = { ...groups };
+        if (activeGroupId && updatedGroups[activeGroupId]) {
+          updatedGroups[activeGroupId] = {
+            ...updatedGroups[activeGroupId],
+            savedLayout: layout,
+            savedFocusedLeafId: focusedLeafId,
+          };
+        }
+
+        // Case 3: target pane belongs to another group — restore its layout
+        const targetGroup = getGroupForPane(updatedGroups, pane.id);
+        if (targetGroup) {
+          const restoredLayout = targetGroup.savedLayout;
+          const leaf = findLeafByPaneId(restoredLayout, pane.id);
+          set({
+            groups: updatedGroups,
+            activeGroupId: targetGroup.id,
+            layout: restoredLayout,
+            focusedLeafId: leaf?.id ?? targetGroup.savedFocusedLeafId,
+            activePane: pane,
+          });
+          return;
+        }
+
+        // Case 4: ungrouped pane — single-pane view
+        const rootLeaf = makeRootLeaf(pane);
+        set({
+          groups: updatedGroups,
+          activeGroupId: null,
+          layout: rootLeaf,
+          focusedLeafId: rootLeaf.id,
+          activePane: pane,
+        });
+      },
 
       fetchSessions: async () => {
         const res = await fetch("/api/sessions").catch(() => null);
@@ -385,10 +594,9 @@ export const useStore = create<AppState>()(
           (s) => s.claudeSessionId === claudeSessionId,
         );
         if (existing) {
-          set({
-            activePane: { type: "session", id: existing.id },
-            status: "connected",
-          });
+          const pane: ActivePane = { type: "session", id: existing.id };
+          get().switchPane(pane);
+          set({ status: "connected" });
           return;
         }
         await spawnSession(
@@ -419,17 +627,21 @@ export const useStore = create<AppState>()(
         // If already open, just switch to it
         const existing = previewPanes.find((p) => p.filePath === filePath);
         if (existing) {
-          set({ activePane: { type: "preview", id: existing.id } });
+          const { layout, focusedLeafId } = get();
+          const activeP: ActivePane = { type: "preview", id: existing.id };
+          set({ activePane: activeP, layout: setLeafPane(layout, focusedLeafId, activeP) });
           return;
         }
         const id = `preview-${Date.now()}-${++previewCounter}`;
         const title = filePath.split("/").pop() || filePath;
         const pane: PreviewPaneInfo = { id, filePath, title };
-        const { paneOrder } = get();
+        const { paneOrder, layout, focusedLeafId } = get();
+        const activeP: ActivePane = { type: "preview", id };
         set({
           previewPanes: [...previewPanes, pane],
           paneOrder: [...paneOrder, previewOrderKey(id)],
-          activePane: { type: "preview", id },
+          activePane: activeP,
+          layout: setLeafPane(layout, focusedLeafId, activeP),
         });
       },
 
@@ -462,7 +674,7 @@ export const useStore = create<AppState>()(
       // ── Layout / split-pane actions ──────────────────────────────────────
 
       splitLeafWithPane: (leafId, direction, newSide, pane) => {
-        const { layout } = get();
+        const { layout, groups, activeGroupId } = get();
         const { root, newLeafId: newId } = insertLeaf(
           layout,
           leafId,
@@ -470,12 +682,23 @@ export const useStore = create<AppState>()(
           newSide,
           pane,
         );
-        set({ layout: root, focusedLeafId: newId });
+
+        const groupUpdates = pane
+          ? addPaneToGroup(groups, activeGroupId, allPanes(layout), pane.id, root, newId)
+          : { groups, activeGroupId };
+
+        set({
+          layout: root,
+          focusedLeafId: newId,
+          groups: groupUpdates.groups,
+          activeGroupId: groupUpdates.activeGroupId,
+        });
         if (pane) set({ activePane: pane, status: "connected" });
       },
 
       createSessionIntoLeaf: async (leafId, direction, newSide, cwd = "~") => {
         const { layout } = get();
+        const existingPanes = allPanes(layout);
         // Reserve a slot by inserting a null-pane leaf first (shows loading state)
         const { root: reservedRoot, newLeafId: newId } = insertLeaf(
           layout,
@@ -495,21 +718,40 @@ export const useStore = create<AppState>()(
           (session) => {
             const pane: ActivePane = { type: "session", id: session.id };
             const updatedLayout = setLeafPane(get().layout, newId, pane);
-            set({ layout: updatedLayout, activePane: pane, status: "connected" });
+            const groupUpdates = addPaneToGroup(
+              get().groups, get().activeGroupId,
+              existingPanes, pane.id, updatedLayout, newId,
+            );
+
+            set({
+              layout: updatedLayout,
+              activePane: pane,
+              status: "connected",
+              groups: groupUpdates.groups,
+              activeGroupId: groupUpdates.activeGroupId,
+            });
           },
         );
       },
 
       setLeafPane: (leafId, pane) => {
-        const { layout } = get();
+        const { layout, activeGroupId, groups } = get();
         const updated = setLeafPane(layout, leafId, pane);
-        set({ layout: updated, focusedLeafId: leafId });
-        if (pane) set({ activePane: pane });
+        set({
+          layout: updated,
+          focusedLeafId: leafId,
+          ...(pane && { activePane: pane }),
+          ...saveGroupSnapshot(groups, activeGroupId, updated, leafId),
+        });
       },
 
       setLeafSizes: (branchId, sizes) => {
-        const { layout } = get();
-        set({ layout: updateBranchSizes(layout, branchId, sizes) });
+        const { layout, activeGroupId, groups, focusedLeafId } = get();
+        const updatedLayout = updateBranchSizes(layout, branchId, sizes);
+        set({
+          layout: updatedLayout,
+          ...saveGroupSnapshot(groups, activeGroupId, updatedLayout, focusedLeafId),
+        });
       },
 
       setFocusedLeaf: (leafId) => {
@@ -521,18 +763,73 @@ export const useStore = create<AppState>()(
       },
 
       closeLeaf: (leafId) => {
-        const { layout, focusedLeafId } = get();
+        const { layout, focusedLeafId, groups, activeGroupId } = get();
         const newRoot = removeLeaf(layout, leafId);
         if (!newRoot) return; // Don't remove the last leaf
-        // If closing the focused leaf, focus the next available leaf
+
         const newFocused =
           focusedLeafId === leafId
             ? nextLeafId(newRoot, leafId)
             : focusedLeafId;
+
+        const groupUpdates = syncGroupAfterRemoval(groups, activeGroupId, newRoot, newFocused);
+
         set({
           layout: newRoot,
           focusedLeafId: newFocused,
           activePane: derivedActivePane(newRoot, newFocused),
+          ...groupUpdates,
+        });
+      },
+
+      movePaneToLeaf: (paneId, targetLeafId, zone) => {
+        const { layout, activeGroupId, groups } = get();
+        const pane = allPanes(layout).find((p) => p.id === paneId);
+        if (!pane) return;
+
+        const sourceLeaf = findLeafByPaneId(layout, paneId);
+        if (!sourceLeaf) return;
+
+        // Don't drop on yourself
+        if (sourceLeaf.id === targetLeafId && zone === "center") return;
+
+        let result: LayoutNode;
+        let focusLeafId: string;
+
+        if (zone === "center") {
+          // Replace: put dragged pane in target, remove source leaf
+          const withTarget = setLeafPane(layout, targetLeafId, pane);
+          const cleaned = removeLeaf(withTarget, sourceLeaf.id);
+          result = cleaned ?? withTarget;
+          focusLeafId = targetLeafId;
+        } else {
+          // Directional: split target, then remove source
+          const directionMap = {
+            north: ["vertical", "first"],
+            south: ["vertical", "second"],
+            west: ["horizontal", "first"],
+            east: ["horizontal", "second"],
+          } as const;
+          const [dir, side] = directionMap[zone];
+          const { root: split, newLeafId: newId } = insertLeaf(
+            layout,
+            targetLeafId,
+            dir,
+            side,
+            pane,
+          );
+          const cleaned = removeLeaf(split, sourceLeaf.id);
+          result = cleaned ?? split;
+          focusLeafId = newId;
+        }
+
+        const groupUpdates = syncGroupAfterRemoval(groups, activeGroupId, result, focusLeafId);
+
+        set({
+          layout: result,
+          focusedLeafId: focusLeafId,
+          activePane: pane,
+          ...groupUpdates,
         });
       },
     };
@@ -549,6 +846,8 @@ export const useStore = create<AppState>()(
         previewPanes: state.previewPanes,
         layout: state.layout,
         focusedLeafId: state.focusedLeafId,
+        groups: state.groups,
+        activeGroupId: state.activeGroupId,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Record<string, unknown>;
@@ -586,6 +885,14 @@ export const useStore = create<AppState>()(
           const rootLeaf = makeRootLeaf(merged.activePane);
           merged.layout = rootLeaf;
           merged.focusedLeafId = rootLeaf.id;
+        }
+
+        // Restore groups
+        if (saved?.groups && typeof saved.groups === "object") {
+          merged.groups = saved.groups as Record<string, PaneGroup>;
+        }
+        if (typeof saved?.activeGroupId === "string") {
+          merged.activeGroupId = saved.activeGroupId;
         }
 
         return merged;
