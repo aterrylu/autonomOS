@@ -36,10 +36,7 @@ export function newBranchId(): string {
 // ── Pure helpers ───────────────────────────────────────────────────────────
 
 /** Find a leaf node by id. Returns null if not found. */
-export function findLeaf(
-  node: LayoutNode,
-  leafId: string,
-): LayoutLeaf | null {
+export function findLeaf(node: LayoutNode, leafId: string): LayoutLeaf | null {
   if (node.kind === "leaf") return node.id === leafId ? node : null;
   return findLeaf(node.first, leafId) ?? findLeaf(node.second, leafId);
 }

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { PreviewPane } from "../components/PreviewPane";
 import { SessionPane } from "../components/SessionPane";
 import { useStore } from "../store";
-import { allLeafIds, findLeaf } from "./layoutTree";
 import { type SlotRect, useLayoutContext } from "./LayoutContext";
+import { allLeafIds, findLeaf } from "./layoutTree";
 
 /**
  * SessionMountLayer — mounts ALL sessions and previews once at the app root,
@@ -28,6 +28,7 @@ export function SessionMountLayer() {
   useSlotUpdateTrigger(triggerUpdate);
 
   // Also re-render on window resize (sidebar toggle, viewport change)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: triggerUpdate is stable (only calls setTick)
   useEffect(() => {
     window.addEventListener("resize", triggerUpdate);
     return () => window.removeEventListener("resize", triggerUpdate);

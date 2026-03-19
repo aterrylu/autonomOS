@@ -1,7 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { DRAG_TYPE, encodeDragData, useDragContext } from "../layout/DragContext";
+import {
+  DRAG_TYPE,
+  encodeDragData,
+  useDragContext,
+} from "../layout/DragContext";
 import type { ActivePane, ProjectInfo } from "../store";
-import { buildSidebarItems, getGroupForPane, sidebarItemPane, THEMES, useStore } from "../store";
+import {
+  buildSidebarItems,
+  getGroupForPane,
+  sidebarItemPane,
+  THEMES,
+  useStore,
+} from "../store";
 import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -197,7 +207,9 @@ export function Sidebar() {
                 onDragEnd={handleDragEnd}
                 className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                 style={{
-                  borderLeft: group ? `3px solid ${group.color}` : "3px solid transparent",
+                  borderLeft: group
+                    ? `3px solid ${group.color}`
+                    : "3px solid transparent",
                   paddingLeft: "9px",
                   paddingRight: "12px",
                   background: isActive

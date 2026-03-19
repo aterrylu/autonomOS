@@ -1,6 +1,6 @@
+import { SplitLayout } from "../layout/SplitLayout";
 import { THEMES, useStore } from "../store";
 import { ConversationView } from "./conversation/ConversationView";
-import { SplitLayout } from "../layout/SplitLayout";
 
 /**
  * SessionViewManager — renders the main content area.

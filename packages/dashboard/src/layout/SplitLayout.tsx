@@ -1,6 +1,6 @@
 import {
-  Group as PanelGroup,
   Panel,
+  Group as PanelGroup,
   Separator as PanelResizeHandle,
 } from "react-resizable-panels";
 import { THEMES, useStore } from "../store";
@@ -29,9 +29,7 @@ export function SplitLayout({ node }: SplitLayoutProps) {
 
 function LeafNode({ leaf }: { leaf: LayoutLeaf }) {
   const focusedLeafId = useStore((s) => s.focusedLeafId);
-  return (
-    <PaneSlot leafId={leaf.id} focused={leaf.id === focusedLeafId} />
-  );
+  return <PaneSlot leafId={leaf.id} focused={leaf.id === focusedLeafId} />;
 }
 
 function BranchNode({ branch }: { branch: LayoutBranch }) {

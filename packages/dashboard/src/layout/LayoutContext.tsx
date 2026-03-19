@@ -47,7 +47,9 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <LayoutContext.Provider value={{ registerSlot, unregisterSlot, getSlotRect, getAllSlots }}>
+    <LayoutContext.Provider
+      value={{ registerSlot, unregisterSlot, getSlotRect, getAllSlots }}
+    >
       {children}
     </LayoutContext.Provider>
   );

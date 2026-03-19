@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useStore } from "../store";
-import { findLeafByPaneId } from "./layoutTree";
 import { useDragContext } from "./DragContext";
+import { findLeafByPaneId } from "./layoutTree";
 
 type SplitZone = "north" | "south" | "east" | "west" | "center";
 
@@ -90,13 +90,41 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
     };
     switch (zone) {
       case "north":
-        return { ...base, top: 0, left: 0, right: 0, height: "50%", borderBottom: "2px solid rgba(83, 189, 250, 0.8)" };
+        return {
+          ...base,
+          top: 0,
+          left: 0,
+          right: 0,
+          height: "50%",
+          borderBottom: "2px solid rgba(83, 189, 250, 0.8)",
+        };
       case "south":
-        return { ...base, bottom: 0, left: 0, right: 0, height: "50%", borderTop: "2px solid rgba(83, 189, 250, 0.8)" };
+        return {
+          ...base,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: "50%",
+          borderTop: "2px solid rgba(83, 189, 250, 0.8)",
+        };
       case "west":
-        return { ...base, top: 0, left: 0, bottom: 0, width: "50%", borderRight: "2px solid rgba(83, 189, 250, 0.8)" };
+        return {
+          ...base,
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width: "50%",
+          borderRight: "2px solid rgba(83, 189, 250, 0.8)",
+        };
       case "east":
-        return { ...base, top: 0, right: 0, bottom: 0, width: "50%", borderLeft: "2px solid rgba(83, 189, 250, 0.8)" };
+        return {
+          ...base,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: "50%",
+          borderLeft: "2px solid rgba(83, 189, 250, 0.8)",
+        };
     }
   }
 
@@ -123,6 +151,7 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
   const label = dropLabel();
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: drag target for split preview
     <div
       ref={containerRef}
       className="absolute inset-0 z-20"

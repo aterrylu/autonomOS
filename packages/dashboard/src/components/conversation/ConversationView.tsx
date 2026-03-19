@@ -1,9 +1,14 @@
-import type { RenderItem, SystemItem, ToolCallItem, Turn } from "@autonomos/core";
+import type {
+  RenderItem,
+  SystemItem,
+  ToolCallItem,
+  Turn,
+} from "@autonomos/core";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { useEffect, useRef, useState } from "react";
+import remarkGfm from "remark-gfm";
 import { THEMES, useStore } from "../../store";
 import { DiffView } from "./DiffView";
 
@@ -17,7 +22,11 @@ interface ConversationData {
 // ── Markdown renderer with syntax-highlighted code blocks ────────────────────
 
 const mdComponents = {
-  code({ className, children, ...props }: React.ComponentProps<"code"> & { inline?: boolean }) {
+  code({
+    className,
+    children,
+    ...props
+  }: React.ComponentProps<"code"> & { inline?: boolean }) {
     const lang = (className || "").match(/^language-(\w+)$/)?.[1];
     if (!props.inline && lang) {
       return (
@@ -25,13 +34,21 @@ const mdComponents = {
           style={vscDarkPlus}
           language={lang}
           PreTag="div"
-          customStyle={{ margin: "0.5em 0", borderRadius: "4px", fontSize: "11px" }}
+          customStyle={{
+            margin: "0.5em 0",
+            borderRadius: "4px",
+            fontSize: "11px",
+          }}
         >
           {String(children).replace(/\n$/, "")}
         </SyntaxHighlighter>
       );
     }
-    return <code className={className} {...props}>{children}</code>;
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
   },
 };
 
@@ -47,14 +64,19 @@ function MarkdownText({ children }: { children: string }) {
 
 function toolSummary(toolName: string, input: Record<string, unknown>): string {
   switch (toolName) {
-    case "Bash": return String(input.command || "").slice(0, 100);
+    case "Bash":
+      return String(input.command || "").slice(0, 100);
     case "Read":
     case "Write":
-    case "Edit": return String(input.file_path || "");
+    case "Edit":
+      return String(input.file_path || "");
     case "Glob":
-    case "Grep": return String(input.pattern || input.glob || "");
-    case "Agent": return String(input.description || "").slice(0, 80);
-    default: return Object.values(input).map(String).join(" ").slice(0, 80);
+    case "Grep":
+      return String(input.pattern || input.glob || "");
+    case "Agent":
+      return String(input.description || "").slice(0, 80);
+    default:
+      return Object.values(input).map(String).join(" ").slice(0, 80);
   }
 }
 
@@ -80,9 +102,16 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
         className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left bg-transparent border-none"
         onClick={() => setExpanded(!expanded)}
       >
-        <span style={{ color: dotColor }} className="shrink-0 w-3">{dot}</span>
-        <span className="font-semibold shrink-0" style={{ color: page.fg }}>{item.toolName}</span>
-        <span className="truncate flex-1 text-[11px]" style={{ color: page.statusFg }}>
+        <span style={{ color: dotColor }} className="shrink-0 w-3">
+          {dot}
+        </span>
+        <span className="font-semibold shrink-0" style={{ color: page.fg }}>
+          {item.toolName}
+        </span>
+        <span
+          className="truncate flex-1 text-[11px]"
+          style={{ color: page.statusFg }}
+        >
           {toolSummary(item.toolName, item.input)}
         </span>
         <span className="text-[10px] shrink-0" style={{ color: page.statusFg }}>
@@ -91,11 +120,17 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
       </button>
 
       {expanded && (
-        <div className="px-3 pb-2.5 space-y-2" style={{ borderTop: `1px solid ${page.border}` }}>
+        <div
+          className="px-3 pb-2.5 space-y-2"
+          style={{ borderTop: `1px solid ${page.border}` }}
+        >
           {item.toolName === "Edit" ? (
             <div className="pt-2">
               {!!item.input.file_path && (
-                <div className="text-[11px] mb-1.5" style={{ color: page.statusFg }}>
+                <div
+                  className="text-[11px] mb-1.5"
+                  style={{ color: page.statusFg }}
+                >
                   {String(item.input.file_path)}
                 </div>
               )}
@@ -107,7 +142,12 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
             </div>
           ) : (
             <div className="pt-2">
-              <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: page.statusFg }}>Input</div>
+              <div
+                className="text-[10px] uppercase tracking-wider mb-1"
+                style={{ color: page.statusFg }}
+              >
+                Input
+              </div>
               <pre
                 className="whitespace-pre-wrap break-all text-[11px] rounded p-2"
                 style={{ color: page.fg, background: codeBg }}
@@ -127,7 +167,10 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
               </div>
               <pre
                 className="whitespace-pre-wrap break-all text-[11px] max-h-48 overflow-y-auto rounded p-2"
-                style={{ color: isError ? "#ea6c73" : page.fg, background: codeBg }}
+                style={{
+                  color: isError ? "#ea6c73" : page.fg,
+                  background: codeBg,
+                }}
               >
                 {item.result.length > 2000
                   ? `${item.result.slice(0, 2000)}\n… (${item.result.length.toLocaleString()} chars)`
@@ -165,7 +208,10 @@ function ThinkingBlock({ content }: { content: string }) {
         <span className="text-[10px]">{expanded ? "▾" : "▸"}</span>
       </button>
       {expanded && (
-        <div className="px-3 pb-2.5 pt-1" style={{ borderTop: `1px solid ${page.border}` }}>
+        <div
+          className="px-3 pb-2.5 pt-1"
+          style={{ borderTop: `1px solid ${page.border}` }}
+        >
           <pre
             className="whitespace-pre-wrap text-[11px] max-h-64 overflow-y-auto rounded p-2"
             style={{ color: page.statusFg, background: codeBg }}
@@ -186,7 +232,10 @@ function CompactionDivider({ item }: { item: SystemItem }) {
   const tokens = item.content ? Number(item.content).toLocaleString() : null;
 
   return (
-    <div className="flex items-center gap-3 py-1" style={{ color: page.statusFg }}>
+    <div
+      className="flex items-center gap-3 py-1"
+      style={{ color: page.statusFg }}
+    >
       <div className="flex-1 border-t" style={{ borderColor: page.border }} />
       <span className="text-[11px] font-mono shrink-0 italic select-none">
         context compacted{tokens ? ` · ${tokens} tokens` : ""}
@@ -202,7 +251,7 @@ function AssistantTurn({ turn }: { turn: Turn }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const hasContent = turn.items.some(
-    (i) => i.type === "text" || i.type === "tool_call" || i.type === "thinking"
+    (i) => i.type === "text" || i.type === "tool_call" || i.type === "thinking",
   );
   if (!hasContent) return null;
 
@@ -217,7 +266,11 @@ function AssistantTurn({ turn }: { turn: Turn }) {
         }
         if (item.type === "text" && item.content.trim()) {
           return (
-            <div key={item.id} className="prose-tui text-sm leading-relaxed" style={{ color: page.fg }}>
+            <div
+              key={item.id}
+              className="prose-tui text-sm leading-relaxed"
+              style={{ color: page.fg }}
+            >
               <MarkdownText>{item.content}</MarkdownText>
             </div>
           );
@@ -234,7 +287,10 @@ function UserTurn({ turn }: { turn: Turn }) {
   const green = THEMES[theme].terminal.green;
 
   const text = turn.items
-    .filter((i): i is RenderItem & { type: "user_prompt"; content: string } => i.type === "user_prompt")
+    .filter(
+      (i): i is RenderItem & { type: "user_prompt"; content: string } =>
+        i.type === "user_prompt",
+    )
     .map((i) => i.content)
     .join("\n");
 
@@ -242,8 +298,16 @@ function UserTurn({ turn }: { turn: Turn }) {
 
   return (
     <div className="flex gap-2">
-      <span className="shrink-0 select-none font-semibold" style={{ color: green }}>›</span>
-      <span className="text-sm font-mono whitespace-pre-wrap" style={{ color: page.fg }}>
+      <span
+        className="shrink-0 select-none font-semibold"
+        style={{ color: green }}
+      >
+        ›
+      </span>
+      <span
+        className="text-sm font-mono whitespace-pre-wrap"
+        style={{ color: page.fg }}
+      >
         {text}
       </span>
     </div>
@@ -253,7 +317,13 @@ function UserTurn({ turn }: { turn: Turn }) {
 // ── Main conversation view ───────────────────────────────────────────────────
 
 // Sub-agent color palette — cycles for each distinct sidechain agent
-const SIDECHAIN_COLORS = ["#53bdfa", "#fae38e", "#90e1c6", "#ea6c73", "#c792ea"];
+const SIDECHAIN_COLORS = [
+  "#53bdfa",
+  "#fae38e",
+  "#90e1c6",
+  "#ea6c73",
+  "#c792ea",
+];
 
 function TUIThread({ turns }: { turns: Turn[] }) {
   const theme = useStore((s) => s.theme);
@@ -266,7 +336,7 @@ function TUIThread({ turns }: { turns: Turn[] }) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
-  }, [turns]);
+  }, []);
 
   return (
     <div
@@ -278,19 +348,25 @@ function TUIThread({ turns }: { turns: Turn[] }) {
         if (turn.isSidechain && !lastWasSidechain) sidechainIndex++;
         lastWasSidechain = !!turn.isSidechain;
 
-        const sidechainColor = SIDECHAIN_COLORS[sidechainIndex % SIDECHAIN_COLORS.length];
+        const sidechainColor =
+          SIDECHAIN_COLORS[sidechainIndex % SIDECHAIN_COLORS.length];
 
         if (turn.role === "system") {
           return turn.items
-            .filter((item): item is SystemItem =>
-              item.type === "system" && (item as SystemItem).subtype === "compact_boundary"
+            .filter(
+              (item): item is SystemItem =>
+                item.type === "system" &&
+                (item as SystemItem).subtype === "compact_boundary",
             )
             .map((item) => <CompactionDivider key={item.id} item={item} />);
         }
 
-        const content = turn.role === "user"
-          ? <UserTurn turn={turn} />
-          : <AssistantTurn turn={turn} />;
+        const content =
+          turn.role === "user" ? (
+            <UserTurn turn={turn} />
+          ) : (
+            <AssistantTurn turn={turn} />
+          );
 
         if (!turn.isSidechain) return <div key={i}>{content}</div>;
 
@@ -327,7 +403,8 @@ export function ConversationView() {
 
   const sessions = useStore((s) => s.sessions);
   const activePane = useStore((s) => s.activePane);
-  const activeSessionId = activePane?.type === "session" ? activePane.id : undefined;
+  const activeSessionId =
+    activePane?.type === "session" ? activePane.id : undefined;
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const claudeSessionId = activeSession?.claudeSessionId;
   // sessions is transient — wait for it to be populated before erroring
@@ -348,7 +425,9 @@ export function ConversationView() {
       .then(async (res) => {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+          throw new Error(
+            (body as { error?: string }).error || `HTTP ${res.status}`,
+          );
         }
         return res.json() as Promise<ConversationData>;
       })
@@ -363,14 +442,18 @@ export function ConversationView() {
   }, [claudeSessionId, sessionsLoaded]);
 
   const placeholder = (msg: string) => (
-    <div className="flex flex-1 items-center justify-center text-sm font-mono" style={{ color: page.statusFg }}>
+    <div
+      className="flex flex-1 items-center justify-center text-sm font-mono"
+      style={{ color: page.statusFg }}
+    >
       {msg}
     </div>
   );
 
   if (loading) return placeholder("loading…");
   if (error) return placeholder(error);
-  if (!data || data.turns.length === 0) return placeholder("no conversation data");
+  if (!data || data.turns.length === 0)
+    return placeholder("no conversation data");
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">

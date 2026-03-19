@@ -110,10 +110,14 @@ export function App() {
         e.preventDefault();
         const { focusedLeafId, layout, sessions } = useStore.getState();
         const leaf = findLeaf(layout, focusedLeafId);
-        const cwd = leaf?.pane?.type === "session"
-          ? sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ?? "~"
-          : "~";
-        useStore.getState().createSessionIntoLeaf(focusedLeafId, "vertical", "second", cwd);
+        const cwd =
+          leaf?.pane?.type === "session"
+            ? (sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ??
+              "~")
+            : "~";
+        useStore
+          .getState()
+          .createSessionIntoLeaf(focusedLeafId, "vertical", "second", cwd);
         return;
       }
 
@@ -122,10 +126,14 @@ export function App() {
         e.preventDefault();
         const { focusedLeafId, layout, sessions } = useStore.getState();
         const leaf = findLeaf(layout, focusedLeafId);
-        const cwd = leaf?.pane?.type === "session"
-          ? sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ?? "~"
-          : "~";
-        useStore.getState().createSessionIntoLeaf(focusedLeafId, "horizontal", "second", cwd);
+        const cwd =
+          leaf?.pane?.type === "session"
+            ? (sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ??
+              "~")
+            : "~";
+        useStore
+          .getState()
+          .createSessionIntoLeaf(focusedLeafId, "horizontal", "second", cwd);
         return;
       }
 
@@ -195,7 +203,11 @@ export function App() {
       <LayoutProvider>
         <div
           className="flex flex-col font-sans"
-          style={{ background: page.bg, color: page.fg, height: viewportHeight }}
+          style={{
+            background: page.bg,
+            color: page.fg,
+            height: viewportHeight,
+          }}
         >
           <Header />
           <div className="relative flex flex-1 overflow-hidden">

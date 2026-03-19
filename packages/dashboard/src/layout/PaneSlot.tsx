@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
-import { allLeafIds } from "./layoutTree";
-import { useLayoutContext } from "./LayoutContext";
-import { notifySlotUpdate } from "./SessionMountLayer";
 import { DropZoneOverlay } from "./DropZoneOverlay";
+import { useLayoutContext } from "./LayoutContext";
+import { allLeafIds } from "./layoutTree";
+import { notifySlotUpdate } from "./SessionMountLayer";
 
 interface PaneSlotProps {
   leafId: string;
@@ -68,6 +68,8 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
   }, [leafId, registerSlot, unregisterSlot]);
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: pane focus on click
+    // biome-ignore lint/a11y/useKeyWithClickEvents: pane focus on click
     <div
       ref={slotRef}
       className="relative flex-1 h-full"

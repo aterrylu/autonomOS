@@ -40,7 +40,10 @@ export function DiffView({ oldText, newText, codeBg }: DiffViewProps) {
           <div key={i} className="flex" style={{ background: c.bg }}>
             <span
               className="select-none shrink-0 w-4 text-center"
-              style={{ color: c.fg || page.statusFg, opacity: line.type === "context" ? 0.5 : 1 }}
+              style={{
+                color: c.fg || page.statusFg,
+                opacity: line.type === "context" ? 0.5 : 1,
+              }}
             >
               {c.marker}
             </span>
@@ -75,11 +78,15 @@ export function DiffBlock({ content }: { content: string }) {
         const c = colors[type];
         const isHeader = text.startsWith("@@");
         return (
-          <div key={i} className="flex" style={{ background: isHeader ? "transparent" : c.bg }}>
+          <div
+            key={i}
+            className="flex"
+            style={{ background: isHeader ? "transparent" : c.bg }}
+          >
             <span
               className="flex-1 px-3 whitespace-pre-wrap break-all"
               style={{
-                color: isHeader ? page.statusFg : (c.fg || page.fg),
+                color: isHeader ? page.statusFg : c.fg || page.fg,
                 fontStyle: isHeader ? "italic" : "normal",
               }}
             >
@@ -98,27 +105,38 @@ function computeUnifiedDiff(oldText: string, newText: string): DiffLine[] {
   const result: DiffLine[] = [];
 
   let prefixLen = 0;
-  while (prefixLen < oldLines.length && prefixLen < newLines.length && oldLines[prefixLen] === newLines[prefixLen]) prefixLen++;
+  while (
+    prefixLen < oldLines.length &&
+    prefixLen < newLines.length &&
+    oldLines[prefixLen] === newLines[prefixLen]
+  )
+    prefixLen++;
 
   let suffixLen = 0;
   while (
     suffixLen < oldLines.length - prefixLen &&
     suffixLen < newLines.length - prefixLen &&
-    oldLines[oldLines.length - 1 - suffixLen] === newLines[newLines.length - 1 - suffixLen]
-  ) suffixLen++;
+    oldLines[oldLines.length - 1 - suffixLen] ===
+      newLines[newLines.length - 1 - suffixLen]
+  )
+    suffixLen++;
 
   const ctxStart = Math.max(0, prefixLen - 3);
-  for (let i = ctxStart; i < prefixLen; i++) result.push({ text: oldLines[i], type: "context" });
+  for (let i = ctxStart; i < prefixLen; i++)
+    result.push({ text: oldLines[i], type: "context" });
 
   const oldEnd = oldLines.length - suffixLen;
-  for (let i = prefixLen; i < oldEnd; i++) result.push({ text: oldLines[i], type: "remove" });
+  for (let i = prefixLen; i < oldEnd; i++)
+    result.push({ text: oldLines[i], type: "remove" });
 
   const newEnd = newLines.length - suffixLen;
-  for (let i = prefixLen; i < newEnd; i++) result.push({ text: newLines[i], type: "add" });
+  for (let i = prefixLen; i < newEnd; i++)
+    result.push({ text: newLines[i], type: "add" });
 
   const suffixStart = oldLines.length - suffixLen;
   const ctxEnd = Math.min(oldLines.length, suffixStart + 3);
-  for (let i = suffixStart; i < ctxEnd; i++) result.push({ text: oldLines[i], type: "context" });
+  for (let i = suffixStart; i < ctxEnd; i++)
+    result.push({ text: oldLines[i], type: "context" });
 
   return result;
 }
