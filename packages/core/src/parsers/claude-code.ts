@@ -155,8 +155,13 @@ export class ClaudeCodeParser implements SessionParser {
             ? "system"
             : "assistant";
 
-      const isSidechain = (item as { isSidechain?: boolean }).isSidechain ?? false;
-      if (!current || current.role !== role || current.isSidechain !== isSidechain) {
+      const isSidechain =
+        (item as { isSidechain?: boolean }).isSidechain ?? false;
+      if (
+        !current ||
+        current.role !== role ||
+        current.isSidechain !== isSidechain
+      ) {
         current = { role, items: [], isSidechain };
         turns.push(current);
       }

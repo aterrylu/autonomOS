@@ -368,11 +368,14 @@ function TUIThread({ turns }: { turns: Turn[] }) {
             <AssistantTurn turn={turn} />
           );
 
-        if (!turn.isSidechain) return <div key={i}>{content}</div>;
+        if (!turn.isSidechain)
+          // biome-ignore lint/suspicious/noArrayIndexKey: turns have no stable id
+          return <div key={i}>{content}</div>;
 
         // Sidechain: indent + colored left border
         return (
           <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: turns have no stable id
             key={i}
             className="pl-3 ml-2"
             style={{ borderLeft: `2px solid ${sidechainColor}44` }}

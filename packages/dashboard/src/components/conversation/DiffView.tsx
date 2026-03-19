@@ -37,6 +37,7 @@ export function DiffView({ oldText, newText, codeBg }: DiffViewProps) {
       {lines.map((line, i) => {
         const c = colors[line.type];
         return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: diff lines have no stable id
           <div key={i} className="flex" style={{ background: c.bg }}>
             <span
               className="select-none shrink-0 w-4 text-center"
@@ -79,6 +80,7 @@ export function DiffBlock({ content }: { content: string }) {
         const isHeader = text.startsWith("@@");
         return (
           <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: diff lines have no stable id
             key={i}
             className="flex"
             style={{ background: isHeader ? "transparent" : c.bg }}
