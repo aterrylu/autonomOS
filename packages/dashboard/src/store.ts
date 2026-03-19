@@ -1,5 +1,17 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import {
+  type LayoutNode,
+  type SplitDirection,
+  type SplitSide,
+  derivedActivePane,
+  insertLeaf,
+  makeRootLeaf,
+  nextLeafId,
+  removeLeaf,
+  setLeafPane,
+  updateBranchSizes,
+} from "./layout/layoutTree";
 
 export type ThemeName = "midnight" | "daylight" | "void";
 
@@ -206,6 +218,8 @@ interface AppState {
   autonomousMode: boolean;
   paneOrder: string[];
   previewPanes: PreviewPaneInfo[];
+  layout: LayoutNode;
+  focusedLeafId: string;
 
   // Transient
   status: string;
@@ -230,6 +244,24 @@ interface AppState {
   openPreview: (filePath: string) => void;
   closePreview: (id: string) => void;
   reorderPanes: (fromIndex: number, toIndex: number) => void;
+
+  // Layout / split-pane actions
+  splitLeafWithPane: (
+    leafId: string,
+    direction: SplitDirection,
+    newSide: SplitSide,
+    pane: ActivePane | null,
+  ) => void;
+  createSessionIntoLeaf: (
+    leafId: string,
+    direction: SplitDirection,
+    newSide: SplitSide,
+    cwd?: string,
+  ) => Promise<void>;
+  setLeafPane: (leafId: string, pane: ActivePane | null) => void;
+  setLeafSizes: (branchId: string, sizes: [number, number]) => void;
+  setFocusedLeaf: (leafId: string) => void;
+  closeLeaf: (leafId: string) => void;
 }
 
 type SetState = (partial: Partial<AppState>) => void;
@@ -238,6 +270,7 @@ type GetState = () => AppState;
 /**
  * Shared logic for createSession and resumeSession.
  * Guards against concurrent spawns and handles fetch errors uniformly.
+ * Optional onSuccess callback receives the new session (used for split-pane).
  */
 async function spawnSession(
   set: SetState,
@@ -245,6 +278,7 @@ async function spawnSession(
   pendingStatus: string,
   failureStatus: string,
   body: Record<string, unknown>,
+  onSuccess?: (session: SessionInfo) => void,
 ): Promise<void> {
   const { status } = get();
   if (status === "spawning..." || status === "resuming...") return;
@@ -266,10 +300,14 @@ async function spawnSession(
   }
 
   const session: SessionInfo = await res.json();
-  set({
-    activePane: { type: "session", id: session.id },
-    status: "connected",
-  });
+  if (onSuccess) {
+    onSuccess(session);
+  } else {
+    set({
+      activePane: { type: "session", id: session.id },
+      status: "connected",
+    });
+  }
   await get().fetchSessions();
 }
 
@@ -277,7 +315,10 @@ let previewCounter = 0;
 
 export const useStore = create<AppState>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      // Build the initial root leaf lazily — we'll migrate from activePane in merge()
+      const _initialRoot = makeRootLeaf(null);
+      return {
       theme: "void",
       activePane: null,
       status: "disconnected",
@@ -287,6 +328,8 @@ export const useStore = create<AppState>()(
       autonomousMode: true,
       paneOrder: [],
       previewPanes: [],
+      layout: _initialRoot,
+      focusedLeafId: _initialRoot.id,
 
       cycleTheme: () => {
         const current = get().theme;
@@ -410,7 +453,85 @@ export const useStore = create<AppState>()(
         ordered.splice(toIndex, 0, moved);
         set({ paneOrder: ordered });
       },
-    }),
+
+      // ── Layout / split-pane actions ──────────────────────────────────────
+
+      splitLeafWithPane: (leafId, direction, newSide, pane) => {
+        const { layout } = get();
+        const { root, newLeafId: newId } = insertLeaf(
+          layout,
+          leafId,
+          direction,
+          newSide,
+          pane,
+        );
+        set({ layout: root, focusedLeafId: newId });
+        if (pane) set({ activePane: pane, status: "connected" });
+      },
+
+      createSessionIntoLeaf: async (leafId, direction, newSide, cwd = "~") => {
+        const { layout } = get();
+        // Reserve a slot by inserting a null-pane leaf first (shows loading state)
+        const { root: reservedRoot, newLeafId: newId } = insertLeaf(
+          layout,
+          leafId,
+          direction,
+          newSide,
+          null,
+        );
+        set({ layout: reservedRoot, focusedLeafId: newId });
+
+        await spawnSession(
+          set,
+          get,
+          "spawning...",
+          "failed to create session",
+          { workingDirectory: cwd, autonomousMode: get().autonomousMode },
+          (session) => {
+            const pane: ActivePane = { type: "session", id: session.id };
+            const updatedLayout = setLeafPane(get().layout, newId, pane);
+            set({ layout: updatedLayout, activePane: pane, status: "connected" });
+          },
+        );
+      },
+
+      setLeafPane: (leafId, pane) => {
+        const { layout } = get();
+        const updated = setLeafPane(layout, leafId, pane);
+        set({ layout: updated, focusedLeafId: leafId });
+        if (pane) set({ activePane: pane });
+      },
+
+      setLeafSizes: (branchId, sizes) => {
+        const { layout } = get();
+        set({ layout: updateBranchSizes(layout, branchId, sizes) });
+      },
+
+      setFocusedLeaf: (leafId) => {
+        const { layout } = get();
+        set({
+          focusedLeafId: leafId,
+          activePane: derivedActivePane(layout, leafId),
+        });
+      },
+
+      closeLeaf: (leafId) => {
+        const { layout, focusedLeafId } = get();
+        const newRoot = removeLeaf(layout, leafId);
+        if (!newRoot) return; // Don't remove the last leaf
+        // If closing the focused leaf, focus the next available leaf
+        const newFocused =
+          focusedLeafId === leafId
+            ? nextLeafId(newRoot, leafId)
+            : focusedLeafId;
+        set({
+          layout: newRoot,
+          focusedLeafId: newFocused,
+          activePane: derivedActivePane(newRoot, newFocused),
+        });
+      },
+    };
+  },
     {
       name: "autonomos",
       partialize: (state) => ({
@@ -420,6 +541,8 @@ export const useStore = create<AppState>()(
         autonomousMode: state.autonomousMode,
         paneOrder: state.paneOrder,
         previewPanes: state.previewPanes,
+        layout: state.layout,
+        focusedLeafId: state.focusedLeafId,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Record<string, unknown>;
@@ -445,6 +568,18 @@ export const useStore = create<AppState>()(
           merged.paneOrder = saved.paneOrder as string[];
         } else if (Array.isArray(saved?.sessionOrder)) {
           merged.paneOrder = saved.sessionOrder as string[];
+        }
+
+        // Migrate: if layout is missing, construct from existing activePane
+        if (saved?.layout && typeof saved.layout === "object" && (saved.layout as LayoutNode).kind) {
+          merged.layout = saved.layout as LayoutNode;
+          if (typeof saved.focusedLeafId === "string") {
+            merged.focusedLeafId = saved.focusedLeafId;
+          }
+        } else {
+          const rootLeaf = makeRootLeaf(merged.activePane);
+          merged.layout = rootLeaf;
+          merged.focusedLeafId = rootLeaf.id;
         }
 
         return merged;

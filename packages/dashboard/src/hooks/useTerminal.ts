@@ -349,6 +349,12 @@ function handleKeyEvent(
     case "b":
       // Suppress terminal input — App-level handler toggles the sidebar
       return false;
+    case "d":
+      // Suppress Ctrl+D EOF — App-level handler creates a split pane
+      return false;
+    case "w":
+      // Suppress Ctrl+W if multiple panes — App-level handler closes focused pane
+      return false;
     case "o":
       // Pass Ctrl+O through to Claude Code (show details)
       sendToWs("\x0f");

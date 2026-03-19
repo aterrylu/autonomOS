@@ -1,45 +1,30 @@
 import { THEMES, useStore } from "../store";
-import { PreviewPane } from "./PreviewPane";
-import { SessionPane } from "./SessionPane";
+import { SplitLayout } from "../layout/SplitLayout";
 
 /**
- * Manages all active pane views. Keeps terminal instances alive
- * across switches — only toggles visibility (like VSCode tabs).
- * Also renders preview panes alongside sessions.
+ * SessionViewManager — thin wrapper around SplitLayout.
+ * All session/preview mounting is handled by SessionMountLayer in App.tsx.
  */
 export function SessionViewManager() {
+  const layout = useStore((s) => s.layout);
   const activePane = useStore((s) => s.activePane);
-  const sessions = useStore((s) => s.sessions);
-  const previewPanes = useStore((s) => s.previewPanes);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
-  const hasSelection = activePane !== null;
+  if (!activePane) {
+    return (
+      <div
+        className="flex flex-1 items-center justify-center text-sm"
+        style={{ color: page.statusFg }}
+      >
+        Create or select a session to start
+      </div>
+    );
+  }
 
   return (
-    <>
-      {!hasSelection && (
-        <div
-          className="flex flex-1 items-center justify-center text-sm"
-          style={{ color: page.statusFg }}
-        >
-          Create or select a session to start
-        </div>
-      )}
-      {sessions.map((s) => (
-        <SessionPane
-          key={s.id}
-          sessionId={s.id}
-          visible={activePane?.type === "session" && activePane.id === s.id}
-        />
-      ))}
-      {previewPanes.map((p) => (
-        <PreviewPane
-          key={p.id}
-          preview={p}
-          visible={activePane?.type === "preview" && activePane.id === p.id}
-        />
-      ))}
-    </>
+    <div className="flex flex-1 overflow-hidden relative">
+      <SplitLayout node={layout} />
+    </div>
   );
 }

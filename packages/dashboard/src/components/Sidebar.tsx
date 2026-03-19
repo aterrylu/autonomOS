@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { DRAG_TYPE, encodeDragData, useDragContext } from "../layout/DragContext";
 import type { ActivePane, ProjectInfo } from "../store";
 import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
@@ -35,6 +36,7 @@ export function Sidebar() {
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
+  const { startDrag, endDrag } = useDragContext();
 
   const sidebarItems = useMemo(
     () => buildSidebarItems(sessions, previewPanes, paneOrder),
@@ -92,8 +94,12 @@ export function Sidebar() {
   const dragIdx = useRef<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
 
-  function handleDragStart(idx: number) {
+  function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
     dragIdx.current = idx;
+    const data = { pane };
+    e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
+    e.dataTransfer.effectAllowed = "move";
+    startDrag(data);
   }
 
   function handleDragOver(e: React.DragEvent, idx: number) {
@@ -112,6 +118,7 @@ export function Sidebar() {
   function handleDragEnd() {
     dragIdx.current = null;
     setDropIdx(null);
+    endDrag();
   }
 
   function isPaneActive(pane: ActivePane): boolean {
@@ -180,7 +187,7 @@ export function Sidebar() {
                 role="button"
                 tabIndex={0}
                 draggable
-                onDragStart={() => handleDragStart(idx)}
+                onDragStart={(e) => handleDragStart(e, idx, pane)}
                 onDragOver={(e) => handleDragOver(e, idx)}
                 onDrop={() => handleDrop(idx)}
                 onDragEnd={handleDragEnd}
@@ -234,7 +241,7 @@ export function Sidebar() {
               role="button"
               tabIndex={0}
               draggable
-              onDragStart={() => handleDragStart(idx)}
+              onDragStart={(e) => handleDragStart(e, idx, pane)}
               onDragOver={(e) => handleDragOver(e, idx)}
               onDrop={() => handleDrop(idx)}
               onDragEnd={handleDragEnd}
