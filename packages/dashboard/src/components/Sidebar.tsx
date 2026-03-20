@@ -4,7 +4,13 @@ import {
   encodeDragData,
   useDragContext,
 } from "../layout/DragContext";
-import type { ActivePane, PaneGroup, PreviewPaneInfo, ProjectInfo, SessionInfo } from "../store";
+import type {
+  ActivePane,
+  PaneGroup,
+  PreviewPaneInfo,
+  ProjectInfo,
+  SessionInfo,
+} from "../store";
 import {
   buildSidebarItems,
   getGroupForPane,
@@ -45,7 +51,6 @@ interface GroupContainerProps {
     }
   >;
   onHeaderClick: () => void;
-  onRemoveFromGroup: (paneId: string) => void;
   onMemberClick: (pane: ActivePane) => void;
   onMemberDragStart: (e: React.DragEvent, pane: ActivePane) => void;
   onMemberDragEnd: () => void;
@@ -58,7 +63,6 @@ function GroupContainer({
   activePane,
   sessionMetaMap,
   onHeaderClick,
-  onRemoveFromGroup,
   onMemberClick,
   onMemberDragStart,
   onMemberDragEnd,
@@ -74,6 +78,7 @@ function GroupContainer({
   }
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: drop zone for group container
     <div
       style={{
         borderLeft: `3px solid ${group.color}`,
@@ -111,10 +116,7 @@ function GroupContainer({
           }
         }}
       >
-        <span
-          className="text-[10px] shrink-0"
-          style={{ color: page.statusFg }}
-        >
+        <span className="text-[10px] shrink-0" style={{ color: page.statusFg }}>
           {collapsed ? "▶" : "▼"}
         </span>
         <span className="flex-1 truncate text-xs font-medium">
@@ -156,7 +158,10 @@ function GroupContainer({
                 onDragStart={(e) => {
                   // Tag this drag as a group-member drag so the sidebar
                   // drop zone knows to ungroup instead of reorder
-                  e.dataTransfer.setData("application/autonomos-ungroup", group.id);
+                  e.dataTransfer.setData(
+                    "application/autonomos-ungroup",
+                    group.id,
+                  );
                   onMemberDragStart(e, pane);
                 }}
                 onDragEnd={onMemberDragEnd}
@@ -191,8 +196,7 @@ function GroupContainer({
                     style={{ color: page.statusFg }}
                   >
                     <span className="min-w-0 truncate">
-                      {meta?.projectName ??
-                        s.workingDirectory.split("/").pop()}
+                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
                       {meta?.gitBranch &&
                         meta.gitBranch !== "HEAD" &&
                         ` · ${meta.gitBranch}`}
@@ -421,7 +425,9 @@ export function Sidebar() {
         }}
         onDrop={(e) => {
           // Handle ungroup: member dragged out of its group container
-          const groupId = e.dataTransfer.getData("application/autonomos-ungroup");
+          const groupId = e.dataTransfer.getData(
+            "application/autonomos-ungroup",
+          );
           const paneData = e.dataTransfer.getData(DRAG_TYPE);
           if (groupId && paneData) {
             e.preventDefault();
@@ -457,9 +463,6 @@ export function Sidebar() {
                 onHeaderClick={() => {
                   if (firstMemberPane) switchPane(firstMemberPane);
                 }}
-                onRemoveFromGroup={(paneId) =>
-                  useStore.getState().removeFromGroup(item.group.id, paneId)
-                }
                 onMemberClick={(pane) => switchPane(pane)}
                 onMemberDragStart={(e, pane) => {
                   const data = { pane };
