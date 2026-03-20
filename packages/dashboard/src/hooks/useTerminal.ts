@@ -290,7 +290,9 @@ class MarkdownLinkProvider implements ILinkProvider {
           end: { x: startX + filePath.length + 1, y: bufferLineNumber },
         },
         text: filePath,
-        activate: (_event, linkText) => {
+        activate: (event, linkText) => {
+          // Only open on Ctrl+click (Cmd+click on Mac) to avoid accidental opens
+          if (!event.ctrlKey && !event.metaKey) return;
           let resolved = linkText;
           if (!linkText.startsWith("/")) {
             const session = useStore

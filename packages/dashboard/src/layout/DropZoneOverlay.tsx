@@ -34,6 +34,13 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
     ? !!findLeafByPaneId(layout, dragData.pane.id)
     : false;
 
+  // Suppress overlay entirely when dragging a pane onto its own leaf
+  // (can't split with yourself or replace yourself)
+  if (isExistingPane && dragData?.pane) {
+    const sourceLeaf = findLeafByPaneId(layout, dragData.pane.id);
+    if (sourceLeaf?.id === leafId) return null;
+  }
+
   function detectZone(e: React.DragEvent): SplitZone {
     const el = containerRef.current;
     if (!el) return "center";

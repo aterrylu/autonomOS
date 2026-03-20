@@ -4,7 +4,7 @@ import {
   encodeDragData,
   useDragContext,
 } from "../layout/DragContext";
-import type { ActivePane, ProjectInfo } from "../store";
+import type { ActivePane, PaneGroup, PreviewPaneInfo, ProjectInfo, SessionInfo } from "../store";
 import {
   buildSidebarItems,
   getGroupForPane,
@@ -15,6 +15,201 @@ import {
 import { Codicon } from "./Codicon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+
+// ── Display list types for two-pass rendering ─────────────────────────────
+
+type DisplayItem =
+  | {
+      type: "group";
+      group: PaneGroup;
+      sessions: { session: SessionInfo; pane: ActivePane }[];
+    }
+  | { type: "session"; session: SessionInfo; pane: ActivePane }
+  | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
+
+// ── GroupContainer ─────────────────────────────────────────────────────────
+
+interface GroupContainerProps {
+  group: PaneGroup;
+  members: { session: SessionInfo; pane: ActivePane }[];
+  page: PageTheme;
+  activePane: ActivePane | null;
+  sessionMetaMap: Map<
+    string,
+    {
+      summary?: string;
+      projectName?: string;
+      gitBranch?: string;
+      lastModified: number;
+      gitDiffStat?: { insertions: number; deletions: number };
+    }
+  >;
+  onHeaderClick: () => void;
+  onRemoveFromGroup: (paneId: string) => void;
+  onMemberClick: (pane: ActivePane) => void;
+  onMemberDragStart: (e: React.DragEvent, pane: ActivePane) => void;
+  onMemberDragEnd: () => void;
+}
+
+function GroupContainer({
+  group,
+  members,
+  page,
+  activePane,
+  sessionMetaMap,
+  onHeaderClick,
+  onRemoveFromGroup,
+  onMemberClick,
+  onMemberDragStart,
+  onMemberDragEnd,
+}: GroupContainerProps) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Guard: if members is empty (group just dissolved), don't render
+  if (members.length === 0) return null;
+
+  function isPaneActive(pane: ActivePane): boolean {
+    if (!activePane) return false;
+    return activePane.type === pane.type && activePane.id === pane.id;
+  }
+
+  return (
+    <div
+      style={{
+        borderLeft: `3px solid ${group.color}`,
+        marginBottom: "2px",
+      }}
+      onDragOver={(e) => {
+        // Accept drops from group members being dragged back in
+        e.preventDefault();
+      }}
+      onDrop={(e) => {
+        // Drops within the group container are no-ops (member stays in group)
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      {/* Group header */}
+      {/* biome-ignore lint/a11y/useSemanticElements: composite interactive element */}
+      <div
+        role="button"
+        tabIndex={0}
+        className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
+        style={{
+          paddingLeft: "9px",
+          paddingRight: "12px",
+          background: "transparent",
+        }}
+        onClick={() => {
+          onHeaderClick();
+          setCollapsed((c) => !c);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            onHeaderClick();
+            setCollapsed((c) => !c);
+          }
+        }}
+      >
+        <span
+          className="text-[10px] shrink-0"
+          style={{ color: page.statusFg }}
+        >
+          {collapsed ? "▶" : "▼"}
+        </span>
+        <span className="flex-1 truncate text-xs font-medium">
+          {group.name}
+        </span>
+        {/* Member count dots */}
+        <span className="flex items-center gap-0.5 shrink-0">
+          {members.map((m) => (
+            <span
+              key={m.session.id}
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ background: group.color, opacity: 0.7 }}
+            />
+          ))}
+        </span>
+      </div>
+
+      {/* Member sessions — draggable to ungroup */}
+      {!collapsed && (
+        <div>
+          {members.map((m, memberIdx) => {
+            const s = m.session;
+            const pane = m.pane;
+            const meta = s.claudeSessionId
+              ? sessionMetaMap.get(s.claudeSessionId)
+              : undefined;
+            const displayName = meta?.summary || s.name;
+            const lastActive = meta?.lastModified ?? s.createdAt;
+            const isActive = isPaneActive(pane);
+            const isLast = memberIdx === members.length - 1;
+
+            return (
+              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+              <div
+                key={`gs-${s.id}`}
+                role="button"
+                tabIndex={0}
+                draggable
+                onDragStart={(e) => {
+                  // Tag this drag as a group-member drag so the sidebar
+                  // drop zone knows to ungroup instead of reorder
+                  e.dataTransfer.setData("application/autonomos-ungroup", group.id);
+                  onMemberDragStart(e, pane);
+                }}
+                onDragEnd={onMemberDragEnd}
+                className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
+                style={{
+                  paddingLeft: "20px",
+                  paddingRight: "12px",
+                  background: isActive ? page.border : "transparent",
+                }}
+                onClick={() => onMemberClick(pane)}
+                onKeyDown={(e) => e.key === "Enter" && onMemberClick(pane)}
+              >
+                {/* Tree connector */}
+                <span
+                  className="shrink-0 text-[10px] select-none"
+                  style={{ color: page.statusFg }}
+                >
+                  {isLast ? "└" : "├"}
+                </span>
+                <Codicon name="claude" size={12} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1">
+                    <span className="flex-1 truncate text-xs">
+                      {displayName}
+                    </span>
+                    {meta?.gitBranch && meta?.gitDiffStat && (
+                      <DiffStat stat={meta.gitDiffStat} />
+                    )}
+                  </div>
+                  <div
+                    className="flex items-center text-[10px]"
+                    style={{ color: page.statusFg }}
+                  >
+                    <span className="min-w-0 truncate">
+                      {meta?.projectName ??
+                        s.workingDirectory.split("/").pop()}
+                      {meta?.gitBranch &&
+                        meta.gitBranch !== "HEAD" &&
+                        ` · ${meta.gitBranch}`}
+                    </span>
+                    <span className="ml-1.5 shrink-0">
+                      {formatAge(lastActive)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function DiffStat({
   stat,
@@ -44,7 +239,6 @@ export function Sidebar() {
   const reorderPanes = useStore((s) => s.reorderPanes);
   const status = useStore((s) => s.status);
   const groups = useStore((s) => s.groups);
-  const activeGroupId = useStore((s) => s.activeGroupId);
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
@@ -54,6 +248,53 @@ export function Sidebar() {
     () => buildSidebarItems(sessions, previewPanes, paneOrder),
     [sessions, previewPanes, paneOrder],
   );
+
+  // Two-pass: build a display list grouping sessions by their PaneGroup.
+  // Groups appear at the position of their first member in the original order.
+  const displayItems = useMemo((): DisplayItem[] => {
+    const result: DisplayItem[] = [];
+    const seenGroups = new Set<string>();
+
+    for (const item of sidebarItems) {
+      const pane = sidebarItemPane(item);
+
+      if (item.type === "preview") {
+        result.push({ type: "preview", preview: item.data, pane });
+        continue;
+      }
+
+      // session item
+      const s = item.data;
+      const group = getGroupForPane(groups, s.id);
+
+      if (!group) {
+        result.push({ type: "session", session: s, pane });
+        continue;
+      }
+
+      if (seenGroups.has(group.id)) {
+        // Find the existing group entry and append this member to it
+        const existing = result.find(
+          (d): d is DisplayItem & { type: "group" } =>
+            d.type === "group" && d.group.id === group.id,
+        );
+        if (existing) {
+          existing.sessions.push({ session: s, pane });
+        }
+        continue;
+      }
+
+      // First time we see this group — create the group entry
+      seenGroups.add(group.id);
+      result.push({
+        type: "group",
+        group,
+        sessions: [{ session: s, pane }],
+      });
+    }
+
+    return result;
+  }, [sidebarItems, groups]);
 
   // Build a lookup map from claudeSessionId → enriched project session data.
   const sessionMetaMap = useMemo(() => {
@@ -169,8 +410,30 @@ export function Sidebar() {
         </button>
       </div>
 
-      <div className="py-1">
-        {sidebarItems.length === 0 && (
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone for ungroup */}
+      <div
+        className="py-1"
+        onDragOver={(e) => {
+          // Accept drops (for ungroup drags from group members)
+          if (e.dataTransfer.types.includes("application/autonomos-ungroup")) {
+            e.preventDefault();
+          }
+        }}
+        onDrop={(e) => {
+          // Handle ungroup: member dragged out of its group container
+          const groupId = e.dataTransfer.getData("application/autonomos-ungroup");
+          const paneData = e.dataTransfer.getData(DRAG_TYPE);
+          if (groupId && paneData) {
+            e.preventDefault();
+            const decoded = JSON.parse(paneData);
+            if (decoded?.pane?.id) {
+              useStore.getState().removeFromGroup(groupId, decoded.pane.id);
+            }
+          }
+          handleDragEnd();
+        }}
+      >
+        {displayItems.length === 0 && (
           <p
             className="px-3 py-3 text-center text-xs"
             style={{ color: page.statusFg }}
@@ -179,20 +442,47 @@ export function Sidebar() {
           </p>
         )}
 
-        {sidebarItems.map((item, idx) => {
-          const pane = sidebarItemPane(item);
-          const isActive = isPaneActive(pane);
-          const isDropTarget = dropIdx === idx;
+        {displayItems.map((item, idx) => {
+          // Group container — no drag participation
+          if (item.type === "group") {
+            const firstMemberPane = item.sessions[0]?.pane;
+            return (
+              <GroupContainer
+                key={`group-${item.group.id}`}
+                group={item.group}
+                members={item.sessions}
+                page={page}
+                activePane={activePane}
+                sessionMetaMap={sessionMetaMap}
+                onHeaderClick={() => {
+                  if (firstMemberPane) switchPane(firstMemberPane);
+                }}
+                onRemoveFromGroup={(paneId) =>
+                  useStore.getState().removeFromGroup(item.group.id, paneId)
+                }
+                onMemberClick={(pane) => switchPane(pane)}
+                onMemberDragStart={(e, pane) => {
+                  const data = { pane };
+                  e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
+                  e.dataTransfer.effectAllowed = "move";
+                  startDrag(data);
+                }}
+                onMemberDragEnd={handleDragEnd}
+              />
+            );
+          }
 
+          // Ungrouped session row
           if (item.type === "session") {
-            const s = item.data;
+            const s = item.session;
+            const pane = item.pane;
+            const isActive = isPaneActive(pane);
+            const isDropTarget = dropIdx === idx;
             const meta = s.claudeSessionId
               ? sessionMetaMap.get(s.claudeSessionId)
               : undefined;
             const displayName = meta?.summary || s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
-            const group = getGroupForPane(groups, s.id);
-            const isInActiveGroup = !!group && group.id === activeGroupId;
 
             return (
               // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -207,16 +497,10 @@ export function Sidebar() {
                 onDragEnd={handleDragEnd}
                 className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                 style={{
-                  borderLeft: group
-                    ? `3px solid ${group.color}`
-                    : "3px solid transparent",
+                  borderLeft: "3px solid transparent",
                   paddingLeft: "9px",
                   paddingRight: "12px",
-                  background: isActive
-                    ? page.border
-                    : isInActiveGroup
-                      ? `${group!.color}18`
-                      : "transparent",
+                  background: isActive ? page.border : "transparent",
                   ...(isDropTarget && {
                     boxShadow: `inset 0 2px 0 ${page.fg}`,
                   }),
@@ -256,7 +540,10 @@ export function Sidebar() {
           }
 
           // Preview pane row
-          const p = item.data;
+          const p = item.preview;
+          const pane = item.pane;
+          const isActive = isPaneActive(pane);
+          const isDropTarget = dropIdx === idx;
           return (
             // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
             <div
