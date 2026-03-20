@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.17",
@@ -29,11 +31,13 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^22",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "tailwindcss": "^4.2.1",
     "typescript": "^5",
-    "vite": "^6"
+    "vite": "^6",
+    "vitest": "^4.1.0"
   }
 }

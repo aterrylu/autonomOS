@@ -83,6 +83,7 @@ let _groupCounter = 0;
 
 export interface PaneGroup {
   id: string;
+  name: string;
   color: string;
   memberPaneIds: string[];
   savedLayout: LayoutNode;
@@ -138,8 +139,10 @@ function addPaneToGroup(
   const color = nextGroupColor(updated);
   _groupCounter++;
   const groupId = `group-${Date.now()}-${_groupCounter}`;
+  const groupNum = Object.keys(updated).length + 1;
   updated[groupId] = {
     id: groupId,
+    name: `Split ${groupNum}`,
     color,
     memberPaneIds: memberIds,
     savedLayout: newLayout,
@@ -412,6 +415,7 @@ interface AppState {
     targetLeafId: string,
     zone: "center" | "north" | "south" | "east" | "west",
   ) => void;
+  removeFromGroup: (groupId: string, paneId: string) => void;
 }
 
 type SetState = (partial: Partial<AppState>) => void;
@@ -534,7 +538,8 @@ export const useStore = create<AppState>()(
           }
 
           // Case 2: navigating away — save current group snapshot if active
-          const updatedGroups = { ...groups };
+          // Re-read groups in case stale cleanup above modified them
+          const updatedGroups = { ...get().groups };
           if (activeGroupId && updatedGroups[activeGroupId]) {
             updatedGroups[activeGroupId] = {
               ...updatedGroups[activeGroupId],
@@ -877,6 +882,52 @@ export const useStore = create<AppState>()(
             activePane: pane,
             ...groupUpdates,
           });
+        },
+
+        removeFromGroup: (groupId, paneId) => {
+          const { groups, activeGroupId, layout, focusedLeafId } = get();
+          const group = groups[groupId];
+          if (!group) return;
+
+          const updatedGroups = { ...groups };
+          const remaining = group.memberPaneIds.filter((id) => id !== paneId);
+
+          if (remaining.length <= 1) {
+            // Group dissolves
+            delete updatedGroups[groupId];
+            set({
+              groups: updatedGroups,
+              activeGroupId: activeGroupId === groupId ? null : activeGroupId,
+            });
+          } else {
+            // Remove pane from group, update saved layout
+            const leaf = findLeafByPaneId(layout, paneId);
+            let updatedLayout = layout;
+            let updatedFocused = focusedLeafId;
+            if (leaf && activeGroupId === groupId) {
+              // Remove the pane's leaf from the layout if we're viewing this group
+              const cleaned = removeLeaf(layout, leaf.id);
+              if (cleaned) {
+                updatedLayout = cleaned;
+                updatedFocused =
+                  focusedLeafId === leaf.id
+                    ? nextLeafId(cleaned, leaf.id)
+                    : focusedLeafId;
+              }
+            }
+            updatedGroups[groupId] = {
+              ...group,
+              memberPaneIds: remaining,
+              savedLayout: updatedLayout,
+              savedFocusedLeafId: updatedFocused,
+            };
+            set({
+              groups: updatedGroups,
+              layout: updatedLayout,
+              focusedLeafId: updatedFocused,
+              activePane: derivedActivePane(updatedLayout, updatedFocused),
+            });
+          }
         },
       };
     },
