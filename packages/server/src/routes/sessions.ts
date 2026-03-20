@@ -4,6 +4,7 @@ import {
   getAllSessions,
   getSession,
   killSession,
+  restartAllSessions,
 } from "../sessions.js";
 import { batchGetTitles } from "../titleCache.js";
 
@@ -97,6 +98,11 @@ sessionRouter.post("/", async (c) => {
       500,
     );
   }
+});
+
+sessionRouter.post("/restart-all", (c) => {
+  const idMap = restartAllSessions();
+  return c.json({ restarted: Object.keys(idMap).length, idMap });
 });
 
 sessionRouter.get("/:id", (c) => {

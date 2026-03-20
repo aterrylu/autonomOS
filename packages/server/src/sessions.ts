@@ -4,7 +4,11 @@ import { basename } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { persistSession, removePersistedSession } from "./persisted.js";
+import {
+  getPersistedSessions,
+  persistSession,
+  removePersistedSession,
+} from "./persisted.js";
 import { getSettings } from "./settings.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
@@ -237,6 +241,80 @@ export function killAllSessions(): void {
   for (const [id] of sessions) {
     killSession(id);
   }
+}
+
+/**
+ * Restart all live sessions — kills each PTY and respawns with fresh env.
+ * Preserves session IDs so the dashboard's layout/groups/panes remain valid.
+ *
+ * Strategy: snapshot all session info, kill all PTYs under shuttingDown flag
+ * (prevents onExit from deleting sessions), clear the map, then respawn
+ * each session via createSession with the same claudeSessionId.
+ * The new session gets a new internal ID but the Claude session ID is preserved.
+ *
+ * Returns a mapping of old session IDs to new session IDs so the
+ * dashboard can update its layout/groups/panes.
+ */
+export function restartAllSessions(): Record<string, string> {
+  // Look up autonomousMode from persisted sessions
+  const persisted = getPersistedSessions();
+  const persistedMap = new Map(persisted.map((p) => [p.claudeSessionId, p]));
+
+  // Snapshot sessions to restart (including old internal ID for remapping)
+  const toRestart: Array<{
+    oldId: string;
+    claudeSessionId: string;
+    workingDirectory: string;
+    name: string;
+    autonomousMode: boolean;
+  }> = [];
+
+  for (const [id, managed] of sessions) {
+    const { session } = managed;
+    if (session.claudeSessionId) {
+      const p = persistedMap.get(session.claudeSessionId);
+      toRestart.push({
+        oldId: id,
+        claudeSessionId: session.claudeSessionId,
+        workingDirectory: session.workingDirectory,
+        name: session.name,
+        autonomousMode: p?.autonomousMode ?? false,
+      });
+    }
+  }
+
+  // Kill all PTYs — use shuttingDown to prevent onExit cleanup
+  shuttingDown = true;
+  for (const [, managed] of sessions) {
+    try {
+      managed.pty.kill();
+    } catch {
+      // best-effort
+    }
+  }
+  sessions.clear();
+  shuttingDown = false;
+
+  // Respawn each session, collecting old→new ID mapping
+  const idMap: Record<string, string> = {};
+  for (const info of toRestart) {
+    try {
+      const managed = createSession({
+        workingDirectory: info.workingDirectory,
+        name: info.name,
+        resumeSessionId: info.claudeSessionId,
+        autonomousMode: info.autonomousMode,
+      });
+      idMap[info.oldId] = managed.session.id;
+    } catch (err) {
+      console.error(
+        `Failed to restart session ${info.claudeSessionId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return idMap;
 }
 
 /** For testing — reset internal state */

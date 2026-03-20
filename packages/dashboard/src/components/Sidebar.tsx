@@ -310,8 +310,7 @@ export function Sidebar() {
       const pane = sidebarItemPane(item);
 
       // Check group membership for both sessions and previews
-      const paneId =
-        item.type === "session" ? item.data.id : item.data.id;
+      const paneId = item.data.id;
       const group = getGroupForPane(groups, paneId);
 
       if (!group) {
