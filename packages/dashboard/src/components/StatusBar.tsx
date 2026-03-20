@@ -31,13 +31,14 @@ export function StatusBar() {
 
   return (
     <div
-      className="flex shrink-0 items-center justify-between"
+      className="relative flex shrink-0 items-center justify-between"
       style={{
         height: 24,
         borderTop: `1px solid ${page.border}`,
         background: page.bg,
         color: page.statusFg,
         fontSize: 12,
+        zIndex: 50,
       }}
     >
       <div className="flex items-center gap-3 px-3">
