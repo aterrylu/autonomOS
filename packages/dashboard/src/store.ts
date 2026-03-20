@@ -534,7 +534,8 @@ export const useStore = create<AppState>()(
           }
 
           // Case 2: navigating away — save current group snapshot if active
-          const updatedGroups = { ...groups };
+          // Re-read groups in case stale cleanup above modified them
+          const updatedGroups = { ...get().groups };
           if (activeGroupId && updatedGroups[activeGroupId]) {
             updatedGroups[activeGroupId] = {
               ...updatedGroups[activeGroupId],
