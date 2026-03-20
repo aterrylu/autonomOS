@@ -24,12 +24,12 @@ type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
 // ── Display list types for two-pass rendering ─────────────────────────────
 
+type GroupMember =
+  | { type: "session"; session: SessionInfo; pane: ActivePane }
+  | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
+
 type DisplayItem =
-  | {
-      type: "group";
-      group: PaneGroup;
-      sessions: { session: SessionInfo; pane: ActivePane }[];
-    }
+  | { type: "group"; group: PaneGroup; members: GroupMember[] }
   | { type: "session"; session: SessionInfo; pane: ActivePane }
   | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
 
@@ -37,7 +37,7 @@ type DisplayItem =
 
 interface GroupContainerProps {
   group: PaneGroup;
-  members: { session: SessionInfo; pane: ActivePane }[];
+  members: GroupMember[];
   page: PageTheme;
   activePane: ActivePane | null;
   sessionMetaMap: Map<
@@ -54,6 +54,7 @@ interface GroupContainerProps {
   onMemberClick: (pane: ActivePane) => void;
   onMemberDragStart: (e: React.DragEvent, pane: ActivePane) => void;
   onMemberDragEnd: () => void;
+  closePreview: (id: string) => void;
 }
 
 function GroupContainer({
@@ -66,6 +67,7 @@ function GroupContainer({
   onMemberClick,
   onMemberDragStart,
   onMemberDragEnd,
+  closePreview,
 }: GroupContainerProps) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -126,7 +128,7 @@ function GroupContainer({
         <span className="flex items-center gap-0.5 shrink-0">
           {members.map((m) => (
             <span
-              key={m.session.id}
+              key={m.pane.id}
               className="inline-block h-1.5 w-1.5 rounded-full"
               style={{ background: group.color, opacity: 0.7 }}
             />
@@ -134,19 +136,75 @@ function GroupContainer({
         </span>
       </div>
 
-      {/* Member sessions — draggable to ungroup */}
+      {/* Group members — draggable to ungroup */}
       {!collapsed && (
         <div>
           {members.map((m, memberIdx) => {
-            const s = m.session;
             const pane = m.pane;
+            const isActive = isPaneActive(pane);
+            const isLast = memberIdx === members.length - 1;
+
+            const memberDragProps = {
+              draggable: true,
+              onDragStart: (e: React.DragEvent) => {
+                e.dataTransfer.setData(
+                  "application/autonomos-ungroup",
+                  group.id,
+                );
+                onMemberDragStart(e, pane);
+              },
+              onDragEnd: onMemberDragEnd,
+            };
+
+            if (m.type === "preview") {
+              return (
+                // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+                <div
+                  key={`gp-${m.preview.id}`}
+                  role="button"
+                  tabIndex={0}
+                  {...memberDragProps}
+                  className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
+                  style={{
+                    paddingLeft: "20px",
+                    paddingRight: "12px",
+                    background: isActive ? page.border : "transparent",
+                  }}
+                  onClick={() => onMemberClick(pane)}
+                  onKeyDown={(e) => e.key === "Enter" && onMemberClick(pane)}
+                >
+                  <span
+                    className="shrink-0 text-[10px] select-none"
+                    style={{ color: page.statusFg }}
+                  >
+                    {isLast ? "└" : "├"}
+                  </span>
+                  <Codicon name="markdown" size={12} />
+                  <span className="flex-1 truncate text-xs">
+                    {m.preview.title}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closePreview(m.preview.id);
+                    }}
+                    className="shrink-0 rounded cursor-pointer opacity-0 group-hover/member:opacity-100 transition-opacity"
+                    style={{ color: page.statusFg }}
+                    title="Close preview"
+                  >
+                    <Codicon name="close" size={12} />
+                  </button>
+                </div>
+              );
+            }
+
+            const s = m.session;
             const meta = s.claudeSessionId
               ? sessionMetaMap.get(s.claudeSessionId)
               : undefined;
             const displayName = meta?.summary || s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
-            const isActive = isPaneActive(pane);
-            const isLast = memberIdx === members.length - 1;
 
             return (
               // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -154,17 +212,7 @@ function GroupContainer({
                 key={`gs-${s.id}`}
                 role="button"
                 tabIndex={0}
-                draggable
-                onDragStart={(e) => {
-                  // Tag this drag as a group-member drag so the sidebar
-                  // drop zone knows to ungroup instead of reorder
-                  e.dataTransfer.setData(
-                    "application/autonomos-ungroup",
-                    group.id,
-                  );
-                  onMemberDragStart(e, pane);
-                }}
-                onDragEnd={onMemberDragEnd}
+                {...memberDragProps}
                 className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                 style={{
                   paddingLeft: "20px",
@@ -174,7 +222,6 @@ function GroupContainer({
                 onClick={() => onMemberClick(pane)}
                 onKeyDown={(e) => e.key === "Enter" && onMemberClick(pane)}
               >
-                {/* Tree connector */}
                 <span
                   className="shrink-0 text-[10px] select-none"
                   style={{ color: page.statusFg }}
@@ -262,28 +309,34 @@ export function Sidebar() {
     for (const item of sidebarItems) {
       const pane = sidebarItemPane(item);
 
-      if (item.type === "preview") {
-        result.push({ type: "preview", preview: item.data, pane });
-        continue;
-      }
-
-      // session item
-      const s = item.data;
-      const group = getGroupForPane(groups, s.id);
+      // Check group membership for both sessions and previews
+      const paneId =
+        item.type === "session" ? item.data.id : item.data.id;
+      const group = getGroupForPane(groups, paneId);
 
       if (!group) {
-        result.push({ type: "session", session: s, pane });
+        // Ungrouped item — render standalone
+        if (item.type === "preview") {
+          result.push({ type: "preview", preview: item.data, pane });
+        } else {
+          result.push({ type: "session", session: item.data, pane });
+        }
         continue;
       }
 
+      // Build the GroupMember entry
+      const member: GroupMember =
+        item.type === "preview"
+          ? { type: "preview", preview: item.data, pane }
+          : { type: "session", session: item.data, pane };
+
       if (seenGroups.has(group.id)) {
-        // Find the existing group entry and append this member to it
         const existing = result.find(
           (d): d is DisplayItem & { type: "group" } =>
             d.type === "group" && d.group.id === group.id,
         );
         if (existing) {
-          existing.sessions.push({ session: s, pane });
+          existing.members.push(member);
         }
         continue;
       }
@@ -293,7 +346,7 @@ export function Sidebar() {
       result.push({
         type: "group",
         group,
-        sessions: [{ session: s, pane }],
+        members: [member],
       });
     }
 
@@ -451,12 +504,12 @@ export function Sidebar() {
         {displayItems.map((item, idx) => {
           // Group container — no drag participation
           if (item.type === "group") {
-            const firstMemberPane = item.sessions[0]?.pane;
+            const firstMemberPane = item.members[0]?.pane;
             return (
               <GroupContainer
                 key={`group-${item.group.id}`}
                 group={item.group}
-                members={item.sessions}
+                members={item.members}
                 page={page}
                 activePane={activePane}
                 sessionMetaMap={sessionMetaMap}
@@ -471,6 +524,7 @@ export function Sidebar() {
                   startDrag(data);
                 }}
                 onMemberDragEnd={handleDragEnd}
+                closePreview={closePreview}
               />
             );
           }
