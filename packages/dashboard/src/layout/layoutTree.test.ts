@@ -108,11 +108,7 @@ describe("allLeafIds", () => {
   });
 
   it("handles nested branches", () => {
-    const tree = branch(
-      "b1",
-      branch("b2", leaf("a"), leaf("b")),
-      leaf("c"),
-    );
+    const tree = branch("b1", branch("b2", leaf("a"), leaf("b")), leaf("c"));
     expect(allLeafIds(tree)).toEqual(["a", "b", "c"]);
   });
 });
@@ -164,7 +160,11 @@ describe("insertLeaf", () => {
   it("splits a single leaf into a branch", () => {
     const root = leaf("a", pane("s1"));
     const { root: newRoot, newLeafId: newId } = insertLeaf(
-      root, "a", "horizontal", "second", pane("s2"),
+      root,
+      "a",
+      "horizontal",
+      "second",
+      pane("s2"),
     );
     expect(newRoot.kind).toBe("branch");
     const br = newRoot as LayoutBranch;
@@ -178,7 +178,11 @@ describe("insertLeaf", () => {
   it("places new leaf on first side when newSide=first", () => {
     const root = leaf("a", pane("s1"));
     const { root: newRoot } = insertLeaf(
-      root, "a", "vertical", "first", pane("s2"),
+      root,
+      "a",
+      "vertical",
+      "first",
+      pane("s2"),
     );
     const br = newRoot as LayoutBranch;
     expect((br.first as LayoutLeaf).pane).toEqual(pane("s2"));
@@ -187,14 +191,26 @@ describe("insertLeaf", () => {
 
   it("inserts with null pane (loading placeholder)", () => {
     const root = leaf("a", pane("s1"));
-    const { root: newRoot } = insertLeaf(root, "a", "horizontal", "second", null);
+    const { root: newRoot } = insertLeaf(
+      root,
+      "a",
+      "horizontal",
+      "second",
+      null,
+    );
     const br = newRoot as LayoutBranch;
     expect((br.second as LayoutLeaf).pane).toBeNull();
   });
 
   it("returns tree unchanged when target not found", () => {
     const root = leaf("a", pane("s1"));
-    const { root: newRoot } = insertLeaf(root, "nonexistent", "horizontal", "second", pane("s2"));
+    const { root: newRoot } = insertLeaf(
+      root,
+      "nonexistent",
+      "horizontal",
+      "second",
+      pane("s2"),
+    );
     // The tree should still have a branch because insertLeaf always creates a new leaf
     // But the original leaf is unchanged since target wasn't found
     expect(newRoot.kind).toBe("leaf");
@@ -225,11 +241,7 @@ describe("removeLeaf", () => {
   });
 
   it("collapses parent correctly for deeper trees", () => {
-    const tree = branch(
-      "b1",
-      leaf("a"),
-      branch("b2", leaf("b"), leaf("c")),
-    );
+    const tree = branch("b1", leaf("a"), branch("b2", leaf("b"), leaf("c")));
     const result = removeLeaf(tree, "b");
     expect(result).not.toBeNull();
     // After removing "b", b2's sibling "c" replaces b2

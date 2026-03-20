@@ -47,7 +47,9 @@ function setupSplitView(id1: string, id2: string) {
   const { focusedLeafId } = useStore.getState();
 
   // Split to add pane2
-  useStore.getState().splitLeafWithPane(focusedLeafId, "horizontal", "second", pane2);
+  useStore
+    .getState()
+    .splitLeafWithPane(focusedLeafId, "horizontal", "second", pane2);
 
   return {
     pane1,
@@ -140,7 +142,10 @@ describe("switchPane", () => {
         ...groups,
         [activeGroupId!]: {
           ...groups[activeGroupId!],
-          memberPaneIds: [...groups[activeGroupId!].memberPaneIds, "stale-pane"],
+          memberPaneIds: [
+            ...groups[activeGroupId!].memberPaneIds,
+            "stale-pane",
+          ],
         },
       },
     });
@@ -164,9 +169,14 @@ describe("splitLeafWithPane", () => {
     setupSinglePane("s1");
     const { focusedLeafId } = useStore.getState();
 
-    useStore.getState().splitLeafWithPane(
-      focusedLeafId, "horizontal", "second", sessionPane("s2"),
-    );
+    useStore
+      .getState()
+      .splitLeafWithPane(
+        focusedLeafId,
+        "horizontal",
+        "second",
+        sessionPane("s2"),
+      );
 
     const state = useStore.getState();
     expect(state.activeGroupId).not.toBeNull();
@@ -179,9 +189,14 @@ describe("splitLeafWithPane", () => {
     const { pane1, pane2 } = setupSplitView("s1", "s2");
     const { activeGroupId, focusedLeafId } = useStore.getState();
 
-    useStore.getState().splitLeafWithPane(
-      focusedLeafId, "vertical", "second", sessionPane("s3"),
-    );
+    useStore
+      .getState()
+      .splitLeafWithPane(
+        focusedLeafId,
+        "vertical",
+        "second",
+        sessionPane("s3"),
+      );
 
     const state = useStore.getState();
     // Same group, now with 3 members
@@ -195,9 +210,9 @@ describe("splitLeafWithPane", () => {
     setupSinglePane("s1");
     const { focusedLeafId } = useStore.getState();
 
-    useStore.getState().splitLeafWithPane(
-      focusedLeafId, "horizontal", "second", null,
-    );
+    useStore
+      .getState()
+      .splitLeafWithPane(focusedLeafId, "horizontal", "second", null);
 
     const state = useStore.getState();
     expect(state.activeGroupId).toBeNull();
@@ -208,9 +223,14 @@ describe("splitLeafWithPane", () => {
     setupSinglePane("s1");
     const { focusedLeafId } = useStore.getState();
 
-    useStore.getState().splitLeafWithPane(
-      focusedLeafId, "horizontal", "second", sessionPane("s2"),
-    );
+    useStore
+      .getState()
+      .splitLeafWithPane(
+        focusedLeafId,
+        "horizontal",
+        "second",
+        sessionPane("s2"),
+      );
 
     const state = useStore.getState();
     const group = state.groups[state.activeGroupId!];
@@ -231,8 +251,11 @@ describe("movePaneToLeaf", () => {
 
     // State should be unchanged
     const stateAfter = useStore.getState();
-    expect(allPanes(stateAfter.layout).map((p) => p.id).sort())
-      .toEqual(["s1", "s2"]);
+    expect(
+      allPanes(stateAfter.layout)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["s1", "s2"]);
   });
 
   it("moves pane to other leaf (center): collapses to single leaf", () => {
@@ -256,9 +279,9 @@ describe("movePaneToLeaf", () => {
 
     // Split again to add s3
     const leaf2 = findLeafByPaneId(state1.layout, "s2")!;
-    useStore.getState().splitLeafWithPane(
-      leaf2.id, "vertical", "second", sessionPane("s3"),
-    );
+    useStore
+      .getState()
+      .splitLeafWithPane(leaf2.id, "vertical", "second", sessionPane("s3"));
 
     const state2 = useStore.getState();
     const leaf1 = findLeafByPaneId(state2.layout, "s1")!;
@@ -268,7 +291,9 @@ describe("movePaneToLeaf", () => {
     useStore.getState().movePaneToLeaf("s1", leaf3.id, "east");
 
     const after = useStore.getState();
-    const paneIds = allPanes(after.layout).map((p) => p.id).sort();
+    const paneIds = allPanes(after.layout)
+      .map((p) => p.id)
+      .sort();
     expect(paneIds).toEqual(["s1", "s2", "s3"]);
   });
 
@@ -282,7 +307,11 @@ describe("movePaneToLeaf", () => {
 
     // Layout should be unchanged
     const after = useStore.getState();
-    expect(allPanes(after.layout).map((p) => p.id).sort()).toEqual(["s1", "s2"]);
+    expect(
+      allPanes(after.layout)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["s1", "s2"]);
   });
 
   it("dissolves group when move reduces to 1 member", () => {
@@ -348,9 +377,14 @@ describe("closeLeaf", () => {
     const { focusedLeafId, activeGroupId } = useStore.getState();
 
     // Add a third pane
-    useStore.getState().splitLeafWithPane(
-      focusedLeafId, "vertical", "second", sessionPane("s3"),
-    );
+    useStore
+      .getState()
+      .splitLeafWithPane(
+        focusedLeafId,
+        "vertical",
+        "second",
+        sessionPane("s3"),
+      );
 
     const stateWith3 = useStore.getState();
     expect(stateWith3.groups[activeGroupId!].memberPaneIds).toHaveLength(3);
