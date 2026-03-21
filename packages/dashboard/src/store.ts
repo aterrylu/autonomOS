@@ -886,13 +886,8 @@ export const useStore = create<AppState>()(
         },
 
         remapSessionIds: (idMap) => {
-          const {
-            layout,
-            activePane,
-            paneOrder,
-            groups,
-            activeGroupId,
-          } = get();
+          const { layout, activePane, paneOrder, groups, activeGroupId } =
+            get();
 
           // Helper: remap a pane reference
           const remapPane = (p: ActivePane | null): ActivePane | null => {

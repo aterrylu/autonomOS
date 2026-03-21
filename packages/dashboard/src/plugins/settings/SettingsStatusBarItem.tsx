@@ -154,12 +154,12 @@ function RestartAllButton({ page }: { page: PageTheme }) {
         className="w-full rounded px-3 py-1.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         style={{ background: page.border, color: page.fg }}
       >
-      {state === "done"
-        ? "Restarted!"
-        : state === "restarting"
-          ? "Restarting..."
-          : "Restart All Sessions"}
-    </button>
+        {state === "done"
+          ? "Restarted!"
+          : state === "restarting"
+            ? "Restarting..."
+            : "Restart All Sessions"}
+      </button>
     </div>
   );
 }
