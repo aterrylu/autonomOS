@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
@@ -43,6 +43,7 @@ function SettingRow({
             onClick={() => {
               setEditing(true);
               setDraft("");
+              onChange("");
             }}
             className="text-[10px] cursor-pointer hover:opacity-80"
             style={{ color: "#16825d" }}
@@ -85,6 +86,85 @@ function SettingRow({
     </div>
   );
 }
+
+function RestartAllButton({ page }: { page: PageTheme }) {
+  const [state, setState] = useState<
+    "idle" | "confirming" | "restarting" | "done"
+  >("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleRestart = useCallback(async () => {
+    setState("restarting");
+    setError(null);
+    try {
+      const res = await fetch("/api/sessions/restart-all", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { idMap } = await res.json();
+      if (idMap && Object.keys(idMap).length > 0) {
+        useStore.getState().remapSessionIds(idMap);
+      }
+      setState("done");
+      setTimeout(() => setState("idle"), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Restart failed");
+      setState("idle");
+    }
+  }, []);
+
+  if (state === "confirming") {
+    return (
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          onClick={handleRestart}
+          className="flex-1 rounded px-3 py-1.5 text-xs font-medium cursor-pointer"
+          style={{ background: "#ea6c73", color: "#fff" }}
+        >
+          Confirm restart
+        </button>
+        <button
+          type="button"
+          onClick={() => setState("idle")}
+          className="rounded px-3 py-1.5 text-xs cursor-pointer"
+          style={{ background: page.border, color: page.fg }}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {error && (
+        <div
+          className="text-xs mb-1 rounded px-2 py-1"
+          style={{ color: "#ea6c73" }}
+        >
+          {error}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          setState("confirming");
+          setError(null);
+        }}
+        disabled={state === "restarting" || state === "done"}
+        className="w-full rounded px-3 py-1.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        style={{ background: page.border, color: page.fg }}
+      >
+        {state === "done"
+          ? "Restarted!"
+          : state === "restarting"
+            ? "Restarting..."
+            : "Restart All Sessions"}
+      </button>
+    </div>
+  );
+}
+
+type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
 function SettingsPanel({ onClose }: { onClose: () => void }) {
   const theme = useStore((s) => s.theme);
@@ -223,8 +303,11 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           </button>
 
           <div className="text-[10px]" style={labelStyle}>
-            Injected as env vars into new sessions.
+            Settings are injected as env vars. Save, then restart sessions to
+            apply to running sessions.
           </div>
+
+          <RestartAllButton page={page} />
         </div>
       )}
     </div>

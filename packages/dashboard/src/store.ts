@@ -416,6 +416,7 @@ interface AppState {
     zone: "center" | "north" | "south" | "east" | "west",
   ) => void;
   removeFromGroup: (groupId: string, paneId: string) => void;
+  remapSessionIds: (idMap: Record<string, string>) => void;
 }
 
 type SetState = (partial: Partial<AppState>) => void;
@@ -882,6 +883,61 @@ export const useStore = create<AppState>()(
             activePane: pane,
             ...groupUpdates,
           });
+        },
+
+        remapSessionIds: (idMap) => {
+          const { layout, activePane, paneOrder, groups, activeGroupId } =
+            get();
+
+          // Helper: remap a pane reference
+          const remapPane = (p: ActivePane | null): ActivePane | null => {
+            if (!p || p.type !== "session") return p;
+            const newId = idMap[p.id];
+            return newId ? { ...p, id: newId } : p;
+          };
+
+          // Remap layout tree panes
+          const remapLayout = (node: LayoutNode): LayoutNode => {
+            if (node.kind === "leaf") {
+              return { ...node, pane: remapPane(node.pane) };
+            }
+            return {
+              ...node,
+              first: remapLayout(node.first),
+              second: remapLayout(node.second),
+            };
+          };
+
+          // Remap paneOrder (session keys are "session:<id>")
+          const newPaneOrder = paneOrder.map((key) => {
+            if (key.startsWith("session:")) {
+              const oldId = key.slice("session:".length);
+              const newId = idMap[oldId];
+              return newId ? `session:${newId}` : key;
+            }
+            return key;
+          });
+
+          // Remap groups
+          const newGroups: Record<string, PaneGroup> = {};
+          for (const [gid, g] of Object.entries(groups)) {
+            newGroups[gid] = {
+              ...g,
+              memberPaneIds: g.memberPaneIds.map((id) => idMap[id] ?? id),
+              savedLayout: remapLayout(g.savedLayout),
+            };
+          }
+
+          set({
+            layout: remapLayout(layout),
+            activePane: remapPane(activePane),
+            paneOrder: newPaneOrder,
+            groups: newGroups,
+            activeGroupId,
+          });
+
+          // Fetch new session list
+          get().fetchSessions();
         },
 
         removeFromGroup: (groupId, paneId) => {
