@@ -339,13 +339,15 @@ function buildEnv(): Record<string, string> {
   delete env.CLAUDECODE;
   delete env.PORT;
 
-  // Inject dashboard-configured settings as env vars
+  // Inject dashboard-configured settings as env vars (only when override toggle is on)
   const settings = getSettings();
-  if (settings.anthropicBaseUrl) {
-    env.ANTHROPIC_BASE_URL = settings.anthropicBaseUrl;
-  }
-  if (settings.anthropicAuthToken) {
-    env.ANTHROPIC_AUTH_TOKEN = settings.anthropicAuthToken;
+  if (settings.anthropicOverrideEnabled !== false) {
+    if (settings.anthropicBaseUrl) {
+      env.ANTHROPIC_BASE_URL = settings.anthropicBaseUrl;
+    }
+    if (settings.anthropicAuthToken) {
+      env.ANTHROPIC_AUTH_TOKEN = settings.anthropicAuthToken;
+    }
   }
 
   return env;

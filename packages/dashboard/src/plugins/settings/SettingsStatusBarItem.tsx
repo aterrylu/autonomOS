@@ -8,6 +8,7 @@ interface MaskedSettings {
   claudeOrgId: string | null;
   anthropicBaseUrl: string | null;
   anthropicAuthToken: string | null;
+  anthropicOverrideEnabled: boolean;
 }
 
 function SettingRow({
@@ -252,33 +253,80 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         <div style={labelStyle}>Loading...</div>
       ) : (
         <div className="space-y-2.5">
-          <div
-            className="text-[10px] font-medium uppercase tracking-wide"
-            style={labelStyle}
-          >
-            Anthropic API
+          <div className="flex items-center justify-between">
+            <div
+              className="text-[10px] font-medium uppercase tracking-wide"
+              style={labelStyle}
+            >
+              Anthropic API Override
+            </div>
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch */}
+            <div
+              className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
+              style={{
+                background: settings?.anthropicOverrideEnabled
+                  ? "#16825d"
+                  : page.border,
+              }}
+              onClick={async () => {
+                const newVal = !settings?.anthropicOverrideEnabled;
+                try {
+                  const res = await fetch("/api/settings", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      anthropicOverrideEnabled: newVal,
+                    }),
+                  });
+                  if (res.ok) {
+                    const updated: MaskedSettings = await res.json();
+                    setSettings(updated);
+                  }
+                } catch {
+                  // silent — toggle will revert visually on next open
+                }
+              }}
+            >
+              <div
+                className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
+                style={{
+                  background: "#fff",
+                  left: settings?.anthropicOverrideEnabled ? "18px" : "2px",
+                }}
+              />
+            </div>
           </div>
-          <SettingRow
-            label="Base URL"
-            value={settings?.anthropicBaseUrl ?? null}
-            placeholder="https://api.anthropic.com (default)"
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => {
-              setPending((p) => ({ ...p, anthropicBaseUrl: v }));
+          <div
+            style={{
+              opacity: settings?.anthropicOverrideEnabled ? 1 : 0.4,
+              pointerEvents: settings?.anthropicOverrideEnabled
+                ? "auto"
+                : "none",
             }}
-          />
-          <SettingRow
-            label="Auth Token"
-            value={settings?.anthropicAuthToken ?? null}
-            placeholder="sk-..."
-            secret
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => {
-              setPending((p) => ({ ...p, anthropicAuthToken: v }));
-            }}
-          />
+            className="space-y-2.5"
+          >
+            <SettingRow
+              label="Base URL"
+              value={settings?.anthropicBaseUrl ?? null}
+              placeholder="https://api.anthropic.com (default)"
+              inputStyle={inputStyle}
+              labelStyle={labelStyle}
+              onChange={(v) => {
+                setPending((p) => ({ ...p, anthropicBaseUrl: v }));
+              }}
+            />
+            <SettingRow
+              label="Auth Token"
+              value={settings?.anthropicAuthToken ?? null}
+              placeholder="sk-..."
+              secret
+              inputStyle={inputStyle}
+              labelStyle={labelStyle}
+              onChange={(v) => {
+                setPending((p) => ({ ...p, anthropicAuthToken: v }));
+              }}
+            />
+          </div>
 
           {error && (
             <div
