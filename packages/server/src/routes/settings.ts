@@ -17,6 +17,7 @@ function maskSettings(settings: AppSettings) {
     claudeOrgId: settings.claudeOrgId || null,
     anthropicBaseUrl: settings.anthropicBaseUrl || null,
     anthropicAuthToken: redact(settings.anthropicAuthToken),
+    anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
   };
 }
 
@@ -44,6 +45,9 @@ settingsRouter.put("/", async (c) => {
   }
   if (typeof body.anthropicAuthToken === "string") {
     partial.anthropicAuthToken = body.anthropicAuthToken.trim();
+  }
+  if (typeof body.anthropicOverrideEnabled === "boolean") {
+    partial.anthropicOverrideEnabled = body.anthropicOverrideEnabled;
   }
 
   let updated: AppSettings;

@@ -18,6 +18,8 @@ export interface AppSettings {
   anthropicBaseUrl?: string;
   /** Anthropic API auth token */
   anthropicAuthToken?: string;
+  /** Whether to inject anthropicBaseUrl/anthropicAuthToken into sessions (default: true if values exist) */
+  anthropicOverrideEnabled?: boolean;
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
