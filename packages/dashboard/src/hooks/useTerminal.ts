@@ -54,6 +54,7 @@ export function useTerminal(
       theme: THEMES[themeRef.current].terminal,
       scrollback: 10000,
       allowProposedApi: true,
+      scrollSensitivity: 3,
     });
 
     const fitAddon = new FitAddon();
@@ -78,7 +79,16 @@ export function useTerminal(
       new MarkdownLinkProvider(terminal, sessionId),
     );
 
+    let userScrolledUp = false;
+    let programmaticScroll = false;
     let disposed = false;
+
+    terminal.onScroll(() => {
+      if (disposed || programmaticScroll) return;
+      const buf = terminal.buffer.active;
+      const atBottom = buf.baseY - buf.viewportY <= 1;
+      userScrolledUp = !atBottom;
+    });
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let scrollTimer: ReturnType<typeof setTimeout> | null = null;
     let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -86,6 +96,7 @@ export function useTerminal(
 
     function connect() {
       if (disposed) return;
+      userScrolledUp = false;
 
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
@@ -112,12 +123,15 @@ export function useTerminal(
       };
 
       ws.onmessage = (event) => {
-        const buf = terminal.buffer.active;
-        const atBottom = buf.baseY - buf.viewportY <= 3;
         terminal.write(event.data);
-        if (atBottom) {
+        // Only auto-scroll if the user hasn't manually scrolled up
+        if (!userScrolledUp) {
           if (scrollTimer) clearTimeout(scrollTimer);
-          scrollTimer = setTimeout(() => terminal.scrollToBottom(), 100);
+          scrollTimer = setTimeout(() => {
+            programmaticScroll = true;
+            terminal.scrollToBottom();
+            programmaticScroll = false;
+          }, 100);
         }
       };
 
@@ -142,7 +156,9 @@ export function useTerminal(
           connect();
         }, retryDelay);
       };
-      ws.onerror = () => {};
+      ws.onerror = () => {
+        // Errors are followed by onclose — log but don't act
+      };
 
       wsRef.current = ws;
     }
@@ -199,6 +215,49 @@ export function useTerminal(
     });
     resizeObserver.observe(container);
 
+    // Touch scroll support — xterm.js v6 doesn't handle touch natively because
+    // .xterm-screen overlays .xterm-viewport, intercepting all touch events.
+    // We translate touch gestures into terminal.scrollLines() calls.
+    let touchStartY: number | null = null;
+    let touchAccum = 0;
+    const LINE_HEIGHT_FALLBACK = 14;
+
+    function onTouchStart(e: TouchEvent) {
+      if (e.touches.length === 1) {
+        touchStartY = e.touches[0].clientY;
+        touchAccum = 0;
+      }
+    }
+
+    function onTouchMove(e: TouchEvent) {
+      if (disposed || touchStartY === null || e.touches.length !== 1) return;
+      e.preventDefault();
+
+      const dy = touchStartY - e.touches[0].clientY;
+      touchStartY = e.touches[0].clientY;
+
+      const lineHeight =
+        (terminal.options.fontSize ?? LINE_HEIGHT_FALLBACK) *
+        (terminal.options.lineHeight ?? 1);
+      if (lineHeight <= 0) return;
+      touchAccum += dy;
+
+      const lines = Math.trunc(touchAccum / lineHeight);
+      if (lines !== 0) {
+        terminal.scrollLines(lines);
+        touchAccum -= lines * lineHeight;
+      }
+    }
+
+    function onTouchEnd() {
+      touchStartY = null;
+      touchAccum = 0;
+    }
+
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+    container.addEventListener("touchend", onTouchEnd, { passive: true });
+
     termRef.current = terminal;
 
     return () => {
@@ -208,6 +267,9 @@ export function useTerminal(
       if (nudgeTimer) clearTimeout(nudgeTimer);
       document.removeEventListener("visibilitychange", handleVisibility);
       resizeObserver.disconnect();
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
+      container.removeEventListener("touchend", onTouchEnd);
       wsRef.current?.close();
       terminal.dispose();
       container.replaceChildren();

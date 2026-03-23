@@ -41,7 +41,11 @@ export const SessionPane = memo(function SessionPane({
       >
         {title}
       </div>
-      <div ref={containerRef} className="flex-1 p-1" />
+      <div
+        ref={containerRef}
+        className="flex-1 p-1"
+        style={{ touchAction: "none" }}
+      />
     </div>
   );
 });
