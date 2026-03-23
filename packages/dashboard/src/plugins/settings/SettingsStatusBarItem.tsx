@@ -261,6 +261,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
               Anthropic API Override
             </div>
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: toggle switch */}
             <div
               className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
               style={{
