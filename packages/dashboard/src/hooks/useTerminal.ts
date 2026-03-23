@@ -215,17 +215,39 @@ export function useTerminal(
     });
     resizeObserver.observe(container);
 
-    // Touch scroll support — xterm.js v6 doesn't handle touch natively because
-    // .xterm-screen overlays .xterm-viewport, intercepting all touch events.
-    // We translate touch gestures into terminal.scrollLines() calls.
+    // Touch scroll — xterm.js v6 doesn't handle touch natively (.xterm-screen
+    // overlays .xterm-viewport). We translate touch gestures into scrollLines()
+    // with inertial scrolling (momentum/flick) on release.
     let touchStartY: number | null = null;
     let touchAccum = 0;
+    let velocity = 0;
+    let lastTouchTime = 0;
+    let inertiaRaf: number | null = null;
     const LINE_HEIGHT_FALLBACK = 14;
+    const FRICTION = 0.92;
+    const MIN_VELOCITY = 0.3; // px/ms threshold to stop inertia
+
+    function getLineHeight(): number {
+      return (
+        (terminal.options.fontSize ?? LINE_HEIGHT_FALLBACK) *
+        (terminal.options.lineHeight ?? 1)
+      );
+    }
+
+    function stopInertia() {
+      if (inertiaRaf !== null) {
+        cancelAnimationFrame(inertiaRaf);
+        inertiaRaf = null;
+      }
+    }
 
     function onTouchStart(e: TouchEvent) {
       if (e.touches.length === 1) {
+        stopInertia();
         touchStartY = e.touches[0].clientY;
         touchAccum = 0;
+        velocity = 0;
+        lastTouchTime = Date.now();
       }
     }
 
@@ -233,12 +255,16 @@ export function useTerminal(
       if (disposed || touchStartY === null || e.touches.length !== 1) return;
       e.preventDefault();
 
+      const now = Date.now();
       const dy = touchStartY - e.touches[0].clientY;
+      const dt = Math.max(1, now - lastTouchTime);
       touchStartY = e.touches[0].clientY;
+      lastTouchTime = now;
 
-      const lineHeight =
-        (terminal.options.fontSize ?? LINE_HEIGHT_FALLBACK) *
-        (terminal.options.lineHeight ?? 1);
+      // Exponential moving average for smoother velocity tracking
+      velocity = 0.6 * (dy / dt) + 0.4 * velocity;
+
+      const lineHeight = getLineHeight();
       if (lineHeight <= 0) return;
       touchAccum += dy;
 
@@ -251,7 +277,42 @@ export function useTerminal(
 
     function onTouchEnd() {
       touchStartY = null;
-      touchAccum = 0;
+
+      // Start inertial scroll if flick velocity is high enough
+      if (Math.abs(velocity) < MIN_VELOCITY) {
+        velocity = 0;
+        touchAccum = 0;
+        return;
+      }
+
+      let lastFrame = performance.now();
+      let inertiaAccum = 0;
+
+      function inertiaStep(now: number) {
+        if (disposed) return;
+        const dt = now - lastFrame;
+        lastFrame = now;
+
+        velocity *= FRICTION;
+        if (Math.abs(velocity) < MIN_VELOCITY) {
+          velocity = 0;
+          inertiaRaf = null;
+          return;
+        }
+
+        const lineHeight = getLineHeight();
+        if (lineHeight <= 0) return;
+
+        inertiaAccum += velocity * dt;
+        const lines = Math.trunc(inertiaAccum / lineHeight);
+        if (lines !== 0) {
+          terminal.scrollLines(lines);
+          inertiaAccum -= lines * lineHeight;
+        }
+        inertiaRaf = requestAnimationFrame(inertiaStep);
+      }
+
+      inertiaRaf = requestAnimationFrame(inertiaStep);
     }
 
     container.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -262,6 +323,7 @@ export function useTerminal(
 
     return () => {
       disposed = true;
+      stopInertia();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (scrollTimer) clearTimeout(scrollTimer);
       if (nudgeTimer) clearTimeout(nudgeTimer);
