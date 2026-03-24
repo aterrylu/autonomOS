@@ -581,38 +581,45 @@ export function Sidebar() {
               >
                 <AgentStatusIcon
                   status={
-                    (agentStatuses[s.id]?.status as AgentStatus) ?? "unknown"
+                    (agentStatuses[s.id]?.status as AgentStatus) ?? "working"
                   }
                   size={14}
                 />
                 <div className="flex-1 min-w-0">
-                  {/* Top row: title + git stats */}
+                  {/* Top row: title (left), time + unread (right) */}
                   <div className="flex items-center gap-1">
                     <span className="flex-1 truncate text-xs">
                       {displayName}
                     </span>
-                    {meta?.gitBranch && meta?.gitDiffStat && (
-                      <DiffStat stat={meta.gitDiffStat} />
+                    <span
+                      className="shrink-0 text-[10px]"
+                      style={{ color: page.statusFg }}
+                    >
+                      {formatAge(lastActive)}
+                    </span>
+                    {(notificationCounts[s.id] ?? 0) > 0 && (
+                      <span
+                        className="shrink-0 text-[10px] font-medium"
+                        style={{ color: "#ea6c73" }}
+                      >
+                        ·{notificationCounts[s.id]}
+                      </span>
                     )}
                   </div>
-                  {/* Bottom row: project/branch + time */}
+                  {/* Bottom row: project/branch (left), status (right) */}
                   <div
                     className="flex items-center text-[10px]"
                     style={{ color: page.statusFg }}
                   >
-                    <span className="min-w-0 truncate">
+                    <span className="flex-1 min-w-0 truncate">
                       {meta?.projectName ?? s.workingDirectory.split("/").pop()}
                       {meta?.gitBranch &&
                         meta.gitBranch !== "HEAD" &&
                         ` · ${meta.gitBranch}`}
                     </span>
-                    <span className="ml-1.5 shrink-0">
-                      {formatAge(lastActive)}
-                    </span>
                     {agentStatuses[s.id]?.status &&
                       agentStatuses[s.id].status !== "unknown" && (
-                        <span className="ml-1.5 shrink-0 opacity-75">
-                          ·{" "}
+                        <span className="shrink-0 ml-1.5 opacity-75">
                           {agentStatusLabel(
                             agentStatuses[s.id].status as AgentStatus,
                             agentStatuses[s.id].currentTool,
