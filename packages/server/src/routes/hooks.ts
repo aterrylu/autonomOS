@@ -185,10 +185,15 @@ hooksRouter.post("/:sessionId", async (c) => {
   // Update agent status
   const statusUpdate = deriveStatus(body);
   if (statusUpdate.status) {
-    const current = agentStates.get(sessionId);
+    const current = agentStates.get(sessionId) ?? {
+      status: "unknown" as AgentStatus,
+      lastEvent: "",
+      updatedAt: 0,
+    };
     agentStates.set(sessionId, {
       ...current,
       ...statusUpdate,
+      status: statusUpdate.status,
       lastEvent: event,
       updatedAt: timestamp,
     });
