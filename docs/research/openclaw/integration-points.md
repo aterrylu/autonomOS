@@ -20,6 +20,7 @@ The gateway exposes 50+ RPC methods via WebSocket. These are the primary program
 | `sessions:reset` | Write | Reset a session | Control: force session reset |
 | `sessions:delete` | Write | Delete a session | Cleanup |
 | `sessions:compact` | Write | Compact session transcript | Free up context window |
+| `sessions:send` | Write | Send message from one agent to another | Inter-agent communication (A2A) |
 
 ### Agent Methods
 
@@ -35,6 +36,41 @@ The gateway exposes 50+ RPC methods via WebSocket. These are the primary program
 | `agents:files:list` | Read | List agent workspace files | File browser |
 | `agents:files:get` | Read | Read an agent workspace file | Memory/config viewer |
 | `agents:files:set` | Write | Write an agent workspace file | Memory/config editor |
+
+### Agent-to-Agent (A2A) Tools
+
+OpenClaw has **native inter-agent communication** via two agent-facing tools:
+
+| Tool | What It Does | Notes |
+|------|-------------|-------|
+| `sessions_send` | Agent A sends a message to Agent B | Ping-pong reply flow, up to `maxPingPongTurns` (default 5) |
+| `sessions_spawn` | Agent A spawns a sub-agent for task delegation | Isolated session; result returned to caller |
+
+**Configuration** (`openclaw.json`):
+
+```json
+{
+  "tools": {
+    "agentToAgent": {
+      "enabled": true,
+      "allow": ["agent-a", "agent-b"],
+      "maxPingPongTurns": 5
+    },
+    "sessions": {
+      "visibility": "tree"
+    }
+  }
+}
+```
+
+- `tools.agentToAgent.enabled` — disabled by default; must be explicitly enabled
+- `tools.agentToAgent.allow` — optional allowlist of agent IDs that may communicate
+- `tools.agentToAgent.maxPingPongTurns` — caps back-and-forth turns (default 5)
+- `tools.sessions.visibility` — controls which sessions an agent can see: `"tree"` (default, agent + descendants), `"self"`, `"agent"`, `"all"`
+
+**Known bug:** Slack channel A2A routing is broken (GitHub issue #15946).
+
+**Memory isolation:** Memory remains siloed per agent — `sessions_send` enables message passing, not memory sharing. This is by design.
 
 ### Chat Methods
 
@@ -266,7 +302,7 @@ Features that require a custom OpenClaw plugin or upstream changes:
 | Memory search from dashboard | Memory search API is internal, not exposed via RPC | Plugin registers `registerGatewayMethod("memory:search", ...)` |
 | Agent decision traces (why did it do X?) | Tool call details flow over WebSocket but aren't persisted queryably | Plugin hook on `after_tool_call` to log to queryable store |
 | Webhook on cron completion | No event emitted when cron finishes | Plugin hook on `agent_end` + check if cron-triggered |
-| Multi-agent coordination status | No concept of agent teams/orchestration | Plugin manages team state, registers status endpoint |
+| Multi-agent coordination status | Native A2A (`sessions_send`) exists but no team/orchestration state concept | Plugin manages team state, registers status endpoint |
 | Custom metrics endpoint | No Prometheus/OTEL export by default | Use `diagnostics-otel` extension or write custom |
 
 ### Requires Upstream Change
@@ -355,7 +391,7 @@ Every piece of data we need flows through the gateway WebSocket. Instead of scra
 1. **No aggregate token tracking** — per-session only, no "total spend this week"
 2. **No memory search API** — internal only, needs plugin to expose
 3. **No event export/webhook** — can't subscribe to events from outside the gateway
-4. **No multi-agent orchestration** — each agent is independent
+4. **No multi-agent orchestration state** — native A2A messaging exists (`sessions_send`, `sessions_spawn`) but no built-in concept of agent teams, task queues, or orchestration graphs
 5. **No historical analytics** — no time-series data storage
 
 All gaps can be filled with a custom OpenClaw plugin (~200-500 lines each), which is the recommended approach over forking or CLI scraping.
