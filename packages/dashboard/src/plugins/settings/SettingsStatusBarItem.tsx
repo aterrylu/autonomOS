@@ -426,8 +426,8 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             })}
           </div>
           <div className="text-[10px]" style={labelStyle}>
-            Enabled channels are injected into every new session via
-            --channels. Requires Claude Code v2.1.80+.
+            Enabled channels are injected into every new session via --channels.
+            Requires Claude Code v2.1.80+.
           </div>
 
           {error && (

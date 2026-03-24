@@ -50,6 +50,8 @@ interface AssistantEntry {
   uuid: string;
   timestamp: string;
   isSidechain?: boolean;
+  isApiErrorMessage?: boolean;
+  error?: string;
   message: {
     role: "assistant";
     content: AssistantContentBlock[];
@@ -179,12 +181,14 @@ export class ClaudeCodeParser implements SessionParser {
     for (const block of entry.message.content) {
       switch (block.type) {
         case "text": {
-          if (block.text.trim()) {
+          const text = block.text.trim();
+          if (text && text !== "No response requested.") {
             items.push({
               type: "text",
               content: block.text,
               id: `${entry.uuid}-text-${items.length}`,
               isSidechain: entry.isSidechain,
+              isError: entry.isApiErrorMessage ?? false,
             } satisfies TextItem);
           }
           break;
@@ -312,7 +316,7 @@ export class ClaudeCodeParser implements SessionParser {
       .replace(/<command-message>[\s\S]*?<\/command-message>/g, "")
       .replace(/<command-args>[\s\S]*?<\/command-args>/g, "")
       .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, "")
-      .replace(/^No response requested\.$/m, "")
+      .replace(/No response requested\./g, "")
       .trim();
   }
 }
