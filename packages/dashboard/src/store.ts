@@ -606,9 +606,9 @@ export const useStore = create<AppState>()(
           const counts: Record<string, number> = {};
           await Promise.all(
             sessions.map(async (s) => {
-              const res = await fetch(
-                `/api/hooks/${s.id}/notifications`,
-              ).catch(() => null);
+              const res = await fetch(`/api/hooks/${s.id}/notifications`).catch(
+                () => null,
+              );
               if (!res?.ok) return;
               const data = await res.json().catch(() => null);
               if (data?.unread) counts[s.id] = data.unread;

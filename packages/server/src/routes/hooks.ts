@@ -23,15 +23,9 @@ export interface SessionNotification {
 const notifications = new Map<string, SessionNotification[]>();
 
 /** Events that generate a user-visible notification badge */
-const NOTIFY_EVENTS = new Set([
-  "Notification",
-  "Stop",
-  "PermissionRequest",
-]);
+const NOTIFY_EVENTS = new Set(["Notification", "Stop", "PermissionRequest"]);
 
-export function getNotifications(
-  sessionId: string,
-): SessionNotification[] {
+export function getNotifications(sessionId: string): SessionNotification[] {
   return notifications.get(sessionId) ?? [];
 }
 

@@ -15,9 +15,9 @@ import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
+import { hooksRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
-import { hooksRouter } from "./routes/hooks.js";
 import { settingsRouter } from "./routes/settings.js";
 import { terminalRouter } from "./routes/terminal.js";
 import {
