@@ -109,8 +109,10 @@ if (AUTH_TOKEN) {
   // Protect API and WS routes — static assets pass through so the
   // dashboard can load and show a "not authenticated" state.
   const requireAuth: MiddlewareHandler = async (c, next) => {
-    // Hook relay endpoint is unauthenticated (called from PTY sessions via curl)
-    if (c.req.path.startsWith("/api/hooks")) return next();
+    // Hook relay POST is unauthenticated (called from PTY sessions via curl).
+    // GET endpoints remain behind auth to protect session data.
+    if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
+      return next();
     const token = extractToken(c);
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
     return c.json(

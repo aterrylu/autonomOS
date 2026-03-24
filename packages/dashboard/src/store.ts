@@ -631,15 +631,17 @@ export const useStore = create<AppState>()(
           set({ notificationCounts: counts, agentStatuses: statuses });
         },
         markNotificationsRead: async (sessionId) => {
-          await fetch(`/api/hooks/${sessionId}/read`, {
+          const res = await fetch(`/api/hooks/${sessionId}/read`, {
             method: "POST",
           }).catch(() => null);
-          set({
-            notificationCounts: {
-              ...get().notificationCounts,
-              [sessionId]: 0,
-            },
-          });
+          if (res?.ok) {
+            set({
+              notificationCounts: {
+                ...get().notificationCounts,
+                [sessionId]: 0,
+              },
+            });
+          }
         },
         createSession: async (workingDirectory = "~") => {
           await spawnSession(

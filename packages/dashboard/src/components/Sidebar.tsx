@@ -595,14 +595,13 @@ export function Sidebar() {
                       className="shrink-0 text-[10px]"
                       style={{ color: page.statusFg }}
                     >
+                      {(notificationCounts[s.id] ?? 0) > 0 && (
+                        <span style={{ color: "#ea6c73" }}>
+                          {notificationCounts[s.id]} ·{" "}
+                        </span>
+                      )}
                       {formatAge(lastActive)}
                     </span>
-                    {(notificationCounts[s.id] ?? 0) > 0 && (
-                      <span
-                        className="shrink-0 inline-block h-1.5 w-1.5 rounded-full ml-0.5"
-                        style={{ background: "#53bdfa" }}
-                      />
-                    )}
                   </div>
                   {/* Bottom row: project/branch (left), status (right) */}
                   <div
