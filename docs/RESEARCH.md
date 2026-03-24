@@ -11,11 +11,32 @@ Document all research findings here. Link sources. Include your assessment of re
 - [x] **Claude Code hooks & workflows** — Terry's custom setup in `aterrylu-dev/claude`. Understand what conventions/patterns could be integrated.
 - [x] **Multi-agent coordination** — Claude Code agent teams, `/loop`, `ralph-loop`, community orchestrators (Overstory, CC Mirror, gstack, Ruflo), fork+query pattern for non-blocking introspection. Full analysis: [`docs/research/multi-agent-coordination/`](research/multi-agent-coordination/)
 - [x] **Agent frameworks & SDKs** — LangGraph, Claude Agent SDK, Claude Code, Gemini ADK, AN SDK (21st.dev), n8n. Comparison, integration points, patterns. Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
+- [x] **Google A2A (Agent2Agent) Protocol** — Inter-agent communication standard (Linux Foundation, Apache 2.0). Agent Cards, task lifecycle, JSON-RPC/SSE/gRPC, discovery, MCP comparison, 150+ org ecosystem. Full analysis: [`docs/research/a2a-protocol/`](research/a2a-protocol/)
 - [ ] **Robot middleware** — ROS2, micro-ROS, foxglove. How do they handle observability and control?
 
 ---
 
 ## Findings
+
+### Google A2A (Agent2Agent) Protocol (2026-03-19)
+
+**What:** Open standard for agent-to-agent communication (Linux Foundation, Apache 2.0). Announced April 2025 by Google, donated to Linux Foundation June 2025. v0.3.0 released July 2025. 150+ org ecosystem including all major hyperscalers. IBM's competing ACP merged into A2A by August 2025.
+
+**Key findings:**
+- **Complements MCP, doesn't compete.** MCP = agent ↔ tools (vertical). A2A = agent ↔ agent (horizontal). Both needed in a full multi-agent stack.
+- **Agent Card** — JSON discovery document at `/.well-known/agent.json`. Contains: name, description, url, skills[], capabilities (streaming, pushNotifications), defaultInputModes/OutputModes, authentication schemes. Cards can be signed (JWS) in v0.3+.
+- **Task lifecycle** — 8 states: `submitted → working → input-required | auth-required → completed | failed | canceled | rejected`. Terminal states cannot be restarted; new task required in same contextId.
+- **Transport** — HTTPS + JSON-RPC 2.0 (required). gRPC (optional, v0.3+). REST binding also available. Key methods: `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/set`.
+- **Three update modes** — synchronous response, SSE streaming, and webhook push notifications (for long-running/disconnected scenarios). Webhook calls authenticated via JWT + JWKS.
+- **contextId** — groups related tasks across a "conversation". analogous to autonomOS project concept.
+- **Opaque agents** — clients cannot see agent internals, only Agent Card + task outputs. Intentional design for cross-framework interoperability. Conflicts with autonomOS's deep observability goal.
+- **Ecosystem maturity** — LangChain, LlamaIndex, CrewAI, LangGraph, Semantic Kernel all have adapters. Google ADK has native support. Microsoft integrated into Azure AI Foundry and Copilot Studio. SAP integrated into Joule.
+
+**Relevance: HIGH for long-term, MEDIUM for now.** A2A is the right protocol for autonomOS's external-facing task delegation interface (Phase 2+). For Phase 1 (Claude Code-only, internal), continue with PTY/hook/JSONL — it gives deeper observability than A2A's opaque model. Immediate action: align internal task state model with A2A semantics so the Phase 2 transport mapping is trivial.
+
+Full analysis: [`docs/research/a2a-protocol/`](research/a2a-protocol/) — README, architecture, Agent Card schema, MCP comparison, ecosystem, autonomOS integration analysis.
+
+---
 
 ### dimensionalOS (2026-03-04, updated with source-level deep dive)
 
