@@ -13,6 +13,34 @@ import { getSettings } from "./settings.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
+// ── Hook relay config (injected per-session via --settings) ──────────
+// Posts event JSON to /api/hooks via curl. No trailing & — Claude Code's
+// async:true handles backgrounding (& would disconnect stdin, breaking -d @-).
+const HOOK_CMD =
+  'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
+  " >/dev/null 2>&1";
+
+const HOOK_ENTRY = {
+  matcher: "",
+  hooks: [{ type: "command", command: HOOK_CMD, timeout: 3, async: true }],
+} as const;
+
+const HOOK_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "Stop",
+  "Notification",
+  "PermissionRequest",
+  "SubagentStart",
+  "PreCompact",
+  "SessionEnd",
+] as const;
+
 export interface ManagedSession {
   session: Session;
   pty: IPty;
@@ -107,37 +135,11 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--channels", ...channels);
   }
 
-  // Inject hook relay via --settings (per-session, no global config mutation).
-  // Hooks fire curl to POST event JSON to our /api/hooks endpoint.
-  // AUTONOMOS_SERVER and AUTONOMOS_SESSION_ID are already in env via buildEnv().
-  // Note: no trailing & — Claude Code's async:true handles backgrounding.
-  // Backgrounding with & disconnects stdin, breaking curl's -d @- (read from pipe).
-  const hookCmd =
-    'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
-    ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
-    " >/dev/null 2>&1";
-  const hookEntry = {
-    matcher: "",
-    hooks: [{ type: "command", command: hookCmd, timeout: 3, async: true }],
-  };
-  const hookEvents = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "Stop",
-    "Notification",
-    "PermissionRequest",
-    "SubagentStart",
-    "PreCompact",
-    "SessionEnd",
-  ];
+  // Inject hook relay so Claude Code posts events to our /api/hooks endpoint
   args.push(
     "--settings",
     JSON.stringify({
-      hooks: Object.fromEntries(hookEvents.map((e) => [e, [hookEntry]])),
+      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
     }),
   );
 

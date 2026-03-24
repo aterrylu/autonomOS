@@ -16,63 +16,33 @@ export type AgentStatus =
   | "orchestrating"
   | "stopped";
 
+type StatusCategory =
+  | "completed"
+  | "warning"
+  | "syncing"
+  | "stopped"
+  | "unknown";
+
 interface AgentStatusIconProps {
   status: AgentStatus;
   size?: number;
 }
 
-/**
- * Animated status icon for agent sessions.
- * Adapted from 21st.dev's card-status-list component.
- *
- * - Completed/idle: green circle with checkmark
- * - Needs input/error: yellow triangle with exclamation
- * - Working/syncing: spinning dash loader
- * - Stopped: gray circle with dash
- */
-export function AgentStatusIcon({ status, size = 16 }: AgentStatusIconProps) {
-  const [activeDashIndex, setActiveDashIndex] = useState(0);
+/** Pre-computed spinner dash positions (8 evenly-spaced dashes around center) */
+const SPINNER_DASHES = Array.from({ length: 8 }, (_, i) => {
+  const radian = ((i * 45 - 90) * Math.PI) / 180;
+  const r = 6;
+  const dl = 1.8;
+  return {
+    x1: 8 + (r - dl / 2) * Math.cos(radian),
+    y1: 8 + (r - dl / 2) * Math.sin(radian),
+    x2: 8 + (r + dl / 2) * Math.cos(radian),
+    y2: 8 + (r + dl / 2) * Math.sin(radian),
+  };
+});
 
-  const isAnimating =
-    status === "working" ||
-    status === "tool_running" ||
-    status === "compacting" ||
-    status === "orchestrating";
-
-  useEffect(() => {
-    if (!isAnimating) return;
-    const interval = setInterval(() => {
-      setActiveDashIndex((prev) => (prev + 1) % 8);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isAnimating]);
-
-  const icon = getStatusIcon(status, size, activeDashIndex);
-
-  return (
-    <div
-      className="flex items-center justify-center overflow-hidden"
-      style={{ width: size, height: size }}
-    >
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={statusCategory(status)}
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          exit={{ scale: 0.8, opacity: 0 }}
-          transition={{ type: "spring", stiffness: 400, damping: 25 }}
-        >
-          {icon}
-        </motion.div>
-      </AnimatePresence>
-    </div>
-  );
-}
-
-/** Collapse statuses into categories so AnimatePresence only transitions between distinct visuals */
-function statusCategory(
-  status: AgentStatus,
-): "completed" | "warning" | "syncing" | "stopped" | "unknown" {
+/** Collapse statuses into visual categories for icon selection and AnimatePresence keying */
+function statusCategory(status: AgentStatus): StatusCategory {
   switch (status) {
     case "idle":
     case "ready":
@@ -92,13 +62,59 @@ function statusCategory(
   }
 }
 
-function getStatusIcon(
-  status: AgentStatus,
-  size: number,
-  activeDashIndex: number,
-) {
+/**
+ * Animated status icon for agent sessions.
+ *
+ * - Completed/idle: green circle with checkmark
+ * - Needs input/error: yellow triangle with exclamation
+ * - Working/syncing: spinning dash loader
+ * - Stopped: gray circle with dash
+ */
+export function AgentStatusIcon({ status, size = 16 }: AgentStatusIconProps) {
+  const [activeDashIndex, setActiveDashIndex] = useState(0);
   const category = statusCategory(status);
 
+  useEffect(() => {
+    if (category !== "syncing") return;
+    const interval = setInterval(() => {
+      setActiveDashIndex((prev) => (prev + 1) % 8);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [category]);
+
+  return (
+    <div
+      className="flex items-center justify-center overflow-hidden"
+      style={{ width: size, height: size }}
+    >
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={category}
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.8, opacity: 0 }}
+          transition={{ type: "spring", stiffness: 400, damping: 25 }}
+        >
+          <StatusSvg
+            category={category}
+            size={size}
+            activeDashIndex={activeDashIndex}
+          />
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function StatusSvg({
+  category,
+  size,
+  activeDashIndex,
+}: {
+  category: StatusCategory;
+  size: number;
+  activeDashIndex: number;
+}) {
   switch (category) {
     case "completed":
       return (
@@ -154,25 +170,19 @@ function getStatusIcon(
           role="img"
           aria-label="Working"
         >
-          {Array.from({ length: 8 }).map((_, index) => {
-            const angle = index * 45 - 90;
-            const radian = (angle * Math.PI) / 180;
-            const r = 6;
-            const dl = 1.8;
-            return (
-              <line
-                // biome-ignore lint/suspicious/noArrayIndexKey: fixed set of 8 dashes
-                key={index}
-                x1={8 + (r - dl / 2) * Math.cos(radian)}
-                y1={8 + (r - dl / 2) * Math.sin(radian)}
-                x2={8 + (r + dl / 2) * Math.cos(radian)}
-                y2={8 + (r + dl / 2) * Math.sin(radian)}
-                stroke={index === activeDashIndex ? "#ffffff" : "#6b7280"}
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            );
-          })}
+          {SPINNER_DASHES.map((dash, index) => (
+            <line
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed set of 8 dashes
+              key={index}
+              x1={dash.x1}
+              y1={dash.y1}
+              x2={dash.x2}
+              y2={dash.y2}
+              stroke={index === activeDashIndex ? "#ffffff" : "#6b7280"}
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          ))}
         </svg>
       );
     case "stopped":

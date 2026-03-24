@@ -42,6 +42,18 @@ export interface AgentState {
   updatedAt: number;
 }
 
+const DEFAULT_AGENT_STATE: AgentState = {
+  status: "unknown",
+  lastEvent: "",
+  updatedAt: 0,
+};
+
+/** Fields to clear when a tool finishes or the agent transitions away from tool use */
+const CLEAR_TOOL = {
+  currentTool: undefined,
+  toolDetail: undefined,
+} as const;
+
 // In-memory stores — keyed by autonomOS session ID
 const notifications = new Map<string, SessionNotification[]>();
 const agentStates = new Map<string, AgentState>();
@@ -73,44 +85,26 @@ export function clearNotifications(sessionId: string): void {
 // ── Agent status helpers ─────────────────────────────────────────────
 
 export function getAgentState(sessionId: string): AgentState {
-  return (
-    agentStates.get(sessionId) ?? {
-      status: "unknown",
-      lastEvent: "",
-      updatedAt: 0,
-    }
-  );
+  return agentStates.get(sessionId) ?? DEFAULT_AGENT_STATE;
 }
 
 /** Derive agent status from a hook event */
 function deriveStatus(event: HookEvent): Partial<AgentState> {
-  const name = event.hook_event_name;
-
-  switch (name) {
+  switch (event.hook_event_name) {
     case "SessionStart":
       return event.source === "compact"
         ? { status: "compacting" }
         : { status: "ready" };
 
     case "UserPromptSubmit":
-      return {
-        status: "working",
-        currentTool: undefined,
-        toolDetail: undefined,
-      };
+    case "PostToolUse":
+      return { status: "working", ...CLEAR_TOOL };
 
     case "PreToolUse":
       return {
         status: "tool_running",
         currentTool: event.tool_name,
         toolDetail: extractToolDetail(event),
-      };
-
-    case "PostToolUse":
-      return {
-        status: "working",
-        currentTool: undefined,
-        toolDetail: undefined,
       };
 
     case "PostToolUseFailure":
@@ -121,7 +115,7 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
       };
 
     case "Stop":
-      return { status: "idle", currentTool: undefined, toolDetail: undefined };
+      return { status: "idle", ...CLEAR_TOOL };
 
     case "Notification":
       return event.notification_type === "permission_prompt"
@@ -138,29 +132,25 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
       return { status: "compacting" };
 
     case "SessionEnd":
-      return {
-        status: "stopped",
-        currentTool: undefined,
-        toolDetail: undefined,
-      };
+      return { status: "stopped", ...CLEAR_TOOL };
 
     default:
       return {};
   }
 }
 
-/** Extract a short detail string from tool input */
+/** Extract a short detail string from tool input (filename or truncated command) */
 function extractToolDetail(event: HookEvent): string | undefined {
-  if (!event.tool_input) return undefined;
-  if (event.tool_input.file_path) {
-    // Show just the filename
-    const parts = event.tool_input.file_path.split("/");
-    return parts[parts.length - 1];
+  const input = event.tool_input;
+  if (!input) return undefined;
+
+  if (input.file_path) {
+    return input.file_path.split("/").pop();
   }
-  if (event.tool_input.command) {
-    // Truncate long commands
-    const cmd = event.tool_input.command;
-    return cmd.length > 40 ? `${cmd.slice(0, 37)}...` : cmd;
+  if (input.command) {
+    return input.command.length > 40
+      ? `${input.command.slice(0, 37)}...`
+      : input.command;
   }
   return undefined;
 }
@@ -185,15 +175,9 @@ hooksRouter.post("/:sessionId", async (c) => {
   // Update agent status
   const statusUpdate = deriveStatus(body);
   if (statusUpdate.status) {
-    const current = agentStates.get(sessionId) ?? {
-      status: "unknown" as AgentStatus,
-      lastEvent: "",
-      updatedAt: 0,
-    };
     agentStates.set(sessionId, {
-      ...current,
+      ...getAgentState(sessionId),
       ...statusUpdate,
-      status: statusUpdate.status,
       lastEvent: event,
       updatedAt: timestamp,
     });
