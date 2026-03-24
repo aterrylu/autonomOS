@@ -107,6 +107,37 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--channels", ...channels);
   }
 
+  // Inject hook relay via --settings (per-session, no global config mutation).
+  // Hooks fire curl to POST event JSON to our /api/hooks endpoint.
+  // AUTONOMOS_SERVER and AUTONOMOS_SESSION_ID are already in env via buildEnv().
+  const hookCmd =
+    'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
+    ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
+    " >/dev/null 2>&1 &";
+  const hookEntry = {
+    matcher: "",
+    hooks: [{ type: "command", command: hookCmd, timeout: 3, async: true }],
+  };
+  const hookEvents = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "Notification",
+    "PermissionRequest",
+    "SubagentStart",
+    "PreCompact",
+    "SessionEnd",
+  ];
+  args.push(
+    "--settings",
+    JSON.stringify({
+      hooks: Object.fromEntries(hookEvents.map((e) => [e, [hookEntry]])),
+    }),
+  );
+
   if (options.prompt) {
     args.push("--", options.prompt);
   }
