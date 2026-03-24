@@ -142,7 +142,11 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--", options.prompt);
   }
 
-  console.log(`[session] spawning: ${binary} ${args.join(" ")}`);
+  // Log spawn command (truncate --settings JSON for readability)
+  const logArgs = args.map((a) =>
+    a.startsWith('{"hooks"') ? '{"hooks":...}' : a,
+  );
+  console.log(`[session] spawning: ${binary} ${logArgs.join(" ")}`);
 
   const pty = spawn(binary, args, {
     name: "xterm-256color",
