@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-03-18
+Last updated: 2026-03-19
 
 ## Done
 
@@ -33,8 +33,28 @@ Last updated: 2026-03-18
 - [x] Drag-to-reorder — reorder sessions and preview panes in sidebar
 - [x] Simplified Makefile — dev/prod split, PM2 daemon, removed Tailscale sidecar (ADR-017)
 - [x] Remote deployment — `make deploy` with rsync + PM2
+- [x] Research: agent platform design (ADR-019–022) — folder model, session model, context assembly, audience types
+- [x] Research: multi-agent landscape — Jinn, Marc Nuri dashboard, Claudia, ccswarm, multiclaude, OpenSwarm, agent-orchestrator (see `docs/research/`)
 
-## Now — Orchestrator Foundation
+## Now — Agent Platform + Multi-Agent Foundation
+
+Design and build the autonomous agent platform so agents can be defined, scheduled, and run from the dashboard.
+
+**Agent platform (ADR-019–022):**
+- [ ] Agent runner — reads `agent.yaml`, assembles systemPrompt, calls Claude Agent SDK `query()`
+- [ ] Cron scheduler — triggers oneshot/persistent sessions per `agent.yaml` schedule
+- [ ] `state/` folder protocol — agents read/write shared state across sessions
+- [ ] File watcher — hot-reload agent definitions without server restart
+- [ ] Dashboard: context % metric — most important health signal for running agents (see Marc Nuri research)
+- [ ] Dashboard: session states — working / idle / awaiting-permission (three canonical states)
+- [ ] Dashboard: per-session token cost tracking
+
+**Multi-agent coordination (research phase → design):**
+- [ ] Orchestrator agent design — LLM-as-orchestrator pattern (ComposioHQ research), reads agent YAML, delegates to workers
+- [ ] Inter-agent communication model — evaluate: file-based (multiclaude), MCP mesh (Jinn), or message bus
+- [ ] Agent-to-agent typed interface — expose each agent's `name`, `description`, `capabilities` for orchestrator discovery
+
+## Next — Orchestrator Foundation
 
 Evolve from passive dashboard to orchestrator-first platform (ADR-012).
 
@@ -48,32 +68,19 @@ Evolve from passive dashboard to orchestrator-first platform (ADR-012).
 
 ## Next — Make It Useful
 
-### Core Infrastructure
-- [ ] Notification system — core event bus + toast UI + history panel (ADR-019). Plugins and core features publish via `notify()` API. Bell icon with badge count, dismissable history.
-- [ ] Quick commands — `Cmd+K` command palette for session management, theme switching, orchestrator actions. Searchable, keyboard-driven. Plugin for now, may become core.
-
-### Plugins (ADR-019)
-- [ ] Cost tracker plugin — per-session token counts from JSONL files, dollar costs by model pricing (ADR-019). Status bar: `$4.32 today`, panel: per-session breakdown + daily trend.
-- [ ] Agent activity plugin — real-time session states (idle/active/error), current task, duration, burn rate. Status bar: `3 agents · 2 active`, panel: session cards. Open question: how to infer agent activity from terminal output or hooks.
-
-### Session Enrichment
-- [ ] PR status per session — detect PR creation, attach metadata to session, show badge + CI status on session card (ADR-019)
 - [ ] Multi-terminal — view multiple sessions side by side (split panes)
+- [ ] Token spend / cost tracking per session (extend claude-usage plugin)
+- [ ] Agent activity dashboard (what's running, what failed)
 - [ ] Session rename from dashboard (blocked by SDK `customTitle` bug, or needs own metadata file)
-
-### Integrations
 - [ ] OpenClaw integration — read agent status, cron jobs
 
 ## Later
 
-### Plugins (Future)
-- [ ] Problems/diagnostics plugin — aggregate errors across sessions, centralized triage panel
-- [ ] Timeline plugin — chronological activity stream across all sessions ("what happened while I was away?")
-- [ ] Structured trace viewer — agent sessions emit traces (task→files read→edit→test→PR), span viewer for debugging agent workflows
-
-### Core
 - [ ] Memory state viewer
 - [ ] Configure agents from the dashboard
 - [ ] Cross-workspace project tracking (project spans multiple repos)
 - [ ] Move shared types (ProjectInfo, ProjectSession) to @autonomos/core
-- [ ] Robot path (aspirational)
+- [ ] Semantic memory upgrade path — LanceDB for agents that outgrow `state/` files (OpenSwarm pattern)
+- [ ] Discord/Slack integration — agents escalate to messaging channels when stuck (OpenSwarm pattern)
+- [ ] Session checkpointing — git-like branching for conversation history (Claudia pattern)
+- [ ] VLA runtime — `VLARuntime` implementing `AgentRuntime` for physical agents (ADR-023, punted)

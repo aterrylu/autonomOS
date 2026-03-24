@@ -301,7 +301,8 @@ openclaw cron status            # Overall cron status
 ### Session Model
 - **Alignment:** OpenClaw's session model is sender-scoped and channel-aware — good for messaging but thin for our needs. autonomOS needs richer session modeling (capabilities, memory state, health).
 - **Integration point:** `sessions:list` and `sessions:preview` gateway methods give us read access. We can observe session state without modifying it.
-- **Gap:** No concept of "agent orchestration sessions" — each session is a single sender talking to a single agent. Multi-agent coordination would need to be built on top.
+- **Inter-agent communication:** OpenClaw **does** support native A2A messaging via the `sessions_send` tool (Agent A → Agent B) and `sessions_spawn` for sub-agent delegation. Disabled by default; requires `tools.agentToAgent.enabled: true` in config. Reply flow is limited to `maxPingPongTurns` (default 5). Session visibility is controlled by `tools.sessions.visibility` (default: `"tree"`). See `integration-points.md` for full config details.
+- **Gap:** No concept of "agent teams" or orchestration graphs — sessions remain 1:1 sender-to-agent. Multi-agent coordination state (queues, task routing, team status) would need to be built on top of the native A2A primitives.
 
 ### Memory System
 - **Alignment:** The vector DB + hybrid search pattern is exactly what we'd want. The per-agent scoping matches our agent abstraction.

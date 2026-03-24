@@ -489,36 +489,181 @@ resolveTitle?(nativeSessionId, cwd): Promise<string | null>
 
 ---
 
-## ADR-019: Plugin System Evolution — Notifications, Cost Tracking, and Session Enrichment
-**Date:** 2026-03-18
-**Decided by:** Terry + Claude
-**Source:** Claude Code session (plugin system research and planning)
+## ADR-019: Agent Platform — Folder-Based Agent Definitions
+**Date:** 2026-03-17
+**Decided by:** Terry
+**Source:** Claude Code research session (agent-platform-research branch)
 
-**Context:** The plugin system (ADR-013) ships with two plugins: Claude Usage (rate limits) and Settings. With the move toward orchestrator-first (ADR-012), the dashboard needs richer observability. A review of VSCode extension patterns identified features that translate to an agent orchestration dashboard.
+**Context:** Need a model for defining, storing, and running autonomous agents in autonomOS. Options ranged from monolithic config files (OpenClaw's `openclaw.json`) to database-backed entries (Claudia's SQLite) to folder-per-agent structures.
 
-**Decisions (3 items):**
+**Decision:** Flat folder-per-agent under `~/.autonomos/agents/`. Each agent is a self-contained directory:
+```
+~/.autonomos/
+├── CLAUDE.md                        # base context for ALL agents
+├── OWNER.md                         # owner profile, injected for all agents
+└── agents/
+    └── home-presence/
+        ├── agent.json               # schedule, model, display metadata
+        ├── state/                   # shared across all sessions of this agent
+        └── .claude/
+            ├── CLAUDE.md            # agent-specific behavior
+            ├── settings.json        # allowed tools, permissions, MCP servers
+            └── skills/
+```
 
-### 1. Notification system is core infrastructure, not a plugin
-Notifications (toasts, event history, badges) will be a standalone core system — not a status bar plugin. Plugins and core features both publish to it via a `notify()` API. A status bar plugin can't handle toast stacking, history persistence, or the event bus architecture this requires.
+**agent.json schema (deliberately minimal):**
+```json
+{
+  "name": "Home Presence",
+  "description": "Monitors cameras and presence",
+  "model": "sonnet",
+  "schedule": {
+    "cron": "*/5 * * * *",
+    "mode": "oneshot"
+  }
+}
+```
 
-### 2. Cost tracking is a separate plugin from Claude Usage
-The current `claude-usage` plugin scrapes claude.ai's usage API for account-wide rate limit utilization. Cost tracking parses Claude Code's JSONL session files in `~/.claude/projects/` for per-session token counts and computes dollar costs by model pricing. Separate plugins because:
-- Different data sources (claude.ai API vs. local JSONL files)
-- Different granularity (account-wide vs. per-session)
-- Different auth (session cookie vs. filesystem access)
-
-### 3. PR status is per-session metadata, not a global plugin
-PR/CI status attaches to individual sessions, not a global status bar widget. One session may produce multiple PRs; different sessions have unrelated PRs. Data flow: agent creates PR → autonomOS detects (via git remote or GitHub API) → PR reference attached to session metadata → session UI shows PR badge with status.
+`agent.json` only contains what the autonomOS runner needs: **name, description, model, schedule.** Everything else (allowed tools, permissions, hooks, MCP servers) lives in `.claude/settings.json` where Claude Code already expects it. No duplication.
 
 **Rationale:**
-- Notifications are cross-cutting infrastructure — every plugin and core feature needs to push status. A plugin can't own infrastructure that other plugins depend on.
-- Cost tracking and rate-limit tracking serve different users at different granularities. Conflating them creates a confusing "usage" plugin that does two unrelated things.
-- PRs only make sense in the context of the session that created them. A global PR widget loses the "which agent did this?" context that the orchestrator needs.
+- Adding an agent = dropping a folder. No central config file to edit.
+- Each agent is independently version-controllable and shareable.
+- JSON over YAML — consistent with `.claude/settings.json`, no YAML parser dependency.
+- `agent.json` is deliberately thin: only runner concerns. Agent capabilities/permissions stay in `.claude/` where Claude Code already handles them.
+- Mirrors how Claude Code itself works (`.claude/` folder = local config). Familiar mental model.
+- Flat structure avoids hierarchy complexity. All agents are peers.
+- Validated by Jinn (config + adjacent CLAUDE.md) and OpenClaw (flat agent list).
 
-**Alternatives considered:**
-- **Notification as a plugin** — Simpler to implement but wrong abstraction. Plugins shouldn't own cross-cutting infrastructure.
-- **Extend claude-usage for cost tracking** — Data sources are completely different. Would create a confusing plugin doing two unrelated things.
-- **Global PR dashboard plugin** — Shows all PRs in one panel. Rejected because PRs are meaningless without session context in an orchestrator. A global view could be added later as an optional panel.
-- **Proxy-based cost tracking** — Run a proxy between Claude Code and the API to capture token counts. Over-engineered; JSONL files already contain the data. Only needed for API-key users (not the current use case with Claude Max/Pro).
+**Alternatives:**
+- **Monolithic config** (OpenClaw model) — editing a central file to add agents. Not composable.
+- **SQLite rows** (Claudia model) — not version-controllable, GUI-required to edit.
+- **YAML instead of JSON** — readable but adds a parsing dependency. JSON is native to Node.js and consistent with the rest of the `.claude/` ecosystem.
+- **Hierarchical template/instance model** — `templates/` + `agents/` with singleton/multi/job split. Too confusing for v1. Collapsed to flat.
+- **Put allowedTools in agent.json** — duplication. `.claude/settings.json` already handles this and is what the SDK reads.
 
 ---
+
+## ADR-020: Agent Context Assembly — Explicit systemPrompt Over SDK Parent-Dir Walk
+**Date:** 2026-03-17
+**Decided by:** Terry
+**Source:** Claude Code research session (agent-platform-research branch)
+
+**Context:** The Claude Agent SDK automatically walks parent directories for CLAUDE.md files when `settingSources` includes `"project"`. This could be used to inherit `~/.autonomos/CLAUDE.md` by placing agents under `~/.autonomos/`. However, this behavior is a side effect of `settingSources`, not a documented primary feature, and breaks if agent folders move.
+
+**Decision:** The autonomOS agent runner explicitly assembles the system prompt from files and injects via the `systemPrompt` parameter. `settingSources: ["project"]` is used only for skills and `settings.json` — not for CLAUDE.md inheritance.
+
+```typescript
+const baseContext = readFile("~/.autonomos/CLAUDE.md")
+const agentContext = readFile(`agents/${name}/.claude/CLAUDE.md`)
+
+query({
+  prompt: triggerMessage,
+  options: {
+    systemPrompt: `${baseContext}\n\n---\n\n${agentContext}`,
+    cwd: agentFolder,
+    settingSources: ["project"],   // loads skills + settings.json only
+  }
+})
+```
+
+**Context layers an agent sees:**
+1. `systemPrompt` — explicitly assembled base context + agent-specific context
+2. `settingSources: ["project"]` — skills from `.claude/skills/`, permissions from `.claude/settings.json`
+3. `prompt` — the trigger message (cron tick message or user message)
+
+**Rationale:**
+- Explicit assembly is debuggable — log the full system prompt before each run.
+- Location-independent — agent folders can live anywhere, not just under `~/.autonomos/`.
+- Not subject to SDK behavior changes. Parent-dir walking is undocumented side effect behavior.
+- Composition order is controlled — base context always before agent context.
+
+**Alternatives:**
+- **Rely on SDK parent-dir walk** — simpler but fragile. Breaks on folder moves, depends on undocumented behavior, hard to debug.
+- **Symlink CLAUDE.md** — fragile, platform-specific, still implicit.
+
+---
+
+## ADR-021: Agent Session Model — oneshot vs persistent
+**Date:** 2026-03-17
+**Decided by:** Terry
+**Source:** Claude Code research session (agent-platform-research branch)
+
+**Context:** Scheduled agents need a session model. Two options: spawn a fresh session per cron tick (stateless), or maintain one long-lived session and message into it (stateful).
+
+**Decision:** Two modes, `oneshot` (default) and `persistent`. Controlled by `schedule.mode` in `agent.json`.
+
+**oneshot (default):**
+- Fresh isolated session per cron tick
+- Agent reads `state/` at start, does work, writes `state/`, session dies
+- No context window growth over time
+- Cheap, predictable, maps to OpenClaw's `sessionTarget: "isolated"`
+
+**persistent:**
+- One long-lived session, cron tick sends a message into it
+- Agent retains full conversation history across ticks
+- Context accumulates — requires a compaction/archival strategy
+- Use only when multi-turn reasoning across ticks genuinely matters
+- Maps to OpenClaw's `sessionTarget: "main"`
+
+**Default to `oneshot`.** Use `persistent` only with a specific stated reason.
+
+**Rationale:**
+- `oneshot` avoids context window growth, the primary failure mode for long-running agents (validated by Marc Nuri dashboard research — context % is the key health metric)
+- `state/` folder provides all the inter-run continuity needed for most agents
+- `persistent` is available for interactive agents or agents where conversational reasoning across ticks is the core value
+
+**Alternatives:**
+- **Always oneshot** — simpler but removes the option for genuinely persistent agents.
+- **Always persistent** — context bloat, eventual failure. Not viable for 24/7 agents.
+- **Auto-compact on overflow** — OpenClaw's approach. Valid for persistent mode but doesn't change the default.
+
+---
+
+## ADR-022: OWNER.md Convention — No Formal Audience Types
+**Date:** 2026-03-17 (revised 2026-03-19)
+**Decided by:** Terry
+**Source:** Claude Code research session (agent-platform-research branch)
+
+**Context:** Initially designed a formal `audience.type` field in agent config (personal/service/dedicated) to handle different user profiles. On reflection, all current agents are personal tools — the distinction is premature and adds complexity to `agent.json` for hypothetical use cases.
+
+**Decision:** Drop formal audience types. Keep a single convention:
+
+- **`OWNER.md`** at `~/.autonomos/OWNER.md` — describes the owner (Terry). Injected into the systemPrompt for all agents by the runner.
+- If a specific agent serves a different person, the agent author handles this in the agent's own `.claude/CLAUDE.md` or drops a `persona.md` in the agent folder. No framework support needed.
+- Multi-user / service agent patterns are punted entirely.
+
+**Rationale:**
+- All agents Terry builds now are personal. "Service" and "dedicated" types are solving problems that don't exist yet.
+- OWNER.md covers 100% of current use cases — agents know who Terry is.
+- Outward-facing agents (if ever needed) can define their own user context in CLAUDE.md. This is agent-specific logic, not platform logic.
+- Keeps `agent.json` minimal — no `audience` field.
+
+**Alternatives:**
+- **Formal audience.type field** (original ADR-022) — three types with different USER.md and session allocation strategies. Over-engineered for a personal tool.
+- **No OWNER.md at all** — agents wouldn't know who they serve. Simple but misses easy personalization.
+
+---
+
+## ADR-023: VLA Runtime — Punted to Roadmap
+**Date:** 2026-03-19
+**Decided by:** Terry
+**Source:** Claude Code research session (agent-platform-research branch)
+
+**Context:** autonomOS has an aspirational "Robot Path" for persistent physical agents (home automation, robotics). This requires a fundamentally different runtime from the Claude Agent SDK: VLA (Vision-Language-Action) models run at 10–50Hz, output continuous motor commands, and require in-model temporal state (recurrent architectures or sliding frame windows) rather than software-managed context windows. The `AgentRuntime` abstraction (ADR-019) was designed to make this swap possible.
+
+**Decision:** Punt VLA runtime to roadmap. The `AgentRuntime` interface is the seam — a `VLARuntime` implementation would replace `query()` with a high-frequency sensorimotor loop and a VLA-capable model (RT-2, π0, or equivalent). No work on this until the Dev Path agent platform is working end-to-end.
+
+**Key architectural difference documented:**
+- Text LLM agents: discrete episodic (cron ticks, context window as memory, software-managed history)
+- VLA agents: continuous real-time (10–50Hz, in-model recurrent state, physical grounding)
+- Visual memory for VLA: CLIP embeddings in vector DB (LanceDB) — no well-known OpenClaw-equivalent exists yet for visual-memory agent orchestration
+
+**Rationale:**
+- Robot path is aspirational. Dev path is the immediate priority.
+- The `AgentRuntime` abstraction already provides the architectural seam — no premature VLA work needed now.
+- VLA frameworks (RT-2, π0, OpenVLA) are rapidly evolving. Better to wait for the ecosystem to stabilize.
+
+**Alternatives:**
+- **Build VLA runtime now** — premature. No hardware to test against, no immediate use case.
+- **Ignore robot path entirely** — the `AgentRuntime` abstraction costs nothing to keep and preserves the option.
