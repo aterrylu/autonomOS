@@ -12,6 +12,7 @@ Document all research findings here. Link sources. Include your assessment of re
 - [x] **Multi-agent coordination** — Claude Code agent teams, `/loop`, `ralph-loop`, community orchestrators (Overstory, CC Mirror, gstack, Ruflo), fork+query pattern for non-blocking introspection. Full analysis: [`docs/research/multi-agent-coordination/`](research/multi-agent-coordination/)
 - [x] **Agent frameworks & SDKs** — LangGraph, Claude Agent SDK, Claude Code, Gemini ADK, AN SDK (21st.dev), n8n. Comparison, integration points, patterns. Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
 - [ ] **Robot middleware** — ROS2, micro-ROS, foxglove. How do they handle observability and control?
+- [x] **cmux** — Native macOS terminal for multi-agent workflows (Swift/AppKit, libghostty). Notification system, integrated browser, agent automation API, CLI/socket control. Full analysis: [`docs/research/cmux/`](research/cmux/)
 
 ---
 
@@ -110,3 +111,26 @@ Full analysis: [`docs/research/multi-agent-coordination/`](research/multi-agent-
 **Relevance: MEDIUM** — Not a reference implementation we can study deeply (closed-source), but a valuable UX reference and potential infrastructure provider. MCP integration is the concrete opportunity; skills registry pattern is worth adopting.
 
 Full analysis: [`docs/research/zo-computer/`](research/zo-computer/)
+
+### cmux (2026-03-23)
+
+**What:** Native macOS terminal app for multi-AI-agent workflows by manaflow-ai (Swift/AppKit, libghostty). 9,774 stars in ~2 months. Built because existing terminals lacked contextual notifications and metadata for parallel agent sessions.
+
+**Key findings:**
+- **Notification system is table stakes.** OSC sequence detection + visual rings on panes + notification panel + jump-to-unread shortcut is the design autonomOS should match. The `cmux notify` CLI (wired into hooks) solves the daily pain of not knowing which agent needs attention.
+- **Sidebar metadata density.** Each workspace tab shows: git branch, PR status/number, working directory, listening ports, latest notification text. autonomOS session cards should show the same.
+- **Primitive vs orchestrator.** cmux explicitly says it is "a primitive, not a solution" — composable building blocks, no prescriptive workflow. This is the opposite of autonomOS's orchestrator-first vision (ADR-012). Not competitive — different bets.
+- **Integrated browser with agent automation API.** WKWebView + vercel-labs/agent-browser port. Agents can interact with dev servers directly. autonomOS has no equivalent (markdown preview is close but not agent-scriptable).
+- **Native performance advantage.** libghostty (C) vs xterm.js/WebGL. Real difference for heavy terminal workloads.
+- **No session persistence for processes.** cmux restores layout/scrollback on relaunch but NOT live process state. autonomOS's PM2 + pinned sessions is a genuine advantage.
+- **No orchestration layer.** cmux has no project model, no PM agent, no cross-workspace coordination. autonomOS's entire ADR-012 vision is what cmux explicitly chose not to build.
+- **AGPL-3.0 license.** Strong copyleft. Cannot incorporate code directly, but patterns and API design are fine to study.
+
+**Immediate action items:**
+1. Ship `POST /api/notify` endpoint + session card badge — closes the most visible gap vs cmux
+2. Add git branch to session cards (run `git branch --show-current` from CWD)
+3. Prioritize notification system in "Next" milestone (already in ADR-019)
+
+**Relevance: HIGH** — Direct competitor in the multi-agent terminal UX space, but with a fundamentally different product bet. cmux validates the notification + metadata features autonomOS needs to ship. The orchestrator vision (ADR-012) is autonomOS's clear differentiation.
+
+Full analysis: [`docs/research/cmux/`](research/cmux/)
