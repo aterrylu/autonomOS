@@ -15,6 +15,7 @@ import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
+import { hooksRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
@@ -129,6 +130,7 @@ app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
 app.route("/api/settings", settingsRouter);
+app.route("/api/hooks", hooksRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
 // MCP — Streamable HTTP transport for agent-to-agent communication

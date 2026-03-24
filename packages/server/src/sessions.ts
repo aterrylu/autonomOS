@@ -91,7 +91,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
 
   const binary = resolveClaudePath();
 
-  const env = buildEnv();
+  const env = buildEnv(id);
 
   const args: string[] = [];
   if (options.autonomousMode) {
@@ -328,7 +328,7 @@ export function _resetForTesting(): void {
  * nested-session detection, and inject settings as env vars.
  * Not cached — settings can change between session spawns.
  */
-function buildEnv(): Record<string, string> {
+function buildEnv(sessionId: string): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
   const extraPaths = [
     `${process.env.HOME}/.local/bin`,
@@ -338,6 +338,11 @@ function buildEnv(): Record<string, string> {
   env.PATH = [...extraPaths, env.PATH].join(":");
   delete env.CLAUDECODE;
   delete env.PORT;
+
+  // Identify this session to the hook relay script
+  const port = process.env.PORT || "3100";
+  env.AUTONOMOS_SERVER = `http://localhost:${port}`;
+  env.AUTONOMOS_SESSION_ID = sessionId;
 
   // Inject dashboard-configured settings as env vars (only when override toggle is on)
   const settings = getSettings();
