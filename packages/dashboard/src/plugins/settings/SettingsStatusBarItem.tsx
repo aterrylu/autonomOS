@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Codicon } from "../../components/Codicon";
+import { Codicon, type CodiconName } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
 
@@ -9,7 +9,26 @@ interface MaskedSettings {
   anthropicBaseUrl: string | null;
   anthropicAuthToken: string | null;
   anthropicOverrideEnabled: boolean;
+  channels: string[];
 }
+
+const AVAILABLE_CHANNELS = [
+  {
+    id: "plugin:telegram@claude-plugins-official",
+    label: "Telegram",
+    icon: "comment-discussion",
+  },
+  {
+    id: "plugin:discord@claude-plugins-official",
+    label: "Discord",
+    icon: "comment-discussion",
+  },
+  {
+    id: "server:autonomos",
+    label: "autonomOS",
+    icon: "radio-tower",
+  },
+] as const;
 
 function SettingRow({
   label,
@@ -85,6 +104,41 @@ function SettingRow({
         </div>
       )}
     </div>
+  );
+}
+
+function ChannelToggle({
+  label,
+  icon,
+  enabled,
+  page,
+  onToggle,
+}: {
+  label: string;
+  icon: CodiconName;
+  enabled: boolean;
+  page: PageTheme;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="flex items-center gap-2 w-full rounded px-2 py-1.5 text-xs cursor-pointer"
+      style={{
+        background: enabled ? "#16825d20" : page.border,
+        border: enabled ? "1px solid #16825d50" : "1px solid transparent",
+        color: page.fg,
+      }}
+    >
+      <Codicon name={icon} size={14} />
+      <span className="flex-1 text-left">{label}</span>
+      <Codicon
+        name={enabled ? "check" : "circle-large"}
+        size={14}
+        style={{ color: enabled ? "#16825d" : page.statusFg }}
+      />
+    </button>
   );
 }
 
@@ -180,6 +234,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<MaskedSettings | null>(null);
 
   const [pending, setPending] = useState<Record<string, string>>({});
+  const [pendingChannels, setPendingChannels] = useState<string[] | null>(null);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -200,15 +255,21 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   async function handleSave() {
-    if (Object.keys(pending).length === 0) return;
+    const hasTextChanges = Object.keys(pending).length > 0;
+    const hasChannelChanges = pendingChannels !== null;
+    if (!hasTextChanges && !hasChannelChanges) return;
     setSaving(true);
     setError("");
     setSaved(false);
     try {
+      const body: Record<string, unknown> = { ...pending };
+      if (pendingChannels !== null) {
+        body.channels = pendingChannels;
+      }
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pending),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         setError(`Failed to save (HTTP ${res.status})`);
@@ -217,6 +278,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       const updated: MaskedSettings = await res.json();
       setSettings(updated);
       setPending({});
+      setPendingChannels(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -234,7 +296,8 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
   };
 
   const labelStyle: React.CSSProperties = { color: page.statusFg };
-  const hasPending = Object.keys(pending).length > 0;
+  const hasPending =
+    Object.keys(pending).length > 0 || pendingChannels !== null;
 
   return (
     <div
@@ -329,6 +392,42 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
                 setPending((p) => ({ ...p, anthropicAuthToken: v }));
               }}
             />
+          </div>
+
+          <div
+            className="text-[10px] font-medium uppercase tracking-wide mt-3"
+            style={labelStyle}
+          >
+            Channels
+          </div>
+          <div className="space-y-1">
+            {AVAILABLE_CHANNELS.map((ch) => {
+              const current = pendingChannels ?? settings?.channels ?? [];
+              const isEnabled = current.includes(ch.id);
+              return (
+                <ChannelToggle
+                  key={ch.id}
+                  label={ch.label}
+                  icon={ch.icon}
+                  enabled={isEnabled}
+                  page={page}
+                  onToggle={() => {
+                    const base = pendingChannels ?? [
+                      ...(settings?.channels ?? []),
+                    ];
+                    setPendingChannels(
+                      isEnabled
+                        ? base.filter((c) => c !== ch.id)
+                        : [...base, ch.id],
+                    );
+                  }}
+                />
+              );
+            })}
+          </div>
+          <div className="text-[10px]" style={labelStyle}>
+            Enabled channels are injected into every new session via
+            --channels. Requires Claude Code v2.1.80+.
           </div>
 
           {error && (

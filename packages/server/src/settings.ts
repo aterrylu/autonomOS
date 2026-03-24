@@ -20,6 +20,14 @@ export interface AppSettings {
   anthropicAuthToken?: string;
   /** Whether to inject anthropicBaseUrl/anthropicAuthToken into sessions (default: true if values exist) */
   anthropicOverrideEnabled?: boolean;
+  /**
+   * Channel plugins enabled for every session.
+   * Values are --channels arguments, e.g.:
+   *   "plugin:telegram@claude-plugins-official"
+   *   "plugin:discord@claude-plugins-official"
+   *   "server:autonomos"
+   */
+  channels?: string[];
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
@@ -44,9 +52,13 @@ export function getSettings(): AppSettings {
 export function updateSettings(partial: Partial<AppSettings>): AppSettings {
   const current = getSettings();
   const updated = { ...current, ...partial };
-  // Remove keys set to empty string or undefined
+  // Remove keys set to empty string, undefined, or empty arrays
   for (const [key, value] of Object.entries(updated)) {
-    if (value === "" || value === undefined) {
+    if (
+      value === "" ||
+      value === undefined ||
+      (Array.isArray(value) && value.length === 0)
+    ) {
       delete (updated as Record<string, unknown>)[key];
     }
   }
