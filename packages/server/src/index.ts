@@ -10,6 +10,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { installHookRelay } from "./installHooks.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
@@ -34,6 +35,9 @@ try {
   console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 }
+
+// Auto-install hook relay script + register in Claude Code settings
+installHookRelay();
 
 type NodeEnv = {
   Bindings: {
