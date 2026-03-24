@@ -134,7 +134,7 @@ export const PreviewPane = memo(function PreviewPane({
   return (
     <div
       className="flex flex-1 flex-col"
-      style={{ display: visible ? "flex" : "none" }}
+      style={{ display: visible ? "flex" : "none", background: page.bg }}
     >
       {/* Toolbar */}
       <div
