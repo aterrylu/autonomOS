@@ -100,9 +100,18 @@ export function createSession(options: SpawnOptions): ManagedSession {
   if (options.resumeSessionId) {
     args.push("--resume", options.resumeSessionId);
   }
+
+  // Inject configured channels (from settings.json)
+  const { channels } = getSettings();
+  if (channels && channels.length > 0) {
+    args.push("--channels", ...channels);
+  }
+
   if (options.prompt) {
     args.push("--", options.prompt);
   }
+
+  console.log(`[session] spawning: ${binary} ${args.join(" ")}`);
 
   const pty = spawn(binary, args, {
     name: "xterm-256color",

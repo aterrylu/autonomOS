@@ -18,6 +18,7 @@ function maskSettings(settings: AppSettings) {
     anthropicBaseUrl: settings.anthropicBaseUrl || null,
     anthropicAuthToken: redact(settings.anthropicAuthToken),
     anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
+    channels: settings.channels ?? [],
   };
 }
 
@@ -48,6 +49,11 @@ settingsRouter.put("/", async (c) => {
   }
   if (typeof body.anthropicOverrideEnabled === "boolean") {
     partial.anthropicOverrideEnabled = body.anthropicOverrideEnabled;
+  }
+  if (Array.isArray(body.channels)) {
+    partial.channels = body.channels.filter(
+      (c): c is string => typeof c === "string" && c.trim().length > 0,
+    );
   }
 
   let updated: AppSettings;

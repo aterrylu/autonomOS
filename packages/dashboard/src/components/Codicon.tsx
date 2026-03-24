@@ -1,21 +1,29 @@
+import checkSvg from "@vscode/codicons/src/icons/check.svg?raw";
+import circleLargeSvg from "@vscode/codicons/src/icons/circle-large.svg?raw";
 import claudeSvg from "@vscode/codicons/src/icons/claude.svg?raw";
 import closeSvg from "@vscode/codicons/src/icons/close.svg?raw";
+import commentDiscussionSvg from "@vscode/codicons/src/icons/comment-discussion.svg?raw";
 import copySvg from "@vscode/codicons/src/icons/copy.svg?raw";
 import gearSvg from "@vscode/codicons/src/icons/gear.svg?raw";
 import linkExternalSvg from "@vscode/codicons/src/icons/link-external.svg?raw";
 import markdownSvg from "@vscode/codicons/src/icons/markdown.svg?raw";
+import radioTowerSvg from "@vscode/codicons/src/icons/radio-tower.svg?raw";
 
 function extractPaths(raw: string): string[] {
   return [...raw.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]);
 }
 
 const ICONS = {
+  check: extractPaths(checkSvg),
+  "circle-large": extractPaths(circleLargeSvg),
   claude: extractPaths(claudeSvg),
   close: extractPaths(closeSvg),
+  "comment-discussion": extractPaths(commentDiscussionSvg),
   copy: extractPaths(copySvg),
   gear: extractPaths(gearSvg),
   "link-external": extractPaths(linkExternalSvg),
   markdown: extractPaths(markdownSvg),
+  "radio-tower": extractPaths(radioTowerSvg),
 } as const;
 
 export type CodiconName = keyof typeof ICONS;
@@ -23,9 +31,11 @@ export type CodiconName = keyof typeof ICONS;
 export function Codicon({
   name,
   size = 14,
+  style,
 }: {
   name: CodiconName;
   size?: number;
+  style?: React.CSSProperties;
 }) {
   const paths = ICONS[name];
   return (
@@ -35,6 +45,7 @@ export function Codicon({
       viewBox="0 0 16 16"
       fill="currentColor"
       className="inline-block shrink-0"
+      style={style}
       role="img"
       aria-hidden="true"
     >
