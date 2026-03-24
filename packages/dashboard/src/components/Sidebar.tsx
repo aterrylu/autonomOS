@@ -551,6 +551,7 @@ export function Sidebar() {
               : undefined;
             const displayName = meta?.summary || s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
+            const agentState = agentStatuses[s.id];
 
             return (
               // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -580,9 +581,7 @@ export function Sidebar() {
                 onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
               >
                 <AgentStatusIcon
-                  status={
-                    (agentStatuses[s.id]?.status as AgentStatus) ?? "working"
-                  }
+                  status={(agentState?.status as AgentStatus) ?? "working"}
                   size={14}
                 />
                 <div className="flex-1 min-w-0">
@@ -614,15 +613,14 @@ export function Sidebar() {
                         meta.gitBranch !== "HEAD" &&
                         ` · ${meta.gitBranch}`}
                     </span>
-                    {agentStatuses[s.id]?.status &&
-                      agentStatuses[s.id].status !== "unknown" && (
-                        <span className="shrink-0 ml-1.5 opacity-75">
-                          {agentStatusLabel(
-                            agentStatuses[s.id].status as AgentStatus,
-                            agentStatuses[s.id].currentTool,
-                          )}
-                        </span>
-                      )}
+                    {agentState?.status && agentState.status !== "unknown" && (
+                      <span className="shrink-0 ml-1.5 opacity-75">
+                        {agentStatusLabel(
+                          agentState.status as AgentStatus,
+                          agentState.currentTool,
+                        )}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
