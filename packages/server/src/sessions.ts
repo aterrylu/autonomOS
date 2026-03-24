@@ -387,7 +387,7 @@ function buildEnv(sessionId: string): Record<string, string> {
   delete env.PORT;
 
   // Identify this session to the hook relay script
-  const port = process.env.PORT || "3100";
+  const port = process.env.PORT || "3000";
   env.AUTONOMOS_SERVER = `http://localhost:${port}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
 
