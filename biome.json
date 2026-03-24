@@ -37,6 +37,6 @@
     }
   ],
   "files": {
-    "includes": ["packages/*/src/**"]
+    "includes": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"]
   }
 }

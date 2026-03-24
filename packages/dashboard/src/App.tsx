@@ -3,6 +3,7 @@ import { Header } from "./components/Header";
 import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
+import { ThemeVars } from "./components/ThemeVars";
 import { DragProvider } from "./layout/DragContext";
 import { LayoutProvider } from "./layout/LayoutContext";
 import { allLeafIds, findLeaf } from "./layout/layoutTree";
@@ -201,6 +202,7 @@ export function App() {
   return (
     <DragProvider>
       <LayoutProvider>
+        <ThemeVars />
         <div
           className="flex flex-col font-sans"
           style={{
