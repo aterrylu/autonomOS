@@ -110,6 +110,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
   // Inject hook relay via --settings (per-session, no global config mutation).
   // Hooks fire curl to POST event JSON to our /api/hooks endpoint.
   // AUTONOMOS_SERVER and AUTONOMOS_SESSION_ID are already in env via buildEnv().
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion, not JS template
   const hookCmd =
     'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
