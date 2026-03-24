@@ -599,11 +599,9 @@ export function Sidebar() {
                     </span>
                     {(notificationCounts[s.id] ?? 0) > 0 && (
                       <span
-                        className="shrink-0 text-[10px] font-medium"
-                        style={{ color: "#ea6c73" }}
-                      >
-                        ·{notificationCounts[s.id]}
-                      </span>
+                        className="shrink-0 inline-block h-1.5 w-1.5 rounded-full ml-0.5"
+                        style={{ background: "#53bdfa" }}
+                      />
                     )}
                   </div>
                   {/* Bottom row: project/branch (left), status (right) */}
