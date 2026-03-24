@@ -35,7 +35,6 @@ try {
   process.exit(1);
 }
 
-
 type NodeEnv = {
   Bindings: {
     incoming: IncomingMessage;
