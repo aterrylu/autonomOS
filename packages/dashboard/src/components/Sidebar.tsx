@@ -596,7 +596,7 @@ export function Sidebar() {
                     >
                       {(notificationCounts[s.id] ?? 0) > 0 && (
                         <span style={{ color: "#ea6c73" }}>
-                          {notificationCounts[s.id]} ·{" "}
+                          {notificationCounts[s.id]} unread ·{" "}
                         </span>
                       )}
                       {formatAge(lastActive)}
