@@ -13,6 +13,8 @@ export interface TextItem {
   /** Unique ID for keying in React */
   id: string;
   isSidechain?: boolean;
+  /** True when this is an API/auth error message (e.g. "Not logged in") */
+  isError?: boolean;
 }
 
 /** A thinking/reasoning block from extended thinking */
