@@ -34,12 +34,14 @@ export function useTerminal(
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
 
-  // Focus terminal when it becomes the active session
+  // Focus terminal when it becomes the active session + clear unread
+  const markRead = useStore((s) => s.markNotificationsRead);
   useEffect(() => {
     if (isActive && termRef.current) {
       termRef.current.focus();
+      markRead(sessionId);
     }
-  }, [isActive]);
+  }, [isActive, sessionId, markRead]);
 
   useEffect(() => {
     const container = containerRef.current;
