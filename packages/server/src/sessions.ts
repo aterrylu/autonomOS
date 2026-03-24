@@ -110,11 +110,13 @@ export function createSession(options: SpawnOptions): ManagedSession {
   // Inject hook relay via --settings (per-session, no global config mutation).
   // Hooks fire curl to POST event JSON to our /api/hooks endpoint.
   // AUTONOMOS_SERVER and AUTONOMOS_SESSION_ID are already in env via buildEnv().
+  // Note: no trailing & — Claude Code's async:true handles backgrounding.
+  // Backgrounding with & disconnects stdin, breaking curl's -d @- (read from pipe).
   const hookCmd =
     'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
     ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
-    " >/dev/null 2>&1 &";
+    " >/dev/null 2>&1";
   const hookEntry = {
     matcher: "",
     hooks: [{ type: "command", command: hookCmd, timeout: 3, async: true }],
