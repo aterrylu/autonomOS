@@ -372,6 +372,8 @@ interface AppState {
   status: string;
   sessions: SessionInfo[];
   projects: ProjectInfo[];
+  /** Unread notification count per session ID */
+  notificationCounts: Record<string, number>;
 
   // Actions
   cycleTheme: () => void;
@@ -382,6 +384,8 @@ interface AppState {
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
+  fetchNotifications: () => Promise<void>;
+  markNotificationsRead: (sessionId: string) => Promise<void>;
   createSession: (workingDirectory?: string) => Promise<void>;
   resumeSession: (
     claudeSessionId: string,
@@ -480,6 +484,7 @@ export const useStore = create<AppState>()(
         status: "disconnected",
         sessions: [],
         projects: [],
+        notificationCounts: {},
         sidebarOpen: true,
         autonomousMode: true,
         paneOrder: [],
@@ -594,6 +599,33 @@ export const useStore = create<AppState>()(
           if (!res?.ok) return;
           const projects: ProjectInfo[] = await res.json();
           set({ projects });
+        },
+        fetchNotifications: async () => {
+          const { sessions } = get();
+          if (sessions.length === 0) return;
+          const counts: Record<string, number> = {};
+          await Promise.all(
+            sessions.map(async (s) => {
+              const res = await fetch(
+                `/api/hooks/${s.id}/notifications`,
+              ).catch(() => null);
+              if (!res?.ok) return;
+              const data = await res.json().catch(() => null);
+              if (data?.unread) counts[s.id] = data.unread;
+            }),
+          );
+          set({ notificationCounts: counts });
+        },
+        markNotificationsRead: async (sessionId) => {
+          await fetch(`/api/hooks/${sessionId}/read`, {
+            method: "POST",
+          }).catch(() => null);
+          set({
+            notificationCounts: {
+              ...get().notificationCounts,
+              [sessionId]: 0,
+            },
+          });
         },
         createSession: async (workingDirectory = "~") => {
           await spawnSession(

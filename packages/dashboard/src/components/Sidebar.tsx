@@ -290,6 +290,9 @@ export function Sidebar() {
   const reorderPanes = useStore((s) => s.reorderPanes);
   const status = useStore((s) => s.status);
   const groups = useStore((s) => s.groups);
+  const notificationCounts = useStore((s) => s.notificationCounts);
+  const fetchNotifications = useStore((s) => s.fetchNotifications);
+  const markNotificationsRead = useStore((s) => s.markNotificationsRead);
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";
@@ -387,17 +390,20 @@ export function Sidebar() {
     return set;
   }, [sessions]);
 
-  // Poll live sessions every 5s, projects every 30s (heavier operation)
+  // Poll live sessions every 5s, projects every 30s, notifications every 3s
   useEffect(() => {
     fetchSessions();
     fetchProjects();
+    fetchNotifications();
     const sessionsInterval = setInterval(fetchSessions, 5000);
     const projectsInterval = setInterval(fetchProjects, 30000);
+    const notifInterval = setInterval(fetchNotifications, 3000);
     return () => {
       clearInterval(sessionsInterval);
       clearInterval(projectsInterval);
+      clearInterval(notifInterval);
     };
-  }, [fetchSessions, fetchProjects]);
+  }, [fetchSessions, fetchProjects, fetchNotifications]);
 
   // Drag state
   const dragIdx = useRef<number | null>(null);
@@ -561,10 +567,21 @@ export function Sidebar() {
                     boxShadow: `inset 0 2px 0 ${page.fg}`,
                   }),
                 }}
-                onClick={() => switchPane(pane)}
+                onClick={() => {
+                  switchPane(pane);
+                  if (notificationCounts[s.id]) markNotificationsRead(s.id);
+                }}
                 onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
               >
-                <Codicon name="claude" size={12} />
+                <div className="relative shrink-0">
+                  <Codicon name="claude" size={12} />
+                  {(notificationCounts[s.id] ?? 0) > 0 && (
+                    <span
+                      className="absolute -top-1 -right-1 h-2 w-2 rounded-full"
+                      style={{ background: "#53bdfa" }}
+                    />
+                  )}
+                </div>
                 <div className="flex-1 min-w-0">
                   {/* Top row: title + git stats */}
                   <div className="flex items-center gap-1">
