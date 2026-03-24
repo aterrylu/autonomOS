@@ -612,7 +612,8 @@ export function Sidebar() {
                     style={{ color: page.statusFg }}
                   >
                     <span className="flex-1 min-w-0 truncate">
-                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
+                      {meta?.projectName ??
+                        s.workingDirectory.split("/").pop()}
                       {meta?.gitBranch &&
                         meta.gitBranch !== "HEAD" &&
                         ` · ${meta.gitBranch}`}
