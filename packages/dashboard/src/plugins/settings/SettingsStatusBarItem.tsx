@@ -282,6 +282,8 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
                   if (res.ok) {
                     const updated: MaskedSettings = await res.json();
                     setSettings(updated);
+                    setSaved(true);
+                    setTimeout(() => setSaved(false), 2000);
                   }
                 } catch {
                   // silent — toggle will revert visually on next open
