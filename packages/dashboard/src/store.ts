@@ -374,6 +374,11 @@ interface AppState {
   projects: ProjectInfo[];
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
+  /** Agent status per session ID (from hook events) */
+  agentStatuses: Record<
+    string,
+    { status: string; currentTool?: string; toolDetail?: string }
+  >;
 
   // Actions
   cycleTheme: () => void;
@@ -485,6 +490,7 @@ export const useStore = create<AppState>()(
         sessions: [],
         projects: [],
         notificationCounts: {},
+        agentStatuses: {},
         sidebarOpen: true,
         autonomousMode: true,
         paneOrder: [],
@@ -601,20 +607,28 @@ export const useStore = create<AppState>()(
           set({ projects });
         },
         fetchNotifications: async () => {
-          const { sessions } = get();
-          if (sessions.length === 0) return;
+          const res = await fetch("/api/hooks").catch(() => null);
+          if (!res?.ok) return;
+          const data = await res.json().catch(() => null);
+          if (!data || typeof data !== "object") return;
           const counts: Record<string, number> = {};
-          await Promise.all(
-            sessions.map(async (s) => {
-              const res = await fetch(`/api/hooks/${s.id}/notifications`).catch(
-                () => null,
-              );
-              if (!res?.ok) return;
-              const data = await res.json().catch(() => null);
-              if (data?.unread) counts[s.id] = data.unread;
-            }),
-          );
-          set({ notificationCounts: counts });
+          const statuses: Record<
+            string,
+            { status: string; currentTool?: string; toolDetail?: string }
+          > = {};
+          for (const [id, entry] of Object.entries(data)) {
+            const e = entry as {
+              status?: {
+                status: string;
+                currentTool?: string;
+                toolDetail?: string;
+              };
+              unread?: number;
+            };
+            if (e.unread) counts[id] = e.unread;
+            if (e.status) statuses[id] = e.status;
+          }
+          set({ notificationCounts: counts, agentStatuses: statuses });
         },
         markNotificationsRead: async (sessionId) => {
           await fetch(`/api/hooks/${sessionId}/read`, {

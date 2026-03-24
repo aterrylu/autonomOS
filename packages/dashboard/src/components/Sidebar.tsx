@@ -19,6 +19,11 @@ import {
   useStore,
 } from "../store";
 import { Codicon } from "./Codicon";
+import {
+  type AgentStatus,
+  AgentStatusIcon,
+  agentStatusLabel,
+} from "./ui/agent-status-icon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
@@ -291,6 +296,7 @@ export function Sidebar() {
   const status = useStore((s) => s.status);
   const groups = useStore((s) => s.groups);
   const notificationCounts = useStore((s) => s.notificationCounts);
+  const agentStatuses = useStore((s) => s.agentStatuses);
   const fetchNotifications = useStore((s) => s.fetchNotifications);
   const markNotificationsRead = useStore((s) => s.markNotificationsRead);
   const page = THEMES[theme].page;
@@ -573,15 +579,12 @@ export function Sidebar() {
                 }}
                 onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
               >
-                <div className="relative shrink-0">
-                  <Codicon name="claude" size={12} />
-                  {(notificationCounts[s.id] ?? 0) > 0 && (
-                    <span
-                      className="absolute -top-1 -right-1 h-2 w-2 rounded-full"
-                      style={{ background: "#53bdfa" }}
-                    />
-                  )}
-                </div>
+                <AgentStatusIcon
+                  status={
+                    (agentStatuses[s.id]?.status as AgentStatus) ?? "unknown"
+                  }
+                  size={14}
+                />
                 <div className="flex-1 min-w-0">
                   {/* Top row: title + git stats */}
                   <div className="flex items-center gap-1">
@@ -606,6 +609,16 @@ export function Sidebar() {
                     <span className="ml-1.5 shrink-0">
                       {formatAge(lastActive)}
                     </span>
+                    {agentStatuses[s.id]?.status &&
+                      agentStatuses[s.id].status !== "unknown" && (
+                        <span className="ml-1.5 shrink-0 opacity-75">
+                          ·{" "}
+                          {agentStatusLabel(
+                            agentStatuses[s.id].status as AgentStatus,
+                            agentStatuses[s.id].currentTool,
+                          )}
+                        </span>
+                      )}
                   </div>
                 </div>
               </div>

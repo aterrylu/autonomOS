@@ -109,6 +109,8 @@ if (AUTH_TOKEN) {
   // Protect API and WS routes — static assets pass through so the
   // dashboard can load and show a "not authenticated" state.
   const requireAuth: MiddlewareHandler = async (c, next) => {
+    // Hook relay endpoint is unauthenticated (called from PTY sessions via curl)
+    if (c.req.path.startsWith("/api/hooks")) return next();
     const token = extractToken(c);
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
     return c.json(
@@ -124,13 +126,16 @@ if (AUTH_TOKEN) {
 // Server info — lightweight, no auth required for status bar
 app.get("/api/host", (c) => c.json({ hostname: hostname() }));
 
-// REST API
+// Hook relay — no auth (called from PTY sessions via curl, no cookie available).
+// POST only accepts events; GET endpoints are behind auth via the wildcard above.
+app.route("/api/hooks", hooksRouter);
+
+// REST API (behind auth)
 app.route("/api/conversation", conversationRouter);
 app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api/sessions", sessionRouter);
 app.route("/api/settings", settingsRouter);
-app.route("/api/hooks", hooksRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
 // MCP — Streamable HTTP transport for agent-to-agent communication

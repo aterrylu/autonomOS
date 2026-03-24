@@ -1,6 +1,32 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
+/* shadcn CSS variable layer — mapped from THEMES in store.ts via ThemeVars component.
+   Enables 21st.dev and shadcn components to work with our theme system. */
+:root {
+  --background: 10 14 20;
+  --foreground: 179 177 173;
+  --card: 10 14 20;
+  --card-foreground: 179 177 173;
+  --muted: 28 36 51;
+  --muted-foreground: 98 106 115;
+  --border: 28 36 51;
+  --accent: 28 36 51;
+  --accent-foreground: 179 177 173;
+}
+
+@theme inline {
+  --color-background: rgb(var(--background));
+  --color-foreground: rgb(var(--foreground));
+  --color-card: rgb(var(--card));
+  --color-card-foreground: rgb(var(--card-foreground));
+  --color-muted: rgb(var(--muted));
+  --color-muted-foreground: rgb(var(--muted-foreground));
+  --color-border: rgb(var(--border));
+  --color-accent: rgb(var(--accent));
+  --color-accent-foreground: rgb(var(--accent-foreground));
+}
+
 /* Lock the page — prevent body/html scrolling on mobile */
 html,
 body {
