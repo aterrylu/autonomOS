@@ -715,19 +715,77 @@ export const useStore = create<AppState>()(
         },
 
         closePreview: (id) => {
-          const { previewPanes, paneOrder, activePane, sessions } = get();
+          const {
+            previewPanes,
+            paneOrder,
+            activePane,
+            sessions,
+            layout,
+            focusedLeafId,
+            groups,
+            activeGroupId,
+          } = get();
           const updated: Partial<AppState> = {
             previewPanes: previewPanes.filter((p) => p.id !== id),
             paneOrder: paneOrder.filter((k) => k !== previewOrderKey(id)),
           };
-          // If closing the active pane, fall back to first session or null
-          if (activePane?.type === "preview" && activePane.id === id) {
+
+          // Find the leaf holding this preview in the layout
+          const previewLeaf = findLeafByPaneId(layout, id);
+
+          if (previewLeaf) {
+            // Try to remove the leaf from the layout (split pane case)
+            const collapsed = removeLeaf(layout, previewLeaf.id);
+            if (collapsed) {
+              // Split pane: sibling expands to fill the space
+              const newFocused =
+                focusedLeafId === previewLeaf.id
+                  ? nextLeafId(collapsed, previewLeaf.id)
+                  : focusedLeafId;
+              updated.layout = collapsed;
+              updated.focusedLeafId = newFocused;
+              updated.activePane = derivedActivePane(collapsed, newFocused);
+
+              // Sync group if active
+              const groupUpdates = syncGroupAfterRemoval(
+                groups,
+                activeGroupId,
+                collapsed,
+                newFocused,
+              );
+              Object.assign(updated, groupUpdates);
+            } else {
+              // Single leaf (dedicated tab): switch to last session
+              const fallbackSession = sessions.length > 0 ? sessions[0] : null;
+              if (fallbackSession) {
+                const pane: ActivePane = {
+                  type: "session",
+                  id: fallbackSession.id,
+                };
+                const rootLeaf = makeRootLeaf(pane);
+                updated.layout = rootLeaf;
+                updated.focusedLeafId = rootLeaf.id;
+                updated.activePane = pane;
+                updated.activeGroupId = null;
+              } else {
+                const rootLeaf = makeRootLeaf(null);
+                updated.layout = rootLeaf;
+                updated.focusedLeafId = rootLeaf.id;
+                updated.activePane = null;
+              }
+            }
+          } else if (activePane?.type === "preview" && activePane.id === id) {
+            // Preview wasn't in layout but was active — fall back to a session
             if (sessions.length > 0) {
-              updated.activePane = { type: "session", id: sessions[0].id };
+              updated.activePane = {
+                type: "session",
+                id: sessions[0].id,
+              };
             } else {
               updated.activePane = null;
             }
           }
+
           set(updated);
         },
 
