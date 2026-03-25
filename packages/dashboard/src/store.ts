@@ -96,7 +96,8 @@ export function getGroupForPane(
   paneId: string,
 ): PaneGroup | null {
   for (const g of Object.values(groups)) {
-    if (g.memberPaneIds.includes(paneId)) return g;
+    if (Array.isArray(g?.memberPaneIds) && g.memberPaneIds.includes(paneId))
+      return g;
   }
   return null;
 }
@@ -1150,9 +1151,28 @@ export const useStore = create<AppState>()(
           merged.focusedLeafId = rootLeaf.id;
         }
 
-        // Restore groups
-        if (saved?.groups && typeof saved.groups === "object") {
-          merged.groups = saved.groups as Record<string, PaneGroup>;
+        // Restore groups — validate each entry has required fields
+        if (
+          saved?.groups &&
+          typeof saved.groups === "object" &&
+          !Array.isArray(saved.groups)
+        ) {
+          const validGroups: Record<string, PaneGroup> = {};
+          for (const [gid, g] of Object.entries(
+            saved.groups as Record<string, unknown>,
+          )) {
+            const group = g as Record<string, unknown>;
+            if (
+              group &&
+              typeof group.id === "string" &&
+              Array.isArray(group.memberPaneIds) &&
+              group.savedLayout &&
+              typeof (group.savedLayout as LayoutNode).kind === "string"
+            ) {
+              validGroups[gid] = group as unknown as PaneGroup;
+            }
+          }
+          merged.groups = validGroups;
         }
         if (typeof saved?.activeGroupId === "string") {
           merged.activeGroupId = saved.activeGroupId;
