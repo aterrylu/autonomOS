@@ -526,8 +526,12 @@ export function Sidebar() {
                 sessionMetaMap={sessionMetaMap}
                 onHeaderClick={() => {
                   if (firstMemberPane) switchPane(firstMemberPane);
+                  (document.activeElement as HTMLElement)?.blur();
                 }}
-                onMemberClick={(pane) => switchPane(pane)}
+                onMemberClick={(pane) => {
+                  switchPane(pane);
+                  (document.activeElement as HTMLElement)?.blur();
+                }}
                 onMemberDragStart={(e, pane) => {
                   const data = { pane };
                   e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
@@ -577,6 +581,8 @@ export function Sidebar() {
                 onClick={() => {
                   switchPane(pane);
                   if (notificationCounts[s.id]) markNotificationsRead(s.id);
+                  // Release focus from sidebar so terminal can capture it
+                  (document.activeElement as HTMLElement)?.blur();
                 }}
                 onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
               >
