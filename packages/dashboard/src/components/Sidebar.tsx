@@ -208,7 +208,7 @@ function GroupContainer({
             const meta = s.claudeSessionId
               ? sessionMetaMap.get(s.claudeSessionId)
               : undefined;
-            const displayName = meta?.summary || s.name;
+            const displayName = s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
 
             return (
@@ -549,7 +549,7 @@ export function Sidebar() {
             const meta = s.claudeSessionId
               ? sessionMetaMap.get(s.claudeSessionId)
               : undefined;
-            const displayName = meta?.summary || s.name;
+            const displayName = s.name;
             const lastActive = meta?.lastModified ?? s.createdAt;
             const agentState = agentStatuses[s.id];
 

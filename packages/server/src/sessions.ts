@@ -238,10 +238,10 @@ export function createSession(options: SpawnOptions): ManagedSession {
   pty.onExit(() => {
     session.status = "stopped";
     session.updatedAt = Date.now();
+    // Don't remove from persistence here — only killSession() (user intent)
+    // should delete. This prevents race conditions on server restart/SIGKILL
+    // where onExit fires before shuttingDown is set.
     if (!shuttingDown) {
-      if (session.claudeSessionId) {
-        removePersistedSession(session.claudeSessionId);
-      }
       sessions.delete(id);
     }
   });
