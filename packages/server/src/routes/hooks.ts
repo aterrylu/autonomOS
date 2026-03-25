@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { persistSession } from "../persisted.js";
+import { getSession } from "../sessions.js";
 
 /**
  * Hook events received from Claude Code sessions via autonomos-relay.sh.
@@ -181,6 +183,28 @@ hooksRouter.post("/:sessionId", async (c) => {
       lastEvent: event,
       updatedAt: timestamp,
     });
+  }
+
+  // Update session metadata from hook events
+  const managed = getSession(sessionId);
+  if (managed) {
+    const { session } = managed;
+
+    // SessionStart carries Claude's session_id — set it if not already known
+    if (
+      event === "SessionStart" &&
+      body.session_id &&
+      !session.claudeSessionId
+    ) {
+      session.claudeSessionId = body.session_id as string;
+      persistSession({
+        claudeSessionId: session.claudeSessionId,
+        workingDirectory: session.workingDirectory,
+        name: session.name,
+        autonomousMode: body.permission_mode === "bypassPermissions",
+        persistedAt: Date.now(),
+      });
+    }
   }
 
   // Store notification-worthy events
