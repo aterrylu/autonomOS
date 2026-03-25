@@ -420,7 +420,14 @@ class MarkdownLinkProvider implements ILinkProvider {
           // Only open on Ctrl+click (Cmd+click on Mac) to avoid accidental opens
           if (!event.ctrlKey && !event.metaKey) return;
           let resolved = linkText;
-          if (!linkText.startsWith("/")) {
+          if (linkText.startsWith("/")) {
+            // Absolute path — use as-is
+            resolved = linkText;
+          } else if (linkText.startsWith("~/")) {
+            // Home-relative path — pass as-is, server expands ~
+            resolved = linkText;
+          } else {
+            // Relative path — prepend session working directory
             const session = useStore
               .getState()
               .sessions.find((s) => s.id === this.sessionId);

@@ -7,7 +7,10 @@ const HOME = process.env.HOME ?? "";
 
 /** Resolve and validate that a file path is within the user's home directory. */
 function safePath(filePath: string): string | null {
-  const resolved = resolve(filePath);
+  const expanded = filePath.startsWith("~/")
+    ? `${HOME}/${filePath.slice(2)}`
+    : filePath;
+  const resolved = resolve(expanded);
   if (!HOME || !resolved.startsWith(`${HOME}/`)) return null;
   return resolved;
 }
