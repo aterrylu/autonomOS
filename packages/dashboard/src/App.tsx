@@ -8,7 +8,7 @@ import { DragProvider } from "./layout/DragContext";
 import { LayoutProvider } from "./layout/LayoutContext";
 import { allLeafIds, findLeaf } from "./layout/layoutTree";
 import { SessionMountLayer } from "./layout/SessionMountLayer";
-import { THEMES, useStore } from "./store";
+import { requestNotificationPermission, THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
 
 type AuthState = "checking" | "authenticated" | "unauthenticated" | "error";
@@ -203,6 +203,8 @@ export function App() {
     <DragProvider>
       <LayoutProvider>
         <ThemeVars />
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: notification permission on first interaction */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: notification permission on first interaction */}
         <div
           className="flex flex-col font-sans"
           style={{
@@ -210,6 +212,7 @@ export function App() {
             color: page.fg,
             height: viewportHeight,
           }}
+          onClick={requestNotificationPermission}
         >
           <Header />
           <div className="relative flex flex-1 overflow-hidden">
