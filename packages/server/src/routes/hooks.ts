@@ -126,9 +126,12 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
       return { status: "idle", ...CLEAR_TOOL };
 
     case "Notification":
-      return event.notification_type === "permission_prompt"
-        ? { status: "needs_input" }
-        : { status: "idle" };
+      // Only permission prompts change status — other notifications
+      // (progress, info, etc.) should not override the current status
+      if (event.notification_type === "permission_prompt") {
+        return { status: "needs_input" };
+      }
+      return {};
 
     case "PermissionRequest":
       return { status: "needs_input" };
@@ -189,8 +192,19 @@ hooksRouter.post("/:sessionId", async (c) => {
   // Update agent status
   const statusUpdate = deriveStatus(body);
   if (statusUpdate.status) {
+    const prev = getAgentState(sessionId);
+    // Log transitions to warning-producing statuses for debugging
+    if (
+      statusUpdate.status === "needs_input" ||
+      statusUpdate.status === "error"
+    ) {
+      console.log(
+        `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${statusUpdate.status}` +
+          ` (event=${event}, notification_type=${body.notification_type ?? "none"})`,
+      );
+    }
     agentStates.set(sessionId, {
-      ...getAgentState(sessionId),
+      ...prev,
       ...statusUpdate,
       lastEvent: event,
       updatedAt: timestamp,
