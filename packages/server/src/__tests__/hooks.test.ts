@@ -77,12 +77,14 @@ describe("hooks — agent status derivation", () => {
     assert.equal(getAgentState(sid).status, "needs_input");
   });
 
-  it("Notification (idle_prompt) → idle", async () => {
+  it("Notification (non-permission) → no status change", async () => {
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    assert.equal(getAgentState(sid).status, "working");
     await postHookEvent(sid, {
       hook_event_name: "Notification",
       notification_type: "idle_prompt",
     });
-    assert.equal(getAgentState(sid).status, "idle");
+    assert.equal(getAgentState(sid).status, "working");
   });
 
   it("PermissionRequest → needs_input", async () => {
