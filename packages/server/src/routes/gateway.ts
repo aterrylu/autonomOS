@@ -8,8 +8,8 @@
  * Messages from channel servers are routed by the gateway router.
  */
 
-import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import type { GatewayWsMessage } from "@autonomos/core";
+import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import {
   getAgentList,
   registerDashboard,
@@ -57,7 +57,11 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           }
 
           case "send_to_agent": {
-            routeToAgent(sessionId ?? "unknown", msg.targetSessionId, msg.content);
+            routeToAgent(
+              sessionId ?? "unknown",
+              msg.targetSessionId,
+              msg.content,
+            );
             break;
           }
 

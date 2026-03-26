@@ -4,8 +4,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema
+  CallToolRequestSchema,
+  ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
 var SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 var SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
@@ -24,8 +24,10 @@ function connectToServer() {
   try {
     ws = new WebSocket(SERVER_URL);
   } catch (err) {
-    process.stderr.write(`autonomos-channel: WebSocket connect failed: ${err}
-`);
+    process.stderr.write(
+      `autonomos-channel: WebSocket connect failed: ${err}
+`
+    );
     scheduleReconnect();
     return;
   }
@@ -145,14 +147,22 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return { content: [{ type: "text", text: "Not connected to gateway" }], isError: true };
+    return {
+      content: [{ type: "text", text: "Not connected to gateway" }],
+      isError: true
+    };
   }
   switch (name) {
     case "reply": {
       const { chat_id, text, reply_to } = args;
       if (!lastInboundFrom) {
         return {
-          content: [{ type: "text", text: "Cannot determine target platform \u2014 no inbound message received yet." }],
+          content: [
+            {
+              type: "text",
+              text: "Cannot determine target platform \u2014 no inbound message received yet."
+            }
+          ],
           isError: true
         };
       }
@@ -169,7 +179,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         ws.send(JSON.stringify(msg));
       } catch {
-        return { content: [{ type: "text", text: "Failed to send: gateway connection lost" }], isError: true };
+        return {
+          content: [
+            { type: "text", text: "Failed to send: gateway connection lost" }
+          ],
+          isError: true
+        };
       }
       return { content: [{ type: "text", text: "Reply sent." }] };
     }
@@ -183,10 +198,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         ws.send(JSON.stringify(msg));
       } catch {
-        return { content: [{ type: "text", text: "Failed to send: gateway connection lost" }], isError: true };
+        return {
+          content: [
+            { type: "text", text: "Failed to send: gateway connection lost" }
+          ],
+          isError: true
+        };
       }
       return {
-        content: [{ type: "text", text: `Message sent to session ${session_id}` }]
+        content: [
+          { type: "text", text: `Message sent to session ${session_id}` }
+        ]
       };
     }
     case "list_agents": {
@@ -197,13 +219,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           resolve([]);
         }, 5e3);
         pendingListAgents.set(requestId, { resolve, timer });
-        const msg = { type: "list_agents_request", requestId };
+        const msg = {
+          type: "list_agents_request",
+          requestId
+        };
         ws.send(JSON.stringify(msg));
       });
       if (agents.length === 0) {
-        return { content: [{ type: "text", text: "No active sessions (or request timed out)." }] };
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No active sessions (or request timed out)."
+            }
+          ]
+        };
       }
-      const lines = agents.map((a) => `${a.name} (${a.sessionId}) \u2014 ${a.status}`);
+      const lines = agents.map(
+        (a) => `${a.name} (${a.sessionId}) \u2014 ${a.status}`
+      );
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
     default:
@@ -236,10 +270,8 @@ async function main() {
   connectToServer();
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
-  process.stderr.write(
-    `autonomos-channel: started (session=${SESSION_ID})
-`
-  );
+  process.stderr.write(`autonomos-channel: started (session=${SESSION_ID})
+`);
 }
 main().catch((err) => {
   process.stderr.write(`autonomos-channel: fatal: ${err}

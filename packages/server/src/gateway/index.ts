@@ -5,11 +5,11 @@
  * the router, and connects to platforms if enabled in settings.
  */
 
-import { registerAdapter, setRoutes } from "./router.js";
-import { DiscordAdapter } from "./adapters/discord.js";
-import { TelegramAdapter } from "./adapters/telegram.js";
-import { SlackAdapter } from "./adapters/slack.js";
 import { getSettings } from "../settings.js";
+import { DiscordAdapter } from "./adapters/discord.js";
+import { SlackAdapter } from "./adapters/slack.js";
+import { TelegramAdapter } from "./adapters/telegram.js";
+import { registerAdapter, setRoutes } from "./router.js";
 
 const adapters = [
   new DiscordAdapter(),

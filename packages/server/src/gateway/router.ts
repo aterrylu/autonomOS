@@ -31,10 +31,7 @@ let routes: ChannelRoute[] = [];
 
 // ── Public API ────────────────────────────────────────────────────
 
-export function registerSessionClient(
-  sessionId: string,
-  ws: WSContext,
-): void {
+export function registerSessionClient(sessionId: string, ws: WSContext): void {
   sessionClients.set(sessionId, ws);
   console.log(`[gateway] session ${sessionId} connected`);
 }
@@ -100,7 +97,10 @@ function routeInbound(msg: GatewayMessage): void {
   try {
     client.send(JSON.stringify(wsMsg));
   } catch (err) {
-    console.error(`[gateway] failed to send to session ${route.sessionId}:`, err);
+    console.error(
+      `[gateway] failed to send to session ${route.sessionId}:`,
+      err,
+    );
   }
 }
 

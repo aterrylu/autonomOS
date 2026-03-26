@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * server:autonomos — MCP channel server for Claude Code
  *
@@ -12,13 +13,13 @@
  *   AUTONOMOS_SESSION_ID  — this CC session's autonomOS ID
  */
 
+import type { GatewayMessage, GatewayWsMessage } from "@autonomos/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-  ListToolsRequestSchema,
   CallToolRequestSchema,
+  ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { GatewayMessage, GatewayWsMessage } from "@autonomos/core";
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 const SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
@@ -42,14 +43,21 @@ let lastInboundFrom: { platform: string; chatId: string } | null = null;
 // Pending list_agents requests waiting for server response
 const pendingListAgents = new Map<
   string,
-  { resolve: (agents: Array<{ sessionId: string; name: string; status: string }>) => void; timer: ReturnType<typeof setTimeout> }
+  {
+    resolve: (
+      agents: Array<{ sessionId: string; name: string; status: string }>,
+    ) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
 >();
 
 function connectToServer(): void {
   try {
     ws = new WebSocket(SERVER_URL!);
   } catch (err) {
-    process.stderr.write(`autonomos-channel: WebSocket connect failed: ${err}\n`);
+    process.stderr.write(
+      `autonomos-channel: WebSocket connect failed: ${err}\n`,
+    );
     scheduleReconnect();
     return;
   }
@@ -125,7 +133,7 @@ const mcp = new Server(
       tools: {},
     },
     instructions: [
-      "Messages from external platforms (Discord, Telegram, Slack) and other autonomOS sessions arrive as <channel source=\"autonomos\" ...> events.",
+      'Messages from external platforms (Discord, Telegram, Slack) and other autonomOS sessions arrive as <channel source="autonomos" ...> events.',
       "Use the reply tool to respond — pass the chat_id from the channel tag.",
       "Use send_to_agent to message another CC session by its session ID.",
       "Use list_agents to discover active sessions.",
@@ -159,7 +167,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "send_to_agent",
-      description: "Send a message to another Claude Code session by session ID",
+      description:
+        "Send a message to another Claude Code session by session ID",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -184,7 +193,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
 
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return { content: [{ type: "text", text: "Not connected to gateway" }], isError: true };
+    return {
+      content: [{ type: "text", text: "Not connected to gateway" }],
+      isError: true,
+    };
   }
 
   switch (name) {
@@ -196,7 +208,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
       if (!lastInboundFrom) {
         return {
-          content: [{ type: "text", text: "Cannot determine target platform — no inbound message received yet." }],
+          content: [
+            {
+              type: "text",
+              text: "Cannot determine target platform — no inbound message received yet.",
+            },
+          ],
           isError: true,
         };
       }
@@ -213,7 +230,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         ws.send(JSON.stringify(msg));
       } catch {
-        return { content: [{ type: "text", text: "Failed to send: gateway connection lost" }], isError: true };
+        return {
+          content: [
+            { type: "text", text: "Failed to send: gateway connection lost" },
+          ],
+          isError: true,
+        };
       }
       return { content: [{ type: "text", text: "Reply sent." }] };
     }
@@ -231,10 +253,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         ws.send(JSON.stringify(msg));
       } catch {
-        return { content: [{ type: "text", text: "Failed to send: gateway connection lost" }], isError: true };
+        return {
+          content: [
+            { type: "text", text: "Failed to send: gateway connection lost" },
+          ],
+          isError: true,
+        };
       }
       return {
-        content: [{ type: "text", text: `Message sent to session ${session_id}` }],
+        content: [
+          { type: "text", text: `Message sent to session ${session_id}` },
+        ],
       };
     }
 
@@ -248,14 +277,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           resolve([]);
         }, 5000);
         pendingListAgents.set(requestId, { resolve, timer });
-        const msg: GatewayWsMessage = { type: "list_agents_request", requestId };
+        const msg: GatewayWsMessage = {
+          type: "list_agents_request",
+          requestId,
+        };
         ws!.send(JSON.stringify(msg));
       });
 
       if (agents.length === 0) {
-        return { content: [{ type: "text", text: "No active sessions (or request timed out)." }] };
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No active sessions (or request timed out).",
+            },
+          ],
+        };
       }
-      const lines = agents.map((a) => `${a.name} (${a.sessionId}) — ${a.status}`);
+      const lines = agents.map(
+        (a) => `${a.name} (${a.sessionId}) — ${a.status}`,
+      );
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
 
@@ -300,9 +341,7 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  process.stderr.write(
-    `autonomos-channel: started (session=${SESSION_ID})\n`,
-  );
+  process.stderr.write(`autonomos-channel: started (session=${SESSION_ID})\n`);
 }
 
 main().catch((err) => {
