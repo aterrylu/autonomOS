@@ -213,7 +213,7 @@ function RestartAllButton({ page }: { page: PageTheme }) {
           ? "Restarted!"
           : state === "restarting"
             ? "Restarting..."
-            : "Restart All Sessions"}
+            : "Restart Server"}
       </button>
     </div>
   );
@@ -453,8 +453,8 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           </button>
 
           <div className="text-[10px]" style={labelStyle}>
-            Settings are injected as env vars. Save, then restart sessions to
-            apply to running sessions.
+            Settings are injected as env vars. Save, then restart the server
+            to apply changes to running sessions.
           </div>
 
           <RestartAllButton page={page} />
