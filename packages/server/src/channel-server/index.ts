@@ -23,6 +23,7 @@ import {
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 const SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
+const AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
 
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
@@ -53,7 +54,11 @@ const pendingListAgents = new Map<
 
 function connectToServer(): void {
   try {
-    ws = new WebSocket(SERVER_URL!);
+    // Append auth token as query param if configured
+    const url = AUTH_TOKEN
+      ? `${SERVER_URL}?token=${encodeURIComponent(AUTH_TOKEN)}`
+      : SERVER_URL!;
+    ws = new WebSocket(url);
   } catch (err) {
     process.stderr.write(
       `autonomos-channel: WebSocket connect failed: ${err}\n`,

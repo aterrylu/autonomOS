@@ -9,6 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 var SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 var SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
+var AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
     "autonomos-channel: AUTONOMOS_SESSION_ID and AUTONOMOS_SERVER_URL required\n"
@@ -22,7 +23,8 @@ var lastInboundFrom = null;
 var pendingListAgents = /* @__PURE__ */ new Map();
 function connectToServer() {
   try {
-    ws = new WebSocket(SERVER_URL);
+    const url = AUTH_TOKEN ? `${SERVER_URL}?token=${encodeURIComponent(AUTH_TOKEN)}` : SERVER_URL;
+    ws = new WebSocket(url);
   } catch (err) {
     process.stderr.write(
       `autonomos-channel: WebSocket connect failed: ${err}
