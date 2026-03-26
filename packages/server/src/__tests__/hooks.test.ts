@@ -1,20 +1,21 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { hooksRouter, getAgentState, clearNotifications } from "../routes/hooks.js";
+import {
+  clearNotifications,
+  getAgentState,
+  hooksRouter,
+} from "../routes/hooks.js";
 
 // Helper: simulate a hook event POST
 async function postHookEvent(
   sessionId: string,
   event: Record<string, unknown>,
 ) {
-  const req = new Request(
-    `http://localhost/api/hooks/${sessionId}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
-    },
-  );
+  const req = new Request(`http://localhost/api/hooks/${sessionId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(event),
+  });
   // Use Hono's fetch to test the route
   return hooksRouter.request(`/${sessionId}`, {
     method: "POST",
@@ -53,7 +54,10 @@ describe("hooks — agent status derivation", () => {
   });
 
   it("PostToolUse → working (clears tool)", async () => {
-    await postHookEvent(sid, { hook_event_name: "PreToolUse", tool_name: "Bash" });
+    await postHookEvent(sid, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+    });
     await postHookEvent(sid, { hook_event_name: "PostToolUse" });
     const state = getAgentState(sid);
     assert.equal(state.status, "working");
@@ -153,21 +157,24 @@ describe("hooks — notifications", () => {
     assert.equal(body.ok, true);
     // Check via the bulk endpoint
     const bulk = await hooksRouter.request("/", { method: "GET" });
-    const data = await bulk.json() as Record<string, { unread: number }>;
+    const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread, 1);
   });
 
   it("Notification event creates a notification", async () => {
     await postHookEvent(sid, { hook_event_name: "Notification" });
     const bulk = await hooksRouter.request("/", { method: "GET" });
-    const data = await bulk.json() as Record<string, { unread: number }>;
+    const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread, 1);
   });
 
   it("PreToolUse does NOT create a notification", async () => {
-    await postHookEvent(sid, { hook_event_name: "PreToolUse", tool_name: "Bash" });
+    await postHookEvent(sid, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+    });
     const bulk = await hooksRouter.request("/", { method: "GET" });
-    const data = await bulk.json() as Record<string, { unread: number }>;
+    const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread ?? 0, 0);
   });
 });
