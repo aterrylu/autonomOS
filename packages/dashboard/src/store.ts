@@ -1,5 +1,21 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+
+// ── Desktop notifications ────────────────────────────────────────────
+
+/** Request notification permission on first user interaction */
+export function requestNotificationPermission() {
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+
+function sendDesktopNotification(title: string, body: string) {
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification(`autonomOS — ${title}`, { body, icon: "/favicon.svg" });
+  }
+}
+
 import {
   allPanes,
   derivedActivePane,
@@ -628,6 +644,21 @@ export const useStore = create<AppState>()(
             };
             if (e.unread) counts[id] = e.unread;
             if (e.status) statuses[id] = e.status;
+          }
+          // Desktop notification when an agent needs input and tab isn't focused
+          if (!document.hasFocus()) {
+            const prev = get().agentStatuses;
+            const sessions = get().sessions;
+            for (const [id, s] of Object.entries(statuses)) {
+              if (
+                s.status === "needs_input" &&
+                prev[id]?.status !== "needs_input"
+              ) {
+                const name =
+                  sessions.find((ss) => ss.id === id)?.name ?? "Agent";
+                sendDesktopNotification(name, "Needs your input");
+              }
+            }
           }
           set({ notificationCounts: counts, agentStatuses: statuses });
         },
