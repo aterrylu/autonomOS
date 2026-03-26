@@ -12,6 +12,7 @@ Document all research findings here. Link sources. Include your assessment of re
 - [x] **Multi-agent coordination** — Claude Code agent teams, `/loop`, `ralph-loop`, community orchestrators (Overstory, CC Mirror, gstack, Ruflo), fork+query pattern for non-blocking introspection. Full analysis: [`docs/research/multi-agent-coordination/`](research/multi-agent-coordination/)
 - [x] **Agent frameworks & SDKs** — LangGraph, Claude Agent SDK, Claude Code, Gemini ADK, AN SDK (21st.dev), n8n. Comparison, integration points, patterns. Full analysis: [`docs/research/agent-frameworks/`](research/agent-frameworks/)
 - [x] **Google A2A (Agent2Agent) Protocol** — Inter-agent communication standard (Linux Foundation, Apache 2.0). Agent Cards, task lifecycle, JSON-RPC/SSE/gRPC, discovery, MCP comparison, 150+ org ecosystem. Full analysis: [`docs/research/a2a-protocol/`](research/a2a-protocol/)
+- [x] **Claude Code CLI Flags** — Full evaluation of ~40 CLI flags for autonomOS integration. `--session-id` (deterministic IDs), `--permission-mode auto` (safe autonomous mode), `--brief` (SendUserMessage structured messaging), `--agents` (custom personas). Full analysis: [`docs/research/claude-code-flags/`](research/claude-code-flags/)
 - [ ] **Robot middleware** — ROS2, micro-ROS, foxglove. How do they handle observability and control?
 - [x] **cmux** — Native macOS terminal for multi-agent workflows (Swift/AppKit, libghostty). Notification system, integrated browser, agent automation API, CLI/socket control. Full analysis: [`docs/research/cmux/`](research/cmux/)
 
