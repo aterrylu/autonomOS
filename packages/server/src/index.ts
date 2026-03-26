@@ -19,6 +19,7 @@ import { hooksRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
+import { gatewayRouter } from "./routes/gateway.js";
 import { terminalRouter } from "./routes/terminal.js";
 import {
   createSession,
@@ -162,9 +163,10 @@ app.delete("/mcp", async (c) => {
   return new Response(null);
 });
 
-// WebSocket — terminal PTY streaming + file watching
+// WebSocket — terminal PTY streaming, file watching, gateway channels
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
 app.get("/ws/files/watch", fileWatchRouter(upgradeWebSocket));
+app.get("/ws/gateway", gatewayRouter(upgradeWebSocket));
 
 if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
@@ -195,6 +197,13 @@ const server = serve({ fetch: app.fetch, port }, () => {
   } else {
     console.log(`Auth disabled — set AUTONOMOS_TOKEN to enable`);
   }
+
+  // Initialize gateway (platform adapters, routing table)
+  import("./gateway/index.js").then(({ initGateway }) => {
+    initGateway().catch((err) =>
+      console.error("[gateway] init failed:", err),
+    );
+  });
 
   // Auto-resume persisted sessions after startup
   resumePersistedSessions();
@@ -235,6 +244,9 @@ function shutdown() {
   console.log(
     "Shutting down — killing PTYs (sessions will resume on next start)...",
   );
+  import("./gateway/index.js")
+    .then(({ shutdownGateway }) => shutdownGateway())
+    .catch(() => {});
   shutdownAllSessions();
   process.exit(0);
 }

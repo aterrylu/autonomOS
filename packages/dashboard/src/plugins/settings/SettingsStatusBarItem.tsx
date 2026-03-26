@@ -14,18 +14,8 @@ interface MaskedSettings {
 
 const AVAILABLE_CHANNELS = [
   {
-    id: "plugin:telegram@claude-plugins-official",
-    label: "Telegram",
-    icon: "comment-discussion",
-  },
-  {
-    id: "plugin:discord@claude-plugins-official",
-    label: "Discord",
-    icon: "comment-discussion",
-  },
-  {
     id: "server:autonomos",
-    label: "autonomOS",
+    label: "autonomOS Gateway",
     icon: "radio-tower",
   },
 ] as const;
