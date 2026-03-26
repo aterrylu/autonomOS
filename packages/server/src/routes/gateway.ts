@@ -26,7 +26,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
     let sessionId: string | null = null;
 
     return {
-      onMessage(event, ws) {
+      async onMessage(event, ws) {
         const raw =
           typeof event.data === "string"
             ? event.data
@@ -66,7 +66,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           }
 
           case "list_agents_request": {
-            const agents = getAgentList();
+            const agents = await getAgentList();
             const response: GatewayWsMessage = {
               type: "list_agents_response",
               requestId: msg.requestId,

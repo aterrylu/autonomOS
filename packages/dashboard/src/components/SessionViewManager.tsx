@@ -25,7 +25,7 @@ export function SessionViewManager() {
         className="flex flex-1 items-center justify-center text-sm"
         style={{ color: page.statusFg }}
       >
-        Create or select a session to start
+        Create or select an agent to start
       </div>
     );
   }

@@ -455,7 +455,7 @@ export function Sidebar() {
         background: page.bg,
       }}
     >
-      {/* Live Sessions Section */}
+      {/* Agents Section */}
       <div
         className="flex items-center justify-between px-3 py-2"
         style={{ borderBottom: `1px solid ${page.border}` }}
@@ -464,7 +464,7 @@ export function Sidebar() {
           className="text-xs font-medium uppercase"
           style={{ color: page.statusFg }}
         >
-          Live Sessions
+          Agents
         </span>
         <button
           type="button"
@@ -472,7 +472,7 @@ export function Sidebar() {
           disabled={isSpawning}
           className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: "#238636", color: "#fff" }}
-          title="New Session"
+          title="New Agent"
         >
           +
         </button>
@@ -508,7 +508,7 @@ export function Sidebar() {
             className="px-3 py-3 text-center text-xs"
             style={{ color: page.statusFg }}
           >
-            No active sessions
+            No active agents
           </p>
         )}
 
