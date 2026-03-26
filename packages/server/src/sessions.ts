@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
@@ -137,9 +137,44 @@ export function createSession(options: SpawnOptions): ManagedSession {
   }
 
   // Inject configured channels (from settings.json)
+  // Dev channels (server:*) use --dangerously-load-development-channels <entries>
+  // Official plugins use --channels <entries>
+  // They are separate flags — entries are arguments TO each flag
   const { channels } = getSettings();
   if (channels && channels.length > 0) {
-    args.push("--channels", ...channels);
+    const devChannels = channels.filter((c) => c.startsWith("server:"));
+    const officialChannels = channels.filter((c) => !c.startsWith("server:"));
+
+    if (devChannels.length > 0) {
+      args.push("--dangerously-load-development-channels", ...devChannels);
+    }
+    if (officialChannels.length > 0) {
+      args.push("--channels", ...officialChannels);
+    }
+
+    // If server:autonomos is enabled, inject the MCP config so CC knows
+    // how to spawn the channel server subprocess
+    if (channels.includes("server:autonomos")) {
+      // Use precompiled JS so CC can spawn with plain `node` — no tsx dependency
+      const channelScript = resolve(
+        import.meta.dirname,
+        "channel-server/dist.mjs",
+      );
+      const port = process.env.PORT || "3000";
+      const mcpConfig = {
+        mcpServers: {
+          autonomos: {
+            command: "node",
+            args: [channelScript],
+            env: {
+              AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
+              AUTONOMOS_SESSION_ID: id,
+            },
+          },
+        },
+      };
+      args.push("--mcp-config", JSON.stringify(mcpConfig));
+    }
   }
 
   // Inject hook relay so Claude Code posts events to our /api/hooks endpoint
@@ -154,10 +189,12 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--", options.prompt);
   }
 
-  // Log spawn command (truncate --settings JSON for readability)
-  const logArgs = args.map((a) =>
-    a.startsWith('{"hooks"') ? '{"hooks":...}' : a,
-  );
+  // Log spawn command (truncate large JSON args for readability)
+  const logArgs = args.map((a) => {
+    if (a.startsWith('{"hooks"')) return '{"hooks":...}';
+    if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
+    return a;
+  });
   console.log(`[session] spawning: ${binary} ${logArgs.join(" ")}`);
 
   const pty = spawn(binary, args, {

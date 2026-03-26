@@ -28,6 +28,14 @@ export interface AppSettings {
    *   "server:autonomos"
    */
   channels?: string[];
+  /** Gateway platform adapter config */
+  gateway?: {
+    discord?: { enabled: boolean };
+    telegram?: { enabled: boolean };
+    slack?: { enabled: boolean };
+  };
+  /** Channel-to-session routing rules */
+  routes?: import("@autonomos/core").ChannelRoute[];
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");

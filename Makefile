@@ -21,6 +21,8 @@ dev:
 prod:
 	@command -v $(PM2) >/dev/null || { echo "Installing pm2..."; $(BUN) add -g pm2; }
 	@$(BUN) install
+	@echo "Building channel server..."
+	@bunx esbuild packages/server/src/channel-server/index.ts --bundle --platform=node --format=esm --outfile=packages/server/src/channel-server/dist.mjs --packages=external --log-level=warning
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@echo "Restarting server..."
