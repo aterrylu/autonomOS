@@ -111,10 +111,11 @@ if (AUTH_TOKEN) {
   // dashboard can load and show a "not authenticated" state.
   const requireAuth: MiddlewareHandler = async (c, next) => {
     // Hook relay POST is unauthenticated (called from PTY sessions via curl).
-    // GET endpoints remain behind auth to protect session data.
     if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
       return next();
-    const token = extractToken(c);
+    // Accept token from cookie, Authorization header, or ?token= query param.
+    // Query param is used by the channel server subprocess (can't set headers on WebSocket).
+    const token = extractToken(c) ?? c.req.query("token") ?? undefined;
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
     return c.json(
       { error: "Unauthorized — visit /auth?token=YOUR_TOKEN to authenticate" },

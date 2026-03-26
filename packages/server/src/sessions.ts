@@ -169,6 +169,9 @@ export function createSession(options: SpawnOptions): ManagedSession {
             env: {
               AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
               AUTONOMOS_SESSION_ID: id,
+              ...(process.env.AUTONOMOS_TOKEN && {
+                AUTONOMOS_TOKEN: process.env.AUTONOMOS_TOKEN,
+              }),
             },
           },
         },
