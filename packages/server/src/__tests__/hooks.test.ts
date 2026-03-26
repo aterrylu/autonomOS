@@ -119,14 +119,14 @@ describe("hooks — agent status derivation", () => {
     assert.equal(getAgentState(sid).status, "stopped");
   });
 
-  it("PostToolUseFailure → error with tool name", async () => {
+  it("PostToolUseFailure → working (agent continues after tool error)", async () => {
     await postHookEvent(sid, {
       hook_event_name: "PostToolUseFailure",
       tool_name: "Bash",
       tool_input: { command: "failing-cmd" },
     });
     const state = getAgentState(sid);
-    assert.equal(state.status, "error");
+    assert.equal(state.status, "working");
     assert.equal(state.currentTool, "Bash");
   });
 

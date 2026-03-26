@@ -88,7 +88,13 @@ export function getAgentState(sessionId: string): AgentState {
   return agentStates.get(sessionId) ?? DEFAULT_AGENT_STATE;
 }
 
-/** Derive agent status from a hook event */
+/** Derive agent status from a hook event.
+ *
+ * Tool failures (PostToolUseFailure) are routine — the agent handles them
+ * and continues working. We record the failed tool as metadata but keep
+ * the status as "working" so the UI doesn't flicker between warning and
+ * in-progress when errors happen during normal flow.
+ */
 function deriveStatus(event: HookEvent): Partial<AgentState> {
   switch (event.hook_event_name) {
     case "SessionStart":
@@ -108,8 +114,10 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
       };
 
     case "PostToolUseFailure":
+      // Tool failures are normal during agent work (e.g., bash exits non-zero).
+      // Keep status as "working" — the agent will handle the error and continue.
       return {
-        status: "error",
+        status: "working",
         currentTool: event.tool_name,
         toolDetail: extractToolDetail(event),
       };
