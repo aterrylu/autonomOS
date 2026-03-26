@@ -136,6 +136,11 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--session-id", claudeSessionId);
   }
 
+  // Pass display name to Claude Code (shown in terminal title + /resume picker)
+  if (options.name) {
+    args.push("--name", options.name);
+  }
+
   // Inject configured channels (from settings.json)
   // Dev channels (server:*) use --dangerously-load-development-channels <entries>
   // Official plugins use --channels <entries>
