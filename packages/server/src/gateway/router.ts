@@ -14,6 +14,7 @@ import type {
 } from "@autonomos/core";
 import type { WSContext } from "hono/ws";
 import { getAllSessions } from "../sessions.js";
+import { batchGetTitles } from "../titleCache.js";
 
 // ── Registry ──────────────────────────────────────────────────────
 
@@ -200,14 +201,28 @@ export function routeToAgent(
 
 // ── Agent discovery ───────────────────────────────────────────────
 
-export function getAgentList(): Array<{
-  sessionId: string;
-  name: string;
-  status: string;
-}> {
-  return getAllSessions().map((s) => ({
+export async function getAgentList(): Promise<
+  Array<{ sessionId: string; name: string; status: string }>
+> {
+  const sessions = getAllSessions();
+
+  // Enrich names with titleCache (same logic as GET /api/sessions)
+  const withClaude = sessions
+    .filter((s) => s.claudeSessionId)
+    .map((s) => ({ sessionId: s.claudeSessionId!, cwd: s.workingDirectory }));
+
+  let titles = new Map<string, string>();
+  if (withClaude.length > 0) {
+    try {
+      titles = await batchGetTitles(withClaude);
+    } catch {
+      // best-effort — fall back to spawn-time name
+    }
+  }
+
+  return sessions.map((s) => ({
     sessionId: s.id,
-    name: s.name,
+    name: (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name,
     status: s.status,
   }));
 }
