@@ -37,7 +37,9 @@ const HOOK_EVENTS = [
   "Notification",
   "PermissionRequest",
   "SubagentStart",
+  "SubagentStop",
   "PreCompact",
+  "PostCompact",
   "SessionEnd",
 ] as const;
 
@@ -121,12 +123,17 @@ export function createSession(options: SpawnOptions): ManagedSession {
 
   const env = buildEnv(id);
 
+  // Pre-generate Claude session ID — eliminates PTY regex parsing race condition
+  const claudeSessionId = options.resumeSessionId || crypto.randomUUID();
+
   const args: string[] = [];
   if (options.autonomousMode) {
     args.push("--dangerously-skip-permissions");
   }
   if (options.resumeSessionId) {
     args.push("--resume", options.resumeSessionId);
+  } else {
+    args.push("--session-id", claudeSessionId);
   }
 
   // Inject configured channels (from settings.json)
@@ -171,7 +178,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
     status: "running",
     workingDirectory: cwd,
     provider: "claude-code",
-    claudeSessionId: options.resumeSessionId,
+    claudeSessionId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -184,38 +191,18 @@ export function createSession(options: SpawnOptions): ManagedSession {
   };
   sessions.set(id, managed);
 
-  // Auto-persist sessions that have a Claude session ID
-  if (session.claudeSessionId) {
-    persistSession({
-      claudeSessionId: session.claudeSessionId,
-      workingDirectory: cwd,
-      name: defaultName,
-      autonomousMode: !!options.autonomousMode,
-      persistedAt: Date.now(),
-    });
-  }
+  // Persist immediately — claudeSessionId is always known at spawn time now
+  persistSession({
+    claudeSessionId,
+    workingDirectory: cwd,
+    name: defaultName,
+    autonomousMode: !!options.autonomousMode,
+    persistedAt: Date.now(),
+  });
 
   pty.onData((data: string) => {
     managed.outputBuffer.push(data);
     managed.outputSize += data.length;
-
-    // Detect Claude session ID from PTY output for fresh (non-resumed) sessions.
-    // Claude Code prints "Session: <uuid>" near the start of output.
-    if (!session.claudeSessionId) {
-      const match = data.match(
-        /Session:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
-      );
-      if (match) {
-        session.claudeSessionId = match[1];
-        persistSession({
-          claudeSessionId: match[1],
-          workingDirectory: cwd,
-          name: defaultName,
-          autonomousMode: !!options.autonomousMode,
-          persistedAt: Date.now(),
-        });
-      }
-    }
 
     // Trim buffer when it exceeds the limit — bulk splice to avoid O(n²) shift()
     if (managed.outputSize > OUTPUT_BUFFER_LIMIT) {
