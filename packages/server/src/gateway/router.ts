@@ -128,18 +128,47 @@ export function routeReply(reply: GatewayReply): void {
 
 // ── Inter-agent: CC session → CC session ──────────────────────────
 
+/** Resolve a target by ID or name. Returns [sessionId, WSContext] or null. */
+function resolveTarget(idOrName: string): [string, WSContext] | null {
+  // Exact ID match
+  const byId = sessionClients.get(idOrName);
+  if (byId) return [idOrName, byId];
+
+  // Name match (case-insensitive)
+  const sessions = getAllSessions();
+  const exact = sessions.find(
+    (s) => s.name.toLowerCase() === idOrName.toLowerCase(),
+  );
+  if (exact) {
+    const ws = sessionClients.get(exact.id);
+    if (ws) return [exact.id, ws];
+  }
+
+  // Partial name match
+  const partial = sessions.find((s) =>
+    s.name.toLowerCase().includes(idOrName.toLowerCase()),
+  );
+  if (partial) {
+    const ws = sessionClients.get(partial.id);
+    if (ws) return [partial.id, ws];
+  }
+
+  return null;
+}
+
 export function routeToAgent(
   fromSessionId: string,
-  targetSessionId: string,
+  targetIdOrName: string,
   content: string,
 ): void {
-  const target = sessionClients.get(targetSessionId);
-  if (!target) {
+  const resolved = resolveTarget(targetIdOrName);
+  if (!resolved) {
     console.log(
-      `[gateway] target session ${targetSessionId} not connected — dropping inter-agent message`,
+      `[gateway] target "${targetIdOrName}" not found or not connected — dropping inter-agent message`,
     );
     return;
   }
+  const [targetSessionId, target] = resolved;
 
   // Inter-agent messages reuse GatewayMessage with a synthetic chatId.
   // Platform is set to "discord" as a placeholder — the channel server

@@ -124,13 +124,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "send_to_agent",
-      description: "Send a message to another Claude Code session by session ID",
+      description: "Send a message to another Claude Code session by name or ID",
       inputSchema: {
         type: "object",
         properties: {
           session_id: {
             type: "string",
-            description: "Target session's autonomOS ID"
+            description: "Target session name or ID (use list_agents to discover)"
           },
           content: { type: "string", description: "Message to send" }
         },
