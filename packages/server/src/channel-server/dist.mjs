@@ -199,6 +199,9 @@ function handleServerMessage(msg) {
   }
 }
 function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return Promise.resolve(defaultOnTimeout);
+  }
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
@@ -208,7 +211,13 @@ function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout) {
       resolve,
       timer
     });
-    ws.send(JSON.stringify(msg));
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch (err) {
+      clearTimeout(timer);
+      pendingRequests.delete(requestId);
+      resolve(defaultOnTimeout);
+    }
   });
 }
 var mcp = new Server(
@@ -246,7 +255,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         message,
         requestId
       };
-      const result = await requestGateway(wsMsg, requestId, 2e3, { success: true });
+      const result = await requestGateway(wsMsg, requestId, 2e3, {
+        success: false,
+        error: "Gateway did not confirm delivery (timeout)"
+      });
       if (!result.success) {
         return {
           content: [{ type: "text", text: result.error ?? "Send failed" }],

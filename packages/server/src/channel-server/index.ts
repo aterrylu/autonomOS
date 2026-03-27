@@ -148,6 +148,9 @@ function requestGateway<T>(
   timeoutMs: number,
   defaultOnTimeout: T,
 ): Promise<T> {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return Promise.resolve(defaultOnTimeout);
+  }
   return new Promise<T>((resolve) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
@@ -157,7 +160,13 @@ function requestGateway<T>(
       resolve: resolve as (result: unknown) => void,
       timer,
     });
-    ws!.send(JSON.stringify(msg));
+    try {
+      ws!.send(JSON.stringify(msg));
+    } catch (err) {
+      clearTimeout(timer);
+      pendingRequests.delete(requestId);
+      resolve(defaultOnTimeout);
+    }
   });
 }
 
@@ -216,7 +225,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const result = await requestGateway<{
         success: boolean;
         error?: string;
-      }>(wsMsg, requestId, 2000, { success: true });
+      }>(wsMsg, requestId, 2000, {
+        success: false,
+        error: "Gateway did not confirm delivery (timeout)",
+      });
 
       if (!result.success) {
         return {
