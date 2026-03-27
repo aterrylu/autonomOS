@@ -144,6 +144,8 @@ export function createSession(options: SpawnOptions): ManagedSession {
   // Enable SendUserMessage tool for structured agent-to-dashboard messaging.
   // Agents route important replies through SendUserMessage with status labels
   // (normal/proactive). The hook relay intercepts these for notification badges.
+  // Intentionally always on, including for --resume — the flag is ephemeral
+  // (not stored in session) and must be re-passed on every spawn.
   args.push("--brief");
 
   // Inject configured channels (from settings.json)
