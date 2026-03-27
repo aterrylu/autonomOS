@@ -274,9 +274,26 @@ export function createSession(options: SpawnOptions): ManagedSession {
     }
   });
 
-  pty.onExit(() => {
+  const spawnedAt = Date.now();
+
+  pty.onExit(({ exitCode, signal }) => {
+    const lifetime = Date.now() - spawnedAt;
     session.status = "stopped";
     session.updatedAt = Date.now();
+
+    // Log abnormal exits for debugging
+    if (exitCode !== 0 || signal) {
+      console.warn(
+        `[session] ${id.slice(0, 8)} exited: code=${exitCode} signal=${signal ?? "none"} lifetime=${lifetime}ms`,
+      );
+    }
+    // Detect likely spawn argument errors (dies within 5 seconds)
+    if (lifetime < 5000 && exitCode !== 0) {
+      console.error(
+        `[session] ${id.slice(0, 8)} died immediately (${lifetime}ms) — likely a bad flag. Args: ${logArgs.join(" ")}`,
+      );
+    }
+
     if (!shuttingDown) {
       // Natural exit (Ctrl+C, agent finished, crash) — remove from persistence
       if (session.claudeSessionId) {

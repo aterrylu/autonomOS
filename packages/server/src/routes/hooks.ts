@@ -189,7 +189,11 @@ hooksRouter.post("/:sessionId", async (c) => {
   let body: HookEvent;
   try {
     body = await c.req.json();
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[hooks] ${sessionId.slice(0, 8)} invalid JSON from hook relay:`,
+      err instanceof Error ? err.message : err,
+    );
     return c.json({ error: "Invalid JSON" }, 400);
   }
 
@@ -235,23 +239,29 @@ hooksRouter.post("/:sessionId", async (c) => {
   // duplicate notifications — PostToolUse carries the same payload)
   if (
     event === "PreToolUse" &&
-    (body.tool_name === "SendUserMessage" || body.tool_name === "Brief") &&
-    body.tool_input?.message
+    (body.tool_name === "SendUserMessage" || body.tool_name === "Brief")
   ) {
-    const items = notifications.get(sessionId) ?? [];
-    items.push({
-      event: "SendUserMessage",
-      message: body.tool_input.message,
-      timestamp,
-      read: false,
-    });
-    if (items.length > 50) items.splice(0, items.length - 50);
-    notifications.set(sessionId, items);
+    const msg = body.tool_input?.message;
+    if (typeof msg === "string" && msg.length > 0) {
+      const items = notifications.get(sessionId) ?? [];
+      items.push({
+        event: "SendUserMessage",
+        message: msg,
+        timestamp,
+        read: false,
+      });
+      if (items.length > 50) items.splice(0, items.length - 50);
+      notifications.set(sessionId, items);
 
-    // Proactive messages always generate a notification (agent initiated)
-    if (body.tool_input.status === "proactive") {
-      console.log(
-        `[hooks] ${sessionId.slice(0, 8)} proactive: ${body.tool_input.message.slice(0, 80)}`,
+      if (body.tool_input?.status === "proactive") {
+        console.log(
+          `[hooks] ${sessionId.slice(0, 8)} proactive: ${msg.slice(0, 80)}`,
+        );
+      }
+    } else {
+      console.warn(
+        `[hooks] ${sessionId.slice(0, 8)} SendUserMessage with missing/empty message` +
+          ` (keys: ${body.tool_input ? Object.keys(body.tool_input).join(",") : "none"})`,
       );
     }
   }
