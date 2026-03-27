@@ -141,6 +141,13 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--name", options.name);
   }
 
+  // System prompt injection — append keeps CC defaults + CLAUDE.md, replace overrides all
+  if (options.appendSystemPrompt) {
+    args.push("--append-system-prompt", options.appendSystemPrompt);
+  } else if (options.systemPrompt) {
+    args.push("--system-prompt", options.systemPrompt);
+  }
+
   // Enable SendUserMessage tool for structured agent-to-dashboard messaging.
   // Agents route important replies through SendUserMessage with status labels
   // (normal/proactive). The hook relay intercepts these for notification badges.

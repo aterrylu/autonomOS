@@ -30,6 +30,10 @@ export interface SpawnOptions {
   resumeSessionId?: string;
   /** Skip permission prompts (--dangerously-skip-permissions) */
   autonomousMode?: boolean;
+  /** Replace the default system prompt entirely (--system-prompt) */
+  systemPrompt?: string;
+  /** Append to the default system prompt (--append-system-prompt) — keeps CLAUDE.md and CC defaults */
+  appendSystemPrompt?: string;
   cols?: number;
   rows?: number;
 }
