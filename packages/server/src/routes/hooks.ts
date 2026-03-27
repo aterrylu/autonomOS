@@ -9,7 +9,14 @@ export interface HookEvent {
   hook_event_name: string;
   session_id?: string;
   tool_name?: string;
-  tool_input?: { command?: string; file_path?: string };
+  tool_input?: {
+    command?: string;
+    file_path?: string;
+    // SendUserMessage fields (when --brief is active)
+    message?: string;
+    status?: "normal" | "proactive";
+    attachments?: string[];
+  };
   notification_type?: string;
   source?: string;
   [key: string]: unknown;
@@ -222,6 +229,30 @@ hooksRouter.post("/:sessionId", async (c) => {
     });
     if (items.length > 50) items.splice(0, items.length - 50);
     notifications.set(sessionId, items);
+  }
+
+  // Intercept SendUserMessage from --brief mode
+  if (
+    (event === "PreToolUse" || event === "PostToolUse") &&
+    (body.tool_name === "SendUserMessage" || body.tool_name === "Brief") &&
+    body.tool_input?.message
+  ) {
+    const items = notifications.get(sessionId) ?? [];
+    items.push({
+      event: "SendUserMessage",
+      message: body.tool_input.message,
+      timestamp,
+      read: false,
+    });
+    if (items.length > 50) items.splice(0, items.length - 50);
+    notifications.set(sessionId, items);
+
+    // Proactive messages always generate a notification (agent initiated)
+    if (body.tool_input.status === "proactive") {
+      console.log(
+        `[hooks] ${sessionId.slice(0, 8)} proactive: ${body.tool_input.message.slice(0, 80)}`,
+      );
+    }
   }
 
   return c.json({ ok: true, event, sessionId });
