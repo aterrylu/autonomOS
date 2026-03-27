@@ -102,20 +102,40 @@ function createMcpServer(): McpServer {
       agent: z.string().describe("Agent name or session ID to terminate"),
     },
     async (args) => {
-      // Try by ID first, then fall back to case-insensitive name lookup
-      const session = getAllSessions().find(
-        (s) =>
-          s.id === args.agent ||
-          s.name.toLowerCase() === args.agent.toLowerCase(),
-      );
-      if (!session || !killSession(session.id)) {
+      // Try exact ID match first
+      if (killSession(args.agent)) {
         return {
-          content: [{ type: "text", text: `Agent "${args.agent}" not found.` }],
+          content: [
+            { type: "text", text: `Agent "${args.agent}" terminated.` },
+          ],
+        };
+      }
+      // Fall back to name lookup — check for ambiguity
+      const matches = getAllSessions().filter(
+        (s) => s.name.toLowerCase() === args.agent.toLowerCase(),
+      );
+      if (matches.length > 1) {
+        const list = matches.map((s) => `  ${s.name} (id: ${s.id})`).join("\n");
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Multiple agents named "${args.agent}". Specify by ID:\n${list}`,
+            },
+          ],
           isError: true,
         };
       }
+      if (matches.length === 1 && killSession(matches[0].id)) {
+        return {
+          content: [
+            { type: "text", text: `Agent "${args.agent}" terminated.` },
+          ],
+        };
+      }
       return {
-        content: [{ type: "text", text: `Agent "${args.agent}" terminated.` }],
+        content: [{ type: "text", text: `Agent "${args.agent}" not found.` }],
+        isError: true,
       };
     },
   );
