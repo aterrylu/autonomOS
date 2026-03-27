@@ -231,9 +231,10 @@ hooksRouter.post("/:sessionId", async (c) => {
     notifications.set(sessionId, items);
   }
 
-  // Intercept SendUserMessage from --brief mode
+  // Intercept SendUserMessage from --brief mode (PreToolUse only to avoid
+  // duplicate notifications — PostToolUse carries the same payload)
   if (
-    (event === "PreToolUse" || event === "PostToolUse") &&
+    event === "PreToolUse" &&
     (body.tool_name === "SendUserMessage" || body.tool_name === "Brief") &&
     body.tool_input?.message
   ) {
