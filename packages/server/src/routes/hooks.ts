@@ -253,7 +253,7 @@ hooksRouter.post("/:sessionId", async (c) => {
       if (items.length > 50) items.splice(0, items.length - 50);
       notifications.set(sessionId, items);
 
-      if (body.tool_input.status === "proactive") {
+      if (body.tool_input?.status === "proactive") {
         console.log(
           `[hooks] ${sessionId.slice(0, 8)} proactive: ${msg.slice(0, 80)}`,
         );
