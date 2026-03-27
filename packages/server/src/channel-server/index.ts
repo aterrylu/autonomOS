@@ -16,7 +16,11 @@
  *   AUTONOMOS_TOKEN       — auth token (optional)
  */
 
-import type { GatewayMessage, GatewayWsMessage } from "@autonomos/core";
+import type {
+  AgentInfo,
+  GatewayMessage,
+  GatewayWsMessage,
+} from "@autonomos/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -45,14 +49,7 @@ const MAX_RECONNECT_DELAY = 30_000;
 const pendingListAgents = new Map<
   string,
   {
-    resolve: (
-      agents: Array<{
-        sessionId: string;
-        name: string;
-        uri: string;
-        status: string;
-      }>,
-    ) => void;
+    resolve: (agents: AgentInfo[]) => void;
     timer: ReturnType<typeof setTimeout>;
   }
 >();
@@ -135,12 +132,11 @@ function handleServerMessage(msg: GatewayWsMessage): void {
       break;
     }
     case "send_result": {
-      // Match any pending send by iterating (only one should be pending at a time)
-      for (const [id, pending] of pendingSends) {
+      const pending = pendingSends.get(msg.requestId);
+      if (pending) {
         clearTimeout(pending.timer);
-        pendingSends.delete(id);
+        pendingSends.delete(msg.requestId);
         pending.resolve(msg);
-        break;
       }
       break;
     }
@@ -215,7 +211,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   switch (name) {
     case "send": {
       const { to, message } = args as { to: string; message: string };
-      const wsMsg: GatewayWsMessage = { type: "send", to, message };
+      const requestId = crypto.randomUUID();
+      const wsMsg: GatewayWsMessage = { type: "send", to, message, requestId };
       try {
         ws.send(JSON.stringify(wsMsg));
       } catch {
@@ -235,12 +232,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         success: boolean;
         error?: string;
       }>((resolve) => {
-        const id = crypto.randomUUID();
         const timer = setTimeout(() => {
-          pendingSends.delete(id);
+          pendingSends.delete(requestId);
           resolve({ success: true }); // assume success on timeout
         }, 2000);
-        pendingSends.set(id, { resolve, timer });
+        pendingSends.set(requestId, { resolve, timer });
       });
 
       if (!result.success) {
@@ -255,14 +251,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case "list_agents": {
       const requestId = crypto.randomUUID();
-      const agents = await new Promise<
-        Array<{
-          sessionId: string;
-          name: string;
-          uri: string;
-          status: string;
-        }>
-      >((resolve) => {
+      const agents = await new Promise<AgentInfo[]>((resolve) => {
         const timer = setTimeout(() => {
           pendingListAgents.delete(requestId);
           resolve([]);

@@ -85,11 +85,11 @@ function handleServerMessage(msg) {
       break;
     }
     case "send_result": {
-      for (const [id, pending] of pendingSends) {
+      const pending = pendingSends.get(msg.requestId);
+      if (pending) {
         clearTimeout(pending.timer);
-        pendingSends.delete(id);
+        pendingSends.delete(msg.requestId);
         pending.resolve(msg);
-        break;
       }
       break;
     }
@@ -153,7 +153,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   switch (name) {
     case "send": {
       const { to, message } = args;
-      const wsMsg = { type: "send", to, message };
+      const requestId = crypto.randomUUID();
+      const wsMsg = { type: "send", to, message, requestId };
       try {
         ws.send(JSON.stringify(wsMsg));
       } catch {
@@ -168,12 +169,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       const result = await new Promise((resolve) => {
-        const id = crypto.randomUUID();
         const timer = setTimeout(() => {
-          pendingSends.delete(id);
+          pendingSends.delete(requestId);
           resolve({ success: true });
         }, 2e3);
-        pendingSends.set(id, { resolve, timer });
+        pendingSends.set(requestId, { resolve, timer });
       });
       if (!result.success) {
         return {

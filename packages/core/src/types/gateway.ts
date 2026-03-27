@@ -43,6 +43,15 @@ export interface PlatformAdapter {
   onMessage(handler: (msg: GatewayMessage) => void): void;
 }
 
+// ── Agent Discovery ──────────────────────────────────────────────
+
+export interface AgentInfo {
+  sessionId: string;
+  name: string;
+  uri: string;
+  status: string;
+}
+
 // ── Gateway WebSocket Protocol ────────────────────────────────────
 // Between autonomOS server and server:autonomos MCP channel subprocess
 
@@ -50,19 +59,10 @@ export type GatewayWsMessage =
   | { type: "register"; sessionId: string }
   | { type: "dashboard_connect" }
   | { type: "message"; payload: GatewayMessage }
-  | { type: "send"; to: string; message: string }
-  | { type: "send_result"; success: boolean; error?: string }
+  | { type: "send"; to: string; message: string; requestId: string }
+  | { type: "send_result"; requestId: string; success: boolean; error?: string }
   | { type: "list_agents_request"; requestId: string }
-  | {
-      type: "list_agents_response";
-      requestId: string;
-      agents: Array<{
-        sessionId: string;
-        name: string;
-        uri: string;
-        status: string;
-      }>;
-    };
+  | { type: "list_agents_response"; requestId: string; agents: AgentInfo[] };
 
 // ── Routing ───────────────────────────────────────────────────────
 

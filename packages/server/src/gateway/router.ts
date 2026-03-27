@@ -7,10 +7,11 @@
  */
 
 import type {
+  AgentInfo,
   ChannelRoute,
   GatewayMessage,
-  GatewayReply,
   GatewayWsMessage,
+  Platform,
   PlatformAdapter,
 } from "@autonomos/core";
 import type { WSContext } from "hono/ws";
@@ -74,11 +75,11 @@ export function getRoutes(): ChannelRoute[] {
 /**
  * Route a message by URI. Returns an error string if routing fails, null on success.
  */
-export function routeMessage(
+export async function routeMessage(
   to: string,
   message: string,
   fromSessionId: string,
-): string | null {
+): Promise<string | null> {
   const sepIndex = to.indexOf("://");
   if (sepIndex === -1) {
     return `Invalid URI: "${to}" — expected scheme://path (e.g. agent://name)`;
@@ -169,25 +170,40 @@ async function resolveSessionName(sessionId: string): Promise<string> {
   if (!session) return `Agent ${sessionId.slice(0, 8)}`;
 
   if (session.claudeSessionId) {
-    try {
-      const titles = await batchGetTitles([
-        { sessionId: session.claudeSessionId, cwd: session.workingDirectory },
-      ]);
-      const title = titles.get(session.claudeSessionId);
-      if (title) return title;
-    } catch {
-      // fall back to spawn-time name
-    }
+    const titles = await batchGetTitles([
+      { sessionId: session.claudeSessionId, cwd: session.workingDirectory },
+    ]).catch(() => new Map<string, string>());
+    const title = titles.get(session.claudeSessionId);
+    if (title) return title;
   }
 
   return session.name;
 }
 
-function routeToAgent(
+/** Build a GatewayMessage for agent-to-agent communication */
+function buildAgentMessage(
+  senderId: string,
+  senderName: string,
+  text: string,
+): GatewayMessage {
+  return {
+    id: crypto.randomUUID(),
+    platform: "discord", // unused for agent messages — fromUri is the source of truth
+    platformMessageId: "",
+    chatId: "",
+    userId: senderId,
+    userName: senderName,
+    text,
+    fromUri: `agent://${senderName}`,
+    timestamp: Date.now(),
+  };
+}
+
+async function routeToAgent(
   fromSessionId: string,
   targetName: string,
   content: string,
-): string | null {
+): Promise<string | null> {
   const resolved = resolveAgent(targetName);
   if (!resolved) {
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
@@ -200,36 +216,25 @@ function routeToAgent(
     return "Cannot send to yourself.";
   }
 
-  // Resolve sender name asynchronously — deliver message with best-effort name
-  resolveSessionName(fromSessionId).then((senderName) => {
-    const msg: GatewayMessage = {
-      id: crypto.randomUUID(),
-      platform: "discord", // unused for agent messages — fromUri is the source of truth
-      platformMessageId: "",
-      chatId: "",
-      userId: fromSessionId,
-      userName: senderName,
-      text: content,
-      fromUri: `agent://${senderName}`,
-      timestamp: Date.now(),
-    };
-
-    const wsMsg: GatewayWsMessage = { type: "message", payload: msg };
-    try {
-      target.send(JSON.stringify(wsMsg));
-    } catch (err) {
-      console.error(`[gateway] failed to send to agent ${targetName}:`, err);
-    }
-    fanOutToDashboard(wsMsg);
-  });
-
+  const senderName = await resolveSessionName(fromSessionId);
+  const wsMsg: GatewayWsMessage = {
+    type: "message",
+    payload: buildAgentMessage(fromSessionId, senderName, content),
+  };
+  try {
+    target.send(JSON.stringify(wsMsg));
+  } catch (err) {
+    console.error(`[gateway] failed to send to agent ${targetName}:`, err);
+    return `Failed to deliver message to agent "${targetName}"`;
+  }
+  fanOutToDashboard(wsMsg);
   return null;
 }
 
 // ── Platform routing ──────────────────────────────────────────────
 
 function routeToPlatform(
-  platform: string,
+  platform: Platform,
   path: string,
   message: string,
 ): string | null {
@@ -241,15 +246,9 @@ function routeToPlatform(
     return `${platform} adapter not connected`;
   }
 
-  adapter
-    .send({
-      platform: platform as "discord" | "telegram" | "slack",
-      chatId: path,
-      text: message,
-    })
-    .catch((err) => {
-      console.error(`[gateway] ${platform} send failed:`, err);
-    });
+  adapter.send({ platform, chatId: path, text: message }).catch((err) => {
+    console.error(`[gateway] ${platform} send failed:`, err);
+  });
 
   return null;
 }
@@ -258,23 +257,14 @@ function routeToPlatform(
 
 function broadcastToAllAgents(fromSessionId: string, content: string): void {
   resolveSessionName(fromSessionId).then((senderName) => {
-    const msg: GatewayMessage = {
-      id: crypto.randomUUID(),
-      platform: "discord",
-      platformMessageId: "",
-      chatId: "",
-      userId: fromSessionId,
-      userName: senderName,
-      text: content,
-      fromUri: `agent://${senderName}`,
-      timestamp: Date.now(),
+    const wsMsg: GatewayWsMessage = {
+      type: "message",
+      payload: buildAgentMessage(fromSessionId, senderName, content),
     };
-
-    const wsMsg: GatewayWsMessage = { type: "message", payload: msg };
     const json = JSON.stringify(wsMsg);
 
     for (const [sessionId, client] of sessionClients) {
-      if (sessionId === fromSessionId) continue; // don't broadcast to self
+      if (sessionId === fromSessionId) continue;
       try {
         client.send(json);
       } catch {
@@ -287,9 +277,7 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
 
 // ── Agent discovery ───────────────────────────────────────────────
 
-export async function getAgentList(): Promise<
-  Array<{ sessionId: string; name: string; uri: string; status: string }>
-> {
+export async function getAgentList(): Promise<AgentInfo[]> {
   const sessions = getAllSessions();
 
   const withClaude = sessions
@@ -299,14 +287,10 @@ export async function getAgentList(): Promise<
       cwd: s.workingDirectory,
     }));
 
-  let titles = new Map<string, string>();
-  if (withClaude.length > 0) {
-    try {
-      titles = await batchGetTitles(withClaude);
-    } catch {
-      // best-effort
-    }
-  }
+  const titles =
+    withClaude.length > 0
+      ? await batchGetTitles(withClaude).catch(() => new Map<string, string>())
+      : new Map<string, string>();
 
   return sessions.map((s) => {
     const name = (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name;

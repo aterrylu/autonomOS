@@ -51,14 +51,14 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           }
 
           case "send": {
-            const error = routeMessage(
+            const error = await routeMessage(
               msg.to,
               msg.message,
               sessionId ?? "unknown",
             );
-            // Send result back to channel server for error feedback
             const result: GatewayWsMessage = {
               type: "send_result",
+              requestId: msg.requestId,
               success: error === null,
               ...(error && { error }),
             };
