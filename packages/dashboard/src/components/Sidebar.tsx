@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   DRAG_TYPE,
   encodeDragData,
@@ -18,6 +19,39 @@ import {
   THEMES,
   useStore,
 } from "../store";
+
+/** Select data fields that change over time — useShallow prevents re-renders when values are equal */
+function useSidebarData() {
+  return useStore(
+    useShallow((s) => ({
+      theme: s.theme,
+      sessions: s.sessions,
+      projects: s.projects,
+      activePane: s.activePane,
+      paneOrder: s.paneOrder,
+      previewPanes: s.previewPanes,
+      status: s.status,
+      groups: s.groups,
+      notificationCounts: s.notificationCounts,
+      agentStatuses: s.agentStatuses,
+    })),
+  );
+}
+
+/** Select store actions — these are stable references that never change identity */
+function useSidebarActions() {
+  return useStore((s) => ({
+    fetchSessions: s.fetchSessions,
+    fetchProjects: s.fetchProjects,
+    createSession: s.createSession,
+    switchPane: s.switchPane,
+    closePreview: s.closePreview,
+    reorderPanes: s.reorderPanes,
+    fetchNotifications: s.fetchNotifications,
+    markNotificationsRead: s.markNotificationsRead,
+  }));
+}
+
 import { Codicon } from "./Codicon";
 import {
   type AgentStatus,
@@ -62,7 +96,7 @@ interface GroupContainerProps {
   closePreview: (id: string) => void;
 }
 
-function GroupContainer({
+const GroupContainer = React.memo(function GroupContainer({
   group,
   members,
   page,
@@ -265,7 +299,7 @@ function GroupContainer({
       )}
     </div>
   );
-}
+});
 
 function DiffStat({
   stat,
@@ -281,24 +315,28 @@ function DiffStat({
 }
 
 export function Sidebar() {
-  const theme = useStore((s) => s.theme);
-  const sessions = useStore((s) => s.sessions);
-  const projects = useStore((s) => s.projects);
-  const activePane = useStore((s) => s.activePane);
-  const paneOrder = useStore((s) => s.paneOrder);
-  const previewPanes = useStore((s) => s.previewPanes);
-  const fetchSessions = useStore((s) => s.fetchSessions);
-  const fetchProjects = useStore((s) => s.fetchProjects);
-  const createSession = useStore((s) => s.createSession);
-  const switchPane = useStore((s) => s.switchPane);
-  const closePreview = useStore((s) => s.closePreview);
-  const reorderPanes = useStore((s) => s.reorderPanes);
-  const status = useStore((s) => s.status);
-  const groups = useStore((s) => s.groups);
-  const notificationCounts = useStore((s) => s.notificationCounts);
-  const agentStatuses = useStore((s) => s.agentStatuses);
-  const fetchNotifications = useStore((s) => s.fetchNotifications);
-  const markNotificationsRead = useStore((s) => s.markNotificationsRead);
+  const {
+    theme,
+    sessions,
+    projects,
+    activePane,
+    paneOrder,
+    previewPanes,
+    status,
+    groups,
+    notificationCounts,
+    agentStatuses,
+  } = useSidebarData();
+  const {
+    fetchSessions,
+    fetchProjects,
+    createSession,
+    switchPane,
+    closePreview,
+    reorderPanes,
+    fetchNotifications,
+    markNotificationsRead,
+  } = useSidebarActions();
   const page = THEMES[theme].page;
 
   const isSpawning = status === "spawning...";

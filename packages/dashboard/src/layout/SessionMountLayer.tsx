@@ -107,9 +107,15 @@ export function SessionMountLayer() {
 
 /** Global registry so PaneSlot can call triggerUpdate after registering. */
 let _slotUpdateCallback: (() => void) | null = null;
+let _rafId: number | null = null;
 
+/** Batched slot update — coalesces multiple calls per frame via rAF */
 export function notifySlotUpdate() {
-  _slotUpdateCallback?.();
+  if (_rafId !== null) return; // already scheduled
+  _rafId = requestAnimationFrame(() => {
+    _rafId = null;
+    _slotUpdateCallback?.();
+  });
 }
 
 function useSlotUpdateTrigger(cb: () => void) {
@@ -120,6 +126,10 @@ function useSlotUpdateTrigger(cb: () => void) {
     _slotUpdateCallback = () => cbRef.current();
     return () => {
       _slotUpdateCallback = null;
+      if (_rafId !== null) {
+        cancelAnimationFrame(_rafId);
+        _rafId = null;
+      }
     };
   }, []);
 }
