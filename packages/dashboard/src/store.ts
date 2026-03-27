@@ -16,6 +16,17 @@ function sendDesktopNotification(title: string, body: string) {
   }
 }
 
+/** Shallow-compare two Record objects, optionally using a custom equality function for values */
+function shallowEqualRecord<V>(
+  a: Record<string, V>,
+  b: Record<string, V>,
+  isEqual: (va: V, vb: V) => boolean = (va, vb) => va === vb,
+): boolean {
+  const keysA = Object.keys(a);
+  if (keysA.length !== Object.keys(b).length) return false;
+  return keysA.every((k) => k in b && isEqual(a[k], b[k]));
+}
+
 import {
   allPanes,
   derivedActivePane,
@@ -607,6 +618,17 @@ export const useStore = create<AppState>()(
           const res = await fetch("/api/sessions").catch(() => null);
           if (!res?.ok) return;
           const sessions: SessionInfo[] = await res.json();
+          const prev = get().sessions;
+          const unchanged =
+            prev.length === sessions.length &&
+            prev.every(
+              (s, i) =>
+                s.id === sessions[i].id &&
+                s.name === sessions[i].name &&
+                s.status === sessions[i].status &&
+                s.claudeSessionId === sessions[i].claudeSessionId,
+            );
+          if (unchanged) return;
           set({ sessions });
 
           const { activePane } = get();
@@ -660,7 +682,20 @@ export const useStore = create<AppState>()(
               }
             }
           }
-          set({ notificationCounts: counts, agentStatuses: statuses });
+          const prevCounts = get().notificationCounts;
+          const prevStatuses = get().agentStatuses;
+          const countsChanged = !shallowEqualRecord(counts, prevCounts);
+          const statusesChanged = !shallowEqualRecord(
+            statuses,
+            prevStatuses,
+            (a, b) =>
+              a.status === b.status &&
+              a.currentTool === b.currentTool &&
+              a.toolDetail === b.toolDetail,
+          );
+          if (countsChanged || statusesChanged) {
+            set({ notificationCounts: counts, agentStatuses: statuses });
+          }
         },
         markNotificationsRead: async (sessionId) => {
           const res = await fetch(`/api/hooks/${sessionId}/read`, {

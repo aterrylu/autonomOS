@@ -1,5 +1,4 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useState } from "react";
 
 /**
  * Agent status types derived from Claude Code hook events.
@@ -67,20 +66,11 @@ function statusCategory(status: AgentStatus): StatusCategory {
  *
  * - Completed/idle: green circle with checkmark
  * - Needs input/error: yellow triangle with exclamation
- * - Working/syncing: spinning dash loader
+ * - Working/syncing: spinning dash loader (pure CSS animation — no React re-renders)
  * - Stopped: gray circle with dash
  */
 export function AgentStatusIcon({ status, size = 16 }: AgentStatusIconProps) {
-  const [activeDashIndex, setActiveDashIndex] = useState(0);
   const category = statusCategory(status);
-
-  useEffect(() => {
-    if (category !== "syncing") return;
-    const interval = setInterval(() => {
-      setActiveDashIndex((prev) => (prev + 1) % 8);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [category]);
 
   return (
     <div
@@ -95,25 +85,39 @@ export function AgentStatusIcon({ status, size = 16 }: AgentStatusIconProps) {
           exit={{ scale: 0.8, opacity: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 25 }}
         >
-          <StatusSvg
-            category={category}
-            size={size}
-            activeDashIndex={activeDashIndex}
-          />
+          <StatusSvg category={category} size={size} />
         </motion.div>
       </AnimatePresence>
     </div>
   );
 }
 
+/**
+ * CSS keyframes for the spinner — injected once into the document head.
+ * Cycles through 8 dashes by animating opacity in discrete steps.
+ * Runs entirely on the compositor thread.
+ */
+const SPINNER_STYLE_ID = "agent-spinner-keyframes";
+if (
+  typeof document !== "undefined" &&
+  !document.getElementById(SPINNER_STYLE_ID)
+) {
+  const style = document.createElement("style");
+  style.id = SPINNER_STYLE_ID;
+  style.textContent = `
+@keyframes dash-spin {
+  0%, 100%  { opacity: 1 }
+  12.5%     { opacity: 0 }
+}`;
+  document.head.appendChild(style);
+}
+
 function StatusSvg({
   category,
   size,
-  activeDashIndex,
 }: {
   category: StatusCategory;
   size: number;
-  activeDashIndex: number;
 }) {
   switch (category) {
     case "completed":
@@ -178,9 +182,14 @@ function StatusSvg({
               y1={dash.y1}
               x2={dash.x2}
               y2={dash.y2}
-              stroke={index === activeDashIndex ? "#ffffff" : "#6b7280"}
+              stroke="#ffffff"
               strokeWidth="2"
               strokeLinecap="round"
+              style={{
+                animation: "dash-spin 800ms steps(1, end) infinite",
+                animationDelay: `${-index * 100}ms`,
+                opacity: 0.3,
+              }}
             />
           ))}
         </svg>
