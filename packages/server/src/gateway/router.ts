@@ -1,6 +1,7 @@
 /**
  * Gateway Router — routes messages between platform adapters and CC sessions.
  *
+ * Uses URI-based addressing: agent://name, discord://guild/channel, broadcast://all.
  * The router is stateless (no message persistence). If a session is down,
  * messages are dropped. CC owns its own conversation history.
  */
@@ -68,6 +69,42 @@ export function getRoutes(): ChannelRoute[] {
   return routes;
 }
 
+// ── URI-based message routing ─────────────────────────────────────
+
+/**
+ * Route a message by URI. Returns an error string if routing fails, null on success.
+ */
+export function routeMessage(
+  to: string,
+  message: string,
+  fromSessionId: string,
+): string | null {
+  const sepIndex = to.indexOf("://");
+  if (sepIndex === -1) {
+    return `Invalid URI: "${to}" — expected scheme://path (e.g. agent://name)`;
+  }
+
+  const scheme = to.slice(0, sepIndex);
+  const path = to.slice(sepIndex + 3);
+
+  switch (scheme) {
+    case "agent":
+      return routeToAgent(fromSessionId, path, message);
+
+    case "discord":
+    case "telegram":
+    case "slack":
+      return routeToPlatform(scheme, path, message);
+
+    case "broadcast":
+      broadcastToAllAgents(fromSessionId, message);
+      return null;
+
+    default:
+      return `Unknown URI scheme: "${scheme}" — supported: agent, discord, telegram, slack, broadcast`;
+  }
+}
+
 // ── Inbound: platform → CC session ────────────────────────────────
 
 function routeInbound(msg: GatewayMessage): void {
@@ -105,126 +142,181 @@ function routeInbound(msg: GatewayMessage): void {
   }
 }
 
-// ── Outbound: CC session → platform ───────────────────────────────
+// ── Agent routing ─────────────────────────────────────────────────
 
-export function routeReply(reply: GatewayReply): void {
-  // Fan out to dashboard
-  fanOutToDashboard({ type: "reply", payload: reply });
+/** Resolve agent by name. Exact case-insensitive match only. */
+function resolveAgent(name: string): [string, WSContext] | null {
+  // Exact session ID match
+  const byId = sessionClients.get(name);
+  if (byId) return [name, byId];
 
-  const adapter = adapters.get(reply.platform);
-  if (!adapter) {
-    console.log(`[gateway] no adapter for platform: ${reply.platform}`);
-    return;
-  }
-
-  if (!adapter.isConnected()) {
-    console.log(`[gateway] ${reply.platform} adapter not connected`);
-    return;
-  }
-
-  adapter.send(reply).catch((err) => {
-    console.error(`[gateway] ${reply.platform} send failed:`, err);
-  });
-}
-
-// ── Inter-agent: CC session → CC session ──────────────────────────
-
-/** Resolve a target by ID or name. Returns [sessionId, WSContext] or null. */
-function resolveTarget(idOrName: string): [string, WSContext] | null {
-  // Exact ID match
-  const byId = sessionClients.get(idOrName);
-  if (byId) return [idOrName, byId];
-
-  // Name match (case-insensitive)
+  // Exact name match (case-insensitive)
   const sessions = getAllSessions();
-  const exact = sessions.find(
-    (s) => s.name.toLowerCase() === idOrName.toLowerCase(),
+  const match = sessions.find(
+    (s) => s.name.toLowerCase() === name.toLowerCase(),
   );
-  if (exact) {
-    const ws = sessionClients.get(exact.id);
-    if (ws) return [exact.id, ws];
-  }
-
-  // Partial name match
-  const partial = sessions.find((s) =>
-    s.name.toLowerCase().includes(idOrName.toLowerCase()),
-  );
-  if (partial) {
-    const ws = sessionClients.get(partial.id);
-    if (ws) return [partial.id, ws];
+  if (match) {
+    const ws = sessionClients.get(match.id);
+    if (ws) return [match.id, ws];
   }
 
   return null;
 }
 
-export function routeToAgent(
+/** Resolve the display name for a session ID (enriched via titleCache) */
+async function resolveSessionName(sessionId: string): Promise<string> {
+  const session = getAllSessions().find((s) => s.id === sessionId);
+  if (!session) return `Agent ${sessionId.slice(0, 8)}`;
+
+  if (session.claudeSessionId) {
+    try {
+      const titles = await batchGetTitles([
+        { sessionId: session.claudeSessionId, cwd: session.workingDirectory },
+      ]);
+      const title = titles.get(session.claudeSessionId);
+      if (title) return title;
+    } catch {
+      // fall back to spawn-time name
+    }
+  }
+
+  return session.name;
+}
+
+function routeToAgent(
   fromSessionId: string,
-  targetIdOrName: string,
+  targetName: string,
   content: string,
-): void {
-  const resolved = resolveTarget(targetIdOrName);
+): string | null {
+  const resolved = resolveAgent(targetName);
   if (!resolved) {
-    console.log(
-      `[gateway] target "${targetIdOrName}" not found or not connected — dropping inter-agent message`,
-    );
-    return;
+    console.log(`[gateway] agent "${targetName}" not found or not connected`);
+    return `Agent "${targetName}" not found or not connected. Use list_agents to see available agents.`;
   }
   const [targetSessionId, target] = resolved;
 
-  // Inter-agent messages reuse GatewayMessage with a synthetic chatId.
-  // Platform is set to "discord" as a placeholder — the channel server
-  // identifies the source via the "agent:" prefix in chatId.
-  const msg: GatewayMessage = {
-    id: crypto.randomUUID(),
-    platform: "discord",
-    platformMessageId: "",
-    chatId: `agent:${fromSessionId}`,
-    userId: fromSessionId,
-    userName: `Session ${fromSessionId.slice(0, 8)}`,
-    text: content,
-    timestamp: Date.now(),
-  };
-
-  const wsMsg: GatewayWsMessage = { type: "message", payload: msg };
-  try {
-    target.send(JSON.stringify(wsMsg));
-  } catch (err) {
-    console.error(
-      `[gateway] failed to send to target session ${targetSessionId}:`,
-      err,
-    );
+  // Self-send guard
+  if (targetSessionId === fromSessionId) {
+    return "Cannot send to yourself.";
   }
 
-  // Fan out to dashboard
-  fanOutToDashboard(wsMsg);
+  // Resolve sender name asynchronously — deliver message with best-effort name
+  resolveSessionName(fromSessionId).then((senderName) => {
+    const msg: GatewayMessage = {
+      id: crypto.randomUUID(),
+      platform: "discord", // unused for agent messages — fromUri is the source of truth
+      platformMessageId: "",
+      chatId: "",
+      userId: fromSessionId,
+      userName: senderName,
+      text: content,
+      fromUri: `agent://${senderName}`,
+      timestamp: Date.now(),
+    };
+
+    const wsMsg: GatewayWsMessage = { type: "message", payload: msg };
+    try {
+      target.send(JSON.stringify(wsMsg));
+    } catch (err) {
+      console.error(`[gateway] failed to send to agent ${targetName}:`, err);
+    }
+    fanOutToDashboard(wsMsg);
+  });
+
+  return null;
+}
+
+// ── Platform routing ──────────────────────────────────────────────
+
+function routeToPlatform(
+  platform: string,
+  path: string,
+  message: string,
+): string | null {
+  const adapter = adapters.get(platform);
+  if (!adapter) {
+    return `${platform} adapter not available`;
+  }
+  if (!adapter.isConnected()) {
+    return `${platform} adapter not connected`;
+  }
+
+  adapter
+    .send({
+      platform: platform as "discord" | "telegram" | "slack",
+      chatId: path,
+      text: message,
+    })
+    .catch((err) => {
+      console.error(`[gateway] ${platform} send failed:`, err);
+    });
+
+  return null;
+}
+
+// ── Broadcast ─────────────────────────────────────────────────────
+
+function broadcastToAllAgents(fromSessionId: string, content: string): void {
+  resolveSessionName(fromSessionId).then((senderName) => {
+    const msg: GatewayMessage = {
+      id: crypto.randomUUID(),
+      platform: "discord",
+      platformMessageId: "",
+      chatId: "",
+      userId: fromSessionId,
+      userName: senderName,
+      text: content,
+      fromUri: `agent://${senderName}`,
+      timestamp: Date.now(),
+    };
+
+    const wsMsg: GatewayWsMessage = { type: "message", payload: msg };
+    const json = JSON.stringify(wsMsg);
+
+    for (const [sessionId, client] of sessionClients) {
+      if (sessionId === fromSessionId) continue; // don't broadcast to self
+      try {
+        client.send(json);
+      } catch {
+        // best effort
+      }
+    }
+    fanOutToDashboard(wsMsg);
+  });
 }
 
 // ── Agent discovery ───────────────────────────────────────────────
 
 export async function getAgentList(): Promise<
-  Array<{ sessionId: string; name: string; status: string }>
+  Array<{ sessionId: string; name: string; uri: string; status: string }>
 > {
   const sessions = getAllSessions();
 
-  // Enrich names with titleCache (same logic as GET /api/sessions)
   const withClaude = sessions
     .filter((s) => s.claudeSessionId)
-    .map((s) => ({ sessionId: s.claudeSessionId!, cwd: s.workingDirectory }));
+    .map((s) => ({
+      sessionId: s.claudeSessionId!,
+      cwd: s.workingDirectory,
+    }));
 
   let titles = new Map<string, string>();
   if (withClaude.length > 0) {
     try {
       titles = await batchGetTitles(withClaude);
     } catch {
-      // best-effort — fall back to spawn-time name
+      // best-effort
     }
   }
 
-  return sessions.map((s) => ({
-    sessionId: s.id,
-    name: (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name,
-    status: s.status,
-  }));
+  return sessions.map((s) => {
+    const name = (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name;
+    return {
+      sessionId: s.id,
+      name,
+      uri: `agent://${name}`,
+      status: s.status,
+    };
+  });
 }
 
 // ── Dashboard fan-out ─────────────────────────────────────────────

@@ -3,14 +3,17 @@
 /**
  * server:autonomos — MCP channel server for Claude Code
  *
- * This is a standalone script spawned by Claude Code as a subprocess.
- * It bridges two connections:
- *   1. MCP over stdio (to Claude Code) — pushes <channel> events, exposes reply tools
- *   2. WebSocket (to autonomOS server) — receives messages to deliver, sends replies back
+ * Standalone script spawned by Claude Code as a subprocess.
+ * Bridges MCP (stdio, to Claude Code) and WebSocket (to autonomOS gateway).
  *
- * Environment variables (set by autonomOS server at spawn time):
- *   AUTONOMOS_SERVER_URL  — WebSocket URL, e.g. "ws://localhost:3100/ws/gateway/SESSION_ID"
- *   AUTONOMOS_SESSION_ID  — this CC session's autonomOS ID
+ * Tools:
+ *   send(to, message) — send to any URI: agent://name, discord://guild/channel, broadcast://all
+ *   list_agents()     — discover agents with their URIs
+ *
+ * Environment variables (set by autonomOS at spawn time):
+ *   AUTONOMOS_SERVER_URL  — WebSocket URL, e.g. "ws://localhost:3100/ws/gateway"
+ *   AUTONOMOS_SESSION_ID  — this agent's autonomOS session ID
+ *   AUTONOMOS_TOKEN       — auth token (optional)
  */
 
 import type { GatewayMessage, GatewayWsMessage } from "@autonomos/core";
@@ -38,23 +41,33 @@ let ws: WebSocket | null = null;
 let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 30_000;
 
-// Track the last inbound message source for reply routing
-let lastInboundFrom: { platform: string; chatId: string } | null = null;
-
-// Pending list_agents requests waiting for server response
+// Pending list_agents requests
 const pendingListAgents = new Map<
   string,
   {
     resolve: (
-      agents: Array<{ sessionId: string; name: string; status: string }>,
+      agents: Array<{
+        sessionId: string;
+        name: string;
+        uri: string;
+        status: string;
+      }>,
     ) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
+>();
+
+// Pending send results (for error feedback)
+const pendingSends = new Map<
+  string,
+  {
+    resolve: (result: { success: boolean; error?: string }) => void;
     timer: ReturnType<typeof setTimeout>;
   }
 >();
 
 function connectToServer(): void {
   try {
-    // Append auth token as query param if configured
     const url = AUTH_TOKEN
       ? `${SERVER_URL}?token=${encodeURIComponent(AUTH_TOKEN)}`
       : SERVER_URL!;
@@ -69,10 +82,12 @@ function connectToServer(): void {
 
   ws.addEventListener("open", () => {
     reconnectDelay = 1000;
-    // Register this session with the gateway
-    const msg: GatewayWsMessage = { type: "register", sessionId: SESSION_ID! };
+    const msg: GatewayWsMessage = {
+      type: "register",
+      sessionId: SESSION_ID!,
+    };
     ws?.send(JSON.stringify(msg));
-    process.stderr.write(`autonomos-channel: connected to gateway\n`);
+    process.stderr.write("autonomos-channel: connected to gateway\n");
   });
 
   ws.addEventListener("message", (event) => {
@@ -107,11 +122,6 @@ function scheduleReconnect(): void {
 function handleServerMessage(msg: GatewayWsMessage): void {
   switch (msg.type) {
     case "message": {
-      // Inbound platform message — deliver to Claude via MCP channel notification
-      lastInboundFrom = {
-        platform: msg.payload.platform,
-        chatId: msg.payload.chatId,
-      };
       deliverToClaudeCode(msg.payload);
       break;
     }
@@ -124,25 +134,42 @@ function handleServerMessage(msg: GatewayWsMessage): void {
       }
       break;
     }
+    case "send_result": {
+      // Match any pending send by iterating (only one should be pending at a time)
+      for (const [id, pending] of pendingSends) {
+        clearTimeout(pending.timer);
+        pendingSends.delete(id);
+        pending.resolve(msg);
+        break;
+      }
+      break;
+    }
   }
 }
 
 // ── MCP Server ────────────────────────────────────────────────────
-// Uses low-level Server class to declare experimental claude/channel capability
 
 const mcp = new Server(
-  { name: "autonomos", version: "0.1.0" },
+  { name: "autonomos", version: "0.2.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
     },
     instructions: [
-      'Messages from external platforms (Discord, Telegram, Slack) and other autonomOS sessions arrive as <channel source="autonomos" ...> events.',
-      "Use the reply tool to respond — pass the chat_id from the channel tag.",
-      "Use send_to_agent to message another CC session by its session ID.",
-      "Use list_agents to discover active sessions.",
-    ].join(" "),
+      "You are connected to the autonomOS gateway.",
+      'Messages arrive as <channel source="autonomos" ...> events.',
+      "",
+      "Each message has:",
+      "- from: the sender's name",
+      "- from_uri: the sender's address — use this with the send tool to respond",
+      "",
+      'To respond to a message: send(to: "<from_uri from the message>", message: "your reply")',
+      'To message an agent: send(to: "agent://agent-name", message: "hello")',
+      'To broadcast to all agents: send(to: "broadcast://all", message: "announcement")',
+      "",
+      "Use list_agents to discover available agents and their URIs.",
+    ].join("\n"),
   },
 );
 
@@ -151,45 +178,25 @@ const mcp = new Server(
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "reply",
+      name: "send",
       description:
-        "Reply to the platform that sent the last channel message (Discord, Telegram, Slack, or dashboard)",
+        "Send a message to any destination — agents, platform channels, or broadcast. Use the from_uri from incoming messages to respond.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          chat_id: {
-            type: "string",
-            description: "The chat_id from the inbound <channel> tag",
-          },
-          text: { type: "string", description: "The reply text" },
-          reply_to: {
-            type: "string",
-            description: "Platform message ID to thread under (optional)",
-          },
-        },
-        required: ["chat_id", "text"],
-      },
-    },
-    {
-      name: "send_to_agent",
-      description:
-        "Send a message to another Claude Code session by name or ID",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          session_id: {
+          to: {
             type: "string",
             description:
-              "Target session name or ID (use list_agents to discover)",
+              'Destination URI (e.g. "agent://name", "discord://guild/channel", "broadcast://all")',
           },
-          content: { type: "string", description: "Message to send" },
+          message: { type: "string", description: "Your message" },
         },
-        required: ["session_id", "content"],
+        required: ["to", "message"],
       },
     },
     {
       name: "list_agents",
-      description: "List all active autonomOS sessions",
+      description: "List all active agents with their names, URIs, and status",
       inputSchema: { type: "object" as const, properties: {} },
     },
   ],
@@ -206,77 +213,55 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   switch (name) {
-    case "reply": {
-      const { chat_id, text, reply_to } = args as {
-        chat_id: string;
-        text: string;
-        reply_to?: string;
-      };
-      if (!lastInboundFrom) {
+    case "send": {
+      const { to, message } = args as { to: string; message: string };
+      const wsMsg: GatewayWsMessage = { type: "send", to, message };
+      try {
+        ws.send(JSON.stringify(wsMsg));
+      } catch {
         return {
           content: [
             {
               type: "text",
-              text: "Cannot determine target platform — no inbound message received yet.",
+              text: "Failed to send: gateway connection lost",
             },
           ],
           isError: true,
         };
       }
-      const platform = lastInboundFrom.platform;
-      const msg: GatewayWsMessage = {
-        type: "reply",
-        payload: {
-          platform: platform as "discord" | "telegram" | "slack",
-          chatId: chat_id,
-          text,
-          replyTo: reply_to,
-        },
-      };
-      try {
-        ws.send(JSON.stringify(msg));
-      } catch {
-        return {
-          content: [
-            { type: "text", text: "Failed to send: gateway connection lost" },
-          ],
-          isError: true,
-        };
-      }
-      return { content: [{ type: "text", text: "Reply sent." }] };
-    }
 
-    case "send_to_agent": {
-      const { session_id, content } = args as {
-        session_id: string;
-        content: string;
-      };
-      const msg: GatewayWsMessage = {
-        type: "send_to_agent",
-        targetSessionId: session_id,
-        content,
-      };
-      try {
-        ws.send(JSON.stringify(msg));
-      } catch {
+      // Wait briefly for send_result (error feedback from gateway)
+      const result = await new Promise<{
+        success: boolean;
+        error?: string;
+      }>((resolve) => {
+        const id = crypto.randomUUID();
+        const timer = setTimeout(() => {
+          pendingSends.delete(id);
+          resolve({ success: true }); // assume success on timeout
+        }, 2000);
+        pendingSends.set(id, { resolve, timer });
+      });
+
+      if (!result.success) {
         return {
-          content: [
-            { type: "text", text: "Failed to send: gateway connection lost" },
-          ],
+          content: [{ type: "text", text: result.error ?? "Send failed" }],
           isError: true,
         };
       }
-      return {
-        content: [
-          { type: "text", text: `Message sent to session ${session_id}` },
-        ],
-      };
+
+      return { content: [{ type: "text", text: `Sent to ${to}` }] };
     }
 
     case "list_agents": {
       const requestId = crypto.randomUUID();
       const agents = await new Promise<
-        Array<{ sessionId: string; name: string; status: string }>
+        Array<{
+          sessionId: string;
+          name: string;
+          uri: string;
+          status: string;
+        }>
       >((resolve) => {
         const timer = setTimeout(() => {
           pendingListAgents.delete(requestId);
@@ -295,14 +280,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: "text",
-              text: "No active sessions (or request timed out).",
+              text: "No active agents (or request timed out).",
             },
           ],
         };
       }
-      const lines = agents.map(
-        (a) => `${a.name} (${a.sessionId}) — ${a.status}`,
-      );
+      const lines = agents.map((a) => `${a.name} (${a.uri}) — ${a.status}`);
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
 
@@ -320,13 +303,9 @@ function deliverToClaudeCode(msg: GatewayMessage): void {
       params: {
         content: msg.text,
         meta: {
-          platform: msg.platform,
-          chat_id: msg.chatId,
-          user: msg.userName,
-          message_id: msg.platformMessageId,
+          from: msg.userName,
+          from_uri: msg.fromUri,
           ts: new Date(msg.timestamp).toISOString(),
-          ...(msg.replyTo && { reply_to: msg.replyTo }),
-          ...(msg.threadId && { thread_id: msg.threadId }),
         },
       },
     })
@@ -340,13 +319,9 @@ function deliverToClaudeCode(msg: GatewayMessage): void {
 // ── Startup ───────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Connect to autonomOS gateway
   connectToServer();
-
-  // Connect MCP over stdio (Claude Code spawns us as a subprocess)
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
-
   process.stderr.write(`autonomos-channel: started (session=${SESSION_ID})\n`);
 }
 

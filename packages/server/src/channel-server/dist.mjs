@@ -19,8 +19,8 @@ if (!SESSION_ID || !SERVER_URL) {
 var ws = null;
 var reconnectDelay = 1e3;
 var MAX_RECONNECT_DELAY = 3e4;
-var lastInboundFrom = null;
 var pendingListAgents = /* @__PURE__ */ new Map();
+var pendingSends = /* @__PURE__ */ new Map();
 function connectToServer() {
   try {
     const url = AUTH_TOKEN ? `${SERVER_URL}?token=${encodeURIComponent(AUTH_TOKEN)}` : SERVER_URL;
@@ -35,10 +35,12 @@ function connectToServer() {
   }
   ws.addEventListener("open", () => {
     reconnectDelay = 1e3;
-    const msg = { type: "register", sessionId: SESSION_ID };
+    const msg = {
+      type: "register",
+      sessionId: SESSION_ID
+    };
     ws?.send(JSON.stringify(msg));
-    process.stderr.write(`autonomos-channel: connected to gateway
-`);
+    process.stderr.write("autonomos-channel: connected to gateway\n");
   });
   ws.addEventListener("message", (event) => {
     try {
@@ -70,10 +72,6 @@ function scheduleReconnect() {
 function handleServerMessage(msg) {
   switch (msg.type) {
     case "message": {
-      lastInboundFrom = {
-        platform: msg.payload.platform,
-        chatId: msg.payload.chatId
-      };
       deliverToClaudeCode(msg.payload);
       break;
     }
@@ -86,62 +84,60 @@ function handleServerMessage(msg) {
       }
       break;
     }
+    case "send_result": {
+      for (const [id, pending] of pendingSends) {
+        clearTimeout(pending.timer);
+        pendingSends.delete(id);
+        pending.resolve(msg);
+        break;
+      }
+      break;
+    }
   }
 }
 var mcp = new Server(
-  { name: "autonomos", version: "0.1.0" },
+  { name: "autonomos", version: "0.2.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {}
     },
     instructions: [
-      'Messages from external platforms (Discord, Telegram, Slack) and other autonomOS sessions arrive as <channel source="autonomos" ...> events.',
-      "Use the reply tool to respond \u2014 pass the chat_id from the channel tag.",
-      "Use send_to_agent to message another CC session by its session ID.",
-      "Use list_agents to discover active sessions."
-    ].join(" ")
+      "You are connected to the autonomOS gateway.",
+      'Messages arrive as <channel source="autonomos" ...> events.',
+      "",
+      "Each message has:",
+      "- from: the sender's name",
+      "- from_uri: the sender's address \u2014 use this with the send tool to respond",
+      "",
+      'To respond to a message: send(to: "<from_uri from the message>", message: "your reply")',
+      'To message an agent: send(to: "agent://agent-name", message: "hello")',
+      'To broadcast to all agents: send(to: "broadcast://all", message: "announcement")',
+      "",
+      "Use list_agents to discover available agents and their URIs."
+    ].join("\n")
   }
 );
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "reply",
-      description: "Reply to the platform that sent the last channel message (Discord, Telegram, Slack, or dashboard)",
+      name: "send",
+      description: "Send a message to any destination \u2014 agents, platform channels, or broadcast. Use the from_uri from incoming messages to respond.",
       inputSchema: {
         type: "object",
         properties: {
-          chat_id: {
+          to: {
             type: "string",
-            description: "The chat_id from the inbound <channel> tag"
+            description: 'Destination URI (e.g. "agent://name", "discord://guild/channel", "broadcast://all")'
           },
-          text: { type: "string", description: "The reply text" },
-          reply_to: {
-            type: "string",
-            description: "Platform message ID to thread under (optional)"
-          }
+          message: { type: "string", description: "Your message" }
         },
-        required: ["chat_id", "text"]
-      }
-    },
-    {
-      name: "send_to_agent",
-      description: "Send a message to another Claude Code session by name or ID",
-      inputSchema: {
-        type: "object",
-        properties: {
-          session_id: {
-            type: "string",
-            description: "Target session name or ID (use list_agents to discover)"
-          },
-          content: { type: "string", description: "Message to send" }
-        },
-        required: ["session_id", "content"]
+        required: ["to", "message"]
       }
     },
     {
       name: "list_agents",
-      description: "List all active autonomOS sessions",
+      description: "List all active agents with their names, URIs, and status",
       inputSchema: { type: "object", properties: {} }
     }
   ]
@@ -155,63 +151,37 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     };
   }
   switch (name) {
-    case "reply": {
-      const { chat_id, text, reply_to } = args;
-      if (!lastInboundFrom) {
+    case "send": {
+      const { to, message } = args;
+      const wsMsg = { type: "send", to, message };
+      try {
+        ws.send(JSON.stringify(wsMsg));
+      } catch {
         return {
           content: [
             {
               type: "text",
-              text: "Cannot determine target platform \u2014 no inbound message received yet."
+              text: "Failed to send: gateway connection lost"
             }
           ],
           isError: true
         };
       }
-      const platform = lastInboundFrom.platform;
-      const msg = {
-        type: "reply",
-        payload: {
-          platform,
-          chatId: chat_id,
-          text,
-          replyTo: reply_to
-        }
-      };
-      try {
-        ws.send(JSON.stringify(msg));
-      } catch {
+      const result = await new Promise((resolve) => {
+        const id = crypto.randomUUID();
+        const timer = setTimeout(() => {
+          pendingSends.delete(id);
+          resolve({ success: true });
+        }, 2e3);
+        pendingSends.set(id, { resolve, timer });
+      });
+      if (!result.success) {
         return {
-          content: [
-            { type: "text", text: "Failed to send: gateway connection lost" }
-          ],
+          content: [{ type: "text", text: result.error ?? "Send failed" }],
           isError: true
         };
       }
-      return { content: [{ type: "text", text: "Reply sent." }] };
-    }
-    case "send_to_agent": {
-      const { session_id, content } = args;
-      const msg = {
-        type: "send_to_agent",
-        targetSessionId: session_id,
-        content
-      };
-      try {
-        ws.send(JSON.stringify(msg));
-      } catch {
-        return {
-          content: [
-            { type: "text", text: "Failed to send: gateway connection lost" }
-          ],
-          isError: true
-        };
-      }
-      return {
-        content: [
-          { type: "text", text: `Message sent to session ${session_id}` }
-        ]
-      };
+      return { content: [{ type: "text", text: `Sent to ${to}` }] };
     }
     case "list_agents": {
       const requestId = crypto.randomUUID();
@@ -232,14 +202,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: "text",
-              text: "No active sessions (or request timed out)."
+              text: "No active agents (or request timed out)."
             }
           ]
         };
       }
-      const lines = agents.map(
-        (a) => `${a.name} (${a.sessionId}) \u2014 ${a.status}`
-      );
+      const lines = agents.map((a) => `${a.name} (${a.uri}) \u2014 ${a.status}`);
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
     default:
@@ -252,13 +220,9 @@ function deliverToClaudeCode(msg) {
     params: {
       content: msg.text,
       meta: {
-        platform: msg.platform,
-        chat_id: msg.chatId,
-        user: msg.userName,
-        message_id: msg.platformMessageId,
-        ts: new Date(msg.timestamp).toISOString(),
-        ...msg.replyTo && { reply_to: msg.replyTo },
-        ...msg.threadId && { thread_id: msg.threadId }
+        from: msg.userName,
+        from_uri: msg.fromUri,
+        ts: new Date(msg.timestamp).toISOString()
       }
     }
   }).catch((err) => {

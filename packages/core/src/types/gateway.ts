@@ -7,7 +7,7 @@
 
 export type Platform = "discord" | "telegram" | "slack";
 
-/** Normalized inbound message from any platform */
+/** Normalized inbound message from any platform or agent */
 export interface GatewayMessage {
   id: string;
   platform: Platform;
@@ -17,6 +17,8 @@ export interface GatewayMessage {
   userId: string;
   userName: string;
   text: string;
+  /** URI the receiver uses to respond (e.g. "agent://name", "discord://guild/channel") */
+  fromUri: string;
   replyTo?: string;
   threadId?: string;
   timestamp: number;
@@ -48,14 +50,19 @@ export type GatewayWsMessage =
   | { type: "register"; sessionId: string }
   | { type: "dashboard_connect" }
   | { type: "message"; payload: GatewayMessage }
-  | { type: "reply"; payload: GatewayReply }
+  | { type: "send"; to: string; message: string }
+  | { type: "send_result"; success: boolean; error?: string }
   | { type: "list_agents_request"; requestId: string }
   | {
       type: "list_agents_response";
       requestId: string;
-      agents: Array<{ sessionId: string; name: string; status: string }>;
-    }
-  | { type: "send_to_agent"; targetSessionId: string; content: string };
+      agents: Array<{
+        sessionId: string;
+        name: string;
+        uri: string;
+        status: string;
+      }>;
+    };
 
 // ── Routing ───────────────────────────────────────────────────────
 

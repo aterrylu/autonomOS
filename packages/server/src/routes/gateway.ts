@@ -5,7 +5,7 @@
  *   1. Channel MCP servers (per CC session) — send { type: "register", sessionId }
  *   2. Dashboard browser — sends { type: "dashboard_connect" }
  *
- * Messages from channel servers are routed by the gateway router.
+ * Messages from channel servers are routed by the gateway URI router.
  */
 
 import type { GatewayWsMessage } from "@autonomos/core";
@@ -14,8 +14,7 @@ import {
   getAgentList,
   registerDashboard,
   registerSessionClient,
-  routeReply,
-  routeToAgent,
+  routeMessage,
   unregisterDashboard,
   unregisterSessionClient,
 } from "../gateway/router.js";
@@ -51,17 +50,19 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
             break;
           }
 
-          case "reply": {
-            routeReply(msg.payload);
-            break;
-          }
-
-          case "send_to_agent": {
-            routeToAgent(
+          case "send": {
+            const error = routeMessage(
+              msg.to,
+              msg.message,
               sessionId ?? "unknown",
-              msg.targetSessionId,
-              msg.content,
             );
+            // Send result back to channel server for error feedback
+            const result: GatewayWsMessage = {
+              type: "send_result",
+              success: error === null,
+              ...(error && { error }),
+            };
+            ws.send(JSON.stringify(result));
             break;
           }
 
