@@ -274,9 +274,25 @@ export function createSession(options: SpawnOptions): ManagedSession {
     }
   });
 
-  pty.onExit(() => {
+  const spawnedAt = Date.now();
+
+  pty.onExit(({ exitCode, signal }) => {
+    const lifetime = Date.now() - spawnedAt;
     session.status = "stopped";
     session.updatedAt = Date.now();
+
+    // Fast exit with non-zero code almost always means bad spawn args
+    if (lifetime < 5_000 && exitCode !== 0) {
+      console.error(
+        `[session] ${id.slice(0, 8)} died immediately (${lifetime}ms), code=${exitCode}` +
+          ` — likely a bad flag. Args: ${logArgs.join(" ")}`,
+      );
+    } else if (exitCode !== 0 || signal) {
+      console.warn(
+        `[session] ${id.slice(0, 8)} exited: code=${exitCode} signal=${signal ?? "none"} lifetime=${lifetime}ms`,
+      );
+    }
+
     if (!shuttingDown) {
       // Natural exit (Ctrl+C, agent finished, crash) — remove from persistence
       if (session.claudeSessionId) {

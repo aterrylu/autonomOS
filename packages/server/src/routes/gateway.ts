@@ -20,7 +20,7 @@ import {
 } from "../gateway/router.js";
 
 export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
-  return upgradeWebSocket((c) => {
+  return upgradeWebSocket((_c) => {
     let clientType: "session" | "dashboard" | null = null;
     let sessionId: string | null = null;
 
@@ -34,7 +34,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
         let msg: GatewayWsMessage;
         try {
           msg = JSON.parse(raw);
-        } catch (err) {
+        } catch (_err) {
           console.error(
             `[gateway-ws] invalid JSON from client (type=${clientType}):`,
             raw.slice(0, 200),
