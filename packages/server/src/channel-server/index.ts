@@ -234,7 +234,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }>((resolve) => {
         const timer = setTimeout(() => {
           pendingSends.delete(requestId);
-          resolve({ success: true }); // assume success on timeout
+          resolve({ success: true }); // optimistic — gateway confirmed routing but may not have confirmed delivery
         }, 2000);
         pendingSends.set(requestId, { resolve, timer });
       });

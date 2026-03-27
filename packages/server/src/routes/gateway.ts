@@ -51,18 +51,28 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           }
 
           case "send": {
-            const error = await routeMessage(
-              msg.to,
-              msg.message,
-              sessionId ?? "unknown",
-            );
+            if (!sessionId) {
+              const result: GatewayWsMessage = {
+                type: "send_result",
+                requestId: msg.requestId,
+                success: false,
+                error: "Must register before sending messages",
+              };
+              ws.send(JSON.stringify(result));
+              break;
+            }
+            const error = await routeMessage(msg.to, msg.message, sessionId);
             const result: GatewayWsMessage = {
               type: "send_result",
               requestId: msg.requestId,
               success: error === null,
               ...(error && { error }),
             };
-            ws.send(JSON.stringify(result));
+            try {
+              ws.send(JSON.stringify(result));
+            } catch {
+              // client disconnected before we could send result
+            }
             break;
           }
 

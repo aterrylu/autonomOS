@@ -172,7 +172,10 @@ async function resolveSessionName(sessionId: string): Promise<string> {
   if (session.claudeSessionId) {
     const titles = await batchGetTitles([
       { sessionId: session.claudeSessionId, cwd: session.workingDirectory },
-    ]).catch(() => new Map<string, string>());
+    ]).catch((err) => {
+      console.warn(`[gateway] title resolution failed:`, err);
+      return new Map<string, string>();
+    });
     const title = titles.get(session.claudeSessionId);
     if (title) return title;
   }
@@ -267,8 +270,12 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
       if (sessionId === fromSessionId) continue;
       try {
         client.send(json);
-      } catch {
-        // best effort
+      } catch (err) {
+        console.warn(
+          `[gateway] broadcast to session ${sessionId} failed, removing:`,
+          err,
+        );
+        sessionClients.delete(sessionId);
       }
     }
     fanOutToDashboard(wsMsg);
