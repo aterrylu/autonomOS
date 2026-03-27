@@ -141,11 +141,34 @@ export function createSession(options: SpawnOptions): ManagedSession {
     args.push("--name", options.name);
   }
 
-  // System prompt injection — append keeps CC defaults + CLAUDE.md, replace overrides all
-  if (options.appendSystemPrompt) {
-    args.push("--append-system-prompt", options.appendSystemPrompt);
-  } else if (options.systemPrompt) {
+  // System prompt injection
+  if (options.systemPrompt) {
+    // Full override — replaces CC defaults (rare)
     args.push("--system-prompt", options.systemPrompt);
+  } else {
+    // Build the appended system prompt: base autonomOS context + optional per-agent instructions
+    const parts: string[] = [];
+
+    // Base autonomOS context — tells the agent what environment it's in and what tools it has
+    parts.push(
+      "You are running inside autonomOS — an agent orchestration platform.",
+      "",
+      "Available autonomOS tools:",
+      "- send(to, message): Send messages via URI (agent://name, broadcast://all)",
+      "- list_agents(): Discover active agents and their URIs",
+      "- create_agent(): Spawn a new dedicated agent",
+      "- kill_agent(): Terminate an agent",
+      "",
+      "Messages from other agents and platforms arrive as <channel> events.",
+      'To respond: send(to: "<from_uri from the message>", message: "your reply")',
+    );
+
+    // Per-agent instructions from the orchestrator
+    if (options.appendSystemPrompt) {
+      parts.push("", "---", "", options.appendSystemPrompt);
+    }
+
+    args.push("--append-system-prompt", parts.join("\n"));
   }
 
   // Enable SendUserMessage tool for structured agent-to-dashboard messaging.

@@ -4,52 +4,44 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { MCP_INSTRUCTIONS_EXTERNAL, MCP_SERVER_INFO } from "./mcp/tools.js";
 import { createSession, getAllSessions, killSession } from "./sessions.js";
 
-// ── MCP Server ──────────────────────────────────────────────────────────
-// Exposes autonomOS session management as MCP tools so any agent
-// (Claude Code, OpenClaw, etc.) can discover and control sessions.
+// ── MCP Server (HTTP transport — for external clients) ─────────────────
+// Claude Desktop, CI pipelines, other MCP clients can connect here.
+// Does NOT include `send` tool — that requires the gateway WebSocket.
 
 function createMcpServer(): McpServer {
   const server = new McpServer(
-    { name: "autonomos", version: "0.1.0" },
+    { name: MCP_SERVER_INFO.name, version: MCP_SERVER_INFO.version },
     {
       capabilities: { tools: {} },
-      instructions:
-        "autonomOS orchestrator — create and manage agent sessions across workspaces.",
+      instructions: MCP_INSTRUCTIONS_EXTERNAL,
     },
   );
 
-  // ── Tool: create_agent ──────────────────────────────────────────────
   server.tool(
     "create_agent",
-    "Create a new agent — a dedicated Claude Code session with a name, context, and optional instructions.",
+    "Create a new agent — a dedicated Claude Code session with a name, context, and optional task.",
     {
       workingDirectory: z
         .string()
         .describe("Absolute path to the working directory (~ allowed)"),
-      name: z
-        .string()
-        .optional()
-        .describe(
-          "Display name for the agent (shown in dashboard and list_agents)",
-        ),
+      name: z.string().optional().describe("Display name for the agent"),
       systemPrompt: z
         .string()
         .optional()
         .describe(
-          "Instructions appended to the default system prompt. Use this to define the agent's role, goals, and who to report to. Keeps CLAUDE.md and CC defaults.",
+          "Instructions appended to the system prompt. Defines role/goals.",
         ),
       prompt: z
         .string()
         .optional()
-        .describe("Initial task or message to send to the agent"),
+        .describe("Initial task or message — what the agent starts working on"),
       resumeSessionId: z
         .string()
         .optional()
-        .describe(
-          "Claude Code session ID to resume (for reconnecting to an existing agent)",
-        ),
+        .describe("Claude Code session ID to resume"),
       autonomousMode: z
         .boolean()
         .optional()
@@ -68,17 +60,14 @@ function createMcpServer(): McpServer {
         });
         return {
           content: [
-            {
-              type: "text",
-              text: JSON.stringify(managed.session, null, 2),
-            },
+            { type: "text", text: JSON.stringify(managed.session, null, 2) },
           ],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         return {
           content: [
-            { type: "text", text: `Failed to create session: ${message}` },
+            { type: "text", text: `Failed to create agent: ${message}` },
           ],
           isError: true,
         };
@@ -86,7 +75,6 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Tool: list_agents ───────────────────────────────────────────────
   server.tool(
     "list_agents",
     "List all active agents with their status, working directory, and metadata.",
@@ -99,7 +87,7 @@ function createMcpServer(): McpServer {
             type: "text",
             text:
               sessions.length === 0
-                ? "No active sessions."
+                ? "No active agents."
                 : JSON.stringify(sessions, null, 2),
           },
         ],
@@ -107,27 +95,27 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Tool: kill_agent ────────────────────────────────────────────────
   server.tool(
     "kill_agent",
-    "Terminate an active agent by session ID.",
+    "Terminate an active agent by name or session ID.",
     {
-      sessionId: z.string().describe("The agent's session ID to terminate"),
+      agent: z.string().describe("Agent name or session ID to terminate"),
     },
     async (args) => {
-      const killed = killSession(args.sessionId);
-      if (!killed) {
+      // Try by ID first, then fall back to case-insensitive name lookup
+      const session = getAllSessions().find(
+        (s) =>
+          s.id === args.agent ||
+          s.name.toLowerCase() === args.agent.toLowerCase(),
+      );
+      if (!session || !killSession(session.id)) {
         return {
-          content: [
-            { type: "text", text: `Agent ${args.sessionId} not found.` },
-          ],
+          content: [{ type: "text", text: `Agent "${args.agent}" not found.` }],
           isError: true,
         };
       }
       return {
-        content: [
-          { type: "text", text: `Agent ${args.sessionId} terminated.` },
-        ],
+        content: [{ type: "text", text: `Agent "${args.agent}" terminated.` }],
       };
     },
   );
@@ -135,16 +123,11 @@ function createMcpServer(): McpServer {
   return server;
 }
 
-// ── Transport / Session Management ────────────────────────────────────
-// Stateful mode: each MCP client gets its own transport with a session ID.
+// ── Transport ─────────────────────────────────────────────────────────
 
 const mcpServer = createMcpServer();
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
-/**
- * Handle an incoming MCP request. Designed to be called from a Hono route
- * handler that has access to the raw Node.js req/res objects.
- */
 export async function handleMcpRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -152,14 +135,11 @@ export async function handleMcpRequest(
 ): Promise<void> {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-  // Reuse existing transport for established sessions
   if (sessionId && transports.has(sessionId)) {
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res, body);
+    await transports.get(sessionId)!.handleRequest(req, res, body);
     return;
   }
 
-  // New session — only allow initialize requests
   if (body && isInitializeRequest(body)) {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -181,7 +161,6 @@ export async function handleMcpRequest(
     return;
   }
 
-  // Invalid request — no session and not an initialize
   res.writeHead(400, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
@@ -192,9 +171,6 @@ export async function handleMcpRequest(
   );
 }
 
-/**
- * Handle SSE GET or DELETE requests for existing MCP sessions.
- */
 export async function handleMcpSessionRequest(
   req: IncomingMessage,
   res: ServerResponse,
