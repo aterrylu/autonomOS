@@ -86,6 +86,10 @@ sessionRouter.post("/", async (c) => {
           ? body.resumeSessionId
           : undefined,
       autonomousMode: body.autonomousMode === true,
+      appendSystemPrompt:
+        typeof body.appendSystemPrompt === "string"
+          ? body.appendSystemPrompt
+          : undefined,
       cols: body.cols as number | undefined,
       rows: body.rows as number | undefined,
     });
