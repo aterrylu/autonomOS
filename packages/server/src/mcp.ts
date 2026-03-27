@@ -20,23 +20,36 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Tool: create_session ────────────────────────────────────────────
+  // ── Tool: create_agent ──────────────────────────────────────────────
   server.tool(
-    "create_session",
-    "Create a new autonomous agent session. Returns the session metadata including its ID.",
+    "create_agent",
+    "Create a new agent — a dedicated Claude Code session with a name, context, and optional instructions.",
     {
       workingDirectory: z
         .string()
         .describe("Absolute path to the working directory (~ allowed)"),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "Display name for the agent (shown in dashboard and list_agents)",
+        ),
+      systemPrompt: z
+        .string()
+        .optional()
+        .describe(
+          "Instructions appended to the default system prompt. Use this to define the agent's role, goals, and who to report to. Keeps CLAUDE.md and CC defaults.",
+        ),
       prompt: z
         .string()
         .optional()
-        .describe("Initial prompt to send to the agent"),
-      name: z.string().optional().describe("Display name for the session"),
+        .describe("Initial task or message to send to the agent"),
       resumeSessionId: z
         .string()
         .optional()
-        .describe("Claude Code session ID to resume"),
+        .describe(
+          "Claude Code session ID to resume (for reconnecting to an existing agent)",
+        ),
       autonomousMode: z
         .boolean()
         .optional()
@@ -51,6 +64,7 @@ function createMcpServer(): McpServer {
           name: args.name,
           resumeSessionId: args.resumeSessionId,
           autonomousMode: args.autonomousMode,
+          appendSystemPrompt: args.systemPrompt,
         });
         return {
           content: [
@@ -72,10 +86,10 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Tool: list_sessions ─────────────────────────────────────────────
+  // ── Tool: list_agents ───────────────────────────────────────────────
   server.tool(
-    "list_sessions",
-    "List all active autonomOS sessions with their status, working directory, and metadata.",
+    "list_agents",
+    "List all active agents with their status, working directory, and metadata.",
     {},
     async () => {
       const sessions = getAllSessions();
@@ -93,26 +107,26 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Tool: kill_session ──────────────────────────────────────────────
+  // ── Tool: kill_agent ────────────────────────────────────────────────
   server.tool(
-    "kill_session",
-    "Terminate an active session by ID.",
+    "kill_agent",
+    "Terminate an active agent by session ID.",
     {
-      sessionId: z.string().describe("The session ID to kill"),
+      sessionId: z.string().describe("The agent's session ID to terminate"),
     },
     async (args) => {
       const killed = killSession(args.sessionId);
       if (!killed) {
         return {
           content: [
-            { type: "text", text: `Session ${args.sessionId} not found.` },
+            { type: "text", text: `Agent ${args.sessionId} not found.` },
           ],
           isError: true,
         };
       }
       return {
         content: [
-          { type: "text", text: `Session ${args.sessionId} terminated.` },
+          { type: "text", text: `Agent ${args.sessionId} terminated.` },
         ],
       };
     },
