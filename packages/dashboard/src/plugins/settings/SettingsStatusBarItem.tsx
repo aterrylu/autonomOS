@@ -328,9 +328,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             secret
             inputStyle={inputStyle}
             labelStyle={labelStyle}
-            onChange={(v) =>
-              setPending((p) => ({ ...p, claudeSessionKey: v }))
-            }
+            onChange={(v) => setPending((p) => ({ ...p, claudeSessionKey: v }))}
           />
           <SettingRow
             label="Organization ID"
@@ -338,9 +336,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             placeholder="UUID (auto-detected if blank)"
             inputStyle={inputStyle}
             labelStyle={labelStyle}
-            onChange={(v) =>
-              setPending((p) => ({ ...p, claudeOrgId: v }))
-            }
+            onChange={(v) => setPending((p) => ({ ...p, claudeOrgId: v }))}
           />
 
           <div className="flex items-center justify-between">
