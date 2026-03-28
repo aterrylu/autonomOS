@@ -382,10 +382,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 function deliverToClaudeCode(msg) {
+  const content = `[${msg.userName} \u2192 you via ${msg.fromUri}]
+${msg.text}`;
   mcp.notification({
     method: "notifications/claude/channel",
     params: {
-      content: msg.text,
+      content,
       meta: {
         from: msg.userName,
         from_uri: msg.fromUri,

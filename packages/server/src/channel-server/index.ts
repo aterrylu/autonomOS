@@ -371,11 +371,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // ── Channel notification delivery ─────────────────────────────────
 
 function deliverToClaudeCode(msg: GatewayMessage): void {
+  // Prepend sender info so the terminal display shows who sent it
+  const content = `[${msg.userName} → you via ${msg.fromUri}]\n${msg.text}`;
+
   mcp
     .notification({
       method: "notifications/claude/channel",
       params: {
-        content: msg.text,
+        content,
         meta: {
           from: msg.userName,
           from_uri: msg.fromUri,
