@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import mermaid from "mermaid";
-import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Components } from "react-markdown";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,23 +12,43 @@ mermaid.initialize({ startOnLoad: false, theme: "dark" });
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
 
+/** Monotonic counter avoids mermaid ID collisions across StrictMode double-renders */
+let mermaidSeq = 0;
+
 function MermaidBlock({ children }: { children: string }) {
-  const id = useId().replace(/:/g, "_");
   const [svg, setSvg] = useState<string>("");
+  const [error, setError] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
-    mermaid.render(`mermaid${id}`, children.trim()).then((result) => {
-      if (!cancelled) setSvg(DOMPurify.sanitize(result.svg));
-    });
+    const diagId = `mermaid_${++mermaidSeq}`;
+    mermaid
+      .render(diagId, children.trim())
+      .then((result) => {
+        if (!cancelled) setSvg(DOMPurify.sanitize(result.svg));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err?.message ?? err));
+        document.getElementById(diagId)?.remove();
+      });
     return () => {
       cancelled = true;
     };
-  }, [children, id]);
+  }, [children]);
+
+  if (error) {
+    return (
+      <pre
+        className="my-4 text-xs p-3 rounded overflow-x-auto"
+        style={{ color: "#ea6c73", background: "#1a1a2e" }}
+      >
+        Mermaid error: {error}
+      </pre>
+    );
+  }
 
   if (!svg) return null;
 
-  // Mermaid output is sanitized through DOMPurify above
   return (
     <div
       className="my-4 flex justify-center"
@@ -118,8 +138,10 @@ export const PreviewPane = memo(function PreviewPane({
         children,
         ...props
       }: React.ComponentProps<"code"> & { className?: string }) => {
-        if (className === "language-mermaid" && typeof children === "string") {
-          return <MermaidBlock>{children}</MermaidBlock>;
+        if (className === "language-mermaid") {
+          const text =
+            typeof children === "string" ? children : String(children ?? "");
+          if (text) return <MermaidBlock>{text}</MermaidBlock>;
         }
         return (
           <code className={className} {...props}>
