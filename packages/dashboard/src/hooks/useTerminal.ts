@@ -8,6 +8,40 @@ import { THEMES, useStore } from "../store";
 import { isMac } from "../utils/platform";
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+
+// ── Terminal focus registry ─────────────────────────────────────────
+// Allows external code (sidebar click handlers) to focus a specific
+// session's terminal without going through React's effect chain.
+const terminalRegistry = new Map<string, Terminal>();
+
+/** Cancel any in-flight focus polling before starting a new one */
+let pendingFocusRaf: number | null = null;
+
+/** Focus the terminal for a given session ID. Call from click handlers. */
+export function focusTerminal(sessionId: string) {
+  if (pendingFocusRaf !== null) {
+    cancelAnimationFrame(pendingFocusRaf);
+    pendingFocusRaf = null;
+  }
+  // Poll until the terminal's container is visible, then focus.
+  // SessionMountLayer may take 1-3 frames to assign a rect and flip display.
+  let attempts = 0;
+  function tryFocus() {
+    pendingFocusRaf = null;
+    const term = terminalRegistry.get(sessionId);
+    if (!term) return;
+    const textarea = term.textarea;
+    if (textarea && textarea.offsetParent !== null) {
+      term.focus();
+      return;
+    }
+    if (++attempts < 10) {
+      pendingFocusRaf = requestAnimationFrame(tryFocus);
+    }
+  }
+  pendingFocusRaf = requestAnimationFrame(tryFocus);
+}
+
 const MAX_RETRY_DELAY = 10000;
 
 /**
@@ -34,14 +68,21 @@ export function useTerminal(
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
 
-  // Focus terminal when it becomes the active session + clear unread
-  const markRead = useStore((s) => s.markNotificationsRead);
+  // Focus terminal when it becomes the active session
   useEffect(() => {
     if (isActive && termRef.current) {
       termRef.current.focus();
+    }
+  }, [isActive]);
+
+  // Auto-clear unread notifications whenever this session is active and has unreads
+  const markRead = useStore((s) => s.markNotificationsRead);
+  const unreadCount = useStore((s) => s.notificationCounts[sessionId] ?? 0);
+  useEffect(() => {
+    if (isActive && unreadCount > 0) {
       markRead(sessionId);
     }
-  }, [isActive, sessionId, markRead]);
+  }, [isActive, unreadCount, sessionId, markRead]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -322,9 +363,14 @@ export function useTerminal(
     container.addEventListener("touchend", onTouchEnd, { passive: true });
 
     termRef.current = terminal;
+    terminalRegistry.set(sessionId, terminal);
 
     return () => {
       disposed = true;
+      // Only remove from registry if this terminal instance is still the registered one
+      if (terminalRegistry.get(sessionId) === terminal) {
+        terminalRegistry.delete(sessionId);
+      }
       stopInertia();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (scrollTimer) clearTimeout(scrollTimer);
