@@ -199,17 +199,25 @@ function RestartAllButton({ page }: { page: PageTheme }) {
         className="w-full rounded px-3 py-1.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         style={{ background: page.border, color: page.fg }}
       >
-        {state === "done"
-          ? "Restarted!"
-          : state === "restarting"
-            ? "Restarting..."
-            : "Restart Server"}
+        {restartButtonLabel(state)}
       </button>
     </div>
   );
 }
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+
+function restartButtonLabel(state: string): string {
+  if (state === "done") return "Restarted!";
+  if (state === "restarting") return "Restarting...";
+  return "Restart Server";
+}
+
+function saveButtonLabel(saving: boolean, saved: boolean): string {
+  if (saved) return "Saved!";
+  if (saving) return "Saving...";
+  return "Save";
+}
 
 function SettingsPanel({ onClose }: { onClose: () => void }) {
   const theme = useStore((s) => s.theme);
@@ -271,7 +279,8 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
       setPendingChannels(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {
+    } catch (err) {
+      console.error("Failed to save settings:", err);
       setError("Could not reach server");
     } finally {
       setSaving(false);
@@ -319,9 +328,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             secret
             inputStyle={inputStyle}
             labelStyle={labelStyle}
-            onChange={(v) => {
-              setPending((p) => ({ ...p, claudeSessionKey: v }));
-            }}
+            onChange={(v) =>
+              setPending((p) => ({ ...p, claudeSessionKey: v }))
+            }
           />
           <SettingRow
             label="Organization ID"
@@ -329,9 +338,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             placeholder="UUID (auto-detected if blank)"
             inputStyle={inputStyle}
             labelStyle={labelStyle}
-            onChange={(v) => {
-              setPending((p) => ({ ...p, claudeOrgId: v }));
-            }}
+            onChange={(v) =>
+              setPending((p) => ({ ...p, claudeOrgId: v }))
+            }
           />
 
           <div className="flex items-center justify-between">
@@ -365,9 +374,12 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
                     setSettings(updated);
                     setSaved(true);
                     setTimeout(() => setSaved(false), 2000);
+                  } else {
+                    setError(`Toggle failed (HTTP ${res.status})`);
                   }
-                } catch {
-                  // silent — toggle will revert visually on next open
+                } catch (err) {
+                  console.error("Failed to toggle API override:", err);
+                  setError("Could not reach server");
                 }
               }}
             >
@@ -395,9 +407,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
               placeholder="https://api.anthropic.com (default)"
               inputStyle={inputStyle}
               labelStyle={labelStyle}
-              onChange={(v) => {
-                setPending((p) => ({ ...p, anthropicBaseUrl: v }));
-              }}
+              onChange={(v) =>
+                setPending((p) => ({ ...p, anthropicBaseUrl: v }))
+              }
             />
             <SettingRow
               label="Auth Token"
@@ -406,9 +418,9 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
               secret
               inputStyle={inputStyle}
               labelStyle={labelStyle}
-              onChange={(v) => {
-                setPending((p) => ({ ...p, anthropicAuthToken: v }));
-              }}
+              onChange={(v) =>
+                setPending((p) => ({ ...p, anthropicAuthToken: v }))
+              }
             />
           </div>
 
@@ -467,7 +479,7 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
               color: "#fff",
             }}
           >
-            {saved ? "Saved!" : saving ? "Saving..." : "Save"}
+            {saveButtonLabel(saving, saved)}
           </button>
 
           <div className="text-[10px]" style={labelStyle}>
