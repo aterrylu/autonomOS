@@ -27,6 +27,9 @@ autonomOS/
 ├── packages/
 │   ├── dashboard/          # Web UI — observability & control
 │   ├── server/             # Hono + node-pty — API, WebSocket, PTY management
+│   │   ├── src/gateway/        # URI-based message router + platform adapters
+│   │   ├── src/channel-server/ # Standalone MCP subprocess (server:autonomos)
+│   │   └── src/mcp/            # Shared MCP tool definitions (used by both servers)
 │   └── core/               # Shared agent abstractions & types
 ├── docs/
 │   ├── DECISIONS.md        # Architectural Decision Records (append-only)
@@ -65,9 +68,38 @@ All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When
 
 ### Development Philosophy
 - **Observe first, control later** — dashboard starts read-only
-- **Don't reinvent** — build on OpenClaw for now, diverge only when needed
 - **Personal tool first** — ship for Terry, generalize later
 - **Both paths share core** — abstractions should work for dev agents AND robots
+
+### Agent Communication (URI-based)
+Agents communicate via URI-based addressing through the gateway:
+- `agent://name` — send to a named agent
+- `broadcast://all` — send to all agents
+- `discord://guild/channel`, `telegram://...`, `slack://...` — platform channels (when adapters ship)
+
+The gateway router parses the URI scheme and delivers to the right destination.
+
+### MCP Tool Architecture
+Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
+- **HTTP MCP server** (`mcp.ts`) — for external clients (Claude Desktop, CI)
+- **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
+
+Both servers expose: `create_agent`, `list_agents`, `kill_agent`. The channel server also has `send` (requires gateway WebSocket).
+
+### Base Context Injection
+Every autonomOS-spawned session gets `--append-system-prompt` with:
+1. Base autonomOS context — "You are running inside autonomOS" + available tools
+2. Per-agent instructions (if provided via `create_agent`'s prompt/systemPrompt params)
+
+Use `--append-system-prompt` (preserves CC defaults + CLAUDE.md). Use `--system-prompt` only for full override.
+
+### Terminology
+- **UI says "agents"** — sidebar, buttons, labels
+- **Code says "sessions"** — types, APIs, server internals
+- Both refer to the same entity — a managed CC PTY process
+
+### Session Naming
+CC owns session names via JSONL `customTitle`. `titleCache.ts` reads them (256KB tail scan, mtime-cached). The `--name` flag sets the initial name at spawn. `/rename` updates it. The titleCache is more reliable than the SDK's `listSessions()` (which only reads 64KB).
 
 ## What NOT to Do
 
@@ -75,7 +107,7 @@ All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When
 - Don't start building without checking ROADMAP.md for priorities
 - Don't ignore existing research — check RESEARCH.md before investigating something
 - Don't over-engineer for the robot path yet — it's aspirational
-- Don't build a new agent runtime from scratch — start with OpenClaw integration
+- Don't define MCP tool schemas directly in `mcp.ts` or `channel-server/index.ts` — they go in `mcp/tools.ts`
 
 ## Agent Workflow
 
