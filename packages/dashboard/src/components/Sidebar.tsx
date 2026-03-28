@@ -38,18 +38,20 @@ function useSidebarData() {
   );
 }
 
-/** Select store actions — these are stable references that never change identity */
+/** Select store actions — useShallow needed because the selector returns a new object */
 function useSidebarActions() {
-  return useStore((s) => ({
-    fetchSessions: s.fetchSessions,
-    fetchProjects: s.fetchProjects,
-    createSession: s.createSession,
-    switchPane: s.switchPane,
-    closePreview: s.closePreview,
-    reorderPanes: s.reorderPanes,
-    fetchNotifications: s.fetchNotifications,
-    markNotificationsRead: s.markNotificationsRead,
-  }));
+  return useStore(
+    useShallow((s) => ({
+      fetchSessions: s.fetchSessions,
+      fetchProjects: s.fetchProjects,
+      createSession: s.createSession,
+      switchPane: s.switchPane,
+      closePreview: s.closePreview,
+      reorderPanes: s.reorderPanes,
+      fetchNotifications: s.fetchNotifications,
+      markNotificationsRead: s.markNotificationsRead,
+    })),
+  );
 }
 
 import { Codicon } from "./Codicon";
