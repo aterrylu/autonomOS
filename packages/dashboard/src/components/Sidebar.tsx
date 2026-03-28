@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { focusTerminal } from "../hooks/useTerminal";
 import {
   DRAG_TYPE,
   encodeDragData,
@@ -141,7 +142,8 @@ const GroupContainer = React.memo(function GroupContainer({
       {/* biome-ignore lint/a11y/useSemanticElements: composite interactive element */}
       <div
         role="button"
-        tabIndex={0}
+        tabIndex={-1}
+        onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
         className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
         style={{
           paddingLeft: "9px",
@@ -203,7 +205,8 @@ const GroupContainer = React.memo(function GroupContainer({
                 <div
                   key={`gp-${m.preview.id}`}
                   role="button"
-                  tabIndex={0}
+                  tabIndex={-1}
+                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
                   {...memberDragProps}
                   className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                   style={{
@@ -252,7 +255,8 @@ const GroupContainer = React.memo(function GroupContainer({
               <div
                 key={`gs-${s.id}`}
                 role="button"
-                tabIndex={0}
+                tabIndex={-1}
+                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
                 {...memberDragProps}
                 className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
                 style={{
@@ -565,12 +569,20 @@ export function Sidebar() {
                 activePane={activePane}
                 sessionMetaMap={sessionMetaMap}
                 onHeaderClick={() => {
-                  if (firstMemberPane) switchPane(firstMemberPane);
-                  (document.activeElement as HTMLElement)?.blur();
+                  if (firstMemberPane) {
+                    switchPane(firstMemberPane);
+                    if (firstMemberPane.type === "session") {
+                      focusTerminal(firstMemberPane.id);
+                      if (notificationCounts[firstMemberPane.id]) markNotificationsRead(firstMemberPane.id);
+                    }
+                  }
                 }}
                 onMemberClick={(pane) => {
                   switchPane(pane);
-                  (document.activeElement as HTMLElement)?.blur();
+                  if (pane.type === "session") {
+                    focusTerminal(pane.id);
+                    if (notificationCounts[pane.id]) markNotificationsRead(pane.id);
+                  }
                 }}
                 onMemberDragStart={(e, pane) => {
                   const data = { pane };
@@ -602,7 +614,8 @@ export function Sidebar() {
               <div
                 key={`s-${s.id}`}
                 role="button"
-                tabIndex={0}
+                tabIndex={-1}
+                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
                 draggable
                 onDragStart={(e) => handleDragStart(e, idx, pane)}
                 onDragOver={(e) => handleDragOver(e, idx)}
@@ -620,9 +633,8 @@ export function Sidebar() {
                 }}
                 onClick={() => {
                   switchPane(pane);
+                  if (pane.type === "session") focusTerminal(pane.id);
                   if (notificationCounts[s.id]) markNotificationsRead(s.id);
-                  // Release focus from sidebar so terminal can capture it
-                  (document.activeElement as HTMLElement)?.blur();
                 }}
                 onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
               >
@@ -683,7 +695,8 @@ export function Sidebar() {
             <div
               key={`p-${p.id}`}
               role="button"
-              tabIndex={0}
+              tabIndex={-1}
+              onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
               draggable
               onDragStart={(e) => handleDragStart(e, idx, pane)}
               onDragOver={(e) => handleDragOver(e, idx)}
@@ -750,8 +763,6 @@ export function Sidebar() {
             project={project}
             page={page}
             liveSessionIds={liveSessionIds}
-            activePane={activePane}
-            sessions={sessions}
           />
         ))}
       </div>
@@ -763,36 +774,19 @@ interface ProjectItemProps {
   project: ProjectInfo;
   page: PageTheme;
   liveSessionIds: Set<string>;
-  activePane: ActivePane | null;
-  sessions: { id: string; claudeSessionId?: string }[];
 }
 
 const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
   liveSessionIds,
-  activePane,
-  sessions,
 }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const createSession = useStore((s) => s.createSession);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
 
-  // Derive the active Claude session ID from the active pane
-  const activeClaude = useMemo(() => {
-    if (activePane?.type !== "session") return undefined;
-    return sessions.find((s) => s.id === activePane.id)?.claudeSessionId;
-  }, [activePane, sessions]);
-
-  const hasActiveSession =
-    activeClaude != null &&
-    project.sessions.some((ps) => ps.sessionId === activeClaude);
-  const [expanded, setExpanded] = useState(hasActiveSession);
-
-  useEffect(() => {
-    if (hasActiveSession) setExpanded(true);
-  }, [hasActiveSession]);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div>
