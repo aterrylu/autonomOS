@@ -1,27 +1,39 @@
 # autonomOS
 
-An orchestrator agent for autonomous development — manage projects, coordinate agents across workspaces, and observe everything from one place.
+A mission control platform for autonomous agents — spawn, observe, and coordinate Claude Code sessions from a web dashboard.
 
 ## What is this?
 
-autonomOS is an **agent that manages agents**. The main interface is a PM-style orchestrator that understands your projects, delegates tasks to workspace agents (Claude Code sessions), and tracks progress across repositories.
-
-### Core Concepts
-
-- **Orchestrator** — The PM agent. Your main interface. It understands project goals, delegates work, and coordinates across workspaces.
-- **Projects** — Logical goals with roadmaps. A project can span multiple workspaces (e.g., "Add auth" touches `api` + `dashboard` repos). Multiple projects can live under the same workspace.
-- **Workspaces** — Physical repositories, auto-discovered from your machine. Each workspace can have active agent sessions running in it.
+autonomOS is a **terminal dashboard for managing AI agents**. It spawns Claude Code sessions as PTY subprocesses, provides real-time observability via hook telemetry, and enables multi-agent coordination through a URI-based messaging gateway.
 
 ### What's Built
 
-- **Terminal-first** — Claude Code sessions in high-quality embedded terminals (xterm.js 6, WebGL, synchronized output for flicker-free rendering)
-- **Workspace browser** — all your Claude Code sessions grouped by repository via the Agent SDK
-- **Session management** — create, switch, resume, kill, auto-reconnect with output replay, auto-persist across restarts
-- **Markdown preview** — Ctrl+click `.md` links in terminal to preview with mermaid diagram support
-- **Plugin system** — VSCode-style status bar with modular plugins (Claude usage tracking built-in)
-- **Settings panel** — configure API keys and provider settings from the dashboard
-- **Observability** — see what your agents are doing across workspaces
-- **Themes** — Midnight, Daylight, Void (Pitch Black)
+- **Split-pane terminals** — multiple Claude Code sessions side by side, drag-to-split, keyboard shortcuts (Ctrl+D/Shift+D/W/B)
+- **Agent status tracking** — real-time status icons (working/idle/needs input/error) derived from Claude Code hook events
+- **Session management** — create, resume, kill, auto-reconnect, output replay, auto-persist across server restarts
+- **Auto-trust** — automatically dismisses Claude Code's startup trust prompts for frictionless session launch
+- **Notification badges** — unread count per agent from SendUserMessage/Stop/Notification events, auto-clear when focused
+- **Multi-agent messaging** — URI-based gateway (`agent://name`, `broadcast://all`) with MCP tools: `send`, `list_agents`, `create_agent`, `kill_agent`
+- **Hook relay** — zero-config telemetry via `--settings` inline curl, 13 Claude Code hook events
+- **Markdown preview** — Ctrl+click `.md` links in terminal, live-updating with mermaid diagram support
+- **Plugin system** — VSCode-style status bar (Claude usage tracking built-in)
+- **Settings panel** — API keys, channels, auto-trust toggle, Anthropic API override
+- **PWA** — installable as standalone app with desktop notifications
+- **Themes** — Midnight, Daylight, Void
+
+### Architecture
+
+```
+Dashboard (React)          Server (Hono + node-pty)
+┌─────────────┐           ┌──────────────────────┐
+│ xterm.js    │◄──ws──────│ PTY sessions         │
+│ Split panes │           │ Hook relay           │
+│ Sidebar     │◄──poll────│ Agent status machine │
+│ Status bar  │           │ MCP server (HTTP)    │
+└─────────────┘           │ Gateway router       │
+                          │ Channel server (MCP) │
+                          └──────────────────────┘
+```
 
 ## Quick Start
 
@@ -40,76 +52,69 @@ make down                # Stop everything
 |--------|-------------|
 | `make dev` | Start API server (watch mode, :3101) + Vite HMR (:5173) |
 | `make prod` | Build dashboard + start/restart PM2 daemon on :3100 |
-| `make stop` | Stop PM2 daemon |
-| `make restart` | Alias for `make prod` |
-| `make logs` | Tail PM2 logs (last 50 lines) |
-| `make check` | Lint (Biome) + typecheck (tsc) + tests |
-| `make fmt` | Auto-fix lint + formatting issues |
 | `make deploy` | Rsync to remote + `make prod` (set `DEPLOY_HOST` in `.env`) |
+| `make check` | Lint (Biome) + typecheck (tsc) + server tests |
+| `make fmt` | Auto-fix lint + formatting issues |
+| `make stop` | Stop PM2 daemon |
+| `make logs` | Tail PM2 logs (last 50 lines) |
 | `make down` | Stop everything and kill all server processes |
 
 ### Authentication
 
 Optional token-based auth. When `AUTONOMOS_TOKEN` is set, the dashboard shows a login page and all API/WebSocket endpoints require the token.
 
-1. Add to `.env`:
-   ```
-   AUTONOMOS_TOKEN=your-secure-token-here
-   ```
-2. Start the server — it will print `Auth enabled (token: your...here)`
-3. Open the dashboard — enter the token on the login page
-4. A session cookie is set (1-year expiration) — you won't need to re-enter it
+```env
+AUTONOMOS_TOKEN=your-secure-token-here
+```
 
-Leave `AUTONOMOS_TOKEN` unset to disable auth entirely.
-
-### Claude Usage Tracking
-
-The status bar shows your Claude rate limits (5h rolling, 7d weekly, per-model breakdowns).
-
-1. Go to [claude.ai](https://claude.ai)
-2. Open DevTools → Application → Cookies → `.claude.ai`
-3. Copy `sessionKey` and `lastActiveOrg` values (use the `.claude.ai` domain, not `anthropic.com`)
-4. Add to `.env`:
-   ```
-   CLAUDE_SESSION_KEY=sk-ant-sid01-XXXX
-   CLAUDE_ORG_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   ```
+Leave unset to disable auth entirely.
 
 ### Remote Deployment
 
-Deploy to a remote server via rsync:
+```env
+DEPLOY_HOST=your-server-hostname
+# DEPLOY_PATH=~/autonomOS    # optional, defaults to ~/autonomOS
+```
 
-1. Add to `.env`:
-   ```
-   DEPLOY_HOST=your-server-hostname
-   # DEPLOY_PATH=~/autonomOS    # optional, defaults to ~/autonomOS
-   ```
-2. Run `make deploy` — rsyncs code, installs deps, builds, and starts PM2
+Run `make deploy` — rsyncs code, installs deps, builds, and starts PM2.
 
 ## Structure
 
 ```
 packages/
   dashboard/    # React + Zustand + Tailwind — web UI
+    src/layout/       # Binary tree split-pane system
+    src/hooks/        # useTerminal (xterm.js + focus registry)
+    src/components/   # Sidebar, PreviewPane, SessionPane, ConversationView
+    src/plugins/      # Status bar plugins (claude-usage, settings)
   server/       # Hono + node-pty — API, WebSocket, PTY management
-  core/         # Shared types and agent abstractions
+    src/gateway/      # URI-based message router + platform adapters
+    src/channel-server/ # Standalone MCP subprocess (server:autonomos)
+    src/mcp/          # Shared MCP tool definitions
+    src/routes/       # REST + WebSocket endpoints
+  core/         # Shared types (Session, Gateway, Parser)
 docs/
   DECISIONS.md  # Architectural decisions (append-only)
+  FEATURES.md   # Feature specifications (F-001 through F-016)
   ROADMAP.md    # Current priorities
   RESEARCH.md   # Research findings
+  VISION.md     # Project vision
+  research/     # Deep-dive research topics (20+ entries)
 ```
 
 ## Tech Stack
 
-- **Frontend**: React 19, Zustand, Tailwind CSS 4, xterm.js 6, Mermaid
-- **Backend**: Hono, node-pty, Claude Agent SDK, MCP SDK
+- **Frontend**: React 19, Zustand 5, Tailwind CSS 4, xterm.js 6, Mermaid, framer-motion, react-resizable-panels
+- **Backend**: Hono, node-pty, Claude Agent SDK, MCP SDK (@modelcontextprotocol/sdk)
 - **Tooling**: Bun, Biome, PM2, TypeScript project references
 
 ## Docs
 
+- **[FEATURES.md](docs/FEATURES.md)** — Feature specifications and design intent
 - **[ROADMAP.md](docs/ROADMAP.md)** — What's done, what's next
 - **[DECISIONS.md](docs/DECISIONS.md)** — Architectural decision records
 - **[RESEARCH.md](docs/RESEARCH.md)** — Competitor analysis and research
+- **[VISION.md](docs/VISION.md)** — Project vision
 
 ## License
 
