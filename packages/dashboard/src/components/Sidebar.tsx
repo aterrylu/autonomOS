@@ -573,7 +573,8 @@ export function Sidebar() {
                     switchPane(firstMemberPane);
                     if (firstMemberPane.type === "session") {
                       focusTerminal(firstMemberPane.id);
-                      if (notificationCounts[firstMemberPane.id]) markNotificationsRead(firstMemberPane.id);
+                      if (notificationCounts[firstMemberPane.id])
+                        markNotificationsRead(firstMemberPane.id);
                     }
                   }
                 }}
@@ -581,7 +582,8 @@ export function Sidebar() {
                   switchPane(pane);
                   if (pane.type === "session") {
                     focusTerminal(pane.id);
-                    if (notificationCounts[pane.id]) markNotificationsRead(pane.id);
+                    if (notificationCounts[pane.id])
+                      markNotificationsRead(pane.id);
                   }
                 }}
                 onMemberDragStart={(e, pane) => {
