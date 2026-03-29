@@ -10,6 +10,7 @@ interface MaskedSettings {
   anthropicAuthToken: string | null;
   anthropicOverrideEnabled: boolean;
   channels: string[];
+  autoTrust: boolean;
 }
 
 const AVAILABLE_CHANNELS = [
@@ -418,6 +419,56 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
                 setPending((p) => ({ ...p, anthropicAuthToken: v }))
               }
             />
+          </div>
+
+          <div className="flex items-center justify-between mt-3">
+            <div
+              className="text-[10px] font-medium uppercase tracking-wide"
+              style={labelStyle}
+            >
+              Auto-Trust
+            </div>
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: toggle switch */}
+            <div
+              className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
+              style={{
+                background: settings?.autoTrust ? "#16825d" : page.border,
+              }}
+              onClick={async () => {
+                const newVal = !settings?.autoTrust;
+                try {
+                  const res = await fetch("/api/settings", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ autoTrust: newVal }),
+                  });
+                  if (res.ok) {
+                    const updated: MaskedSettings = await res.json();
+                    setSettings(updated);
+                    setSaved(true);
+                    setTimeout(() => setSaved(false), 2000);
+                  } else {
+                    setError(`Toggle failed (HTTP ${res.status})`);
+                  }
+                } catch (err) {
+                  console.error("Failed to toggle auto-trust:", err);
+                  setError("Could not reach server");
+                }
+              }}
+            >
+              <div
+                className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
+                style={{
+                  background: "#fff",
+                  left: settings?.autoTrust ? "18px" : "2px",
+                }}
+              />
+            </div>
+          </div>
+          <div className="text-[10px]" style={labelStyle}>
+            Auto-dismiss workspace trust and dev channel prompts on session
+            start.
           </div>
 
           <div
