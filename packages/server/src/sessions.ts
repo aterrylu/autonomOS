@@ -502,6 +502,10 @@ function buildEnv(sessionId: string): Record<string, string> {
 
 // ── Auto-trust: dismiss Claude Code startup prompts ──────────────────
 
+/** Regex to strip ANSI escape sequences from PTY output (ESC, BEL, CSI, OSC) */
+const ANSI_STRIP_RE =
+  /\x1b[[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
+
 // Needles match the OPTION text (not the question) — the TUI is ready for
 // input only once the options are rendered. Stripped of spaces because the TUI
 // renders words via cursor positioning escape sequences.
@@ -523,11 +527,8 @@ function attachStartupWatcher(pty: IPty): void {
 
   const disposable = pty.onData((data: string) => {
     if (disposed) return;
-    // Strip ANSI escape sequences and control chars so needle matching works
-    const clean = data.replace(
-      /\x1b[\[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g,
-      "",
-    );
+    // Strip ANSI escape sequences and control chars so needle matching works.
+    const clean = data.replace(ANSI_STRIP_RE, "");
     buf += clean;
     if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
 
