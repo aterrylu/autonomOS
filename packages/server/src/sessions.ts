@@ -250,6 +250,11 @@ export function createSession(options: SpawnOptions): ManagedSession {
     env,
   });
 
+  // Auto-answer startup trust/channel prompts so they don't block the session
+  if (getSettings().autoTrust !== false) {
+    attachStartupWatcher(pty);
+  }
+
   const dirName = basename(cwd) || cwd;
   const shortId = id.slice(0, 4);
   const defaultName = options.name || `${dirName} · ${shortId}`;
@@ -493,4 +498,74 @@ function buildEnv(sessionId: string): Record<string, string> {
   }
 
   return env;
+}
+
+// ── Auto-trust: dismiss Claude Code startup prompts ──────────────────
+
+// Needles match the OPTION text (not the question) — the TUI is ready for
+// input only once the options are rendered. Stripped of spaces because the TUI
+// renders words via cursor positioning escape sequences.
+const STARTUP_PROMPTS = [
+  { id: "trust", needle: "Yes,Itrustthisfolder" },
+  { id: "channels", needle: "WARNING: Loading development channels" },
+];
+
+/**
+ * Watch PTY output during startup for interactive prompts that block
+ * Claude Code from starting. Auto-answers by sending Enter (\r).
+ * Self-disposes after all prompts are handled or after 30s timeout.
+ */
+function attachStartupWatcher(pty: IPty): void {
+  let buf = "";
+  const MAX_BUF = 4096;
+  const answered = new Set<string>();
+  let disposed = false;
+
+  const disposable = pty.onData((data: string) => {
+    if (disposed) return;
+    // Strip ANSI escape sequences and control chars so needle matching works
+    const clean = data.replace(
+      /\x1b[\[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g,
+      "",
+    );
+    buf += clean;
+    if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
+
+    for (const prompt of STARTUP_PROMPTS) {
+      if (answered.has(prompt.id)) continue;
+      if (buf.includes(prompt.needle)) {
+        answered.add(prompt.id);
+        setTimeout(() => {
+          try {
+            pty.write("\r");
+          } catch {
+            // PTY already dead
+          }
+        }, 300);
+        buf = "";
+        console.log(`[auto-trust] answered "${prompt.id}" prompt`);
+        break;
+      }
+    }
+
+    if (answered.size === STARTUP_PROMPTS.length) cleanup();
+  });
+
+  const timer = setTimeout(() => {
+    if (!disposed) {
+      if (answered.size > 0) {
+        console.log(
+          `[auto-trust] timeout — answered ${answered.size}/${STARTUP_PROMPTS.length}`,
+        );
+      }
+      cleanup();
+    }
+  }, 30_000);
+
+  function cleanup() {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(timer);
+    disposable.dispose();
+  }
 }

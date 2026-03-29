@@ -36,6 +36,8 @@ export interface AppSettings {
   };
   /** Channel-to-session routing rules */
   routes?: import("@autonomos/core").ChannelRoute[];
+  /** Auto-answer Claude Code startup trust prompts (default: true) */
+  autoTrust?: boolean;
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
