@@ -252,7 +252,10 @@ export function createSession(options: SpawnOptions): ManagedSession {
 
   // Auto-answer startup trust/channel prompts so they don't block the session
   if (getSettings().autoTrust !== false) {
-    attachStartupWatcher(pty);
+    const hasDevChannels = args.includes(
+      "--dangerously-load-development-channels",
+    );
+    attachStartupWatcher(pty, hasDevChannels);
   }
 
   const dirName = basename(cwd) || cwd;
@@ -506,20 +509,32 @@ function buildEnv(sessionId: string): Record<string, string> {
 const ANSI_STRIP_RE =
   /\x1b[[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
 
-// Needles match the OPTION text (not the question) — the TUI is ready for
-// input only once the options are rendered. Stripped of spaces because the TUI
-// renders words via cursor positioning escape sequences.
-const STARTUP_PROMPTS = [
-  { id: "trust", needle: "Yes,Itrustthisfolder" },
-  { id: "channels", needle: "WARNING: Loading development channels" },
-];
+// Needle strings for each prompt type. Stripped of spaces because the TUI
+// renders words via cursor-positioning escape sequences.
+const TRUST_NEEDLE = "Yes,Itrustthisfolder";
+const CHANNELS_NEEDLE = "WARNING: Loading development channels";
+
+interface StartupPrompt {
+  id: string;
+  needle: string;
+}
 
 /**
  * Watch PTY output during startup for interactive prompts that block
  * Claude Code from starting. Auto-answers by sending Enter (\r).
- * Self-disposes after all prompts are handled or after 30s timeout.
+ *
+ * Only watches for prompts that are expected based on spawn args:
+ * - Trust prompt: always expected (CC may ask for any directory)
+ * - Channels prompt: only when --dangerously-load-development-channels is used
+ *
+ * Self-disposes after all expected prompts are handled or after 15s timeout.
  */
-function attachStartupWatcher(pty: IPty): void {
+function attachStartupWatcher(pty: IPty, expectChannels: boolean): void {
+  const expected: StartupPrompt[] = [{ id: "trust", needle: TRUST_NEEDLE }];
+  if (expectChannels) {
+    expected.push({ id: "channels", needle: CHANNELS_NEEDLE });
+  }
+
   let buf = "";
   const MAX_BUF = 4096;
   const answered = new Set<string>();
@@ -532,7 +547,7 @@ function attachStartupWatcher(pty: IPty): void {
     buf += clean;
     if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
 
-    for (const prompt of STARTUP_PROMPTS) {
+    for (const prompt of expected) {
       if (answered.has(prompt.id)) continue;
       if (buf.includes(prompt.needle)) {
         answered.add(prompt.id);
@@ -549,19 +564,13 @@ function attachStartupWatcher(pty: IPty): void {
       }
     }
 
-    if (answered.size === STARTUP_PROMPTS.length) cleanup();
+    if (answered.size === expected.length) cleanup();
   });
 
+  // 15s timeout — prompts appear within first few seconds if at all
   const timer = setTimeout(() => {
-    if (!disposed) {
-      if (answered.size > 0) {
-        console.log(
-          `[auto-trust] timeout — answered ${answered.size}/${STARTUP_PROMPTS.length}`,
-        );
-      }
-      cleanup();
-    }
-  }, 30_000);
+    if (!disposed) cleanup();
+  }, 15_000);
 
   function cleanup() {
     if (disposed) return;
