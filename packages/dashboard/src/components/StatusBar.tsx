@@ -14,9 +14,15 @@ export function StatusBar() {
 
   useEffect(() => {
     fetch("/api/host")
-      .then((r) => r.json())
-      .then((d) => setHost(d.hostname))
-      .catch(() => {});
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => setHost(d.hostname ?? "unknown"))
+      .catch((err) => {
+        console.warn("Failed to fetch hostname:", err);
+        setHost("offline");
+      });
   }, []);
 
   const { left, right } = useMemo(() => {

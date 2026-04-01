@@ -13,7 +13,8 @@ function useServerHealth(): ServerHealth {
       try {
         const res = await fetch("/api/host");
         if (mounted) setHealth(res.ok ? "connected" : "disconnected");
-      } catch {
+      } catch (err) {
+        console.debug("Health check failed:", err);
         if (mounted) setHealth("disconnected");
       }
     }
