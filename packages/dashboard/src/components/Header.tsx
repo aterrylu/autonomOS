@@ -2,14 +2,8 @@ import { THEMES, useStore } from "../store";
 
 export function Header() {
   const theme = useStore((s) => s.theme);
-  const status = useStore((s) => s.status);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
-  const autonomousMode = useStore((s) => s.autonomousMode);
-  const viewMode = useStore((s) => s.viewMode);
-  const cycleTheme = useStore((s) => s.cycleTheme);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
-  const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
-  const toggleViewMode = useStore((s) => s.toggleViewMode);
   const page = THEMES[theme].page;
 
   return (
@@ -27,47 +21,6 @@ export function Header() {
         ☰
       </button>
       <h1 className="text-base font-semibold">autonomOS</h1>
-      <span className="text-sm" style={{ color: page.statusFg }}>
-        {status}
-      </span>
-      <div className="ml-auto flex items-center gap-2">
-        <button
-          type="button"
-          onClick={toggleViewMode}
-          className="rounded-md px-3 py-1.5 text-sm cursor-pointer font-mono"
-          style={{
-            background: page.border,
-            color: viewMode === "conversation" ? page.fg : page.statusFg,
-          }}
-          title="Toggle between terminal and conversation view"
-        >
-          {viewMode === "terminal" ? "> terminal" : "≡ chat"}
-        </button>
-        <button
-          type="button"
-          onClick={toggleAutonomousMode}
-          className="rounded-md px-3 py-1.5 text-sm cursor-pointer"
-          style={{
-            background: autonomousMode ? "#22863a" : page.border,
-            color: autonomousMode ? "#fff" : page.statusFg,
-          }}
-          title={
-            autonomousMode
-              ? "Autonomous mode: ON — sessions skip permission prompts"
-              : "Autonomous mode: OFF — sessions require permission approval"
-          }
-        >
-          Autonomous
-        </button>
-        <button
-          type="button"
-          onClick={cycleTheme}
-          className="rounded-md px-4 py-1.5 text-sm cursor-pointer"
-          style={{ background: page.border, color: page.fg }}
-        >
-          {theme[0].toUpperCase() + theme.slice(1)}
-        </button>
-      </div>
     </header>
   );
 }

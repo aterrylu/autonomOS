@@ -13,6 +13,36 @@ interface MaskedSettings {
   autoTrust: boolean;
 }
 
+type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+
+function ToggleSwitch({
+  enabled,
+  inactiveBackground,
+  onClick,
+}: {
+  enabled: boolean;
+  inactiveBackground: string;
+  onClick: () => void;
+}) {
+  return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch
+    // biome-ignore lint/a11y/noStaticElementInteractions: toggle switch
+    <div
+      className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
+      style={{ background: enabled ? "#16825d" : inactiveBackground }}
+      onClick={onClick}
+    >
+      <div
+        className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
+        style={{
+          background: "#fff",
+          left: enabled ? "18px" : "2px",
+        }}
+      />
+    </div>
+  );
+}
+
 const AVAILABLE_CHANNELS = [
   {
     id: "server:autonomos",
@@ -206,8 +236,6 @@ function RestartAllButton({ page }: { page: PageTheme }) {
   );
 }
 
-type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
-
 function restartButtonLabel(state: string): string {
   if (state === "done") return "Restarted!";
   if (state === "restarting") return "Restarting...";
@@ -220,11 +248,90 @@ function saveButtonLabel(saving: boolean, saved: boolean): string {
   return "Save";
 }
 
-function SettingsPanel({ onClose }: { onClose: () => void }) {
+const THEME_LABELS: Record<string, string> = {
+  midnight: "Midnight",
+  daylight: "Daylight",
+  void: "Void",
+};
+
+function DashboardPreferences({ page }: { page: PageTheme }) {
+  const theme = useStore((s) => s.theme);
+  const autonomousMode = useStore((s) => s.autonomousMode);
+  const viewMode = useStore((s) => s.viewMode);
+  const cycleTheme = useStore((s) => s.cycleTheme);
+  const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
+  const toggleViewMode = useStore((s) => s.toggleViewMode);
+
+  const labelStyle: React.CSSProperties = { color: page.statusFg };
+
+  return (
+    <div className="space-y-2.5">
+      <div
+        className="text-[10px] font-medium uppercase tracking-wide"
+        style={labelStyle}
+      >
+        Dashboard
+      </div>
+
+      {/* Theme */}
+      <div className="flex items-center justify-between">
+        <span className="text-xs" style={labelStyle}>
+          Theme
+        </span>
+        <button
+          type="button"
+          onClick={cycleTheme}
+          className="rounded px-2.5 py-1 text-xs cursor-pointer"
+          style={{ background: page.border, color: page.fg }}
+        >
+          {THEME_LABELS[theme] ?? theme}
+        </button>
+      </div>
+
+      {/* View mode */}
+      <div className="flex items-center justify-between">
+        <span className="text-xs" style={labelStyle}>
+          View Mode
+        </span>
+        <button
+          type="button"
+          onClick={toggleViewMode}
+          className="rounded px-2.5 py-1 text-xs cursor-pointer font-mono"
+          style={{ background: page.border, color: page.fg }}
+        >
+          {viewMode === "terminal" ? "> terminal" : "≡ chat"}
+        </button>
+      </div>
+
+      {/* Autonomous mode */}
+      <div className="flex items-center justify-between">
+        <span className="text-xs" style={labelStyle}>
+          Autonomous Mode
+        </span>
+        <ToggleSwitch
+          enabled={autonomousMode}
+          inactiveBackground={page.border}
+          onClick={toggleAutonomousMode}
+        />
+      </div>
+      <div className="text-[10px]" style={labelStyle}>
+        New sessions skip permission prompts when enabled.
+      </div>
+    </div>
+  );
+}
+
+export function SettingsPanel({
+  onClose,
+  toggleRef,
+}: {
+  onClose: () => void;
+  toggleRef?: React.RefObject<HTMLElement | null>;
+}) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const ref = useRef<HTMLDivElement>(null);
-  useClickOutside(ref, onClose);
+  useClickOutside(ref, onClose, toggleRef);
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -234,6 +341,29 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
 
   const [pending, setPending] = useState<Record<string, string>>({});
   const [pendingChannels, setPendingChannels] = useState<string[] | null>(null);
+
+  const toggleSetting = useCallback(
+    async (key: keyof MaskedSettings, newVal: unknown) => {
+      try {
+        const res = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [key]: newVal }),
+        });
+        if (res.ok) {
+          const updated: MaskedSettings = await res.json();
+          setSettings(updated);
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        } else {
+          setError(`Toggle failed (HTTP ${res.status})`);
+        }
+      } catch {
+        setError("Could not reach server");
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     fetch("/api/settings")
@@ -312,6 +442,11 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
     >
       <div className="font-medium text-sm mb-3">Settings</div>
 
+      {/* Dashboard preferences — local state, no server round-trip */}
+      <DashboardPreferences page={page} />
+
+      <div className="my-3" style={{ borderTop: `1px solid ${page.border}` }} />
+
       {!loaded ? (
         <div style={labelStyle}>Loading...</div>
       ) : (
@@ -347,47 +482,16 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             >
               Anthropic API Override
             </div>
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: toggle switch */}
-            <div
-              className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
-              style={{
-                background: settings?.anthropicOverrideEnabled
-                  ? "#16825d"
-                  : page.border,
-              }}
-              onClick={async () => {
-                const newVal = !settings?.anthropicOverrideEnabled;
-                try {
-                  const res = await fetch("/api/settings", {
-                    method: "PUT",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      anthropicOverrideEnabled: newVal,
-                    }),
-                  });
-                  if (res.ok) {
-                    const updated: MaskedSettings = await res.json();
-                    setSettings(updated);
-                    setSaved(true);
-                    setTimeout(() => setSaved(false), 2000);
-                  } else {
-                    setError(`Toggle failed (HTTP ${res.status})`);
-                  }
-                } catch (err) {
-                  console.error("Failed to toggle API override:", err);
-                  setError("Could not reach server");
-                }
-              }}
-            >
-              <div
-                className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
-                style={{
-                  background: "#fff",
-                  left: settings?.anthropicOverrideEnabled ? "18px" : "2px",
-                }}
-              />
-            </div>
+            <ToggleSwitch
+              enabled={!!settings?.anthropicOverrideEnabled}
+              inactiveBackground={page.border}
+              onClick={() =>
+                toggleSetting(
+                  "anthropicOverrideEnabled",
+                  !settings?.anthropicOverrideEnabled,
+                )
+              }
+            />
           </div>
           <div
             style={{
@@ -428,43 +532,11 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
             >
               Auto-Trust
             </div>
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: toggle switch */}
-            <div
-              className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
-              style={{
-                background: settings?.autoTrust ? "#16825d" : page.border,
-              }}
-              onClick={async () => {
-                const newVal = !settings?.autoTrust;
-                try {
-                  const res = await fetch("/api/settings", {
-                    method: "PUT",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ autoTrust: newVal }),
-                  });
-                  if (res.ok) {
-                    const updated: MaskedSettings = await res.json();
-                    setSettings(updated);
-                    setSaved(true);
-                    setTimeout(() => setSaved(false), 2000);
-                  } else {
-                    setError(`Toggle failed (HTTP ${res.status})`);
-                  }
-                } catch (err) {
-                  console.error("Failed to toggle auto-trust:", err);
-                  setError("Could not reach server");
-                }
-              }}
-            >
-              <div
-                className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
-                style={{
-                  background: "#fff",
-                  left: settings?.autoTrust ? "18px" : "2px",
-                }}
-              />
-            </div>
+            <ToggleSwitch
+              enabled={!!settings?.autoTrust}
+              inactiveBackground={page.border}
+              onClick={() => toggleSetting("autoTrust", !settings?.autoTrust)}
+            />
           </div>
           <div className="text-[10px]" style={labelStyle}>
             Auto-dismiss workspace trust and dev channel prompts on session
@@ -537,27 +609,6 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           <RestartAllButton page={page} />
         </div>
       )}
-    </div>
-  );
-}
-
-export function SettingsStatusBarItem() {
-  const theme = useStore((s) => s.theme);
-  const page = THEMES[theme].page;
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 cursor-pointer hover:opacity-80"
-        style={{ color: page.statusFg }}
-        title="Settings"
-      >
-        <Codicon name="gear" size={14} />
-      </button>
-      {open && <SettingsPanel onClose={() => setOpen(false)} />}
     </div>
   );
 }

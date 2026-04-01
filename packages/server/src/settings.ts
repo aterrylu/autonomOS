@@ -62,13 +62,10 @@ export function getSettings(): AppSettings {
 export function updateSettings(partial: Partial<AppSettings>): AppSettings {
   const current = getSettings();
   const updated = { ...current, ...partial };
-  // Remove keys set to empty string, undefined, or empty arrays
+  // Remove keys set to empty string or undefined.
+  // Keep empty arrays (e.g. channels: [] means "explicitly none").
   for (const [key, value] of Object.entries(updated)) {
-    if (
-      value === "" ||
-      value === undefined ||
-      (Array.isArray(value) && value.length === 0)
-    ) {
+    if (value === "" || value === undefined) {
       delete (updated as Record<string, unknown>)[key];
     }
   }
