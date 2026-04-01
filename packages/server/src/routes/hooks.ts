@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { getAllSessions } from "../sessions.js";
 
 /**
  * Hook events received from Claude Code sessions via autonomos-relay.sh.
@@ -27,6 +28,8 @@ export interface SessionNotification {
   message?: string;
   timestamp: number;
   read: boolean;
+  /** True when SendUserMessage was sent with status: "proactive" */
+  proactive?: boolean;
 }
 
 export type AgentStatus =
@@ -114,6 +117,9 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
       return { status: "working", ...CLEAR_TOOL };
 
     case "PreToolUse":
+      // SendUserMessage/Brief is a notification-only tool — don't show as tool_running
+      if (event.tool_name === "SendUserMessage" || event.tool_name === "Brief")
+        return {};
       return {
         status: "tool_running",
         currentTool: event.tool_name,
@@ -249,6 +255,7 @@ hooksRouter.post("/:sessionId", async (c) => {
         message: msg,
         timestamp,
         read: false,
+        proactive: body.tool_input?.status === "proactive" || undefined,
       });
       if (items.length > 50) items.splice(0, items.length - 50);
       notifications.set(sessionId, items);
@@ -273,6 +280,33 @@ hooksRouter.post("/:sessionId", async (c) => {
 hooksRouter.get("/:sessionId/status", (c) => {
   const sessionId = c.req.param("sessionId");
   return c.json(getAgentState(sessionId));
+});
+
+// Bulk notifications across all sessions (for notification panel)
+hooksRouter.get("/notifications", (c) => {
+  const allSessions = getAllSessions();
+  const sessionNames = new Map(allSessions.map((s) => [s.id, s.name]));
+
+  const all: Array<
+    SessionNotification & { sessionId: string; sessionName: string }
+  > = [];
+  let totalUnread = 0;
+
+  for (const [sessionId, items] of notifications) {
+    const name = sessionNames.get(sessionId) ?? sessionId.slice(0, 8);
+    for (const n of items) {
+      // Only show SendUserMessage events — these are actual agent messages from --brief.
+      // Other events (Stop, Notification, PermissionRequest) are system noise.
+      if (n.event !== "SendUserMessage") continue;
+      all.push({ ...n, sessionId, sessionName: name });
+      if (!n.read) totalUnread++;
+    }
+  }
+
+  // Newest first
+  all.sort((a, b) => b.timestamp - a.timestamp);
+
+  return c.json({ notifications: all.slice(0, 100), totalUnread });
 });
 
 // Get notifications for a session
