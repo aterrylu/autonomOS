@@ -1,3 +1,5 @@
+import bellSvg from "@vscode/codicons/src/icons/bell.svg?raw";
+import bellDotSvg from "@vscode/codicons/src/icons/bell-dot.svg?raw";
 import checkSvg from "@vscode/codicons/src/icons/check.svg?raw";
 import circleLargeSvg from "@vscode/codicons/src/icons/circle-large.svg?raw";
 import claudeSvg from "@vscode/codicons/src/icons/claude.svg?raw";
@@ -14,6 +16,8 @@ function extractPaths(raw: string): string[] {
 }
 
 const ICONS = {
+  bell: extractPaths(bellSvg),
+  "bell-dot": extractPaths(bellDotSvg),
   check: extractPaths(checkSvg),
   "circle-large": extractPaths(circleLargeSvg),
   claude: extractPaths(claudeSvg),
