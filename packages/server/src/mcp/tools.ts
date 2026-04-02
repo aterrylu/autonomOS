@@ -59,6 +59,21 @@ export const TOOL_CREATE_AGENT: ToolDef = {
         description: "Skip permission prompts (default: true)",
         default: true,
       },
+      template: {
+        type: "string",
+        description:
+          "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and capabilities.",
+      },
+      manager: {
+        type: "string",
+        description:
+          "Manager agent name (e.g. 'TeamLead@autonomOS'). Sets the org chart relationship.",
+      },
+      project: {
+        type: "string",
+        description:
+          "Project scope (e.g. 'autonomOS', 'homelab'). Used in role@project naming.",
+      },
     },
     required: ["workingDirectory"],
   },
@@ -110,12 +125,103 @@ export const TOOL_SEND: ToolDef = {
   },
 };
 
+export const TOOL_SET_MANAGER: ToolDef = {
+  name: "set_manager",
+  description:
+    "Set an agent's manager in the org chart. Both agents must be registered.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      agent: {
+        type: "string",
+        description: "Agent name (e.g. 'Dashboard@autonomOS')",
+      },
+      manager: {
+        type: "string",
+        description:
+          "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager.",
+      },
+    },
+    required: ["agent"],
+  },
+};
+
+export const TOOL_GET_ORG_CHART: ToolDef = {
+  name: "get_org_chart",
+  description:
+    "Get the organization chart showing all agents and their hierarchy.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+  },
+};
+
+export const TOOL_LIST_TEMPLATES: ToolDef = {
+  name: "list_templates",
+  description:
+    "List available agent templates (blueprints for creating agents with predefined roles).",
+  inputSchema: {
+    type: "object",
+    properties: {},
+  },
+};
+
+export const TOOL_CREATE_TEMPLATE: ToolDef = {
+  name: "create_template",
+  description:
+    "Create a reusable agent template (blueprint) that defines a role, system prompt, and capabilities. Saved to ~/.autonomos/templates/.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description:
+          "Template name (lowercase, hyphens, e.g. 'feature-worker', 'code-reviewer'). Used as the filename.",
+      },
+      role: {
+        type: "string",
+        description:
+          "Human-readable role name (e.g. 'Feature Worker', 'Code Reviewer')",
+      },
+      description: {
+        type: "string",
+        description: "Short description of what this template is for",
+      },
+      systemPrompt: {
+        type: "string",
+        description:
+          "System prompt appended to the agent's CC session. Defines the agent's behavior and responsibilities.",
+      },
+      capabilities: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Capabilities to grant: 'send', 'list_agents', 'create_agent', 'kill_agent'. Defaults to all.",
+      },
+      autonomousMode: {
+        type: "boolean",
+        description: "Skip permission prompts (default: true)",
+      },
+      model: {
+        type: "string",
+        description:
+          "Model override for litellm routing (e.g. 'opus', 'sonnet', 'haiku'). Omit for CC default.",
+      },
+    },
+    required: ["name", "role", "description", "systemPrompt"],
+  },
+};
+
 /** All tools — used by both server and channel MCP */
 export const ALL_TOOLS: ToolDef[] = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
   TOOL_KILL_AGENT,
   TOOL_SEND,
+  TOOL_SET_MANAGER,
+  TOOL_GET_ORG_CHART,
+  TOOL_LIST_TEMPLATES,
+  TOOL_CREATE_TEMPLATE,
 ];
 
 /** Tools available without gateway connection (HTTP MCP for external clients) */
@@ -123,6 +229,10 @@ export const SERVER_TOOLS: ToolDef[] = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
   TOOL_KILL_AGENT,
+  TOOL_SET_MANAGER,
+  TOOL_GET_ORG_CHART,
+  TOOL_LIST_TEMPLATES,
+  TOOL_CREATE_TEMPLATE,
 ];
 
 // ── Shared MCP metadata ──────────────────────────────────────────
@@ -136,12 +246,13 @@ export const MCP_INSTRUCTIONS = [
   "You are running inside autonomOS — an agent orchestration platform.",
   "",
   "Available tools:",
-  "- send(to, message): Send messages to agents or platforms via URI",
-  "  - agent://name — message another agent (use list_agents to discover names)",
-  "  - broadcast://all — message all agents",
-  "- list_agents(): See all active agents with their URIs",
-  "- create_agent(): Spawn a new dedicated agent with a task",
+  "- send(to, message): Send messages via URI (agent://name, broadcast://all)",
+  "- list_agents(): Discover active agents and their URIs",
+  "- create_agent(): Spawn a new dedicated agent",
   "- kill_agent(): Terminate an agent",
+  "- set_manager(): Configure org chart relationships",
+  "- get_org_chart(): View the organization hierarchy",
+  "- list_templates(): Browse available agent templates",
   "",
   "Messages from other agents and platforms arrive as <channel> events.",
   "Each has from (sender name) and from_uri (address to respond to).",

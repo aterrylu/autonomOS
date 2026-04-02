@@ -162,7 +162,7 @@ function requestGateway<T>(
     });
     try {
       ws!.send(JSON.stringify(msg));
-    } catch (err) {
+    } catch {
       clearTimeout(timer);
       pendingRequests.delete(requestId);
       resolve(defaultOnTimeout);
@@ -196,6 +196,46 @@ const SERVER_BASE = (() => {
     .replace("wss://", "https://")
     .replace(/\/ws\/gateway$/, "");
 })();
+
+/** MCP tool result shape (index signature required by MCP SDK) */
+interface ToolResult {
+  [key: string]: unknown;
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}
+
+/** Build auth headers for server API calls */
+function authHeaders(contentType?: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (contentType) headers["Content-Type"] = contentType;
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+  return headers;
+}
+
+/** Fetch from the autonomOS server API and return an MCP tool result */
+async function serverFetch(
+  path: string,
+  init?: RequestInit,
+): Promise<ToolResult> {
+  const res = await fetch(`${SERVER_BASE}${path}`, {
+    ...init,
+    headers: {
+      ...authHeaders(init?.body ? "application/json" : undefined),
+      ...(init?.headers as Record<string, string>),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    return {
+      content: [{ type: "text", text: `Failed: ${text}` }],
+      isError: true,
+    };
+  }
+  const data = await res.json();
+  const pretty =
+    typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
+  return { content: [{ type: "text", text: pretty }] };
+}
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: ALL_TOOLS,
@@ -279,6 +319,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         prompt,
         resumeSessionId,
         autonomousMode,
+        template,
+        manager,
+        project,
       } = args as {
         workingDirectory: string;
         name?: string;
@@ -286,16 +329,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         prompt?: string;
         resumeSessionId?: string;
         autonomousMode?: boolean;
+        template?: string;
+        manager?: string;
+        project?: string;
       };
 
       try {
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-        const res = await fetch(`${SERVER_BASE}/api/sessions`, {
+        return await serverFetch("/api/sessions", {
           method: "POST",
-          headers,
           body: JSON.stringify({
             workingDirectory,
             name: agentName,
@@ -303,21 +344,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             resumeSessionId,
             autonomousMode: autonomousMode ?? true,
             appendSystemPrompt: systemPrompt,
+            template,
+            manager,
+            project,
           }),
         });
-        if (!res.ok) {
-          const text = await res.text();
-          return {
-            content: [
-              { type: "text", text: `Failed to create agent: ${text}` },
-            ],
-            isError: true,
-          };
-        }
-        const session = await res.json();
-        return {
-          content: [{ type: "text", text: JSON.stringify(session, null, 2) }],
-        };
       } catch (err) {
         return {
           content: [
@@ -334,19 +365,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "kill_agent": {
       const { agent } = args as { agent: string };
       try {
-        const headers: Record<string, string> = {};
-        if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-        const res = await fetch(
-          `${SERVER_BASE}/api/sessions/${encodeURIComponent(agent)}`,
-          { method: "DELETE", headers },
+        const result = await serverFetch(
+          `/api/sessions/${encodeURIComponent(agent)}`,
+          { method: "DELETE" },
         );
-        if (!res.ok) {
-          const text = await res.text();
-          return {
-            content: [{ type: "text", text: `Failed to kill agent: ${text}` }],
-            isError: true,
-          };
-        }
+        if (result.isError) return result;
         return {
           content: [{ type: "text", text: `Agent "${agent}" terminated.` }],
         };
@@ -361,6 +384,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
+    }
+
+    case "set_manager": {
+      const { agent, manager } = args as { agent: string; manager?: string };
+      return serverFetch("/api/org/manager", {
+        method: "PUT",
+        body: JSON.stringify({ agent, manager: manager ?? null }),
+      });
+    }
+
+    case "get_org_chart": {
+      return serverFetch("/api/org");
+    }
+
+    case "create_template": {
+      return serverFetch("/api/templates", {
+        method: "POST",
+        body: JSON.stringify(args),
+      });
+    }
+
+    case "list_templates": {
+      return serverFetch("/api/templates");
     }
 
     default:

@@ -6,6 +6,7 @@ import {
   killSession,
   restartAllSessions,
 } from "../sessions.js";
+import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
 
 export const sessionRouter = new Hono();
@@ -77,19 +78,35 @@ sessionRouter.post("/", async (c) => {
   }
 
   try {
+    // Resolve template if provided
+    const templateName =
+      typeof body.template === "string" ? body.template : undefined;
+    const tmpl = templateName ? getTemplate(templateName) : null;
+    if (templateName && !tmpl) {
+      return c.json({ error: `Template "${templateName}" not found` }, 400);
+    }
+
+    const agentName = typeof body.name === "string" ? body.name : undefined;
+    const systemPrompt =
+      typeof body.appendSystemPrompt === "string"
+        ? body.appendSystemPrompt
+        : tmpl?.systemPrompt;
+    const autonomousMode =
+      (body.autonomousMode ?? tmpl?.autonomousMode) === true;
+
     const managed = createSession({
       workingDirectory: body.workingDirectory,
-      name: typeof body.name === "string" ? body.name : undefined,
+      name: agentName,
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
       resumeSessionId:
         typeof body.resumeSessionId === "string"
           ? body.resumeSessionId
           : undefined,
-      autonomousMode: body.autonomousMode === true,
-      appendSystemPrompt:
-        typeof body.appendSystemPrompt === "string"
-          ? body.appendSystemPrompt
-          : undefined,
+      autonomousMode,
+      appendSystemPrompt: systemPrompt,
+      template: templateName,
+      manager: typeof body.manager === "string" ? body.manager : undefined,
+      project: typeof body.project === "string" ? body.project : undefined,
       cols: body.cols as number | undefined,
       rows: body.rows as number | undefined,
     });

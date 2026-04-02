@@ -13,22 +13,30 @@ import {
 } from "../mcp/tools.js";
 
 describe("shared MCP tool definitions", () => {
-  it("ALL_TOOLS contains all 4 tools", () => {
-    assert.equal(ALL_TOOLS.length, 4);
+  it("ALL_TOOLS contains all expected tools", () => {
     const names = ALL_TOOLS.map((t) => t.name);
-    assert.ok(names.includes("create_agent"));
-    assert.ok(names.includes("list_agents"));
-    assert.ok(names.includes("kill_agent"));
-    assert.ok(names.includes("send"));
+    for (const expected of [
+      "create_agent",
+      "list_agents",
+      "kill_agent",
+      "send",
+      "set_manager",
+      "get_org_chart",
+      "list_templates",
+      "create_template",
+    ]) {
+      assert.ok(names.includes(expected), `missing tool: ${expected}`);
+    }
+    assert.equal(ALL_TOOLS.length, 8);
   });
 
   it("SERVER_TOOLS excludes send (no gateway for external clients)", () => {
-    assert.equal(SERVER_TOOLS.length, 3);
     const names = SERVER_TOOLS.map((t) => t.name);
     assert.ok(names.includes("create_agent"));
     assert.ok(names.includes("list_agents"));
     assert.ok(names.includes("kill_agent"));
     assert.ok(!names.includes("send"));
+    assert.equal(SERVER_TOOLS.length, 7);
   });
 
   it("each tool has required fields", () => {
