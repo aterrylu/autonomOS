@@ -6,7 +6,7 @@ import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
 import { DragProvider } from "./layout/DragContext";
 import { LayoutProvider } from "./layout/LayoutContext";
-import { allLeafIds, findLeaf } from "./layout/layoutTree";
+import { activeTabPane, allLeafIds, findLeaf } from "./layout/layoutTree";
 import { SessionMountLayer } from "./layout/SessionMountLayer";
 import { requestNotificationPermission, THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
@@ -111,11 +111,12 @@ export function App() {
         e.preventDefault();
         const { focusedLeafId, layout, sessions } = useStore.getState();
         const leaf = findLeaf(layout, focusedLeafId);
-        const cwd =
-          leaf?.pane?.type === "session"
-            ? (sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ??
-              "~")
+        const cwd = (() => {
+          const p = leaf ? activeTabPane(leaf) : null;
+          return p?.type === "session"
+            ? (sessions.find((s) => s.id === p.id)?.workingDirectory ?? "~")
             : "~";
+        })();
         useStore
           .getState()
           .createSessionIntoLeaf(focusedLeafId, "vertical", "second", cwd);
@@ -127,11 +128,12 @@ export function App() {
         e.preventDefault();
         const { focusedLeafId, layout, sessions } = useStore.getState();
         const leaf = findLeaf(layout, focusedLeafId);
-        const cwd =
-          leaf?.pane?.type === "session"
-            ? (sessions.find((s) => s.id === leaf.pane?.id)?.workingDirectory ??
-              "~")
+        const cwd = (() => {
+          const p = leaf ? activeTabPane(leaf) : null;
+          return p?.type === "session"
+            ? (sessions.find((s) => s.id === p.id)?.workingDirectory ?? "~")
             : "~";
+        })();
         useStore
           .getState()
           .createSessionIntoLeaf(focusedLeafId, "horizontal", "second", cwd);

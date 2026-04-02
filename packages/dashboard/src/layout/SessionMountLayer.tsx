@@ -3,7 +3,7 @@ import { PreviewPane } from "../components/PreviewPane";
 import { SessionPane } from "../components/SessionPane";
 import { useStore } from "../store";
 import { type SlotRect, useLayoutContext } from "./LayoutContext";
-import { allLeafIds, findLeaf } from "./layoutTree";
+import { activeTabPane, allLeafIds, findLeaf } from "./layoutTree";
 
 /**
  * SessionMountLayer — mounts ALL sessions and previews once at the app root,
@@ -36,20 +36,25 @@ export function SessionMountLayer() {
 
   const slots = getAllSlots();
 
-  // Build a map from ActivePane id → slot rect by iterating all leaves
+  // Build a map from ActivePane id → slot rect by iterating all leaves.
+  // Only the active tab in each leaf gets a rect — other tabs stay hidden.
   const paneToRect = new Map<string, SlotRect>();
   for (const leafId of allLeafIds(layout)) {
     const leaf = findLeaf(layout, leafId);
-    if (!leaf?.pane) continue;
+    if (!leaf) continue;
+    const activePaneForLeaf = activeTabPane(leaf);
+    if (!activePaneForLeaf) continue;
     const rect = slots.get(leafId);
     if (rect) {
-      paneToRect.set(leaf.pane.id, rect);
+      paneToRect.set(activePaneForLeaf.id, rect);
     }
   }
 
   // Determine focused pane for z-index stacking
   const focusedLeaf = findLeaf(layout, focusedLeafId);
-  const focusedPaneId = focusedLeaf?.pane?.id;
+  const focusedPaneId = focusedLeaf
+    ? activeTabPane(focusedLeaf)?.id
+    : undefined;
 
   return (
     <>

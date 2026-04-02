@@ -6,6 +6,7 @@ import {
   encodeDragData,
   useDragContext,
 } from "../layout/DragContext";
+import { allPanes } from "../layout/layoutTree";
 import type {
   ActivePane,
   PaneGroup,
@@ -35,6 +36,7 @@ function useSidebarData() {
       groups: s.groups,
       notificationCounts: s.notificationCounts,
       agentStatuses: s.agentStatuses,
+      layout: s.layout,
     })),
   );
 }
@@ -332,6 +334,7 @@ export function Sidebar() {
     groups,
     notificationCounts,
     agentStatuses,
+    layout,
   } = useSidebarData();
   const {
     fetchSessions,
@@ -347,6 +350,13 @@ export function Sidebar() {
 
   const isSpawning = status === "spawning...";
   const { startDrag, endDrag } = useDragContext();
+
+  // Set of pane IDs currently visible on screen (active tab in each leaf)
+  const visiblePaneIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of allPanes(layout)) ids.add(p.id);
+    return ids;
+  }, [layout]);
 
   const sidebarItems = useMemo(
     () => buildSidebarItems(sessions, previewPanes, paneOrder),
@@ -628,7 +638,11 @@ export function Sidebar() {
                   borderLeft: "3px solid transparent",
                   paddingLeft: "9px",
                   paddingRight: "12px",
-                  background: isActive ? page.border : "transparent",
+                  background: isActive
+                    ? page.border
+                    : visiblePaneIds.has(pane.id)
+                      ? `${page.border}80`
+                      : "transparent",
                   ...(isDropTarget && {
                     boxShadow: `inset 0 2px 0 ${page.fg}`,
                   }),
@@ -706,7 +720,11 @@ export function Sidebar() {
               onDragEnd={handleDragEnd}
               className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
               style={{
-                background: isActive ? page.border : "transparent",
+                background: isActive
+                  ? page.border
+                  : visiblePaneIds.has(pane.id)
+                    ? `${page.border}80`
+                    : "transparent",
                 ...(isDropTarget && {
                   boxShadow: `inset 0 2px 0 ${page.fg}`,
                 }),

@@ -28,17 +28,25 @@ function shallowEqualRecord<V>(
 }
 
 import {
+  activeTabPane,
+  addTab,
   allPanes,
+  allTabPanes,
   derivedActivePane,
+  findLeaf,
   findLeafByPaneId,
   insertLeaf,
   type LayoutNode,
   makeRootLeaf,
+  migrateLayout,
   nextLeafId,
   removeLeaf,
+  removeTab,
   type SplitDirection,
   type SplitSide,
+  setActiveTab,
   setLeafPane,
+  type TabItem,
   updateBranchSizes,
 } from "./layout/layoutTree";
 
@@ -444,6 +452,9 @@ interface AppState {
     cwd?: string,
   ) => Promise<void>;
   setLeafPane: (leafId: string, pane: ActivePane | null) => void;
+  addTabToLeaf: (leafId: string, pane: ActivePane) => void;
+  closeTab: (leafId: string, tabId: string) => void;
+  switchTabInLeaf: (leafId: string, tabIndex: number) => void;
   setLeafSizes: (branchId: string, sizes: [number, number]) => void;
   setFocusedLeaf: (leafId: string) => void;
   closeLeaf: (leafId: string) => void;
@@ -559,7 +570,12 @@ export const useStore = create<AppState>()(
           ) {
             const leaf = findLeafByPaneId(layout, pane.id);
             if (leaf) {
+              // Activate the tab containing this pane
+              const tabIdx = leaf.tabs.findIndex((t) => t.pane.id === pane.id);
+              const updatedLayout =
+                tabIdx >= 0 ? setActiveTab(layout, leaf.id, tabIdx) : layout;
               set({
+                layout: updatedLayout,
                 focusedLeafId: leaf.id,
                 activePane: pane,
               });
@@ -591,8 +607,15 @@ export const useStore = create<AppState>()(
           // Case 3: target pane belongs to another group — restore its layout
           const targetGroup = getGroupForPane(updatedGroups, pane.id);
           if (targetGroup) {
-            const restoredLayout = targetGroup.savedLayout;
+            let restoredLayout = targetGroup.savedLayout;
             const leaf = findLeafByPaneId(restoredLayout, pane.id);
+            // Activate the tab containing this pane
+            if (leaf) {
+              const tabIdx = leaf.tabs.findIndex((t) => t.pane.id === pane.id);
+              if (tabIdx >= 0) {
+                restoredLayout = setActiveTab(restoredLayout, leaf.id, tabIdx);
+              }
+            }
             set({
               groups: updatedGroups,
               activeGroupId: targetGroup.id,
@@ -757,15 +780,10 @@ export const useStore = create<AppState>()(
         },
         openPreview: (filePath) => {
           const { previewPanes } = get();
-          // If already open, just switch to it
+          // If already open, switch to it (find its leaf + tab)
           const existing = previewPanes.find((p) => p.filePath === filePath);
           if (existing) {
-            const { layout, focusedLeafId } = get();
-            const activeP: ActivePane = { type: "preview", id: existing.id };
-            set({
-              activePane: activeP,
-              layout: setLeafPane(layout, focusedLeafId, activeP),
-            });
+            get().switchPane({ type: "preview", id: existing.id });
             return;
           }
           const id = `preview-${Date.now()}-${++previewCounter}`;
@@ -773,11 +791,12 @@ export const useStore = create<AppState>()(
           const pane: PreviewPaneInfo = { id, filePath, title };
           const { paneOrder, layout, focusedLeafId } = get();
           const activeP: ActivePane = { type: "preview", id };
+          // Add preview as a new tab in the focused leaf
           set({
             previewPanes: [...previewPanes, pane],
             paneOrder: [...paneOrder, previewOrderKey(id)],
             activePane: activeP,
-            layout: setLeafPane(layout, focusedLeafId, activeP),
+            layout: addTab(layout, focusedLeafId, activeP),
           });
         },
 
@@ -955,6 +974,50 @@ export const useStore = create<AppState>()(
           });
         },
 
+        addTabToLeaf: (leafId, pane) => {
+          const { layout, activeGroupId, groups } = get();
+          const updated = addTab(layout, leafId, pane);
+          set({
+            layout: updated,
+            focusedLeafId: leafId,
+            activePane: pane,
+            ...saveGroupSnapshot(groups, activeGroupId, updated, leafId),
+          });
+        },
+
+        closeTab: (leafId, tabId) => {
+          const { layout, focusedLeafId, activeGroupId, groups } = get();
+          const leaf = findLeaf(layout, leafId);
+          if (!leaf) return;
+
+          // If this is the last tab, close the leaf entirely
+          if (leaf.tabs.length <= 1) {
+            get().closeLeaf(leafId);
+            return;
+          }
+
+          const updated = removeTab(layout, leafId, tabId);
+          const newActivePane = derivedActivePane(updated, focusedLeafId);
+          set({
+            layout: updated,
+            activePane: newActivePane,
+            ...saveGroupSnapshot(groups, activeGroupId, updated, focusedLeafId),
+          });
+        },
+
+        switchTabInLeaf: (leafId, tabIndex) => {
+          const { layout, activeGroupId, groups } = get();
+          const updated = setActiveTab(layout, leafId, tabIndex);
+          const leaf = findLeaf(updated, leafId);
+          const pane = leaf ? activeTabPane(leaf) : null;
+          set({
+            layout: updated,
+            focusedLeafId: leafId,
+            ...(pane && { activePane: pane }),
+            ...saveGroupSnapshot(groups, activeGroupId, updated, leafId),
+          });
+        },
+
         setLeafSizes: (branchId, sizes) => {
           const { layout, activeGroupId, groups, focusedLeafId } = get();
           const updatedLayout = updateBranchSizes(layout, branchId, sizes);
@@ -1069,10 +1132,16 @@ export const useStore = create<AppState>()(
             return newId ? { ...p, id: newId } : p;
           };
 
-          // Remap layout tree panes
+          // Remap layout tree panes (including all tabs)
           const remapLayout = (node: LayoutNode): LayoutNode => {
             if (node.kind === "leaf") {
-              return { ...node, pane: remapPane(node.pane) };
+              return {
+                ...node,
+                tabs: node.tabs.map((t) => ({
+                  ...t,
+                  pane: remapPane(t.pane) ?? t.pane,
+                })),
+              };
             }
             return {
               ...node,
@@ -1201,13 +1270,14 @@ export const useStore = create<AppState>()(
           merged.paneOrder = saved.sessionOrder as string[];
         }
 
-        // Migrate: if layout is missing, construct from existing activePane
+        // Migrate: if layout is missing, construct from existing activePane.
+        // Also migrate old single-pane leaves to tabs format.
         if (
           saved?.layout &&
           typeof saved.layout === "object" &&
           (saved.layout as LayoutNode).kind
         ) {
-          merged.layout = saved.layout as LayoutNode;
+          merged.layout = migrateLayout(saved.layout);
           if (typeof saved.focusedLeafId === "string") {
             merged.focusedLeafId = saved.focusedLeafId;
           }
@@ -1235,7 +1305,12 @@ export const useStore = create<AppState>()(
               group.savedLayout &&
               typeof (group.savedLayout as LayoutNode).kind === "string"
             ) {
-              validGroups[gid] = group as unknown as PaneGroup;
+              // Migrate savedLayout in case it has old single-pane leaves
+              const migrated = {
+                ...(group as unknown as PaneGroup),
+                savedLayout: migrateLayout(group.savedLayout),
+              };
+              validGroups[gid] = migrated;
             }
           }
           merged.groups = validGroups;

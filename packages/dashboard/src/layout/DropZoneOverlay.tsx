@@ -22,7 +22,7 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
   const { isDragging, dragData, endDrag } = useDragContext();
   const [zone, setZone] = useState<SplitZone | null>(null);
   const splitLeafWithPane = useStore((s) => s.splitLeafWithPane);
-  const setLeafPane = useStore((s) => s.setLeafPane);
+  const addTabToLeaf = useStore((s) => s.addTabToLeaf);
   const movePaneToLeaf = useStore((s) => s.movePaneToLeaf);
   const layout = useStore((s) => s.layout);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -63,10 +63,10 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
       // Move existing pane — removes from old position, places in new
       movePaneToLeaf(pane.id, leafId, z);
     } else {
-      // New pane — split or replace
+      // New pane — split or add as tab
       switch (z) {
         case "center":
-          setLeafPane(leafId, pane);
+          addTabToLeaf(leafId, pane);
           break;
         case "north":
           splitLeafWithPane(leafId, "vertical", "first", pane);
