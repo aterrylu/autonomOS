@@ -72,14 +72,22 @@ Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
 - **HTTP MCP server** (`mcp.ts`) — for external clients (Claude Desktop, CI)
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
-Both servers expose: `create_agent`, `list_agents`, `kill_agent`. The channel server also has `send` (requires gateway WebSocket).
+Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`. The channel server also has `send` (requires gateway WebSocket).
+
+### Agent Templates (`~/.autonomos/templates/`)
+Reusable blueprints for creating agents. Individual JSON files with: `role`, `description`, `systemPrompt`, `capabilities`, `autonomousMode`, `model`. Created via `create_template` MCP tool or by dropping a `.json` file in the templates directory. Used via `create_agent(template: "team-lead", ...)`.
+
+### Agent Hierarchy (Org Chart)
+Hierarchy metadata (`template`, `manager`, `project`) is stored on persisted sessions in `sessions.json`. The org chart is derived at query time from `manager` references. Configured at runtime via `set_manager` MCP tool — agents or the human can organize the hierarchy after spawning. REST API: `GET /api/org`, `PUT /api/org/manager`, `GET/POST /api/templates`.
 
 ### Base Context Injection
-Every autonomOS-spawned session gets `--append-system-prompt` with:
-1. Base autonomOS context — "You are running inside autonomOS" + available tools
-2. Per-agent instructions (if provided via `create_agent`'s prompt/systemPrompt params)
+Every autonomOS-spawned session gets `--append-system-prompt` with a `BASE_CONTEXT` constant covering:
+1. **Identity** — agent is named, part of an organization, has manager/peers/reports
+2. **Communication** — available MCP tools, async messaging, `from_uri` response pattern
+3. **Environment** — dashboard observability, shared codebase, no direct terminal access between agents
+4. **Lifecycle** — some agents are long-lived, others exit after a task. Sessions persist across restarts until ended by human, self, or manager
 
-Use `--append-system-prompt` (preserves CC defaults + CLAUDE.md). Use `--system-prompt` only for full override.
+The tool list section interpolates `MCP_INSTRUCTIONS` from `mcp/tools.ts` (single source of truth). Use `--append-system-prompt` (preserves CC defaults + CLAUDE.md). Use `--system-prompt` only for full override.
 
 ## Key Conventions
 

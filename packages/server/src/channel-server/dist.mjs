@@ -39,6 +39,18 @@ var TOOL_CREATE_AGENT = {
         type: "boolean",
         description: "Skip permission prompts (default: true)",
         default: true
+      },
+      template: {
+        type: "string",
+        description: "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and capabilities."
+      },
+      manager: {
+        type: "string",
+        description: "Manager agent name (e.g. 'TeamLead@autonomOS'). Sets the org chart relationship."
+      },
+      project: {
+        type: "string",
+        description: "Project scope (e.g. 'autonomOS', 'homelab'). Used in role@project naming."
       }
     },
     required: ["workingDirectory"]
@@ -84,11 +96,88 @@ var TOOL_SEND = {
     required: ["to", "message"]
   }
 };
+var TOOL_SET_MANAGER = {
+  name: "set_manager",
+  description: "Set an agent's manager in the org chart. Both agents must be registered.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      agent: {
+        type: "string",
+        description: "Agent name (e.g. 'Dashboard@autonomOS')"
+      },
+      manager: {
+        type: "string",
+        description: "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager."
+      }
+    },
+    required: ["agent"]
+  }
+};
+var TOOL_GET_ORG_CHART = {
+  name: "get_org_chart",
+  description: "Get the organization chart showing all agents and their hierarchy.",
+  inputSchema: {
+    type: "object",
+    properties: {}
+  }
+};
+var TOOL_LIST_TEMPLATES = {
+  name: "list_templates",
+  description: "List available agent templates (blueprints for creating agents with predefined roles).",
+  inputSchema: {
+    type: "object",
+    properties: {}
+  }
+};
+var TOOL_CREATE_TEMPLATE = {
+  name: "create_template",
+  description: "Create a reusable agent template (blueprint) that defines a role, system prompt, and capabilities. Saved to ~/.autonomos/templates/.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Template name (lowercase, hyphens, e.g. 'feature-worker', 'code-reviewer'). Used as the filename."
+      },
+      role: {
+        type: "string",
+        description: "Human-readable role name (e.g. 'Feature Worker', 'Code Reviewer')"
+      },
+      description: {
+        type: "string",
+        description: "Short description of what this template is for"
+      },
+      systemPrompt: {
+        type: "string",
+        description: "System prompt appended to the agent's CC session. Defines the agent's behavior and responsibilities."
+      },
+      capabilities: {
+        type: "array",
+        items: { type: "string" },
+        description: "Capabilities to grant: 'send', 'list_agents', 'create_agent', 'kill_agent'. Defaults to all."
+      },
+      autonomousMode: {
+        type: "boolean",
+        description: "Skip permission prompts (default: true)"
+      },
+      model: {
+        type: "string",
+        description: "Model override for litellm routing (e.g. 'opus', 'sonnet', 'haiku'). Omit for CC default."
+      }
+    },
+    required: ["name", "role", "description", "systemPrompt"]
+  }
+};
 var ALL_TOOLS = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
   TOOL_KILL_AGENT,
-  TOOL_SEND
+  TOOL_SEND,
+  TOOL_SET_MANAGER,
+  TOOL_GET_ORG_CHART,
+  TOOL_LIST_TEMPLATES,
+  TOOL_CREATE_TEMPLATE
 ];
 var MCP_SERVER_INFO = {
   name: "autonomos",
@@ -98,12 +187,13 @@ var MCP_INSTRUCTIONS = [
   "You are running inside autonomOS \u2014 an agent orchestration platform.",
   "",
   "Available tools:",
-  "- send(to, message): Send messages to agents or platforms via URI",
-  "  - agent://name \u2014 message another agent (use list_agents to discover names)",
-  "  - broadcast://all \u2014 message all agents",
-  "- list_agents(): See all active agents with their URIs",
-  "- create_agent(): Spawn a new dedicated agent with a task",
+  "- send(to, message): Send messages via URI (agent://name, broadcast://all)",
+  "- list_agents(): Discover active agents and their URIs",
+  "- create_agent(): Spawn a new dedicated agent",
   "- kill_agent(): Terminate an agent",
+  "- set_manager(): Configure org chart relationships",
+  "- get_org_chart(): View the organization hierarchy",
+  "- list_templates(): Browse available agent templates",
   "",
   "Messages from other agents and platforms arrive as <channel> events.",
   "Each has from (sender name) and from_uri (address to respond to).",
@@ -213,7 +303,7 @@ function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout) {
     });
     try {
       ws.send(JSON.stringify(msg));
-    } catch (err) {
+    } catch {
       clearTimeout(timer);
       pendingRequests.delete(requestId);
       resolve(defaultOnTimeout);
@@ -234,6 +324,31 @@ var SERVER_BASE = (() => {
   const wsUrl = SERVER_URL;
   return wsUrl.replace("ws://", "http://").replace("wss://", "https://").replace(/\/ws\/gateway$/, "");
 })();
+function authHeaders(contentType) {
+  const headers = {};
+  if (contentType) headers["Content-Type"] = contentType;
+  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+  return headers;
+}
+async function serverFetch(path, init) {
+  const res = await fetch(`${SERVER_BASE}${path}`, {
+    ...init,
+    headers: {
+      ...authHeaders(init?.body ? "application/json" : void 0),
+      ...init?.headers
+    }
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    return {
+      content: [{ type: "text", text: `Failed: ${text}` }],
+      isError: true
+    };
+  }
+  const data = await res.json();
+  const pretty = typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
+  return { content: [{ type: "text", text: pretty }] };
+}
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: ALL_TOOLS
 }));
@@ -302,38 +417,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         systemPrompt,
         prompt,
         resumeSessionId,
-        autonomousMode
+        autonomousMode,
+        template,
+        manager,
+        project
       } = args;
       try {
-        const headers = {
-          "Content-Type": "application/json"
-        };
-        if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-        const res = await fetch(`${SERVER_BASE}/api/sessions`, {
+        return await serverFetch("/api/sessions", {
           method: "POST",
-          headers,
           body: JSON.stringify({
             workingDirectory,
             name: agentName,
             prompt,
             resumeSessionId,
             autonomousMode: autonomousMode ?? true,
-            appendSystemPrompt: systemPrompt
+            appendSystemPrompt: systemPrompt,
+            template,
+            manager,
+            project
           })
         });
-        if (!res.ok) {
-          const text = await res.text();
-          return {
-            content: [
-              { type: "text", text: `Failed to create agent: ${text}` }
-            ],
-            isError: true
-          };
-        }
-        const session = await res.json();
-        return {
-          content: [{ type: "text", text: JSON.stringify(session, null, 2) }]
-        };
       } catch (err) {
         return {
           content: [
@@ -349,19 +452,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "kill_agent": {
       const { agent } = args;
       try {
-        const headers = {};
-        if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-        const res = await fetch(
-          `${SERVER_BASE}/api/sessions/${encodeURIComponent(agent)}`,
-          { method: "DELETE", headers }
+        const result = await serverFetch(
+          `/api/sessions/${encodeURIComponent(agent)}`,
+          { method: "DELETE" }
         );
-        if (!res.ok) {
-          const text = await res.text();
-          return {
-            content: [{ type: "text", text: `Failed to kill agent: ${text}` }],
-            isError: true
-          };
-        }
+        if (result.isError) return result;
         return {
           content: [{ type: "text", text: `Agent "${agent}" terminated.` }]
         };
@@ -376,6 +471,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true
         };
       }
+    }
+    case "set_manager": {
+      const { agent, manager } = args;
+      return serverFetch("/api/org/manager", {
+        method: "PUT",
+        body: JSON.stringify({ agent, manager: manager ?? null })
+      });
+    }
+    case "get_org_chart": {
+      return serverFetch("/api/org");
+    }
+    case "create_template": {
+      return serverFetch("/api/templates", {
+        method: "POST",
+        body: JSON.stringify(args)
+      });
+    }
+    case "list_templates": {
+      return serverFetch("/api/templates");
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

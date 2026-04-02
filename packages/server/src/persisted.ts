@@ -17,6 +17,12 @@ export interface PersistedSession {
   name: string;
   autonomousMode: boolean;
   persistedAt: number;
+  /** Template used to spawn this agent (e.g. "team-lead") */
+  template?: string;
+  /** Manager agent name for org chart (e.g. "CEO@company") */
+  manager?: string;
+  /** Project scope (e.g. "autonomOS") */
+  project?: string;
 }
 
 const SESSIONS_FILE = join(CONFIG_DIR, "sessions.json");
@@ -90,4 +96,18 @@ export function removePersistedSession(claudeSessionId: string): void {
     sessions.splice(idx, 1);
     writeSessions(sessions);
   }
+}
+
+/** Update specific fields on a persisted session (by name, case-insensitive) */
+export function updatePersistedSessionByName(
+  name: string,
+  updates: Partial<Pick<PersistedSession, "manager" | "project" | "template">>,
+): boolean {
+  const sessions = readSessions();
+  const lower = name.toLowerCase();
+  const idx = sessions.findIndex((s) => s.name.toLowerCase() === lower);
+  if (idx < 0) return false;
+  sessions[idx] = { ...sessions[idx], ...updates };
+  writeSessions(sessions);
+  return true;
 }

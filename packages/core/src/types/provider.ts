@@ -36,4 +36,10 @@ export interface SpawnOptions {
   appendSystemPrompt?: string;
   cols?: number;
   rows?: number;
+  /** Template used to spawn this agent (e.g. "team-lead") */
+  template?: string;
+  /** Manager agent name for org chart (e.g. "CEO@company") */
+  manager?: string;
+  /** Project scope (e.g. "autonomOS") */
+  project?: string;
 }

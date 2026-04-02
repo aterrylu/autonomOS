@@ -15,6 +15,9 @@ Document all research findings here. Link sources. Include your assessment of re
 - [x] **Claude Code CLI Flags** — Full evaluation of ~40 CLI flags for autonomOS integration. `--session-id` (deterministic IDs), `--permission-mode auto` (safe autonomous mode), `--brief` (SendUserMessage structured messaging), `--agents` (custom personas). Full analysis: [`docs/research/claude-code-flags/`](research/claude-code-flags/)
 - [ ] **Robot middleware** — ROS2, micro-ROS, foxglove. How do they handle observability and control?
 - [x] **cmux** — Native macOS terminal for multi-agent workflows (Swift/AppKit, libghostty). Notification system, integrated browser, agent automation API, CLI/socket control. Full analysis: [`docs/research/cmux/`](research/cmux/)
+- [x] **Overstory deep dive** — 4-layer hierarchy, SQLite WAL mail, 11 runtime adapters, 3-tier watchdog. No web UI, no hierarchy visualization. Full analysis: [`docs/research/overstory.md`](research/overstory.md)
+- [x] **Persistent agent identity** — 1:1 agent:process model survey. No coding-agent platform does this. Validated by K8s, ROS2, Letta/SoulSpec. Key insight: persistent identity ≠ persistent context. Full analysis: [`docs/research/persistent-agent-identity.md`](research/persistent-agent-identity.md)
+- [x] **Singleton agent pattern** — Refined framing: not about persistent memory, but about preventing duplicate instances + config-on-disk (like systemd units). No coding agent platform enforces this. CC bugs #17457 and #36800 prove the need. K8s Agent Sandbox is the closest prior art. Full analysis: [`docs/research/singleton-agent-pattern.md`](research/singleton-agent-pattern.md)
 
 ---
 

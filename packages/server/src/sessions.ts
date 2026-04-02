@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
+import { MCP_INSTRUCTIONS } from "./mcp/tools.js";
 import {
   getPersistedSessions,
   persistSession,
@@ -42,6 +43,41 @@ const HOOK_EVENTS = [
   "PostCompact",
   "SessionEnd",
 ] as const;
+
+// ── Base context injected into every spawned session ─────────────
+// The tool list section is imported from mcp/tools.ts (MCP_INSTRUCTIONS)
+// to avoid maintaining the same list in two places.
+const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
+AI coding agents for personal and enterprise use.
+
+## Your Identity
+
+You are a named agent in an organization. Other agents and the human operator \
+can see you by name, send you messages, and observe your status. You may have \
+a manager, peers, and direct reports — use get_org_chart() to see the hierarchy.
+
+## Communication
+
+${MCP_INSTRUCTIONS}
+
+Messages are asynchronous — the recipient may be busy or idle. Do not block \
+waiting for a response. Continue your work and handle replies when they arrive.
+
+## Environment
+
+- A human operator monitors all agents via a server dashboard, seeing status \
+and notifications. You do not need to over-report — they can see your terminal.
+- You may share a codebase with other agents. Some projects use the main branch \
+(single agent), others use worktrees for isolation (multiple agents).
+- You cannot access another agent's terminal or read their output directly. \
+All inter-agent communication goes through send().
+
+## Lifecycle
+
+Some agents are long-lived (team leads, persistent roles). Others are spawned \
+for a specific task — once the work is done and the PR is merged, they exit. \
+Your session persists across server restarts until you, the human operator, or \
+a managing agent (such as your manager or a superior) ends it.`;
 
 export interface ManagedSession {
   session: Session;
@@ -150,18 +186,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
     const parts: string[] = [];
 
     // Base autonomOS context — tells the agent what environment it's in and what tools it has
-    parts.push(
-      "You are running inside autonomOS — an agent orchestration platform.",
-      "",
-      "Available autonomOS tools:",
-      "- send(to, message): Send messages via URI (agent://name, broadcast://all)",
-      "- list_agents(): Discover active agents and their URIs",
-      "- create_agent(): Spawn a new dedicated agent",
-      "- kill_agent(): Terminate an agent",
-      "",
-      "Messages from other agents and platforms arrive as <channel> events.",
-      'To respond: send(to: "<from_uri from the message>", message: "your reply")',
-    );
+    parts.push(BASE_CONTEXT);
 
     // Per-agent instructions from the orchestrator
     if (options.appendSystemPrompt) {
@@ -288,6 +313,9 @@ export function createSession(options: SpawnOptions): ManagedSession {
     name: defaultName,
     autonomousMode: !!options.autonomousMode,
     persistedAt: Date.now(),
+    template: options.template,
+    manager: options.manager,
+    project: options.project,
   });
 
   pty.onData((data: string) => {
