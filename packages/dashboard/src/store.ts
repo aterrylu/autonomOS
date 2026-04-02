@@ -1067,7 +1067,8 @@ export const useStore = create<AppState>()(
 
         movePaneToLeaf: (paneId, targetLeafId, zone) => {
           const { layout, activeGroupId, groups } = get();
-          const pane = allPanes(layout).find((p) => p.id === paneId);
+          // Search all tabs for the pane
+          const pane = allTabPanes(layout).find((p) => p.id === paneId);
           if (!pane) return;
 
           const sourceLeaf = findLeafByPaneId(layout, paneId);
@@ -1076,14 +1077,25 @@ export const useStore = create<AppState>()(
           // Don't drop on yourself
           if (sourceLeaf.id === targetLeafId && zone === "center") return;
 
+          // Find the tab ID for removal from source
+          const sourceTab = sourceLeaf.tabs.find((t) => t.pane.id === paneId);
+
           let result: LayoutNode;
           let focusLeafId: string;
 
           if (zone === "center") {
-            // Replace: put dragged pane in target, remove source leaf
-            const withTarget = setLeafPane(layout, targetLeafId, pane);
-            const cleaned = removeLeaf(withTarget, sourceLeaf.id);
-            result = cleaned ?? withTarget;
+            // Add as tab in target
+            const updated = addTab(layout, targetLeafId, pane);
+            // Remove from source: if source had multiple tabs, just remove the tab
+            // If source had only one tab, remove the whole leaf
+            if (sourceLeaf.tabs.length <= 1) {
+              const cleaned = removeLeaf(updated, sourceLeaf.id);
+              result = cleaned ?? updated;
+            } else if (sourceTab) {
+              result = removeTab(updated, sourceLeaf.id, sourceTab.id);
+            } else {
+              result = updated;
+            }
             focusLeafId = targetLeafId;
           } else {
             // Directional: split target, then remove source
@@ -1272,16 +1284,23 @@ export const useStore = create<AppState>()(
 
         // Migrate: if layout is missing, construct from existing activePane.
         // Also migrate old single-pane leaves to tabs format.
-        if (
-          saved?.layout &&
-          typeof saved.layout === "object" &&
-          (saved.layout as LayoutNode).kind
-        ) {
-          merged.layout = migrateLayout(saved.layout);
-          if (typeof saved.focusedLeafId === "string") {
-            merged.focusedLeafId = saved.focusedLeafId;
+        try {
+          if (
+            saved?.layout &&
+            typeof saved.layout === "object" &&
+            (saved.layout as LayoutNode).kind
+          ) {
+            merged.layout = migrateLayout(saved.layout);
+            if (typeof saved.focusedLeafId === "string") {
+              merged.focusedLeafId = saved.focusedLeafId;
+            }
+          } else {
+            const rootLeaf = makeRootLeaf(merged.activePane);
+            merged.layout = rootLeaf;
+            merged.focusedLeafId = rootLeaf.id;
           }
-        } else {
+        } catch {
+          // Corrupted layout — start fresh
           const rootLeaf = makeRootLeaf(merged.activePane);
           merged.layout = rootLeaf;
           merged.focusedLeafId = rootLeaf.id;
@@ -1293,27 +1312,32 @@ export const useStore = create<AppState>()(
           typeof saved.groups === "object" &&
           !Array.isArray(saved.groups)
         ) {
-          const validGroups: Record<string, PaneGroup> = {};
-          for (const [gid, g] of Object.entries(
-            saved.groups as Record<string, unknown>,
-          )) {
-            const group = g as Record<string, unknown>;
-            if (
-              group &&
-              typeof group.id === "string" &&
-              Array.isArray(group.memberPaneIds) &&
-              group.savedLayout &&
-              typeof (group.savedLayout as LayoutNode).kind === "string"
-            ) {
-              // Migrate savedLayout in case it has old single-pane leaves
-              const migrated = {
-                ...(group as unknown as PaneGroup),
-                savedLayout: migrateLayout(group.savedLayout),
-              };
-              validGroups[gid] = migrated;
+          try {
+            const validGroups: Record<string, PaneGroup> = {};
+            for (const [gid, g] of Object.entries(
+              saved.groups as Record<string, unknown>,
+            )) {
+              const group = g as Record<string, unknown>;
+              if (
+                group &&
+                typeof group.id === "string" &&
+                Array.isArray(group.memberPaneIds) &&
+                group.savedLayout &&
+                typeof (group.savedLayout as LayoutNode).kind === "string"
+              ) {
+                const migrated = {
+                  ...(group as unknown as PaneGroup),
+                  savedLayout: migrateLayout(group.savedLayout),
+                };
+                validGroups[gid] = migrated;
+              }
             }
+            merged.groups = validGroups;
+          } catch {
+            // Corrupted group data — discard all groups
+            merged.groups = {};
+            merged.activeGroupId = null;
           }
-          merged.groups = validGroups;
         }
         if (typeof saved?.activeGroupId === "string") {
           merged.activeGroupId = saved.activeGroupId;

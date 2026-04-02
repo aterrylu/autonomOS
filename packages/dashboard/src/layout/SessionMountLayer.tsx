@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PreviewPane } from "../components/PreviewPane";
 import { SessionPane } from "../components/SessionPane";
 import { useStore } from "../store";
+import { useDragContext } from "./DragContext";
 import { type SlotRect, useLayoutContext } from "./LayoutContext";
 import { activeTabPane, allLeafIds, findLeaf } from "./layoutTree";
 
@@ -18,6 +19,7 @@ export function SessionMountLayer() {
   const previewPanes = useStore((s) => s.previewPanes);
   const layout = useStore((s) => s.layout);
   const focusedLeafId = useStore((s) => s.focusedLeafId);
+  const { isDragging } = useDragContext();
   const { getAllSlots } = useLayoutContext();
 
   // Force re-render when slots update (via ResizeObserver in PaneSlot)
@@ -73,6 +75,8 @@ export function SessionMountLayer() {
                     width: rect.width,
                     height: rect.height,
                     zIndex: s.id === focusedPaneId ? 2 : 1,
+                    // Disable pointer events during drag so DropZoneOverlay receives events
+                    pointerEvents: isDragging ? "none" : "auto",
                   }
                 : { display: "none" }
             }
@@ -96,6 +100,7 @@ export function SessionMountLayer() {
                     width: rect.width,
                     height: rect.height,
                     zIndex: p.id === focusedPaneId ? 2 : 1,
+                    pointerEvents: isDragging ? "none" : "auto",
                   }
                 : { display: "none" }
             }

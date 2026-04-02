@@ -149,10 +149,10 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
   const ghost = ghostStyle();
   const center = centerStyle();
 
-  // Label: "Move" for existing panes, "Split" / "Replace" for new
+  // Label: "Move" for existing panes, "Add Tab" / "Split" for new
   function dropLabel(): string | null {
     if (!zone) return null;
-    if (zone === "center") return "Replace";
+    if (zone === "center") return isExistingPane ? "Move" : "Add Tab";
     return isExistingPane ? "Move" : "Split";
   }
   const label = dropLabel();

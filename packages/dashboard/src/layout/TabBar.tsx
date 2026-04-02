@@ -1,3 +1,7 @@
+import {
+  type AgentStatus,
+  AgentStatusIcon,
+} from "../components/ui/agent-status-icon";
 import { THEMES, useStore } from "../store";
 import type { TabItem } from "./layoutTree";
 
@@ -12,17 +16,17 @@ interface TabBarProps {
 /**
  * Horizontal tab bar rendered inside each PaneSlot.
  * Auto-hides when the pane has only one tab (VS Code style).
- * Each tab shows the session/preview name and a close button.
+ * Each tab shows a status icon, session/preview name, and a close button.
  */
 export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
   const previewPanes = useStore((s) => s.previewPanes);
+  const agentStatuses = useStore((s) => s.agentStatuses);
   const switchTabInLeaf = useStore((s) => s.switchTabInLeaf);
   const closeTab = useStore((s) => s.closeTab);
   const page = THEMES[theme].page;
 
-  // Auto-hide for single tab
   if (tabs.length <= 1) return null;
 
   function getTabTitle(tab: TabItem): string {
@@ -38,6 +42,11 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
     return "Tab";
   }
 
+  function getTabStatus(tab: TabItem): AgentStatus | null {
+    if (tab.pane.type !== "session") return null;
+    return (agentStatuses[tab.pane.id]?.status as AgentStatus) ?? null;
+  }
+
   return (
     <div
       className="flex items-center shrink-0 overflow-x-auto"
@@ -49,13 +58,14 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
     >
       {tabs.map((tab, i) => {
         const isActive = i === activeTabIndex;
+        const status = getTabStatus(tab);
         return (
           <button
             key={tab.id}
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => switchTabInLeaf(leafId, i)}
-            className="flex items-center gap-1 px-3 text-[11px] shrink-0 cursor-pointer border-r transition-colors"
+            className={`group/tab flex items-center gap-1.5 px-2.5 text-[11px] shrink-0 cursor-pointer border-r transition-colors ${isActive ? "font-medium" : "hover:brightness-125"}`}
             style={{
               height: TAB_HEIGHT,
               background: isActive ? page.border : "transparent",
@@ -66,11 +76,11 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
                 : "2px solid transparent",
             }}
           >
+            {status && <AgentStatusIcon status={status} size={12} />}
             <span className="truncate max-w-[120px]">{getTabTitle(tab)}</span>
-            {/* Close button — only show on hover or when active */}
             <button
               type="button"
-              className={`ml-1 rounded hover:opacity-100 cursor-pointer ${isActive ? "opacity-60" : "opacity-0"}`}
+              className="ml-0.5 rounded opacity-0 group-hover/tab:opacity-60 hover:!opacity-100 cursor-pointer"
               style={{
                 fontSize: 10,
                 lineHeight: 1,
