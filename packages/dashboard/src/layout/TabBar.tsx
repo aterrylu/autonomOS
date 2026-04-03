@@ -66,11 +66,11 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => switchTabInLeaf(leafId, i)}
-            className={`group/tab flex items-center gap-1.5 px-2.5 text-[11px] cursor-pointer border-r transition-colors min-w-0 ${isActive ? "font-medium" : "hover:brightness-125"}`}
+            className={`group/tab flex items-center gap-1.5 px-2 text-[11px] cursor-pointer border-r transition-colors min-w-0 ${isActive ? "font-medium" : "hover:brightness-125"}`}
             style={{
               height: TAB_HEIGHT,
               width: `${100 / tabs.length}%`,
-              maxWidth: 180,
+              maxWidth: 200,
               background: isActive ? page.border : "transparent",
               color: isActive ? page.fg : page.statusFg,
               borderColor: page.border,
@@ -79,11 +79,17 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
                 : "2px solid transparent",
             }}
           >
-            {status && <AgentStatusIcon status={status} size={12} />}
-            <span className="truncate max-w-[120px]">{getTabTitle(tab)}</span>
+            {status && (
+              <span className="shrink-0">
+                <AgentStatusIcon status={status} size={12} />
+              </span>
+            )}
+            <span className="flex-1 truncate text-left">
+              {getTabTitle(tab)}
+            </span>
             <button
               type="button"
-              className="ml-0.5 rounded opacity-0 group-hover/tab:opacity-60 hover:!opacity-100 cursor-pointer"
+              className="shrink-0 rounded opacity-0 group-hover/tab:opacity-60 hover:!opacity-100 cursor-pointer ml-auto"
               style={{
                 fontSize: 10,
                 lineHeight: 1,
