@@ -45,7 +45,7 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
 
   function getTabStatus(tab: TabItem): AgentStatus | null {
     if (tab.pane.type !== "session") return null;
-    return (agentStatuses[tab.pane.id]?.status as AgentStatus) ?? null;
+    return (agentStatuses[tab.pane.id]?.status as AgentStatus) ?? "working";
   }
 
   return (
@@ -79,8 +79,8 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
                 : "2px solid transparent",
             }}
           >
-            <span className="shrink-0" style={{ width: 12, height: 12 }}>
-              {status && <AgentStatusIcon status={status} size={12} />}
+            <span className="shrink-0">
+              <AgentStatusIcon status={status} size={12} />
             </span>
             <span className="flex-1 truncate text-left">
               {getTabTitle(tab)}
