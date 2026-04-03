@@ -66,9 +66,11 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => switchTabInLeaf(leafId, i)}
-            className={`group/tab flex items-center gap-1.5 px-2.5 text-[11px] shrink-0 cursor-pointer border-r transition-colors ${isActive ? "font-medium" : "hover:brightness-125"}`}
+            className={`group/tab flex items-center gap-1.5 px-2.5 text-[11px] cursor-pointer border-r transition-colors min-w-0 ${isActive ? "font-medium" : "hover:brightness-125"}`}
             style={{
               height: TAB_HEIGHT,
+              width: `${100 / tabs.length}%`,
+              maxWidth: 180,
               background: isActive ? page.border : "transparent",
               color: isActive ? page.fg : page.statusFg,
               borderColor: page.border,
