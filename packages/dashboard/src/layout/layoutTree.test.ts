@@ -379,7 +379,7 @@ describe("removeTab", () => {
     expect(result.tabs[0].id).toBe("t2");
   });
 
-  it("adjusts activeTabIndex when removing before active", () => {
+  it("adjusts activeTabIndex when removing the active tab", () => {
     const l: LayoutLeaf = {
       kind: "leaf",
       id: "a",
@@ -392,6 +392,23 @@ describe("removeTab", () => {
     const result = removeTab(l, "a", "t2") as LayoutLeaf;
     expect(result.tabs.length).toBe(1);
     expect(result.activeTabIndex).toBe(0);
+  });
+
+  it("decrements activeTabIndex when removing tab before active (3+ tabs)", () => {
+    const l: LayoutLeaf = {
+      kind: "leaf",
+      id: "a",
+      tabs: [
+        { id: "t1", pane: pane("s1") },
+        { id: "t2", pane: pane("s2") },
+        { id: "t3", pane: pane("s3") },
+      ],
+      activeTabIndex: 2, // t3 is active
+    };
+    const result = removeTab(l, "a", "t1") as LayoutLeaf;
+    expect(result.tabs.length).toBe(2);
+    expect(result.activeTabIndex).toBe(1); // t3 is still active, now at index 1
+    expect(result.tabs[result.activeTabIndex].pane).toEqual(pane("s3"));
   });
 
   it("returns empty tabs when removing last tab", () => {

@@ -232,6 +232,7 @@ export function removeTab(
     if (idx === -1) return root;
     const newTabs = root.tabs.filter((t) => t.id !== tabId);
     let newIndex = root.activeTabIndex;
+    if (idx < newIndex) newIndex--;
     if (newIndex >= newTabs.length) newIndex = Math.max(0, newTabs.length - 1);
     return { ...root, tabs: newTabs, activeTabIndex: newIndex };
   }

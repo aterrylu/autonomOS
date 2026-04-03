@@ -57,55 +57,52 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
         borderBottom: `1px solid ${page.border}`,
       }}
     >
-      {tabs.map((tab, i) => {
-        const isActive = i === activeTabIndex;
-        const status = getTabStatus(tab);
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => switchTabInLeaf(leafId, i)}
-            className={`group/tab flex items-center gap-1.5 px-2 text-[11px] cursor-pointer border-r transition-colors min-w-0 ${isActive ? "font-medium" : "hover:brightness-125"}`}
-            style={{
-              height: TAB_HEIGHT,
-              width: `${100 / tabs.length}%`,
-              maxWidth: 200,
-              background: isActive ? page.border : "transparent",
-              color: isActive ? page.fg : page.statusFg,
-              borderColor: page.border,
-              borderBottom: isActive
+      {tabs.map((tab, i) => (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: tab click
+        <div
+          key={tab.id}
+          role="tab"
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => switchTabInLeaf(leafId, i)}
+          className={`group/tab flex items-center gap-1.5 px-2 text-[11px] cursor-pointer border-r transition-colors min-w-0 ${i === activeTabIndex ? "font-medium" : "hover:brightness-125"}`}
+          style={{
+            height: TAB_HEIGHT,
+            width: `${100 / tabs.length}%`,
+            maxWidth: 200,
+            background: i === activeTabIndex ? page.border : "transparent",
+            color: i === activeTabIndex ? page.fg : page.statusFg,
+            borderColor: page.border,
+            borderBottom:
+              i === activeTabIndex
                 ? `2px solid ${page.fg}`
                 : "2px solid transparent",
+          }}
+        >
+          <span className="shrink-0">
+            <AgentStatusIcon status={getTabStatus(tab)} size={12} />
+          </span>
+          <span className="flex-1 truncate text-left">{getTabTitle(tab)}</span>
+          <button
+            type="button"
+            className="shrink-0 rounded opacity-0 group-hover/tab:opacity-60 hover:!opacity-100 cursor-pointer ml-auto"
+            style={{
+              fontSize: 10,
+              lineHeight: 1,
+              background: "none",
+              border: "none",
+              color: "inherit",
             }}
+            onClick={(e) => {
+              e.stopPropagation();
+              closeTab(leafId, tab.id);
+            }}
+            tabIndex={-1}
           >
-            <span className="shrink-0">
-              <AgentStatusIcon status={status} size={12} />
-            </span>
-            <span className="flex-1 truncate text-left">
-              {getTabTitle(tab)}
-            </span>
-            <button
-              type="button"
-              className="shrink-0 rounded opacity-0 group-hover/tab:opacity-60 hover:!opacity-100 cursor-pointer ml-auto"
-              style={{
-                fontSize: 10,
-                lineHeight: 1,
-                background: "none",
-                border: "none",
-                color: "inherit",
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                closeTab(leafId, tab.id);
-              }}
-              tabIndex={-1}
-            >
-              ✕
-            </button>
+            ✕
           </button>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }
