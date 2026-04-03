@@ -533,72 +533,109 @@ function buildEnv(sessionId: string): Record<string, string> {
 
 // ── Auto-trust: dismiss Claude Code startup prompts ──────────────────
 
-/** Regex to strip ANSI escape sequences from PTY output (ESC, BEL, CSI, OSC) */
-const ANSI_STRIP_RE =
+/** Strip ANSI escape sequences from PTY output for needle matching */
+const ANSI_RE =
   /\x1b[[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
 
-// Needle strings for each prompt type. Stripped of spaces because the TUI
-// renders words via cursor-positioning escape sequences.
-const TRUST_NEEDLE = "Yes,Itrustthisfolder";
-const CHANNELS_NEEDLE = "WARNING: Loading development channels";
-
-interface StartupPrompt {
-  id: string;
-  needle: string;
-}
+// Multiple needle variants per prompt for robustness — the TUI renders
+// text via cursor positioning, so after ANSI stripping words may or may
+// not have spaces between them depending on the terminal width.
+const TRUST_NEEDLES = [
+  "Yes,Itrustthisfolder",
+  "Yes, I trust this folder",
+  "Itrustthisfolder",
+];
+const CHANNELS_NEEDLES = [
+  "WARNING: Loading development channels",
+  "WARNING:Loadingdevelopmentchannels",
+  "Iamusingthisforlocaldevelopment",
+  "I am using this for local development",
+];
 
 /**
  * Watch PTY output during startup for interactive prompts that block
  * Claude Code from starting. Auto-answers by sending Enter (\r).
  *
- * Only watches for prompts that are expected based on spawn args:
- * - Trust prompt: always expected (CC may ask for any directory)
- * - Channels prompt: only when --dangerously-load-development-channels is used
+ * Strategy: detect prompt needles in PTY output, then send Enter
+ * multiple times with delays to handle timing variations. Sending
+ * Enter when no prompt is showing is harmless — CC ignores it.
  *
- * Self-disposes after all expected prompts are handled or after 15s timeout.
+ * Self-disposes after all expected prompts are handled or after 30s timeout.
  */
 function attachStartupWatcher(pty: IPty, expectChannels: boolean): void {
-  const expected: StartupPrompt[] = [{ id: "trust", needle: TRUST_NEEDLE }];
-  if (expectChannels) {
-    expected.push({ id: "channels", needle: CHANNELS_NEEDLE });
-  }
-
   let buf = "";
-  const MAX_BUF = 4096;
+  const MAX_BUF = 8192;
   const answered = new Set<string>();
   let disposed = false;
 
+  /** Send Enter with multiple retries at increasing delays. */
+  function sendEnterBurst(promptId: string) {
+    if (answered.has(promptId)) return;
+    answered.add(promptId);
+    console.log(`[auto-trust] answered "${promptId}" prompt`);
+
+    // Send Enter 5 times with increasing delays — at least one will land
+    // when the TUI is ready. Extra Enters are harmless (CC ignores them).
+    const delays = [50, 200, 500, 1000, 2000];
+    for (const delay of delays) {
+      setTimeout(() => {
+        if (disposed) return;
+        try {
+          pty.write("\r");
+        } catch {
+          // PTY dead — stop retrying
+          disposed = true;
+        }
+      }, delay);
+    }
+  }
+
   const disposable = pty.onData((data: string) => {
     if (disposed) return;
-    // Strip ANSI escape sequences and control chars so needle matching works.
-    const clean = data.replace(ANSI_STRIP_RE, "");
+    const clean = data.replace(ANSI_RE, "");
     buf += clean;
     if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
 
-    for (const prompt of expected) {
-      if (answered.has(prompt.id)) continue;
-      if (buf.includes(prompt.needle)) {
-        answered.add(prompt.id);
-        setTimeout(() => {
-          try {
-            pty.write("\r");
-          } catch {
-            // PTY already dead
-          }
-        }, 300);
-        buf = "";
-        console.log(`[auto-trust] answered "${prompt.id}" prompt`);
-        break;
+    // Check trust prompt
+    if (!answered.has("trust")) {
+      for (const needle of TRUST_NEEDLES) {
+        if (buf.includes(needle)) {
+          sendEnterBurst("trust");
+          break;
+        }
       }
     }
 
-    if (answered.size === expected.length) cleanup();
+    // Check channels prompt (don't clear buf — trust and channels
+    // may arrive in the same data chunk after trust is dismissed)
+    if (expectChannels && !answered.has("channels")) {
+      for (const needle of CHANNELS_NEEDLES) {
+        if (buf.includes(needle)) {
+          sendEnterBurst("channels");
+          break;
+        }
+      }
+    }
+
+    const needed = expectChannels ? 2 : 1;
+    if (answered.size >= needed) cleanup();
   });
 
-  // 15s timeout — prompts appear within first few seconds if at all
+  // 30s timeout
   const timer = setTimeout(() => {
-    if (!disposed) cleanup();
-  }, 15_000);
+    if (!disposed) {
+      const unanswered: string[] = [];
+      if (!answered.has("trust")) unanswered.push("trust");
+      if (expectChannels && !answered.has("channels"))
+        unanswered.push("channels");
+      if (unanswered.length > 0) {
+        console.warn(
+          `[auto-trust] timed out — never dismissed: ${unanswered.join(", ")}`,
+        );
+      }
+      cleanup();
+    }
+  }, 30_000);
 
   function cleanup() {
     if (disposed) return;
