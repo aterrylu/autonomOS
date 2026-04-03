@@ -79,8 +79,10 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
                 : "2px solid transparent",
           }}
         >
-          <span className="shrink-0">
-            <AgentStatusIcon status={getTabStatus(tab)} size={12} />
+          <span className="shrink-0" style={{ width: 12, height: 12 }}>
+            {getTabStatus(tab) && (
+              <AgentStatusIcon status={getTabStatus(tab)!} size={12} />
+            )}
           </span>
           <span className="flex-1 truncate text-left">{getTabTitle(tab)}</span>
           <button
