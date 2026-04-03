@@ -2,8 +2,9 @@ import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
 import { DropZoneOverlay } from "./DropZoneOverlay";
 import { useLayoutContext } from "./LayoutContext";
-import { allLeafIds } from "./layoutTree";
+import { allLeafIds, findLeaf } from "./layoutTree";
 import { notifySlotUpdate } from "./SessionMountLayer";
+import { TAB_HEIGHT, TabBar } from "./TabBar";
 
 interface PaneSlotProps {
   leafId: string;
@@ -13,7 +14,8 @@ interface PaneSlotProps {
 
 /**
  * PaneSlot — renders the chrome for a single leaf slot:
- * - Registers its bounding rect so SessionMountLayer can position sessions here
+ * - Tab bar (auto-hides for single tab)
+ * - Registers its bounding rect (offset by tab bar) for SessionMountLayer
  * - Shows a focus ring when focused
  * - Renders drop zones during sidebar drags
  * - Renders a close button (when there are multiple panes)
@@ -27,19 +29,18 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
   const setFocusedLeaf = useStore((s) => s.setFocusedLeaf);
   const closeLeaf = useStore((s) => s.closeLeaf);
 
-  // Determine if we have multiple leaves (show close button)
+  const leaf = findLeaf(layout, leafId);
   const leafCount = allLeafIds(layout).length;
+  const hasTabs = (leaf?.tabs.length ?? 0) > 0;
 
   // Register slot rect + keep it updated via ResizeObserver.
-  // Coords are relative to the App-level "relative flex flex-1 overflow-hidden" div
-  // (the same ancestor that SessionMountLayer's absolute children are positioned within).
+  // Always offset top by TAB_HEIGHT since tab bar is always visible.
   useEffect(() => {
     const el = slotRef.current;
     if (!el) return;
 
     function updateRect() {
       if (!el) return;
-      // Walk up to find the containing "relative" panel area
       let container: HTMLElement | null = el.parentElement;
       while (container && getComputedStyle(container).position === "static") {
         container = container.parentElement;
@@ -48,11 +49,13 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
         ? container.getBoundingClientRect()
         : { left: 0, top: 0 };
       const rect = el.getBoundingClientRect();
+      // Offset top by tab bar height when tabs are visible
+      const tabOffset = hasTabs ? TAB_HEIGHT : 0;
       registerSlot(leafId, {
         left: rect.left - containerRect.left,
-        top: rect.top - containerRect.top,
+        top: rect.top - containerRect.top + tabOffset,
         width: rect.width,
-        height: rect.height,
+        height: rect.height - tabOffset,
       });
       notifySlotUpdate();
     }
@@ -65,7 +68,7 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
       unregisterSlot(leafId);
       notifySlotUpdate();
     };
-  }, [leafId, registerSlot, unregisterSlot]);
+  }, [leafId, registerSlot, unregisterSlot, hasTabs]);
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: pane focus on click
@@ -79,14 +82,24 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
       }}
       onClick={() => setFocusedLeaf(leafId)}
     >
+      {/* Tab bar — auto-hides for single tab */}
+      {leaf && hasTabs && (
+        <TabBar
+          leafId={leafId}
+          tabs={leaf.tabs}
+          activeTabIndex={leaf.activeTabIndex}
+        />
+      )}
+
       {/* Close button — shown when multiple panes */}
       {leafCount > 1 && (
         <button
           type="button"
-          className="absolute top-1 right-1 z-30 flex items-center justify-center w-5 h-5 rounded text-xs cursor-pointer opacity-0 hover:opacity-100 transition-opacity focus:opacity-100"
+          className="absolute right-1 z-30 flex items-center justify-center w-5 h-5 rounded text-xs cursor-pointer opacity-0 hover:opacity-100 transition-opacity focus:opacity-100"
           style={{
             background: page.border,
             color: page.statusFg,
+            top: hasTabs ? TAB_HEIGHT + 4 : 4,
           }}
           onClick={(e) => {
             e.stopPropagation();

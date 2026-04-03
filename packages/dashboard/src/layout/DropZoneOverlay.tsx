@@ -22,7 +22,7 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
   const { isDragging, dragData, endDrag } = useDragContext();
   const [zone, setZone] = useState<SplitZone | null>(null);
   const splitLeafWithPane = useStore((s) => s.splitLeafWithPane);
-  const setLeafPane = useStore((s) => s.setLeafPane);
+  const addTabToLeaf = useStore((s) => s.addTabToLeaf);
   const movePaneToLeaf = useStore((s) => s.movePaneToLeaf);
   const layout = useStore((s) => s.layout);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -63,10 +63,10 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
       // Move existing pane — removes from old position, places in new
       movePaneToLeaf(pane.id, leafId, z);
     } else {
-      // New pane — split or replace
+      // New pane — split or add as tab
       switch (z) {
         case "center":
-          setLeafPane(leafId, pane);
+          addTabToLeaf(leafId, pane);
           break;
         case "north":
           splitLeafWithPane(leafId, "vertical", "first", pane);
@@ -149,10 +149,10 @@ export function DropZoneOverlay({ leafId }: DropZoneOverlayProps) {
   const ghost = ghostStyle();
   const center = centerStyle();
 
-  // Label: "Move" for existing panes, "Split" / "Replace" for new
+  // Label: "Move" for existing panes, "Add Tab" / "Split" for new
   function dropLabel(): string | null {
     if (!zone) return null;
-    if (zone === "center") return "Replace";
+    if (zone === "center") return isExistingPane ? "Move" : "Add Tab";
     return isExistingPane ? "Move" : "Split";
   }
   const label = dropLabel();

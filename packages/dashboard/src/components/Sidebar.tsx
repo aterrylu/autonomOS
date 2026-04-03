@@ -6,20 +6,14 @@ import {
   encodeDragData,
   useDragContext,
 } from "../layout/DragContext";
+import { allTabPanes } from "../layout/layoutTree";
 import type {
   ActivePane,
-  PaneGroup,
   PreviewPaneInfo,
   ProjectInfo,
   SessionInfo,
 } from "../store";
-import {
-  buildSidebarItems,
-  getGroupForPane,
-  sidebarItemPane,
-  THEMES,
-  useStore,
-} from "../store";
+import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
 
 /** Select data fields that change over time — useShallow prevents re-renders when values are equal */
 function useSidebarData() {
@@ -32,9 +26,9 @@ function useSidebarData() {
       paneOrder: s.paneOrder,
       previewPanes: s.previewPanes,
       status: s.status,
-      groups: s.groups,
       notificationCounts: s.notificationCounts,
       agentStatuses: s.agentStatuses,
+      layout: s.layout,
     })),
   );
 }
@@ -64,248 +58,11 @@ import {
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
-// ── Display list types for two-pass rendering ─────────────────────────────
-
-type GroupMember =
-  | { type: "session"; session: SessionInfo; pane: ActivePane }
-  | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
+// ── Display list types ──────────────────────────────────────────────────────
 
 type DisplayItem =
-  | { type: "group"; group: PaneGroup; members: GroupMember[] }
   | { type: "session"; session: SessionInfo; pane: ActivePane }
   | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
-
-// ── GroupContainer ─────────────────────────────────────────────────────────
-
-interface GroupContainerProps {
-  group: PaneGroup;
-  members: GroupMember[];
-  page: PageTheme;
-  activePane: ActivePane | null;
-  sessionMetaMap: Map<
-    string,
-    {
-      summary?: string;
-      projectName?: string;
-      gitBranch?: string;
-      lastModified: number;
-      gitDiffStat?: { insertions: number; deletions: number };
-    }
-  >;
-  onHeaderClick: () => void;
-  onMemberClick: (pane: ActivePane) => void;
-  onMemberDragStart: (e: React.DragEvent, pane: ActivePane) => void;
-  onMemberDragEnd: () => void;
-  closePreview: (id: string) => void;
-}
-
-const GroupContainer = React.memo(function GroupContainer({
-  group,
-  members,
-  page,
-  activePane,
-  sessionMetaMap,
-  onHeaderClick,
-  onMemberClick,
-  onMemberDragStart,
-  onMemberDragEnd,
-  closePreview,
-}: GroupContainerProps) {
-  const [collapsed, setCollapsed] = useState(false);
-
-  // Guard: if members is empty (group just dissolved), don't render
-  if (members.length === 0) return null;
-
-  function isPaneActive(pane: ActivePane): boolean {
-    if (!activePane) return false;
-    return activePane.type === pane.type && activePane.id === pane.id;
-  }
-
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: drop zone for group container
-    <div
-      style={{
-        borderLeft: `3px solid ${group.color}`,
-        marginBottom: "2px",
-      }}
-      onDragOver={(e) => {
-        // Accept drops from group members being dragged back in
-        e.preventDefault();
-      }}
-      onDrop={(e) => {
-        // Drops within the group container are no-ops (member stays in group)
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-    >
-      {/* Group header */}
-      {/* biome-ignore lint/a11y/useSemanticElements: composite interactive element */}
-      <div
-        role="button"
-        tabIndex={-1}
-        onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-        className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
-        style={{
-          paddingLeft: "9px",
-          paddingRight: "12px",
-          background: "transparent",
-        }}
-        onClick={() => {
-          onHeaderClick();
-          setCollapsed((c) => !c);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            onHeaderClick();
-            setCollapsed((c) => !c);
-          }
-        }}
-      >
-        <span className="text-[10px] shrink-0" style={{ color: page.statusFg }}>
-          {collapsed ? "▶" : "▼"}
-        </span>
-        <span className="flex-1 truncate text-xs font-medium">
-          {group.name}
-        </span>
-        {/* Member count dots */}
-        <span className="flex items-center gap-0.5 shrink-0">
-          {members.map((m) => (
-            <span
-              key={m.pane.id}
-              className="inline-block h-1.5 w-1.5 rounded-full"
-              style={{ background: group.color, opacity: 0.7 }}
-            />
-          ))}
-        </span>
-      </div>
-
-      {/* Group members — draggable to ungroup */}
-      {!collapsed && (
-        <div>
-          {members.map((m, memberIdx) => {
-            const pane = m.pane;
-            const isActive = isPaneActive(pane);
-            const isLast = memberIdx === members.length - 1;
-
-            const memberDragProps = {
-              draggable: true,
-              onDragStart: (e: React.DragEvent) => {
-                e.dataTransfer.setData(
-                  "application/autonomos-ungroup",
-                  group.id,
-                );
-                onMemberDragStart(e, pane);
-              },
-              onDragEnd: onMemberDragEnd,
-            };
-
-            if (m.type === "preview") {
-              return (
-                // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-                <div
-                  key={`gp-${m.preview.id}`}
-                  role="button"
-                  tabIndex={-1}
-                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                  {...memberDragProps}
-                  className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
-                  style={{
-                    paddingLeft: "20px",
-                    paddingRight: "12px",
-                    background: isActive ? page.border : "transparent",
-                  }}
-                  onClick={() => onMemberClick(pane)}
-                  onKeyDown={(e) => e.key === "Enter" && onMemberClick(pane)}
-                >
-                  <span
-                    className="shrink-0 text-[10px] select-none"
-                    style={{ color: page.statusFg }}
-                  >
-                    {isLast ? "└" : "├"}
-                  </span>
-                  <Codicon name="markdown" size={12} />
-                  <span className="flex-1 truncate text-xs">
-                    {m.preview.title}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closePreview(m.preview.id);
-                    }}
-                    className="shrink-0 rounded cursor-pointer opacity-0 group-hover/member:opacity-100 transition-opacity"
-                    style={{ color: page.statusFg }}
-                    title="Close preview"
-                  >
-                    <Codicon name="close" size={12} />
-                  </button>
-                </div>
-              );
-            }
-
-            const s = m.session;
-            const meta = s.claudeSessionId
-              ? sessionMetaMap.get(s.claudeSessionId)
-              : undefined;
-            const displayName = s.name;
-            const lastActive = meta?.lastModified ?? s.createdAt;
-
-            return (
-              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-              <div
-                key={`gs-${s.id}`}
-                role="button"
-                tabIndex={-1}
-                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                {...memberDragProps}
-                className="group/member flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
-                style={{
-                  paddingLeft: "20px",
-                  paddingRight: "12px",
-                  background: isActive ? page.border : "transparent",
-                }}
-                onClick={() => onMemberClick(pane)}
-                onKeyDown={(e) => e.key === "Enter" && onMemberClick(pane)}
-              >
-                <span
-                  className="shrink-0 text-[10px] select-none"
-                  style={{ color: page.statusFg }}
-                >
-                  {isLast ? "└" : "├"}
-                </span>
-                <Codicon name="claude" size={12} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1">
-                    <span className="flex-1 truncate text-xs">
-                      {displayName}
-                    </span>
-                    {meta?.gitBranch && meta?.gitDiffStat && (
-                      <DiffStat stat={meta.gitDiffStat} />
-                    )}
-                  </div>
-                  <div
-                    className="flex items-center text-[10px]"
-                    style={{ color: page.statusFg }}
-                  >
-                    <span className="min-w-0 truncate">
-                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
-                      {meta?.gitBranch &&
-                        meta.gitBranch !== "HEAD" &&
-                        ` · ${meta.gitBranch}`}
-                    </span>
-                    <span className="ml-1.5 shrink-0">
-                      {formatAge(lastActive)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-});
 
 function DiffStat({
   stat,
@@ -329,9 +86,9 @@ export function Sidebar() {
     paneOrder,
     previewPanes,
     status,
-    groups,
     notificationCounts,
     agentStatuses,
+    layout,
   } = useSidebarData();
   const {
     fetchSessions,
@@ -348,62 +105,33 @@ export function Sidebar() {
   const isSpawning = status === "spawning...";
   const { startDrag, endDrag } = useDragContext();
 
+  // Set of pane IDs currently visible on screen (active tab in each leaf)
+  const visiblePaneIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of allTabPanes(layout)) ids.add(p.id);
+    return ids;
+  }, [layout]);
+
   const sidebarItems = useMemo(
     () => buildSidebarItems(sessions, previewPanes, paneOrder),
     [sessions, previewPanes, paneOrder],
   );
 
-  // Two-pass: build a display list grouping sessions by their PaneGroup.
-  // Groups appear at the position of their first member in the original order.
+  // Flat display list — no group containers, just sessions and previews in order.
   const displayItems = useMemo((): DisplayItem[] => {
     const result: DisplayItem[] = [];
-    const seenGroups = new Set<string>();
 
     for (const item of sidebarItems) {
       const pane = sidebarItemPane(item);
-
-      // Check group membership for both sessions and previews
-      const paneId = item.data.id;
-      const group = getGroupForPane(groups, paneId);
-
-      if (!group) {
-        // Ungrouped item — render standalone
-        if (item.type === "preview") {
-          result.push({ type: "preview", preview: item.data, pane });
-        } else {
-          result.push({ type: "session", session: item.data, pane });
-        }
-        continue;
+      if (item.type === "preview") {
+        result.push({ type: "preview", preview: item.data, pane });
+      } else {
+        result.push({ type: "session", session: item.data, pane });
       }
-
-      // Build the GroupMember entry
-      const member: GroupMember =
-        item.type === "preview"
-          ? { type: "preview", preview: item.data, pane }
-          : { type: "session", session: item.data, pane };
-
-      if (seenGroups.has(group.id)) {
-        const existing = result.find(
-          (d): d is DisplayItem & { type: "group" } =>
-            d.type === "group" && d.group.id === group.id,
-        );
-        if (existing) {
-          existing.members.push(member);
-        }
-        continue;
-      }
-
-      // First time we see this group — create the group entry
-      seenGroups.add(group.id);
-      result.push({
-        type: "group",
-        group,
-        members: [member],
-      });
     }
 
     return result;
-  }, [sidebarItems, groups]);
+  }, [sidebarItems]);
 
   // Build a lookup map from claudeSessionId → enriched project session data.
   const sessionMetaMap = useMemo(() => {
@@ -522,31 +250,7 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone for ungroup */}
-      <div
-        className="py-1"
-        onDragOver={(e) => {
-          // Accept drops (for ungroup drags from group members)
-          if (e.dataTransfer.types.includes("application/autonomos-ungroup")) {
-            e.preventDefault();
-          }
-        }}
-        onDrop={(e) => {
-          // Handle ungroup: member dragged out of its group container
-          const groupId = e.dataTransfer.getData(
-            "application/autonomos-ungroup",
-          );
-          const paneData = e.dataTransfer.getData(DRAG_TYPE);
-          if (groupId && paneData) {
-            e.preventDefault();
-            const decoded = JSON.parse(paneData);
-            if (decoded?.pane?.id) {
-              useStore.getState().removeFromGroup(groupId, decoded.pane.id);
-            }
-          }
-          handleDragEnd();
-        }}
-      >
+      <div className="py-1">
         {displayItems.length === 0 && (
           <p
             className="px-3 py-3 text-center text-xs"
@@ -557,48 +261,7 @@ export function Sidebar() {
         )}
 
         {displayItems.map((item, idx) => {
-          // Group container — no drag participation
-          if (item.type === "group") {
-            const firstMemberPane = item.members[0]?.pane;
-            return (
-              <GroupContainer
-                key={`group-${item.group.id}`}
-                group={item.group}
-                members={item.members}
-                page={page}
-                activePane={activePane}
-                sessionMetaMap={sessionMetaMap}
-                onHeaderClick={() => {
-                  if (firstMemberPane) {
-                    switchPane(firstMemberPane);
-                    if (firstMemberPane.type === "session") {
-                      focusTerminal(firstMemberPane.id);
-                      if (notificationCounts[firstMemberPane.id])
-                        markNotificationsRead(firstMemberPane.id);
-                    }
-                  }
-                }}
-                onMemberClick={(pane) => {
-                  switchPane(pane);
-                  if (pane.type === "session") {
-                    focusTerminal(pane.id);
-                    if (notificationCounts[pane.id])
-                      markNotificationsRead(pane.id);
-                  }
-                }}
-                onMemberDragStart={(e, pane) => {
-                  const data = { pane };
-                  e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
-                  e.dataTransfer.effectAllowed = "move";
-                  startDrag(data);
-                }}
-                onMemberDragEnd={handleDragEnd}
-                closePreview={closePreview}
-              />
-            );
-          }
-
-          // Ungrouped session row
+          // Session row
           if (item.type === "session") {
             const s = item.session;
             const pane = item.pane;
@@ -617,7 +280,13 @@ export function Sidebar() {
                 key={`s-${s.id}`}
                 role="button"
                 tabIndex={-1}
-                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                onMouseDown={(e: React.MouseEvent) => {
+                  // Don't preventDefault — it blocks drag initiation.
+                  // focusTerminal() handles stealing focus back after click.
+                  // Only prevent for non-draggable elements (group headers).
+                  if (!(e.currentTarget as HTMLElement).draggable)
+                    e.preventDefault();
+                }}
                 draggable
                 onDragStart={(e) => handleDragStart(e, idx, pane)}
                 onDragOver={(e) => handleDragOver(e, idx)}
@@ -628,7 +297,11 @@ export function Sidebar() {
                   borderLeft: "3px solid transparent",
                   paddingLeft: "9px",
                   paddingRight: "12px",
-                  background: isActive ? page.border : "transparent",
+                  background: isActive
+                    ? page.border
+                    : visiblePaneIds.has(pane.id)
+                      ? `${page.border}80`
+                      : "transparent",
                   ...(isDropTarget && {
                     boxShadow: `inset 0 2px 0 ${page.fg}`,
                   }),
@@ -706,7 +379,11 @@ export function Sidebar() {
               onDragEnd={handleDragEnd}
               className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
               style={{
-                background: isActive ? page.border : "transparent",
+                background: isActive
+                  ? page.border
+                  : visiblePaneIds.has(pane.id)
+                    ? `${page.border}80`
+                    : "transparent",
                 ...(isDropTarget && {
                   boxShadow: `inset 0 2px 0 ${page.fg}`,
                 }),
