@@ -145,20 +145,46 @@ function routeInbound(msg: GatewayMessage): void {
 
 // ── Agent routing ─────────────────────────────────────────────────
 
-/** Resolve agent by name. Exact case-insensitive match only. */
-function resolveAgent(name: string): [string, WSContext] | null {
-  // Exact session ID match
+/**
+ * Resolve agent by name. Exact case-insensitive match.
+ * Uses the same title-resolution logic as getAgentList() so the names
+ * returned by list_agents actually work with send().
+ */
+async function resolveAgent(name: string): Promise<[string, WSContext] | null> {
+  // Exact session ID match (UUID)
   const byId = sessionClients.get(name);
   if (byId) return [name, byId];
 
-  // Exact name match (case-insensitive)
   const sessions = getAllSessions();
-  const match = sessions.find(
+
+  // First try raw s.name match (cheap, no async)
+  const rawMatch = sessions.find(
     (s) => s.name.toLowerCase() === name.toLowerCase(),
   );
-  if (match) {
-    const ws = sessionClients.get(match.id);
-    if (ws) return [match.id, ws];
+  if (rawMatch) {
+    const ws = sessionClients.get(rawMatch.id);
+    if (ws) return [rawMatch.id, ws];
+  }
+
+  // Then try title-resolved names (from JSONL, same as getAgentList)
+  const withClaude = sessions
+    .filter((s) => s.claudeSessionId)
+    .map((s) => ({
+      sessionId: s.claudeSessionId!,
+      cwd: s.workingDirectory,
+    }));
+  if (withClaude.length > 0) {
+    const titles = await batchGetTitles(withClaude).catch(
+      () => new Map<string, string>(),
+    );
+    for (const s of sessions) {
+      const resolved =
+        (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name;
+      if (resolved.toLowerCase() === name.toLowerCase()) {
+        const ws = sessionClients.get(s.id);
+        if (ws) return [s.id, ws];
+      }
+    }
   }
 
   return null;
@@ -207,7 +233,7 @@ async function routeToAgent(
   targetName: string,
   content: string,
 ): Promise<string | null> {
-  const resolved = resolveAgent(targetName);
+  const resolved = await resolveAgent(targetName);
   if (!resolved) {
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
     return `Agent "${targetName}" not found or not connected. Use list_agents to see available agents.`;
