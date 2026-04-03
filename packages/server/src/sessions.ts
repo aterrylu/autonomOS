@@ -576,15 +576,15 @@ function attachStartupWatcher(pty: IPty, expectChannels: boolean): void {
 
     // Send Enter 5 times with increasing delays — at least one will land
     // when the TUI is ready. Extra Enters are harmless (CC ignores them).
+    // NOTE: Don't check `disposed` — cleanup may fire before the burst
+    // completes, but we still need the Enters to land.
     const delays = [50, 200, 500, 1000, 2000];
     for (const delay of delays) {
       setTimeout(() => {
-        if (disposed) return;
         try {
           pty.write("\r");
         } catch {
-          // PTY dead — stop retrying
-          disposed = true;
+          // PTY dead — ignore
         }
       }, delay);
     }
@@ -611,6 +611,8 @@ function attachStartupWatcher(pty: IPty, expectChannels: boolean): void {
     if (expectChannels && !answered.has("channels")) {
       for (const needle of CHANNELS_NEEDLES) {
         if (buf.includes(needle)) {
+          // If we see the channels prompt, trust was implicitly passed
+          if (!answered.has("trust")) answered.add("trust");
           sendEnterBurst("channels");
           break;
         }
