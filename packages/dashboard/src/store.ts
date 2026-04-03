@@ -30,7 +30,6 @@ function shallowEqualRecord<V>(
 import {
   activeTabPane,
   addTab,
-  allPanes,
   allTabPanes,
   derivedActivePane,
   findLeaf,
@@ -202,7 +201,7 @@ function syncGroupAfterRemoval(
 
   if (activeGroupId && updated[activeGroupId]) {
     const group = updated[activeGroupId];
-    const remainingIds = new Set(allPanes(newLayout).map((p) => p.id));
+    const remainingIds = new Set(allTabPanes(newLayout).map((p) => p.id));
     const updatedMembers = group.memberPaneIds.filter((id) =>
       remainingIds.has(id),
     );
@@ -900,7 +899,7 @@ export const useStore = create<AppState>()(
             ? addPaneToGroup(
                 groups,
                 activeGroupId,
-                allPanes(layout),
+                allTabPanes(layout),
                 pane.id,
                 root,
                 newId,
@@ -923,7 +922,7 @@ export const useStore = create<AppState>()(
           cwd = "~",
         ) => {
           const { layout } = get();
-          const existingPanes = allPanes(layout);
+          const existingPanes = allTabPanes(layout);
           // Reserve a slot by inserting a null-pane leaf first (shows loading state)
           const { root: reservedRoot, newLeafId: newId } = insertLeaf(
             layout,
@@ -1074,8 +1073,11 @@ export const useStore = create<AppState>()(
           const sourceLeaf = findLeafByPaneId(layout, paneId);
           if (!sourceLeaf) return;
 
-          // Don't drop on yourself
-          if (sourceLeaf.id === targetLeafId && zone === "center") return;
+          // Don't drop on yourself (center = no-op, directional with single tab = no-op)
+          if (sourceLeaf.id === targetLeafId) {
+            if (zone === "center") return;
+            if (sourceLeaf.tabs.length <= 1) return;
+          }
 
           // Find the tab ID for removal from source
           const sourceTab = sourceLeaf.tabs.find((t) => t.pane.id === paneId);
@@ -1098,7 +1100,7 @@ export const useStore = create<AppState>()(
             }
             focusLeafId = targetLeafId;
           } else {
-            // Directional: split target, then remove source
+            // Directional: split target, then remove source tab/leaf
             const directionMap = {
               north: ["vertical", "first"],
               south: ["vertical", "second"],
@@ -1113,8 +1115,15 @@ export const useStore = create<AppState>()(
               side,
               pane,
             );
-            const cleaned = removeLeaf(split, sourceLeaf.id);
-            result = cleaned ?? split;
+            // If source had multiple tabs, only remove the dragged tab
+            if (sourceLeaf.tabs.length <= 1) {
+              const cleaned = removeLeaf(split, sourceLeaf.id);
+              result = cleaned ?? split;
+            } else if (sourceTab) {
+              result = removeTab(split, sourceLeaf.id, sourceTab.id);
+            } else {
+              result = split;
+            }
             focusLeafId = newId;
           }
 
@@ -1299,8 +1308,8 @@ export const useStore = create<AppState>()(
             merged.layout = rootLeaf;
             merged.focusedLeafId = rootLeaf.id;
           }
-        } catch {
-          // Corrupted layout — start fresh
+        } catch (err) {
+          console.error("[autonomOS] Failed to migrate layout:", err);
           const rootLeaf = makeRootLeaf(merged.activePane);
           merged.layout = rootLeaf;
           merged.focusedLeafId = rootLeaf.id;
@@ -1333,8 +1342,8 @@ export const useStore = create<AppState>()(
               }
             }
             merged.groups = validGroups;
-          } catch {
-            // Corrupted group data — discard all groups
+          } catch (err) {
+            console.error("[autonomOS] Failed to migrate groups:", err);
             merged.groups = {};
             merged.activeGroupId = null;
           }
