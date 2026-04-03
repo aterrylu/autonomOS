@@ -31,11 +31,10 @@ export function PaneSlot({ leafId, focused }: PaneSlotProps) {
 
   const leaf = findLeaf(layout, leafId);
   const leafCount = allLeafIds(layout).length;
-  const hasTabs = (leaf?.tabs.length ?? 0) > 1;
+  const hasTabs = (leaf?.tabs.length ?? 0) > 0;
 
   // Register slot rect + keep it updated via ResizeObserver.
-  // When tabs are visible, offset the top by TAB_HEIGHT so the terminal
-  // renders below the tab bar.
+  // Always offset top by TAB_HEIGHT since tab bar is always visible.
   useEffect(() => {
     const el = slotRef.current;
     if (!el) return;

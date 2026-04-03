@@ -27,7 +27,8 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
   const closeTab = useStore((s) => s.closeTab);
   const page = THEMES[theme].page;
 
-  if (tabs.length <= 1) return null;
+  // Always show tab bar — even for single tab (matches cmux)
+  if (tabs.length === 0) return null;
 
   function getTabTitle(tab: TabItem): string {
     const { pane } = tab;
