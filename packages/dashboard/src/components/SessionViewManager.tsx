@@ -1,6 +1,7 @@
 import { SplitLayout } from "../layout/SplitLayout";
 import { THEMES, useStore } from "../store";
 import { ConversationView } from "./conversation/ConversationView";
+import { HierarchyPanel } from "./HierarchyPanel";
 
 /**
  * SessionViewManager — renders the main content area.
@@ -18,6 +19,14 @@ export function SessionViewManager() {
   const viewMode = useStore((s) => s.viewMode);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+
+  if (viewMode === "hierarchy") {
+    return (
+      <div className="relative z-10 flex flex-1 overflow-hidden">
+        <HierarchyPanel />
+      </div>
+    );
+  }
 
   if (!activePane) {
     return (
