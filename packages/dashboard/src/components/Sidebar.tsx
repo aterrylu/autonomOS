@@ -445,6 +445,9 @@ export function Sidebar() {
           />
         ))}
       </div>
+
+      {/* Org Chart Section */}
+      <OrgChartSection page={page} />
     </aside>
   );
 }
@@ -551,6 +554,47 @@ const ProjectItem = React.memo(function ProjectItem({
     </div>
   );
 });
+
+// ── Org Chart Sidebar Section ─────────────────────────────────────────
+
+function OrgChartSection({ page }: { page: PageTheme }) {
+  const viewMode = useStore((s) => s.viewMode);
+  const setViewMode = useStore((s) => s.setViewMode);
+  const isActive = viewMode === "hierarchy";
+
+  return (
+    <>
+      <div
+        className="flex items-center px-3 py-2"
+        style={{
+          borderTop: `1px solid ${page.border}`,
+          borderBottom: `1px solid ${page.border}`,
+        }}
+      >
+        <span
+          className="text-xs font-medium uppercase"
+          style={{ color: page.statusFg }}
+        >
+          Org Chart
+        </span>
+      </div>
+      <div className="py-1">
+        <button
+          type="button"
+          onClick={() => setViewMode(isActive ? "terminal" : "hierarchy")}
+          className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left text-xs"
+          style={{
+            color: isActive ? page.fg : page.statusFg,
+            background: isActive ? page.border : "transparent",
+          }}
+        >
+          <Codicon name="type-hierarchy" size={12} />
+          <span>{isActive ? "Close hierarchy view" : "View hierarchy"}</span>
+        </button>
+      </div>
+    </>
+  );
+}
 
 function formatAge(timestamp: number): string {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);

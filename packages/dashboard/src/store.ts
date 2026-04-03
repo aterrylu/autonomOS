@@ -392,7 +392,7 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
 interface AppState {
   // Persisted
   theme: ThemeName;
-  viewMode: "terminal" | "conversation";
+  viewMode: "terminal" | "conversation" | "hierarchy";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
@@ -420,6 +420,7 @@ interface AppState {
   toggleSidebar: () => void;
   toggleAutonomousMode: () => void;
   toggleViewMode: () => void;
+  setViewMode: (mode: "terminal" | "conversation" | "hierarchy") => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -554,6 +555,7 @@ export const useStore = create<AppState>()(
             viewMode:
               get().viewMode === "terminal" ? "conversation" : "terminal",
           }),
+        setViewMode: (mode) => set({ viewMode: mode }),
         setStatus: (status) => set({ status }),
         switchPane: (pane) => {
           if (!pane) {
@@ -1270,6 +1272,12 @@ export const useStore = create<AppState>()(
         const merged = { ...current };
 
         if (isThemeName(saved?.theme)) merged.theme = saved.theme;
+        // Restore viewMode but never persist "hierarchy" — it's a transient view
+        if (
+          saved?.viewMode === "terminal" ||
+          saved?.viewMode === "conversation"
+        )
+          merged.viewMode = saved.viewMode;
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (typeof saved?.autonomousMode === "boolean")
