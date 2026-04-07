@@ -771,10 +771,9 @@ export const useStore = create<AppState>()(
           // which re-resolves the template and restores full config.
           if (opts?.isAutonomosAgent) {
             set({ status: "resuming..." });
-            const res = await fetch(
-              `/api/sessions/${claudeSessionId}/resume`,
-              { method: "POST" },
-            ).catch(() => null);
+            const res = await fetch(`/api/sessions/${claudeSessionId}/resume`, {
+              method: "POST",
+            }).catch(() => null);
             if (!res?.ok) {
               const err = await res
                 ?.json()
