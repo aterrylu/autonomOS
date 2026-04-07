@@ -77,6 +77,12 @@ export interface ProjectSession {
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
   gitDiffStat?: GitDiffStat;
+  /** True if this session is managed by autonomOS */
+  isAutonomosAgent?: boolean;
+  /** Lifecycle status for autonomOS agents */
+  autonomosStatus?: "running" | "exited";
+  /** Template used to spawn this agent */
+  template?: string;
 }
 
 export interface GitDiffStat {
@@ -432,6 +438,7 @@ interface AppState {
     claudeSessionId: string,
     cwd: string,
     name?: string,
+    opts?: { isAutonomosAgent?: boolean },
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
   openPreview: (filePath: string) => void;
@@ -641,7 +648,10 @@ export const useStore = create<AppState>()(
         fetchSessions: async () => {
           const res = await fetch("/api/sessions").catch(() => null);
           if (!res?.ok) return;
-          const sessions: SessionInfo[] = await res.json();
+          const allSessions: SessionInfo[] = await res.json();
+          // Filter out exited sessions — they have no PTY and would create
+          // broken terminals with perpetual WebSocket reconnect loops.
+          const sessions = allSessions.filter((s) => s.status !== "exited");
           const prev = get().sessions;
           const unchanged =
             prev.length === sessions.length &&
@@ -746,7 +756,7 @@ export const useStore = create<AppState>()(
             },
           );
         },
-        resumeSession: async (claudeSessionId, cwd, name) => {
+        resumeSession: async (claudeSessionId, cwd, name, opts) => {
           const existing = get().sessions.find(
             (s) => s.claudeSessionId === claudeSessionId,
           );
@@ -756,6 +766,53 @@ export const useStore = create<AppState>()(
             set({ status: "connected" });
             return;
           }
+
+          // For exited autonomOS agents, use the dedicated resume endpoint
+          // which re-resolves the template and restores full config.
+          if (opts?.isAutonomosAgent) {
+            set({ status: "resuming..." });
+            const res = await fetch(
+              `/api/sessions/${claudeSessionId}/resume`,
+              { method: "POST" },
+            ).catch(() => null);
+            if (!res?.ok) {
+              const err = await res
+                ?.json()
+                .catch(() => ({ error: "Server error" }));
+              const detail =
+                err?.error || err?.detail || `HTTP ${res?.status ?? "network"}`;
+              console.error("Failed to resume autonomOS session:", detail);
+              set({ status: `resume failed: ${detail}` });
+              return;
+            }
+            await get().fetchSessions();
+            const resumed = get().sessions.find(
+              (s) => s.claudeSessionId === claudeSessionId,
+            );
+            if (resumed) {
+              get().switchPane({ type: "session", id: resumed.id });
+              set({ status: "connected" });
+            } else {
+              // Session created but not yet visible — poll once more
+              console.warn(
+                `Resume API succeeded but session ${claudeSessionId} not found — retrying fetch`,
+              );
+              setTimeout(async () => {
+                await get().fetchSessions();
+                const retry = get().sessions.find(
+                  (s) => s.claudeSessionId === claudeSessionId,
+                );
+                if (retry) {
+                  get().switchPane({ type: "session", id: retry.id });
+                  set({ status: "connected" });
+                } else {
+                  set({ status: "session resumed — click to switch" });
+                }
+              }, 1000);
+            }
+            return;
+          }
+
           await spawnSession(
             set,
             get,
@@ -1173,14 +1230,13 @@ export const useStore = create<AppState>()(
             };
           };
 
-          // Remap paneOrder (session keys are "session:<id>")
+          // Remap paneOrder — keys are raw claudeSessionId or internal id
+          // (no prefix). claudeSessionId doesn't change on restart, so only
+          // entries that used the internal id need remapping.
           const newPaneOrder = paneOrder.map((key) => {
-            if (key.startsWith("session:")) {
-              const oldId = key.slice("session:".length);
-              const newId = idMap[oldId];
-              return newId ? `session:${newId}` : key;
-            }
-            return key;
+            if (key.startsWith("preview:")) return key;
+            const newId = idMap[key];
+            return newId ?? key;
           });
 
           // Remap groups
