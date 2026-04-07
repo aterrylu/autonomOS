@@ -1,10 +1,14 @@
 import { Hono } from "hono";
-import { batchUpdatePersistedSessionNames } from "../persisted.js";
+import {
+  batchUpdatePersistedSessionNames,
+  getPersistedSessions,
+} from "../persisted.js";
 import {
   createSession,
   getAllSessions,
   getSession,
   killSession,
+  permanentlyRemoveSession,
   resolveSessionId,
   restartAllSessions,
 } from "../sessions.js";
@@ -66,7 +70,31 @@ sessionRouter.get("/", async (c) => {
     return s;
   });
 
-  return c.json(enriched);
+  // Append exited sessions from persistence (not already in live sessions)
+  const liveClaudeIds = new Set<string>();
+  for (const s of sessions) {
+    if (s.claudeSessionId) liveClaudeIds.add(s.claudeSessionId);
+  }
+
+  const exitedSessions = getPersistedSessions()
+    .filter(
+      (p) => p.status === "exited" && !liveClaudeIds.has(p.claudeSessionId),
+    )
+    .map((p) => ({
+      id: p.claudeSessionId,
+      name: p.name,
+      status: "exited" as const,
+      workingDirectory: p.workingDirectory,
+      provider: "claude-code",
+      claudeSessionId: p.claudeSessionId,
+      createdAt: p.persistedAt,
+      updatedAt: p.persistedAt,
+      template: p.template,
+      manager: p.manager,
+      project: p.project,
+    }));
+
+  return c.json([...enriched, ...exitedSessions]);
 });
 
 sessionRouter.post("/", async (c) => {
@@ -143,6 +171,55 @@ sessionRouter.post("/", async (c) => {
   }
 });
 
+sessionRouter.post("/:id/resume", (c) => {
+  const claudeSessionId = c.req.param("id");
+
+  // Guard: prevent resuming a session that's already live
+  const alreadyLive = getAllSessions().some(
+    (s) => s.claudeSessionId === claudeSessionId,
+  );
+  if (alreadyLive) {
+    return c.json({ error: "Session is already running" }, 409);
+  }
+
+  const persisted = getPersistedSessions();
+  const entry = persisted.find(
+    (p) => p.claudeSessionId === claudeSessionId && p.status === "exited",
+  );
+  if (!entry) {
+    return c.json({ error: "Exited session not found" }, 404);
+  }
+
+  try {
+    // Re-resolve template for role context
+    const tmpl = entry.template ? getTemplate(entry.template) : null;
+    if (entry.template && !tmpl) {
+      console.warn(
+        `Template "${entry.template}" not found for ${entry.name} — resuming without role context`,
+      );
+    }
+
+    const managed = createSession({
+      workingDirectory: entry.workingDirectory,
+      name: entry.name,
+      resumeSessionId: claudeSessionId,
+      autonomousMode: entry.autonomousMode,
+      appendSystemPrompt: tmpl?.systemPrompt,
+      template: entry.template,
+      manager: entry.manager,
+      project: entry.project,
+    });
+    return c.json(managed.session, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error(`Failed to resume session ${claudeSessionId}:`, message);
+    return c.json(
+      { error: "Failed to resume agent process", detail: message },
+      500,
+    );
+  }
+});
+
 sessionRouter.post("/restart-all", (c) => {
   const idMap = restartAllSessions();
   return c.json({ restarted: Object.keys(idMap).length, idMap });
@@ -155,15 +232,27 @@ sessionRouter.get("/:id", (c) => {
 });
 
 sessionRouter.delete("/:id", async (c) => {
+  const permanent = c.req.query("permanent") === "true";
+  const id = c.req.param("id");
+
+  if (permanent) {
+    // Permanent removal — kill PTY if live, then delete from sessions.json
+    if (!permanentlyRemoveSession(id)) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+    return c.json({ ok: true });
+  }
+
+  // Default: kill PTY, mark as exited in persistence
   // Try direct UUID kill first
-  if (killSession(c.req.param("id"))) return c.json({ ok: true });
+  if (killSession(id)) return c.json({ ok: true });
   // Fall back to name resolution (case-insensitive, titleCache)
-  const resolved = await resolveSessionId(c.req.param("id"));
+  const resolved = await resolveSessionId(id);
   if ("error" in resolved) return c.json({ error: resolved.error }, 404);
   if (!killSession(resolved.id))
     return c.json(
       {
-        error: `Agent "${c.req.param("id")}" was found but exited before it could be terminated`,
+        error: `Agent "${id}" was found but exited before it could be terminated`,
       },
       409,
     );
