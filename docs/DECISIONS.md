@@ -667,3 +667,38 @@ query({
 **Alternatives:**
 - **Build VLA runtime now** — premature. No hardware to test against, no immediate use case.
 - **Ignore robot path entirely** — the `AgentRuntime` abstraction costs nothing to keep and preserves the option.
+
+---
+
+## ADR-024: Persist Exited Sessions Instead of Deleting
+**Date:** 2026-04-07
+**Decided by:** Terry + TeamLead agent
+**Source:** Claude Code session (autonomOS team lead discussion)
+
+**Context:** When an agent exits (PTY process ends naturally or via kill), `onExit` calls `removePersistedSession()` which deletes the entry from `sessions.json`. This means exited agents vanish completely — their org chart position, template, manager, and name are all lost. Terry wants the ability to bring back exited agents without re-configuring everything.
+
+**Decision:** Instead of deleting sessions from `sessions.json` on exit, mark them with `status: "exited"`. The dashboard shows exited sessions in a grayed-out/collapsed state. Users can manually resume them via a `POST /api/sessions/:id/resume` endpoint. Only an explicit permanent delete action truly removes the entry. `resumePersistedSessions()` on boot skips exited entries (don't auto-resume).
+
+**Rationale:** Preserves all session metadata (template, manager, project, name) across exits. Makes agents feel persistent rather than ephemeral. Also naturally fixes a pre-existing race condition (see ADR-025).
+
+**Alternatives:**
+- **Separate "archive" storage** — unnecessary complexity, same data structure works with a status field.
+- **Prompt before deleting** — disruptive UX, doesn't help with programmatic kills.
+- **Auto-resume all on boot** — unwanted. Some agents exit intentionally.
+
+---
+
+## ADR-025: Fix restartAllSessions onExit Race Condition
+**Date:** 2026-04-07
+**Decided by:** Terry + BugFixes agent
+**Source:** Claude Code session (discovered during PR #109 testing)
+
+**Context:** `restartAllSessions()` sets `shuttingDown = true`, kills PTYs, calls `sessions.clear()`, then sets `shuttingDown = false` before respawning. PTY `onExit` handlers fire asynchronously — by the time they run, `shuttingDown` is already `false`, so they call `removePersistedSession()` which deletes entries that newly spawned sessions just wrote. Result: `sessions.json` ends up empty after restart-all.
+
+**Decision:** Fix falls out of ADR-024 — `onExit` now sets `status: "exited"` instead of removing. No removal means no race. During `restartAllSessions()`, the new `createSession()` calls overwrite the exited entries via `persistSession()`'s upsert logic, so the status correctly becomes active again.
+
+**Rationale:** Simplest fix that eliminates the race entirely rather than adding synchronization complexity.
+
+**Alternatives:**
+- **Track pending exits with a counter** — adds complexity, requires async coordination.
+- **Check if session ID is still in the map before removing** — fragile timing dependency.
