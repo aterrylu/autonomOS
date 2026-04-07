@@ -510,32 +510,60 @@ const ProjectItem = React.memo(function ProjectItem({
         <div className="pl-4">
           {project.sessions.map((s) => {
             const isLive = liveSessionIds.has(s.sessionId);
+            const isExited = s.autonomosStatus === "exited" && !isLive;
+
+            let dotColor = "transparent";
+            let tooltip = "Resume this session";
+            if (isLive) {
+              dotColor = "#238636";
+              tooltip = "Switch to live session";
+            } else if (isExited) {
+              dotColor = "#848d97";
+              tooltip = "Resume autonomOS agent with full config";
+            }
+
             return (
               <button
                 type="button"
                 key={s.sessionId}
                 disabled={isBusy}
                 className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
-                style={{ color: page.fg }}
+                style={{
+                  color: page.fg,
+                  opacity: isExited ? 0.6 : 1,
+                }}
                 onClick={() =>
-                  resumeSession(s.sessionId, project.path, s.summary)
+                  resumeSession(s.sessionId, project.path, s.summary, {
+                    isAutonomosAgent: s.isAutonomosAgent,
+                  })
                 }
-                title={
-                  isLive ? "Switch to live session" : "Resume this session"
-                }
+                title={tooltip}
               >
                 <span
                   className="h-1.5 w-1.5 shrink-0 rounded-full mt-1"
-                  style={{
-                    background: isLive ? "#238636" : "transparent",
-                  }}
+                  style={{ background: dotColor }}
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="truncate">{s.summary}</p>
+                  <div className="flex items-center gap-1">
+                    <p className="truncate flex-1">{s.summary}</p>
+                    {isExited && (
+                      <span
+                        className="shrink-0 text-[10px]"
+                        title={`autonomOS agent${s.template ? ` (${s.template})` : ""}`}
+                      >
+                        exited
+                      </span>
+                    )}
+                  </div>
                   <div
                     className="flex items-center gap-2 mt-0.5"
                     style={{ color: page.statusFg }}
                   >
+                    {s.isAutonomosAgent && (
+                      <span className="text-[10px]">
+                        {s.template ?? "agent"}
+                      </span>
+                    )}
                     {s.gitBranch && (
                       <span className="text-[10px] truncate max-w-[120px]">
                         {s.gitBranch}

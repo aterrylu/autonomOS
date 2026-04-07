@@ -6,6 +6,7 @@ import {
   type SDKSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Hono } from "hono";
+import { getPersistedSessions } from "../persisted.js";
 import { batchGetTitles } from "../titleCache";
 
 const execFileAsync = promisify(execFile);
@@ -31,6 +32,16 @@ export interface ProjectSession {
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
   gitDiffStat?: GitDiffStat;
+  /** True if this session is managed by autonomOS (has a persisted session entry) */
+  isAutonomosAgent?: boolean;
+  /** Lifecycle status for autonomOS agents: "running" or "exited" */
+  autonomosStatus?: "running" | "exited";
+  /** Template used to spawn this agent */
+  template?: string;
+  /** Manager in the org chart */
+  manager?: string;
+  /** Project scope */
+  project?: string;
 }
 
 export const projectRouter = new Hono();
@@ -90,6 +101,22 @@ projectRouter.get("/", async (c) => {
       };
     },
   );
+
+  // Cross-reference with autonomOS persisted sessions to enrich metadata
+  const persisted = getPersistedSessions();
+  const persistedMap = new Map(persisted.map((p) => [p.claudeSessionId, p]));
+  for (const p of projects) {
+    for (const s of p.sessions) {
+      const entry = persistedMap.get(s.sessionId);
+      if (entry) {
+        s.isAutonomosAgent = true;
+        s.autonomosStatus = entry.status ?? "running";
+        s.template = entry.template;
+        s.manager = entry.manager;
+        s.project = entry.project;
+      }
+    }
+  }
 
   // Fetch git diff stats per session (branch vs main) in parallel
   const allSessions = projects.flatMap((p) =>
