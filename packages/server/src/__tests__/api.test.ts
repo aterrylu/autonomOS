@@ -148,6 +148,6 @@ describe("DELETE /api/sessions/:id", () => {
       "/api/sessions/nonexistent",
     );
     assert.equal(status, 404);
-    assert.equal(json.error, "Session not found");
+    assert.equal(json.error, 'Agent "nonexistent" not found.');
   });
 });

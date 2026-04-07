@@ -98,6 +98,25 @@ export function removePersistedSession(claudeSessionId: string): void {
   }
 }
 
+/** Batch-update persisted names for sessions (single read-modify-write cycle) */
+export function batchUpdatePersistedSessionNames(
+  updates: Array<{ claudeSessionId: string; name: string }>,
+): void {
+  if (updates.length === 0) return;
+  const sessions = readSessions();
+  let dirty = false;
+  for (const { claudeSessionId, name } of updates) {
+    const idx = sessions.findIndex(
+      (s) => s.claudeSessionId === claudeSessionId,
+    );
+    if (idx >= 0 && sessions[idx].name !== name) {
+      sessions[idx].name = name;
+      dirty = true;
+    }
+  }
+  if (dirty) writeSessions(sessions);
+}
+
 /** Update specific fields on a persisted session (by name, case-insensitive) */
 export function updatePersistedSessionByName(
   name: string,

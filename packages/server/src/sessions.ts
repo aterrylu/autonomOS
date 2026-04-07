@@ -11,6 +11,8 @@ import {
   removePersistedSession,
 } from "./persisted.js";
 import { getSettings } from "./settings.js";
+import { getTemplate } from "./templates.js";
+import { batchGetTitles } from "./titleCache.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
@@ -417,6 +419,69 @@ export function killAllSessions(): void {
 }
 
 /**
+ * Resolve a session by name or ID.
+ * Steps: (1) exact UUID match, (2) raw s.name case-insensitive, (3) titleCache lookup.
+ * Returns { id } on unique match, or { error } on ambiguity/not-found.
+ */
+export async function resolveSessionId(
+  nameOrId: string,
+): Promise<{ id: string } | { error: string }> {
+  // 1. Exact UUID match
+  if (sessions.has(nameOrId)) return { id: nameOrId };
+
+  const allSessions = getAllSessions();
+  const needle = nameOrId.toLowerCase();
+
+  function uniqueMatch(
+    matches: Session[],
+  ): { id: string } | { error: string } | null {
+    if (matches.length === 1) return { id: matches[0].id };
+    if (matches.length > 1) {
+      const list = matches.map((s) => `  ${s.name} (id: ${s.id})`).join("\n");
+      return {
+        error: `Multiple agents named "${nameOrId}". Specify by ID:\n${list}`,
+      };
+    }
+    return null;
+  }
+
+  // 2. Raw s.name match (case-insensitive)
+  const byName = uniqueMatch(
+    allSessions.filter((s) => s.name.toLowerCase() === needle),
+  );
+  if (byName) return byName;
+
+  // 3. titleCache lookup
+  const withClaude = allSessions
+    .filter((s) => s.claudeSessionId)
+    .map((s) => ({
+      sessionId: s.claudeSessionId!,
+      cwd: s.workingDirectory,
+    }));
+
+  if (withClaude.length > 0) {
+    const titles = await batchGetTitles(withClaude).catch((err) => {
+      console.warn(
+        "resolveSessionId: titleCache lookup failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return new Map<string, string>();
+    });
+    const byTitle = uniqueMatch(
+      allSessions.filter((s) => {
+        const title = s.claudeSessionId
+          ? titles.get(s.claudeSessionId)
+          : undefined;
+        return (title ?? s.name).toLowerCase() === needle;
+      }),
+    );
+    if (byTitle) return byTitle;
+  }
+
+  return { error: `Agent "${nameOrId}" not found.` };
+}
+
+/**
  * Restart all live sessions — kills each PTY and respawns with fresh env.
  * Preserves session IDs so the dashboard's layout/groups/panes remain valid.
  *
@@ -440,6 +505,9 @@ export function restartAllSessions(): Record<string, string> {
     workingDirectory: string;
     name: string;
     autonomousMode: boolean;
+    template?: string;
+    manager?: string;
+    project?: string;
   }> = [];
 
   for (const [id, managed] of sessions) {
@@ -452,6 +520,9 @@ export function restartAllSessions(): Record<string, string> {
         workingDirectory: session.workingDirectory,
         name: session.name,
         autonomousMode: p?.autonomousMode ?? false,
+        template: p?.template,
+        manager: p?.manager,
+        project: p?.project,
       });
     }
   }
@@ -472,11 +543,23 @@ export function restartAllSessions(): Record<string, string> {
   const idMap: Record<string, string> = {};
   for (const info of toRestart) {
     try {
+      // Re-resolve template system prompt so agents keep their role context
+      const tmpl = info.template ? getTemplate(info.template) : null;
+      if (info.template && !tmpl) {
+        console.warn(
+          `Template "${info.template}" not found for ${info.name} — agent will restart without role context`,
+        );
+      }
+
       const managed = createSession({
         workingDirectory: info.workingDirectory,
         name: info.name,
         resumeSessionId: info.claudeSessionId,
         autonomousMode: info.autonomousMode,
+        appendSystemPrompt: tmpl?.systemPrompt,
+        template: info.template,
+        manager: info.manager,
+        project: info.project,
       });
       idMap[info.oldId] = managed.session.id;
     } catch (err) {

@@ -8,7 +8,12 @@ import { z } from "zod";
 import { MCP_INSTRUCTIONS_EXTERNAL, MCP_SERVER_INFO } from "./mcp/tools.js";
 import { buildOrgChart } from "./orgChart.js";
 import { updatePersistedSessionByName } from "./persisted.js";
-import { createSession, getAllSessions, killSession } from "./sessions.js";
+import {
+  createSession,
+  getAllSessions,
+  killSession,
+  resolveSessionId,
+} from "./sessions.js";
 import { getTemplate, listTemplates, saveTemplate } from "./templates.js";
 
 // ── MCP Server (HTTP transport — for external clients) ─────────────────
@@ -148,32 +153,27 @@ function createMcpServer(): McpServer {
           ],
         };
       }
-      // Fall back to name lookup — check for ambiguity
-      const matches = getAllSessions().filter(
-        (s) => s.name.toLowerCase() === args.agent.toLowerCase(),
-      );
-      if (matches.length > 1) {
-        const list = matches.map((s) => `  ${s.name} (id: ${s.id})`).join("\n");
+      // Fall back to name resolution (case-insensitive, titleCache)
+      const resolved = await resolveSessionId(args.agent);
+      if ("error" in resolved) {
+        return {
+          content: [{ type: "text", text: resolved.error }],
+          isError: true,
+        };
+      }
+      if (!killSession(resolved.id)) {
         return {
           content: [
             {
               type: "text",
-              text: `Multiple agents named "${args.agent}". Specify by ID:\n${list}`,
+              text: `Agent "${args.agent}" was found but exited before it could be terminated.`,
             },
           ],
           isError: true,
         };
       }
-      if (matches.length === 1 && killSession(matches[0].id)) {
-        return {
-          content: [
-            { type: "text", text: `Agent "${args.agent}" terminated.` },
-          ],
-        };
-      }
       return {
-        content: [{ type: "text", text: `Agent "${args.agent}" not found.` }],
-        isError: true,
+        content: [{ type: "text", text: `Agent "${args.agent}" terminated.` }],
       };
     },
   );
