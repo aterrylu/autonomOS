@@ -1,9 +1,11 @@
 import { Hono } from "hono";
+import { batchUpdatePersistedSessionNames } from "../persisted.js";
 import {
   createSession,
   getAllSessions,
   getSession,
   killSession,
+  resolveSessionId,
   restartAllSessions,
 } from "../sessions.js";
 import { getTemplate } from "../templates.js";
@@ -32,6 +34,26 @@ sessionRouter.get("/", async (c) => {
   } catch (err) {
     console.warn(
       "Failed to enrich session titles:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Persist renamed titles to sessions.json so they survive restart.
+  // Batched into a single read-modify-write cycle, best-effort (never fail the list).
+  try {
+    const nameUpdates: Array<{ claudeSessionId: string; name: string }> = [];
+    for (const s of sessions) {
+      if (s.claudeSessionId) {
+        const title = titles.get(s.claudeSessionId);
+        if (title && title !== s.name) {
+          nameUpdates.push({ claudeSessionId: s.claudeSessionId, name: title });
+        }
+      }
+    }
+    batchUpdatePersistedSessionNames(nameUpdates);
+  } catch (err) {
+    console.warn(
+      "Failed to persist renamed titles:",
       err instanceof Error ? err.message : err,
     );
   }
@@ -132,8 +154,18 @@ sessionRouter.get("/:id", (c) => {
   return c.json(managed.session);
 });
 
-sessionRouter.delete("/:id", (c) => {
-  const killed = killSession(c.req.param("id"));
-  if (!killed) return c.json({ error: "Session not found" }, 404);
+sessionRouter.delete("/:id", async (c) => {
+  // Try direct UUID kill first
+  if (killSession(c.req.param("id"))) return c.json({ ok: true });
+  // Fall back to name resolution (case-insensitive, titleCache)
+  const resolved = await resolveSessionId(c.req.param("id"));
+  if ("error" in resolved) return c.json({ error: resolved.error }, 404);
+  if (!killSession(resolved.id))
+    return c.json(
+      {
+        error: `Agent "${c.req.param("id")}" was found but exited before it could be terminated`,
+      },
+      409,
+    );
   return c.json({ ok: true });
 });

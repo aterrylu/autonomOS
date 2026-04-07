@@ -27,6 +27,7 @@ import {
   resolveClaudePath,
   shutdownAllSessions,
 } from "./sessions.js";
+import { getTemplate } from "./templates.js";
 
 // Validate claude binary exists at startup — fail fast with a clear message
 try {
@@ -221,11 +222,23 @@ function resumePersistedSessions() {
   let resumed = 0;
   for (const p of persisted) {
     try {
+      // Re-resolve template system prompt so agents keep their role context
+      const tmpl = p.template ? getTemplate(p.template) : null;
+      if (p.template && !tmpl) {
+        console.warn(
+          `  ⚠ Template "${p.template}" not found for ${p.name} — agent will resume without role context`,
+        );
+      }
+
       createSession({
         workingDirectory: p.workingDirectory,
         resumeSessionId: p.claudeSessionId,
         name: p.name,
         autonomousMode: p.autonomousMode,
+        appendSystemPrompt: tmpl?.systemPrompt,
+        template: p.template,
+        manager: p.manager,
+        project: p.project,
       });
       console.log(`  ✓ ${p.name} (${p.claudeSessionId.slice(0, 8)}...)`);
       resumed++;

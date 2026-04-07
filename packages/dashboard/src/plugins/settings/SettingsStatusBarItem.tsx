@@ -237,9 +237,9 @@ function RestartAllButton({ page }: { page: PageTheme }) {
 }
 
 function restartButtonLabel(state: string): string {
-  if (state === "done") return "Restarted!";
-  if (state === "restarting") return "Restarting...";
-  return "Restart Server";
+  if (state === "done") return "Sessions Restarted!";
+  if (state === "restarting") return "Restarting Sessions...";
+  return "Restart All Sessions";
 }
 
 function saveButtonLabel(saving: boolean, saved: boolean): string {
@@ -602,8 +602,8 @@ export function SettingsPanel({
           </button>
 
           <div className="text-[10px]" style={labelStyle}>
-            Settings are injected as env vars. Save, then restart the server to
-            apply changes to running sessions.
+            Settings are injected as env vars. Save, then restart all sessions
+            to apply changes to running sessions.
           </div>
 
           <RestartAllButton page={page} />
