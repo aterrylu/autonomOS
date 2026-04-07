@@ -23,6 +23,8 @@ export interface PersistedSession {
   manager?: string;
   /** Project scope (e.g. "autonomOS") */
   project?: string;
+  /** Session lifecycle status. Missing means "running" (backward compat). */
+  status?: "running" | "exited";
 }
 
 const SESSIONS_FILE = join(CONFIG_DIR, "sessions.json");
@@ -89,13 +91,25 @@ export function persistSession(session: PersistedSession): void {
   writeSessions(sessions);
 }
 
-export function removePersistedSession(claudeSessionId: string): void {
+export function removePersistedSession(claudeSessionId: string): boolean {
   const sessions = readSessions();
   const idx = sessions.findIndex((s) => s.claudeSessionId === claudeSessionId);
   if (idx >= 0) {
     sessions.splice(idx, 1);
     writeSessions(sessions);
+    return true;
   }
+  return false;
+}
+
+/** Mark a persisted session as exited (instead of deleting it) */
+export function markSessionExited(claudeSessionId: string): void {
+  const sessions = readSessions();
+  const idx = sessions.findIndex((s) => s.claudeSessionId === claudeSessionId);
+  if (idx < 0) return;
+  if (sessions[idx].status === "exited") return;
+  sessions[idx].status = "exited";
+  writeSessions(sessions);
 }
 
 /** Batch-update persisted names for sessions (single read-modify-write cycle) */

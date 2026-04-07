@@ -7,6 +7,7 @@ import { spawn } from "node-pty";
 import { MCP_INSTRUCTIONS } from "./mcp/tools.js";
 import {
   getPersistedSessions,
+  markSessionExited,
   persistSession,
   removePersistedSession,
 } from "./persisted.js";
@@ -362,9 +363,9 @@ export function createSession(options: SpawnOptions): ManagedSession {
     }
 
     if (!shuttingDown) {
-      // Natural exit (Ctrl+C, agent finished, crash) — remove from persistence
+      // Natural exit (Ctrl+C, agent finished, crash) — mark as exited in persistence
       if (session.claudeSessionId) {
-        removePersistedSession(session.claudeSessionId);
+        markSessionExited(session.claudeSessionId);
       }
       sessions.delete(id);
     }
@@ -386,10 +387,29 @@ export function killSession(id: string): boolean {
   managed.session.status = "stopped";
   managed.session.updatedAt = Date.now();
   if (managed.session.claudeSessionId) {
-    removePersistedSession(managed.session.claudeSessionId);
+    markSessionExited(managed.session.claudeSessionId);
   }
   sessions.delete(id);
   return true;
+}
+
+/**
+ * Permanently remove a session — kill PTY if live, then delete from sessions.json.
+ * Unlike killSession (which marks as exited), this truly deletes the record.
+ */
+export function permanentlyRemoveSession(id: string): boolean {
+  // Kill PTY if this is a live session (killSession marks as exited, we'll overwrite below)
+  const managed = sessions.get(id);
+  if (managed) {
+    killSession(id);
+  }
+
+  // Delete from persistence entirely (overrides the "exited" mark from killSession)
+  const claudeId = managed?.session.claudeSessionId ?? id;
+  const removed = removePersistedSession(claudeId);
+  // If we killed a live PTY, that counts as success even if persistence removal
+  // missed (killSession already marked it exited)
+  return !!managed || removed;
 }
 
 /**

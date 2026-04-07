@@ -218,9 +218,16 @@ function resumePersistedSessions() {
   const persisted = getPersistedSessions();
   if (persisted.length === 0) return;
 
-  console.log(`Resuming ${persisted.length} session(s)...`);
+  const toResume = persisted.filter((p) => p.status !== "exited");
+  const exitedCount = persisted.length - toResume.length;
+  if (exitedCount > 0) {
+    console.log(`  Skipping ${exitedCount} exited session(s)`);
+  }
+  if (toResume.length === 0) return;
+
+  console.log(`Resuming ${toResume.length} session(s)...`);
   let resumed = 0;
-  for (const p of persisted) {
+  for (const p of toResume) {
     try {
       // Re-resolve template system prompt so agents keep their role context
       const tmpl = p.template ? getTemplate(p.template) : null;
@@ -249,8 +256,8 @@ function resumePersistedSessions() {
       );
     }
   }
-  if (resumed < persisted.length) {
-    console.warn(`Resumed ${resumed} of ${persisted.length} sessions`);
+  if (resumed < toResume.length) {
+    console.warn(`Resumed ${resumed} of ${toResume.length} sessions`);
   }
 }
 

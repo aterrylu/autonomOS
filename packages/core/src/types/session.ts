@@ -3,6 +3,7 @@ export type SessionStatus =
   | "running"
   | "idle"
   | "stopped"
+  | "exited"
   | "error";
 
 export interface Session {
