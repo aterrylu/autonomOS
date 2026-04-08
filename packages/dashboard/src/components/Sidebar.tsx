@@ -14,11 +14,12 @@ import type {
   SessionInfo,
 } from "../store";
 import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
+import { Codicon } from "./Codicon";
 import {
-  type OrgNode,
-  useAgentStatusByName,
-  useOrgChart,
-} from "./HierarchyPanel";
+  type AgentStatus,
+  AgentStatusIcon,
+  agentStatusLabel,
+} from "./ui/agent-status-icon";
 
 /** Select data fields that change over time — useShallow prevents re-renders when values are equal */
 function useSidebarData() {
@@ -34,6 +35,8 @@ function useSidebarData() {
       notificationCounts: s.notificationCounts,
       agentStatuses: s.agentStatuses,
       layout: s.layout,
+      exitedSessions: s.exitedSessions,
+      showExitedAgents: s.showExitedAgents,
     })),
   );
 }
@@ -50,24 +53,14 @@ function useSidebarActions() {
       reorderPanes: s.reorderPanes,
       fetchNotifications: s.fetchNotifications,
       markNotificationsRead: s.markNotificationsRead,
+      openOrgChart: s.openOrgChart,
+      toggleShowExitedAgents: s.toggleShowExitedAgents,
+      removeSession: s.removeSession,
     })),
   );
 }
 
-import { Codicon } from "./Codicon";
-import {
-  type AgentStatus,
-  AgentStatusIcon,
-  agentStatusLabel,
-} from "./ui/agent-status-icon";
-
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
-type SidebarTab = "agents" | "orgchart";
-
-const SIDEBAR_TABS: ReadonlyArray<{ key: SidebarTab; label: string }> = [
-  { key: "agents", label: "Agents" },
-  { key: "orgchart", label: "Org Chart" },
-] as const;
 
 // ── Display list types ──────────────────────────────────────────────────────
 
@@ -100,6 +93,8 @@ export function Sidebar() {
     notificationCounts,
     agentStatuses,
     layout,
+    exitedSessions,
+    showExitedAgents,
   } = useSidebarData();
   const {
     fetchSessions,
@@ -110,6 +105,9 @@ export function Sidebar() {
     reorderPanes,
     fetchNotifications,
     markNotificationsRead,
+    openOrgChart,
+    toggleShowExitedAgents,
+    removeSession,
   } = useSidebarActions();
   const page = THEMES[theme].page;
 
@@ -197,8 +195,8 @@ export function Sidebar() {
   // Drag state
   const dragIdx = useRef<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("agents");
-
+  // Confirm-remove state for exited agents
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
     dragIdx.current = idx;
     const data = { pane };
@@ -239,257 +237,321 @@ export function Sidebar() {
         background: page.bg,
       }}
     >
-      {/* Tab Bar */}
+      {/* Org Chart section header */}
+      <button
+        type="button"
+        onClick={openOrgChart}
+        className="flex items-center px-3 py-2 w-full text-left cursor-pointer transition-colors"
+        style={{
+          borderBottom: `1px solid ${page.border}`,
+          color: activePane?.type === "orgchart" ? page.fg : page.statusFg,
+          background:
+            activePane?.type === "orgchart" ? page.border : "transparent",
+        }}
+      >
+        <span className="text-xs font-medium uppercase">Org Chart</span>
+      </button>
+
+      {/* Agents section header + toggle + New button */}
       <div
-        className="flex shrink-0"
+        className="flex items-center gap-1.5 px-3 py-1.5"
         style={{ borderBottom: `1px solid ${page.border}` }}
       >
-        {SIDEBAR_TABS.map(({ key, label }) => {
-          const isActive = sidebarTab === key;
+        <span
+          className="text-xs font-medium uppercase flex-1"
+          style={{ color: page.statusFg }}
+        >
+          Agents
+        </span>
+        {exitedSessions.length > 0 && (
+          <button
+            type="button"
+            onClick={toggleShowExitedAgents}
+            className="text-[10px] cursor-pointer px-1 rounded transition-colors"
+            style={{ color: page.statusFg }}
+            title={
+              showExitedAgents
+                ? "Hide stopped agents"
+                : `Show ${exitedSessions.length} stopped`
+            }
+          >
+            <Codicon name={showExitedAgents ? "eye" : "eye-closed"} size={12} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => createSession()}
+          disabled={isSpawning}
+          className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: "#238636", color: "#fff" }}
+          title="New Agent"
+        >
+          + New
+        </button>
+      </div>
+
+      <div className="py-1">
+        {displayItems.length === 0 && (
+          <p
+            className="px-3 py-3 text-center text-xs"
+            style={{ color: page.statusFg }}
+          >
+            No active agents
+          </p>
+        )}
+
+        {displayItems.map((item, idx) => {
+          // Session row
+          if (item.type === "session") {
+            const s = item.session;
+            const pane = item.pane;
+            const isActive = isPaneActive(pane);
+            const isDropTarget = dropIdx === idx;
+            const meta = s.claudeSessionId
+              ? sessionMetaMap.get(s.claudeSessionId)
+              : undefined;
+            const displayName = s.name;
+            const lastActive = meta?.lastModified ?? s.createdAt;
+            const agentState = agentStatuses[s.id];
+
+            return (
+              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+              <div
+                key={`s-${s.id}`}
+                role="button"
+                tabIndex={-1}
+                onMouseDown={(e: React.MouseEvent) => {
+                  // Don't preventDefault — it blocks drag initiation.
+                  // focusTerminal() handles stealing focus back after click.
+                  // Only prevent for non-draggable elements (group headers).
+                  if (!(e.currentTarget as HTMLElement).draggable)
+                    e.preventDefault();
+                }}
+                draggable
+                onDragStart={(e) => handleDragStart(e, idx, pane)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDrop={() => handleDrop(idx)}
+                onDragEnd={handleDragEnd}
+                className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
+                style={{
+                  borderLeft: "3px solid transparent",
+                  paddingLeft: "9px",
+                  paddingRight: "12px",
+                  background: isActive
+                    ? page.border
+                    : visiblePaneIds.has(pane.id)
+                      ? `${page.border}80`
+                      : "transparent",
+                  ...(isDropTarget && {
+                    boxShadow: `inset 0 2px 0 ${page.fg}`,
+                  }),
+                }}
+                onClick={() => {
+                  switchPane(pane);
+                  if (pane.type === "session") focusTerminal(pane.id);
+                  if (notificationCounts[s.id]) markNotificationsRead(s.id);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
+              >
+                <AgentStatusIcon
+                  status={(agentState?.status as AgentStatus) ?? "working"}
+                  size={14}
+                />
+                <div className="flex-1 min-w-0">
+                  {/* Top row: title (left), time + unread (right) */}
+                  <div className="flex items-center gap-1">
+                    <span className="flex-1 truncate text-xs">
+                      {displayName}
+                    </span>
+                    <span
+                      className="shrink-0 text-[10px]"
+                      style={{ color: page.statusFg }}
+                    >
+                      {(notificationCounts[s.id] ?? 0) > 0 && (
+                        <span style={{ color: "#ea6c73" }}>
+                          {notificationCounts[s.id]} unread ·{" "}
+                        </span>
+                      )}
+                      {formatAge(lastActive)}
+                    </span>
+                  </div>
+                  {/* Bottom row: project/branch (left), status (right) */}
+                  <div
+                    className="flex items-center text-[10px]"
+                    style={{ color: page.statusFg }}
+                  >
+                    <span className="flex-1 min-w-0 truncate">
+                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
+                      {meta?.gitBranch &&
+                        meta.gitBranch !== "HEAD" &&
+                        ` · ${meta.gitBranch}`}
+                    </span>
+                    {agentState?.status && agentState.status !== "unknown" && (
+                      <span className="shrink-0 ml-1.5 opacity-75">
+                        {agentStatusLabel(
+                          agentState.status as AgentStatus,
+                          agentState.currentTool,
+                        )}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // Preview pane row
+          const p = item.preview;
+          const pane = item.pane;
+          const isActive = isPaneActive(pane);
+          const isDropTarget = dropIdx === idx;
           return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setSidebarTab(key)}
-              className="flex-1 px-3 py-2 text-xs font-medium uppercase cursor-pointer transition-colors"
+            // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+            <div
+              key={`p-${p.id}`}
+              role="button"
+              tabIndex={-1}
+              onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+              draggable
+              onDragStart={(e) => handleDragStart(e, idx, pane)}
+              onDragOver={(e) => handleDragOver(e, idx)}
+              onDrop={() => handleDrop(idx)}
+              onDragEnd={handleDragEnd}
+              className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
               style={{
-                color: isActive ? page.fg : page.statusFg,
-                borderBottom: `2px solid ${isActive ? page.fg : "transparent"}`,
+                background: isActive
+                  ? page.border
+                  : visiblePaneIds.has(pane.id)
+                    ? `${page.border}80`
+                    : "transparent",
+                ...(isDropTarget && {
+                  boxShadow: `inset 0 2px 0 ${page.fg}`,
+                }),
               }}
+              onClick={() => switchPane(pane)}
+              onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
             >
-              {label}
-            </button>
+              <Codicon name="markdown" size={12} />
+              <span className="flex-1 truncate text-xs">{p.title}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closePreview(p.id);
+                }}
+                className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                style={{ color: page.statusFg }}
+                title="Close preview"
+              >
+                <Codicon name="close" size={12} />
+              </button>
+            </div>
           );
         })}
       </div>
 
-      {sidebarTab === "agents" ? (
-        <>
-          {/* New Agent button */}
+      {/* Exited agents (toggleable) */}
+      {showExitedAgents &&
+        exitedSessions.map((s) => (
           <div
-            className="flex items-center justify-end px-3 py-1.5"
-            style={{ borderBottom: `1px solid ${page.border}` }}
-          >
-            <button
-              type="button"
-              onClick={() => createSession()}
-              disabled={isSpawning}
-              className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ background: "#238636", color: "#fff" }}
-              title="New Agent"
-            >
-              + New
-            </button>
-          </div>
-
-          <div className="py-1">
-            {displayItems.length === 0 && (
-              <p
-                className="px-3 py-3 text-center text-xs"
-                style={{ color: page.statusFg }}
-              >
-                No active agents
-              </p>
-            )}
-
-            {displayItems.map((item, idx) => {
-              // Session row
-              if (item.type === "session") {
-                const s = item.session;
-                const pane = item.pane;
-                const isActive = isPaneActive(pane);
-                const isDropTarget = dropIdx === idx;
-                const meta = s.claudeSessionId
-                  ? sessionMetaMap.get(s.claudeSessionId)
-                  : undefined;
-                const displayName = s.name;
-                const lastActive = meta?.lastModified ?? s.createdAt;
-                const agentState = agentStatuses[s.id];
-
-                return (
-                  // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-                  <div
-                    key={`s-${s.id}`}
-                    role="button"
-                    tabIndex={-1}
-                    onMouseDown={(e: React.MouseEvent) => {
-                      // Don't preventDefault — it blocks drag initiation.
-                      // focusTerminal() handles stealing focus back after click.
-                      // Only prevent for non-draggable elements (group headers).
-                      if (!(e.currentTarget as HTMLElement).draggable)
-                        e.preventDefault();
-                    }}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, idx, pane)}
-                    onDragOver={(e) => handleDragOver(e, idx)}
-                    onDrop={() => handleDrop(idx)}
-                    onDragEnd={handleDragEnd}
-                    className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
-                    style={{
-                      borderLeft: "3px solid transparent",
-                      paddingLeft: "9px",
-                      paddingRight: "12px",
-                      background: isActive
-                        ? page.border
-                        : visiblePaneIds.has(pane.id)
-                          ? `${page.border}80`
-                          : "transparent",
-                      ...(isDropTarget && {
-                        boxShadow: `inset 0 2px 0 ${page.fg}`,
-                      }),
-                    }}
-                    onClick={() => {
-                      switchPane(pane);
-                      if (pane.type === "session") focusTerminal(pane.id);
-                      if (notificationCounts[s.id]) markNotificationsRead(s.id);
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
-                  >
-                    <AgentStatusIcon
-                      status={(agentState?.status as AgentStatus) ?? "working"}
-                      size={14}
-                    />
-                    <div className="flex-1 min-w-0">
-                      {/* Top row: title (left), time + unread (right) */}
-                      <div className="flex items-center gap-1">
-                        <span className="flex-1 truncate text-xs">
-                          {displayName}
-                        </span>
-                        <span
-                          className="shrink-0 text-[10px]"
-                          style={{ color: page.statusFg }}
-                        >
-                          {(notificationCounts[s.id] ?? 0) > 0 && (
-                            <span style={{ color: "#ea6c73" }}>
-                              {notificationCounts[s.id]} unread ·{" "}
-                            </span>
-                          )}
-                          {formatAge(lastActive)}
-                        </span>
-                      </div>
-                      {/* Bottom row: project/branch (left), status (right) */}
-                      <div
-                        className="flex items-center text-[10px]"
-                        style={{ color: page.statusFg }}
-                      >
-                        <span className="flex-1 min-w-0 truncate">
-                          {meta?.projectName ??
-                            s.workingDirectory.split("/").pop()}
-                          {meta?.gitBranch &&
-                            meta.gitBranch !== "HEAD" &&
-                            ` · ${meta.gitBranch}`}
-                        </span>
-                        {agentState?.status &&
-                          agentState.status !== "unknown" && (
-                            <span className="shrink-0 ml-1.5 opacity-75">
-                              {agentStatusLabel(
-                                agentState.status as AgentStatus,
-                                agentState.currentTool,
-                              )}
-                            </span>
-                          )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-
-              // Preview pane row
-              const p = item.preview;
-              const pane = item.pane;
-              const isActive = isPaneActive(pane);
-              const isDropTarget = dropIdx === idx;
-              return (
-                // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-                <div
-                  key={`p-${p.id}`}
-                  role="button"
-                  tabIndex={-1}
-                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, idx, pane)}
-                  onDragOver={(e) => handleDragOver(e, idx)}
-                  onDrop={() => handleDrop(idx)}
-                  onDragEnd={handleDragEnd}
-                  className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
-                  style={{
-                    background: isActive
-                      ? page.border
-                      : visiblePaneIds.has(pane.id)
-                        ? `${page.border}80`
-                        : "transparent",
-                    ...(isDropTarget && {
-                      boxShadow: `inset 0 2px 0 ${page.fg}`,
-                    }),
-                  }}
-                  onClick={() => switchPane(pane)}
-                  onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
-                >
-                  <Codicon name="markdown" size={12} />
-                  <span className="flex-1 truncate text-xs">{p.title}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closePreview(p.id);
-                    }}
-                    className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                    style={{ color: page.statusFg }}
-                    title="Close preview"
-                  >
-                    <Codicon name="close" size={12} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Projects Section */}
-          <div
-            className="flex items-center px-3 py-2"
+            key={`exited-${s.id}`}
+            className="group flex w-full items-center gap-1.5 py-1 text-left"
             style={{
-              borderTop: `1px solid ${page.border}`,
-              borderBottom: `1px solid ${page.border}`,
+              borderLeft: "3px solid transparent",
+              paddingLeft: "9px",
+              paddingRight: "12px",
+              opacity: 0.5,
             }}
           >
-            <span
-              className="text-xs font-medium uppercase"
-              style={{ color: page.statusFg }}
-            >
-              Projects
-            </span>
-          </div>
-
-          <div className="flex-1 py-1">
-            {projects.length === 0 && (
-              <p
-                className="px-3 py-3 text-center text-xs"
+            <AgentStatusIcon status="stopped" size={14} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1">
+                <span className="flex-1 truncate text-xs">{s.name}</span>
+                <span
+                  className="shrink-0 text-[10px]"
+                  style={{ color: page.statusFg }}
+                >
+                  stopped
+                </span>
+              </div>
+            </div>
+            {confirmRemoveId === s.id ? (
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await removeSession(s.id);
+                      setConfirmRemoveId(null);
+                    } catch {
+                      // Keep confirm visible on failure
+                    }
+                  }}
+                  className="text-[10px] px-1 rounded cursor-pointer"
+                  style={{ color: "#ea6c73" }}
+                  title="Confirm permanent removal"
+                >
+                  remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemoveId(null)}
+                  className="text-[10px] px-1 rounded cursor-pointer"
+                  style={{ color: page.statusFg }}
+                  title="Cancel"
+                >
+                  cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmRemoveId(s.id)}
+                className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                 style={{ color: page.statusFg }}
+                title="Remove permanently"
               >
-                No projects found
-              </p>
+                <Codicon name="trash" size={12} />
+              </button>
             )}
-
-            {projects.map((project) => (
-              <ProjectItem
-                key={project.path}
-                project={project}
-                page={page}
-                liveSessionIds={liveSessionIds}
-              />
-            ))}
           </div>
-        </>
-      ) : (
-        <InlineOrgChart
-          page={page}
-          onSelectAgent={(sessionId) => {
-            setSidebarTab("agents");
-            switchPane({ type: "session", id: sessionId });
-            focusTerminal(sessionId);
-          }}
-        />
-      )}
+        ))}
+
+      {/* Projects Section */}
+      <div
+        className="flex items-center px-3 py-2"
+        style={{
+          borderTop: `1px solid ${page.border}`,
+          borderBottom: `1px solid ${page.border}`,
+        }}
+      >
+        <span
+          className="text-xs font-medium uppercase"
+          style={{ color: page.statusFg }}
+        >
+          Projects
+        </span>
+      </div>
+
+      <div className="flex-1 py-1">
+        {projects.length === 0 && (
+          <p
+            className="px-3 py-3 text-center text-xs"
+            style={{ color: page.statusFg }}
+          >
+            No projects found
+          </p>
+        )}
+
+        {projects.map((project) => (
+          <ProjectItem
+            key={project.path}
+            project={project}
+            page={page}
+            liveSessionIds={liveSessionIds}
+          />
+        ))}
+      </div>
     </aside>
   );
 }
@@ -593,7 +655,7 @@ const ProjectItem = React.memo(function ProjectItem({
                         className="shrink-0 text-[10px]"
                         title={`autonomOS agent${s.template ? ` (${s.template})` : ""}`}
                       >
-                        exited
+                        stopped
                       </span>
                     )}
                   </div>
@@ -624,136 +686,6 @@ const ProjectItem = React.memo(function ProjectItem({
     </div>
   );
 });
-
-// ── Inline Org Chart (sidebar tab) ────────────────────────────────────
-
-interface InlineOrgChartProps {
-  page: PageTheme;
-  onSelectAgent: (sessionId: string) => void;
-}
-
-function InlineOrgChart({ page, onSelectAgent }: InlineOrgChartProps) {
-  const { chart, loading, error } = useOrgChart();
-  const statusMap = useAgentStatusByName();
-
-  if (loading) {
-    return (
-      <div
-        className="px-3 py-6 text-center text-xs"
-        style={{ color: page.statusFg }}
-      >
-        Loading...
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div
-        className="px-3 py-6 text-center text-xs"
-        style={{ color: "#ea6c73" }}
-      >
-        <p>{error}</p>
-        <p className="mt-1 opacity-60" style={{ color: page.statusFg }}>
-          Retrying...
-        </p>
-      </div>
-    );
-  }
-
-  if (chart.length === 0) {
-    return (
-      <div
-        className="px-3 py-6 text-center text-xs"
-        style={{ color: page.statusFg }}
-      >
-        <p>No hierarchy</p>
-        <p className="mt-1 opacity-60">
-          Use set_manager() to build the org chart
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex-1 py-1 overflow-y-auto">
-      {chart.map((root, i) => (
-        <OrgTreeItem
-          // biome-ignore lint/suspicious/noArrayIndexKey: org chart nodes lack unique IDs
-          key={`${root.name}-${i}`}
-          node={root}
-          depth={0}
-          page={page}
-          statusMap={statusMap}
-          onSelect={onSelectAgent}
-        />
-      ))}
-    </div>
-  );
-}
-
-interface OrgTreeItemProps {
-  node: OrgNode;
-  depth: number;
-  page: PageTheme;
-  statusMap: ReturnType<typeof useAgentStatusByName>;
-  onSelect: (sessionId: string) => void;
-}
-
-function OrgTreeItem({
-  node,
-  depth,
-  page,
-  statusMap,
-  onSelect,
-}: OrgTreeItemProps) {
-  const info = statusMap[node.name.toLowerCase()];
-  const agentStatus = info?.agentStatus ?? "stopped";
-  const hasSession = info != null;
-
-  return (
-    <>
-      <button
-        type="button"
-        disabled={!hasSession}
-        onClick={() => hasSession && onSelect(info.session.id)}
-        className="flex w-full items-center gap-1.5 py-1 text-left text-xs disabled:cursor-default"
-        style={{
-          paddingLeft: `${12 + depth * 16}px`,
-          paddingRight: "12px",
-          color: hasSession ? page.fg : page.statusFg,
-          opacity: hasSession ? 1 : 0.6,
-          cursor: hasSession ? "pointer" : "default",
-        }}
-        title={
-          hasSession ? `Switch to ${node.name}` : `${node.name} (not running)`
-        }
-      >
-        <AgentStatusIcon status={agentStatus} size={12} />
-        <span className="flex-1 truncate">{node.name}</span>
-        {node.template && (
-          <span
-            className="shrink-0 text-[10px]"
-            style={{ color: page.statusFg }}
-          >
-            {node.template}
-          </span>
-        )}
-      </button>
-      {node.children.map((child, i) => (
-        <OrgTreeItem
-          // biome-ignore lint/suspicious/noArrayIndexKey: org chart nodes lack unique IDs
-          key={`${child.name}-${i}`}
-          node={child}
-          depth={depth + 1}
-          page={page}
-          statusMap={statusMap}
-          onSelect={onSelect}
-        />
-      ))}
-    </>
-  );
-}
 
 function formatAge(timestamp: number): string {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
