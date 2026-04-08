@@ -20,7 +20,7 @@ import {
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
-interface OrgNode {
+export interface OrgNode {
   name: string;
   template?: string;
   project?: string;
@@ -35,7 +35,7 @@ const WORKING_STATUSES: ReadonlySet<AgentStatus> = new Set([
 
 // ── Data fetching ────────────────────────────────────────────────
 
-function useOrgChart() {
+export function useOrgChart() {
   const [chart, setChart] = useState<OrgNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +81,7 @@ function useOrgChart() {
 
 // ── Status resolver ──────────────────────────────────────────────
 
-function useAgentStatusByName() {
+export function useAgentStatusByName() {
   const sessions = useStore((s) => s.sessions);
   const agentStatuses = useStore((s) => s.agentStatuses);
 

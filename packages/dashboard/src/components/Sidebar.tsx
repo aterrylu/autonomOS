@@ -14,6 +14,11 @@ import type {
   SessionInfo,
 } from "../store";
 import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
+import {
+  type OrgNode,
+  useAgentStatusByName,
+  useOrgChart,
+} from "./HierarchyPanel";
 
 /** Select data fields that change over time — useShallow prevents re-renders when values are equal */
 function useSidebarData() {
@@ -57,6 +62,12 @@ import {
 } from "./ui/agent-status-icon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+type SidebarTab = "agents" | "orgchart";
+
+const SIDEBAR_TABS: ReadonlyArray<{ key: SidebarTab; label: string }> = [
+  { key: "agents", label: "Agents" },
+  { key: "orgchart", label: "Org Chart" },
+] as const;
 
 // ── Display list types ──────────────────────────────────────────────────────
 
@@ -64,7 +75,7 @@ type DisplayItem =
   | { type: "session"; session: SessionInfo; pane: ActivePane }
   | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
 
-function DiffStat({
+function _DiffStat({
   stat,
 }: {
   stat: { insertions: number; deletions: number };
@@ -186,6 +197,7 @@ export function Sidebar() {
   // Drag state
   const dragIdx = useRef<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("agents");
 
   function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
     dragIdx.current = idx;
@@ -227,227 +239,257 @@ export function Sidebar() {
         background: page.bg,
       }}
     >
-      {/* Agents Section */}
+      {/* Tab Bar */}
       <div
-        className="flex items-center justify-between px-3 py-2"
+        className="flex shrink-0"
         style={{ borderBottom: `1px solid ${page.border}` }}
       >
-        <span
-          className="text-xs font-medium uppercase"
-          style={{ color: page.statusFg }}
-        >
-          Agents
-        </span>
-        <button
-          type="button"
-          onClick={() => createSession()}
-          disabled={isSpawning}
-          className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: "#238636", color: "#fff" }}
-          title="New Agent"
-        >
-          +
-        </button>
-      </div>
-
-      <div className="py-1">
-        {displayItems.length === 0 && (
-          <p
-            className="px-3 py-3 text-center text-xs"
-            style={{ color: page.statusFg }}
-          >
-            No active agents
-          </p>
-        )}
-
-        {displayItems.map((item, idx) => {
-          // Session row
-          if (item.type === "session") {
-            const s = item.session;
-            const pane = item.pane;
-            const isActive = isPaneActive(pane);
-            const isDropTarget = dropIdx === idx;
-            const meta = s.claudeSessionId
-              ? sessionMetaMap.get(s.claudeSessionId)
-              : undefined;
-            const displayName = s.name;
-            const lastActive = meta?.lastModified ?? s.createdAt;
-            const agentState = agentStatuses[s.id];
-
-            return (
-              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-              <div
-                key={`s-${s.id}`}
-                role="button"
-                tabIndex={-1}
-                onMouseDown={(e: React.MouseEvent) => {
-                  // Don't preventDefault — it blocks drag initiation.
-                  // focusTerminal() handles stealing focus back after click.
-                  // Only prevent for non-draggable elements (group headers).
-                  if (!(e.currentTarget as HTMLElement).draggable)
-                    e.preventDefault();
-                }}
-                draggable
-                onDragStart={(e) => handleDragStart(e, idx, pane)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDrop={() => handleDrop(idx)}
-                onDragEnd={handleDragEnd}
-                className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
-                style={{
-                  borderLeft: "3px solid transparent",
-                  paddingLeft: "9px",
-                  paddingRight: "12px",
-                  background: isActive
-                    ? page.border
-                    : visiblePaneIds.has(pane.id)
-                      ? `${page.border}80`
-                      : "transparent",
-                  ...(isDropTarget && {
-                    boxShadow: `inset 0 2px 0 ${page.fg}`,
-                  }),
-                }}
-                onClick={() => {
-                  switchPane(pane);
-                  if (pane.type === "session") focusTerminal(pane.id);
-                  if (notificationCounts[s.id]) markNotificationsRead(s.id);
-                }}
-                onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
-              >
-                <AgentStatusIcon
-                  status={(agentState?.status as AgentStatus) ?? "working"}
-                  size={14}
-                />
-                <div className="flex-1 min-w-0">
-                  {/* Top row: title (left), time + unread (right) */}
-                  <div className="flex items-center gap-1">
-                    <span className="flex-1 truncate text-xs">
-                      {displayName}
-                    </span>
-                    <span
-                      className="shrink-0 text-[10px]"
-                      style={{ color: page.statusFg }}
-                    >
-                      {(notificationCounts[s.id] ?? 0) > 0 && (
-                        <span style={{ color: "#ea6c73" }}>
-                          {notificationCounts[s.id]} unread ·{" "}
-                        </span>
-                      )}
-                      {formatAge(lastActive)}
-                    </span>
-                  </div>
-                  {/* Bottom row: project/branch (left), status (right) */}
-                  <div
-                    className="flex items-center text-[10px]"
-                    style={{ color: page.statusFg }}
-                  >
-                    <span className="flex-1 min-w-0 truncate">
-                      {meta?.projectName ?? s.workingDirectory.split("/").pop()}
-                      {meta?.gitBranch &&
-                        meta.gitBranch !== "HEAD" &&
-                        ` · ${meta.gitBranch}`}
-                    </span>
-                    {agentState?.status && agentState.status !== "unknown" && (
-                      <span className="shrink-0 ml-1.5 opacity-75">
-                        {agentStatusLabel(
-                          agentState.status as AgentStatus,
-                          agentState.currentTool,
-                        )}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          }
-
-          // Preview pane row
-          const p = item.preview;
-          const pane = item.pane;
-          const isActive = isPaneActive(pane);
-          const isDropTarget = dropIdx === idx;
+        {SIDEBAR_TABS.map(({ key, label }) => {
+          const isActive = sidebarTab === key;
           return (
-            // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-            <div
-              key={`p-${p.id}`}
-              role="button"
-              tabIndex={-1}
-              onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-              draggable
-              onDragStart={(e) => handleDragStart(e, idx, pane)}
-              onDragOver={(e) => handleDragOver(e, idx)}
-              onDrop={() => handleDrop(idx)}
-              onDragEnd={handleDragEnd}
-              className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+            <button
+              key={key}
+              type="button"
+              onClick={() => setSidebarTab(key)}
+              className="flex-1 px-3 py-2 text-xs font-medium uppercase cursor-pointer transition-colors"
               style={{
-                background: isActive
-                  ? page.border
-                  : visiblePaneIds.has(pane.id)
-                    ? `${page.border}80`
-                    : "transparent",
-                ...(isDropTarget && {
-                  boxShadow: `inset 0 2px 0 ${page.fg}`,
-                }),
+                color: isActive ? page.fg : page.statusFg,
+                borderBottom: `2px solid ${isActive ? page.fg : "transparent"}`,
               }}
-              onClick={() => switchPane(pane)}
-              onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
             >
-              <Codicon name="markdown" size={12} />
-              <span className="flex-1 truncate text-xs">{p.title}</span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closePreview(p.id);
-                }}
-                className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ color: page.statusFg }}
-                title="Close preview"
-              >
-                <Codicon name="close" size={12} />
-              </button>
-            </div>
+              {label}
+            </button>
           );
         })}
       </div>
 
-      {/* Projects Section */}
-      <div
-        className="flex items-center px-3 py-2"
-        style={{
-          borderTop: `1px solid ${page.border}`,
-          borderBottom: `1px solid ${page.border}`,
-        }}
-      >
-        <span
-          className="text-xs font-medium uppercase"
-          style={{ color: page.statusFg }}
-        >
-          Projects
-        </span>
-      </div>
-
-      <div className="flex-1 py-1">
-        {projects.length === 0 && (
-          <p
-            className="px-3 py-3 text-center text-xs"
-            style={{ color: page.statusFg }}
+      {sidebarTab === "agents" ? (
+        <>
+          {/* New Agent button */}
+          <div
+            className="flex items-center justify-end px-3 py-1.5"
+            style={{ borderBottom: `1px solid ${page.border}` }}
           >
-            No projects found
-          </p>
-        )}
+            <button
+              type="button"
+              onClick={() => createSession()}
+              disabled={isSpawning}
+              className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: "#238636", color: "#fff" }}
+              title="New Agent"
+            >
+              + New
+            </button>
+          </div>
 
-        {projects.map((project) => (
-          <ProjectItem
-            key={project.path}
-            project={project}
-            page={page}
-            liveSessionIds={liveSessionIds}
-          />
-        ))}
-      </div>
+          <div className="py-1">
+            {displayItems.length === 0 && (
+              <p
+                className="px-3 py-3 text-center text-xs"
+                style={{ color: page.statusFg }}
+              >
+                No active agents
+              </p>
+            )}
 
-      {/* Org Chart Section */}
-      <OrgChartSection page={page} />
+            {displayItems.map((item, idx) => {
+              // Session row
+              if (item.type === "session") {
+                const s = item.session;
+                const pane = item.pane;
+                const isActive = isPaneActive(pane);
+                const isDropTarget = dropIdx === idx;
+                const meta = s.claudeSessionId
+                  ? sessionMetaMap.get(s.claudeSessionId)
+                  : undefined;
+                const displayName = s.name;
+                const lastActive = meta?.lastModified ?? s.createdAt;
+                const agentState = agentStatuses[s.id];
+
+                return (
+                  // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+                  <div
+                    key={`s-${s.id}`}
+                    role="button"
+                    tabIndex={-1}
+                    onMouseDown={(e: React.MouseEvent) => {
+                      // Don't preventDefault — it blocks drag initiation.
+                      // focusTerminal() handles stealing focus back after click.
+                      // Only prevent for non-draggable elements (group headers).
+                      if (!(e.currentTarget as HTMLElement).draggable)
+                        e.preventDefault();
+                    }}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, idx, pane)}
+                    onDragOver={(e) => handleDragOver(e, idx)}
+                    onDrop={() => handleDrop(idx)}
+                    onDragEnd={handleDragEnd}
+                    className="group flex w-full items-center gap-1.5 py-1 cursor-pointer text-left"
+                    style={{
+                      borderLeft: "3px solid transparent",
+                      paddingLeft: "9px",
+                      paddingRight: "12px",
+                      background: isActive
+                        ? page.border
+                        : visiblePaneIds.has(pane.id)
+                          ? `${page.border}80`
+                          : "transparent",
+                      ...(isDropTarget && {
+                        boxShadow: `inset 0 2px 0 ${page.fg}`,
+                      }),
+                    }}
+                    onClick={() => {
+                      switchPane(pane);
+                      if (pane.type === "session") focusTerminal(pane.id);
+                      if (notificationCounts[s.id]) markNotificationsRead(s.id);
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
+                  >
+                    <AgentStatusIcon
+                      status={(agentState?.status as AgentStatus) ?? "working"}
+                      size={14}
+                    />
+                    <div className="flex-1 min-w-0">
+                      {/* Top row: title (left), time + unread (right) */}
+                      <div className="flex items-center gap-1">
+                        <span className="flex-1 truncate text-xs">
+                          {displayName}
+                        </span>
+                        <span
+                          className="shrink-0 text-[10px]"
+                          style={{ color: page.statusFg }}
+                        >
+                          {(notificationCounts[s.id] ?? 0) > 0 && (
+                            <span style={{ color: "#ea6c73" }}>
+                              {notificationCounts[s.id]} unread ·{" "}
+                            </span>
+                          )}
+                          {formatAge(lastActive)}
+                        </span>
+                      </div>
+                      {/* Bottom row: project/branch (left), status (right) */}
+                      <div
+                        className="flex items-center text-[10px]"
+                        style={{ color: page.statusFg }}
+                      >
+                        <span className="flex-1 min-w-0 truncate">
+                          {meta?.projectName ??
+                            s.workingDirectory.split("/").pop()}
+                          {meta?.gitBranch &&
+                            meta.gitBranch !== "HEAD" &&
+                            ` · ${meta.gitBranch}`}
+                        </span>
+                        {agentState?.status &&
+                          agentState.status !== "unknown" && (
+                            <span className="shrink-0 ml-1.5 opacity-75">
+                              {agentStatusLabel(
+                                agentState.status as AgentStatus,
+                                agentState.currentTool,
+                              )}
+                            </span>
+                          )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              // Preview pane row
+              const p = item.preview;
+              const pane = item.pane;
+              const isActive = isPaneActive(pane);
+              const isDropTarget = dropIdx === idx;
+              return (
+                // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+                <div
+                  key={`p-${p.id}`}
+                  role="button"
+                  tabIndex={-1}
+                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, idx, pane)}
+                  onDragOver={(e) => handleDragOver(e, idx)}
+                  onDrop={() => handleDrop(idx)}
+                  onDragEnd={handleDragEnd}
+                  className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+                  style={{
+                    background: isActive
+                      ? page.border
+                      : visiblePaneIds.has(pane.id)
+                        ? `${page.border}80`
+                        : "transparent",
+                    ...(isDropTarget && {
+                      boxShadow: `inset 0 2px 0 ${page.fg}`,
+                    }),
+                  }}
+                  onClick={() => switchPane(pane)}
+                  onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
+                >
+                  <Codicon name="markdown" size={12} />
+                  <span className="flex-1 truncate text-xs">{p.title}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closePreview(p.id);
+                    }}
+                    className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{ color: page.statusFg }}
+                    title="Close preview"
+                  >
+                    <Codicon name="close" size={12} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Projects Section */}
+          <div
+            className="flex items-center px-3 py-2"
+            style={{
+              borderTop: `1px solid ${page.border}`,
+              borderBottom: `1px solid ${page.border}`,
+            }}
+          >
+            <span
+              className="text-xs font-medium uppercase"
+              style={{ color: page.statusFg }}
+            >
+              Projects
+            </span>
+          </div>
+
+          <div className="flex-1 py-1">
+            {projects.length === 0 && (
+              <p
+                className="px-3 py-3 text-center text-xs"
+                style={{ color: page.statusFg }}
+              >
+                No projects found
+              </p>
+            )}
+
+            {projects.map((project) => (
+              <ProjectItem
+                key={project.path}
+                project={project}
+                page={page}
+                liveSessionIds={liveSessionIds}
+              />
+            ))}
+          </div>
+        </>
+      ) : (
+        <InlineOrgChart
+          page={page}
+          onSelectAgent={(sessionId) => {
+            setSidebarTab("agents");
+            switchPane({ type: "session", id: sessionId });
+            focusTerminal(sessionId);
+          }}
+        />
+      )}
     </aside>
   );
 }
@@ -583,43 +625,132 @@ const ProjectItem = React.memo(function ProjectItem({
   );
 });
 
-// ── Org Chart Sidebar Section ─────────────────────────────────────────
+// ── Inline Org Chart (sidebar tab) ────────────────────────────────────
 
-function OrgChartSection({ page }: { page: PageTheme }) {
-  const viewMode = useStore((s) => s.viewMode);
-  const setViewMode = useStore((s) => s.setViewMode);
-  const isActive = viewMode === "hierarchy";
+interface InlineOrgChartProps {
+  page: PageTheme;
+  onSelectAgent: (sessionId: string) => void;
+}
+
+function InlineOrgChart({ page, onSelectAgent }: InlineOrgChartProps) {
+  const { chart, loading, error } = useOrgChart();
+  const statusMap = useAgentStatusByName();
+
+  if (loading) {
+    return (
+      <div
+        className="px-3 py-6 text-center text-xs"
+        style={{ color: page.statusFg }}
+      >
+        Loading...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="px-3 py-6 text-center text-xs"
+        style={{ color: "#ea6c73" }}
+      >
+        <p>{error}</p>
+        <p className="mt-1 opacity-60" style={{ color: page.statusFg }}>
+          Retrying...
+        </p>
+      </div>
+    );
+  }
+
+  if (chart.length === 0) {
+    return (
+      <div
+        className="px-3 py-6 text-center text-xs"
+        style={{ color: page.statusFg }}
+      >
+        <p>No hierarchy</p>
+        <p className="mt-1 opacity-60">
+          Use set_manager() to build the org chart
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 py-1 overflow-y-auto">
+      {chart.map((root, i) => (
+        <OrgTreeItem
+          // biome-ignore lint/suspicious/noArrayIndexKey: org chart nodes lack unique IDs
+          key={`${root.name}-${i}`}
+          node={root}
+          depth={0}
+          page={page}
+          statusMap={statusMap}
+          onSelect={onSelectAgent}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface OrgTreeItemProps {
+  node: OrgNode;
+  depth: number;
+  page: PageTheme;
+  statusMap: ReturnType<typeof useAgentStatusByName>;
+  onSelect: (sessionId: string) => void;
+}
+
+function OrgTreeItem({
+  node,
+  depth,
+  page,
+  statusMap,
+  onSelect,
+}: OrgTreeItemProps) {
+  const info = statusMap[node.name.toLowerCase()];
+  const agentStatus = info?.agentStatus ?? "stopped";
+  const hasSession = info != null;
 
   return (
     <>
-      <div
-        className="flex items-center px-3 py-2"
+      <button
+        type="button"
+        disabled={!hasSession}
+        onClick={() => hasSession && onSelect(info.session.id)}
+        className="flex w-full items-center gap-1.5 py-1 text-left text-xs disabled:cursor-default"
         style={{
-          borderTop: `1px solid ${page.border}`,
-          borderBottom: `1px solid ${page.border}`,
+          paddingLeft: `${12 + depth * 16}px`,
+          paddingRight: "12px",
+          color: hasSession ? page.fg : page.statusFg,
+          opacity: hasSession ? 1 : 0.6,
+          cursor: hasSession ? "pointer" : "default",
         }}
+        title={
+          hasSession ? `Switch to ${node.name}` : `${node.name} (not running)`
+        }
       >
-        <span
-          className="text-xs font-medium uppercase"
-          style={{ color: page.statusFg }}
-        >
-          Org Chart
-        </span>
-      </div>
-      <div className="py-1">
-        <button
-          type="button"
-          onClick={() => setViewMode(isActive ? "terminal" : "hierarchy")}
-          className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left text-xs"
-          style={{
-            color: isActive ? page.fg : page.statusFg,
-            background: isActive ? page.border : "transparent",
-          }}
-        >
-          <Codicon name="type-hierarchy" size={12} />
-          <span>{isActive ? "Close hierarchy view" : "View hierarchy"}</span>
-        </button>
-      </div>
+        <AgentStatusIcon status={agentStatus} size={12} />
+        <span className="flex-1 truncate">{node.name}</span>
+        {node.template && (
+          <span
+            className="shrink-0 text-[10px]"
+            style={{ color: page.statusFg }}
+          >
+            {node.template}
+          </span>
+        )}
+      </button>
+      {node.children.map((child, i) => (
+        <OrgTreeItem
+          // biome-ignore lint/suspicious/noArrayIndexKey: org chart nodes lack unique IDs
+          key={`${child.name}-${i}`}
+          node={child}
+          depth={depth + 1}
+          page={page}
+          statusMap={statusMap}
+          onSelect={onSelect}
+        />
+      ))}
     </>
   );
 }
