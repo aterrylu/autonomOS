@@ -45,7 +45,6 @@ import {
   type SplitSide,
   setActiveTab,
   setLeafPane,
-  type TabItem,
   updateBranchSizes,
 } from "./layout/layoutTree";
 
@@ -398,7 +397,7 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
 interface AppState {
   // Persisted
   theme: ThemeName;
-  viewMode: "terminal" | "conversation" | "hierarchy";
+  viewMode: "terminal" | "conversation";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
@@ -426,7 +425,7 @@ interface AppState {
   toggleSidebar: () => void;
   toggleAutonomousMode: () => void;
   toggleViewMode: () => void;
-  setViewMode: (mode: "terminal" | "conversation" | "hierarchy") => void;
+  setViewMode: (mode: "terminal" | "conversation") => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -1327,7 +1326,6 @@ export const useStore = create<AppState>()(
         const merged = { ...current };
 
         if (isThemeName(saved?.theme)) merged.theme = saved.theme;
-        // Restore viewMode but never persist "hierarchy" — it's a transient view
         if (
           saved?.viewMode === "terminal" ||
           saved?.viewMode === "conversation"
