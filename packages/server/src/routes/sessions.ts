@@ -163,6 +163,10 @@ sessionRouter.post("/", async (c) => {
     return c.json(managed.session, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    // Name collision is a client error (409), not a server failure (500)
+    if (message.includes("already running")) {
+      return c.json({ error: message }, 409);
+    }
     console.error("Failed to create session:", message);
     return c.json(
       { error: "Failed to spawn agent process", detail: message },
@@ -175,7 +179,8 @@ sessionRouter.post("/:id/resume", (c) => {
   const claudeSessionId = c.req.param("id");
 
   // Guard: prevent resuming a session that's already live
-  const alreadyLive = getAllSessions().some(
+  const allLive = getAllSessions();
+  const alreadyLive = allLive.some(
     (s) => s.claudeSessionId === claudeSessionId,
   );
   if (alreadyLive) {
@@ -188,6 +193,19 @@ sessionRouter.post("/:id/resume", (c) => {
   );
   if (!entry) {
     return c.json({ error: "Exited session not found" }, 404);
+  }
+
+  // Guard: prevent resuming if an active agent with the same name exists
+  const nameCollision = allLive.find(
+    (s) => s.name.toLowerCase() === entry.name.toLowerCase(),
+  );
+  if (nameCollision) {
+    return c.json(
+      {
+        error: `Cannot resume — an active agent named "${entry.name}" is already running. Kill it first or rename it.`,
+      },
+      409,
+    );
   }
 
   try {
