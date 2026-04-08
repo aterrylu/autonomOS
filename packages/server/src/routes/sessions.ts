@@ -230,6 +230,9 @@ sessionRouter.post("/:id/resume", (c) => {
     return c.json(managed.session, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("already running")) {
+      return c.json({ error: message }, 409);
+    }
     console.error(`Failed to resume session ${claudeSessionId}:`, message);
     return c.json(
       { error: "Failed to resume agent process", detail: message },
