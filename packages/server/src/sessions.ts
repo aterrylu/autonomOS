@@ -146,6 +146,24 @@ export function expandPath(path: string): string {
 export function createSession(options: SpawnOptions): ManagedSession {
   // resumeSessionId is validated at the route boundary (routes/sessions.ts)
 
+  // Reject if a live agent with the same name is already running.
+  // Exited agents in sessions.json may share names — only active ones must be unique.
+  // INVARIANT: This check is safe because createSession() is fully synchronous —
+  // no await points between here and sessions.set(). Adding an await would create
+  // a TOCTOU race where two concurrent creates could both pass the check.
+  if (options.name) {
+    const needle = options.name.toLowerCase();
+    const duplicate = getAllSessions().find(
+      (s) => s.name.toLowerCase() === needle,
+    );
+    if (duplicate) {
+      throw new Error(
+        `An active agent named "${options.name}" is already running (id: ${duplicate.id}). ` +
+          `Kill it first, or choose a different name.`,
+      );
+    }
+  }
+
   const id = crypto.randomUUID();
   const cols = options.cols ?? 120;
   const rows = options.rows ?? 40;
@@ -597,6 +615,16 @@ export function restartAllSessions(): Record<string, string> {
 export function _resetForTesting(): void {
   sessions.clear();
   claudePath = null;
+}
+
+/** For testing — inject a fake session into the in-memory Map (no PTY needed) */
+export function _injectSessionForTesting(id: string, session: Session): void {
+  sessions.set(id, {
+    session,
+    pty: null as unknown as IPty,
+    outputBuffer: [],
+    outputSize: 0,
+  });
 }
 
 /**
