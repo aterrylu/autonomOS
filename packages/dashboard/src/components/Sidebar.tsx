@@ -677,9 +677,10 @@ function InlineOrgChart({ page, onSelectAgent }: InlineOrgChartProps) {
 
   return (
     <div className="flex-1 py-1 overflow-y-auto">
-      {chart.map((root) => (
+      {chart.map((root, i) => (
         <OrgTreeItem
-          key={root.name}
+          // biome-ignore lint/suspicious/noArrayIndexKey: org chart nodes lack unique IDs
+          key={`${root.name}-${i}`}
           node={root}
           depth={0}
           page={page}
@@ -739,9 +740,10 @@ function OrgTreeItem({
           </span>
         )}
       </button>
-      {node.children.map((child) => (
+      {node.children.map((child, i) => (
         <OrgTreeItem
-          key={child.name}
+          // biome-ignore lint/suspicious/noArrayIndexKey: org chart nodes lack unique IDs
+          key={`${child.name}-${i}`}
           node={child}
           depth={depth + 1}
           page={page}
