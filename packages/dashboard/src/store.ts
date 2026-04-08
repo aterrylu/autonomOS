@@ -105,7 +105,8 @@ export interface PreviewPaneInfo {
 
 export type ActivePane =
   | { type: "session"; id: string }
-  | { type: "preview"; id: string };
+  | { type: "preview"; id: string }
+  | { type: "orgchart"; id: "orgchart" };
 
 // ── Pane Groups ───────────────────────────────────────────────────────
 
@@ -411,6 +412,8 @@ interface AppState {
   // Transient
   status: string;
   sessions: SessionInfo[];
+  exitedSessions: SessionInfo[];
+  showExitedAgents: boolean;
   projects: ProjectInfo[];
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
@@ -442,6 +445,9 @@ interface AppState {
   killSession: (id: string) => Promise<void>;
   openPreview: (filePath: string) => void;
   closePreview: (id: string) => void;
+  openOrgChart: () => void;
+  toggleShowExitedAgents: () => void;
+  removeSession: (id: string) => Promise<void>;
   reorderPanes: (fromIndex: number, toIndex: number) => void;
 
   // Layout / split-pane actions
@@ -533,6 +539,8 @@ export const useStore = create<AppState>()(
         activePane: null,
         status: "disconnected",
         sessions: [],
+        exitedSessions: [],
+        showExitedAgents: false,
         projects: [],
         notificationCounts: {},
         agentStatuses: {},
@@ -651,6 +659,9 @@ export const useStore = create<AppState>()(
           // Filter out exited sessions — they have no PTY and would create
           // broken terminals with perpetual WebSocket reconnect loops.
           const sessions = allSessions.filter((s) => s.status !== "exited");
+          const exitedSessions = allSessions.filter(
+            (s) => s.status === "exited",
+          );
           const prev = get().sessions;
           const unchanged =
             prev.length === sessions.length &&
@@ -661,8 +672,12 @@ export const useStore = create<AppState>()(
                 s.status === sessions[i].status &&
                 s.claudeSessionId === sessions[i].claudeSessionId,
             );
-          if (unchanged) return;
-          set({ sessions });
+          const prevExited = get().exitedSessions;
+          const exitedUnchanged =
+            prevExited.length === exitedSessions.length &&
+            prevExited.every((s, i) => s.id === exitedSessions[i].id);
+          if (unchanged && exitedUnchanged) return;
+          set({ sessions, exitedSessions });
 
           const { activePane } = get();
           if (
@@ -854,6 +869,38 @@ export const useStore = create<AppState>()(
             activePane: activeP,
             layout: addTab(layout, focusedLeafId, activeP),
           });
+        },
+
+        openOrgChart: () => {
+          const { layout, focusedLeafId } = get();
+          const orgPane: ActivePane = { type: "orgchart", id: "orgchart" };
+          // If orgchart tab already exists anywhere, just switch to it
+          if (findLeafByPaneId(layout, "orgchart")) {
+            get().switchPane(orgPane);
+            return;
+          }
+          set({
+            activePane: orgPane,
+            layout: addTab(layout, focusedLeafId, orgPane),
+          });
+        },
+
+        toggleShowExitedAgents: () => {
+          set({ showExitedAgents: !get().showExitedAgents });
+        },
+
+        removeSession: async (id) => {
+          const res = await fetch(`/api/sessions/${id}?permanent=true`, {
+            method: "DELETE",
+          }).catch(() => null);
+          if (!res?.ok) {
+            console.error(
+              `[removeSession] Failed to remove session ${id}:`,
+              res ? `HTTP ${res.status}` : "network error",
+            );
+            throw new Error("Failed to remove session");
+          }
+          await get().fetchSessions();
         },
 
         closePreview: (id) => {
@@ -1314,6 +1361,7 @@ export const useStore = create<AppState>()(
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,
+        showExitedAgents: state.showExitedAgents,
         paneOrder: state.paneOrder,
         previewPanes: state.previewPanes,
         layout: state.layout,
@@ -1335,6 +1383,8 @@ export const useStore = create<AppState>()(
           merged.sidebarOpen = saved.sidebarOpen;
         if (typeof saved?.autonomousMode === "boolean")
           merged.autonomousMode = saved.autonomousMode;
+        if (typeof saved?.showExitedAgents === "boolean")
+          merged.showExitedAgents = saved.showExitedAgents;
         if (Array.isArray(saved?.previewPanes))
           merged.previewPanes = saved.previewPanes as PreviewPaneInfo[];
 

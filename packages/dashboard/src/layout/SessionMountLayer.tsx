@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { HierarchyPanel } from "../components/HierarchyPanel";
 import { PreviewPane } from "../components/PreviewPane";
 import { SessionPane } from "../components/SessionPane";
 import { useStore } from "../store";
@@ -58,6 +59,8 @@ export function SessionMountLayer() {
     ? activeTabPane(focusedLeaf)?.id
     : undefined;
 
+  const orgChartRect = paneToRect.get("orgchart");
+
   return (
     <>
       {sessions.map((s) => {
@@ -109,6 +112,23 @@ export function SessionMountLayer() {
           </div>
         );
       })}
+      {/* Org chart singleton pane */}
+      {orgChartRect && (
+        <div
+          style={{
+            position: "absolute",
+            display: "flex",
+            left: orgChartRect.left,
+            top: orgChartRect.top,
+            width: orgChartRect.width,
+            height: orgChartRect.height,
+            zIndex: focusedPaneId === "orgchart" ? 2 : 1,
+            pointerEvents: isDragging ? "none" : "auto",
+          }}
+        >
+          <HierarchyPanel />
+        </div>
+      )}
     </>
   );
 }

@@ -40,6 +40,7 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
       const preview = previewPanes.find((p) => p.id === pane.id);
       return preview?.title || "Preview";
     }
+    if (pane.type === "orgchart") return "Org Chart";
     return "Tab";
   }
 

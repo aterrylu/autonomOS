@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Tree, TreeNode } from "react-organizational-chart";
+import { useShallow } from "zustand/react/shallow";
 import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
@@ -83,6 +84,7 @@ export function useOrgChart() {
 
 export function useAgentStatusByName() {
   const sessions = useStore((s) => s.sessions);
+  const exitedSessions = useStore((s) => s.exitedSessions);
   const agentStatuses = useStore((s) => s.agentStatuses);
 
   return useMemo(() => {
@@ -90,6 +92,13 @@ export function useAgentStatusByName() {
       string,
       { session: SessionInfo; agentStatus: AgentStatus; currentTool?: string }
     > = {};
+    // Exited sessions first so live sessions override them
+    for (const session of exitedSessions) {
+      map[session.name.toLowerCase()] = {
+        session,
+        agentStatus: "stopped",
+      };
+    }
     for (const session of sessions) {
       const statusInfo = agentStatuses[session.id];
       const agentStatus: AgentStatus =
@@ -102,7 +111,7 @@ export function useAgentStatusByName() {
       };
     }
     return map;
-  }, [sessions, agentStatuses]);
+  }, [sessions, exitedSessions, agentStatuses]);
 }
 
 // ── Accent line gradient helper ──────────────────────────────────
@@ -124,8 +133,35 @@ interface OrgNodeProps {
 function AgentCard({ node, page, statusMap }: OrgNodeProps) {
   const info = statusMap[node.name.toLowerCase()];
   const agentStatus: AgentStatus = info?.agentStatus ?? "stopped";
-  const isRunning = info != null && info.session.status !== "stopped";
+  const isRunning =
+    info != null &&
+    info.session.status !== "stopped" &&
+    info.session.status !== "exited";
   const isWorking = WORKING_STATUSES.has(agentStatus);
+  const { killSession, removeSession } = useStore(
+    useShallow((s) => ({
+      killSession: s.killSession,
+      removeSession: s.removeSession,
+    })),
+  );
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
+
+  const handleRemove = async () => {
+    if (!info || isRemoving) return;
+    setIsRemoving(true);
+    try {
+      if (isRunning) {
+        await killSession(info.session.id);
+      }
+      await removeSession(info.session.id);
+      setConfirmRemove(false);
+    } catch {
+      // Keep confirm dialog open so user sees it didn't work
+    } finally {
+      setIsRemoving(false);
+    }
+  };
 
   return (
     <div
@@ -162,6 +198,57 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
           className="absolute top-0 left-3 right-3 h-[2px] rounded-full"
           style={{ background: accentGradient(isWorking, isRunning) }}
         />
+
+        {/* Overlay — trash on hover, confirm on click */}
+        {info && (
+          <div
+            className={`absolute inset-0 rounded-xl flex flex-col items-center justify-center gap-2 transition-opacity z-10 ${confirmRemove ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+            style={{ background: "rgba(0,0,0,0.7)" }}
+          >
+            {confirmRemove ? (
+              <>
+                <span
+                  className="text-[11px] font-medium"
+                  style={{ color: "#ea6c73" }}
+                >
+                  {isRunning
+                    ? "Kill & remove permanently?"
+                    : "Remove permanently?"}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRemove}
+                    className="text-[11px] px-2.5 py-1 rounded cursor-pointer font-medium"
+                    style={{ color: "#fff", background: "#ea6c73" }}
+                  >
+                    Remove
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemove(false)}
+                    className="text-[11px] px-2.5 py-1 rounded cursor-pointer"
+                    style={{
+                      color: page.statusFg,
+                      background: "rgba(255,255,255,0.1)",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmRemove(true)}
+                className="cursor-pointer"
+                title={isRunning ? "Kill and remove agent" : "Remove agent"}
+              >
+                <Codicon name="trash" size={18} />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Name row */}
         <div className="flex items-center gap-2.5 mt-1 mb-2">
@@ -309,7 +396,6 @@ function HierarchyContent({
 
 export function HierarchyPanel() {
   const theme = useStore((s) => s.theme);
-  const setViewMode = useStore((s) => s.setViewMode);
   const page = THEMES[theme].page;
   const statusMap = useAgentStatusByName();
   const { chart, loading, error } = useOrgChart();
@@ -319,30 +405,6 @@ export function HierarchyPanel() {
       className="flex flex-col h-full w-full"
       style={{ background: page.bg }}
     >
-      {/* Panel header */}
-      <div
-        className="flex items-center px-4 py-2 shrink-0"
-        style={{ borderBottom: `1px solid ${page.border}` }}
-      >
-        <Codicon
-          name="type-hierarchy"
-          size={14}
-          style={{ color: page.statusFg }}
-        />
-        <span className="text-xs font-medium ml-2" style={{ color: page.fg }}>
-          Org Chart
-        </span>
-        <button
-          type="button"
-          onClick={() => setViewMode("terminal")}
-          className="ml-auto cursor-pointer p-1 rounded transition-colors"
-          style={{ color: page.statusFg }}
-          title="Close org chart"
-        >
-          <Codicon name="close" size={14} />
-        </button>
-      </div>
-
       <HierarchyContent
         chart={chart}
         loading={loading}
