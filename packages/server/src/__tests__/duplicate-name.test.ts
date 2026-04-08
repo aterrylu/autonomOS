@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Session } from "@autonomos/core";
 import { Hono } from "hono";
 import {
@@ -34,13 +34,38 @@ function createApp() {
   return app;
 }
 
+/**
+ * Track persisted session IDs before each test so afterEach can remove
+ * any sessions that were added during the test. Prevents test-spawned
+ * sessions from leaking into ~/.autonomos/sessions.json (which the
+ * production dashboard reads).
+ */
+let persistedIdsBefore: Set<string>;
+
+function snapshotPersisted() {
+  persistedIdsBefore = new Set(
+    getPersistedSessions().map((s) => s.claudeSessionId),
+  );
+}
+
+function cleanupPersisted() {
+  const after = getPersistedSessions();
+  for (const s of after) {
+    if (!persistedIdsBefore.has(s.claudeSessionId)) {
+      removePersistedSession(s.claudeSessionId);
+    }
+  }
+}
+
 // ── createSession() active-name uniqueness guard ─────────────────────
 
 describe("createSession() — active name uniqueness", () => {
+  beforeEach(() => snapshotPersisted());
   afterEach(() => {
     // Use _resetForTesting (clears Map) instead of killAllSessions (tries pty.kill)
     // because injected fake sessions have null PTY.
     _resetForTesting();
+    cleanupPersisted();
   });
 
   it("rejects creating a session with the same name as a live one", () => {
@@ -144,10 +169,10 @@ describe("POST /api/sessions — name collision returns 409", () => {
 describe("POST /api/sessions/:id/resume — name collision", () => {
   const exitedClaudeId = "exited-session-for-resume-test";
 
+  beforeEach(() => snapshotPersisted());
   afterEach(() => {
     _resetForTesting();
-    // Clean up any persisted entry we created
-    removePersistedSession(exitedClaudeId);
+    cleanupPersisted();
   });
 
   it("returns 409 when a live agent with the same name already exists", async () => {
