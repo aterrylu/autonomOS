@@ -4,6 +4,10 @@ import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** Redact secrets — show only last 4 chars */
 function redact(value: string | undefined): string | null {
   if (!value) return null;
@@ -20,6 +24,7 @@ function maskSettings(settings: AppSettings) {
     anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
     channels: settings.channels ?? ["server:autonomos"],
     autoTrust: settings.autoTrust !== false,
+    customEnvVars: settings.customEnvVars ?? {},
   };
 }
 
@@ -58,6 +63,22 @@ settingsRouter.put("/", async (c) => {
     partial.channels = body.channels.filter(
       (c): c is string => typeof c === "string" && c.trim().length > 0,
     );
+  }
+  if (isPlainObject(body.customEnvVars)) {
+    const vars: Record<string, string> = {};
+    for (const [k, v] of Object.entries(
+      body.customEnvVars as Record<string, unknown>,
+    )) {
+      const key = k.trim();
+      if (
+        key &&
+        typeof v === "string" &&
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)
+      ) {
+        vars[key] = v;
+      }
+    }
+    partial.customEnvVars = vars;
   }
 
   let updated: AppSettings;
