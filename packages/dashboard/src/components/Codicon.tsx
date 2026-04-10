@@ -8,6 +8,7 @@ import claudeSvg from "@vscode/codicons/src/icons/claude.svg?raw";
 import closeSvg from "@vscode/codicons/src/icons/close.svg?raw";
 import commentDiscussionSvg from "@vscode/codicons/src/icons/comment-discussion.svg?raw";
 import copySvg from "@vscode/codicons/src/icons/copy.svg?raw";
+import debugStartSvg from "@vscode/codicons/src/icons/debug-start.svg?raw";
 import eyeSvg from "@vscode/codicons/src/icons/eye.svg?raw";
 import eyeClosedSvg from "@vscode/codicons/src/icons/eye-closed.svg?raw";
 import gearSvg from "@vscode/codicons/src/icons/gear.svg?raw";
@@ -34,6 +35,7 @@ const ICONS = {
   close: extractPaths(closeSvg),
   "comment-discussion": extractPaths(commentDiscussionSvg),
   copy: extractPaths(copySvg),
+  "debug-start": extractPaths(debugStartSvg),
   eye: extractPaths(eyeSvg),
   "eye-closed": extractPaths(eyeClosedSvg),
   gear: extractPaths(gearSvg),
