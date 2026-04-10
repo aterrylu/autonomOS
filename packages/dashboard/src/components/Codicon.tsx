@@ -1,6 +1,8 @@
 import bellSvg from "@vscode/codicons/src/icons/bell.svg?raw";
 import bellDotSvg from "@vscode/codicons/src/icons/bell-dot.svg?raw";
 import checkSvg from "@vscode/codicons/src/icons/check.svg?raw";
+import chevronDownSvg from "@vscode/codicons/src/icons/chevron-down.svg?raw";
+import chevronRightSvg from "@vscode/codicons/src/icons/chevron-right.svg?raw";
 import circleLargeSvg from "@vscode/codicons/src/icons/circle-large.svg?raw";
 import claudeSvg from "@vscode/codicons/src/icons/claude.svg?raw";
 import closeSvg from "@vscode/codicons/src/icons/close.svg?raw";
@@ -10,6 +12,8 @@ import eyeSvg from "@vscode/codicons/src/icons/eye.svg?raw";
 import eyeClosedSvg from "@vscode/codicons/src/icons/eye-closed.svg?raw";
 import gearSvg from "@vscode/codicons/src/icons/gear.svg?raw";
 import linkExternalSvg from "@vscode/codicons/src/icons/link-external.svg?raw";
+import listFlatSvg from "@vscode/codicons/src/icons/list-flat.svg?raw";
+import listTreeSvg from "@vscode/codicons/src/icons/list-tree.svg?raw";
 import markdownSvg from "@vscode/codicons/src/icons/markdown.svg?raw";
 import radioTowerSvg from "@vscode/codicons/src/icons/radio-tower.svg?raw";
 import trashSvg from "@vscode/codicons/src/icons/trash.svg?raw";
@@ -23,6 +27,8 @@ const ICONS = {
   bell: extractPaths(bellSvg),
   "bell-dot": extractPaths(bellDotSvg),
   check: extractPaths(checkSvg),
+  "chevron-down": extractPaths(chevronDownSvg),
+  "chevron-right": extractPaths(chevronRightSvg),
   "circle-large": extractPaths(circleLargeSvg),
   claude: extractPaths(claudeSvg),
   close: extractPaths(closeSvg),
@@ -32,6 +38,8 @@ const ICONS = {
   "eye-closed": extractPaths(eyeClosedSvg),
   gear: extractPaths(gearSvg),
   "link-external": extractPaths(linkExternalSvg),
+  "list-flat": extractPaths(listFlatSvg),
+  "list-tree": extractPaths(listTreeSvg),
   markdown: extractPaths(markdownSvg),
   "radio-tower": extractPaths(radioTowerSvg),
   trash: extractPaths(trashSvg),

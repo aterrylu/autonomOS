@@ -64,6 +64,7 @@ export interface SessionInfo {
   provider: string;
   claudeSessionId?: string;
   template?: string;
+  manager?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -402,10 +403,13 @@ interface AppState {
   // Persisted
   theme: ThemeName;
   viewMode: "terminal" | "conversation";
+  sidebarViewMode: "flat" | "hierarchy";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
   paneOrder: string[];
+  /** Ordering of children within each hierarchy group. Key = parent name (lowercase) or "__root__". */
+  hierarchyOrder: Record<string, string[]>;
   previewPanes: PreviewPaneInfo[];
   layout: LayoutNode;
   focusedLeafId: string;
@@ -458,6 +462,12 @@ interface AppState {
   saveTemplate: (name: string, template: AgentTemplate) => Promise<void>;
   deleteTemplate: (name: string) => Promise<void>;
   toggleShowExitedAgents: () => void;
+  toggleSidebarViewMode: () => void;
+  reorderHierarchy: (
+    groupKey: string,
+    fromIndex: number,
+    toIndex: number,
+  ) => void;
   removeSession: (id: string) => Promise<void>;
   reorderPanes: (fromIndex: number, toIndex: number) => void;
 
@@ -547,6 +557,7 @@ export const useStore = create<AppState>()(
       return {
         theme: "void",
         viewMode: "terminal",
+        sidebarViewMode: "flat",
         activePane: null,
         status: "disconnected",
         sessions: [],
@@ -561,6 +572,7 @@ export const useStore = create<AppState>()(
         sidebarOpen: true,
         autonomousMode: true,
         paneOrder: [],
+        hierarchyOrder: {},
         previewPanes: [],
         layout: _initialRoot,
         focusedLeafId: _initialRoot.id,
@@ -976,6 +988,24 @@ export const useStore = create<AppState>()(
 
         toggleShowExitedAgents: () => {
           set({ showExitedAgents: !get().showExitedAgents });
+        },
+
+        toggleSidebarViewMode: () => {
+          set({
+            sidebarViewMode:
+              get().sidebarViewMode === "flat" ? "hierarchy" : "flat",
+          });
+        },
+
+        reorderHierarchy: (groupKey, fromIndex, toIndex) => {
+          const prev = get().hierarchyOrder;
+          const order = prev[groupKey] ? [...prev[groupKey]] : [];
+          // If the order array is empty, it hasn't been initialized yet.
+          // The caller should pass the current name list first time.
+          if (order.length === 0) return;
+          const [moved] = order.splice(fromIndex, 1);
+          order.splice(toIndex, 0, moved);
+          set({ hierarchyOrder: { ...prev, [groupKey]: order } });
         },
 
         removeSession: async (id) => {
@@ -1447,11 +1477,13 @@ export const useStore = create<AppState>()(
       partialize: (state) => ({
         theme: state.theme,
         viewMode: state.viewMode,
+        sidebarViewMode: state.sidebarViewMode,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,
         showExitedAgents: state.showExitedAgents,
         paneOrder: state.paneOrder,
+        hierarchyOrder: state.hierarchyOrder,
         previewPanes: state.previewPanes,
         layout: state.layout,
         focusedLeafId: state.focusedLeafId,
@@ -1474,6 +1506,20 @@ export const useStore = create<AppState>()(
           merged.autonomousMode = saved.autonomousMode;
         if (typeof saved?.showExitedAgents === "boolean")
           merged.showExitedAgents = saved.showExitedAgents;
+        if (
+          saved?.sidebarViewMode === "flat" ||
+          saved?.sidebarViewMode === "hierarchy"
+        )
+          merged.sidebarViewMode = saved.sidebarViewMode;
+        if (
+          saved?.hierarchyOrder &&
+          typeof saved.hierarchyOrder === "object" &&
+          !Array.isArray(saved.hierarchyOrder)
+        )
+          merged.hierarchyOrder = saved.hierarchyOrder as Record<
+            string,
+            string[]
+          >;
         if (Array.isArray(saved?.previewPanes))
           merged.previewPanes = saved.previewPanes as PreviewPaneInfo[];
 
