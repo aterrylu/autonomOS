@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Codicon, type CodiconName } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
@@ -11,6 +11,7 @@ interface MaskedSettings {
   anthropicOverrideEnabled: boolean;
   channels: string[];
   autoTrust: boolean;
+  customEnvVars: Record<string, string>;
 }
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -160,6 +161,129 @@ function ChannelToggle({
         style={{ color: enabled ? "#16825d" : page.statusFg }}
       />
     </button>
+  );
+}
+
+function EnvVarRow({
+  envKey,
+  value,
+  inputStyle,
+  page,
+  onChange,
+  onRemove,
+}: {
+  envKey: string;
+  value: string;
+  inputStyle: React.CSSProperties;
+  page: PageTheme;
+  onChange: (key: string, value: string) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex gap-1.5 items-center">
+      <input
+        type="text"
+        value={envKey}
+        onChange={(e) => onChange(e.target.value, value)}
+        placeholder="KEY"
+        className="flex-1 rounded px-2 py-1.5 text-xs font-mono min-w-0"
+        style={inputStyle}
+      />
+      <span className="text-[10px]" style={{ color: page.statusFg }}>
+        =
+      </span>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(envKey, e.target.value)}
+        placeholder="value"
+        className="flex-1 rounded px-2 py-1.5 text-xs font-mono min-w-0"
+        style={inputStyle}
+      />
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded p-1 cursor-pointer hover:opacity-80"
+        style={{ color: page.statusFg }}
+      >
+        <Codicon name="close" size={12} />
+      </button>
+    </div>
+  );
+}
+
+type EnvVarEntry = { id: number; key: string; value: string };
+
+function EnvVarSection({
+  settings,
+  pendingEnvVars,
+  setPendingEnvVars,
+  envIdCounter,
+  inputStyle,
+  page,
+  labelStyle,
+}: {
+  settings: MaskedSettings | null;
+  pendingEnvVars: EnvVarEntry[] | null;
+  setPendingEnvVars: (rows: EnvVarEntry[] | null) => void;
+  envIdCounter: React.RefObject<number>;
+  inputStyle: React.CSSProperties;
+  page: PageTheme;
+  labelStyle: React.CSSProperties;
+}) {
+  // Derive rows from pending state or server settings. Memoized so IDs are
+  // stable across re-renders (prevents React from remounting inputs).
+  // Once the user edits, pendingEnvVars takes over and this memo is bypassed.
+  const settingsVars = settings?.customEnvVars;
+  const serverRows = useMemo(() => {
+    return Object.entries(settingsVars ?? {}).map(([k, v]) => ({
+      id: envIdCounter.current++,
+      key: k,
+      value: v,
+    }));
+  }, [settingsVars, envIdCounter]);
+  const rows = pendingEnvVars ?? serverRows;
+
+  return (
+    <>
+      <div className="space-y-1.5">
+        {rows.map((row, i) => (
+          <EnvVarRow
+            key={row.id}
+            envKey={row.key}
+            value={row.value}
+            inputStyle={inputStyle}
+            page={page}
+            onChange={(newKey, newValue) => {
+              const updated = [...rows];
+              updated[i] = { ...updated[i], key: newKey, value: newValue };
+              setPendingEnvVars(updated);
+            }}
+            onRemove={() => {
+              setPendingEnvVars(rows.filter((_, j) => j !== i));
+            }}
+          />
+        ))}
+        <button
+          type="button"
+          onClick={() => {
+            setPendingEnvVars([
+              ...rows,
+              { id: envIdCounter.current++, key: "", value: "" },
+            ]);
+          }}
+          className="flex items-center gap-1.5 rounded px-2 py-1.5 text-xs cursor-pointer hover:opacity-80"
+          style={{ color: "#16825d" }}
+        >
+          <span className="text-sm leading-none">+</span>
+          Add Variable
+        </button>
+      </div>
+      <div className="text-[10px]" style={labelStyle}>
+        Applied to all newly spawned sessions. Restart existing sessions to
+        apply.
+      </div>
+    </>
   );
 }
 
@@ -341,6 +465,10 @@ export function SettingsPanel({
 
   const [pending, setPending] = useState<Record<string, string>>({});
   const [pendingChannels, setPendingChannels] = useState<string[] | null>(null);
+  const [pendingEnvVars, setPendingEnvVars] = useState<EnvVarEntry[] | null>(
+    null,
+  );
+  const envIdCounter = useRef(0);
 
   const toggleSetting = useCallback(
     async (key: keyof MaskedSettings, newVal: unknown) => {
@@ -386,7 +514,8 @@ export function SettingsPanel({
   async function handleSave() {
     const hasTextChanges = Object.keys(pending).length > 0;
     const hasChannelChanges = pendingChannels !== null;
-    if (!hasTextChanges && !hasChannelChanges) return;
+    const hasEnvChanges = pendingEnvVars !== null;
+    if (!hasTextChanges && !hasChannelChanges && !hasEnvChanges) return;
     setSaving(true);
     setError("");
     setSaved(false);
@@ -394,6 +523,14 @@ export function SettingsPanel({
       const body: Record<string, unknown> = { ...pending };
       if (pendingChannels !== null) {
         body.channels = pendingChannels;
+      }
+      if (pendingEnvVars !== null) {
+        const vars: Record<string, string> = {};
+        for (const { key, value } of pendingEnvVars) {
+          const k = key.trim();
+          if (k) vars[k] = value;
+        }
+        body.customEnvVars = vars;
       }
       const res = await fetch("/api/settings", {
         method: "PUT",
@@ -408,6 +545,7 @@ export function SettingsPanel({
       setSettings(updated);
       setPending({});
       setPendingChannels(null);
+      setPendingEnvVars(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -427,7 +565,9 @@ export function SettingsPanel({
 
   const labelStyle: React.CSSProperties = { color: page.statusFg };
   const hasPending =
-    Object.keys(pending).length > 0 || pendingChannels !== null;
+    Object.keys(pending).length > 0 ||
+    pendingChannels !== null ||
+    pendingEnvVars !== null;
 
   return (
     <div
@@ -578,6 +718,22 @@ export function SettingsPanel({
             Enabled channels are injected into every new session via --channels.
             Requires Claude Code v2.1.80+.
           </div>
+
+          <div
+            className="text-[10px] font-medium uppercase tracking-wide mt-3"
+            style={labelStyle}
+          >
+            Custom Environment Variables
+          </div>
+          <EnvVarSection
+            settings={settings}
+            pendingEnvVars={pendingEnvVars}
+            setPendingEnvVars={setPendingEnvVars}
+            envIdCounter={envIdCounter}
+            inputStyle={inputStyle}
+            page={page}
+            labelStyle={labelStyle}
+          />
 
           {error && (
             <div

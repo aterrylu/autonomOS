@@ -38,6 +38,8 @@ export interface AppSettings {
   routes?: import("@autonomos/core").ChannelRoute[];
   /** Auto-answer Claude Code startup trust prompts (default: true) */
   autoTrust?: boolean;
+  /** User-defined env vars injected into every spawned session */
+  customEnvVars?: Record<string, string>;
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");

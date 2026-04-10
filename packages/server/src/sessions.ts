@@ -627,6 +627,16 @@ export function _injectSessionForTesting(id: string, session: Session): void {
   });
 }
 
+/** Keys that buildEnv manages directly — custom env vars cannot override these. */
+const RESERVED_ENV_KEYS = new Set([
+  "CLAUDECODE",
+  "PORT",
+  "PATH",
+  "HOME",
+  "AUTONOMOS_SERVER",
+  "AUTONOMOS_SESSION_ID",
+]);
+
 /**
  * Build environment with full PATH, strip CLAUDECODE to prevent
  * nested-session detection, and inject settings as env vars.
@@ -656,6 +666,16 @@ function buildEnv(sessionId: string): Record<string, string> {
     }
     if (settings.anthropicAuthToken) {
       env.ANTHROPIC_AUTH_TOKEN = settings.anthropicAuthToken;
+    }
+  }
+
+  // Inject user-defined custom env vars — can override most things (e.g.
+  // ANTHROPIC_BASE_URL) but not internal vars that buildEnv explicitly manages.
+  if (settings.customEnvVars) {
+    for (const [key, value] of Object.entries(settings.customEnvVars)) {
+      if (!RESERVED_ENV_KEYS.has(key)) {
+        env[key] = value;
+      }
     }
   }
 
