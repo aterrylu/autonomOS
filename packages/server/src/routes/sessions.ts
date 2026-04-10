@@ -84,15 +84,14 @@ sessionRouter.get("/", async (c) => {
       ? persistedMap.get(s.claudeSessionId)
       : undefined;
     const title = s.claudeSessionId ? titles.get(s.claudeSessionId) : undefined;
-    if (persisted || title) {
-      return {
-        ...s,
-        ...(title ? { name: title } : {}),
-        template: persisted?.template,
-        manager: persisted?.manager,
-        project: persisted?.project,
-      };
+    const toAdd: Record<string, unknown> = {};
+    if (title) toAdd.name = title;
+    if (persisted) {
+      if (persisted.template !== undefined) toAdd.template = persisted.template;
+      if (persisted.manager !== undefined) toAdd.manager = persisted.manager;
+      if (persisted.project !== undefined) toAdd.project = persisted.project;
     }
+    if (Object.keys(toAdd).length > 0) return { ...s, ...toAdd };
     return s;
   });
 

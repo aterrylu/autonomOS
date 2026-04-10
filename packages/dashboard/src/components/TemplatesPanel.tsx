@@ -381,12 +381,11 @@ function EditorView({
     setSubmitting(true);
     try {
       await deleteTemplate(initialName);
+      setSubmitting(false);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete");
-    } finally {
       setSubmitting(false);
-      setConfirmDelete(false);
     }
   };
 
