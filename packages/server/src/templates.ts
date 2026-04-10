@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -72,6 +73,31 @@ export function saveTemplate(name: string, template: AgentTemplate): void {
   writeFileSync(filePath, `${JSON.stringify(template, null, 2)}\n`, {
     mode: 0o600,
   });
+}
+
+/**
+ * Delete a template by name. Returns true if removed, false if it didn't exist.
+ * Throws on I/O errors other than ENOENT so callers can distinguish
+ * "already gone" from "something is broken".
+ */
+export function deleteTemplate(name: string): boolean {
+  validateName(name);
+  const filePath = join(TEMPLATES_DIR, `${name}.json`);
+  try {
+    unlinkSync(filePath);
+    return true;
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return false;
+    }
+    throw new Error(
+      `Failed to delete template "${name}": ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }
 
 /**

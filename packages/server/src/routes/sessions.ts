@@ -62,11 +62,36 @@ sessionRouter.get("/", async (c) => {
     );
   }
 
-  const enriched = sessions.map((s) => {
-    if (s.claudeSessionId) {
-      const title = titles.get(s.claudeSessionId);
-      if (title) return { ...s, name: title };
+  // Build persisted data lookup for enriching live sessions with template/manager/project
+  // Best-effort — never block the session list on persistence failures
+  const persistedMap = new Map<
+    string,
+    ReturnType<typeof getPersistedSessions>[number]
+  >();
+  try {
+    for (const p of getPersistedSessions()) {
+      persistedMap.set(p.claudeSessionId, p);
     }
+  } catch (err) {
+    console.warn(
+      "Failed to load persisted session data for enrichment:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  const enriched = sessions.map((s) => {
+    const persisted = s.claudeSessionId
+      ? persistedMap.get(s.claudeSessionId)
+      : undefined;
+    const title = s.claudeSessionId ? titles.get(s.claudeSessionId) : undefined;
+    const toAdd: Record<string, unknown> = {};
+    if (title) toAdd.name = title;
+    if (persisted) {
+      if (persisted.template !== undefined) toAdd.template = persisted.template;
+      if (persisted.manager !== undefined) toAdd.manager = persisted.manager;
+      if (persisted.project !== undefined) toAdd.project = persisted.project;
+    }
+    if (Object.keys(toAdd).length > 0) return { ...s, ...toAdd };
     return s;
   });
 

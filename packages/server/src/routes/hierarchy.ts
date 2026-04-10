@@ -9,7 +9,12 @@ import type { AgentCapability } from "@autonomos/core";
 import { Hono } from "hono";
 import { buildOrgChart } from "../orgChart.js";
 import { updatePersistedSessionByName } from "../persisted.js";
-import { listTemplates, saveTemplate } from "../templates.js";
+import {
+  deleteTemplate,
+  getTemplate,
+  listTemplates,
+  saveTemplate,
+} from "../templates.js";
 
 export const orgRouter = new Hono();
 export const templateRouter = new Hono();
@@ -53,7 +58,12 @@ orgRouter.put("/manager", async (c) => {
 // ── Templates ───────────────────────────────────────────────────
 
 templateRouter.get("/", (c) => {
-  return c.json(listTemplates());
+  try {
+    return c.json(listTemplates());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ error: `Failed to list templates: ${message}` }, 500);
+  }
 });
 
 templateRouter.post("/", async (c) => {
@@ -99,5 +109,34 @@ templateRouter.post("/", async (c) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return c.json({ error: `Failed to create template: ${message}` }, 500);
+  }
+});
+
+templateRouter.get("/:name", (c) => {
+  const name = c.req.param("name");
+  try {
+    const template = getTemplate(name);
+    if (!template) {
+      return c.json({ error: `Template "${name}" not found` }, 404);
+    }
+    return c.json(template);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    const status = message.includes("Invalid template name") ? 400 : 500;
+    return c.json({ error: message }, status);
+  }
+});
+
+templateRouter.delete("/:name", (c) => {
+  const name = c.req.param("name");
+  try {
+    const removed = deleteTemplate(name);
+    if (!removed) {
+      return c.json({ error: `Template "${name}" not found` }, 404);
+    }
+    return c.json({ ok: true, message: `Template "${name}" deleted` });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ error: `Failed to delete template: ${message}` }, 500);
   }
 });
