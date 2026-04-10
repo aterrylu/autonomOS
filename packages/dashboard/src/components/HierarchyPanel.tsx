@@ -22,9 +22,12 @@ import {
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
 export interface OrgNode {
+  claudeSessionId: string;
   name: string;
   template?: string;
   project?: string;
+  /** Lifecycle from the server — "running" or "exited". */
+  status: "running" | "exited";
   children: OrgNode[];
 }
 
@@ -82,7 +85,14 @@ export function useOrgChart() {
 
 // ── Status resolver ──────────────────────────────────────────────
 
-export function useAgentStatusByName() {
+/**
+ * Build a lookup map of session activity status (working, needs_input, etc.)
+ * keyed by `claudeSessionId`. Using the session ID — not the name — avoids
+ * the collision class that Bug 2 fixed on the server: two sessions with the
+ * same name would otherwise overwrite each other here, and AgentCard could
+ * pick up the wrong `currentTool`/activity state.
+ */
+export function useAgentStatusById() {
   const sessions = useStore((s) => s.sessions);
   const exitedSessions = useStore((s) => s.exitedSessions);
   const agentStatuses = useStore((s) => s.agentStatuses);
@@ -92,23 +102,23 @@ export function useAgentStatusByName() {
       string,
       { session: SessionInfo; agentStatus: AgentStatus; currentTool?: string }
     > = {};
-    // Exited sessions first so live sessions override them
+    const put = (
+      session: SessionInfo,
+      agentStatus: AgentStatus,
+      currentTool?: string,
+    ) => {
+      if (!session.claudeSessionId) return;
+      map[session.claudeSessionId] = { session, agentStatus, currentTool };
+    };
     for (const session of exitedSessions) {
-      map[session.name.toLowerCase()] = {
-        session,
-        agentStatus: "stopped",
-      };
+      put(session, "stopped");
     }
     for (const session of sessions) {
       const statusInfo = agentStatuses[session.id];
       const agentStatus: AgentStatus =
         (statusInfo?.status as AgentStatus) ??
         (session.status === "stopped" ? "stopped" : "unknown");
-      map[session.name.toLowerCase()] = {
-        session,
-        agentStatus,
-        currentTool: statusInfo?.currentTool,
-      };
+      put(session, agentStatus, statusInfo?.currentTool);
     }
     return map;
   }, [sessions, exitedSessions, agentStatuses]);
@@ -127,39 +137,84 @@ function accentGradient(isWorking: boolean, isRunning: boolean): string {
 interface OrgNodeProps {
   node: OrgNode;
   page: PageTheme;
-  statusMap: ReturnType<typeof useAgentStatusByName>;
+  statusMap: ReturnType<typeof useAgentStatusById>;
 }
 
 function AgentCard({ node, page, statusMap }: OrgNodeProps) {
-  const info = statusMap[node.name.toLowerCase()];
-  const agentStatus: AgentStatus = info?.agentStatus ?? "stopped";
-  const isRunning =
-    info != null &&
-    info.session.status !== "stopped" &&
-    info.session.status !== "exited";
+  // Source of truth for running/exited comes from the node itself
+  // (keyed by claudeSessionId — no collision on duplicate names).
+  const isRunning = node.status === "running";
+  // Activity state (working, needs_input, etc.) looked up by session ID —
+  // same-key-same-meaning invariant, no collision hazard.
+  const info = statusMap[node.claudeSessionId];
+  const agentStatus: AgentStatus = isRunning
+    ? (info?.agentStatus ?? "unknown")
+    : "stopped";
   const isWorking = WORKING_STATUSES.has(agentStatus);
-  const { killSession, removeSession } = useStore(
+  const {
+    killSession,
+    removeSession,
+    resumeSession,
+    sessions,
+    exitedSessions,
+  } = useStore(
     useShallow((s) => ({
       killSession: s.killSession,
       removeSession: s.removeSession,
+      resumeSession: s.resumeSession,
+      sessions: s.sessions,
+      exitedSessions: s.exitedSessions,
     })),
   );
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
+
+  // Look up the session (live or exited) by claudeSessionId — unique even
+  // across name collisions. The store id is what DELETE /api/sessions/:id
+  // expects, so we need the SessionInfo, not just the claudeSessionId.
+  const targetSession = useMemo(() => {
+    const id = node.claudeSessionId;
+    return (
+      sessions.find((s) => s.claudeSessionId === id) ??
+      exitedSessions.find((s) => s.claudeSessionId === id) ??
+      null
+    );
+  }, [sessions, exitedSessions, node.claudeSessionId]);
 
   const handleRemove = async () => {
-    if (!info || isRemoving) return;
+    if (!targetSession || isRemoving) return;
     setIsRemoving(true);
     try {
       if (isRunning) {
-        await killSession(info.session.id);
+        await killSession(targetSession.id);
       }
-      await removeSession(info.session.id);
+      await removeSession(targetSession.id);
       setConfirmRemove(false);
     } catch {
       // Keep confirm dialog open so user sees it didn't work
     } finally {
       setIsRemoving(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (isResuming || isRunning) return;
+    setIsResuming(true);
+    try {
+      // The resume endpoint uses claudeSessionId as :id and restores full
+      // config (template, manager, cwd, etc.) from persisted state — so the
+      // `cwd` and `name` args passed here are unused for the isAutonomosAgent
+      // branch. `resumeSession` does not throw on failure; it sets a visible
+      // `resume failed: ...` in the global status bar (store.ts:798). The
+      // try/catch is defensive in case that contract changes.
+      await resumeSession(node.claudeSessionId, "", node.name, {
+        isAutonomosAgent: true,
+      });
+    } catch {
+      // Defensive — store currently doesn't throw for the autonomOS path
+    } finally {
+      setIsResuming(false);
     }
   };
 
@@ -199,8 +254,8 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
           style={{ background: accentGradient(isWorking, isRunning) }}
         />
 
-        {/* Overlay — trash on hover, confirm on click */}
-        {info && (
+        {/* Overlay — action buttons on hover, confirm on click */}
+        {targetSession && (
           <div
             className={`absolute inset-0 rounded-xl flex flex-col items-center justify-center gap-2 transition-opacity z-10 ${confirmRemove ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
             style={{ background: "rgba(0,0,0,0.7)" }}
@@ -219,7 +274,8 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
                   <button
                     type="button"
                     onClick={handleRemove}
-                    className="text-[11px] px-2.5 py-1 rounded cursor-pointer font-medium"
+                    disabled={isRemoving}
+                    className="text-[11px] px-2.5 py-1 rounded cursor-pointer font-medium disabled:opacity-50"
                     style={{ color: "#fff", background: "#ea6c73" }}
                   >
                     Remove
@@ -238,14 +294,28 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
                 </div>
               </>
             ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmRemove(true)}
-                className="cursor-pointer"
-                title={isRunning ? "Kill and remove agent" : "Remove agent"}
-              >
-                <Codicon name="trash" size={18} />
-              </button>
+              <div className="flex items-center gap-3">
+                {!isRunning && (
+                  <button
+                    type="button"
+                    onClick={handleResume}
+                    disabled={isResuming}
+                    className="cursor-pointer disabled:opacity-50"
+                    title="Resume agent"
+                    style={{ color: "#22c55e" }}
+                  >
+                    <Codicon name="debug-start" size={18} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemove(true)}
+                  className="cursor-pointer"
+                  title={isRunning ? "Kill and remove agent" : "Remove agent"}
+                >
+                  <Codicon name="trash" size={18} />
+                </button>
+              </div>
             )}
           </div>
         )}
@@ -299,7 +369,7 @@ function OrgTreeNode({ node, page, statusMap }: OrgNodeProps) {
     >
       {node.children.map((child) => (
         <OrgTreeNode
-          key={child.name}
+          key={child.claudeSessionId}
           node={child}
           page={page}
           statusMap={statusMap}
@@ -322,7 +392,7 @@ function HierarchyContent({
   loading: boolean;
   error: string | null;
   page: PageTheme;
-  statusMap: ReturnType<typeof useAgentStatusByName>;
+  statusMap: ReturnType<typeof useAgentStatusById>;
 }) {
   if (loading) {
     return (
@@ -368,7 +438,7 @@ function HierarchyContent({
       <div className="flex flex-col gap-12 items-center">
         {chart.map((root) => (
           <Tree
-            key={root.name}
+            key={root.claudeSessionId}
             label={<AgentCard node={root} page={page} statusMap={statusMap} />}
             lineWidth="2px"
             lineColor="rgba(255,255,255,0.15)"
@@ -379,7 +449,7 @@ function HierarchyContent({
           >
             {root.children.map((child) => (
               <OrgTreeNode
-                key={child.name}
+                key={child.claudeSessionId}
                 node={child}
                 page={page}
                 statusMap={statusMap}
@@ -397,7 +467,7 @@ function HierarchyContent({
 export function HierarchyPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const statusMap = useAgentStatusByName();
+  const statusMap = useAgentStatusById();
   const { chart, loading, error } = useOrgChart();
 
   return (
