@@ -32,16 +32,22 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
 
   function getTabTitle(tab: TabItem): string {
     const { pane } = tab;
-    if (pane.type === "session") {
-      const session = sessions.find((s) => s.id === pane.id);
-      return session?.name || pane.id.slice(0, 8);
+    switch (pane.type) {
+      case "session": {
+        const session = sessions.find((s) => s.id === pane.id);
+        return session?.name || pane.id.slice(0, 8);
+      }
+      case "preview": {
+        const preview = previewPanes.find((p) => p.id === pane.id);
+        return preview?.title || "Preview";
+      }
+      case "orgchart":
+        return "Org Chart";
+      case "templates":
+        return "Templates";
+      default:
+        return "Tab";
     }
-    if (pane.type === "preview") {
-      const preview = previewPanes.find((p) => p.id === pane.id);
-      return preview?.title || "Preview";
-    }
-    if (pane.type === "orgchart") return "Org Chart";
-    return "Tab";
   }
 
   function getTabStatus(tab: TabItem): AgentStatus | null {

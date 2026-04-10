@@ -54,6 +54,7 @@ function useSidebarActions() {
       fetchNotifications: s.fetchNotifications,
       markNotificationsRead: s.markNotificationsRead,
       openOrgChart: s.openOrgChart,
+      openTemplates: s.openTemplates,
       toggleShowExitedAgents: s.toggleShowExitedAgents,
       removeSession: s.removeSession,
     })),
@@ -106,6 +107,7 @@ export function Sidebar() {
     fetchNotifications,
     markNotificationsRead,
     openOrgChart,
+    openTemplates,
     toggleShowExitedAgents,
     removeSession,
   } = useSidebarActions();
@@ -237,20 +239,19 @@ export function Sidebar() {
         background: page.bg,
       }}
     >
-      {/* Org Chart section header */}
-      <button
-        type="button"
+      {/* Singleton pane buttons */}
+      <SidebarNavButton
+        label="Org Chart"
+        active={activePane?.type === "orgchart"}
+        page={page}
         onClick={openOrgChart}
-        className="flex items-center px-3 py-2 w-full text-left cursor-pointer transition-colors"
-        style={{
-          borderBottom: `1px solid ${page.border}`,
-          color: activePane?.type === "orgchart" ? page.fg : page.statusFg,
-          background:
-            activePane?.type === "orgchart" ? page.border : "transparent",
-        }}
-      >
-        <span className="text-xs font-medium uppercase">Org Chart</span>
-      </button>
+      />
+      <SidebarNavButton
+        label="Templates"
+        active={activePane?.type === "templates"}
+        page={page}
+        onClick={openTemplates}
+      />
 
       {/* Agents section header + toggle + New button */}
       <div
@@ -553,6 +554,33 @@ export function Sidebar() {
         ))}
       </div>
     </aside>
+  );
+}
+
+function SidebarNavButton({
+  label,
+  active,
+  page,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  page: PageTheme;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center px-3 py-2 w-full text-left cursor-pointer transition-colors"
+      style={{
+        borderBottom: `1px solid ${page.border}`,
+        color: active ? page.fg : page.statusFg,
+        background: active ? page.border : "transparent",
+      }}
+    >
+      <span className="text-xs font-medium uppercase">{label}</span>
+    </button>
   );
 }
 

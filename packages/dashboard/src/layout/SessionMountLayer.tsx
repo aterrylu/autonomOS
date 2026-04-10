@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { HierarchyPanel } from "../components/HierarchyPanel";
 import { PreviewPane } from "../components/PreviewPane";
 import { SessionPane } from "../components/SessionPane";
+import { TemplatesPanel } from "../components/TemplatesPanel";
 import { useStore } from "../store";
 import { useDragContext } from "./DragContext";
 import { type SlotRect, useLayoutContext } from "./LayoutContext";
@@ -60,6 +61,7 @@ export function SessionMountLayer() {
     : undefined;
 
   const orgChartRect = paneToRect.get("orgchart");
+  const templatesRect = paneToRect.get("templates");
 
   return (
     <>
@@ -112,24 +114,57 @@ export function SessionMountLayer() {
           </div>
         );
       })}
-      {/* Org chart singleton pane */}
-      {orgChartRect && (
-        <div
-          style={{
-            position: "absolute",
-            display: "flex",
-            left: orgChartRect.left,
-            top: orgChartRect.top,
-            width: orgChartRect.width,
-            height: orgChartRect.height,
-            zIndex: focusedPaneId === "orgchart" ? 2 : 1,
-            pointerEvents: isDragging ? "none" : "auto",
-          }}
-        >
-          <HierarchyPanel />
-        </div>
-      )}
+      {/* Singleton panes (orgchart, templates) */}
+      <SingletonPane
+        paneId="orgchart"
+        rect={orgChartRect}
+        focusedPaneId={focusedPaneId}
+        isDragging={isDragging}
+      >
+        <HierarchyPanel />
+      </SingletonPane>
+      <SingletonPane
+        paneId="templates"
+        rect={templatesRect}
+        focusedPaneId={focusedPaneId}
+        isDragging={isDragging}
+      >
+        <TemplatesPanel />
+      </SingletonPane>
     </>
+  );
+}
+
+/** Wrapper for singleton panes (orgchart, templates) — absolute positioned to slot rect */
+function SingletonPane({
+  paneId,
+  rect,
+  focusedPaneId,
+  isDragging,
+  children,
+}: {
+  paneId: string;
+  rect: SlotRect | undefined;
+  focusedPaneId: string | undefined;
+  isDragging: boolean;
+  children: React.ReactNode;
+}) {
+  if (!rect) return null;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        display: "flex",
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        zIndex: focusedPaneId === paneId ? 2 : 1,
+        pointerEvents: isDragging ? "none" : "auto",
+      }}
+    >
+      {children}
+    </div>
   );
 }
 

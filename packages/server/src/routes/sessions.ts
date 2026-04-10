@@ -62,10 +62,28 @@ sessionRouter.get("/", async (c) => {
     );
   }
 
+  // Build persisted data lookup for enriching live sessions with template/manager/project
+  const persistedMap = new Map<
+    string,
+    ReturnType<typeof getPersistedSessions>[number]
+  >();
+  for (const p of getPersistedSessions()) {
+    persistedMap.set(p.claudeSessionId, p);
+  }
+
   const enriched = sessions.map((s) => {
-    if (s.claudeSessionId) {
-      const title = titles.get(s.claudeSessionId);
-      if (title) return { ...s, name: title };
+    const persisted = s.claudeSessionId
+      ? persistedMap.get(s.claudeSessionId)
+      : undefined;
+    const title = s.claudeSessionId ? titles.get(s.claudeSessionId) : undefined;
+    if (persisted || title) {
+      return {
+        ...s,
+        ...(title ? { name: title } : {}),
+        template: persisted?.template,
+        manager: persisted?.manager,
+        project: persisted?.project,
+      };
     }
     return s;
   });

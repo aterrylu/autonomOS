@@ -1,3 +1,4 @@
+import type { AgentTemplate } from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
@@ -62,6 +63,7 @@ export interface SessionInfo {
   workingDirectory: string;
   provider: string;
   claudeSessionId?: string;
+  template?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -106,7 +108,8 @@ export interface PreviewPaneInfo {
 export type ActivePane =
   | { type: "session"; id: string }
   | { type: "preview"; id: string }
-  | { type: "orgchart"; id: "orgchart" };
+  | { type: "orgchart"; id: "orgchart" }
+  | { type: "templates"; id: "templates" };
 
 // ── Pane Groups ───────────────────────────────────────────────────────
 
@@ -415,6 +418,10 @@ interface AppState {
   exitedSessions: SessionInfo[];
   showExitedAgents: boolean;
   projects: ProjectInfo[];
+  /** Loaded templates keyed by name */
+  templates: Record<string, AgentTemplate>;
+  templatesLoading: boolean;
+  templatesError: string | null;
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
   /** Agent status per session ID (from hook events) */
@@ -446,6 +453,10 @@ interface AppState {
   openPreview: (filePath: string) => void;
   closePreview: (id: string) => void;
   openOrgChart: () => void;
+  openTemplates: () => void;
+  fetchTemplates: () => Promise<void>;
+  saveTemplate: (name: string, template: AgentTemplate) => Promise<void>;
+  deleteTemplate: (name: string) => Promise<void>;
   toggleShowExitedAgents: () => void;
   removeSession: (id: string) => Promise<void>;
   reorderPanes: (fromIndex: number, toIndex: number) => void;
@@ -542,6 +553,9 @@ export const useStore = create<AppState>()(
         exitedSessions: [],
         showExitedAgents: false,
         projects: [],
+        templates: {},
+        templatesLoading: false,
+        templatesError: null,
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
@@ -882,6 +896,74 @@ export const useStore = create<AppState>()(
           set({
             activePane: orgPane,
             layout: addTab(layout, focusedLeafId, orgPane),
+          });
+        },
+
+        openTemplates: () => {
+          const { layout, focusedLeafId } = get();
+          const pane: ActivePane = { type: "templates", id: "templates" };
+          if (findLeafByPaneId(layout, "templates")) {
+            get().switchPane(pane);
+            return;
+          }
+          set({
+            activePane: pane,
+            layout: addTab(layout, focusedLeafId, pane),
+          });
+        },
+
+        fetchTemplates: async () => {
+          set({ templatesLoading: true, templatesError: null });
+          try {
+            const res = await fetch("/api/templates");
+            if (!res.ok) {
+              throw new Error(`Server error (${res.status})`);
+            }
+            const data = (await res.json()) as Record<string, AgentTemplate>;
+            set({ templates: data, templatesLoading: false });
+          } catch (err) {
+            set({
+              templatesLoading: false,
+              templatesError:
+                err instanceof Error ? err.message : "Failed to load templates",
+            });
+          }
+        },
+
+        saveTemplate: async (name, template) => {
+          const res = await fetch("/api/templates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, ...template }),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          // Optimistically merge into local state, then refetch to sync
+          set((state) => ({
+            templates: { ...state.templates, [name]: template },
+          }));
+          await get().fetchTemplates();
+        },
+
+        deleteTemplate: async (name) => {
+          const res = await fetch(
+            `/api/templates/${encodeURIComponent(name)}`,
+            { method: "DELETE" },
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          set((state) => {
+            const next = { ...state.templates };
+            delete next[name];
+            return { templates: next };
           });
         },
 
