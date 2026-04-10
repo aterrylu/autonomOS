@@ -10,6 +10,11 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import {
+  CONFIG_DIR,
+  ensureConfigDir,
+  IS_OVERRIDDEN_CONFIG_DIR,
+} from "./configDir.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
@@ -33,6 +38,16 @@ import { getTemplate } from "./templates.js";
 try {
   const path = resolveClaudePath();
   console.log(`Claude binary found: ${path}`);
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
+
+// Validate config dir at startup — fail fast if AUTONOMOS_CONFIG_DIR points
+// at an invalid path, rather than deferring until the first write (which
+// would surface as a generic 500 inside a request handler).
+try {
+  ensureConfigDir();
 } catch (err) {
   console.error(err instanceof Error ? err.message : err);
   process.exit(1);
@@ -195,6 +210,10 @@ const port = Number(process.env.PORT) || 3000;
 const server = serve({ fetch: app.fetch, port }, () => {
   const base = `http://localhost:${port}`;
   console.log(`autonomOS server listening on ${base}`);
+  const overrideNote = IS_OVERRIDDEN_CONFIG_DIR
+    ? " (overridden via AUTONOMOS_CONFIG_DIR)"
+    : "";
+  console.log(`Config dir: ${CONFIG_DIR}${overrideNote}`);
   if (AUTH_TOKEN) {
     console.log(
       `Auth enabled (token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)})`,

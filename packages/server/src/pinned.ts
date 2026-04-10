@@ -4,11 +4,12 @@
  * A pinned session saves its config (claudeSessionId, cwd, name, autonomousMode)
  * to a JSON file. On server startup, all pinned sessions are auto-resumed.
  *
- * Storage: ~/.autonomos/pinned-sessions.json
+ * Storage: $CONFIG_DIR/pinned-sessions.json (see configDir.ts for override).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CONFIG_DIR, ensureConfigDir } from "./configDir.js";
 
 export interface PinnedSession {
   /** The Claude Code session ID (used for --resume) */
@@ -23,16 +24,7 @@ export interface PinnedSession {
   pinnedAt: number;
 }
 
-const HOME = process.env.HOME;
-if (!HOME) throw new Error("HOME environment variable is not set");
-const CONFIG_DIR = join(HOME, ".autonomos");
 const PINNED_FILE = join(CONFIG_DIR, "pinned-sessions.json");
-
-function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-  }
-}
 
 function readPinned(): PinnedSession[] {
   try {

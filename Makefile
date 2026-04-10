@@ -7,11 +7,26 @@ DEPLOY_HOST ?= $(shell grep -s '^DEPLOY_HOST=' .env | cut -d= -f2)
 DEPLOY_PATH ?= ~/autonomOS
 
 # ── dev: API on :3101, Vite HMR on :5173 ─────────
+#
+# Dev server uses its own config dir (`.autonomos-dev/` inside this
+# worktree) so it does NOT share sessions.json / settings.json / templates
+# with prod on :3100. Without this, dev's resume sweep would try to re-spawn
+# every running prod session, corrupting live state.
+#
+# Each worktree gets its own sandbox — parallel feature workers don't collide.
+#
+# MAKEFILE_DIR is anchored to the Makefile's directory (not the caller's cwd)
+# so `make -C /path/to/worktree dev` from any cwd still lands the sandbox
+# inside the worktree, not wherever the invoker happened to be.
+MAKEFILE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+DEV_CONFIG_DIR := $(MAKEFILE_DIR)/.autonomos-dev
 dev:
 	@lsof -ti:3101 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
+	@mkdir -p "$(DEV_CONFIG_DIR)"
 	@echo "Starting server on :3101 and dashboard on :5173..."
-	@cd packages/server && PORT=3101 ../../$(TSX) --env-file=../../.env watch src/index.ts &
+	@echo "Dev config dir: $(DEV_CONFIG_DIR)"
+	@cd packages/server && AUTONOMOS_CONFIG_DIR="$(DEV_CONFIG_DIR)" PORT=3101 ../../$(TSX) --env-file=../../.env watch src/index.ts &
 	@sleep 2
 	@cd packages/dashboard && $(BUN) vite --host 0.0.0.0
 
