@@ -913,20 +913,28 @@ export const useStore = create<AppState>()(
         },
 
         fetchTemplates: async () => {
-          set({ templatesLoading: true, templatesError: null });
+          const isInitialLoad = Object.keys(get().templates).length === 0;
+          if (isInitialLoad) set({ templatesLoading: true });
           try {
             const res = await fetch("/api/templates");
             if (!res.ok) {
-              throw new Error(`Server error (${res.status})`);
+              const body = await res.json().catch(() => ({}));
+              throw new Error(
+                (body as { error?: string }).error ??
+                  `Server error (${res.status})`,
+              );
             }
             const data = (await res.json()) as Record<string, AgentTemplate>;
-            set({ templates: data, templatesLoading: false });
-          } catch (err) {
             set({
+              templates: data,
               templatesLoading: false,
-              templatesError:
-                err instanceof Error ? err.message : "Failed to load templates",
+              templatesError: null,
             });
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : "Failed to load templates";
+            console.warn("[templates] fetch failed:", message);
+            set({ templatesLoading: false, templatesError: message });
           }
         },
 
@@ -942,11 +950,10 @@ export const useStore = create<AppState>()(
               (body as { error?: string }).error ?? `HTTP ${res.status}`,
             );
           }
-          // Optimistically merge into local state, then refetch to sync
+          // Optimistic update — polling will sync from server
           set((state) => ({
             templates: { ...state.templates, [name]: template },
           }));
-          await get().fetchTemplates();
         },
 
         deleteTemplate: async (name) => {

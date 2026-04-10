@@ -58,7 +58,12 @@ orgRouter.put("/manager", async (c) => {
 // ── Templates ───────────────────────────────────────────────────
 
 templateRouter.get("/", (c) => {
-  return c.json(listTemplates());
+  try {
+    return c.json(listTemplates());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ error: `Failed to list templates: ${message}` }, 500);
+  }
 });
 
 templateRouter.post("/", async (c) => {
@@ -117,7 +122,8 @@ templateRouter.get("/:name", (c) => {
     return c.json(template);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    return c.json({ error: message }, 400);
+    const status = message.includes("Invalid template name") ? 400 : 500;
+    return c.json({ error: message }, status);
   }
 });
 

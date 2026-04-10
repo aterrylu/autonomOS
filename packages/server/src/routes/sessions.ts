@@ -63,12 +63,20 @@ sessionRouter.get("/", async (c) => {
   }
 
   // Build persisted data lookup for enriching live sessions with template/manager/project
+  // Best-effort — never block the session list on persistence failures
   const persistedMap = new Map<
     string,
     ReturnType<typeof getPersistedSessions>[number]
   >();
-  for (const p of getPersistedSessions()) {
-    persistedMap.set(p.claudeSessionId, p);
+  try {
+    for (const p of getPersistedSessions()) {
+      persistedMap.set(p.claudeSessionId, p);
+    }
+  } catch (err) {
+    console.warn(
+      "Failed to load persisted session data for enrichment:",
+      err instanceof Error ? err.message : err,
+    );
   }
 
   const enriched = sessions.map((s) => {
