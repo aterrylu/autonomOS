@@ -10,6 +10,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { resolveAuthToken } from "./auth.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
@@ -62,16 +63,8 @@ if (corsOrigin) {
   app.use("*", cors({ origin: corsOrigin }));
 }
 
-// Optional token auth — enabled when AUTONOMOS_TOKEN is set
-const AUTH_TOKEN = process.env.AUTONOMOS_TOKEN?.trim() || undefined;
-
-if (process.env.AUTONOMOS_TOKEN && !AUTH_TOKEN) {
-  console.warn("AUTONOMOS_TOKEN is empty/whitespace — auth is DISABLED.");
-} else if (AUTH_TOKEN && AUTH_TOKEN.length < 8) {
-  console.warn(
-    `AUTONOMOS_TOKEN is only ${AUTH_TOKEN.length} chars — consider using a longer token.`,
-  );
-}
+// Auth is always enabled — token resolved from env var, file, or auto-generated
+const AUTH_TOKEN = resolveAuthToken();
 
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -88,46 +81,46 @@ function extractToken(c: Context): string | undefined {
   return undefined;
 }
 
-if (AUTH_TOKEN) {
-  // Token exchange: POST { token } sets a cookie and returns 200
-  app.post("/auth", async (c) => {
-    const body = await c.req.json().catch(() => null);
-    const token = typeof body?.token === "string" ? body.token : null;
-    if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      return c.json({ error: "Invalid token" }, 401);
-    }
-    const isHttps =
-      c.req.url.startsWith("https://") ||
-      c.req.header("x-forwarded-proto") === "https";
-    setCookie(c, "autonomos_token", token, {
-      httpOnly: true,
-      sameSite: "Lax",
-      secure: isHttps,
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365, // 1 year
-    });
-    return c.json({ ok: true });
+// Token exchange: POST { token } sets a cookie and returns 200
+app.post("/auth", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const token = typeof body?.token === "string" ? body.token : null;
+  if (!token || !safeEqual(token, AUTH_TOKEN)) {
+    return c.json({ error: "Invalid token" }, 401);
+  }
+  const isHttps =
+    c.req.url.startsWith("https://") ||
+    c.req.header("x-forwarded-proto") === "https";
+  setCookie(c, "autonomos_token", token, {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: isHttps,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365, // 1 year
   });
+  return c.json({ ok: true });
+});
 
-  // Protect API and WS routes — static assets pass through so the
-  // dashboard can load and show a "not authenticated" state.
-  const requireAuth: MiddlewareHandler = async (c, next) => {
-    // Hook relay POST is unauthenticated (called from PTY sessions via curl).
-    if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
-      return next();
-    // Accept token from cookie, Authorization header, or ?token= query param.
-    // Query param is used by the channel server subprocess (can't set headers on WebSocket).
-    const token = extractToken(c) ?? c.req.query("token") ?? undefined;
-    if (token && safeEqual(token, AUTH_TOKEN)) return next();
-    return c.json(
-      { error: "Unauthorized — visit /auth?token=YOUR_TOKEN to authenticate" },
-      401,
-    );
-  };
+// Protect API and WS routes — static assets pass through so the
+// dashboard can load and show a "not authenticated" state.
+const requireAuth: MiddlewareHandler = async (c, next) => {
+  // Hook relay POST is unauthenticated (called from PTY sessions via curl).
+  if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
+    return next();
+  // Host info is unauthenticated — used by dashboard status bar before login.
+  if (c.req.method === "GET" && c.req.path === "/api/host") return next();
+  // Accept token from cookie, Authorization header, or ?token= query param.
+  // Query param is used by the channel server subprocess (can't set headers on WebSocket).
+  const token = extractToken(c) ?? c.req.query("token") ?? undefined;
+  if (token && safeEqual(token, AUTH_TOKEN)) return next();
+  return c.json(
+    { error: "Unauthorized — visit /auth?token=YOUR_TOKEN to authenticate" },
+    401,
+  );
+};
 
-  app.use("/api/*", requireAuth);
-  app.use("/ws/*", requireAuth);
-}
+app.use("/api/*", requireAuth);
+app.use("/ws/*", requireAuth);
 
 // Server info — lightweight, no auth required for status bar
 app.get("/api/host", (c) => c.json({ hostname: hostname() }));
@@ -195,13 +188,9 @@ const port = Number(process.env.PORT) || 3000;
 const server = serve({ fetch: app.fetch, port }, () => {
   const base = `http://localhost:${port}`;
   console.log(`autonomOS server listening on ${base}`);
-  if (AUTH_TOKEN) {
-    console.log(
-      `Auth enabled (token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)})`,
-    );
-  } else {
-    console.log(`Auth disabled — set AUTONOMOS_TOKEN to enable`);
-  }
+  console.log(
+    `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
+  );
 
   // Initialize gateway (platform adapters, routing table)
   import("./gateway/index.js").then(({ initGateway }) => {

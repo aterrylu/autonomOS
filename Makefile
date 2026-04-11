@@ -3,17 +3,25 @@
 BUN := $(HOME)/.bun/bin/bun
 PM2 := $(HOME)/.bun/bin/pm2
 TSX := packages/server/node_modules/.bin/tsx
-DEPLOY_HOST ?= $(shell grep -s '^DEPLOY_HOST=' .env | cut -d= -f2)
+DEPLOY_HOST ?= $(or $(HOST),$(shell grep -s '^DEPLOY_HOST=' .env | cut -d= -f2))
 DEPLOY_PATH ?= ~/autonomOS
 
-# ── dev: API on :3101, Vite HMR on :5173 ─────────
+# ── dev: isolated per worktree ───────────────────
+# Ports are derived from the directory path hash so each worktree gets unique ports.
+# Override manually: make dev DEV_API_PORT=3101 DEV_VITE_PORT=5173
+DEV_PORT_HASH := $(shell printf '%s' "$(CURDIR)" | cksum | cut -d' ' -f1)
+DEV_API_PORT ?= $(shell echo $$(( 3200 + $(DEV_PORT_HASH) % 800 )))
+DEV_VITE_PORT ?= $(shell echo $$(( 5200 + $(DEV_PORT_HASH) % 800 )))
+DEV_CONFIG_DIR ?= $(CURDIR)/.autonomos-dev
+
 dev:
-	@lsof -ti:3101 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
-	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
-	@echo "Starting server on :3101 and dashboard on :5173..."
-	@cd packages/server && PORT=3101 ../../$(TSX) --env-file=../../.env watch src/index.ts &
+	@mkdir -p $(DEV_CONFIG_DIR)
+	@lsof -ti:$(DEV_API_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+	@lsof -ti:$(DEV_VITE_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+	@echo "Dev server: API=:$(DEV_API_PORT) Vite=:$(DEV_VITE_PORT) Config=$(DEV_CONFIG_DIR)"
+	@cd packages/server && PORT=$(DEV_API_PORT) AUTONOMOS_CONFIG_DIR=$(DEV_CONFIG_DIR) CORS_ORIGIN=http://localhost:$(DEV_VITE_PORT) ../../$(TSX) --env-file=../../.env watch src/index.ts &
 	@sleep 2
-	@cd packages/dashboard && $(BUN) vite --host 0.0.0.0
+	@cd packages/dashboard && VITE_API_PORT=$(DEV_API_PORT) $(BUN) vite --host 0.0.0.0 --port $(DEV_VITE_PORT)
 
 # ── prod: build + pm2 daemon on :3100 ─────────────
 #   nohup + setsid detaches the restart so it survives even when
@@ -40,9 +48,9 @@ logs:
 # ── down: stop everything ────────────────────────
 down:
 	@$(PM2) delete autonomos 2>/dev/null || true
-	@lsof -ti:3101 | xargs kill -9 2>/dev/null || true
-	@lsof -ti:5173 | xargs kill -9 2>/dev/null || true
-	@echo "Stopped."
+	@lsof -ti:$(DEV_API_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+	@lsof -ti:$(DEV_VITE_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+	@echo "Stopped (API=:$(DEV_API_PORT) Vite=:$(DEV_VITE_PORT))."
 
 # ── deploy: rsync + prod on remote ───────────────
 #

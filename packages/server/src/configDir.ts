@@ -11,7 +11,12 @@ import { join } from "node:path";
 const HOME = process.env.HOME;
 if (!HOME) throw new Error("HOME environment variable is not set");
 
-export const CONFIG_DIR = join(HOME, ".autonomos");
+/**
+ * Config directory — defaults to ~/.autonomos/, overridable via AUTONOMOS_CONFIG_DIR.
+ * The override is used by `make dev` in worktrees to isolate dev instances.
+ */
+export const CONFIG_DIR =
+  process.env.AUTONOMOS_CONFIG_DIR?.trim() || join(HOME, ".autonomos");
 
 export function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
