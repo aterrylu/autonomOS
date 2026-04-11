@@ -146,6 +146,13 @@ export function expandPath(path: string): string {
 export function createSession(options: SpawnOptions): ManagedSession {
   // resumeSessionId is validated at the route boundary (routes/sessions.ts)
 
+  // forkFrom and resumeSessionId are mutually exclusive
+  if (options.forkFrom && options.resumeSessionId) {
+    throw new Error(
+      "Cannot use both forkFrom and resumeSessionId — fork creates a new session from the parent's context, resume reconnects to an existing session.",
+    );
+  }
+
   // Reject if a live agent with the same name is already running.
   // Exited agents in sessions.json may share names — only active ones must be unique.
   // INVARIANT: This check is safe because createSession() is fully synchronous —
@@ -178,16 +185,35 @@ export function createSession(options: SpawnOptions): ManagedSession {
 
   const binary = resolveClaudePath();
 
-  const env = buildEnv(id);
+  // Compute defaultName early — needed for buildEnv (AUTONOMOS_AGENT_NAME)
+  // and MCP config before args are fully constructed.
+  const dirName = basename(cwd) || cwd;
+  const shortId = id.slice(0, 4);
+  const defaultName = options.name || `${dirName} · ${shortId}`;
 
-  // Pre-generate Claude session ID — eliminates PTY regex parsing race condition
-  const claudeSessionId = options.resumeSessionId || crypto.randomUUID();
+  const env = buildEnv(id, defaultName);
+
+  // Pre-generate Claude session ID — eliminates PTY regex parsing race condition.
+  // For forks, always generate a new ID (the parent keeps its own).
+  const claudeSessionId = options.forkFrom
+    ? crypto.randomUUID()
+    : options.resumeSessionId || crypto.randomUUID();
 
   const args: string[] = [];
   if (options.autonomousMode) {
     args.push("--dangerously-skip-permissions");
   }
-  if (options.resumeSessionId) {
+  if (options.forkFrom) {
+    // Fork: load parent's conversation, create a new session with its own ID.
+    // The parent session is untouched — child gets a copy of the context.
+    args.push(
+      "--resume",
+      options.forkFrom,
+      "--fork-session",
+      "--session-id",
+      claudeSessionId,
+    );
+  } else if (options.resumeSessionId) {
     args.push("--resume", options.resumeSessionId);
   } else {
     args.push("--session-id", claudeSessionId);
@@ -257,6 +283,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
             env: {
               AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
               AUTONOMOS_SESSION_ID: id,
+              AUTONOMOS_AGENT_NAME: defaultName,
               ...(process.env.AUTONOMOS_TOKEN && {
                 AUTONOMOS_TOKEN: process.env.AUTONOMOS_TOKEN,
               }),
@@ -303,10 +330,6 @@ export function createSession(options: SpawnOptions): ManagedSession {
     );
     attachStartupWatcher(pty, hasDevChannels);
   }
-
-  const dirName = basename(cwd) || cwd;
-  const shortId = id.slice(0, 4);
-  const defaultName = options.name || `${dirName} · ${shortId}`;
 
   const session: Session = {
     id,
@@ -635,6 +658,7 @@ const RESERVED_ENV_KEYS = new Set([
   "HOME",
   "AUTONOMOS_SERVER",
   "AUTONOMOS_SESSION_ID",
+  "AUTONOMOS_AGENT_NAME",
 ]);
 
 /**
@@ -642,7 +666,10 @@ const RESERVED_ENV_KEYS = new Set([
  * nested-session detection, and inject settings as env vars.
  * Not cached — settings can change between session spawns.
  */
-function buildEnv(sessionId: string): Record<string, string> {
+function buildEnv(
+  sessionId: string,
+  agentName?: string,
+): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
   const extraPaths = [
     `${process.env.HOME}/.local/bin`,
@@ -657,6 +684,9 @@ function buildEnv(sessionId: string): Record<string, string> {
   const port = process.env.PORT || "3000";
   env.AUTONOMOS_SERVER = `http://localhost:${port}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
+  if (agentName) {
+    env.AUTONOMOS_AGENT_NAME = agentName;
+  }
 
   // Inject dashboard-configured settings as env vars (only when override toggle is on)
   const settings = getSettings();

@@ -35,6 +35,10 @@ var TOOL_CREATE_AGENT = {
         type: "string",
         description: "Claude Code session ID to resume (for reconnecting to an existing agent)"
       },
+      forkFrom: {
+        type: "string",
+        description: "Claude session ID to fork from \u2014 child inherits parent's conversation context. Mutually exclusive with resumeSessionId."
+      },
       autonomousMode: {
         type: "boolean",
         description: "Skip permission prompts (default: true)",
@@ -119,7 +123,12 @@ var TOOL_GET_ORG_CHART = {
   description: "Get the organization chart showing all agents and their hierarchy.",
   inputSchema: {
     type: "object",
-    properties: {}
+    properties: {
+      includeExited: {
+        type: "boolean",
+        description: "Include exited agents in the chart (default: false, only running agents shown)"
+      }
+    }
   }
 };
 var TOOL_LIST_TEMPLATES = {
@@ -417,11 +426,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         systemPrompt,
         prompt,
         resumeSessionId,
+        forkFrom,
         autonomousMode,
         template,
         manager,
         project
       } = args;
+      const effectiveManager = manager ?? process.env.AUTONOMOS_AGENT_NAME;
+      if (!manager && effectiveManager) {
+        process.stderr.write(
+          `autonomos-channel: auto-setting manager to "${effectiveManager}"
+`
+        );
+      }
       try {
         return await serverFetch("/api/sessions", {
           method: "POST",
@@ -430,21 +447,22 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             name: agentName,
             prompt,
             resumeSessionId,
+            forkFrom,
             autonomousMode: autonomousMode ?? true,
             appendSystemPrompt: systemPrompt,
             template,
-            manager,
+            manager: effectiveManager,
             project
           })
         });
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `autonomos-channel: create_agent failed: ${msg}
+`
+        );
         return {
-          content: [
-            {
-              type: "text",
-              text: `Failed to create agent: ${err instanceof Error ? err.message : err}`
-            }
-          ],
+          content: [{ type: "text", text: `Failed to create agent: ${msg}` }],
           isError: true
         };
       }
@@ -480,7 +498,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       });
     }
     case "get_org_chart": {
-      return serverFetch("/api/org");
+      const { includeExited } = args;
+      const qs = includeExited ? "?includeExited=true" : "";
+      return serverFetch(`/api/org${qs}`);
     }
     case "create_template": {
       return serverFetch("/api/templates", {

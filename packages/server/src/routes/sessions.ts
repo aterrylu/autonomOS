@@ -152,6 +152,44 @@ sessionRouter.post("/", async (c) => {
     );
   }
 
+  if (
+    body.forkFrom != null &&
+    (typeof body.forkFrom !== "string" ||
+      !/^[a-zA-Z0-9_-]+$/.test(body.forkFrom))
+  ) {
+    return c.json(
+      { error: "forkFrom must be alphanumeric (a-z, 0-9, -, _)" },
+      400,
+    );
+  }
+
+  if (body.forkFrom != null && body.resumeSessionId != null) {
+    return c.json(
+      { error: "forkFrom and resumeSessionId are mutually exclusive" },
+      400,
+    );
+  }
+
+  // Best-effort: reject forkFrom if the session ID isn't known to autonomOS.
+  // CC would fail anyway (--resume on a non-existent session), but failing
+  // here gives the caller a clear 404 instead of a zombie PTY that dies on startup.
+  if (body.forkFrom) {
+    const persisted = getPersistedSessions();
+    const liveSessions = getAllSessions();
+    const knownCcIds = new Set([
+      ...persisted.map((p) => p.claudeSessionId),
+      ...liveSessions
+        .filter((s) => s.claudeSessionId)
+        .map((s) => s.claudeSessionId!),
+    ]);
+    if (!knownCcIds.has(body.forkFrom as string)) {
+      return c.json(
+        { error: `forkFrom session "${body.forkFrom}" not found` },
+        404,
+      );
+    }
+  }
+
   try {
     // Resolve template if provided
     const templateName =
@@ -177,6 +215,7 @@ sessionRouter.post("/", async (c) => {
         typeof body.resumeSessionId === "string"
           ? body.resumeSessionId
           : undefined,
+      forkFrom: typeof body.forkFrom === "string" ? body.forkFrom : undefined,
       autonomousMode,
       appendSystemPrompt: systemPrompt,
       template: templateName,

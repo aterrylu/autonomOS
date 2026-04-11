@@ -54,6 +54,11 @@ export const TOOL_CREATE_AGENT: ToolDef = {
         description:
           "Claude Code session ID to resume (for reconnecting to an existing agent)",
       },
+      forkFrom: {
+        type: "string",
+        description:
+          "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+      },
       autonomousMode: {
         type: "boolean",
         description: "Skip permission prompts (default: true)",
