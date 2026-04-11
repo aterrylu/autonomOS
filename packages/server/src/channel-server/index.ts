@@ -33,11 +33,19 @@ import {
 // Tool definitions are shared with the HTTP MCP server.
 // Import paths use relative since this runs as a standalone subprocess.
 // At build time, esbuild resolves these from the same package.
-import { ALL_TOOLS, MCP_INSTRUCTIONS, MCP_SERVER_INFO } from "../mcp/tools.js";
+import {
+  DEFAULT_CAPABILITIES,
+  filterToolsByCapabilities,
+  MCP_INSTRUCTIONS,
+  MCP_SERVER_INFO,
+} from "../mcp/tools.js";
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 const SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
 const AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
+const CAPABILITIES = process.env.AUTONOMOS_CAPABILITIES
+  ? process.env.AUTONOMOS_CAPABILITIES.split(",")
+  : DEFAULT_CAPABILITIES;
 
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
@@ -237,12 +245,30 @@ async function serverFetch(
   return { content: [{ type: "text", text: pretty }] };
 }
 
+const agentTools = filterToolsByCapabilities(CAPABILITIES);
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: ALL_TOOLS,
+  tools: agentTools,
 }));
+
+const capSet = new Set(CAPABILITIES);
+const gatedTools = new Set(DEFAULT_CAPABILITIES);
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
+
+  // Enforce capability gating at execution time, not just listing
+  if (gatedTools.has(name) && !capSet.has(name)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Tool "${name}" is not available. Missing capability: "${name}".`,
+        },
+      ],
+      isError: true,
+    };
+  }
 
   switch (name) {
     case "send": {
@@ -419,6 +445,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case "list_templates": {
       return serverFetch("/api/templates");
+    }
+
+    case "self_exit": {
+      // Fire-and-forget: the DELETE kills our PTY (and this subprocess).
+      // The response may or may not reach the agent before the process dies.
+      serverFetch(`/api/sessions/${encodeURIComponent(SESSION_ID!)}`, {
+        method: "DELETE",
+      }).catch((err) => {
+        process.stderr.write(
+          `autonomos-channel: self_exit failed: ${err instanceof Error ? err.message : err}\n`,
+        );
+      });
+      return { content: [{ type: "text", text: "Exiting..." }] };
     }
 
     default:

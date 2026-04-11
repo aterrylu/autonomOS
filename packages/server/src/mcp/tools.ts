@@ -21,6 +21,17 @@ export interface ToolDef {
   };
 }
 
+// ── Capabilities ─────────────────────────────────────────────────
+
+/** Default capabilities granted when no template specifies them */
+export const DEFAULT_CAPABILITIES: string[] = [
+  "send",
+  "list_agents",
+  "create_agent",
+  "kill_agent",
+  "self_exit",
+];
+
 // ── Tool Definitions ──────────────────────────────────────────────
 
 export const TOOL_CREATE_AGENT: ToolDef = {
@@ -206,8 +217,7 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
       capabilities: {
         type: "array",
         items: { type: "string" },
-        description:
-          "Capabilities to grant: 'send', 'list_agents', 'create_agent', 'kill_agent'. Defaults to all.",
+        description: `Capabilities to grant: ${DEFAULT_CAPABILITIES.map((c) => `'${c}'`).join(", ")}. Defaults to all.`,
       },
       autonomousMode: {
         type: "boolean",
@@ -223,7 +233,17 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
   },
 };
 
-/** All tools — used by both server and channel MCP */
+export const TOOL_SELF_EXIT: ToolDef = {
+  name: "self_exit",
+  description:
+    "Terminate your own session. Use when your work is complete and you want to exit cleanly.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+  },
+};
+
+/** All tools — channel MCP gets these (filtered by capabilities) */
 export const ALL_TOOLS: ToolDef[] = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
@@ -233,6 +253,7 @@ export const ALL_TOOLS: ToolDef[] = [
   TOOL_GET_ORG_CHART,
   TOOL_LIST_TEMPLATES,
   TOOL_CREATE_TEMPLATE,
+  TOOL_SELF_EXIT,
 ];
 
 /** Tools available without gateway connection (HTTP MCP for external clients) */
@@ -245,6 +266,20 @@ export const SERVER_TOOLS: ToolDef[] = [
   TOOL_LIST_TEMPLATES,
   TOOL_CREATE_TEMPLATE,
 ];
+
+/**
+ * Tools that require a matching capability to be visible.
+ * Tools NOT in this set are always available (e.g. set_manager, get_org_chart).
+ */
+const CAPABILITY_GATED_TOOLS = new Set(DEFAULT_CAPABILITIES);
+
+/** Filter ALL_TOOLS to only those the agent's capabilities allow */
+export function filterToolsByCapabilities(capabilities: string[]): ToolDef[] {
+  const allowed = new Set(capabilities);
+  return ALL_TOOLS.filter((tool) => {
+    return !CAPABILITY_GATED_TOOLS.has(tool.name) || allowed.has(tool.name);
+  });
+}
 
 // ── Shared MCP metadata ──────────────────────────────────────────
 
@@ -264,6 +299,7 @@ export const MCP_INSTRUCTIONS = [
   "- set_manager(): Configure org chart relationships",
   "- get_org_chart(): View the organization hierarchy",
   "- list_templates(): Browse available agent templates",
+  "- self_exit(): Terminate your own session when work is complete",
   "",
   "Messages from other agents and platforms arrive as <channel> events.",
   "Each has from (sender name) and from_uri (address to respond to).",

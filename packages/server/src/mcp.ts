@@ -5,7 +5,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { MCP_INSTRUCTIONS_EXTERNAL, MCP_SERVER_INFO } from "./mcp/tools.js";
+import {
+  DEFAULT_CAPABILITIES,
+  MCP_INSTRUCTIONS_EXTERNAL,
+  MCP_SERVER_INFO,
+} from "./mcp/tools.js";
 import { buildOrgChart } from "./orgChart.js";
 import { updatePersistedSessionByName } from "./persisted.js";
 import {
@@ -284,7 +288,7 @@ function createMcpServer(): McpServer {
       capabilities: z
         .array(z.string())
         .optional()
-        .describe("Capabilities: send, list_agents, create_agent, kill_agent"),
+        .describe(`Capabilities: ${DEFAULT_CAPABILITIES.join(", ")}`),
       autonomousMode: z
         .boolean()
         .optional()
@@ -300,12 +304,9 @@ function createMcpServer(): McpServer {
           role: args.role,
           description: args.description,
           systemPrompt: args.systemPrompt,
-          capabilities: (args.capabilities as AgentCapability[]) ?? [
-            "send",
-            "list_agents",
-            "create_agent",
-            "kill_agent",
-          ],
+          capabilities:
+            (args.capabilities as AgentCapability[]) ??
+            (DEFAULT_CAPABILITIES as AgentCapability[]),
           autonomousMode: args.autonomousMode ?? true,
           model: args.model,
         });

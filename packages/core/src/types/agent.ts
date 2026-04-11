@@ -28,4 +28,5 @@ export type AgentCapability =
   | "send"
   | "list_agents"
   | "create_agent"
-  | "kill_agent";
+  | "kill_agent"
+  | "self_exit";
