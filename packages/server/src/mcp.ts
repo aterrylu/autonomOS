@@ -219,9 +219,14 @@ function createMcpServer(): McpServer {
   server.tool(
     "get_org_chart",
     "Get the organization chart showing all agents and their hierarchy.",
-    {},
-    async () => {
-      const chart = buildOrgChart();
+    {
+      includeExited: z
+        .boolean()
+        .optional()
+        .describe("Include exited agents (default: false, only running)"),
+    },
+    async ({ includeExited }) => {
+      const chart = buildOrgChart(includeExited);
       return {
         content: [
           {

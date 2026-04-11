@@ -152,7 +152,13 @@ export const TOOL_GET_ORG_CHART: ToolDef = {
     "Get the organization chart showing all agents and their hierarchy.",
   inputSchema: {
     type: "object",
-    properties: {},
+    properties: {
+      includeExited: {
+        type: "boolean",
+        description:
+          "Include exited agents in the chart (default: false, only running agents shown)",
+      },
+    },
   },
 };
 

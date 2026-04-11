@@ -129,11 +129,55 @@ describe("buildOrgChart() — name collision handling", () => {
       persistedAt: 2000,
     });
 
-    const chart = buildOrgChart();
+    // includeExited=true to verify collision handling for exited sessions
+    const chart = buildOrgChart(true);
     const node = findByName(chart, "CollisionTest_Gamma");
     assert.ok(node);
     assert.equal(node.status, "exited");
     assert.equal(node.claudeSessionId, newerExitedId);
+  });
+
+  it("filters out exited agents by default", () => {
+    makeTestSession("running-filter", {
+      name: "CollisionTest_FilterRunning",
+      status: "running",
+    });
+    makeTestSession("exited-filter", {
+      name: "CollisionTest_FilterExited",
+      status: "exited",
+    });
+
+    const chart = buildOrgChart(); // default: includeExited=false
+    assert.ok(findByName(chart, "CollisionTest_FilterRunning"));
+    assert.equal(
+      findByName(chart, "CollisionTest_FilterExited"),
+      undefined,
+      "exited agent should be hidden by default",
+    );
+
+    const fullChart = buildOrgChart(true);
+    assert.ok(findByName(fullChart, "CollisionTest_FilterExited"));
+  });
+
+  it("promotes running children of exited parents to root", () => {
+    makeTestSession("exited-parent", {
+      name: "CollisionTest_ExitedManager",
+      status: "exited",
+    });
+    makeTestSession("running-child", {
+      name: "CollisionTest_ChildWorker",
+      status: "running",
+      manager: "CollisionTest_ExitedManager",
+    });
+
+    const chart = buildOrgChart(); // default: hide exited
+    assert.equal(
+      findByName(chart, "CollisionTest_ExitedManager"),
+      undefined,
+      "exited parent should be filtered",
+    );
+    const child = findByName(chart, "CollisionTest_ChildWorker");
+    assert.ok(child, "running child should be promoted to root");
   });
 
   it("does not push the same node twice under its parent", () => {

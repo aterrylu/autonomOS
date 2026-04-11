@@ -395,7 +395,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "get_org_chart": {
-      return serverFetch("/api/org");
+      const { includeExited } = args as { includeExited?: boolean };
+      const qs = includeExited ? "?includeExited=true" : "";
+      return serverFetch(`/api/org${qs}`);
     }
 
     case "create_template": {

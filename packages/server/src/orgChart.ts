@@ -64,13 +64,11 @@ function chooseCanonical(sameName: PersistedSession[]): PersistedSession {
 /**
  * Build a tree from persisted sessions using the manager field.
  *
- * TODO(follow-up): the sidebar has a "hide exited agents" toggle; the org
- * chart does not, so its view drifts from the sidebar. Adding one here is
- * non-trivial because hiding an exited parent could orphan its running
- * children — the hide logic has to either promote orphans to roots or
- * walk up to the nearest non-hidden ancestor. Out of scope for this PR.
+ * When includeExited is false (default), exited agents are filtered out.
+ * If an exited parent is removed, its running children are promoted to
+ * root nodes so they remain visible.
  */
-export function buildOrgChart(): OrgNode[] {
+export function buildOrgChart(includeExited = false): OrgNode[] {
   const sessions = getPersistedSessions();
 
   // Group sessions by lowercased name — collisions mean the user killed and
@@ -108,5 +106,22 @@ export function buildOrgChart(): OrgNode[] {
       roots.push(node);
     }
   }
-  return roots;
+
+  if (includeExited) return roots;
+
+  // Filter exited nodes — promote their running children to maintain visibility
+  function filterExited(nodes: OrgNode[]): OrgNode[] {
+    const result: OrgNode[] = [];
+    for (const node of nodes) {
+      if (node.status === "exited") {
+        // Promote any running children to this level
+        result.push(...filterExited(node.children));
+      } else {
+        node.children = filterExited(node.children);
+        result.push(node);
+      }
+    }
+    return result;
+  }
+  return filterExited(roots);
 }

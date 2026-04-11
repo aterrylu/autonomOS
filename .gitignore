@@ -9,3 +9,4 @@ build/
 .mcp.json
 deploy/serve.json.deploy
 .playwright-mcp/
+.autonomos-dev/

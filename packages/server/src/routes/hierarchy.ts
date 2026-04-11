@@ -22,7 +22,8 @@ export const templateRouter = new Hono();
 // ── Org Chart ───────────────────────────────────────────────────
 
 orgRouter.get("/", (c) => {
-  return c.json(buildOrgChart());
+  const includeExited = c.req.query("includeExited") === "true";
+  return c.json(buildOrgChart(includeExited));
 });
 
 orgRouter.put("/manager", async (c) => {
