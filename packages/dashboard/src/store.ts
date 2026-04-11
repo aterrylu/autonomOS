@@ -40,6 +40,7 @@ import {
   makeRootLeaf,
   migrateLayout,
   nextLeafId,
+  pruneStaleSessionTabs,
   removeLeaf,
   removeTab,
   type SplitDirection,
@@ -702,15 +703,51 @@ export const useStore = create<AppState>()(
           const exitedUnchanged =
             prevExited.length === exitedSessions.length &&
             prevExited.every((s, i) => s.id === exitedSessions[i].id);
-          if (unchanged && exitedUnchanged) return;
-          set({ sessions, exitedSessions });
+          if (!unchanged || !exitedUnchanged) {
+            set({ sessions, exitedSessions });
 
-          const { activePane } = get();
-          if (
-            activePane?.type === "session" &&
-            !sessions.some((s) => s.id === activePane.id)
-          ) {
-            set({ activePane: null, status: "disconnected" });
+            const { activePane } = get();
+            if (
+              activePane?.type === "session" &&
+              !sessions.some((s) => s.id === activePane.id)
+            ) {
+              set({ activePane: null, status: "disconnected" });
+            }
+          }
+
+          // Prune layout tabs referencing sessions that no longer exist.
+          // Runs even when session list is unchanged — layout may have stale
+          // tabs from localStorage persisted across page reloads.
+          const validIds = new Set(sessions.map((s) => s.id));
+          const { layout, focusedLeafId, groups, activeGroupId } = get();
+          const pruned = pruneStaleSessionTabs(layout, validIds);
+          if (pruned && pruned !== layout) {
+            const newFocused = findLeaf(pruned, focusedLeafId)
+              ? focusedLeafId
+              : nextLeafId(pruned, focusedLeafId);
+            const newActive = derivedActivePane(pruned, newFocused);
+            const groupUpdates = syncGroupAfterRemoval(
+              groups,
+              activeGroupId,
+              pruned,
+              newFocused,
+            );
+            set({
+              layout: pruned,
+              focusedLeafId: newFocused,
+              activePane: newActive,
+              ...groupUpdates,
+            });
+          } else if (!pruned) {
+            // All tabs were stale — reset to empty root
+            const root = makeRootLeaf(null);
+            set({
+              layout: root,
+              focusedLeafId: root.id,
+              activePane: null,
+              groups: {},
+              activeGroupId: null,
+            });
           }
         },
         fetchProjects: async () => {
