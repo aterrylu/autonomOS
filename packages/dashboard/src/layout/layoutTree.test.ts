@@ -16,6 +16,7 @@ import {
   makeTab,
   migrateLayout,
   nextLeafId,
+  pruneStaleSessionTabs,
   removeLeaf,
   removeTab,
   setActiveTab,
@@ -567,5 +568,161 @@ describe("migrateLayout", () => {
   it("handles null/undefined input", () => {
     const result = migrateLayout(null);
     expect(result.kind).toBe("leaf");
+  });
+});
+
+// ── pruneStaleSessionTabs ───────────────────────────────────────────
+
+describe("pruneStaleSessionTabs", () => {
+  // Helpers for multi-tab leaves
+  function multiLeaf(
+    id: string,
+    panes: ActivePane[],
+    activeTabIndex = 0,
+  ): LayoutLeaf {
+    return {
+      kind: "leaf",
+      id,
+      tabs: panes.map((p) => ({ id: `tab-${p.id}`, pane: p })),
+      activeTabIndex,
+    };
+  }
+
+  const orgchart: ActivePane = { type: "orgchart", id: "orgchart" };
+  const templates: ActivePane = { type: "templates", id: "templates" };
+  const preview = (id: string): ActivePane => ({ type: "preview", id });
+
+  describe("single leaf", () => {
+    it("returns same reference when all tabs are valid", () => {
+      const root = multiLeaf("L1", [pane("a"), pane("b")]);
+      const result = pruneStaleSessionTabs(root, new Set(["a", "b"]));
+      expect(result).toBe(root);
+    });
+
+    it("returns null when all tabs are stale", () => {
+      const root = multiLeaf("L1", [pane("a"), pane("b")]);
+      expect(pruneStaleSessionTabs(root, new Set())).toBeNull();
+    });
+
+    it("removes stale tabs and keeps valid ones", () => {
+      const root = multiLeaf("L1", [pane("a"), pane("b"), pane("c")]);
+      const result = pruneStaleSessionTabs(
+        root,
+        new Set(["a", "c"]),
+      ) as LayoutLeaf;
+      expect(result.tabs).toHaveLength(2);
+      expect(result.tabs[0].pane.id).toBe("a");
+      expect(result.tabs[1].pane.id).toBe("c");
+    });
+
+    it("clamps activeTabIndex when active tab is pruned", () => {
+      const root = multiLeaf("L1", [pane("a"), pane("b"), pane("c")], 2);
+      const result = pruneStaleSessionTabs(
+        root,
+        new Set(["a", "b"]),
+      ) as LayoutLeaf;
+      expect(result.activeTabIndex).toBe(1);
+    });
+
+    it("clamps activeTabIndex to 0 when only one tab survives", () => {
+      const root = multiLeaf("L1", [pane("a"), pane("b"), pane("c")], 1);
+      const result = pruneStaleSessionTabs(
+        root,
+        new Set(["b"]),
+      ) as LayoutLeaf;
+      expect(result.tabs).toHaveLength(1);
+      expect(result.activeTabIndex).toBe(0);
+    });
+  });
+
+  describe("non-session tabs are never pruned", () => {
+    it("keeps orgchart tabs", () => {
+      const root = multiLeaf("L1", [orgchart]);
+      expect(pruneStaleSessionTabs(root, new Set())).toBe(root);
+    });
+
+    it("keeps templates tabs", () => {
+      const root = multiLeaf("L1", [templates]);
+      expect(pruneStaleSessionTabs(root, new Set())).toBe(root);
+    });
+
+    it("keeps preview tabs", () => {
+      const root = multiLeaf("L1", [preview("file.md")]);
+      expect(pruneStaleSessionTabs(root, new Set())).toBe(root);
+    });
+
+    it("keeps non-session tabs while pruning stale sessions", () => {
+      const root = multiLeaf("L1", [orgchart, pane("stale"), templates]);
+      const result = pruneStaleSessionTabs(root, new Set()) as LayoutLeaf;
+      expect(result.tabs).toHaveLength(2);
+      expect(result.tabs[0].pane).toEqual(orgchart);
+      expect(result.tabs[1].pane).toEqual(templates);
+    });
+  });
+
+  describe("branch trees", () => {
+    it("returns same reference when nothing is stale", () => {
+      const root = branch("B1", leaf("L1", pane("a")), leaf("L2", pane("b")));
+      expect(pruneStaleSessionTabs(root, new Set(["a", "b"]))).toBe(root);
+    });
+
+    it("collapses to second child when first is all stale", () => {
+      const second = leaf("L2", pane("b"));
+      const root = branch("B1", leaf("L1", pane("stale")), second);
+      expect(pruneStaleSessionTabs(root, new Set(["b"]))).toBe(second);
+    });
+
+    it("collapses to first child when second is all stale", () => {
+      const first = leaf("L1", pane("a"));
+      const root = branch("B1", first, leaf("L2", pane("stale")));
+      expect(pruneStaleSessionTabs(root, new Set(["a"]))).toBe(first);
+    });
+
+    it("returns null when both children are all stale", () => {
+      const root = branch("B1", leaf("L1", pane("x")), leaf("L2", pane("y")));
+      expect(pruneStaleSessionTabs(root, new Set())).toBeNull();
+    });
+
+    it("handles deep nesting — collapses inner branch", () => {
+      const root = branch(
+        "B1",
+        branch("B2", leaf("L1", pane("a")), leaf("L2", pane("stale"))),
+        leaf("L3", pane("b")),
+      );
+      const result = pruneStaleSessionTabs(
+        root,
+        new Set(["a", "b"]),
+      ) as LayoutBranch;
+      expect(result.first.kind).toBe("leaf");
+      expect((result.first as LayoutLeaf).id).toBe("L1");
+      expect(result.second.kind).toBe("leaf");
+      expect((result.second as LayoutLeaf).id).toBe("L3");
+    });
+
+    it("preserves referential equality for unchanged subtrees", () => {
+      const validLeaf = leaf("L2", pane("b"));
+      const root = branch("B1", leaf("L1", pane("stale")), validLeaf);
+      expect(pruneStaleSessionTabs(root, new Set(["b"]))).toBe(validLeaf);
+    });
+  });
+
+  describe("edge cases", () => {
+    it("returns same reference for empty leaf (nothing to prune)", () => {
+      const root: LayoutLeaf = {
+        kind: "leaf",
+        id: "L1",
+        tabs: [],
+        activeTabIndex: 0,
+      };
+      // Empty leaf has no stale tabs — kept.length === tabs.length, so no change
+      expect(pruneStaleSessionTabs(root, new Set())).toBe(root);
+    });
+
+    it("handles valid set with extra IDs not in tree", () => {
+      const root = leaf("L1", pane("a"));
+      expect(
+        pruneStaleSessionTabs(root, new Set(["a", "b", "c"])),
+      ).toBe(root);
+    });
   });
 });
