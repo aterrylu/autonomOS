@@ -626,10 +626,7 @@ describe("pruneStaleSessionTabs", () => {
 
     it("clamps activeTabIndex to 0 when only one tab survives", () => {
       const root = multiLeaf("L1", [pane("a"), pane("b"), pane("c")], 1);
-      const result = pruneStaleSessionTabs(
-        root,
-        new Set(["b"]),
-      ) as LayoutLeaf;
+      const result = pruneStaleSessionTabs(root, new Set(["b"])) as LayoutLeaf;
       expect(result.tabs).toHaveLength(1);
       expect(result.activeTabIndex).toBe(0);
     });
@@ -720,9 +717,7 @@ describe("pruneStaleSessionTabs", () => {
 
     it("handles valid set with extra IDs not in tree", () => {
       const root = leaf("L1", pane("a"));
-      expect(
-        pruneStaleSessionTabs(root, new Set(["a", "b", "c"])),
-      ).toBe(root);
+      expect(pruneStaleSessionTabs(root, new Set(["a", "b", "c"]))).toBe(root);
     });
   });
 });
