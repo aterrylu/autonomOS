@@ -24,10 +24,11 @@ describe("shared MCP tool definitions", () => {
       "get_org_chart",
       "list_templates",
       "create_template",
+      "self_exit",
     ]) {
       assert.ok(names.includes(expected), `missing tool: ${expected}`);
     }
-    assert.equal(ALL_TOOLS.length, 8);
+    assert.equal(ALL_TOOLS.length, 9);
   });
 
   it("SERVER_TOOLS excludes send (no gateway for external clients)", () => {
@@ -36,6 +37,7 @@ describe("shared MCP tool definitions", () => {
     assert.ok(names.includes("list_agents"));
     assert.ok(names.includes("kill_agent"));
     assert.ok(!names.includes("send"));
+    assert.ok(!names.includes("self_exit"));
     assert.equal(SERVER_TOOLS.length, 7);
   });
 
@@ -76,6 +78,7 @@ describe("shared MCP tool definitions", () => {
     assert.ok(MCP_INSTRUCTIONS.includes("list_agents"));
     assert.ok(MCP_INSTRUCTIONS.includes("create_agent"));
     assert.ok(MCP_INSTRUCTIONS.includes("kill_agent"));
+    assert.ok(MCP_INSTRUCTIONS.includes("self_exit"));
     assert.ok(MCP_INSTRUCTIONS.includes("agent://"));
     assert.ok(MCP_INSTRUCTIONS.includes("broadcast://"));
   });
