@@ -347,3 +347,34 @@ export function migrateLayout(node: unknown): LayoutNode {
 
   return makeRootLeaf(null);
 }
+
+/**
+ * Remove session tabs whose IDs are not in the valid set.
+ * Non-session tabs (orgchart, templates, preview) are always kept.
+ * Empty leaves return null so the parent can collapse them.
+ * Returns the pruned layout, or null if the entire tree was pruned.
+ */
+export function pruneStaleSessionTabs(
+  root: LayoutNode,
+  validSessionIds: Set<string>,
+): LayoutNode | null {
+  if (root.kind === "leaf") {
+    const kept = root.tabs.filter(
+      (t) => t.pane.type !== "session" || validSessionIds.has(t.pane.id),
+    );
+    if (kept.length === root.tabs.length) return root; // nothing pruned
+    if (kept.length === 0) return null; // entire leaf is stale
+    const newIndex = Math.min(root.activeTabIndex, kept.length - 1);
+    return { ...root, tabs: kept, activeTabIndex: newIndex };
+  }
+
+  const newFirst = pruneStaleSessionTabs(root.first, validSessionIds);
+  const newSecond = pruneStaleSessionTabs(root.second, validSessionIds);
+
+  if (newFirst === null && newSecond === null) return null;
+  if (newFirst === null) return newSecond;
+  if (newSecond === null) return newFirst;
+
+  if (newFirst === root.first && newSecond === root.second) return root;
+  return { ...root, first: newFirst, second: newSecond };
+}

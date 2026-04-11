@@ -84,7 +84,17 @@ export function persistSession(session: PersistedSession): void {
     (s) => s.claudeSessionId === session.claudeSessionId,
   );
   if (idx >= 0) {
-    sessions[idx] = session;
+    // Merge: preserve existing optional fields when new values are undefined.
+    // This prevents losing manager/template/project during re-persist on resume.
+    const existing = sessions[idx];
+    sessions[idx] = {
+      ...existing,
+      ...session,
+      template: session.template ?? existing.template,
+      manager: session.manager ?? existing.manager,
+      project: session.project ?? existing.project,
+      status: session.status ?? existing.status,
+    };
   } else {
     sessions.push(session);
   }

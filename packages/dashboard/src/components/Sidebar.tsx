@@ -1024,7 +1024,6 @@ function HierarchyNodeRow({
   const s = node.session; // may be undefined for exited agents
   const isCollapsed = collapsedGroups.has(node.org.name.toLowerCase());
   const hasChildren = node.children.length > 0;
-  const { startDrag, endDrag } = useDragContext();
 
   const isDropTarget =
     hierDropTarget?.group === groupKey && hierDropTarget?.idx === indexInGroup;
@@ -1062,11 +1061,13 @@ function HierarchyNodeRow({
               : undefined
           }
           draggable
-          onDragStart={(e, _idx, pane) => {
+          onDragStart={(e, _idx, _pane) => {
             hierDrag.current = { group: groupKey, idx: indexInGroup };
-            e.dataTransfer.setData(DRAG_TYPE, encodeDragData({ pane }));
+            // Do NOT call startDrag() — it activates the layout DropZoneOverlay
+            // which crashes when trying to split/move panes. Hierarchy drag is
+            // sidebar-only reordering.
+            e.dataTransfer.setData("text/plain", "");
             e.dataTransfer.effectAllowed = "move";
-            startDrag({ pane });
           }}
           onDragOver={(e) => {
             if (hierDrag.current?.group === groupKey) {
@@ -1088,7 +1089,6 @@ function HierarchyNodeRow({
           onDragEnd={() => {
             hierDrag.current = null;
             setHierDropTarget(null);
-            endDrag();
           }}
           onClick={() => {
             const pane: ActivePane = { type: "session", id: s.id };
