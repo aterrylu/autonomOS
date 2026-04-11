@@ -4,7 +4,7 @@ import { basename, resolve } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { MCP_INSTRUCTIONS } from "./mcp/tools.js";
+import { DEFAULT_CAPABILITIES, MCP_INSTRUCTIONS } from "./mcp/tools.js";
 import {
   getPersistedSessions,
   markSessionExited,
@@ -275,6 +275,11 @@ export function createSession(options: SpawnOptions): ManagedSession {
         "channel-server/dist.mjs",
       );
       const port = process.env.PORT || "3000";
+
+      // Resolve capabilities from template (or use defaults)
+      const tmpl = options.template ? getTemplate(options.template) : null;
+      const capabilities = tmpl?.capabilities ?? DEFAULT_CAPABILITIES;
+
       const mcpConfig = {
         mcpServers: {
           autonomos: {
@@ -284,6 +289,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
               AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
               AUTONOMOS_SESSION_ID: id,
               AUTONOMOS_AGENT_NAME: defaultName,
+              AUTONOMOS_CAPABILITIES: capabilities.join(","),
               ...(process.env.AUTONOMOS_TOKEN && {
                 AUTONOMOS_TOKEN: process.env.AUTONOMOS_TOKEN,
               }),

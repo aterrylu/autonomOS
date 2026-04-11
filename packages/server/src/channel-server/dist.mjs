@@ -9,6 +9,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 // packages/server/src/mcp/tools.ts
+var DEFAULT_CAPABILITIES = [
+  "send",
+  "list_agents",
+  "create_agent",
+  "kill_agent",
+  "self_exit"
+];
 var TOOL_CREATE_AGENT = {
   name: "create_agent",
   description: "Create a new agent \u2014 a dedicated Claude Code session with a name, context, and optional task.",
@@ -164,7 +171,7 @@ var TOOL_CREATE_TEMPLATE = {
       capabilities: {
         type: "array",
         items: { type: "string" },
-        description: "Capabilities to grant: 'send', 'list_agents', 'create_agent', 'kill_agent'. Defaults to all."
+        description: `Capabilities to grant: ${DEFAULT_CAPABILITIES.map((c) => `'${c}'`).join(", ")}. Defaults to all.`
       },
       autonomousMode: {
         type: "boolean",
@@ -178,6 +185,14 @@ var TOOL_CREATE_TEMPLATE = {
     required: ["name", "role", "description", "systemPrompt"]
   }
 };
+var TOOL_SELF_EXIT = {
+  name: "self_exit",
+  description: "Terminate your own session. Use when your work is complete and you want to exit cleanly.",
+  inputSchema: {
+    type: "object",
+    properties: {}
+  }
+};
 var ALL_TOOLS = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
@@ -186,8 +201,16 @@ var ALL_TOOLS = [
   TOOL_SET_MANAGER,
   TOOL_GET_ORG_CHART,
   TOOL_LIST_TEMPLATES,
-  TOOL_CREATE_TEMPLATE
+  TOOL_CREATE_TEMPLATE,
+  TOOL_SELF_EXIT
 ];
+var CAPABILITY_GATED_TOOLS = new Set(DEFAULT_CAPABILITIES);
+function filterToolsByCapabilities(capabilities) {
+  const allowed = new Set(capabilities);
+  return ALL_TOOLS.filter((tool) => {
+    return !CAPABILITY_GATED_TOOLS.has(tool.name) || allowed.has(tool.name);
+  });
+}
 var MCP_SERVER_INFO = {
   name: "autonomos",
   version: "0.3.0"
@@ -203,6 +226,7 @@ var MCP_INSTRUCTIONS = [
   "- set_manager(): Configure org chart relationships",
   "- get_org_chart(): View the organization hierarchy",
   "- list_templates(): Browse available agent templates",
+  "- self_exit(): Terminate your own session when work is complete",
   "",
   "Messages from other agents and platforms arrive as <channel> events.",
   "Each has from (sender name) and from_uri (address to respond to).",
@@ -213,6 +237,7 @@ var MCP_INSTRUCTIONS = [
 var SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 var SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
 var AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
+var CAPABILITIES = process.env.AUTONOMOS_CAPABILITIES ? process.env.AUTONOMOS_CAPABILITIES.split(",") : DEFAULT_CAPABILITIES;
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
     "autonomos-channel: AUTONOMOS_SESSION_ID and AUTONOMOS_SERVER_URL required\n"
@@ -358,11 +383,25 @@ async function serverFetch(path, init) {
   const pretty = typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
   return { content: [{ type: "text", text: pretty }] };
 }
+var agentTools = filterToolsByCapabilities(CAPABILITIES);
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: ALL_TOOLS
+  tools: agentTools
 }));
+var capSet = new Set(CAPABILITIES);
+var gatedTools = new Set(DEFAULT_CAPABILITIES);
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
+  if (gatedTools.has(name) && !capSet.has(name)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Tool "${name}" is not available. Missing capability: "${name}".`
+        }
+      ],
+      isError: true
+    };
+  }
   switch (name) {
     case "send": {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -510,6 +549,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     case "list_templates": {
       return serverFetch("/api/templates");
+    }
+    case "self_exit": {
+      serverFetch(`/api/sessions/${encodeURIComponent(SESSION_ID)}`, {
+        method: "DELETE"
+      }).catch((err) => {
+        process.stderr.write(
+          `autonomos-channel: self_exit failed: ${err instanceof Error ? err.message : err}
+`
+        );
+      });
+      return { content: [{ type: "text", text: "Exiting..." }] };
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
