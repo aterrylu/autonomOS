@@ -318,6 +318,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         systemPrompt,
         prompt,
         resumeSessionId,
+        forkFrom,
         autonomousMode,
         template,
         manager,
@@ -328,11 +329,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         systemPrompt?: string;
         prompt?: string;
         resumeSessionId?: string;
+        forkFrom?: string;
         autonomousMode?: boolean;
         template?: string;
         manager?: string;
         project?: string;
       };
+
+      // Auto-default manager to calling agent's name (channel server only)
+      const effectiveManager = manager ?? process.env.AUTONOMOS_AGENT_NAME;
+      if (!manager && effectiveManager) {
+        process.stderr.write(
+          `autonomos-channel: auto-setting manager to "${effectiveManager}"\n`,
+        );
+      }
 
       try {
         return await serverFetch("/api/sessions", {
@@ -342,21 +352,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             name: agentName,
             prompt,
             resumeSessionId,
+            forkFrom,
             autonomousMode: autonomousMode ?? true,
             appendSystemPrompt: systemPrompt,
             template,
-            manager,
+            manager: effectiveManager,
             project,
           }),
         });
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `autonomos-channel: create_agent failed: ${msg}\n`,
+        );
         return {
-          content: [
-            {
-              type: "text",
-              text: `Failed to create agent: ${err instanceof Error ? err.message : err}`,
-            },
-          ],
+          content: [{ type: "text", text: `Failed to create agent: ${msg}` }],
           isError: true,
         };
       }

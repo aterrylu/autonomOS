@@ -51,6 +51,12 @@ function createMcpServer(): McpServer {
         .string()
         .optional()
         .describe("Claude Code session ID to resume"),
+      forkFrom: z
+        .string()
+        .optional()
+        .describe(
+          "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+        ),
       autonomousMode: z
         .boolean()
         .optional()
@@ -95,6 +101,7 @@ function createMcpServer(): McpServer {
           prompt: args.prompt,
           name: args.name,
           resumeSessionId: args.resumeSessionId,
+          forkFrom: args.forkFrom,
           autonomousMode,
           appendSystemPrompt: systemPrompt,
           template: args.template,

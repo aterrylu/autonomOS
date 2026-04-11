@@ -28,6 +28,8 @@ export interface SpawnOptions {
   name?: string;
   /** Claude Code session ID to resume (passed as --resume <id>) */
   resumeSessionId?: string;
+  /** Claude session ID to fork from — child inherits parent's conversation context */
+  forkFrom?: string;
   /** Skip permission prompts (--dangerously-skip-permissions) */
   autonomousMode?: boolean;
   /** Replace the default system prompt entirely (--system-prompt) */
