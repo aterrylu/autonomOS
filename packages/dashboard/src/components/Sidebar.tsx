@@ -603,6 +603,8 @@ export function Sidebar() {
               depth={0}
               groupKey="__root__"
               indexInGroup={idx}
+              isLastChild={idx === hierarchyTree.length - 1}
+              ancestorIsLast={[]}
               page={page}
               isPaneActive={isPaneActive}
               visiblePaneIds={visiblePaneIds}
@@ -760,6 +762,8 @@ interface SessionRowProps {
   borderColor?: string;
   /** Callback when the left border zone is clicked (e.g. expand/collapse) */
   onBorderClick?: () => void;
+  /** Override left padding (used by hierarchy tree-line layout) */
+  paddingLeftOverride?: number;
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent, idx: number, pane: ActivePane) => void;
   onDragOver?: (e: React.DragEvent, idx: number) => void;
@@ -782,6 +786,7 @@ function SessionRow({
   indent,
   borderColor,
   onBorderClick,
+  paddingLeftOverride,
   draggable: isDraggable,
   onDragStart,
   onDragOver,
@@ -790,7 +795,7 @@ function SessionRow({
   onClick,
 }: SessionRowProps) {
   const lastActive = meta?.lastModified ?? s.createdAt;
-  const paddingLeft = 9 + indent * 10;
+  const paddingLeft = paddingLeftOverride ?? 9 + indent * 10;
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -972,6 +977,15 @@ interface HierarchyNodeRowProps {
   groupKey: string;
   /** Index of this node within its sibling group */
   indexInGroup: number;
+  /** Whether this node is the last child in its parent group */
+  isLastChild: boolean;
+  /**
+   * For each ancestor depth (index 0 = depth 0, index 1 = depth 1, etc.),
+   * true means that ancestor was the last child — so NO continuing vertical
+   * line at that level.  Index 0 (root) is skipped since depth-0 nodes have
+   * no branch connector to continue.
+   */
+  ancestorIsLast: boolean[];
   page: PageTheme;
   isPaneActive: (pane: ActivePane) => boolean;
   visiblePaneIds: Set<string>;
@@ -1001,11 +1015,112 @@ interface HierarchyNodeRowProps {
   setHierDropTarget: (v: { group: string; idx: number } | null) => void;
 }
 
+// ── Tree-line geometry ──────────────────────────────────────────────────
+//
+// Guide lines at each depth are aligned with the parent row's status icon
+// center. This means guideX is computed recursively from the parent's
+// actual content position rather than a fixed linear formula.
+//
+//   SessionRow layout:  [3px border] [paddingLeft ...] [14px icon] [content]
+//   Icon center = 3 + paddingLeft + 7
+
+/** Width of the horizontal branch arm (px) */
+const TREE_BRANCH_WIDTH = 4;
+/** Gap between end of branch arm and row content (px) */
+const TREE_BRANCH_GAP = 2;
+/** Half the AgentStatusIcon size (14px) */
+const TREE_ICON_HALF = 7;
+/** SessionRow borderLeft width (always 3px, colored or transparent) */
+const TREE_BORDER = 3;
+
+/** X position of the vertical guide line at a given depth (aligned to parent icon center) */
+function guideX(depth: number): number {
+  if (depth <= 0 || !Number.isFinite(depth)) return 0;
+  // Align with icon center of the parent row at depth-1
+  return TREE_BORDER + treePaddingLeft(depth - 1) + TREE_ICON_HALF;
+}
+
+/** Left padding for row content (after the branch arm + gap, minus border) */
+function treePaddingLeft(depth: number): number {
+  if (depth <= 0 || !Number.isFinite(depth)) return 9;
+  // Subtract TREE_BORDER because SessionRow's borderLeft adds 3px before padding
+  return guideX(depth) + TREE_BRANCH_WIDTH + TREE_BRANCH_GAP - TREE_BORDER;
+}
+
+/**
+ * Renders vertical continuation lines + the branch/elbow connector for one
+ * hierarchy row.  Pure presentational — no interactivity.
+ */
+function TreeLineGuides({
+  depth,
+  isLastChild,
+  ancestorIsLast,
+  lineColor,
+}: {
+  depth: number;
+  isLastChild: boolean;
+  ancestorIsLast: boolean[];
+  lineColor: string;
+}) {
+  if (depth === 0) return null;
+
+  const branchAtX = guideX(depth);
+
+  return (
+    <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+      {/* Vertical continuation lines for ancestor levels (skip depth 0 — roots have no connector) */}
+      {ancestorIsLast.reduce<React.ReactNode[]>((acc, isLast, i) => {
+        if (!isLast && i > 0) {
+          const x = guideX(i);
+          acc.push(
+            <div
+              key={`vl${x}`}
+              className="absolute top-0 bottom-0"
+              style={{
+                left: `${x}px`,
+                width: "1px",
+                background: lineColor,
+              }}
+            />,
+          );
+        }
+        return acc;
+      }, [])}
+
+      {/* Branch connector: ├── or └── */}
+      {/* Vertical segment (half-height for └, full for ├) */}
+      <div
+        className="absolute"
+        style={{
+          left: `${branchAtX}px`,
+          top: 0,
+          bottom: isLastChild ? "50%" : 0,
+          width: "1px",
+          background: lineColor,
+        }}
+      />
+      {/* Horizontal arm */}
+      <div
+        className="absolute"
+        style={{
+          left: `${branchAtX}px`,
+          top: "50%",
+          width: `${TREE_BRANCH_WIDTH}px`,
+          height: "1px",
+          background: lineColor,
+        }}
+      />
+    </div>
+  );
+}
+
 function HierarchyNodeRow({
   node,
   depth,
   groupKey,
   indexInGroup,
+  isLastChild,
+  ancestorIsLast,
   page,
   isPaneActive,
   visiblePaneIds,
@@ -1028,109 +1143,142 @@ function HierarchyNodeRow({
   const isDropTarget =
     hierDropTarget?.group === groupKey && hierDropTarget?.idx === indexInGroup;
 
-  // Colored left border for parents only
+  const lineColor = `${page.statusFg}55`;
+  const rowPaddingLeft = depth > 0 ? treePaddingLeft(depth) : 9;
+
+  // Colored left border for parents with children (existing design)
   const borderColor = hasChildren
     ? isCollapsed
       ? "rgba(255,255,255,0.15)"
       : "rgba(59,130,246,0.5)"
     : undefined;
 
+  // Shared tree guides + downward connector (used by both live and exited rows)
+  const treeGuides = (
+    <>
+      <TreeLineGuides
+        depth={depth}
+        isLastChild={isLastChild}
+        ancestorIsLast={ancestorIsLast}
+        lineColor={lineColor}
+      />
+      {/* Downward connector from parent icon to children (depth+1) */}
+      {hasChildren && !isCollapsed && (
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            left: `${guideX(depth + 1)}px`,
+            top: "50%",
+            bottom: 0,
+            width: "1px",
+            background: lineColor,
+            zIndex: 1,
+          }}
+        />
+      )}
+    </>
+  );
+
   return (
     <>
       {s ? (
-        <SessionRow
-          session={s}
-          pane={{ type: "session", id: s.id }}
-          idx={indexInGroup}
-          page={page}
-          isActive={isPaneActive({ type: "session", id: s.id })}
-          isVisible={visiblePaneIds.has(s.id)}
-          isDropTarget={isDropTarget}
-          meta={
-            s.claudeSessionId
-              ? sessionMetaMap.get(s.claudeSessionId)
-              : undefined
-          }
-          agentState={agentStatuses[s.id]}
-          notifCount={notificationCounts[s.id] ?? 0}
-          indent={depth}
-          borderColor={borderColor}
-          onBorderClick={
-            hasChildren
-              ? () => toggleCollapsed(node.org.name.toLowerCase())
-              : undefined
-          }
-          draggable
-          onDragStart={(e, _idx, _pane) => {
-            hierDrag.current = { group: groupKey, idx: indexInGroup };
-            // Do NOT call startDrag() — it activates the layout DropZoneOverlay
-            // which crashes when trying to split/move panes. Hierarchy drag is
-            // sidebar-only reordering.
-            e.dataTransfer.setData("text/plain", "");
-            e.dataTransfer.effectAllowed = "move";
-          }}
-          onDragOver={(e) => {
-            if (hierDrag.current?.group === groupKey) {
-              e.preventDefault();
-              setHierDropTarget({ group: groupKey, idx: indexInGroup });
+        <div className="relative">
+          {treeGuides}
+          <SessionRow
+            session={s}
+            pane={{ type: "session", id: s.id }}
+            idx={indexInGroup}
+            page={page}
+            isActive={isPaneActive({ type: "session", id: s.id })}
+            isVisible={visiblePaneIds.has(s.id)}
+            isDropTarget={isDropTarget}
+            meta={
+              s.claudeSessionId
+                ? sessionMetaMap.get(s.claudeSessionId)
+                : undefined
             }
-          }}
-          onDrop={() => {
-            if (
-              hierDrag.current &&
-              hierDrag.current.group === groupKey &&
-              hierDrag.current.idx !== indexInGroup
-            ) {
-              onReorder(groupKey, hierDrag.current.idx, indexInGroup);
+            agentState={agentStatuses[s.id]}
+            notifCount={notificationCounts[s.id] ?? 0}
+            indent={0}
+            borderColor={borderColor}
+            onBorderClick={
+              hasChildren
+                ? () => toggleCollapsed(node.org.name.toLowerCase())
+                : undefined
             }
-            hierDrag.current = null;
-            setHierDropTarget(null);
-          }}
-          onDragEnd={() => {
-            hierDrag.current = null;
-            setHierDropTarget(null);
-          }}
-          onClick={() => {
-            const pane: ActivePane = { type: "session", id: s.id };
-            switchPane(pane);
-            focusTerminal(pane.id);
-            if (notificationCounts[s.id]) markNotificationsRead(s.id);
-          }}
-        />
+            paddingLeftOverride={rowPaddingLeft}
+            draggable
+            onDragStart={(e, _idx, _pane) => {
+              hierDrag.current = { group: groupKey, idx: indexInGroup };
+              e.dataTransfer.setData("text/plain", "");
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              if (hierDrag.current?.group === groupKey) {
+                e.preventDefault();
+                setHierDropTarget({ group: groupKey, idx: indexInGroup });
+              }
+            }}
+            onDrop={() => {
+              if (
+                hierDrag.current &&
+                hierDrag.current.group === groupKey &&
+                hierDrag.current.idx !== indexInGroup
+              ) {
+                onReorder(groupKey, hierDrag.current.idx, indexInGroup);
+              }
+              hierDrag.current = null;
+              setHierDropTarget(null);
+            }}
+            onDragEnd={() => {
+              hierDrag.current = null;
+              setHierDropTarget(null);
+            }}
+            onClick={() => {
+              const pane: ActivePane = { type: "session", id: s.id };
+              switchPane(pane);
+              focusTerminal(pane.id);
+              if (notificationCounts[s.id]) markNotificationsRead(s.id);
+            }}
+          />
+        </div>
       ) : (
-        /* Exited / no live session — dimmed label */
-        // biome-ignore lint/a11y/useKeyWithClickEvents: non-critical stopped row
-        // biome-ignore lint/a11y/noStaticElementInteractions: non-critical stopped row
-        <div
-          className={`flex items-center gap-1.5 py-1${hasChildren ? " cursor-pointer" : ""}`}
-          style={{
-            borderLeft: `3px solid ${borderColor ?? "transparent"}`,
-            paddingLeft: `${9 + depth * 10}px`,
-            paddingRight: "12px",
-            opacity: 0.4,
-          }}
-          onClick={
-            hasChildren
-              ? () => toggleCollapsed(node.org.name.toLowerCase())
-              : undefined
-          }
-        >
-          <AgentStatusIcon status="stopped" size={14} />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1">
-              <span className="flex-1 truncate text-xs">{node.org.name}</span>
-              <span
-                className="shrink-0 text-[10px]"
-                style={{ color: page.statusFg }}
-              >
-                stopped
-              </span>
-            </div>
-            {node.org.template && (
-              <div className="text-[10px]" style={{ color: page.statusFg }}>
-                {node.org.template}
+        /* Exited / no live session — borderless wrapper for correct guide alignment */
+        <div className="relative">
+          {treeGuides}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: non-critical stopped row */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: non-critical stopped row */}
+          <div
+            className={`flex items-center gap-1.5 py-1${hasChildren ? " cursor-pointer" : ""}`}
+            style={{
+              borderLeft: `3px solid ${borderColor ?? "transparent"}`,
+              paddingLeft: `${rowPaddingLeft}px`,
+              paddingRight: "12px",
+              opacity: 0.4,
+            }}
+            onClick={
+              hasChildren
+                ? () => toggleCollapsed(node.org.name.toLowerCase())
+                : undefined
+            }
+          >
+            <AgentStatusIcon status="stopped" size={14} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1">
+                <span className="flex-1 truncate text-xs">{node.org.name}</span>
+                <span
+                  className="shrink-0 text-[10px]"
+                  style={{ color: page.statusFg }}
+                >
+                  stopped
+                </span>
               </div>
-            )}
+              {node.org.template && (
+                <div className="text-[10px]" style={{ color: page.statusFg }}>
+                  {node.org.template}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1145,6 +1293,8 @@ function HierarchyNodeRow({
             depth={depth + 1}
             groupKey={node.org.name.toLowerCase()}
             indexInGroup={idx}
+            isLastChild={idx === node.children.length - 1}
+            ancestorIsLast={[...ancestorIsLast, isLastChild]}
             page={page}
             isPaneActive={isPaneActive}
             visiblePaneIds={visiblePaneIds}
