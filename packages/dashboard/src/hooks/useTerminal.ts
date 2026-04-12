@@ -162,7 +162,11 @@ export function useTerminal(
         if (isActiveRef.current) {
           setStatus(`connected: ${sessionId.slice(0, 8)}`);
         }
-        nudgeTimer = nudgeResize(ws, terminal);
+        // Only nudge resize if this browser tab is focused — prevents a
+        // background tab from resizing the shared PTY on (re)connect.
+        if (document.hasFocus()) {
+          nudgeTimer = nudgeResize(ws, terminal);
+        }
       };
 
       ws.onmessage = (event) => {
@@ -226,9 +230,33 @@ export function useTerminal(
     };
     document.addEventListener("visibilitychange", handleVisibility);
 
+    const isContainerVisible = (): boolean =>
+      container.offsetWidth > 0 && container.offsetHeight > 0;
+
+    // When this browser tab regains focus, re-fit and re-send resize for
+    // all visible terminals so their PTY dimensions match this tab's layout.
+    // A background tab may have sent different dimensions while we were hidden.
+    const handleFocus = () => {
+      if (disposed) return;
+      if (
+        isContainerVisible() &&
+        wsRef.current?.readyState === WebSocket.OPEN
+      ) {
+        try {
+          fitAddon.fit();
+        } catch (err) {
+          console.warn("fitAddon.fit() failed on focus reclaim:", err);
+        }
+        // Use nudgeResize (cols-1 then real cols) to force a PTY redraw
+        // even when dimensions happen to match the current PTY size.
+        if (nudgeTimer) clearTimeout(nudgeTimer);
+        nudgeTimer = nudgeResize(wsRef.current, terminal);
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+
     const resizeObserver = new ResizeObserver(() => {
-      const { offsetWidth, offsetHeight } = container;
-      const isVisible = offsetWidth > 0 && offsetHeight > 0;
+      const isVisible = isContainerVisible();
 
       // Dispose WebGL when hidden to free GPU context for the active terminal
       if (!isVisible) {
@@ -253,8 +281,18 @@ export function useTerminal(
         }
       }
 
-      fitAddon.fit();
-      if (wsRef.current) sendResize(wsRef.current, terminal);
+      try {
+        fitAddon.fit();
+      } catch (err) {
+        console.warn("fitAddon.fit() failed in ResizeObserver:", err);
+      }
+      // Only send resize to the server when this tab is focused — a PTY has
+      // one size, so background tabs must not overwrite the active viewer's
+      // dimensions. The local fit() above still runs so xterm's internal
+      // grid stays in sync with its container.
+      if (wsRef.current && document.hasFocus()) {
+        sendResize(wsRef.current, terminal);
+      }
     });
     resizeObserver.observe(container);
 
@@ -376,6 +414,7 @@ export function useTerminal(
       if (scrollTimer) clearTimeout(scrollTimer);
       if (nudgeTimer) clearTimeout(nudgeTimer);
       document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleFocus);
       resizeObserver.disconnect();
       container.removeEventListener("touchstart", onTouchStart);
       container.removeEventListener("touchmove", onTouchMove);
