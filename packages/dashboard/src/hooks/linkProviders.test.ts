@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 
 // Extract the URL regex pattern used by UrlLinkProvider for direct testing.
 // This is the same regex from useTerminal.ts — kept in sync manually.
-const URL_PATTERN =
-  /https?:\/\/[^\s"'`<>)\]},;]+[^\s"'`<>)\]},;.:!?]/g;
+const URL_PATTERN = /https?:\/\/[^\s"'`<>)\]},;]+[^\s"'`<>)\]},;.:!?]/g;
 
 /** Helper: extract all URL matches from a string */
 function findUrls(text: string): string[] {
@@ -109,9 +108,10 @@ describe("UrlLinkProvider regex", () => {
 
   describe("multiple URLs", () => {
     it("finds multiple URLs on one line", () => {
-      expect(
-        findUrls("see https://a.com and https://b.com/path"),
-      ).toEqual(["https://a.com", "https://b.com/path"]);
+      expect(findUrls("see https://a.com and https://b.com/path")).toEqual([
+        "https://a.com",
+        "https://b.com/path",
+      ]);
     });
 
     it("handles URLs separated by commas", () => {
