@@ -40,6 +40,8 @@ export interface AppSettings {
   autoTrust?: boolean;
   /** User-defined env vars injected into every spawned session */
   customEnvVars?: Record<string, string>;
+  /** Terminal renderer backend: xterm.js (default) or ghostty-web */
+  terminalRenderer?: "xterm" | "ghostty-web";
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");

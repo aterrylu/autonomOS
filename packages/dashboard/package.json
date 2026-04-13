@@ -21,15 +21,16 @@
     "@xterm/xterm": "^6",
     "dompurify": "^3.3.3",
     "framer-motion": "^12.38.0",
+    "ghostty-web": "^0.4.0",
     "lucide-react": "^1.0.1",
     "mermaid": "^11.13.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
+    "react-organizational-chart": "^2.2.1",
     "react-resizable-panels": "^4.7.3",
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
-    "react-organizational-chart": "^2.2.1",
     "zustand": "^5.0.11"
   },
   "devDependencies": {
