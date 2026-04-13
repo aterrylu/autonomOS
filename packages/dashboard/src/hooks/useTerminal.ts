@@ -9,7 +9,7 @@ import type {
   TerminalBackend,
   TerminalInstance,
 } from "../terminal/types";
-import { isMac } from "../utils/platform";
+import { hasPrimaryModifier, isMac } from "../utils/platform";
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
 
@@ -163,6 +163,26 @@ export function useTerminal(
       terminal.registerLinkProvider(
         new MarkdownLinkProvider(terminal, sessionId),
       );
+      terminal.registerLinkProvider(new UrlLinkProvider(terminal));
+
+      // ghostty-web has its own OSC 8 link provider (Ctrl/Cmd+Click gated).
+      // xterm.js handles OSC 8 via the linkHandler constructor option instead.
+      if (renderer === "ghostty-web") {
+        import("ghostty-web")
+          .then(({ OSC8LinkProvider }) => {
+            if (!disposed) {
+              terminal!.registerLinkProvider(
+                new OSC8LinkProvider(
+                  // biome-ignore lint/suspicious/noExplicitAny: ghostty-web Terminal type differs from our TerminalInstance
+                  terminal! as any,
+                ) as unknown as ILinkProvider,
+              );
+            }
+          })
+          .catch((err) => {
+            console.warn("Failed to load OSC8LinkProvider:", err);
+          });
+      }
 
       let userScrolledUp = false;
       let programmaticScroll = false;
@@ -486,6 +506,70 @@ function sendResize(ws: WebSocket, terminal: TerminalInstance): void {
   }
 }
 
+/** Safely read a terminal buffer line as text. Returns null on error or missing line. */
+function getLineText(
+  terminal: TerminalInstance,
+  bufferLineNumber: number,
+): string | null {
+  try {
+    const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
+    return line?.translateToString(true) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detects plain-text URLs (http:// and https://) in terminal output.
+ * Ctrl+Click (Cmd+Click on Mac) opens them in the browser.
+ * Renderer-agnostic — works with both xterm.js and ghostty-web.
+ */
+class UrlLinkProvider implements ILinkProvider {
+  private readonly pattern =
+    /https?:\/\/[^\s"'`<>)\]},;]+[^\s"'`<>)\]},;.:!?]/g;
+  private readonly terminal: TerminalInstance;
+
+  constructor(terminal: TerminalInstance) {
+    this.terminal = terminal;
+  }
+
+  provideLinks(
+    bufferLineNumber: number,
+    callback: (links: ILink[] | undefined) => void,
+  ): void {
+    const text = getLineText(this.terminal, bufferLineNumber);
+    if (!text) {
+      callback(undefined);
+      return;
+    }
+
+    const links: ILink[] = [];
+
+    let match: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: standard regex loop
+    while ((match = this.pattern.exec(text)) !== null) {
+      const url = match[0];
+      const startX = match.index;
+
+      links.push({
+        range: {
+          start: { x: startX + 1, y: bufferLineNumber },
+          end: { x: startX + url.length + 1, y: bufferLineNumber },
+        },
+        text: url,
+        activate: (event) => {
+          if (hasPrimaryModifier(event)) {
+            window.open(url, "_blank", "noopener");
+          }
+        },
+      });
+    }
+    this.pattern.lastIndex = 0;
+
+    callback(links.length > 0 ? links : undefined);
+  }
+}
+
 /**
  * Detects file paths ending in .md in terminal output.
  * Ctrl+click opens them in the dashboard's /preview route.
@@ -504,24 +588,12 @@ class MarkdownLinkProvider implements ILinkProvider {
     bufferLineNumber: number,
     callback: (links: ILink[] | undefined) => void,
   ): void {
-    let line: ReturnType<TerminalInstance["buffer"]["active"]["getLine"]>;
-    try {
-      line = this.terminal.buffer.active.getLine(bufferLineNumber - 1);
-    } catch (err) {
-      console.warn(
-        `MarkdownLinkProvider: getLine(${bufferLineNumber - 1}) failed:`,
-        err,
-      );
+    const text = getLineText(this.terminal, bufferLineNumber);
+    if (!text) {
       callback(undefined);
       return;
     }
 
-    if (!line) {
-      callback(undefined);
-      return;
-    }
-
-    const text = line.translateToString(true);
     const links: ILink[] = [];
 
     let match: RegExpExecArray | null;
@@ -537,7 +609,7 @@ class MarkdownLinkProvider implements ILinkProvider {
         },
         text: filePath,
         activate: (event) => {
-          if (!event.ctrlKey && !event.metaKey) return;
+          if (!hasPrimaryModifier(event)) return;
           let resolved = filePath;
           if (!filePath.startsWith("/") && !filePath.startsWith("~/")) {
             const session = useStore
@@ -569,8 +641,7 @@ function handleKeyEvent(
     if (k === "d" || k === "w" || k === "b") return false;
   }
 
-  const primaryMod = isMac ? event.metaKey : event.ctrlKey;
-  if (!primaryMod) return true;
+  if (!hasPrimaryModifier(event)) return true;
 
   if (event.key === "c" || event.key === "v") return true;
   if (!isMac && event.shiftKey && (event.key === "C" || event.key === "V"))
