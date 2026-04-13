@@ -12,6 +12,7 @@ interface MaskedSettings {
   channels: string[];
   autoTrust: boolean;
   customEnvVars: Record<string, string>;
+  terminalRenderer: "xterm" | "ghostty-web";
 }
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -378,10 +379,16 @@ const THEME_LABELS: Record<string, string> = {
   void: "Void",
 };
 
+const RENDERER_LABELS: Record<string, string> = {
+  xterm: "xterm.js",
+  "ghostty-web": "ghostty",
+};
+
 function DashboardPreferences({ page }: { page: PageTheme }) {
   const theme = useStore((s) => s.theme);
   const autonomousMode = useStore((s) => s.autonomousMode);
   const viewMode = useStore((s) => s.viewMode);
+  const terminalRenderer = useStore((s) => s.terminalRenderer);
   const cycleTheme = useStore((s) => s.cycleTheme);
   const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
   const toggleViewMode = useStore((s) => s.toggleViewMode);
@@ -424,6 +431,29 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
           style={{ background: page.border, color: page.fg }}
         >
           {viewMode === "terminal" ? "> terminal" : "≡ chat"}
+        </button>
+      </div>
+
+      {/* Terminal renderer */}
+      <div className="flex items-center justify-between">
+        <span className="text-xs" style={labelStyle}>
+          Terminal Renderer
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            const next = terminalRenderer === "xterm" ? "ghostty-web" : "xterm";
+            useStore.setState({ terminalRenderer: next });
+            fetch("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ terminalRenderer: next }),
+            }).catch(() => {});
+          }}
+          className="rounded px-2.5 py-1 text-xs cursor-pointer font-mono"
+          style={{ background: page.border, color: page.fg }}
+        >
+          {RENDERER_LABELS[terminalRenderer] ?? terminalRenderer}
         </button>
       </div>
 

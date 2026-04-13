@@ -408,6 +408,7 @@ interface AppState {
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   autonomousMode: boolean;
+  terminalRenderer: "xterm" | "ghostty-web";
   paneOrder: string[];
   /** Ordering of children within each hierarchy group. Key = parent name (lowercase) or "__root__". */
   hierarchyOrder: Record<string, string[]>;
@@ -572,6 +573,7 @@ export const useStore = create<AppState>()(
         agentStatuses: {},
         sidebarOpen: true,
         autonomousMode: true,
+        terminalRenderer: "xterm",
         paneOrder: [],
         hierarchyOrder: {},
         previewPanes: [],
@@ -1518,6 +1520,7 @@ export const useStore = create<AppState>()(
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         autonomousMode: state.autonomousMode,
+        terminalRenderer: state.terminalRenderer,
         showExitedAgents: state.showExitedAgents,
         paneOrder: state.paneOrder,
         hierarchyOrder: state.hierarchyOrder,
@@ -1541,6 +1544,11 @@ export const useStore = create<AppState>()(
           merged.sidebarOpen = saved.sidebarOpen;
         if (typeof saved?.autonomousMode === "boolean")
           merged.autonomousMode = saved.autonomousMode;
+        if (
+          saved?.terminalRenderer === "xterm" ||
+          saved?.terminalRenderer === "ghostty-web"
+        )
+          merged.terminalRenderer = saved.terminalRenderer;
         if (typeof saved?.showExitedAgents === "boolean")
           merged.showExitedAgents = saved.showExitedAgents;
         if (

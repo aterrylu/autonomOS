@@ -1,10 +1,14 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
-import type { IBufferLine, ILink, ILinkProvider } from "@xterm/xterm";
-import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
+import { createTerminalBackend } from "../terminal/create";
+import type {
+  IFitAddon,
+  ILink,
+  ILinkProvider,
+  ITerminalAddon,
+  TerminalBackend,
+  TerminalInstance,
+} from "../terminal/types";
 import { isMac } from "../utils/platform";
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
@@ -12,7 +16,7 @@ const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.h
 // ── Terminal focus registry ─────────────────────────────────────────
 // Allows external code (sidebar click handlers) to focus a specific
 // session's terminal without going through React's effect chain.
-const terminalRegistry = new Map<string, Terminal>();
+const terminalRegistry = new Map<string, TerminalInstance>();
 
 /** Cancel any in-flight focus polling before starting a new one */
 let pendingFocusRaf: number | null = null;
@@ -53,10 +57,11 @@ export function useTerminal(
   containerRef: React.RefObject<HTMLDivElement | null>,
   sessionId: string,
 ) {
-  const termRef = useRef<Terminal | null>(null);
+  const termRef = useRef<TerminalInstance | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const theme = useStore((s) => s.theme);
+  const renderer = useStore((s) => s.terminalRenderer);
   const setStatus = useStore((s) => s.setStatus);
   const themeRef = useRef(theme);
   themeRef.current = theme;
@@ -88,342 +93,368 @@ export function useTerminal(
     const container = containerRef.current;
     if (!container) return;
 
-    const terminal = new Terminal({
-      cursorBlink: true,
-      macOptionIsMeta: true,
-      fontSize: 14,
-      fontFamily:
-        '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
-      theme: THEMES[themeRef.current].terminal,
-      scrollback: 10000,
-      allowProposedApi: true,
-      scrollSensitivity: 3,
-    });
-
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-
-    const unicodeAddon = new Unicode11Addon();
-    terminal.loadAddon(unicodeAddon);
-    terminal.unicode.activeVersion = "11";
-
-    terminal.open(container);
-
-    // WebGL is loaded/disposed dynamically — only the visible terminal holds a GPU context
-    let webglAddon: WebglAddon | null = null;
-
-    fitAddon.fit();
-
-    terminal.attachCustomKeyEventHandler((event) =>
-      handleKeyEvent(event, terminal, wsRef),
-    );
-
-    terminal.registerLinkProvider(
-      new MarkdownLinkProvider(terminal, sessionId),
-    );
-
-    let userScrolledUp = false;
-    let programmaticScroll = false;
     let disposed = false;
-
-    terminal.onScroll(() => {
-      if (disposed || programmaticScroll) return;
-      const buf = terminal.buffer.active;
-      const atBottom = buf.baseY - buf.viewportY <= 1;
-      userScrolledUp = !atBottom;
-    });
+    // Mutable references for cleanup — populated by the async init below.
+    // The synchronous cleanup function and the async body both access these.
+    let terminal: TerminalInstance | null = null;
+    let fitAddon: IFitAddon | null = null;
+    let webglAddon: ITerminalAddon | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let scrollTimer: ReturnType<typeof setTimeout> | null = null;
     let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
-    let retryDelay = 1000;
+    let inertiaRaf: number | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let handleVisibility: (() => void) | null = null;
+    let handleFocus: (() => void) | null = null;
+    let onTouchStart: ((e: TouchEvent) => void) | null = null;
+    let onTouchMove: ((e: TouchEvent) => void) | null = null;
+    let onTouchEnd: (() => void) | null = null;
 
-    function connect() {
-      if (disposed) return;
-      userScrolledUp = false;
-
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (scrollTimer) {
-        clearTimeout(scrollTimer);
-        scrollTimer = null;
-      }
-      if (nudgeTimer) {
-        clearTimeout(nudgeTimer);
-        nudgeTimer = null;
-      }
-      wsRef.current?.close();
-
-      const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`);
-
-      ws.onopen = () => {
-        retryDelay = 1000;
+    // Async IIFE — ghostty-web requires await init() for WASM loading.
+    (async () => {
+      let backend: TerminalBackend;
+      try {
+        backend = await createTerminalBackend(renderer, {
+          cursorBlink: true,
+          fontSize: 14,
+          fontFamily:
+            '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+          theme: THEMES[themeRef.current].terminal,
+          scrollback: 10000,
+        });
+      } catch (err) {
+        console.error("Failed to create", renderer, "terminal backend:", err);
         if (isActiveRef.current) {
-          setStatus(`connected: ${sessionId.slice(0, 8)}`);
+          setStatus(`${renderer} failed to load`);
         }
-        // Only nudge resize if this browser tab is focused — prevents a
-        // background tab from resizing the shared PTY on (re)connect.
-        if (document.hasFocus()) {
-          nudgeTimer = nudgeResize(ws, terminal);
-        }
-      };
-
-      ws.onmessage = (event) => {
-        terminal.write(event.data);
-        // Only auto-scroll if the user hasn't manually scrolled up
-        if (!userScrolledUp) {
-          if (scrollTimer) clearTimeout(scrollTimer);
-          scrollTimer = setTimeout(() => {
-            programmaticScroll = true;
-            terminal.scrollToBottom();
-            programmaticScroll = false;
-          }, 100);
-        }
-      };
-
-      ws.onclose = (event) => {
-        if (disposed) return;
-        // 4010 = PTY exited (session ended)
-        // 4004 = session not found (stale persisted sessionId after server restart)
-        if (event.code === 4010 || event.code === 4004) {
-          const store = useStore.getState();
-          const { activePane } = store;
-          if (activePane?.type === "session" && activePane.id === sessionId) {
-            store.switchPane(null);
-          }
-          store.fetchSessions();
-          return;
-        }
-        if (isActiveRef.current) {
-          setStatus("reconnecting...");
-        }
-        reconnectTimer = setTimeout(() => {
-          retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
-          connect();
-        }, retryDelay);
-      };
-      ws.onerror = () => {
-        // Errors are followed by onclose — log but don't act
-      };
-
-      wsRef.current = ws;
-    }
-
-    connect();
-
-    terminal.onData((data) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(data);
-      }
-    });
-
-    const handleVisibility = () => {
-      if (
-        document.visibilityState === "visible" &&
-        wsRef.current?.readyState !== WebSocket.OPEN &&
-        wsRef.current?.readyState !== WebSocket.CONNECTING
-      ) {
-        retryDelay = 1000;
-        connect();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-
-    const isContainerVisible = (): boolean =>
-      container.offsetWidth > 0 && container.offsetHeight > 0;
-
-    // When this browser tab regains focus, re-fit and re-send resize for
-    // all visible terminals so their PTY dimensions match this tab's layout.
-    // A background tab may have sent different dimensions while we were hidden.
-    const handleFocus = () => {
-      if (disposed) return;
-      if (
-        isContainerVisible() &&
-        wsRef.current?.readyState === WebSocket.OPEN
-      ) {
-        try {
-          fitAddon.fit();
-        } catch (err) {
-          console.warn("fitAddon.fit() failed on focus reclaim:", err);
-        }
-        // Use nudgeResize (cols-1 then real cols) to force a PTY redraw
-        // even when dimensions happen to match the current PTY size.
-        if (nudgeTimer) clearTimeout(nudgeTimer);
-        nudgeTimer = nudgeResize(wsRef.current, terminal);
-      }
-    };
-    window.addEventListener("focus", handleFocus);
-
-    const resizeObserver = new ResizeObserver(() => {
-      const isVisible = isContainerVisible();
-
-      // Dispose WebGL when hidden to free GPU context for the active terminal
-      if (!isVisible) {
-        if (webglAddon) {
-          webglAddon.dispose();
-          webglAddon = null;
-        }
+        container.textContent = `Terminal renderer "${renderer}" failed to initialize. Try switching back in Settings.`;
+        container.style.cssText =
+          "color:#ea6c73;padding:16px;font-size:13px;font-family:monospace";
         return;
       }
 
-      // Load WebGL when becoming visible
-      if (!webglAddon) {
-        try {
-          webglAddon = new WebglAddon();
-          terminal.loadAddon(webglAddon);
-        } catch (err) {
-          console.warn(
-            "WebGL addon failed, falling back to canvas renderer:",
-            err,
-          );
-          webglAddon = null;
-        }
+      // If the effect was cleaned up while we were awaiting, dispose immediately
+      if (disposed) {
+        backend.terminal.dispose();
+        return;
       }
+
+      terminal = backend.terminal;
+      fitAddon = backend.fitAddon;
+      const createWebglAddon = backend.createWebglAddon;
 
       try {
+        terminal.open(container);
+        // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
         fitAddon.fit();
       } catch (err) {
-        console.warn("fitAddon.fit() failed in ResizeObserver:", err);
-      }
-      // Only send resize to the server when this tab is focused — a PTY has
-      // one size, so background tabs must not overwrite the active viewer's
-      // dimensions. The local fit() above still runs so xterm's internal
-      // grid stays in sync with its container.
-      if (wsRef.current && document.hasFocus()) {
-        sendResize(wsRef.current, terminal);
-      }
-    });
-    resizeObserver.observe(container);
-
-    // Touch scroll — xterm.js v6 doesn't handle touch natively (.xterm-screen
-    // overlays .xterm-viewport). We translate touch gestures into scrollLines()
-    // with inertial scrolling (momentum/flick) on release.
-    let touchStartY: number | null = null;
-    let touchAccum = 0;
-    let velocity = 0;
-    let lastTouchTime = 0;
-    let inertiaRaf: number | null = null;
-    const LINE_HEIGHT_FALLBACK = 14;
-    const FRICTION = 0.92;
-    const MIN_VELOCITY = 0.3; // px/ms threshold to stop inertia
-
-    function getLineHeight(): number {
-      return (
-        (terminal.options.fontSize ?? LINE_HEIGHT_FALLBACK) *
-        (terminal.options.lineHeight ?? 1)
-      );
-    }
-
-    function stopInertia() {
-      if (inertiaRaf !== null) {
-        cancelAnimationFrame(inertiaRaf);
-        inertiaRaf = null;
-      }
-    }
-
-    function onTouchStart(e: TouchEvent) {
-      if (e.touches.length === 1) {
-        stopInertia();
-        touchStartY = e.touches[0].clientY;
-        touchAccum = 0;
-        velocity = 0;
-        lastTouchTime = Date.now();
-      }
-    }
-
-    function onTouchMove(e: TouchEvent) {
-      if (disposed || touchStartY === null || e.touches.length !== 1) return;
-      e.preventDefault();
-
-      const now = Date.now();
-      const dy = touchStartY - e.touches[0].clientY;
-      const dt = Math.max(1, now - lastTouchTime);
-      touchStartY = e.touches[0].clientY;
-      lastTouchTime = now;
-
-      // Exponential moving average for smoother velocity tracking
-      velocity = 0.6 * (dy / dt) + 0.4 * velocity;
-
-      const lineHeight = getLineHeight();
-      if (lineHeight <= 0) return;
-      touchAccum += dy;
-
-      const lines = Math.trunc(touchAccum / lineHeight);
-      if (lines !== 0) {
-        terminal.scrollLines(lines);
-        touchAccum -= lines * lineHeight;
-      }
-    }
-
-    function onTouchEnd() {
-      touchStartY = null;
-
-      // Start inertial scroll if flick velocity is high enough
-      if (Math.abs(velocity) < MIN_VELOCITY) {
-        velocity = 0;
-        touchAccum = 0;
+        console.error(`Terminal open/fit failed for ${sessionId}:`, err);
+        if (isActiveRef.current) {
+          setStatus("terminal render failed");
+        }
+        terminal.dispose();
         return;
       }
 
-      let lastFrame = performance.now();
-      let inertiaAccum = 0;
+      terminal.attachCustomKeyEventHandler((event) =>
+        handleKeyEvent(event, terminal!, wsRef),
+      );
 
-      function inertiaStep(now: number) {
+      terminal.registerLinkProvider(
+        new MarkdownLinkProvider(terminal, sessionId),
+      );
+
+      let userScrolledUp = false;
+      let programmaticScroll = false;
+
+      terminal.onScroll(() => {
+        if (disposed || programmaticScroll) return;
+        const buf = terminal!.buffer.active;
+        const atBottom = buf.baseY - buf.viewportY <= 1;
+        userScrolledUp = !atBottom;
+      });
+
+      let retryDelay = 1000;
+
+      function connect() {
         if (disposed) return;
-        const dt = now - lastFrame;
-        lastFrame = now;
+        userScrolledUp = false;
 
-        velocity *= FRICTION;
-        if (Math.abs(velocity) < MIN_VELOCITY) {
-          velocity = 0;
-          inertiaRaf = null;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (scrollTimer) {
+          clearTimeout(scrollTimer);
+          scrollTimer = null;
+        }
+        if (nudgeTimer) {
+          clearTimeout(nudgeTimer);
+          nudgeTimer = null;
+        }
+        wsRef.current?.close();
+
+        const ws = new WebSocket(`${WS_URL}/ws/terminal/${sessionId}`);
+
+        ws.onopen = () => {
+          retryDelay = 1000;
+          if (isActiveRef.current) {
+            setStatus(`connected: ${sessionId.slice(0, 8)}`);
+          }
+          if (document.hasFocus()) {
+            nudgeTimer = nudgeResize(ws, terminal!);
+          }
+        };
+
+        ws.onmessage = (event) => {
+          if (disposed) return;
+          terminal!.write(event.data);
+          if (!userScrolledUp) {
+            if (scrollTimer) clearTimeout(scrollTimer);
+            scrollTimer = setTimeout(() => {
+              programmaticScroll = true;
+              terminal!.scrollToBottom();
+              programmaticScroll = false;
+            }, 100);
+          }
+        };
+
+        ws.onclose = (event) => {
+          if (disposed) return;
+          if (event.code === 4010 || event.code === 4004) {
+            const store = useStore.getState();
+            const { activePane } = store;
+            if (activePane?.type === "session" && activePane.id === sessionId) {
+              store.switchPane(null);
+            }
+            store.fetchSessions();
+            return;
+          }
+          if (isActiveRef.current) {
+            setStatus("reconnecting...");
+          }
+          reconnectTimer = setTimeout(() => {
+            retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+            connect();
+          }, retryDelay);
+        };
+        ws.onerror = (event) => {
+          console.warn(`WebSocket error for session ${sessionId}:`, event);
+        };
+
+        wsRef.current = ws;
+      }
+
+      connect();
+
+      terminal.onData((data) => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(data);
+        }
+      });
+
+      handleVisibility = () => {
+        if (
+          document.visibilityState === "visible" &&
+          wsRef.current?.readyState !== WebSocket.OPEN &&
+          wsRef.current?.readyState !== WebSocket.CONNECTING
+        ) {
+          retryDelay = 1000;
+          connect();
+        }
+      };
+      document.addEventListener("visibilitychange", handleVisibility);
+
+      const isContainerVisible = (): boolean =>
+        container.offsetWidth > 0 && container.offsetHeight > 0;
+
+      handleFocus = () => {
+        if (disposed) return;
+        if (
+          isContainerVisible() &&
+          wsRef.current?.readyState === WebSocket.OPEN
+        ) {
+          try {
+            // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
+            fitAddon!.fit();
+          } catch (err) {
+            console.warn("fitAddon.fit() failed on focus reclaim:", err);
+          }
+          if (nudgeTimer) clearTimeout(nudgeTimer);
+          nudgeTimer = nudgeResize(wsRef.current, terminal!);
+        }
+      };
+      window.addEventListener("focus", handleFocus);
+
+      resizeObserver = new ResizeObserver(() => {
+        const isVisible = isContainerVisible();
+
+        // Dispose WebGL when hidden to free GPU context for the active terminal
+        if (!isVisible) {
+          if (webglAddon) {
+            webglAddon.dispose();
+            webglAddon = null;
+          }
           return;
         }
+
+        // Load WebGL when becoming visible (xterm.js only — ghostty returns null)
+        if (!webglAddon) {
+          try {
+            webglAddon = createWebglAddon();
+            if (webglAddon) {
+              terminal!.loadAddon(webglAddon);
+            }
+          } catch (err) {
+            console.warn(
+              "WebGL addon failed, falling back to canvas renderer:",
+              err,
+            );
+            webglAddon = null;
+          }
+        }
+
+        try {
+          // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
+          fitAddon!.fit();
+        } catch (err) {
+          console.warn("fitAddon.fit() failed in ResizeObserver:", err);
+        }
+        if (wsRef.current && document.hasFocus()) {
+          sendResize(wsRef.current, terminal!);
+        }
+      });
+      resizeObserver.observe(container);
+
+      // Touch scroll with inertial scrolling
+      let touchStartY: number | null = null;
+      let touchAccum = 0;
+      let velocity = 0;
+      let lastTouchTime = 0;
+      const LINE_HEIGHT_FALLBACK = 14;
+      const FRICTION = 0.92;
+      const MIN_VELOCITY = 0.3;
+
+      function getLineHeight(): number {
+        return (
+          (terminal!.options.fontSize ?? LINE_HEIGHT_FALLBACK) *
+          (terminal!.options.lineHeight ?? 1)
+        );
+      }
+
+      function stopInertia() {
+        if (inertiaRaf !== null) {
+          cancelAnimationFrame(inertiaRaf);
+          inertiaRaf = null;
+        }
+      }
+
+      onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length === 1) {
+          stopInertia();
+          touchStartY = e.touches[0].clientY;
+          touchAccum = 0;
+          velocity = 0;
+          lastTouchTime = Date.now();
+        }
+      };
+
+      onTouchMove = (e: TouchEvent) => {
+        if (disposed || touchStartY === null || e.touches.length !== 1) return;
+        e.preventDefault();
+
+        const now = Date.now();
+        const dy = touchStartY - e.touches[0].clientY;
+        const dt = Math.max(1, now - lastTouchTime);
+        touchStartY = e.touches[0].clientY;
+        lastTouchTime = now;
+
+        velocity = 0.6 * (dy / dt) + 0.4 * velocity;
 
         const lineHeight = getLineHeight();
         if (lineHeight <= 0) return;
+        touchAccum += dy;
 
-        inertiaAccum += velocity * dt;
-        const lines = Math.trunc(inertiaAccum / lineHeight);
+        const lines = Math.trunc(touchAccum / lineHeight);
         if (lines !== 0) {
-          terminal.scrollLines(lines);
-          inertiaAccum -= lines * lineHeight;
+          terminal!.scrollLines(lines);
+          touchAccum -= lines * lineHeight;
         }
+      };
+
+      onTouchEnd = () => {
+        touchStartY = null;
+
+        if (Math.abs(velocity) < MIN_VELOCITY) {
+          velocity = 0;
+          touchAccum = 0;
+          return;
+        }
+
+        let lastFrame = performance.now();
+        let inertiaAccum = 0;
+
+        function inertiaStep(now: number) {
+          if (disposed) return;
+          const dt = now - lastFrame;
+          lastFrame = now;
+
+          velocity *= FRICTION;
+          if (Math.abs(velocity) < MIN_VELOCITY) {
+            velocity = 0;
+            inertiaRaf = null;
+            return;
+          }
+
+          const lineHeight = getLineHeight();
+          if (lineHeight <= 0) return;
+
+          inertiaAccum += velocity * dt;
+          const lines = Math.trunc(inertiaAccum / lineHeight);
+          if (lines !== 0) {
+            terminal!.scrollLines(lines);
+            inertiaAccum -= lines * lineHeight;
+          }
+          inertiaRaf = requestAnimationFrame(inertiaStep);
+        }
+
         inertiaRaf = requestAnimationFrame(inertiaStep);
-      }
+      };
 
-      inertiaRaf = requestAnimationFrame(inertiaStep);
-    }
+      container.addEventListener("touchstart", onTouchStart, {
+        passive: true,
+      });
+      container.addEventListener("touchmove", onTouchMove, { passive: false });
+      container.addEventListener("touchend", onTouchEnd, { passive: true });
 
-    container.addEventListener("touchstart", onTouchStart, { passive: true });
-    container.addEventListener("touchmove", onTouchMove, { passive: false });
-    container.addEventListener("touchend", onTouchEnd, { passive: true });
-
-    termRef.current = terminal;
-    terminalRegistry.set(sessionId, terminal);
+      termRef.current = terminal;
+      terminalRegistry.set(sessionId, terminal);
+    })();
 
     return () => {
       disposed = true;
-      // Only remove from registry if this terminal instance is still the registered one
-      if (terminalRegistry.get(sessionId) === terminal) {
+      if (terminal && terminalRegistry.get(sessionId) === terminal) {
         terminalRegistry.delete(sessionId);
       }
-      stopInertia();
+      if (inertiaRaf !== null) cancelAnimationFrame(inertiaRaf);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (scrollTimer) clearTimeout(scrollTimer);
       if (nudgeTimer) clearTimeout(nudgeTimer);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("focus", handleFocus);
-      resizeObserver.disconnect();
-      container.removeEventListener("touchstart", onTouchStart);
-      container.removeEventListener("touchmove", onTouchMove);
-      container.removeEventListener("touchend", onTouchEnd);
+      if (handleVisibility)
+        document.removeEventListener("visibilitychange", handleVisibility);
+      if (handleFocus) window.removeEventListener("focus", handleFocus);
+      resizeObserver?.disconnect();
+      if (onTouchStart)
+        container.removeEventListener("touchstart", onTouchStart);
+      if (onTouchMove) container.removeEventListener("touchmove", onTouchMove);
+      if (onTouchEnd) container.removeEventListener("touchend", onTouchEnd);
+      if (webglAddon) webglAddon.dispose();
       wsRef.current?.close();
-      terminal.dispose();
+      terminal?.dispose();
       container.replaceChildren();
+      termRef.current = null;
     };
-  }, [sessionId, setStatus, containerRef]);
+  }, [sessionId, setStatus, containerRef, renderer]);
 
   // Update theme on live terminal
   useEffect(() => {
@@ -435,7 +466,7 @@ export function useTerminal(
 
 function nudgeResize(
   ws: WebSocket,
-  terminal: Terminal,
+  terminal: TerminalInstance,
 ): ReturnType<typeof setTimeout> | null {
   if (ws.readyState !== WebSocket.OPEN) return null;
   const { cols, rows } = terminal;
@@ -443,7 +474,7 @@ function nudgeResize(
   return setTimeout(() => sendResize(ws, terminal), 50);
 }
 
-function sendResize(ws: WebSocket, terminal: Terminal): void {
+function sendResize(ws: WebSocket, terminal: TerminalInstance): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(
       JSON.stringify({
@@ -461,10 +492,10 @@ function sendResize(ws: WebSocket, terminal: Terminal): void {
  */
 class MarkdownLinkProvider implements ILinkProvider {
   private readonly pattern = /(?:^|[\s"'`(])(\/?(?:[\w.~-]+\/)*[\w.-]+\.md)\b/g;
-  private readonly terminal: Terminal;
+  private readonly terminal: TerminalInstance;
   private readonly sessionId: string;
 
-  constructor(terminal: Terminal, sessionId: string) {
+  constructor(terminal: TerminalInstance, sessionId: string) {
     this.terminal = terminal;
     this.sessionId = sessionId;
   }
@@ -473,10 +504,14 @@ class MarkdownLinkProvider implements ILinkProvider {
     bufferLineNumber: number,
     callback: (links: ILink[] | undefined) => void,
   ): void {
-    let line: IBufferLine | undefined;
+    let line: ReturnType<TerminalInstance["buffer"]["active"]["getLine"]>;
     try {
       line = this.terminal.buffer.active.getLine(bufferLineNumber - 1);
-    } catch {
+    } catch (err) {
+      console.warn(
+        `MarkdownLinkProvider: getLine(${bufferLineNumber - 1}) failed:`,
+        err,
+      );
       callback(undefined);
       return;
     }
@@ -489,7 +524,7 @@ class MarkdownLinkProvider implements ILinkProvider {
     const text = line.translateToString(true);
     const links: ILink[] = [];
 
-    let match: RegExpExecArray | null = null;
+    let match: RegExpExecArray | null;
     // biome-ignore lint/suspicious/noAssignInExpressions: standard regex loop
     while ((match = this.pattern.exec(text)) !== null) {
       const filePath = match[1];
@@ -501,23 +536,15 @@ class MarkdownLinkProvider implements ILinkProvider {
           end: { x: startX + filePath.length + 1, y: bufferLineNumber },
         },
         text: filePath,
-        activate: (event, linkText) => {
-          // Only open on Ctrl+click (Cmd+click on Mac) to avoid accidental opens
+        activate: (event) => {
           if (!event.ctrlKey && !event.metaKey) return;
-          let resolved = linkText;
-          if (linkText.startsWith("/")) {
-            // Absolute path — use as-is
-            resolved = linkText;
-          } else if (linkText.startsWith("~/")) {
-            // Home-relative path — pass as-is, server expands ~
-            resolved = linkText;
-          } else {
-            // Relative path — prepend session working directory
+          let resolved = filePath;
+          if (!filePath.startsWith("/") && !filePath.startsWith("~/")) {
             const session = useStore
               .getState()
               .sessions.find((s) => s.id === this.sessionId);
             if (session?.workingDirectory) {
-              resolved = `${session.workingDirectory}/${linkText}`;
+              resolved = `${session.workingDirectory}/${filePath}`;
             }
           }
           useStore.getState().openPreview(resolved);
@@ -532,15 +559,11 @@ class MarkdownLinkProvider implements ILinkProvider {
 
 function handleKeyEvent(
   event: KeyboardEvent,
-  terminal: Terminal,
+  terminal: TerminalInstance,
   wsRef: React.RefObject<WebSocket | null>,
 ): boolean {
   if (event.type !== "keydown") return true;
 
-  // On macOS, primaryMod = metaKey, so Ctrl+D/W/B would slip through the
-  // primaryMod check below. xterm would then send EOF (Ctrl+D) to the PTY and
-  // call stopPropagation(), preventing our App-level capture handler. Suppress
-  // these before primaryMod so the App-level shortcuts always take precedence.
   if (event.ctrlKey) {
     const k = event.key.toLowerCase();
     if (k === "d" || k === "w" || k === "b") return false;
@@ -582,7 +605,6 @@ function handleKeyEvent(
     case "w":
       return false;
     case "o":
-      // Pass Ctrl+O through to Claude Code (show details)
       sendToWs("\x0f");
       return false;
     default:

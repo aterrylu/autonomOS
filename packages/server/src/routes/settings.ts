@@ -25,6 +25,7 @@ function maskSettings(settings: AppSettings) {
     channels: settings.channels ?? ["server:autonomos"],
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
+    terminalRenderer: settings.terminalRenderer ?? "xterm",
   };
 }
 
@@ -63,6 +64,12 @@ settingsRouter.put("/", async (c) => {
     partial.channels = body.channels.filter(
       (c): c is string => typeof c === "string" && c.trim().length > 0,
     );
+  }
+  if (
+    body.terminalRenderer === "xterm" ||
+    body.terminalRenderer === "ghostty-web"
+  ) {
+    partial.terminalRenderer = body.terminalRenderer;
   }
   if (isPlainObject(body.customEnvVars)) {
     const vars: Record<string, string> = {};
