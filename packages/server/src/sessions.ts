@@ -1,86 +1,21 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { Session, SpawnOptions } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { DEFAULT_CAPABILITIES, MCP_INSTRUCTIONS } from "./mcp/tools.js";
+import { DEFAULT_CAPABILITIES } from "./mcp/tools.js";
 import {
   getPersistedSessions,
   markSessionExited,
   persistSession,
   removePersistedSession,
 } from "./persisted.js";
+import { getProvider } from "./providers/index.js";
 import { getSettings } from "./settings.js";
 import { getTemplate } from "./templates.js";
 import { batchGetTitles } from "./titleCache.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
-
-// ── Hook relay config (injected per-session via --settings) ──────────
-// Posts event JSON to /api/hooks via curl. No trailing & — Claude Code's
-// async:true handles backgrounding (& would disconnect stdin, breaking -d @-).
-const HOOK_CMD =
-  'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
-  ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
-  " >/dev/null 2>&1";
-
-const HOOK_ENTRY = {
-  matcher: "",
-  hooks: [{ type: "command", command: HOOK_CMD, timeout: 3, async: true }],
-} as const;
-
-const HOOK_EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-  "Notification",
-  "PermissionRequest",
-  "SubagentStart",
-  "SubagentStop",
-  "PreCompact",
-  "PostCompact",
-  "SessionEnd",
-] as const;
-
-// ── Base context injected into every spawned session ─────────────
-// The tool list section is imported from mcp/tools.ts (MCP_INSTRUCTIONS)
-// to avoid maintaining the same list in two places.
-const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
-AI coding agents for personal and enterprise use.
-
-## Your Identity
-
-You are a named agent in an organization. Other agents and the human operator \
-can see you by name, send you messages, and observe your status. You may have \
-a manager, peers, and direct reports — use get_org_chart() to see the hierarchy.
-
-## Communication
-
-${MCP_INSTRUCTIONS}
-
-Messages are asynchronous — the recipient may be busy or idle. Do not block \
-waiting for a response. Continue your work and handle replies when they arrive.
-
-## Environment
-
-- A human operator monitors all agents via a server dashboard, seeing status \
-and notifications. You do not need to over-report — they can see your terminal.
-- You may share a codebase with other agents. Some projects use the main branch \
-(single agent), others use worktrees for isolation (multiple agents).
-- You cannot access another agent's terminal or read their output directly. \
-All inter-agent communication goes through send().
-
-## Lifecycle
-
-Some agents are long-lived (team leads, persistent roles). Others are spawned \
-for a specific task — once the work is done and the PR is merged, they exit. \
-Your session persists across server restarts until you, the human operator, or \
-a managing agent (such as your manager or a superior) ends it.`;
 
 export interface ManagedSession {
   session: Session;
@@ -92,40 +27,9 @@ export interface ManagedSession {
 const sessions = new Map<string, ManagedSession>();
 let shuttingDown = false;
 
-let claudePath: string | null = null;
-
-/** Resolve claude binary at startup so we fail fast with a clear message. */
+/** Resolve claude binary — delegates to the claude-code provider. */
 export function resolveClaudePath(): string {
-  if (claudePath) return claudePath;
-
-  // Try well-known paths first, then fall back to PATH lookup
-  const candidates = [
-    `${process.env.HOME}/.local/bin/claude`,
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) {
-      claudePath = p;
-      return p;
-    }
-  }
-
-  try {
-    const which = execFileSync("which", ["claude"], {
-      encoding: "utf-8",
-    }).trim();
-    if (which) {
-      claudePath = which;
-      return which;
-    }
-  } catch {
-    // not in PATH
-  }
-
-  throw new Error(
-    `Claude binary not found. Searched: ${candidates.join(", ")} and PATH`,
-  );
+  return getProvider("claude-code").resolveBinary();
 }
 
 export function getSession(id: string): ManagedSession | undefined {
@@ -183,135 +87,43 @@ export function createSession(options: SpawnOptions): ManagedSession {
     throw new Error(`Invalid working directory: ${cwd}`);
   }
 
-  const binary = resolveClaudePath();
+  // ── Resolve provider ──────────────────────────────────────────
+  const providerName = options.provider ?? "claude-code";
+  const provider = getProvider(providerName);
+  const binary = provider.resolveBinary();
 
-  // Compute defaultName early — needed for buildEnv (AUTONOMOS_AGENT_NAME)
-  // and MCP config before args are fully constructed.
+  // Compute defaultName early — needed for env vars and MCP config
   const dirName = basename(cwd) || cwd;
   const shortId = id.slice(0, 4);
   const defaultName = options.name || `${dirName} · ${shortId}`;
 
-  const env = buildEnv(id, defaultName);
-
-  // Pre-generate Claude session ID — eliminates PTY regex parsing race condition.
+  // Pre-generate provider session ID
   // For forks, always generate a new ID (the parent keeps its own).
-  const claudeSessionId = options.forkFrom
+  const providerSessionId = options.forkFrom
     ? crypto.randomUUID()
     : options.resumeSessionId || crypto.randomUUID();
 
-  const args: string[] = [];
-  if (options.autonomousMode) {
-    args.push("--dangerously-skip-permissions");
-  }
-  if (options.forkFrom) {
-    // Fork: load parent's conversation, create a new session with its own ID.
-    // The parent session is untouched — child gets a copy of the context.
-    args.push(
-      "--resume",
-      options.forkFrom,
-      "--fork-session",
-      "--session-id",
-      claudeSessionId,
-    );
-  } else if (options.resumeSessionId) {
-    args.push("--resume", options.resumeSessionId);
-  } else {
-    args.push("--session-id", claudeSessionId);
-  }
-
-  // Pass display name to Claude Code (shown in terminal title + /resume picker)
-  if (options.name) {
-    args.push("--name", options.name);
-  }
-
-  // System prompt injection
-  if (options.systemPrompt) {
-    // Full override — replaces CC defaults (rare)
-    args.push("--system-prompt", options.systemPrompt);
-  } else {
-    // Build the appended system prompt: base autonomOS context + optional per-agent instructions
-    const parts: string[] = [];
-
-    // Base autonomOS context — tells the agent what environment it's in and what tools it has
-    parts.push(BASE_CONTEXT);
-
-    // Per-agent instructions from the orchestrator
-    if (options.appendSystemPrompt) {
-      parts.push("", "---", "", options.appendSystemPrompt);
-    }
-
-    args.push("--append-system-prompt", parts.join("\n"));
-  }
-
-  // Enable SendUserMessage tool for structured agent-to-dashboard messaging.
-  // Agents route important replies through SendUserMessage with status labels
-  // (normal/proactive). The hook relay intercepts these for notification badges.
-  // Intentionally always on, including for --resume — the flag is ephemeral
-  // (not stored in session) and must be re-passed on every spawn.
-  args.push("--brief");
-
-  // Inject configured channels (from settings.json)
-  // Dev channels (server:*) use --dangerously-load-development-channels <entries>
-  // Official plugins use --channels <entries>
-  // They are separate flags — entries are arguments TO each flag
+  // ── Resolve spawn options ───────────────────────────────────
   const { channels } = getSettings();
-  if (channels && channels.length > 0) {
-    const devChannels = channels.filter((c) => c.startsWith("server:"));
-    const officialChannels = channels.filter((c) => !c.startsWith("server:"));
+  const channelScript = resolve(import.meta.dirname, "channel-server/dist.mjs");
 
-    if (devChannels.length > 0) {
-      args.push("--dangerously-load-development-channels", ...devChannels);
-    }
-    if (officialChannels.length > 0) {
-      args.push("--channels", ...officialChannels);
-    }
+  const resolved = {
+    ...options,
+    sessionId: id,
+    agentName: defaultName,
+    cwd,
+    providerSessionId,
+    injectChannelServer: !!channels?.includes("server:autonomos"),
+    channelServerScript: channelScript,
+    serverPort: process.env.PORT || "3000",
+    capabilities:
+      (options.template ? getTemplate(options.template)?.capabilities : null) ??
+      DEFAULT_CAPABILITIES,
+  };
 
-    // If server:autonomos is enabled, inject the MCP config so CC knows
-    // how to spawn the channel server subprocess
-    if (channels.includes("server:autonomos")) {
-      // Use precompiled JS so CC can spawn with plain `node` — no tsx dependency
-      const channelScript = resolve(
-        import.meta.dirname,
-        "channel-server/dist.mjs",
-      );
-      const port = process.env.PORT || "3000";
-
-      // Resolve capabilities from template (or use defaults)
-      const tmpl = options.template ? getTemplate(options.template) : null;
-      const capabilities = tmpl?.capabilities ?? DEFAULT_CAPABILITIES;
-
-      const mcpConfig = {
-        mcpServers: {
-          autonomos: {
-            command: "node",
-            args: [channelScript],
-            env: {
-              AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
-              AUTONOMOS_SESSION_ID: id,
-              AUTONOMOS_AGENT_NAME: defaultName,
-              AUTONOMOS_CAPABILITIES: capabilities.join(","),
-              ...(process.env.AUTONOMOS_TOKEN && {
-                AUTONOMOS_TOKEN: process.env.AUTONOMOS_TOKEN,
-              }),
-            },
-          },
-        },
-      };
-      args.push("--mcp-config", JSON.stringify(mcpConfig));
-    }
-  }
-
-  // Inject hook relay so Claude Code posts events to our /api/hooks endpoint
-  args.push(
-    "--settings",
-    JSON.stringify({
-      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
-    }),
-  );
-
-  if (options.prompt) {
-    args.push("--", options.prompt);
-  }
+  // ── Delegate to provider for args + env ─────────────────────
+  const args = provider.buildArgs(resolved);
+  const env = provider.buildEnv(id, defaultName);
 
   // Log spawn command (truncate large JSON args for readability)
   const logArgs = args.map((a) => {
@@ -329,12 +141,9 @@ export function createSession(options: SpawnOptions): ManagedSession {
     env,
   });
 
-  // Auto-answer startup trust/channel prompts so they don't block the session
-  if (getSettings().autoTrust !== false) {
-    const hasDevChannels = args.includes(
-      "--dangerously-load-development-channels",
-    );
-    attachStartupWatcher(pty, hasDevChannels);
+  // Auto-answer startup prompts via provider-specific watcher
+  if (getSettings().autoTrust !== false && provider.attachStartupWatcher) {
+    provider.attachStartupWatcher(pty, resolved);
   }
 
   const session: Session = {
@@ -342,8 +151,8 @@ export function createSession(options: SpawnOptions): ManagedSession {
     name: defaultName,
     status: "running",
     workingDirectory: cwd,
-    provider: "claude-code",
-    claudeSessionId,
+    provider: providerName,
+    claudeSessionId: providerSessionId,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -356,9 +165,9 @@ export function createSession(options: SpawnOptions): ManagedSession {
   };
   sessions.set(id, managed);
 
-  // Persist immediately — claudeSessionId is always known at spawn time now
+  // Persist immediately — providerSessionId is always known at spawn time now
   persistSession({
-    claudeSessionId,
+    claudeSessionId: providerSessionId,
     workingDirectory: cwd,
     name: defaultName,
     autonomousMode: !!options.autonomousMode,
@@ -643,7 +452,6 @@ export function restartAllSessions(): Record<string, string> {
 /** For testing — reset internal state */
 export function _resetForTesting(): void {
   sessions.clear();
-  claudePath = null;
 }
 
 /** For testing — inject a fake session into the in-memory Map (no PTY needed) */
@@ -654,182 +462,4 @@ export function _injectSessionForTesting(id: string, session: Session): void {
     outputBuffer: [],
     outputSize: 0,
   });
-}
-
-/** Keys that buildEnv manages directly — custom env vars cannot override these. */
-const RESERVED_ENV_KEYS = new Set([
-  "CLAUDECODE",
-  "PORT",
-  "PATH",
-  "HOME",
-  "AUTONOMOS_SERVER",
-  "AUTONOMOS_SESSION_ID",
-  "AUTONOMOS_AGENT_NAME",
-]);
-
-/**
- * Build environment with full PATH, strip CLAUDECODE to prevent
- * nested-session detection, and inject settings as env vars.
- * Not cached — settings can change between session spawns.
- */
-function buildEnv(
-  sessionId: string,
-  agentName?: string,
-): Record<string, string> {
-  const env = { ...process.env } as Record<string, string>;
-  const extraPaths = [
-    `${process.env.HOME}/.local/bin`,
-    `${process.env.HOME}/.bun/bin`,
-    "/usr/local/bin",
-  ];
-  env.PATH = [...extraPaths, env.PATH].join(":");
-  delete env.CLAUDECODE;
-  delete env.PORT;
-
-  // Identify this session to the hook relay script
-  const port = process.env.PORT || "3000";
-  env.AUTONOMOS_SERVER = `http://localhost:${port}`;
-  env.AUTONOMOS_SESSION_ID = sessionId;
-  if (agentName) {
-    env.AUTONOMOS_AGENT_NAME = agentName;
-  }
-
-  // Inject dashboard-configured settings as env vars (only when override toggle is on)
-  const settings = getSettings();
-  if (settings.anthropicOverrideEnabled !== false) {
-    if (settings.anthropicBaseUrl) {
-      env.ANTHROPIC_BASE_URL = settings.anthropicBaseUrl;
-    }
-    if (settings.anthropicAuthToken) {
-      env.ANTHROPIC_AUTH_TOKEN = settings.anthropicAuthToken;
-    }
-  }
-
-  // Inject user-defined custom env vars — can override most things (e.g.
-  // ANTHROPIC_BASE_URL) but not internal vars that buildEnv explicitly manages.
-  if (settings.customEnvVars) {
-    for (const [key, value] of Object.entries(settings.customEnvVars)) {
-      if (!RESERVED_ENV_KEYS.has(key)) {
-        env[key] = value;
-      }
-    }
-  }
-
-  return env;
-}
-
-// ── Auto-trust: dismiss Claude Code startup prompts ──────────────────
-
-/** Strip ANSI escape sequences from PTY output for needle matching */
-const ANSI_RE =
-  /\x1b[[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
-
-// Multiple needle variants per prompt for robustness — the TUI renders
-// text via cursor positioning, so after ANSI stripping words may or may
-// not have spaces between them depending on the terminal width.
-const TRUST_NEEDLES = [
-  "Yes,Itrustthisfolder",
-  "Yes, I trust this folder",
-  "Itrustthisfolder",
-];
-const CHANNELS_NEEDLES = [
-  "WARNING: Loading development channels",
-  "WARNING:Loadingdevelopmentchannels",
-  "Iamusingthisforlocaldevelopment",
-  "I am using this for local development",
-];
-
-/**
- * Watch PTY output during startup for interactive prompts that block
- * Claude Code from starting. Auto-answers by sending Enter (\r).
- *
- * Strategy: detect prompt needles in PTY output, then send Enter
- * multiple times with delays to handle timing variations. Sending
- * Enter when no prompt is showing is harmless — CC ignores it.
- *
- * Self-disposes after all expected prompts are handled or after 30s timeout.
- */
-function attachStartupWatcher(pty: IPty, expectChannels: boolean): void {
-  let buf = "";
-  const MAX_BUF = 8192;
-  const answered = new Set<string>();
-  let disposed = false;
-
-  /** Send Enter with multiple retries at increasing delays. */
-  function sendEnterBurst(promptId: string) {
-    if (answered.has(promptId)) return;
-    answered.add(promptId);
-    console.log(`[auto-trust] answered "${promptId}" prompt`);
-
-    // Send Enter 5 times with increasing delays — at least one will land
-    // when the TUI is ready. Extra Enters are harmless (CC ignores them).
-    // NOTE: Don't check `disposed` — cleanup may fire before the burst
-    // completes, but we still need the Enters to land.
-    const delays = [50, 200, 500, 1000, 2000];
-    for (const delay of delays) {
-      setTimeout(() => {
-        try {
-          pty.write("\r");
-        } catch {
-          // PTY dead — ignore
-        }
-      }, delay);
-    }
-  }
-
-  const disposable = pty.onData((data: string) => {
-    if (disposed) return;
-    const clean = data.replace(ANSI_RE, "");
-    buf += clean;
-    if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
-
-    // Check trust prompt
-    if (!answered.has("trust")) {
-      for (const needle of TRUST_NEEDLES) {
-        if (buf.includes(needle)) {
-          sendEnterBurst("trust");
-          break;
-        }
-      }
-    }
-
-    // Check channels prompt (don't clear buf — trust and channels
-    // may arrive in the same data chunk after trust is dismissed)
-    if (expectChannels && !answered.has("channels")) {
-      for (const needle of CHANNELS_NEEDLES) {
-        if (buf.includes(needle)) {
-          // If we see the channels prompt, trust was implicitly passed
-          if (!answered.has("trust")) answered.add("trust");
-          sendEnterBurst("channels");
-          break;
-        }
-      }
-    }
-
-    const needed = expectChannels ? 2 : 1;
-    if (answered.size >= needed) cleanup();
-  });
-
-  // 30s timeout
-  const timer = setTimeout(() => {
-    if (!disposed) {
-      const unanswered: string[] = [];
-      if (!answered.has("trust")) unanswered.push("trust");
-      if (expectChannels && !answered.has("channels"))
-        unanswered.push("channels");
-      if (unanswered.length > 0) {
-        console.warn(
-          `[auto-trust] timed out — never dismissed: ${unanswered.join(", ")}`,
-        );
-      }
-      cleanup();
-    }
-  }, 30_000);
-
-  function cleanup() {
-    if (disposed) return;
-    disposed = true;
-    clearTimeout(timer);
-    disposable.dispose();
-  }
 }
