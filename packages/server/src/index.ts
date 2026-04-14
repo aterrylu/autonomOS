@@ -20,9 +20,11 @@ import { gatewayRouter } from "./routes/gateway.js";
 import { orgRouter, templateRouter } from "./routes/hierarchy.js";
 import { hooksRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
+import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
 import { terminalRouter } from "./routes/terminal.js";
+import { initScheduler, stopScheduler } from "./scheduler.js";
 import {
   createSession,
   resolveClaudePath,
@@ -137,6 +139,8 @@ app.route("/api/org", orgRouter);
 app.route("/api/sessions", sessionRouter);
 app.route("/api/settings", settingsRouter);
 app.route("/api/templates", templateRouter);
+app.route("/api/schedules", scheduleRouter);
+app.route("/api/scheduler", schedulerRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
 // MCP — Streamable HTTP transport for agent-to-agent communication
@@ -199,6 +203,9 @@ const server = serve({ fetch: app.fetch, port }, () => {
 
   // Auto-resume persisted sessions after startup
   resumePersistedSessions();
+
+  // Start scheduler AFTER sessions are up so agent:<name> targets resolve
+  initScheduler();
 });
 
 injectWebSocket(server);
@@ -255,6 +262,7 @@ function shutdown() {
   console.log(
     "Shutting down — killing PTYs (sessions will resume on next start)...",
   );
+  stopScheduler();
   import("./gateway/index.js")
     .then(({ shutdownGateway }) => shutdownGateway())
     .catch(() => {});

@@ -193,6 +193,149 @@ var TOOL_SELF_EXIT = {
     properties: {}
   }
 };
+var TOOL_CREATE_SCHEDULE = {
+  name: "create_schedule",
+  description: "Create a new scheduled task that runs on a cron schedule or once at a specific time.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Schedule name (lowercase, hyphens, e.g. 'daily-github-summary')"
+      },
+      schedule: {
+        type: "string",
+        description: 'Cron expression (e.g. "0 9 * * 1-5") or one-time (e.g. "once:2026-04-15T09:00")'
+      },
+      target: {
+        type: "string",
+        description: '"isolated" (headless claude -p) or "agent:<name>" (send to running agent)'
+      },
+      prompt: {
+        type: "string",
+        description: "The prompt/task to execute on each run"
+      },
+      workingDirectory: {
+        type: "string",
+        description: "Working directory for isolated execution (~ allowed)"
+      },
+      description: {
+        type: "string",
+        description: "Human-readable description of what this schedule does"
+      },
+      timezone: {
+        type: "string",
+        description: "IANA timezone (e.g. 'America/Los_Angeles'). Defaults to server local."
+      },
+      template: {
+        type: "string",
+        description: "Template name for isolated mode execution"
+      },
+      autonomous: {
+        type: "boolean",
+        description: "Skip permission prompts in isolated mode (default: true)",
+        default: true
+      },
+      overlapPolicy: {
+        type: "string",
+        description: '"skip" (default, skip if previous run active) or "allow" (run regardless)'
+      },
+      onComplete: {
+        type: "string",
+        description: "Gateway URI to send results to when run completes (isolated mode only)"
+      },
+      notify: {
+        type: "string",
+        description: '"always", "failure" (default), or "never" \u2014 when to send notifications'
+      },
+      enabled: {
+        type: "boolean",
+        description: "Whether the schedule is active (default: true)",
+        default: true
+      }
+    },
+    required: ["name", "schedule", "target", "prompt", "workingDirectory"]
+  }
+};
+var TOOL_LIST_SCHEDULES = {
+  name: "list_schedules",
+  description: "List all scheduled tasks with their config and current state.",
+  inputSchema: {
+    type: "object",
+    properties: {}
+  }
+};
+var TOOL_GET_SCHEDULE = {
+  name: "get_schedule",
+  description: "Get a schedule's full config, state, and recent run history.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Schedule name"
+      }
+    },
+    required: ["name"]
+  }
+};
+var TOOL_UPDATE_SCHEDULE = {
+  name: "update_schedule",
+  description: "Update a schedule's config (partial merge). State is preserved.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Schedule name to update"
+      },
+      schedule: { type: "string", description: "New cron expression" },
+      target: { type: "string", description: "New target" },
+      prompt: { type: "string", description: "New prompt" },
+      workingDirectory: {
+        type: "string",
+        description: "New working directory"
+      },
+      description: { type: "string", description: "New description" },
+      timezone: { type: "string", description: "New timezone" },
+      template: { type: "string", description: "New template" },
+      autonomous: { type: "boolean", description: "New autonomous mode" },
+      overlapPolicy: { type: "string", description: "New overlap policy" },
+      onComplete: { type: "string", description: "New onComplete URI" },
+      notify: { type: "string", description: "New notify policy" },
+      enabled: { type: "boolean", description: "Enable/disable" }
+    },
+    required: ["name"]
+  }
+};
+var TOOL_DELETE_SCHEDULE = {
+  name: "delete_schedule",
+  description: "Delete a schedule. Run history is preserved for audit.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Schedule name to delete"
+      }
+    },
+    required: ["name"]
+  }
+};
+var TOOL_RUN_SCHEDULE = {
+  name: "run_schedule",
+  description: "Trigger a schedule immediately, ignoring cron timing. Respects overlap policy and concurrency limits.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Schedule name to trigger"
+      }
+    },
+    required: ["name"]
+  }
+};
 var ALL_TOOLS = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
@@ -202,7 +345,13 @@ var ALL_TOOLS = [
   TOOL_GET_ORG_CHART,
   TOOL_LIST_TEMPLATES,
   TOOL_CREATE_TEMPLATE,
-  TOOL_SELF_EXIT
+  TOOL_SELF_EXIT,
+  TOOL_CREATE_SCHEDULE,
+  TOOL_LIST_SCHEDULES,
+  TOOL_GET_SCHEDULE,
+  TOOL_UPDATE_SCHEDULE,
+  TOOL_DELETE_SCHEDULE,
+  TOOL_RUN_SCHEDULE
 ];
 var CAPABILITY_GATED_TOOLS = new Set(DEFAULT_CAPABILITIES);
 function filterToolsByCapabilities(capabilities) {
@@ -226,7 +375,16 @@ var MCP_INSTRUCTIONS = [
   "- set_manager(): Configure org chart relationships",
   "- get_org_chart(): View the organization hierarchy",
   "- list_templates(): Browse available agent templates",
+  "- create_template(): Create a reusable agent template",
   "- self_exit(): Terminate your own session when work is complete",
+  "",
+  "Schedule tools:",
+  "- create_schedule(): Create a recurring or one-time scheduled task",
+  "- list_schedules(): List all schedules with their state",
+  "- get_schedule(): Get schedule details and recent run history",
+  "- update_schedule(): Update a schedule's configuration",
+  "- delete_schedule(): Remove a schedule",
+  "- run_schedule(): Trigger a schedule immediately",
   "",
   "Messages from other agents and platforms arrive as <channel> events.",
   "Each has from (sender name) and from_uri (address to respond to).",
@@ -560,6 +718,38 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         );
       });
       return { content: [{ type: "text", text: "Exiting..." }] };
+    }
+    // ── Schedule tools (route through server HTTP API) ──────────
+    case "create_schedule":
+      return serverFetch("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify(args)
+      });
+    case "list_schedules":
+      return serverFetch("/api/schedules");
+    case "get_schedule": {
+      const { name: schedName } = args;
+      return serverFetch(`/api/schedules/${encodeURIComponent(schedName)}`);
+    }
+    case "update_schedule": {
+      const { name: schedName, ...schedPartial } = args;
+      return serverFetch(`/api/schedules/${encodeURIComponent(schedName)}`, {
+        method: "PUT",
+        body: JSON.stringify(schedPartial)
+      });
+    }
+    case "delete_schedule": {
+      const { name: schedName } = args;
+      return serverFetch(`/api/schedules/${encodeURIComponent(schedName)}`, {
+        method: "DELETE"
+      });
+    }
+    case "run_schedule": {
+      const { name: schedName } = args;
+      return serverFetch(
+        `/api/schedules/${encodeURIComponent(schedName)}/run`,
+        { method: "POST" }
+      );
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

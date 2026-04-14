@@ -18,10 +18,27 @@ Document all research findings here. Link sources. Include your assessment of re
 - [x] **Overstory deep dive** — 4-layer hierarchy, SQLite WAL mail, 11 runtime adapters, 3-tier watchdog. No web UI, no hierarchy visualization. Full analysis: [`docs/research/overstory.md`](research/overstory.md)
 - [x] **Persistent agent identity** — 1:1 agent:process model survey. No coding-agent platform does this. Validated by K8s, ROS2, Letta/SoulSpec. Key insight: persistent identity ≠ persistent context. Full analysis: [`docs/research/persistent-agent-identity.md`](research/persistent-agent-identity.md)
 - [x] **Singleton agent pattern** — Refined framing: not about persistent memory, but about preventing duplicate instances + config-on-disk (like systemd units). No coding agent platform enforces this. CC bugs #17457 and #36800 prove the need. K8s Agent Sandbox is the closest prior art. Full analysis: [`docs/research/singleton-agent-pattern.md`](research/singleton-agent-pattern.md)
+- [x] **Cron scheduler & automation UIs** — Claude Code's three-tier scheduling (CronCreate, Desktop SKILL.md, Cloud Triggers), competitor landscape (Devin, Zo, Cursor, Temporal, n8n, Inngest, GitHub Actions). Overlap policies, gateway integration, and agent-aware scheduling as key differentiators. Full analysis: [`docs/research/cron-scheduler/`](research/cron-scheduler/)
 
 ---
 
 ## Findings
+
+### Cron Scheduler & Automation UIs (2026-04-11)
+
+**What:** Comprehensive survey of scheduling and automation systems across AI coding agents and workflow platforms. Covers Claude Code's three scheduling tiers, Devin's scheduled sessions, Zo's conversational automations, Cursor's agent dashboard, and workflow tools (Temporal, n8n, Inngest).
+
+**Key findings:**
+- **Claude Code has three tiers** — session-scoped (CronCreate, in-memory, 7-day expiry), desktop-persistent (SKILL.md files, 1-min granularity), cloud-persistent (Anthropic VMs, 1-hour min, fresh clone per run). No unified view, no inter-agent scheduling, no completion webhooks.
+- **Devin is the gold standard** for AI agent scheduling. Recurring/one-time split, visual + custom cron editor, playbook attachment, notification options (always/failure/never), Slack integration, "Run as" user, auto-error after consecutive failures.
+- **Overlap policies are critical** (from Temporal) — SKIP, BUFFER_ONE, ALLOW_ALL, CANCEL_OTHER. No AI coding tool implements these. Essential for agent scheduling where previous runs may still be going.
+- **Nobody does agent-aware scheduling.** Devin schedules single sessions. Cursor has no scheduling. autonomOS can schedule entire agent teams with hierarchy awareness.
+- **Nobody integrates scheduling with agent messaging.** autonomOS's gateway (`send()` on completion) is a unique differentiator.
+- **Three execution modes in one UI** (isolated/inject/session) is unique to autonomOS's architecture.
+
+**Relevance: HIGH** — Directly informs the autonomOS cron scheduler feature design. Devin's UX is the benchmark; Temporal's overlap policies are required; gateway integration is our differentiator.
+
+Full analysis: [`docs/research/cron-scheduler/`](research/cron-scheduler/) — README, Claude Code scheduling deep dive, competitor landscape with links.
 
 ### Google A2A (Agent2Agent) Protocol (2026-03-19)
 

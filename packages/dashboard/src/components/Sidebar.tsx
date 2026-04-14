@@ -57,6 +57,7 @@ function useSidebarActions() {
       markNotificationsRead: s.markNotificationsRead,
       openOrgChart: s.openOrgChart,
       openTemplates: s.openTemplates,
+      openSchedules: s.openSchedules,
       toggleShowExitedAgents: s.toggleShowExitedAgents,
       toggleSidebarViewMode: s.toggleSidebarViewMode,
       reorderHierarchy: s.reorderHierarchy,
@@ -235,6 +236,7 @@ export function Sidebar() {
     markNotificationsRead,
     openOrgChart,
     openTemplates,
+    openSchedules,
     toggleShowExitedAgents,
     toggleSidebarViewMode,
     reorderHierarchy,
@@ -415,6 +417,12 @@ export function Sidebar() {
         active={activePane?.type === "templates"}
         page={page}
         onClick={openTemplates}
+      />
+      <SidebarNavButton
+        label="Schedules"
+        active={activePane?.type === "schedules"}
+        page={page}
+        onClick={openSchedules}
       />
 
       {/* Agents section header + toggle + New button */}

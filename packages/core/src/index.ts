@@ -5,4 +5,5 @@ export * from "./types/gateway";
 export * from "./types/parser";
 export * from "./types/provider";
 export * from "./types/render";
+export * from "./types/schedule";
 export * from "./types/session";
