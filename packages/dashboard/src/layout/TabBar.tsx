@@ -50,6 +50,8 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
         return "Templates";
       case "schedules":
         return "Schedules";
+      case "create-agent":
+        return "New Agent";
       default:
         return "Tab";
     }

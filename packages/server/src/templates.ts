@@ -101,6 +101,83 @@ export function deleteTemplate(name: string): boolean {
 }
 
 /**
+ * Seed default templates if the templates directory is empty.
+ * Called on server startup so fresh installs have useful starting templates.
+ */
+export function seedDefaultTemplates(): void {
+  ensureTemplatesDir();
+  const existing = readdirSync(TEMPLATES_DIR).filter((f) =>
+    f.endsWith(".json"),
+  );
+  if (existing.length > 0) return;
+
+  const defaults: Record<string, AgentTemplate> = {
+    dispatcher: {
+      role: "Dispatcher",
+      description:
+        "Orchestrates work across agents. Breaks down tasks, assigns to workers, tracks progress.",
+      systemPrompt:
+        "You are a Dispatcher — the primary orchestration agent. Your job is to:\n" +
+        "1. Understand the user's goal and break it into tasks\n" +
+        "2. Spawn or assign worker agents for each task\n" +
+        "3. Monitor progress and coordinate between agents\n" +
+        "4. Report results back to the user\n\n" +
+        "Use create_agent() to spawn workers, send() to communicate, and list_agents() to monitor.",
+      capabilities: [
+        "send",
+        "list_agents",
+        "create_agent",
+        "kill_agent",
+        "self_exit",
+      ],
+      autonomousMode: true,
+    },
+    "team-lead": {
+      role: "Team Lead",
+      description:
+        "Manages a team of agents. Plans work, reviews output, handles escalations.",
+      systemPrompt:
+        "You are a Team Lead — you manage a team of coding agents. Your responsibilities:\n" +
+        "1. Plan implementation strategy for assigned tasks\n" +
+        "2. Spawn feature workers and assign work via send()\n" +
+        "3. Review completed work and provide feedback\n" +
+        "4. Escalate blockers to the human operator\n\n" +
+        "Coordinate via send(), monitor with list_agents(), spawn with create_agent().",
+      capabilities: [
+        "send",
+        "list_agents",
+        "create_agent",
+        "kill_agent",
+        "self_exit",
+      ],
+      autonomousMode: true,
+    },
+    "feature-worker": {
+      role: "Feature Worker",
+      description:
+        "Implements features, fixes bugs, ships code. Works on one task at a time.",
+      systemPrompt:
+        "You are a Feature Worker — an implementation agent. Your job is to:\n" +
+        "1. Implement the task assigned to you\n" +
+        "2. Write tests and verify your work\n" +
+        "3. Report completion to your manager via send()\n" +
+        "4. Ask for clarification if requirements are unclear\n\n" +
+        "Focus on one task at a time. Ship quality code.",
+      capabilities: ["send", "list_agents", "self_exit"],
+      autonomousMode: true,
+    },
+  };
+
+  const names = Object.keys(defaults);
+  for (const [name, template] of Object.entries(defaults)) {
+    saveTemplate(name, template);
+  }
+  console.log(
+    `[templates] seeded ${names.length} default templates: ${names.join(", ")}`,
+  );
+}
+
+/**
  * List all available templates.
  * Returns a map of template name → template config.
  */
