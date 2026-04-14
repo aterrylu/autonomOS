@@ -46,6 +46,17 @@ const runQueue: string[] = [];
 
 let schedulerRunning = false;
 
+// ── Executor override (for testing) ────────────────────────────
+
+export type ExecutorFn = (
+  name: string,
+  schedule: Schedule,
+  runState: RunState,
+) => void | Promise<void>;
+
+let _isolatedExecutor: ExecutorFn | null = null;
+let _agentExecutor: ExecutorFn | null = null;
+
 // ── Public API ──────────────────────────────────────────────────
 
 export function isSchedulerRunning(): boolean {
@@ -338,11 +349,19 @@ function dispatchOrQueue(name: string, schedule: Schedule): { error?: string } {
   const runState: RunState = { runId, scheduleName: name, startedAt };
   runningRuns.set(name, runState);
 
-  // Execute based on target
+  // Execute based on target (use overrides if set, for testing)
   if (schedule.target === "isolated") {
-    executeIsolated(name, schedule, runState);
+    if (_isolatedExecutor) {
+      _isolatedExecutor(name, schedule, runState);
+    } else {
+      executeIsolated(name, schedule, runState);
+    }
   } else if (schedule.target.startsWith("agent:")) {
-    executeAgentSend(name, schedule, runState);
+    if (_agentExecutor) {
+      _agentExecutor(name, schedule, runState);
+    } else {
+      executeAgentSend(name, schedule, runState);
+    }
   } else {
     onRunCompleted(name, {
       status: "failure",
@@ -572,3 +591,22 @@ function drainQueue(): void {
     dispatchOrQueue(next, schedule);
   }
 }
+
+// ── Test utilities ─────────────────────────────────────────────
+
+export function _resetForTesting(): void {
+  stopScheduler();
+  schedulerRunning = false;
+  _isolatedExecutor = null;
+  _agentExecutor = null;
+}
+
+export function _setExecutors(
+  isolated: ExecutorFn | null,
+  agent: ExecutorFn | null,
+): void {
+  _isolatedExecutor = isolated;
+  _agentExecutor = agent;
+}
+
+export { onRunCompleted as _onRunCompleted };
