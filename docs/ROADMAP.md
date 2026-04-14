@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-03-29
+Last updated: 2026-04-14
 
 ## Done
 
@@ -54,6 +54,7 @@ Last updated: 2026-03-29
 - [x] Terminal auto-focus — sidebar click focuses terminal via rAF polling registry (#93)
 - [x] Tier 1 perf — CSS spinner, polling equality guards, useShallow, rAF debounce (#88)
 - [x] Documentation overhaul — README, CLAUDE.md, AGENTS.md updated for current state (#96)
+- [x] Cron scheduler — Croner-based scheduling engine, 6 MCP tools, REST API, dashboard Schedules pane, isolated + agent execution modes (ADR-026)
 
 ## Now — Polish & Daily Driver
 
@@ -72,7 +73,8 @@ Evolve from passive dashboard to orchestrator-first platform (ADR-012).
 - [ ] Project model — logical goals with status, roadmap, linked workspaces
 - [ ] Orchestrator chat — main page becomes a conversation with the PM agent
 - [ ] Agent runner — reads `agent.yaml`, assembles systemPrompt, calls Claude Agent SDK `query()`
-- [ ] Cron scheduler — triggers oneshot/persistent sessions per `agent.yaml` schedule
+- [x] ~~Cron scheduler~~ — shipped (#131), see ADR-026. Future: webhooks/event-driven triggers
+- [ ] Event-driven triggers (webhooks) — second automation type, under future "Automations" tab
 - [ ] `state/` folder protocol — agents read/write shared state across sessions
 
 ## Later

@@ -111,7 +111,8 @@ export type ActivePane =
   | { type: "session"; id: string }
   | { type: "preview"; id: string }
   | { type: "orgchart"; id: "orgchart" }
-  | { type: "templates"; id: "templates" };
+  | { type: "templates"; id: "templates" }
+  | { type: "schedules"; id: "schedules" };
 
 // ── Pane Groups ───────────────────────────────────────────────────────
 
@@ -428,6 +429,11 @@ interface AppState {
   templates: Record<string, AgentTemplate>;
   templatesLoading: boolean;
   templatesError: string | null;
+  /** Loaded schedules keyed by name */
+  schedules: Record<string, import("@autonomos/core").Schedule>;
+  schedulesLoading: boolean;
+  schedulesError: string | null;
+  schedulerStatus: import("@autonomos/core").SchedulerStatus | null;
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
   /** Agent status per session ID (from hook events) */
@@ -460,9 +466,19 @@ interface AppState {
   closePreview: (id: string) => void;
   openOrgChart: () => void;
   openTemplates: () => void;
+  openSchedules: () => void;
   fetchTemplates: () => Promise<void>;
   saveTemplate: (name: string, template: AgentTemplate) => Promise<void>;
   deleteTemplate: (name: string) => Promise<void>;
+  fetchSchedules: () => Promise<void>;
+  deleteSchedule: (name: string) => Promise<void>;
+  runSchedule: (name: string) => Promise<void>;
+  updateSchedule: (
+    name: string,
+    partial: Record<string, unknown>,
+  ) => Promise<void>;
+  fetchSchedulerStatus: () => Promise<void>;
+  updateSchedulerSettings: (maxConcurrentRuns: number) => Promise<void>;
   toggleShowExitedAgents: () => void;
   toggleSidebarViewMode: () => void;
   reorderHierarchy: (
@@ -569,6 +585,10 @@ export const useStore = create<AppState>()(
         templates: {},
         templatesLoading: false,
         templatesError: null,
+        schedules: {},
+        schedulesLoading: false,
+        schedulesError: null,
+        schedulerStatus: null,
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
@@ -1023,6 +1043,130 @@ export const useStore = create<AppState>()(
             delete next[name];
             return { templates: next };
           });
+        },
+
+        openSchedules: () => {
+          const { layout, focusedLeafId } = get();
+          const pane: ActivePane = { type: "schedules", id: "schedules" };
+          if (findLeafByPaneId(layout, "schedules")) {
+            get().switchPane(pane);
+            return;
+          }
+          set({
+            activePane: pane,
+            layout: addTab(layout, focusedLeafId, pane),
+          });
+        },
+
+        fetchSchedules: async () => {
+          const isInitialLoad = Object.keys(get().schedules).length === 0;
+          if (isInitialLoad) set({ schedulesLoading: true });
+          try {
+            const res = await fetch("/api/schedules");
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(
+                (body as { error?: string }).error ??
+                  `Server error (${res.status})`,
+              );
+            }
+            const data = await res.json();
+            set({
+              schedules: data,
+              schedulesLoading: false,
+              schedulesError: null,
+            });
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : "Failed to load schedules";
+            console.warn("[schedules] fetch failed:", message);
+            set({ schedulesLoading: false, schedulesError: message });
+          }
+        },
+
+        deleteSchedule: async (name) => {
+          const res = await fetch(
+            `/api/schedules/${encodeURIComponent(name)}`,
+            { method: "DELETE" },
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          set((state) => {
+            const next = { ...state.schedules };
+            delete next[name];
+            return { schedules: next };
+          });
+        },
+
+        runSchedule: async (name) => {
+          const res = await fetch(
+            `/api/schedules/${encodeURIComponent(name)}/run`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+        },
+
+        updateSchedule: async (name, partial) => {
+          const res = await fetch(
+            `/api/schedules/${encodeURIComponent(name)}`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(partial),
+            },
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          const result = await res.json();
+          if (result.schedule) {
+            set((state) => ({
+              schedules: { ...state.schedules, [name]: result.schedule },
+            }));
+          }
+        },
+
+        fetchSchedulerStatus: async () => {
+          try {
+            const res = await fetch("/api/scheduler/status");
+            if (res.ok) {
+              const data = await res.json();
+              set({ schedulerStatus: data });
+            }
+          } catch {
+            // non-critical
+          }
+        },
+
+        updateSchedulerSettings: async (maxConcurrentRuns) => {
+          const res = await fetch("/api/scheduler/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ maxConcurrentRuns }),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          set((state) => ({
+            schedulerStatus: state.schedulerStatus
+              ? { ...state.schedulerStatus, maxConcurrentRuns }
+              : null,
+          }));
         },
 
         toggleShowExitedAgents: () => {

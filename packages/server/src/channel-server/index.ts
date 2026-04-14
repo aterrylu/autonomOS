@@ -460,6 +460,47 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: "text", text: "Exiting..." }] };
     }
 
+    // ── Schedule tools (route through server HTTP API) ──────────
+    case "create_schedule":
+      return serverFetch("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify(args),
+      });
+
+    case "list_schedules":
+      return serverFetch("/api/schedules");
+
+    case "get_schedule": {
+      const { name: schedName } = args as { name: string };
+      return serverFetch(`/api/schedules/${encodeURIComponent(schedName)}`);
+    }
+
+    case "update_schedule": {
+      const { name: schedName, ...schedPartial } = args as {
+        name: string;
+        [key: string]: unknown;
+      };
+      return serverFetch(`/api/schedules/${encodeURIComponent(schedName)}`, {
+        method: "PUT",
+        body: JSON.stringify(schedPartial),
+      });
+    }
+
+    case "delete_schedule": {
+      const { name: schedName } = args as { name: string };
+      return serverFetch(`/api/schedules/${encodeURIComponent(schedName)}`, {
+        method: "DELETE",
+      });
+    }
+
+    case "run_schedule": {
+      const { name: schedName } = args as { name: string };
+      return serverFetch(
+        `/api/schedules/${encodeURIComponent(schedName)}/run`,
+        { method: "POST" },
+      );
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

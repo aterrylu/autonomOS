@@ -425,7 +425,7 @@ Each session row shows:
 ## F-006: Agent Scheduling & Automation
 
 **Priority:** P1
-**Status:** Concept
+**Status:** v1 Shipped (cron + manual dispatch) — see ADR-026, design doc at `docs/research/cron-scheduler/design.md`
 **Depends on:** F-002 (Terminal), F-004 (Session Discovery)
 
 ### What

@@ -13,6 +13,19 @@ import {
 import { buildOrgChart } from "./orgChart.js";
 import { updatePersistedSessionByName } from "./persisted.js";
 import {
+  addScheduleJob,
+  removeScheduleJob,
+  runScheduleNow,
+} from "./scheduler.js";
+import {
+  createSchedule,
+  deleteSchedule,
+  getRecentRuns,
+  getSchedule,
+  listSchedules,
+  updateSchedule,
+} from "./schedules.js";
+import {
   createSession,
   getAllSessions,
   killSession,
@@ -327,6 +340,183 @@ function createMcpServer(): McpServer {
           isError: true,
         };
       }
+    },
+  );
+
+  // ── Schedule tools ───────────────────────────────────────────────
+
+  server.tool(
+    "create_schedule",
+    "Create a new scheduled task.",
+    {
+      name: z.string().describe("Schedule name (kebab-case)"),
+      schedule: z.string().describe("Cron expression or once:ISO"),
+      target: z.string().describe('"isolated" or "agent:<name>"'),
+      prompt: z.string().describe("Task prompt"),
+      workingDirectory: z.string().describe("Working directory"),
+      description: z.string().optional().describe("Description"),
+      timezone: z.string().optional().describe("IANA timezone"),
+      template: z.string().optional().describe("Template name"),
+      autonomous: z.boolean().optional().default(true),
+      overlapPolicy: z.string().optional().describe("skip or allow"),
+      onComplete: z.string().optional().describe("Gateway URI for results"),
+      notify: z.string().optional().describe("always, failure, or never"),
+      enabled: z.boolean().optional().default(true),
+    },
+    async (args) => {
+      try {
+        const config =
+          args as unknown as import("@autonomos/core").ScheduleConfig;
+        const schedule = createSchedule(config);
+        addScheduleJob(schedule.name, schedule);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Schedule "${schedule.name}" created. Next run: ${schedule.state.nextRunAt ?? "pending"}`,
+            },
+          ],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [{ type: "text", text: `Failed: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool("list_schedules", "List all scheduled tasks.", {}, async () => {
+    const schedules = listSchedules();
+    const names = Object.keys(schedules);
+    if (names.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "No schedules. Use create_schedule to add one.",
+          },
+        ],
+      };
+    }
+    return {
+      content: [{ type: "text", text: JSON.stringify(schedules, null, 2) }],
+    };
+  });
+
+  server.tool(
+    "get_schedule",
+    "Get schedule details and recent runs.",
+    { name: z.string().describe("Schedule name") },
+    async (args) => {
+      const schedule = getSchedule(args.name);
+      if (!schedule) {
+        return {
+          content: [
+            { type: "text", text: `Schedule "${args.name}" not found.` },
+          ],
+          isError: true,
+        };
+      }
+      const runs = getRecentRuns(args.name, 10);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ...schedule, recentRuns: runs }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "update_schedule",
+    "Update a schedule's configuration (partial merge).",
+    {
+      name: z.string().describe("Schedule name"),
+      schedule: z.string().optional(),
+      target: z.string().optional(),
+      prompt: z.string().optional(),
+      workingDirectory: z.string().optional(),
+      description: z.string().optional(),
+      timezone: z.string().optional(),
+      template: z.string().optional(),
+      autonomous: z.boolean().optional(),
+      overlapPolicy: z.string().optional(),
+      onComplete: z.string().optional(),
+      notify: z.string().optional(),
+      enabled: z.boolean().optional(),
+    },
+    async (args) => {
+      try {
+        const { name, ...partial } = args;
+        const updated = updateSchedule(
+          name,
+          partial as Record<string, unknown>,
+        );
+        if (
+          "schedule" in partial ||
+          "timezone" in partial ||
+          "enabled" in partial
+        ) {
+          addScheduleJob(name, updated);
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Schedule "${name}" updated. Next run: ${updated.state.nextRunAt ?? "disabled"}`,
+            },
+          ],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [{ type: "text", text: `Failed: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    "delete_schedule",
+    "Delete a schedule (run history preserved).",
+    { name: z.string().describe("Schedule name") },
+    async (args) => {
+      removeScheduleJob(args.name);
+      const removed = deleteSchedule(args.name);
+      if (!removed) {
+        return {
+          content: [
+            { type: "text", text: `Schedule "${args.name}" not found.` },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text: `Schedule "${args.name}" deleted.` }],
+      };
+    },
+  );
+
+  server.tool(
+    "run_schedule",
+    "Trigger a schedule immediately.",
+    { name: z.string().describe("Schedule name") },
+    async (args) => {
+      const result = runScheduleNow(args.name);
+      if (result.error) {
+        return {
+          content: [{ type: "text", text: result.error }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text: `Schedule "${args.name}" triggered.` }],
+      };
     },
   );
 

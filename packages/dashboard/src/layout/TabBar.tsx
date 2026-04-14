@@ -48,6 +48,8 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
         return "Org Chart";
       case "templates":
         return "Templates";
+      case "schedules":
+        return "Schedules";
       default:
         return "Tab";
     }

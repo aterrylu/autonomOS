@@ -25,10 +25,16 @@ describe("shared MCP tool definitions", () => {
       "list_templates",
       "create_template",
       "self_exit",
+      "create_schedule",
+      "list_schedules",
+      "get_schedule",
+      "update_schedule",
+      "delete_schedule",
+      "run_schedule",
     ]) {
       assert.ok(names.includes(expected), `missing tool: ${expected}`);
     }
-    assert.equal(ALL_TOOLS.length, 9);
+    assert.equal(ALL_TOOLS.length, 15);
   });
 
   it("SERVER_TOOLS excludes send (no gateway for external clients)", () => {
@@ -38,7 +44,7 @@ describe("shared MCP tool definitions", () => {
     assert.ok(names.includes("kill_agent"));
     assert.ok(!names.includes("send"));
     assert.ok(!names.includes("self_exit"));
-    assert.equal(SERVER_TOOLS.length, 7);
+    assert.equal(SERVER_TOOLS.length, 13);
   });
 
   it("each tool has required fields", () => {

@@ -42,6 +42,10 @@ export interface AppSettings {
   customEnvVars?: Record<string, string>;
   /** Terminal renderer backend: xterm.js (default) or ghostty-web */
   terminalRenderer?: "xterm" | "ghostty-web";
+  /** Scheduler settings */
+  scheduler?: {
+    maxConcurrentRuns?: number;
+  };
 }
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { HierarchyPanel } from "../components/HierarchyPanel";
 import { PreviewPane } from "../components/PreviewPane";
+import { SchedulesPanel } from "../components/SchedulesPanel";
 import { SessionPane } from "../components/SessionPane";
 import { TemplatesPanel } from "../components/TemplatesPanel";
 import { useStore } from "../store";
@@ -62,6 +63,7 @@ export function SessionMountLayer() {
 
   const orgChartRect = paneToRect.get("orgchart");
   const templatesRect = paneToRect.get("templates");
+  const schedulesRect = paneToRect.get("schedules");
 
   return (
     <>
@@ -130,6 +132,14 @@ export function SessionMountLayer() {
         isDragging={isDragging}
       >
         <TemplatesPanel />
+      </SingletonPane>
+      <SingletonPane
+        paneId="schedules"
+        rect={schedulesRect}
+        focusedPaneId={focusedPaneId}
+        isDragging={isDragging}
+      >
+        <SchedulesPanel />
       </SingletonPane>
     </>
   );
