@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import { afterEach, before, describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, afterEach, before, describe, it } from "node:test";
+import {
+  _resetConfigDirForTesting,
+  _setConfigDirForTesting,
+} from "../configDir.js";
 import { buildOrgChart, type OrgNode } from "../orgChart.js";
 import {
-  getPersistedSessions,
+  _resetCacheForTesting,
   persistSession,
   removePersistedSession,
 } from "../persisted.js";
@@ -10,15 +17,11 @@ import {
 /**
  * Tests for buildOrgChart() — particularly the name-collision path.
  *
- * These tests write to the real ~/.autonomos/sessions.json since there is
- * no mocking layer for persistence. They use unique claudeSessionIds
- * (prefixed with "orgchart-test-") and clean up in afterEach to avoid
- * polluting the real sessions file.
+ * All tests use an isolated temp directory so they never touch
+ * the production ~/.autonomos/sessions.json.
  */
 
-// Unique prefix so we can identify and clean up our test entries even if
-// the test crashes mid-run.
-const TEST_PREFIX = "orgchart-test-";
+let tmpDir: string;
 const testIds: string[] = [];
 
 function makeTestSession(
@@ -30,7 +33,7 @@ function makeTestSession(
     persistedAt?: number;
   },
 ) {
-  const id = `${TEST_PREFIX}${suffix}`;
+  const id = `orgchart-test-${suffix}`;
   testIds.push(id);
   persistSession({
     claudeSessionId: id,
@@ -44,7 +47,6 @@ function makeTestSession(
   return id;
 }
 
-/** Find a node by name in the chart (recursive). */
 function findByName(roots: OrgNode[], name: string): OrgNode | undefined {
   for (const n of roots) {
     if (n.name === name) return n;
@@ -55,20 +57,21 @@ function findByName(roots: OrgNode[], name: string): OrgNode | undefined {
 }
 
 describe("buildOrgChart() — name collision handling", () => {
-  // Startup sweep: remove any stale test entries from a prior crashed run.
-  // Without this, a Ctrl-C between persistSession and afterEach would leak
-  // orgchart-test-* entries into the user's real sessions.json forever.
   before(() => {
-    for (const s of getPersistedSessions()) {
-      if (s.claudeSessionId.startsWith(TEST_PREFIX)) {
-        removePersistedSession(s.claudeSessionId);
-      }
-    }
+    tmpDir = mkdtempSync(join(tmpdir(), "autonomos-test-orgchart-"));
+    _setConfigDirForTesting(tmpDir);
+    _resetCacheForTesting();
   });
 
   afterEach(() => {
     for (const id of testIds) removePersistedSession(id);
     testIds.length = 0;
+  });
+
+  after(() => {
+    _resetCacheForTesting();
+    _resetConfigDirForTesting();
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("prefers the running session when two sessions share a name", () => {
@@ -80,7 +83,7 @@ describe("buildOrgChart() — name collision handling", () => {
     const runningId = makeTestSession("running-1", {
       name: "CollisionTest_Alpha",
       status: "running",
-      persistedAt: 500, // older — but running should still win
+      persistedAt: 500,
     });
 
     const chart = buildOrgChart();
@@ -99,7 +102,7 @@ describe("buildOrgChart() — name collision handling", () => {
   });
 
   it("breaks running-only ties by newest persistedAt", () => {
-    const olderId = makeTestSession("running-older", {
+    makeTestSession("running-older", {
       name: "CollisionTest_Beta",
       status: "running",
       persistedAt: 1000,
@@ -114,7 +117,6 @@ describe("buildOrgChart() — name collision handling", () => {
     const node = findByName(chart, "CollisionTest_Beta");
     assert.ok(node);
     assert.equal(node.claudeSessionId, newerId);
-    assert.notEqual(node.claudeSessionId, olderId);
   });
 
   it("falls back to newest exited when all sessions with a name are exited", () => {
@@ -129,7 +131,6 @@ describe("buildOrgChart() — name collision handling", () => {
       persistedAt: 2000,
     });
 
-    // includeExited=true to verify collision handling for exited sessions
     const chart = buildOrgChart(true);
     const node = findByName(chart, "CollisionTest_Gamma");
     assert.ok(node);
@@ -147,7 +148,7 @@ describe("buildOrgChart() — name collision handling", () => {
       status: "exited",
     });
 
-    const chart = buildOrgChart(); // default: includeExited=false
+    const chart = buildOrgChart();
     assert.ok(findByName(chart, "CollisionTest_FilterRunning"));
     assert.equal(
       findByName(chart, "CollisionTest_FilterExited"),
@@ -170,7 +171,7 @@ describe("buildOrgChart() — name collision handling", () => {
       manager: "CollisionTest_ExitedManager",
     });
 
-    const chart = buildOrgChart(); // default: hide exited
+    const chart = buildOrgChart();
     assert.equal(
       findByName(chart, "CollisionTest_ExitedManager"),
       undefined,
@@ -181,8 +182,6 @@ describe("buildOrgChart() — name collision handling", () => {
   });
 
   it("does not push the same node twice under its parent", () => {
-    // Regression: old implementation pushed the same node object into the
-    // parent's children array once for each duplicate name.
     makeTestSession("parent-for-dup", {
       name: "CollisionTest_Manager",
       status: "running",

@@ -1,28 +1,31 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { CONFIG_DIR, ensureConfigDir } from "../configDir.js";
+import {
+  _resetConfigDirForTesting,
+  _setConfigDirForTesting,
+  ensureConfigDir,
+} from "../configDir.js";
 import { buildOrgChart, type OrgNode } from "../orgChart.js";
-import { getPersistedSessions, persistSession } from "../persisted.js";
+import { _resetCacheForTesting, getPersistedSessions } from "../persisted.js";
 
 /**
  * Tests for backward compatibility — old persisted sessions missing
  * fields added in recent PRs should still load and render correctly.
  *
- * These tests snapshot and restore sessions.json to avoid polluting
- * real persisted data with raw JSON test entries.
+ * All tests use an isolated temp directory so they never touch
+ * the production ~/.autonomos/sessions.json.
  */
 
-const SESSIONS_FILE = join(CONFIG_DIR, "sessions.json");
-
-let savedContent: string | null = null;
+let tmpDir: string;
 
 function writeRawSessions(data: unknown[]): void {
   ensureConfigDir();
-  writeFileSync(SESSIONS_FILE, `${JSON.stringify(data, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  const file = join(tmpDir, "sessions.json");
+  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+  _resetCacheForTesting();
 }
 
 function findByName(roots: OrgNode[], name: string): OrgNode | undefined {
@@ -36,16 +39,15 @@ function findByName(roots: OrgNode[], name: string): OrgNode | undefined {
 
 describe("backward compatibility — old session formats", () => {
   before(() => {
-    ensureConfigDir();
-    savedContent = existsSync(SESSIONS_FILE)
-      ? readFileSync(SESSIONS_FILE, "utf-8")
-      : null;
+    tmpDir = mkdtempSync(join(tmpdir(), "autonomos-test-backcompat-"));
+    _setConfigDirForTesting(tmpDir);
+    _resetCacheForTesting();
   });
 
   after(() => {
-    if (savedContent !== null) {
-      writeFileSync(SESSIONS_FILE, savedContent, { mode: 0o600 });
-    }
+    _resetCacheForTesting();
+    _resetConfigDirForTesting();
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("loads sessions missing autonomousMode (pre-template era)", () => {
