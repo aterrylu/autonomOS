@@ -14,31 +14,55 @@ import { resolveAuthToken } from "./auth.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { getPersistedSessions } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
+import { writeGeminiSettings } from "./providers/gemini-cli.js";
+import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { orgRouter, templateRouter } from "./routes/hierarchy.js";
 import { hooksRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
+import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
 import { sessionRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
-import {
-  createSession,
-  resolveClaudePath,
-  shutdownAllSessions,
-} from "./sessions.js";
+import { createSession, shutdownAllSessions } from "./sessions.js";
 import { getTemplate } from "./templates.js";
 
-// Validate claude binary exists at startup — fail fast with a clear message
-try {
-  const path = resolveClaudePath();
-  console.log(`Claude binary found: ${path}`);
-} catch (err) {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
+// Validate provider binaries at startup.
+// Claude Code is required (default provider) — others are optional.
+for (const p of getAllProviders()) {
+  try {
+    const path = p.resolveBinary();
+    console.log(`${p.displayName} found: ${path}`);
+  } catch (err) {
+    if (p.name === "claude-code") {
+      console.error(err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("not found")) {
+      console.warn(`[providers] ${p.displayName} check failed: ${msg}`);
+    }
+  }
+}
+
+// Write Gemini CLI settings file (hooks + MCP config) if Gemini is installed
+if (isProviderInstalled("gemini-cli")) {
+  try {
+    const channelScript = resolve(
+      import.meta.dirname,
+      "channel-server/dist.mjs",
+    );
+    writeGeminiSettings(channelScript);
+  } catch (err) {
+    console.warn(
+      "[gemini-cli] Failed to write settings — Gemini agents will launch without hooks/MCP:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 type NodeEnv = {
@@ -139,6 +163,7 @@ app.route("/api/org", orgRouter);
 app.route("/api/sessions", sessionRouter);
 app.route("/api/settings", settingsRouter);
 app.route("/api/templates", templateRouter);
+app.route("/api/providers", providerRouter);
 app.route("/api/schedules", scheduleRouter);
 app.route("/api/scheduler", schedulerRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);

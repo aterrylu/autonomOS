@@ -3,25 +3,20 @@
  * CC-specific CLI flags, env vars, and startup handling.
  */
 
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import type {
   AgentProvider,
   PtyHandle,
   ResolvedSpawnOptions,
 } from "@autonomos/core";
-import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
 import { getSettings } from "../settings.js";
+import {
+  buildBaseEnv,
+  buildSystemPrompt,
+  HOOK_CMD,
+  resolveBinaryFromCandidates,
+} from "./shared.js";
 
 // ── Hook relay ─────────────────────────────────────────────────
-// Posts event JSON to /api/hooks via curl. No trailing & — Claude Code's
-// async:true handles backgrounding (& would disconnect stdin, breaking -d @-).
-const HOOK_CMD =
-  'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
-  ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
-  " >/dev/null 2>&1";
-
 const HOOK_ENTRY = {
   matcher: "",
   hooks: [{ type: "command", command: HOOK_CMD, timeout: 3, async: true }],
@@ -43,39 +38,6 @@ const HOOK_EVENTS = [
   "SessionEnd",
 ] as const;
 
-// ── Base context injected into every spawned CC session ────────
-const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
-AI coding agents for personal and enterprise use.
-
-## Your Identity
-
-You are a named agent in an organization. Other agents and the human operator \
-can see you by name, send you messages, and observe your status. You may have \
-a manager, peers, and direct reports — use get_org_chart() to see the hierarchy.
-
-## Communication
-
-${MCP_INSTRUCTIONS}
-
-Messages are asynchronous — the recipient may be busy or idle. Do not block \
-waiting for a response. Continue your work and handle replies when they arrive.
-
-## Environment
-
-- A human operator monitors all agents via a server dashboard, seeing status \
-and notifications. You do not need to over-report — they can see your terminal.
-- You may share a codebase with other agents. Some projects use the main branch \
-(single agent), others use worktrees for isolation (multiple agents).
-- You cannot access another agent's terminal or read their output directly. \
-All inter-agent communication goes through send().
-
-## Lifecycle
-
-Some agents are long-lived (team leads, persistent roles). Others are spawned \
-for a specific task — once the work is done and the PR is merged, they exit. \
-Your session persists across server restarts until you, the human operator, or \
-a managing agent (such as your manager or a superior) ends it.`;
-
 // ── Auto-trust: ANSI stripping + prompt needles ───────────────
 const ANSI_RE =
   /\x1b[[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
@@ -93,7 +55,7 @@ const CHANNELS_NEEDLES = [
 ];
 
 // ── Binary resolution cache ───────────────────────────────────
-let cachedBinaryPath: string | null = null;
+const binaryCache = { path: null as string | null };
 
 // ── Reserved env keys that buildEnv manages directly ──────────
 const RESERVED_ENV_KEYS = new Set([
@@ -122,34 +84,14 @@ export const claudeCodeProvider: AgentProvider = {
   },
 
   resolveBinary(): string {
-    if (cachedBinaryPath) return cachedBinaryPath;
-
-    const candidates = [
-      `${process.env.HOME}/.local/bin/claude`,
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-    ];
-    for (const p of candidates) {
-      if (existsSync(p)) {
-        cachedBinaryPath = p;
-        return p;
-      }
-    }
-
-    try {
-      const which = execFileSync("which", ["claude"], {
-        encoding: "utf-8",
-      }).trim();
-      if (which) {
-        cachedBinaryPath = which;
-        return which;
-      }
-    } catch {
-      // not in PATH
-    }
-
-    throw new Error(
-      `Claude binary not found. Searched: ${candidates.join(", ")} and PATH`,
+    return resolveBinaryFromCandidates(
+      "claude",
+      [
+        `${process.env.HOME}/.local/bin/claude`,
+        "/usr/local/bin/claude",
+        "/opt/homebrew/bin/claude",
+      ],
+      binaryCache,
     );
   },
 
@@ -184,11 +126,10 @@ export const claudeCodeProvider: AgentProvider = {
     if (options.systemPrompt) {
       args.push("--system-prompt", options.systemPrompt);
     } else {
-      const parts: string[] = [BASE_CONTEXT];
-      if (options.appendSystemPrompt) {
-        parts.push("", "---", "", options.appendSystemPrompt);
-      }
-      args.push("--append-system-prompt", parts.join("\n"));
+      args.push(
+        "--append-system-prompt",
+        buildSystemPrompt(undefined, options.appendSystemPrompt),
+      );
     }
 
     // SendUserMessage for structured agent-to-dashboard messaging
@@ -247,20 +188,8 @@ export const claudeCodeProvider: AgentProvider = {
   },
 
   buildEnv(sessionId: string, agentName: string): Record<string, string> {
-    const env = { ...process.env } as Record<string, string>;
-    const extraPaths = [
-      `${process.env.HOME}/.local/bin`,
-      `${process.env.HOME}/.bun/bin`,
-      "/usr/local/bin",
-    ];
-    env.PATH = [...extraPaths, env.PATH].join(":");
+    const env = buildBaseEnv(sessionId, agentName);
     delete env.CLAUDECODE;
-    delete env.PORT;
-
-    const port = process.env.PORT || "3000";
-    env.AUTONOMOS_SERVER = `http://localhost:${port}`;
-    env.AUTONOMOS_SESSION_ID = sessionId;
-    env.AUTONOMOS_AGENT_NAME = agentName;
 
     // Inject dashboard-configured settings as env vars
     const settings = getSettings();
@@ -287,7 +216,6 @@ export const claudeCodeProvider: AgentProvider = {
 
   attachStartupWatcher(pty: PtyHandle, options: ResolvedSpawnOptions): void {
     // Expect the channels warning prompt if any dev channels are configured
-    // (matches original behavior: checked for --dangerously-load-development-channels in args)
     const { channels } = getSettings();
     const expectChannels =
       channels?.some((c) => c.startsWith("server:")) ?? false;
@@ -377,5 +305,5 @@ export const claudeCodeProvider: AgentProvider = {
 
 /** For testing — reset the cached binary path */
 export function _resetBinaryCacheForTesting(): void {
-  cachedBinaryPath = null;
+  binaryCache.path = null;
 }

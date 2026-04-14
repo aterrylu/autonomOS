@@ -223,6 +223,7 @@ sessionRouter.post("/", async (c) => {
       project: typeof body.project === "string" ? body.project : undefined,
       cols: body.cols as number | undefined,
       rows: body.rows as number | undefined,
+      provider: typeof body.provider === "string" ? body.provider : undefined,
     });
     return c.json(managed.session, 201);
   } catch (err) {

@@ -17,6 +17,11 @@ import { batchGetTitles } from "./titleCache.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per session
 
+/** Resolve claude binary — delegates to the claude-code provider. */
+export function resolveClaudePath(): string {
+  return getProvider("claude-code").resolveBinary();
+}
+
 export interface ManagedSession {
   session: Session;
   pty: IPty;
@@ -26,11 +31,6 @@ export interface ManagedSession {
 
 const sessions = new Map<string, ManagedSession>();
 let shuttingDown = false;
-
-/** Resolve claude binary — delegates to the claude-code provider. */
-export function resolveClaudePath(): string {
-  return getProvider("claude-code").resolveBinary();
-}
 
 export function getSession(id: string): ManagedSession | undefined {
   return sessions.get(id);

@@ -7,9 +7,13 @@
 
 import type { AgentProvider } from "@autonomos/core";
 import { claudeCodeProvider } from "./claude-code.js";
+import { codexProvider } from "./codex.js";
+import { geminiCliProvider } from "./gemini-cli.js";
 
 const providers = new Map<string, AgentProvider>([
   ["claude-code", claudeCodeProvider],
+  ["codex", codexProvider],
+  ["gemini-cli", geminiCliProvider],
 ]);
 
 /** Get a provider by name. Throws if unknown. */
@@ -32,13 +36,7 @@ export function isProviderInstalled(name: string): boolean {
   try {
     getProvider(name).resolveBinary();
     return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "";
-    if (msg.includes("not found") || msg.includes("Unknown provider")) {
-      return false;
-    }
-    // Unexpected error (permissions, etc.) — log but still return false
-    console.warn(`[providers] Error checking "${name}":`, msg);
+  } catch {
     return false;
   }
 }
