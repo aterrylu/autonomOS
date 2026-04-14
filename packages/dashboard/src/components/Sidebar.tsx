@@ -78,6 +78,8 @@ type DisplayItem =
 
 interface OrgNode {
   name: string;
+  claudeSessionId?: string;
+  status?: string;
   template?: string;
   project?: string;
   children: OrgNode[];
@@ -105,7 +107,7 @@ function mergeOrgWithSessions(
 ): SidebarHierarchyNode[] {
   const sessionByName = new Map<string, SessionInfo>();
   for (const s of sessions) {
-    sessionByName.set(s.name.toLowerCase(), s);
+    if (s.name) sessionByName.set(s.name.toLowerCase(), s);
   }
 
   /** Sort nodes according to stored order for a given group key */
@@ -116,10 +118,13 @@ function mergeOrgWithSessions(
     const savedOrder = order[groupKey];
     if (!savedOrder || savedOrder.length === 0) return nodes;
     const byName = new Map<string, SidebarHierarchyNode>();
-    for (const n of nodes) byName.set(n.org.name.toLowerCase(), n);
+    for (const n of nodes) {
+      if (n.org.name) byName.set(n.org.name.toLowerCase(), n);
+    }
     const result: SidebarHierarchyNode[] = [];
     const placed = new Set<string>();
     for (const name of savedOrder) {
+      if (!name) continue;
       const key = name.toLowerCase();
       const node = byName.get(key);
       if (node) {
@@ -129,14 +134,15 @@ function mergeOrgWithSessions(
     }
     // Append any new nodes not in saved order
     for (const n of nodes) {
-      if (!placed.has(n.org.name.toLowerCase())) result.push(n);
+      const nKey = n.org.name?.toLowerCase();
+      if (!nKey || !placed.has(nKey)) result.push(n);
     }
     return result;
   }
 
   function merge(node: OrgNode): SidebarHierarchyNode {
-    const children = node.children.map(merge);
-    const groupKey = node.name.toLowerCase();
+    const children = (node.children ?? []).map(merge);
+    const groupKey = (node.name ?? "").toLowerCase();
     return {
       org: node,
       session: sessionByName.get(groupKey),
@@ -606,7 +612,7 @@ export function Sidebar() {
 
           {hierarchyTree.map((node, idx) => (
             <HierarchyNodeRow
-              key={node.org.name}
+              key={node.org.name ?? idx}
               node={node}
               depth={0}
               groupKey="__root__"
@@ -630,16 +636,18 @@ export function Sidebar() {
                   // Determine current sibling names for this group
                   const siblings =
                     gk === "__root__"
-                      ? hierarchyTree.map((n) => n.org.name.toLowerCase())
+                      ? hierarchyTree.map((n) =>
+                          (n.org.name ?? "").toLowerCase(),
+                        )
                       : (() => {
                           // Find parent node and get its children names
                           function findChildren(
                             nodes: SidebarHierarchyNode[],
                           ): string[] | null {
                             for (const n of nodes) {
-                              if (n.org.name.toLowerCase() === gk)
+                              if ((n.org.name ?? "").toLowerCase() === gk)
                                 return n.children.map((c) =>
-                                  c.org.name.toLowerCase(),
+                                  (c.org.name ?? "").toLowerCase(),
                                 );
                               const found = findChildren(n.children);
                               if (found) return found;
@@ -1145,7 +1153,8 @@ function HierarchyNodeRow({
   setHierDropTarget,
 }: HierarchyNodeRowProps) {
   const s = node.session; // may be undefined for exited agents
-  const isCollapsed = collapsedGroups.has(node.org.name.toLowerCase());
+  const nodeName = node.org.name ?? "";
+  const isCollapsed = collapsedGroups.has(nodeName.toLowerCase());
   const hasChildren = node.children.length > 0;
 
   const isDropTarget =
@@ -1211,7 +1220,7 @@ function HierarchyNodeRow({
             borderColor={borderColor}
             onBorderClick={
               hasChildren
-                ? () => toggleCollapsed(node.org.name.toLowerCase())
+                ? () => toggleCollapsed(nodeName.toLowerCase())
                 : undefined
             }
             paddingLeftOverride={rowPaddingLeft}
@@ -1266,7 +1275,7 @@ function HierarchyNodeRow({
             }}
             onClick={
               hasChildren
-                ? () => toggleCollapsed(node.org.name.toLowerCase())
+                ? () => toggleCollapsed(nodeName.toLowerCase())
                 : undefined
             }
           >
@@ -1296,10 +1305,10 @@ function HierarchyNodeRow({
         !isCollapsed &&
         node.children.map((child, idx) => (
           <HierarchyNodeRow
-            key={child.org.name}
+            key={child.org.name ?? idx}
             node={child}
             depth={depth + 1}
-            groupKey={node.org.name.toLowerCase()}
+            groupKey={nodeName.toLowerCase()}
             indexInGroup={idx}
             isLastChild={idx === node.children.length - 1}
             ancestorIsLast={[...ancestorIsLast, isLastChild]}

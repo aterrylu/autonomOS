@@ -115,8 +115,12 @@ export const TOOL_KILL_AGENT: ToolDef = {
         type: "string",
         description: "Agent name or session ID to terminate",
       },
+      name: {
+        type: "string",
+        description:
+          "Alias for 'agent' — agent name or session ID to terminate",
+      },
     },
-    required: ["agent"],
   },
 };
 
@@ -152,13 +156,17 @@ export const TOOL_SET_MANAGER: ToolDef = {
         type: "string",
         description: "Agent name (e.g. 'Dashboard@autonomOS')",
       },
+      name: {
+        type: "string",
+        description:
+          "Alias for 'agent' — agent name (e.g. 'Dashboard@autonomOS')",
+      },
       manager: {
         type: "string",
         description:
           "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager.",
       },
     },
-    required: ["agent"],
   },
 };
 

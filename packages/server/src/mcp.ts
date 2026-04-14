@@ -166,19 +166,36 @@ function createMcpServer(): McpServer {
     "kill_agent",
     "Terminate an active agent by name or session ID.",
     {
-      agent: z.string().describe("Agent name or session ID to terminate"),
+      agent: z
+        .string()
+        .optional()
+        .describe("Agent name or session ID to terminate"),
+      name: z
+        .string()
+        .optional()
+        .describe("Alias for 'agent' — agent name or session ID to terminate"),
     },
     async (args) => {
-      // Try exact ID match first
-      if (killSession(args.agent)) {
+      const target = args.agent || args.name;
+      if (!target) {
         return {
           content: [
-            { type: "text", text: `Agent "${args.agent}" terminated.` },
+            {
+              type: "text",
+              text: `Missing required parameter 'agent'. Usage: kill_agent(agent: "AgentName")`,
+            },
           ],
+          isError: true,
+        };
+      }
+      // Try exact ID match first
+      if (killSession(target)) {
+        return {
+          content: [{ type: "text", text: `Agent "${target}" terminated.` }],
         };
       }
       // Fall back to name resolution (case-insensitive, titleCache)
-      const resolved = await resolveSessionId(args.agent);
+      const resolved = await resolveSessionId(target);
       if ("error" in resolved) {
         return {
           content: [{ type: "text", text: resolved.error }],
@@ -190,14 +207,14 @@ function createMcpServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `Agent "${args.agent}" was found but exited before it could be terminated.`,
+              text: `Agent "${target}" was found but exited before it could be terminated.`,
             },
           ],
           isError: true,
         };
       }
       return {
-        content: [{ type: "text", text: `Agent "${args.agent}" terminated.` }],
+        content: [{ type: "text", text: `Agent "${target}" terminated.` }],
       };
     },
   );
@@ -206,14 +223,35 @@ function createMcpServer(): McpServer {
     "set_manager",
     "Set an agent's manager in the org chart.",
     {
-      agent: z.string().describe("Agent name (e.g. 'Dashboard@autonomOS')"),
+      agent: z
+        .string()
+        .optional()
+        .describe("Agent name (e.g. 'Dashboard@autonomOS')"),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "Alias for 'agent' — agent name (e.g. 'Dashboard@autonomOS')",
+        ),
       manager: z
         .string()
         .optional()
         .describe("Manager agent name, or omit to remove manager"),
     },
     async (args) => {
-      const ok = updatePersistedSessionByName(args.agent, {
+      const target = args.agent || args.name;
+      if (!target) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing required parameter 'agent'. Usage: set_manager(agent: "AgentName", manager: "ManagerName")`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const ok = updatePersistedSessionByName(target, {
         manager: args.manager ?? undefined,
       });
       if (!ok) {
@@ -221,7 +259,7 @@ function createMcpServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `Agent "${args.agent}" not found.`,
+              text: `Agent "${target}" not found.`,
             },
           ],
           isError: true,
@@ -232,8 +270,8 @@ function createMcpServer(): McpServer {
           {
             type: "text",
             text: args.manager
-              ? `Set ${args.agent}'s manager to ${args.manager}.`
-              : `Removed ${args.agent}'s manager.`,
+              ? `Set ${target}'s manager to ${args.manager}.`
+              : `Removed ${target}'s manager.`,
           },
         ],
       };

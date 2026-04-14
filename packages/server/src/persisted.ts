@@ -41,13 +41,18 @@ function readSessions(): PersistedSession[] {
       return [];
     }
     lastReadFailed = false;
-    return data.filter(
-      (p): p is PersistedSession =>
-        typeof p?.claudeSessionId === "string" &&
-        typeof p?.workingDirectory === "string" &&
-        typeof p?.name === "string" &&
-        typeof p?.autonomousMode === "boolean",
-    );
+    return data
+      .filter(
+        (p): p is PersistedSession =>
+          typeof p?.claudeSessionId === "string" &&
+          typeof p?.workingDirectory === "string" &&
+          typeof p?.name === "string",
+      )
+      .map((p) => ({
+        ...p,
+        autonomousMode: p.autonomousMode ?? true,
+        persistedAt: p.persistedAt ?? 0,
+      }));
   } catch (err: unknown) {
     if (err instanceof Error && "code" in err && err.code === "ENOENT") {
       lastReadFailed = false;
@@ -148,7 +153,9 @@ export function updatePersistedSessionByName(
 ): boolean {
   const sessions = readSessions();
   const lower = name.toLowerCase();
-  const idx = sessions.findIndex((s) => s.name.toLowerCase() === lower);
+  const idx = sessions.findIndex(
+    (s) => s.name && s.name.toLowerCase() === lower,
+  );
   if (idx < 0) return false;
   sessions[idx] = { ...sessions[idx], ...updates };
   writeSessions(sessions);

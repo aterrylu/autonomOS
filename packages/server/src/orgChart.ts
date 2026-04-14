@@ -21,7 +21,7 @@ export interface OrgNode {
 function toNode(s: PersistedSession): OrgNode {
   return {
     claudeSessionId: s.claudeSessionId,
-    name: s.name,
+    name: s.name ?? "Unknown",
     template: s.template,
     project: s.project,
     status: s.status === "exited" ? "exited" : "running",
@@ -75,6 +75,7 @@ export function buildOrgChart(includeExited = false): OrgNode[] {
   // respawned an agent with the same name.
   const byName = new Map<string, PersistedSession[]>();
   for (const s of sessions) {
+    if (!s.name) continue;
     const key = s.name.toLowerCase();
     const bucket = byName.get(key);
     if (bucket) bucket.push(s);
