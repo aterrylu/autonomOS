@@ -57,6 +57,19 @@ export type ExecutorFn = (
 let _isolatedExecutor: ExecutorFn | null = null;
 let _agentExecutor: ExecutorFn | null = null;
 
+// Dependency overrides (for testing real executor code paths)
+type SpawnFn = typeof spawn;
+type ResolveClaudePathFn = typeof resolveClaudePath;
+type RouteMessageFn = (
+  to: string,
+  message: string,
+  from: string,
+) => Promise<string | null>;
+
+let _spawnOverride: SpawnFn | null = null;
+let _resolveClaudePathOverride: ResolveClaudePathFn | null = null;
+let _routeMessageOverride: RouteMessageFn | null = null;
+
 // ── Public API ──────────────────────────────────────────────────
 
 export function isSchedulerRunning(): boolean {
@@ -381,7 +394,7 @@ function executeIsolated(
 ): void {
   let claudePath: string;
   try {
-    claudePath = resolveClaudePath();
+    claudePath = (_resolveClaudePathOverride ?? resolveClaudePath)();
   } catch (err) {
     onRunCompleted(name, {
       status: "failure",
@@ -408,7 +421,8 @@ function executeIsolated(
     return;
   }
 
-  const child = spawn(claudePath, args, {
+  const spawnFn = _spawnOverride ?? spawn;
+  const child = spawnFn(claudePath, args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env },
@@ -480,11 +494,17 @@ async function executeAgentSend(
   _runState: RunState,
 ): Promise<void> {
   try {
-    const { routeMessage } = await import("./gateway/router.js");
+    let routeMsg: RouteMessageFn;
+    if (_routeMessageOverride) {
+      routeMsg = _routeMessageOverride;
+    } else {
+      const { routeMessage } = await import("./gateway/router.js");
+      routeMsg = routeMessage;
+    }
     const agentName = schedule.target.slice("agent:".length);
     const to = `agent://${agentName}`;
 
-    const error = await routeMessage(to, schedule.prompt, "scheduler");
+    const error = await routeMsg(to, schedule.prompt, "scheduler");
     if (error) {
       onRunCompleted(name, { status: "failure", error });
     } else {
@@ -573,9 +593,15 @@ async function deliverOnComplete(
   name: string,
   result: RunResult,
 ): Promise<void> {
-  const { routeMessage } = await import("./gateway/router.js");
+  let routeMsg: RouteMessageFn;
+  if (_routeMessageOverride) {
+    routeMsg = _routeMessageOverride;
+  } else {
+    const { routeMessage } = await import("./gateway/router.js");
+    routeMsg = routeMessage;
+  }
   const summary = `Schedule "${name}" completed: ${result.status}${result.error ? ` — ${result.error}` : ""}`;
-  await routeMessage(uri, summary, "scheduler");
+  await routeMsg(uri, summary, "scheduler");
 }
 
 function drainQueue(): void {
@@ -599,6 +625,9 @@ export function _resetForTesting(): void {
   schedulerRunning = false;
   _isolatedExecutor = null;
   _agentExecutor = null;
+  _spawnOverride = null;
+  _resolveClaudePathOverride = null;
+  _routeMessageOverride = null;
 }
 
 export function _setExecutors(
@@ -607,6 +636,17 @@ export function _setExecutors(
 ): void {
   _isolatedExecutor = isolated;
   _agentExecutor = agent;
+}
+
+export function _setDependencies(deps: {
+  spawn?: SpawnFn | null;
+  resolveClaudePath?: ResolveClaudePathFn | null;
+  routeMessage?: RouteMessageFn | null;
+}): void {
+  if ("spawn" in deps) _spawnOverride = deps.spawn ?? null;
+  if ("resolveClaudePath" in deps)
+    _resolveClaudePathOverride = deps.resolveClaudePath ?? null;
+  if ("routeMessage" in deps) _routeMessageOverride = deps.routeMessage ?? null;
 }
 
 export { onRunCompleted as _onRunCompleted };
