@@ -9,6 +9,7 @@ import type {
   TerminalBackend,
   TerminalInstance,
 } from "../terminal/types";
+import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
@@ -559,7 +560,7 @@ class UrlLinkProvider implements ILinkProvider {
         text: url,
         activate: (event) => {
           if (hasPrimaryModifier(event)) {
-            window.open(url, "_blank", "noopener");
+            deduplicatedOpen(url);
           }
         },
       });
