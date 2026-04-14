@@ -64,6 +64,7 @@ function useSidebarActions() {
       openOrgChart: s.openOrgChart,
       openTemplates: s.openTemplates,
       openSchedules: s.openSchedules,
+      openCreateAgent: s.openCreateAgent,
       toggleShowExitedAgents: s.toggleShowExitedAgents,
       toggleSidebarViewMode: s.toggleSidebarViewMode,
       reorderHierarchy: s.reorderHierarchy,
@@ -250,6 +251,7 @@ export function Sidebar() {
     openOrgChart,
     openTemplates,
     openSchedules,
+    openCreateAgent,
     toggleShowExitedAgents,
     toggleSidebarViewMode,
     reorderHierarchy,
@@ -485,7 +487,7 @@ export function Sidebar() {
         )}
         <button
           type="button"
-          onClick={() => createSession()}
+          onClick={() => openCreateAgent()}
           disabled={isSpawning}
           className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: "#238636", color: "#fff" }}

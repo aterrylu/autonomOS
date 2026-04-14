@@ -112,7 +112,8 @@ export type ActivePane =
   | { type: "preview"; id: string }
   | { type: "orgchart"; id: "orgchart" }
   | { type: "templates"; id: "templates" }
-  | { type: "schedules"; id: "schedules" };
+  | { type: "schedules"; id: "schedules" }
+  | { type: "create-agent"; id: "create-agent" };
 
 // ── Pane Groups ───────────────────────────────────────────────────────
 
@@ -460,7 +461,17 @@ interface AppState {
   fetchProjects: () => Promise<void>;
   fetchNotifications: () => Promise<void>;
   markNotificationsRead: (sessionId: string) => Promise<void>;
-  createSession: (workingDirectory?: string) => Promise<void>;
+  createSession: (
+    workingDirectory?: string,
+    opts?: {
+      name?: string;
+      provider?: string;
+      template?: string;
+      appendSystemPrompt?: string;
+      autonomousMode?: boolean;
+    },
+  ) => Promise<void>;
+  openCreateAgent: () => void;
   resumeSession: (
     claudeSessionId: string,
     cwd: string,
@@ -860,7 +871,7 @@ export const useStore = create<AppState>()(
             });
           }
         },
-        createSession: async (workingDirectory = "~") => {
+        createSession: async (workingDirectory = "~", opts) => {
           await spawnSession(
             set,
             get,
@@ -868,9 +879,29 @@ export const useStore = create<AppState>()(
             "failed to create session",
             {
               workingDirectory,
-              autonomousMode: get().autonomousMode,
+              autonomousMode: opts?.autonomousMode ?? get().autonomousMode,
+              name: opts?.name,
+              provider: opts?.provider,
+              template: opts?.template,
+              appendSystemPrompt: opts?.appendSystemPrompt,
             },
           );
+        },
+
+        openCreateAgent: () => {
+          const { layout, focusedLeafId } = get();
+          const pane: ActivePane = {
+            type: "create-agent",
+            id: "create-agent",
+          };
+          if (findLeafByPaneId(layout, "create-agent")) {
+            get().switchPane(pane);
+            return;
+          }
+          set({
+            activePane: pane,
+            layout: addTab(layout, focusedLeafId, pane),
+          });
         },
         resumeSession: async (claudeSessionId, cwd, name, opts) => {
           const existing = get().sessions.find(
@@ -1691,6 +1722,7 @@ export const useStore = create<AppState>()(
         focusedLeafId: state.focusedLeafId,
         groups: state.groups,
         activeGroupId: state.activeGroupId,
+        projects: state.projects,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Record<string, unknown>;
@@ -1812,6 +1844,10 @@ export const useStore = create<AppState>()(
         }
         if (typeof saved?.activeGroupId === "string") {
           merged.activeGroupId = saved.activeGroupId;
+        }
+
+        if (Array.isArray(saved?.projects)) {
+          merged.projects = saved.projects as ProjectInfo[];
         }
 
         return merged;

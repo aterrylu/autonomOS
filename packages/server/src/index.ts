@@ -29,7 +29,10 @@ import { settingsRouter } from "./routes/settings.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { createSession, shutdownAllSessions } from "./sessions.js";
-import { getTemplate } from "./templates.js";
+import { getTemplate, seedDefaultTemplates } from "./templates.js";
+
+// Seed default templates on fresh install
+seedDefaultTemplates();
 
 // Validate provider binaries at startup.
 // Claude Code is required (default provider) — others are optional.
