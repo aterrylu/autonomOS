@@ -561,6 +561,8 @@ function createMcpServer(): McpServer {
   return server;
 }
 
+export { createMcpServer as _createMcpServerForTesting };
+
 // ── Transport ─────────────────────────────────────────────────────────
 
 const mcpServer = createMcpServer();
