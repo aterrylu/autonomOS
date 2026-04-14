@@ -4,12 +4,17 @@
  * Sessions are auto-persisted when created and removed from persistence
  * only when explicitly exited or killed.
  *
- * Storage: ~/.autonomos/sessions.json
+ * Storage: ~/.autonomos/sessions.json (or AUTONOMOS_CONFIG_DIR override)
+ *
+ * Safety:
+ * - In-memory cache prevents read-modify-write races during concurrent mutations
+ * - Backup created before any write that reduces session count (guards against corruption)
+ * - writeFileSync ensures atomic-enough writes (no interleaving)
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR, ensureConfigDir } from "./configDir.js";
+import { ensureConfigDir, getConfigDir } from "./configDir.js";
 
 export interface PersistedSession {
   claudeSessionId: string;
@@ -27,16 +32,27 @@ export interface PersistedSession {
   status?: "running" | "exited";
 }
 
-const SESSIONS_FILE = join(CONFIG_DIR, "sessions.json");
+function getSessionsFile(): string {
+  return join(getConfigDir(), "sessions.json");
+}
 
+// ── In-memory cache ─────────────────────────────────────────────────
+// All mutations go through the cache. readSessions() populates it on
+// first call; subsequent calls return the cached copy. This eliminates
+// TOCTOU races where two concurrent read-modify-write cycles could
+// lose each other's changes.
+let sessionsCache: PersistedSession[] | null = null;
 let lastReadFailed = false;
 
-function readSessions(): PersistedSession[] {
+function loadFromDisk(): PersistedSession[] {
+  const file = getSessionsFile();
   try {
-    const raw = readFileSync(SESSIONS_FILE, "utf-8");
+    const raw = readFileSync(file, "utf-8");
     const data = JSON.parse(raw);
     if (!Array.isArray(data)) {
-      console.warn("Persisted sessions file is not an array, ignoring");
+      console.error(
+        "Persisted sessions file is not an array — persistence is degraded",
+      );
       lastReadFailed = true;
       return [];
     }
@@ -66,21 +82,45 @@ function readSessions(): PersistedSession[] {
   }
 }
 
+function readSessions(): PersistedSession[] {
+  if (sessionsCache === null) {
+    sessionsCache = loadFromDisk();
+  }
+  return sessionsCache;
+}
+
 function writeSessions(sessions: PersistedSession[]): void {
   if (lastReadFailed) {
     console.error(
-      "Refusing to write sessions — last read failed (would destroy data)",
+      `Refusing to write ${sessions.length} sessions — last read failed (would destroy data). Fix or remove ${getSessionsFile()} and restart.`,
     );
     return;
   }
+
+  const file = getSessionsFile();
+
+  // Backup before destructive writes (entry count decreased).
+  // Compare against the cached count — no need to re-read the file.
+  const prevCount = sessionsCache?.length ?? 0;
+  if (sessions.length < prevCount) {
+    try {
+      copyFileSync(file, `${file}.bak`);
+    } catch (backupErr) {
+      console.warn(`Failed to create sessions.json backup: ${backupErr}`);
+    }
+  }
+
   ensureConfigDir();
-  writeFileSync(SESSIONS_FILE, `${JSON.stringify(sessions, null, 2)}\n`, {
+  writeFileSync(file, `${JSON.stringify(sessions, null, 2)}\n`, {
     mode: 0o600,
   });
+
+  // Keep cache in sync
+  sessionsCache = sessions;
 }
 
 export function getPersistedSessions(): PersistedSession[] {
-  return readSessions();
+  return [...readSessions()];
 }
 
 export function persistSession(session: PersistedSession): void {
@@ -160,4 +200,10 @@ export function updatePersistedSessionByName(
   sessions[idx] = { ...sessions[idx], ...updates };
   writeSessions(sessions);
   return true;
+}
+
+/** For testing — clear the in-memory cache so the next read hits disk. */
+export function _resetCacheForTesting(): void {
+  sessionsCache = null;
+  lastReadFailed = false;
 }

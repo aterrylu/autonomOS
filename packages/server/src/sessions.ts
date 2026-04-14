@@ -175,6 +175,7 @@ export function createSession(options: SpawnOptions): ManagedSession {
     template: options.template,
     manager: options.manager,
     project: options.project,
+    status: "running",
   });
 
   pty.onData((data: string) => {

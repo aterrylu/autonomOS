@@ -18,8 +18,26 @@ if (!HOME) throw new Error("HOME environment variable is not set");
 export const CONFIG_DIR =
   process.env.AUTONOMOS_CONFIG_DIR?.trim() || join(HOME, ".autonomos");
 
+let _testOverride: string | null = null;
+
+/** Returns the active config dir — test override if set, otherwise CONFIG_DIR. */
+export function getConfigDir(): string {
+  return _testOverride ?? CONFIG_DIR;
+}
+
 export function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const dir = getConfigDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
+}
+
+/** For testing — redirect all config reads to an isolated temp directory. */
+export function _setConfigDirForTesting(dir: string): void {
+  _testOverride = dir;
+}
+
+/** For testing — restore default config dir. */
+export function _resetConfigDirForTesting(): void {
+  _testOverride = null;
 }

@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, afterEach, before, describe, it } from "node:test";
 import type { Session } from "@autonomos/core";
 import { Hono } from "hono";
-import { persistSession, removePersistedSession } from "../persisted.js";
+import {
+  _resetConfigDirForTesting,
+  _setConfigDirForTesting,
+} from "../configDir.js";
+import {
+  _resetCacheForTesting,
+  persistSession,
+  removePersistedSession,
+} from "../persisted.js";
 import { sessionRouter } from "../routes/sessions.js";
 import {
   _injectSessionForTesting,
@@ -50,6 +61,8 @@ function assertNameGuardPasses(name?: string): void {
     }
   }
 }
+
+let tmpDir: string;
 
 // ── createSession() active-name uniqueness guard ─────────────────────
 
@@ -99,7 +112,6 @@ describe("createSession() — active name uniqueness", () => {
   });
 
   it("allows creating when no live agent has the name", () => {
-    // No sessions injected — guard should pass (no name collision)
     assert.doesNotThrow(() => assertNameGuardPasses("FreshAgent"));
   });
 
@@ -107,7 +119,6 @@ describe("createSession() — active name uniqueness", () => {
     const session = fakeSession({ name: "SomeAgent" });
     _injectSessionForTesting(session.id, session);
 
-    // Undefined name should skip the guard entirely
     assert.doesNotThrow(() => assertNameGuardPasses(undefined));
   });
 });
@@ -143,14 +154,24 @@ describe("POST /api/sessions — name collision returns 409", () => {
 describe("POST /api/sessions/:id/resume — name collision", () => {
   const exitedClaudeId = "exited-session-for-resume-test";
 
+  before(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "autonomos-test-dupname-"));
+    _setConfigDirForTesting(tmpDir);
+    _resetCacheForTesting();
+  });
+
   afterEach(() => {
     _resetForTesting();
-    // Clean up the persisted entry we explicitly created for the test
     removePersistedSession(exitedClaudeId);
   });
 
+  after(() => {
+    _resetCacheForTesting();
+    _resetConfigDirForTesting();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it("returns 409 when a live agent with the same name already exists", async () => {
-    // 1. Persist an exited session
     persistSession({
       claudeSessionId: exitedClaudeId,
       workingDirectory: "/tmp",
@@ -160,11 +181,9 @@ describe("POST /api/sessions/:id/resume — name collision", () => {
       status: "exited",
     });
 
-    // 2. Inject a live session with the same name
     const live = fakeSession({ name: "Dispatch" });
     _injectSessionForTesting(live.id, live);
 
-    // 3. Try to resume the exited one — should be blocked
     const app = createApp();
     const res = await app.request(`/api/sessions/${exitedClaudeId}/resume`, {
       method: "POST",
@@ -187,7 +206,7 @@ describe("POST /api/sessions/:id/resume — name collision", () => {
       status: "exited",
     });
 
-    const live = fakeSession({ name: "dispatch" }); // lowercase
+    const live = fakeSession({ name: "dispatch" });
     _injectSessionForTesting(live.id, live);
 
     const app = createApp();
@@ -198,10 +217,6 @@ describe("POST /api/sessions/:id/resume — name collision", () => {
   });
 
   it("allows resume when no live agent has the name", () => {
-    // Verify the name guard passes without hitting the full resume route
-    // (which would spawn a real CC process and write to sessions.json).
-    // The guard checks if any live session matches the name of the exited entry.
-    // With no live sessions injected, it should pass.
     assert.doesNotThrow(() => assertNameGuardPasses("UniqueAgent"));
   });
 });
