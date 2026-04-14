@@ -72,7 +72,16 @@ Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
 - **HTTP MCP server** (`mcp.ts`) — for external clients (Claude Desktop, CI)
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
-Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`. The channel server also has `send` (requires gateway WebSocket).
+Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`. The channel server also has `send` (requires gateway WebSocket).
+
+### Cron Scheduler (`scheduler.ts` + `schedules.ts`)
+Native timer-based scheduling using Croner v10. Each enabled schedule gets its own `Cron` instance (no polling). Schedules stored as individual JSON files in `~/.autonomos/schedules/<name>.json` (config + state). Run history as append-only JSONL in `~/.autonomos/schedule-runs/<name>.jsonl` (auto-pruned at 2000 lines).
+
+**Execution modes:**
+- `isolated` — spawns headless `claude -p` child process, captures stdout/stderr, stores output in run history
+- `agent:<name>` — sends prompt to a running agent via the gateway (`routeMessage`)
+
+**Key behaviors:** Overlap policies (`skip` default, `allow`), global concurrency limits (`maxConcurrentRuns`, default 3, FIFO queue), startup catch-up for missed runs, one-time schedules (`once:ISO` format). Agents create schedules via MCP tools; the dashboard SchedulesPanel monitors and controls them (no create button in UI). REST API: `GET/POST /api/schedules`, `GET/PUT/DELETE /api/schedules/:name`, `POST /api/schedules/:name/run`, `GET /api/schedules/:name/runs`, `GET /api/scheduler/status`, `PUT /api/scheduler/settings`. See ADR-026.
 
 ### Agent Templates (`~/.autonomos/templates/`)
 Reusable blueprints for creating agents. Individual JSON files with: `role`, `description`, `systemPrompt`, `capabilities`, `autonomousMode`, `model`. Created via `create_template` MCP tool or by dropping a `.json` file in the templates directory. Used via `create_agent(template: "team-lead", ...)`.
