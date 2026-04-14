@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier } from "../utils/platform";
 import type { TerminalBackend, TerminalOptions } from "./types";
 
@@ -14,7 +15,7 @@ export function createXtermBackend(options: TerminalOptions): TerminalBackend {
     linkHandler: {
       activate(event: MouseEvent, uri: string) {
         if (hasPrimaryModifier(event)) {
-          window.open(uri, "_blank", "noopener");
+          deduplicatedOpen(uri);
         }
       },
     },
