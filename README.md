@@ -14,6 +14,7 @@ autonomOS is a **terminal dashboard for managing AI agents**. It spawns Claude C
 - **Auto-trust** — automatically dismisses Claude Code's startup trust prompts for frictionless session launch
 - **Notification badges** — unread count per agent from SendUserMessage/Stop/Notification events, auto-clear when focused
 - **Multi-agent messaging** — URI-based gateway (`agent://name`, `broadcast://all`) with MCP tools: `send`, `list_agents`, `create_agent`, `kill_agent`
+- **Cron scheduler** — native timer-based scheduling (Croner v10) with 6 MCP tools, REST API, dashboard Schedules pane. Agents create schedules; two execution modes: `isolated` (headless `claude -p`) and `agent:<name>` (gateway delivery). Overlap policies, concurrency limits, one-time schedules, startup catch-up
 - **Hook relay** — zero-config telemetry via `--settings` inline curl, 13 Claude Code hook events
 - **Markdown preview** — Ctrl+click `.md` links in terminal, live-updating with mermaid diagram support
 - **Plugin system** — VSCode-style status bar (Claude usage tracking built-in)
@@ -29,9 +30,10 @@ Dashboard (React)          Server (Hono + node-pty)
 │ xterm.js    │◄──ws──────│ PTY sessions         │
 │ Split panes │           │ Hook relay           │
 │ Sidebar     │◄──poll────│ Agent status machine │
-│ Status bar  │           │ MCP server (HTTP)    │
-└─────────────┘           │ Gateway router       │
-                          │ Channel server (MCP) │
+│ Schedules   │           │ MCP server (HTTP)    │
+│ Status bar  │           │ Gateway router       │
+└─────────────┘           │ Channel server (MCP) │
+                          │ Cron scheduler       │
                           └──────────────────────┘
 ```
 
