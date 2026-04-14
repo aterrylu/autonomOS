@@ -1,34 +1,26 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, before, describe, it } from "node:test";
-import { CONFIG_DIR } from "../configDir.js";
+import { after, before, describe, it } from "node:test";
+import { CONFIG_DIR, ensureConfigDir } from "../configDir.js";
 import { buildOrgChart, type OrgNode } from "../orgChart.js";
-import {
-  getPersistedSessions,
-  persistSession,
-  removePersistedSession,
-} from "../persisted.js";
+import { getPersistedSessions, persistSession } from "../persisted.js";
 
 /**
  * Tests for backward compatibility — old persisted sessions missing
  * fields added in recent PRs should still load and render correctly.
+ *
+ * These tests snapshot and restore sessions.json to avoid polluting
+ * real persisted data with raw JSON test entries.
  */
 
-const TEST_PREFIX = "backcompat-test-";
-const testIds: string[] = [];
 const SESSIONS_FILE = join(CONFIG_DIR, "sessions.json");
 
-function readRawSessions(): unknown[] {
-  try {
-    return JSON.parse(readFileSync(SESSIONS_FILE, "utf-8"));
-  } catch {
-    return [];
-  }
-}
+let savedContent: string | null = null;
 
 function writeRawSessions(data: unknown[]): void {
-  writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2) + "\n", {
+  ensureConfigDir();
+  writeFileSync(SESSIONS_FILE, `${JSON.stringify(data, null, 2)}\n`, {
     mode: 0o600,
   });
 }
@@ -43,58 +35,50 @@ function findByName(roots: OrgNode[], name: string): OrgNode | undefined {
 }
 
 describe("backward compatibility — old session formats", () => {
-  let originalSessions: unknown[];
-
   before(() => {
-    originalSessions = readRawSessions();
-    // Clean any stale test entries
-    for (const s of getPersistedSessions()) {
-      if (s.claudeSessionId.startsWith(TEST_PREFIX)) {
-        removePersistedSession(s.claudeSessionId);
-      }
+    ensureConfigDir();
+    savedContent = existsSync(SESSIONS_FILE)
+      ? readFileSync(SESSIONS_FILE, "utf-8")
+      : null;
+  });
+
+  after(() => {
+    if (savedContent !== null) {
+      writeFileSync(SESSIONS_FILE, savedContent, { mode: 0o600 });
     }
   });
 
-  afterEach(() => {
-    for (const id of testIds) removePersistedSession(id);
-    testIds.length = 0;
-  });
-
   it("loads sessions missing autonomousMode (pre-template era)", () => {
-    const sessions = readRawSessions();
-    const oldSession = {
-      claudeSessionId: `${TEST_PREFIX}no-automode`,
-      workingDirectory: "/tmp",
-      name: "BackCompat_NoAutoMode",
-      persistedAt: Date.now(),
-    };
-    testIds.push(oldSession.claudeSessionId);
-    sessions.push(oldSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-no-automode",
+        workingDirectory: "/tmp",
+        name: "BackCompat_NoAutoMode",
+        persistedAt: 1000,
+      },
+    ]);
 
     const loaded = getPersistedSessions();
     const found = loaded.find(
-      (s) => s.claudeSessionId === oldSession.claudeSessionId,
+      (s) => s.claudeSessionId === "bc-test-no-automode",
     );
     assert.ok(found, "session without autonomousMode should load");
     assert.equal(found.autonomousMode, true, "should default to true");
   });
 
   it("loads sessions missing persistedAt", () => {
-    const sessions = readRawSessions();
-    const oldSession = {
-      claudeSessionId: `${TEST_PREFIX}no-persisted-at`,
-      workingDirectory: "/tmp",
-      name: "BackCompat_NoPAt",
-      autonomousMode: false,
-    };
-    testIds.push(oldSession.claudeSessionId);
-    sessions.push(oldSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-no-persisted-at",
+        workingDirectory: "/tmp",
+        name: "BackCompat_NoPAt",
+        autonomousMode: false,
+      },
+    ]);
 
     const loaded = getPersistedSessions();
     const found = loaded.find(
-      (s) => s.claudeSessionId === oldSession.claudeSessionId,
+      (s) => s.claudeSessionId === "bc-test-no-persisted-at",
     );
     assert.ok(found, "session without persistedAt should load");
     assert.equal(found.persistedAt, 0, "should default to 0");
@@ -106,96 +90,74 @@ describe("backward compatibility — old session formats", () => {
   });
 
   it("loads sessions missing status (pre-persist-exited era)", () => {
-    const sessions = readRawSessions();
-    const oldSession = {
-      claudeSessionId: `${TEST_PREFIX}no-status`,
-      workingDirectory: "/tmp",
-      name: "BackCompat_NoStatus",
-      autonomousMode: true,
-      persistedAt: Date.now(),
-    };
-    testIds.push(oldSession.claudeSessionId);
-    sessions.push(oldSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-no-status",
+        workingDirectory: "/tmp",
+        name: "BackCompat_NoStatus",
+        autonomousMode: true,
+        persistedAt: 1000,
+      },
+    ]);
 
     const loaded = getPersistedSessions();
-    const found = loaded.find(
-      (s) => s.claudeSessionId === oldSession.claudeSessionId,
-    );
+    const found = loaded.find((s) => s.claudeSessionId === "bc-test-no-status");
     assert.ok(found, "session without status should load");
     assert.equal(found.status, undefined, "status should remain undefined");
   });
 
   it("loads minimal session (only 3 required fields)", () => {
-    const sessions = readRawSessions();
-    const minimalSession = {
-      claudeSessionId: `${TEST_PREFIX}minimal`,
-      workingDirectory: "/tmp",
-      name: "BackCompat_Minimal",
-    };
-    testIds.push(minimalSession.claudeSessionId);
-    sessions.push(minimalSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-minimal",
+        workingDirectory: "/tmp",
+        name: "BackCompat_Minimal",
+      },
+    ]);
 
     const loaded = getPersistedSessions();
-    const found = loaded.find(
-      (s) => s.claudeSessionId === minimalSession.claudeSessionId,
-    );
+    const found = loaded.find((s) => s.claudeSessionId === "bc-test-minimal");
     assert.ok(found, "minimal session should load");
     assert.equal(found.autonomousMode, true);
     assert.equal(found.persistedAt, 0);
   });
 
   it("rejects sessions missing name", () => {
-    const sessions = readRawSessions();
-    const badSession = {
-      claudeSessionId: `${TEST_PREFIX}no-name`,
-      workingDirectory: "/tmp",
-      autonomousMode: true,
-      persistedAt: Date.now(),
-    };
-    testIds.push(badSession.claudeSessionId);
-    sessions.push(badSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-no-name",
+        workingDirectory: "/tmp",
+        autonomousMode: true,
+        persistedAt: 1000,
+      },
+    ]);
 
     const loaded = getPersistedSessions();
-    const found = loaded.find(
-      (s) => s.claudeSessionId === badSession.claudeSessionId,
-    );
+    const found = loaded.find((s) => s.claudeSessionId === "bc-test-no-name");
     assert.equal(found, undefined, "session without name should be rejected");
   });
 
   it("rejects sessions missing claudeSessionId", () => {
-    const sessions = readRawSessions();
-    const badSession = {
-      workingDirectory: "/tmp",
-      name: "BackCompat_NoId",
-      autonomousMode: true,
-    };
-    sessions.push(badSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        workingDirectory: "/tmp",
+        name: "BackCompat_NoId",
+        autonomousMode: true,
+      },
+    ]);
 
     const loaded = getPersistedSessions();
-    const found = loaded.find(
-      (s) => s.name === "BackCompat_NoId" && !s.claudeSessionId,
-    );
-    assert.equal(
-      found,
-      undefined,
-      "session without claudeSessionId should be rejected",
-    );
+    assert.equal(loaded.length, 0, "session without claudeSessionId rejected");
   });
 
   it("old sessions appear in org chart as running", () => {
-    const sessions = readRawSessions();
-    const oldSession = {
-      claudeSessionId: `${TEST_PREFIX}orgchart-old`,
-      workingDirectory: "/tmp",
-      name: "BackCompat_OrgChart",
-    };
-    testIds.push(oldSession.claudeSessionId);
-    sessions.push(oldSession);
-    writeRawSessions(sessions);
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-orgchart-old",
+        workingDirectory: "/tmp",
+        name: "BackCompat_OrgChart",
+      },
+    ]);
 
     const chart = buildOrgChart();
     const node = findByName(chart, "BackCompat_OrgChart");
@@ -208,25 +170,21 @@ describe("backward compatibility — old session formats", () => {
   });
 
   it("old sessions with manager field appear in hierarchy", () => {
-    const id1 = `${TEST_PREFIX}parent-old`;
-    const id2 = `${TEST_PREFIX}child-old`;
-    testIds.push(id1, id2);
-
-    persistSession({
-      claudeSessionId: id1,
-      workingDirectory: "/tmp",
-      name: "BackCompat_Manager",
-      autonomousMode: true,
-      persistedAt: Date.now(),
-    });
-    persistSession({
-      claudeSessionId: id2,
-      workingDirectory: "/tmp",
-      name: "BackCompat_Worker",
-      autonomousMode: true,
-      persistedAt: Date.now(),
-      manager: "BackCompat_Manager",
-    });
+    writeRawSessions([
+      {
+        claudeSessionId: "bc-test-parent",
+        workingDirectory: "/tmp",
+        name: "BackCompat_Manager",
+        persistedAt: 1000,
+      },
+      {
+        claudeSessionId: "bc-test-child",
+        workingDirectory: "/tmp",
+        name: "BackCompat_Worker",
+        manager: "BackCompat_Manager",
+        persistedAt: 1000,
+      },
+    ]);
 
     const chart = buildOrgChart();
     const manager = findByName(chart, "BackCompat_Manager");
