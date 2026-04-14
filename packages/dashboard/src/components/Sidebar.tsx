@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import { focusTerminal } from "../hooks/useTerminal";
 import {
@@ -231,6 +237,7 @@ export function Sidebar() {
     sidebarViewMode,
     hierarchyOrder,
   } = useSidebarData();
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
   const {
     fetchSessions,
     fetchProjects,
@@ -405,8 +412,9 @@ export function Sidebar() {
 
   return (
     <aside
-      className="absolute inset-y-0 left-0 z-20 flex w-56 shrink-0 flex-col overflow-y-auto md:relative md:w-64"
+      className="absolute inset-y-0 left-0 z-20 flex shrink-0 flex-col overflow-y-auto md:relative"
       style={{
+        width: sidebarWidth,
         borderRight: `1px solid ${page.border}`,
         background: page.bg,
       }}
@@ -724,6 +732,77 @@ export function Sidebar() {
         ))}
       </div>
     </aside>
+  );
+}
+
+export function SidebarResizeHandle() {
+  const page = THEMES[useStore((s) => s.theme)].page;
+  const setSidebarWidth = useStore((s) => s.setSidebarWidth);
+  const resetSidebarWidth = useStore((s) => s.resetSidebarWidth);
+  const [dragging, setDragging] = useState(false);
+  const listenersRef = useRef<{
+    move: (ev: MouseEvent) => void;
+    up: () => void;
+  } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (listenersRef.current) {
+        document.removeEventListener("mousemove", listenersRef.current.move);
+        document.removeEventListener("mouseup", listenersRef.current.up);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        listenersRef.current = null;
+      }
+    };
+  }, []);
+
+  const onMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setDragging(true);
+
+      const onMouseMove = (ev: MouseEvent) => {
+        setSidebarWidth(ev.clientX);
+      };
+      const onMouseUp = () => {
+        setDragging(false);
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        listenersRef.current = null;
+      };
+
+      listenersRef.current = { move: onMouseMove, up: onMouseUp };
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [setSidebarWidth],
+  );
+
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: resize drag handle
+    <div
+      onMouseDown={onMouseDown}
+      onDoubleClick={resetSidebarWidth}
+      className="relative z-20 shrink-0 transition-colors"
+      style={{
+        width: 4,
+        cursor: "col-resize",
+        background: dragging ? page.statusFg : "transparent",
+      }}
+      onMouseEnter={(e) => {
+        if (!dragging)
+          (e.currentTarget as HTMLElement).style.background = page.border;
+      }}
+      onMouseLeave={(e) => {
+        if (!dragging)
+          (e.currentTarget as HTMLElement).style.background = "transparent";
+      }}
+    />
   );
 }
 

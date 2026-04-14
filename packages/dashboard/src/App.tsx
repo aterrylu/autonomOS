@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Header } from "./components/Header";
 import { SessionViewManager } from "./components/SessionViewManager";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
 import { DragProvider } from "./layout/DragContext";
@@ -227,6 +227,7 @@ export function App() {
                   onClick={() => useStore.getState().toggleSidebar()}
                 />
                 <Sidebar />
+                <SidebarResizeHandle />
               </>
             )}
             <SessionViewManager />
