@@ -182,7 +182,7 @@ function createMcpServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `Missing required parameter 'agent'. Usage: kill_agent(agent: "AgentName")`,
+              text: `Missing parameter: provide 'agent' or 'name'. Usage: kill_agent(agent: "AgentName")`,
             },
           ],
           isError: true,
@@ -245,7 +245,7 @@ function createMcpServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `Missing required parameter 'agent'. Usage: set_manager(agent: "AgentName", manager: "ManagerName")`,
+              text: `Missing parameter: provide 'agent' or 'name'. Usage: set_manager(agent: "AgentName", manager: "ManagerName")`,
             },
           ],
           isError: true,

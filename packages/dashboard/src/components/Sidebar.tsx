@@ -612,7 +612,7 @@ export function Sidebar() {
 
           {hierarchyTree.map((node, idx) => (
             <HierarchyNodeRow
-              key={node.org.name ?? idx}
+              key={node.org.name ?? node.org.claudeSessionId ?? `node-${idx}`}
               node={node}
               depth={0}
               groupKey="__root__"
@@ -1305,7 +1305,7 @@ function HierarchyNodeRow({
         !isCollapsed &&
         node.children.map((child, idx) => (
           <HierarchyNodeRow
-            key={child.org.name ?? idx}
+            key={child.org.name ?? child.org.claudeSessionId ?? `child-${idx}`}
             node={child}
             depth={depth + 1}
             groupKey={nodeName.toLowerCase()}
