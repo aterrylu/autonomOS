@@ -333,6 +333,9 @@ export const THEMES: Record<ThemeName, AppTheme> = {
 
 const THEME_ORDER: ThemeName[] = ["midnight", "daylight", "void"];
 
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_DEFAULT_WIDTH = 256;
+
 function isThemeName(value: unknown): value is ThemeName {
   return typeof value === "string" && value in THEMES;
 }
@@ -408,6 +411,7 @@ interface AppState {
   sidebarViewMode: "flat" | "hierarchy";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
+  sidebarWidth: number;
   autonomousMode: boolean;
   terminalRenderer: "xterm" | "ghostty-web";
   paneOrder: string[];
@@ -445,6 +449,8 @@ interface AppState {
   // Actions
   cycleTheme: () => void;
   toggleSidebar: () => void;
+  setSidebarWidth: (width: number) => void;
+  resetSidebarWidth: () => void;
   toggleAutonomousMode: () => void;
   toggleViewMode: () => void;
   setViewMode: (mode: "terminal" | "conversation") => void;
@@ -592,6 +598,7 @@ export const useStore = create<AppState>()(
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
+        sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         autonomousMode: true,
         terminalRenderer: "xterm",
         paneOrder: [],
@@ -611,6 +618,16 @@ export const useStore = create<AppState>()(
           set({ theme: next });
         },
         toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
+        setSidebarWidth: (width: number) => {
+          if (!Number.isFinite(width)) return;
+          set({
+            sidebarWidth: Math.max(
+              SIDEBAR_MIN_WIDTH,
+              Math.min(width, window.innerWidth * 0.5),
+            ),
+          });
+        },
+        resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH }),
         toggleAutonomousMode: () =>
           set({ autonomousMode: !get().autonomousMode }),
         toggleViewMode: () =>
@@ -1663,6 +1680,7 @@ export const useStore = create<AppState>()(
         sidebarViewMode: state.sidebarViewMode,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
+        sidebarWidth: state.sidebarWidth,
         autonomousMode: state.autonomousMode,
         terminalRenderer: state.terminalRenderer,
         showExitedAgents: state.showExitedAgents,
@@ -1686,6 +1704,15 @@ export const useStore = create<AppState>()(
           merged.viewMode = saved.viewMode;
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
+        if (
+          typeof saved?.sidebarWidth === "number" &&
+          Number.isFinite(saved.sidebarWidth) &&
+          saved.sidebarWidth >= SIDEBAR_MIN_WIDTH
+        )
+          merged.sidebarWidth = Math.min(
+            saved.sidebarWidth,
+            window.innerWidth * 0.5,
+          );
         if (typeof saved?.autonomousMode === "boolean")
           merged.autonomousMode = saved.autonomousMode;
         if (
