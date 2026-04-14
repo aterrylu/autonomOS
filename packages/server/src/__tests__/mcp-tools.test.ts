@@ -66,8 +66,10 @@ describe("shared MCP tool definitions", () => {
     assert.deepEqual(TOOL_SEND.inputSchema.required, ["to", "message"]);
   });
 
-  it("kill_agent requires agent", () => {
-    assert.deepEqual(TOOL_KILL_AGENT.inputSchema.required, ["agent"]);
+  it("kill_agent accepts agent or name (both optional)", () => {
+    assert.equal(TOOL_KILL_AGENT.inputSchema.required, undefined);
+    assert.ok(TOOL_KILL_AGENT.inputSchema.properties.agent);
+    assert.ok(TOOL_KILL_AGENT.inputSchema.properties.name);
   });
 
   it("list_agents has no required params", () => {

@@ -278,7 +278,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      const { to, message } = args as { to: string; message: string };
+      const { to, message } = args as { to?: string; message?: string };
+      if (!to || !message) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing required parameter(s). Usage: send(to: "agent://name", message: "your message")`,
+            },
+          ],
+          isError: true,
+        };
+      }
       const requestId = crypto.randomUUID();
       const wsMsg: GatewayWsMessage = {
         type: "send",
@@ -399,15 +410,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "kill_agent": {
-      const { agent } = args as { agent: string };
+      const { agent, name: nameAlias } = args as {
+        agent?: string;
+        name?: string;
+      };
+      const target = agent || nameAlias;
+      if (!target) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing parameter: provide 'agent' or 'name'. Usage: kill_agent(agent: "AgentName")`,
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
         const result = await serverFetch(
-          `/api/sessions/${encodeURIComponent(agent)}`,
+          `/api/sessions/${encodeURIComponent(target)}`,
           { method: "DELETE" },
         );
         if (result.isError) return result;
         return {
-          content: [{ type: "text", text: `Agent "${agent}" terminated.` }],
+          content: [{ type: "text", text: `Agent "${target}" terminated.` }],
         };
       } catch (err) {
         return {
@@ -423,10 +449,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "set_manager": {
-      const { agent, manager } = args as { agent: string; manager?: string };
+      const {
+        agent,
+        name: nameAlias,
+        manager,
+      } = args as {
+        agent?: string;
+        name?: string;
+        manager?: string;
+      };
+      const setTarget = agent || nameAlias;
+      if (!setTarget) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing parameter: provide 'agent' or 'name'. Usage: set_manager(agent: "AgentName", manager: "ManagerName")`,
+            },
+          ],
+          isError: true,
+        };
+      }
       return serverFetch("/api/org/manager", {
         method: "PUT",
-        body: JSON.stringify({ agent, manager: manager ?? null }),
+        body: JSON.stringify({ agent: setTarget, manager: manager ?? null }),
       });
     }
 
