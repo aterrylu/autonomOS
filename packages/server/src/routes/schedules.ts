@@ -135,10 +135,13 @@ scheduleRouter.post("/", async (c) => {
     const created = createSchedule(config);
     addScheduleJob(created.name, created);
 
+    // Re-read from disk — addScheduleJob updates nextRunAt on disk
+    const fresh = getSchedule(created.name) ?? created;
+
     return c.json({
       ok: true,
       message: `Schedule "${created.name}" created`,
-      schedule: created,
+      schedule: fresh,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

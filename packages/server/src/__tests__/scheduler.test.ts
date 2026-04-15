@@ -506,28 +506,33 @@ describe("scheduler engine", () => {
       assert.ok(executorCalled, "catch-up should fire for past one-time");
     });
 
-    it("fires immediately when once: date is in the past (creation path)", () => {
+    it("does not fire for past once: dates (sets nextRunAt only)", () => {
       const pastDate = new Date(Date.now() - 60_000).toISOString();
+
+      // Use _setExecutors to bypass real executors, track if called
+      let executorCalls = 0;
+      _setExecutors(() => {
+        executorCalls++;
+      }, null);
+
       createSchedule(
         makeSchedule({
-          name: "once-past-create",
+          name: "once-past-noop",
           schedule: `once:${pastDate}`,
         }),
       );
 
-      let executorCalled = false;
-      _setExecutors(() => {
-        executorCalled = true;
-      }, null);
+      // Don't init scheduler — test addScheduleJob directly
+      addScheduleJob("once-past-noop");
 
-      initScheduler();
-      // addScheduleJob is called during init — should fire immediately
-      assert.ok(executorCalled, "past once: schedule should fire on creation");
+      // Should NOT have fired (only catch-up on init fires past schedules)
+      assert.equal(executorCalls, 0, "past once: should not fire on creation");
 
-      // Schedule should be disabled after firing
-      const schedule = getSchedule("once-past-create");
+      // nextRunAt should still be set
+      const schedule = getSchedule("once-past-noop");
       assert.ok(schedule);
-      assert.equal(schedule!.enabled, false);
+      assert.equal(schedule!.state.nextRunAt, pastDate);
+      assert.equal(schedule!.enabled, true, "should remain enabled");
     });
 
     it("sets nextRunAt before firing for once: schedules", () => {

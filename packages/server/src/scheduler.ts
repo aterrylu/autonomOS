@@ -252,8 +252,8 @@ function addOneTimeJob(name: string, schedule: Schedule): void {
   const delayMs = target.getTime() - Date.now();
 
   if (delayMs <= 0) {
-    // Fire immediately for past/present dates
-    fireAndDisableOneTime(name);
+    // Past date — no timer needed. catchUpIfNeeded handles server-restart
+    // catch-up separately. Newly created schedules with past dates won't fire.
     return;
   }
 

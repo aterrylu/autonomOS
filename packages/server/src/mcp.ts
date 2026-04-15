@@ -407,11 +407,13 @@ function createMcpServer(): McpServer {
           args as unknown as import("@autonomos/core").ScheduleConfig;
         const schedule = createSchedule(config);
         addScheduleJob(schedule.name, schedule);
+        // Re-read from disk — addScheduleJob updates nextRunAt on disk
+        const fresh = getSchedule(schedule.name) ?? schedule;
         return {
           content: [
             {
               type: "text",
-              text: `Schedule "${schedule.name}" created. Next run: ${schedule.state.nextRunAt ?? "pending"}`,
+              text: `Schedule "${fresh.name}" created. Next run: ${fresh.state.nextRunAt ?? "pending"}`,
             },
           ],
         };
