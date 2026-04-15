@@ -50,21 +50,41 @@ export interface AppSettings {
 
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
 
+const DEFAULT_CHANNELS = ["server:autonomos"];
+
 export function getSettings(): AppSettings {
+  let data: AppSettings;
   try {
     const raw = readFileSync(SETTINGS_FILE, "utf-8");
-    const data = JSON.parse(raw);
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      return {};
+    const parsed = JSON.parse(raw);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      console.warn(
+        `Settings file ${SETTINGS_FILE} does not contain a JSON object — ignoring`,
+      );
+      data = {};
+    } else {
+      data = parsed as AppSettings;
     }
-    return data as AppSettings;
   } catch (err: unknown) {
-    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-      return {};
+    const isNotFound =
+      err instanceof Error && "code" in err && err.code === "ENOENT";
+    if (!isNotFound) {
+      console.warn(`Failed to read settings: ${err}`);
     }
-    console.warn(`Failed to read settings: ${err}`);
-    return {};
+    data = {};
   }
+
+  // Default channels so MCP tools work out of the box.
+  // An explicit empty array means "user disabled all channels" — don't override.
+  if (data.channels == null) {
+    data.channels = DEFAULT_CHANNELS;
+  }
+
+  return data;
 }
 
 export function updateSettings(partial: Partial<AppSettings>): AppSettings {

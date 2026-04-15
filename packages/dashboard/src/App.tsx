@@ -23,12 +23,18 @@ function LoginPage() {
     e.preventDefault();
     if (!token.trim()) return;
     setError("");
-    const res = await fetch("/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: token.trim() }),
-    }).catch(() => null);
-    if (res?.ok) {
+    let res: Response;
+    try {
+      res = await fetch("/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim() }),
+      });
+    } catch {
+      setError("Cannot reach server — check that it is running");
+      return;
+    }
+    if (res.ok) {
       window.location.reload();
     } else {
       setError("Invalid token");
@@ -44,6 +50,14 @@ function LoginPage() {
         <h1 className="text-lg font-semibold text-center">autonomOS</h1>
         <p className="text-xs text-center" style={{ color: page.statusFg }}>
           Enter your access token to continue
+        </p>
+        <p
+          className="text-xs text-center leading-relaxed"
+          style={{ color: page.statusFg, opacity: 0.7 }}
+        >
+          Find your token in the server console output
+          <br />
+          or in <code className="font-mono">~/.autonomos/token</code>
         </p>
         <input
           type="password"
