@@ -245,9 +245,15 @@ function addOneTimeJob(name: string, schedule: Schedule): void {
   const target = parseOneTimeDate(schedule);
   if (!target) return;
 
+  // Always persist nextRunAt so the dashboard/API shows the scheduled time
+  schedule.state.nextRunAt = target.toISOString();
+  saveSchedule(name, schedule);
+
   const delayMs = target.getTime() - Date.now();
 
   if (delayMs <= 0) {
+    // Fire immediately for past/present dates
+    fireAndDisableOneTime(name);
     return;
   }
 
@@ -257,9 +263,6 @@ function addOneTimeJob(name: string, schedule: Schedule): void {
   }, delayMs);
 
   oneTimeTimers.set(name, timer);
-
-  schedule.state.nextRunAt = target.toISOString();
-  saveSchedule(name, schedule);
 }
 
 // ── Catch-up ────────────────────────────────────────────────────

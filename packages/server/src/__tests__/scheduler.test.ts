@@ -506,6 +506,46 @@ describe("scheduler engine", () => {
       assert.ok(executorCalled, "catch-up should fire for past one-time");
     });
 
+    it("fires immediately when once: date is in the past (creation path)", () => {
+      const pastDate = new Date(Date.now() - 60_000).toISOString();
+      createSchedule(
+        makeSchedule({
+          name: "once-past-create",
+          schedule: `once:${pastDate}`,
+        }),
+      );
+
+      let executorCalled = false;
+      _setExecutors(() => {
+        executorCalled = true;
+      }, null);
+
+      initScheduler();
+      // addScheduleJob is called during init — should fire immediately
+      assert.ok(executorCalled, "past once: schedule should fire on creation");
+
+      // Schedule should be disabled after firing
+      const schedule = getSchedule("once-past-create");
+      assert.ok(schedule);
+      assert.equal(schedule!.enabled, false);
+    });
+
+    it("sets nextRunAt before firing for once: schedules", () => {
+      const futureDate = new Date(Date.now() + 120_000).toISOString();
+      createSchedule(
+        makeSchedule({
+          name: "once-nextrun",
+          schedule: `once:${futureDate}`,
+        }),
+      );
+
+      initScheduler();
+
+      const schedule = getSchedule("once-nextrun");
+      assert.ok(schedule);
+      assert.equal(schedule!.state.nextRunAt, futureDate);
+    });
+
     it("handles invalid one-time date gracefully", () => {
       createSchedule(
         makeSchedule({
