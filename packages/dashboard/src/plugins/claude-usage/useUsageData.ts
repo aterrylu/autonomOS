@@ -32,6 +32,16 @@ export function useUsageData() {
     }
   }, []);
 
+  const refetch = useCallback(async () => {
+    setData(null);
+    setError(null);
+    try {
+      await fetchUsage();
+    } catch {
+      setError("Fetch failed");
+    }
+  }, [fetchUsage]);
+
   useEffect(() => {
     cancelledRef.current = false;
     fetchUsage();
@@ -42,5 +52,5 @@ export function useUsageData() {
     };
   }, [fetchUsage]);
 
-  return { data, error, displayMode, setDisplayMode, refetch: fetchUsage };
+  return { data, error, displayMode, setDisplayMode, refetch };
 }
