@@ -238,9 +238,11 @@ function SetupPanel({
 function ErrorPanel({
   error,
   onClose,
+  onReconfigure,
 }: {
   error: string;
   onClose: () => void;
+  onReconfigure: () => void;
 }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -254,10 +256,17 @@ function ErrorPanel({
       >
         {error}
       </div>
-      <div style={{ color: page.statusFg }}>
-        Session cookie may have expired. Click &ldquo;setup needed&rdquo; in the
-        status bar to reconfigure.
+      <div className="mb-3" style={{ color: page.statusFg }}>
+        Session cookie may have expired or is invalid.
       </div>
+      <button
+        type="button"
+        onClick={onReconfigure}
+        className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer"
+        style={{ background: "#16825d", color: "#fff" }}
+      >
+        Reconfigure
+      </button>
     </FloatingPanel>
   );
 }
@@ -266,7 +275,9 @@ export function UsageStatusBarItem() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const { data, error, displayMode, setDisplayMode, refetch } = useUsageData();
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panel, setPanel] = useState<"none" | "error" | "setup" | "usage">(
+    "none",
+  );
   const toggleRef = useRef<HTMLButtonElement>(null);
 
   if (error) {
@@ -299,13 +310,13 @@ export function UsageStatusBarItem() {
           type="button"
           className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
           style={{ color: "#e6b450" }}
-          onClick={() => setPanelOpen(!panelOpen)}
+          onClick={() => setPanel(panel === "none" ? "setup" : "none")}
           title="Click to set up Claude usage tracking"
         >
           <Codicon name="claude" size={14} /> setup needed
         </button>
-        {panelOpen && (
-          <SetupPanel onClose={() => setPanelOpen(false)} onSaved={refetch} />
+        {panel === "setup" && (
+          <SetupPanel onClose={() => setPanel("none")} onSaved={refetch} />
         )}
       </div>
     );
@@ -318,13 +329,20 @@ export function UsageStatusBarItem() {
           type="button"
           className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
           style={{ color: "#ea6c73" }}
-          onClick={() => setPanelOpen(!panelOpen)}
+          onClick={() => setPanel(panel === "none" ? "error" : "none")}
           title={data.error}
         >
           <Codicon name="claude" size={14} /> err
         </button>
-        {panelOpen && (
-          <ErrorPanel error={data.error} onClose={() => setPanelOpen(false)} />
+        {panel === "error" && (
+          <ErrorPanel
+            error={data.error}
+            onClose={() => setPanel("none")}
+            onReconfigure={() => setPanel("setup")}
+          />
+        )}
+        {panel === "setup" && (
+          <SetupPanel onClose={() => setPanel("none")} onSaved={refetch} />
         )}
       </div>
     );
@@ -350,7 +368,7 @@ export function UsageStatusBarItem() {
         type="button"
         className="inline-flex items-center gap-2 cursor-pointer hover:opacity-80"
         style={{ color: page.fg }}
-        onClick={() => setPanelOpen(!panelOpen)}
+        onClick={() => setPanel(panel === "none" ? "usage" : "none")}
         title="Click for rate limit details"
       >
         <Codicon name="claude" size={14} />
@@ -361,12 +379,12 @@ export function UsageStatusBarItem() {
           <WindowLabel label="7d" window={data.sevenDay} mode={displayMode} />
         )}
       </button>
-      {panelOpen && (
+      {panel === "usage" && (
         <UsagePanel
           data={data}
           displayMode={displayMode}
           onDisplayModeChange={setDisplayMode}
-          onClose={() => setPanelOpen(false)}
+          onClose={() => setPanel("none")}
           toggleRef={toggleRef}
         />
       )}
