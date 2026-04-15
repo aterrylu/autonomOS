@@ -16,6 +16,7 @@ import type { AgentProvider, ResolvedSpawnOptions } from "@autonomos/core";
 import {
   buildBaseEnv,
   buildSystemPrompt,
+  commonBinaryCandidates,
   HOOK_CMD,
   resolveBinaryFromCandidates,
 } from "./shared.js";
@@ -54,14 +55,9 @@ export const geminiCliProvider: AgentProvider = {
   },
 
   resolveBinary(): string {
-    const home = process.env.HOME;
     return resolveBinaryFromCandidates(
       "gemini",
-      [
-        ...(home ? [`${home}/.local/bin/gemini`] : []),
-        "/usr/local/bin/gemini",
-        "/opt/homebrew/bin/gemini",
-      ],
+      commonBinaryCandidates("gemini"),
       binaryCache,
     );
   },
