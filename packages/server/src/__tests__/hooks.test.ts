@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
+  clearAgentState,
   clearNotifications,
   getAgentState,
   hooksRouter,
@@ -11,12 +12,6 @@ async function postHookEvent(
   sessionId: string,
   event: Record<string, unknown>,
 ) {
-  const req = new Request(`http://localhost/api/hooks/${sessionId}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(event),
-  });
-  // Use Hono's fetch to test the route
   return hooksRouter.request(`/${sessionId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -29,6 +24,7 @@ describe("hooks — agent status derivation", () => {
 
   afterEach(() => {
     clearNotifications(sid);
+    clearAgentState(sid);
   });
 
   it("SessionStart → ready", async () => {
@@ -146,6 +142,114 @@ describe("hooks — agent status derivation", () => {
   });
 });
 
+describe("hooks — sticky idle state", () => {
+  const sid = "test-sticky-001";
+
+  afterEach(() => {
+    clearNotifications(sid);
+    clearAgentState(sid);
+  });
+
+  it("PostToolUse after Stop does NOT override idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    // Late PostToolUse (e.g., from recap or delayed event) should be ignored
+    await postHookEvent(sid, { hook_event_name: "PostToolUse" });
+    assert.equal(getAgentState(sid).status, "idle");
+  });
+
+  it("SubagentStop after Stop does NOT override idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, { hook_event_name: "SubagentStop" });
+    assert.equal(getAgentState(sid).status, "idle");
+  });
+
+  it("PostCompact after Stop does NOT override idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    assert.equal(getAgentState(sid).status, "idle");
+  });
+
+  it("PostToolUseFailure after Stop does NOT override idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, {
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+    });
+    assert.equal(getAgentState(sid).status, "idle");
+  });
+
+  it("UserPromptSubmit CAN exit idle (new turn)", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    assert.equal(getAgentState(sid).status, "working");
+  });
+
+  it("PreToolUse CAN exit idle (agent resumed work)", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+    });
+    assert.equal(getAgentState(sid).status, "tool_running");
+  });
+
+  it("SessionEnd CAN exit idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, { hook_event_name: "SessionEnd" });
+    assert.equal(getAgentState(sid).status, "stopped");
+  });
+
+  it("PermissionRequest CAN exit idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, { hook_event_name: "PermissionRequest" });
+    assert.equal(getAgentState(sid).status, "needs_input");
+  });
+
+  it("Notification (permission_prompt) CAN exit idle", async () => {
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+
+    await postHookEvent(sid, {
+      hook_event_name: "Notification",
+      notification_type: "permission_prompt",
+    });
+    assert.equal(getAgentState(sid).status, "needs_input");
+  });
+
+  it("stopped is also sticky — PostToolUse ignored", async () => {
+    await postHookEvent(sid, { hook_event_name: "SessionEnd" });
+    assert.equal(getAgentState(sid).status, "stopped");
+
+    await postHookEvent(sid, { hook_event_name: "PostToolUse" });
+    assert.equal(getAgentState(sid).status, "stopped");
+  });
+
+  it("SessionStart CAN exit stopped (session resumed)", async () => {
+    await postHookEvent(sid, { hook_event_name: "SessionEnd" });
+    assert.equal(getAgentState(sid).status, "stopped");
+
+    await postHookEvent(sid, { hook_event_name: "SessionStart" });
+    assert.equal(getAgentState(sid).status, "ready");
+  });
+});
+
 describe("hooks — notifications", () => {
   const sid = "test-notif-001";
 
@@ -157,13 +261,15 @@ describe("hooks — notifications", () => {
     const res = await postHookEvent(sid, { hook_event_name: "Stop" });
     const body = await res.json();
     assert.equal(body.ok, true);
-    // Check via the bulk endpoint
     const bulk = await hooksRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread, 1);
   });
 
   it("Notification event creates a notification", async () => {
+    // Ensure agent has state so bulk endpoint includes it
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    clearNotifications(sid);
     await postHookEvent(sid, { hook_event_name: "Notification" });
     const bulk = await hooksRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
