@@ -22,7 +22,7 @@ function maskSettings(settings: AppSettings) {
     anthropicBaseUrl: settings.anthropicBaseUrl || null,
     anthropicAuthToken: redact(settings.anthropicAuthToken),
     anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
-    channels: settings.channels ?? ["server:autonomos"],
+    channels: settings.channels ?? [],
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
     terminalRenderer: settings.terminalRenderer ?? "xterm",
