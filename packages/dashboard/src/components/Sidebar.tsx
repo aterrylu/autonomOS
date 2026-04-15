@@ -944,7 +944,7 @@ function SessionRow({
         />
       )}
       <AgentStatusIcon
-        status={(agentState?.status as AgentStatus) ?? "working"}
+        status={(agentState?.status as AgentStatus) ?? "unknown"}
         size={14}
       />
       <div className="flex-1 min-w-0">

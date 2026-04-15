@@ -59,7 +59,7 @@ export function TabBar({ leafId, tabs, activeTabIndex }: TabBarProps) {
 
   function getTabStatus(tab: TabItem): AgentStatus | null {
     if (tab.pane.type !== "session") return null;
-    return (agentStatuses[tab.pane.id]?.status as AgentStatus) ?? "working";
+    return (agentStatuses[tab.pane.id]?.status as AgentStatus) ?? "unknown";
   }
 
   function handleTabDragStart(e: React.DragEvent, tab: TabItem) {

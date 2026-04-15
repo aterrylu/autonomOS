@@ -68,6 +68,17 @@ const CLEAR_TOOL = {
 const notifications = new Map<string, SessionNotification[]>();
 const agentStates = new Map<string, AgentState>();
 
+/** Events that can transition OUT of idle/stopped state.
+ *  Late-arriving PostToolUse, SubagentStop, etc. are ignored when idle. */
+const IDLE_EXIT_EVENTS = new Set([
+  "UserPromptSubmit",
+  "SessionStart",
+  "SessionEnd",
+  "PermissionRequest",
+  "Notification",
+  "PreToolUse",
+]);
+
 /** Events that generate a user-visible notification badge */
 const NOTIFY_EVENTS = new Set(["Notification", "Stop", "PermissionRequest"]);
 
@@ -96,6 +107,10 @@ export function clearNotifications(sessionId: string): void {
 
 export function getAgentState(sessionId: string): AgentState {
   return agentStates.get(sessionId) ?? DEFAULT_AGENT_STATE;
+}
+
+export function clearAgentState(sessionId: string): void {
+  agentStates.delete(sessionId);
 }
 
 /** Derive agent status from a hook event.
@@ -210,22 +225,29 @@ hooksRouter.post("/:sessionId", async (c) => {
   const statusUpdate = deriveStatus(body);
   if (statusUpdate.status) {
     const prev = getAgentState(sessionId);
-    // Log transitions to warning-producing statuses for debugging
-    if (
-      statusUpdate.status === "needs_input" ||
-      statusUpdate.status === "error"
-    ) {
-      console.log(
-        `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${statusUpdate.status}` +
-          ` (event=${event}, notification_type=${body.notification_type ?? "none"})`,
-      );
+
+    // Guard: idle and stopped are "sticky" states — only specific events
+    // can transition out. Late-arriving PostToolUse etc. are dropped.
+    const isSticky = prev.status === "idle" || prev.status === "stopped";
+    if (isSticky && !IDLE_EXIT_EVENTS.has(event)) {
+      // Drop the transition — the agent is done with this turn
+    } else {
+      if (
+        statusUpdate.status === "needs_input" ||
+        statusUpdate.status === "error"
+      ) {
+        console.log(
+          `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${statusUpdate.status}` +
+            ` (event=${event}, notification_type=${body.notification_type ?? "none"})`,
+        );
+      }
+      agentStates.set(sessionId, {
+        ...prev,
+        ...statusUpdate,
+        lastEvent: event,
+        updatedAt: timestamp,
+      });
     }
-    agentStates.set(sessionId, {
-      ...prev,
-      ...statusUpdate,
-      lastEvent: event,
-      updatedAt: timestamp,
-    });
   }
 
   // Store notification-worthy events
