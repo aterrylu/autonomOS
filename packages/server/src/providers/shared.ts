@@ -7,7 +7,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
 
 // ── Base context injected into every spawned agent session ────
@@ -52,16 +53,79 @@ export const HOOK_CMD =
   ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
   " >/dev/null 2>&1";
 
-// ── Common PATH extensions ───────────────────────────────────
-const EXTRA_PATH_DIRS = [
-  `${process.env.HOME}/.local/bin`,
-  `${process.env.HOME}/.bun/bin`,
-  "/usr/local/bin",
-];
+// ── Binary discovery helpers ─────────────────────────────────
+
+const HOME = process.env.HOME || "/tmp";
+if (!process.env.HOME) {
+  console.warn(
+    "[providers] $HOME is not set — binary candidate paths will use /tmp. " +
+      "Set HOME in ecosystem.config.cjs env if running under PM2.",
+  );
+}
+
+/**
+ * Find the latest nvm-managed Node bin directory (if nvm is installed).
+ * Returns the bin dir of the highest semver version, or undefined.
+ */
+function findNvmNodeBin(): string | undefined {
+  const nvmDir = join(HOME, ".nvm/versions/node");
+  try {
+    const versions = readdirSync(nvmDir)
+      .filter((d) => d.startsWith("v"))
+      .sort((a, b) => {
+        const pa = a.slice(1).split(".").map(Number);
+        const pb = b.slice(1).split(".").map(Number);
+        for (let i = 0; i < 3; i++) {
+          if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pb[i] ?? 0) - (pa[i] ?? 0);
+        }
+        return 0;
+      });
+    if (versions.length > 0) return join(nvmDir, versions[0], "bin");
+  } catch (err: unknown) {
+    if (
+      !(err instanceof Error) ||
+      (err as NodeJS.ErrnoException).code !== "ENOENT"
+    ) {
+      console.warn("[providers] unexpected error scanning nvm versions:", err);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Well-known directories where CLI binaries are commonly installed.
+ * Computed once at module load. Includes nvm if present on disk.
+ * Used for both PATH enrichment and direct binary candidate resolution.
+ * Keep in sync with EXTRA_PATHS in ecosystem.config.cjs.
+ */
+const BINARY_DIRS: readonly string[] = (() => {
+  const dirs = [
+    join(HOME, ".local/bin"),
+    join(HOME, ".bun/bin"),
+    join(HOME, ".npm-global/bin"),
+    join(HOME, ".cargo/bin"),
+    join(HOME, ".volta/bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/snap/bin",
+    "/usr/bin",
+  ];
+  const nvmBin = findNvmNodeBin();
+  if (nvmBin) dirs.splice(2, 0, nvmBin);
+  return dirs;
+})();
+
+/**
+ * Generate common filesystem candidate paths for a CLI binary.
+ * Each provider can extend this with provider-specific paths.
+ */
+export function commonBinaryCandidates(binaryName: string): string[] {
+  return BINARY_DIRS.map((dir) => join(dir, binaryName));
+}
 
 /**
  * Build the common base environment for any provider.
- * Sets up PATH extensions and AUTONOMOS_* identification vars.
+ * Prepends well-known binary directories to PATH and sets AUTONOMOS_* vars.
  * Providers can extend the returned env with provider-specific vars.
  */
 export function buildBaseEnv(
@@ -69,7 +133,7 @@ export function buildBaseEnv(
   agentName: string,
 ): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
-  env.PATH = [...EXTRA_PATH_DIRS, env.PATH].join(":");
+  env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
   const port = process.env.PORT || "3000";

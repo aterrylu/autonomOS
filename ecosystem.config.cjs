@@ -16,6 +16,22 @@ function loadEnvFile(dir) {
   return env;
 }
 
+// Ensure PM2 child gets a rich PATH so binary detection (`which`) works.
+// Keep in sync with BINARY_DIRS in packages/server/src/providers/shared.ts.
+const HOME = process.env.HOME || "/tmp";
+const EXTRA_PATHS = [
+  join(HOME, ".local/bin"),
+  join(HOME, ".bun/bin"),
+  join(HOME, ".npm-global/bin"),
+  join(HOME, ".cargo/bin"),
+  join(HOME, ".volta/bin"),
+  "/usr/local/bin",
+  "/opt/homebrew/bin",
+  "/snap/bin",
+  "/usr/bin",
+  "/bin",
+].join(":");
+
 module.exports = {
   apps: [
     {
@@ -25,6 +41,7 @@ module.exports = {
       cwd: __dirname,
       env: {
         PORT: 3100,
+        PATH: `${EXTRA_PATHS}:${process.env.PATH || "/usr/bin:/bin"}`,
         ...loadEnvFile(__dirname),
       },
       max_restarts: 10,

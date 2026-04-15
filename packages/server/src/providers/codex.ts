@@ -14,6 +14,7 @@ import type { AgentProvider, ResolvedSpawnOptions } from "@autonomos/core";
 import {
   buildBaseEnv,
   buildSystemPrompt,
+  commonBinaryCandidates,
   resolveBinaryFromCandidates,
 } from "./shared.js";
 
@@ -35,14 +36,9 @@ export const codexProvider: AgentProvider = {
   },
 
   resolveBinary(): string {
-    const home = process.env.HOME;
     return resolveBinaryFromCandidates(
       "codex",
-      [
-        ...(home ? [`${home}/.local/bin/codex`] : []),
-        "/usr/local/bin/codex",
-        "/opt/homebrew/bin/codex",
-      ],
+      commonBinaryCandidates("codex"),
       binaryCache,
     );
   },

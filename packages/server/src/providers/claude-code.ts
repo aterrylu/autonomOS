@@ -12,6 +12,7 @@ import { getSettings } from "../settings.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
+  commonBinaryCandidates,
   HOOK_CMD,
   resolveBinaryFromCandidates,
 } from "./shared.js";
@@ -86,11 +87,7 @@ export const claudeCodeProvider: AgentProvider = {
   resolveBinary(): string {
     return resolveBinaryFromCandidates(
       "claude",
-      [
-        `${process.env.HOME}/.local/bin/claude`,
-        "/usr/local/bin/claude",
-        "/opt/homebrew/bin/claude",
-      ],
+      commonBinaryCandidates("claude"),
       binaryCache,
     );
   },
