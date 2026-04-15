@@ -141,6 +141,19 @@ export function persistSession(session: PersistedSession): void {
       status: session.status ?? existing.status,
     };
   } else {
+    // Clean up exited sessions with the same name to prevent duplicate accumulation.
+    // When a new session reuses a name from an exited one, the exited entry is stale.
+    if (session.name) {
+      const lower = session.name.toLowerCase();
+      for (let i = sessions.length - 1; i >= 0; i--) {
+        if (
+          sessions[i].name?.toLowerCase() === lower &&
+          sessions[i].status === "exited"
+        ) {
+          sessions.splice(i, 1);
+        }
+      }
+    }
     sessions.push(session);
   }
   writeSessions(sessions);
@@ -186,17 +199,23 @@ export function batchUpdatePersistedSessionNames(
   if (dirty) writeSessions(sessions);
 }
 
-/** Update specific fields on a persisted session (by name, case-insensitive) */
+/** Update specific fields on a persisted session (by name, case-insensitive).
+ *  When multiple entries share a name, prefer running over exited. */
 export function updatePersistedSessionByName(
   name: string,
   updates: Partial<Pick<PersistedSession, "manager" | "project" | "template">>,
 ): boolean {
   const sessions = readSessions();
   const lower = name.toLowerCase();
-  const idx = sessions.findIndex(
-    (s) => s.name && s.name.toLowerCase() === lower,
-  );
-  if (idx < 0) return false;
+  const matches = sessions
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => s.name && s.name.toLowerCase() === lower);
+  if (matches.length === 0) return false;
+
+  // Prefer running sessions over exited ones
+  const running = matches.find(({ s }) => s.status !== "exited");
+  const { i: idx } = running ?? matches[0];
+
   sessions[idx] = { ...sessions[idx], ...updates };
   writeSessions(sessions);
   return true;
