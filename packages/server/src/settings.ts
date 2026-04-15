@@ -80,7 +80,7 @@ export function getSettings(): AppSettings {
 
   // Default channels so MCP tools work out of the box.
   // An explicit empty array means "user disabled all channels" — don't override.
-  if (data.channels === undefined) {
+  if (data.channels == null) {
     data.channels = DEFAULT_CHANNELS;
   }
 
