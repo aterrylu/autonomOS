@@ -132,7 +132,7 @@ export const claudeCodeProvider: AgentProvider = {
     // SendUserMessage for structured agent-to-dashboard messaging
     args.push("--brief");
 
-    // Inject configured channels
+    // Inject configured channels (getSettings() deduplicates)
     const { channels } = getSettings();
     if (channels && channels.length > 0) {
       const devChannels = channels.filter((c) => c.startsWith("server:"));

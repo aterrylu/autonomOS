@@ -55,6 +55,30 @@ describe("getSettings", () => {
     assert.deepEqual(settings.channels, custom);
   });
 
+  it("returns default channels when channels is a string (not array)", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ channels: "server:autonomos" }),
+    );
+    const settings = getSettings();
+    assert.deepEqual(settings.channels, ["server:autonomos"]);
+  });
+
+  it("deduplicates channels in settings file", () => {
+    const duped = [
+      "server:autonomos",
+      "server:autonomos",
+      "plugin:discord@claude-plugins-official",
+      "server:autonomos",
+    ];
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ channels: duped }));
+    const settings = getSettings();
+    assert.deepEqual(settings.channels, [
+      "server:autonomos",
+      "plugin:discord@claude-plugins-official",
+    ]);
+  });
+
   it("returns empty settings with defaults for invalid JSON", () => {
     writeFileSync(SETTINGS_FILE, "not json at all");
     const settings = getSettings();
