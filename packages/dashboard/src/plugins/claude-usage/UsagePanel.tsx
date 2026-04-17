@@ -1,8 +1,11 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import type { DisplayMode, RateLimitData, RateLimitWindow } from "./types";
 import { useClickOutside } from "./useClickOutside";
 import { timeUntilReset, utilizationColor } from "./utils";
+
+type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
 function formatPlan(sub?: string): string {
   if (!sub) return "Unknown";
@@ -79,11 +82,274 @@ function WindowDetail({
   );
 }
 
+function CredentialField({
+  label,
+  value,
+  placeholder,
+  emptyLabel,
+  secret,
+  editing,
+  draft,
+  onEdit,
+  onCancel,
+  onDraftChange,
+  inputStyle,
+  statusFg,
+}: {
+  label: string;
+  value: string | null;
+  placeholder: string;
+  emptyLabel: string;
+  secret?: boolean;
+  editing: boolean;
+  draft: string;
+  onEdit: () => void;
+  onCancel: () => void;
+  onDraftChange: (val: string) => void;
+  inputStyle: React.CSSProperties;
+  statusFg: string;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-0.5">
+        <span className="text-[10px]" style={{ color: statusFg }}>
+          {label}
+        </span>
+        {editing ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-[10px] cursor-pointer hover:opacity-80"
+            style={{ color: statusFg }}
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="text-[10px] cursor-pointer hover:opacity-80"
+            style={{ color: "#16825d" }}
+          >
+            {value ? "Change" : "Set"}
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <input
+          type={secret ? "password" : "text"}
+          value={draft}
+          onChange={(e) => onDraftChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full rounded px-2 py-1.5 text-xs font-mono"
+          style={inputStyle}
+        />
+      ) : (
+        <div
+          className="rounded px-2 py-1.5 text-xs font-mono truncate"
+          style={{ ...inputStyle, opacity: 0.8 }}
+        >
+          {value || emptyLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function saveButtonLabel(saving: boolean, saved: boolean): string {
+  if (saved) return "Saved!";
+  if (saving) return "Saving...";
+  return "Save";
+}
+
+function CredentialsSection({
+  page,
+  onRefetch,
+}: {
+  page: PageTheme;
+  onRefetch?: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [maskedKey, setMaskedKey] = useState<string | null>(null);
+  const [maskedOrg, setMaskedOrg] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState(false);
+  const [editingOrg, setEditingOrg] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [orgDraft, setOrgDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!expanded || loaded) return;
+    const controller = new AbortController();
+    fetch("/api/settings", { signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        setMaskedKey(data.claudeSessionKey ?? null);
+        setMaskedOrg(data.claudeOrgId ?? null);
+        setLoaded(true);
+      })
+      .catch((err) => {
+        if (err.name === "AbortError") return;
+        setError(
+          `Failed to load: ${err instanceof Error ? err.message : "unknown"}`,
+        );
+        setLoaded(true);
+      });
+    return () => controller.abort();
+  }, [expanded, loaded]);
+
+  const hasPending =
+    (editingKey && keyDraft.trim()) || (editingOrg && orgDraft.trim());
+
+  async function handleSave(): Promise<void> {
+    if (!hasPending) return;
+    setSaving(true);
+    setError("");
+    try {
+      const body: Record<string, string> = {};
+      if (editingKey && keyDraft.trim())
+        body.claudeSessionKey = keyDraft.trim();
+      if (editingOrg) body.claudeOrgId = orgDraft.trim();
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const errBody = await res.json();
+          if (errBody.error) detail = errBody.error;
+        } catch {}
+        setError(detail);
+        return;
+      }
+      const updated = await res.json();
+      setMaskedKey(updated.claudeSessionKey ?? null);
+      setMaskedOrg(updated.claudeOrgId ?? null);
+      setEditingKey(false);
+      setEditingOrg(false);
+      setKeyDraft("");
+      setOrgDraft("");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+      onRefetch?.();
+    } catch {
+      setError("Could not reach server");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    background: page.border,
+    color: page.fg,
+    border: "none",
+    outline: "none",
+  };
+
+  return (
+    <div
+      className="mt-3 pt-2"
+      style={{ borderTop: `1px solid ${page.border}` }}
+    >
+      <button
+        type="button"
+        className="flex items-center gap-1 w-full cursor-pointer hover:opacity-80"
+        style={{ color: page.statusFg }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <Codicon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
+        <span className="text-[10px] font-medium uppercase tracking-wide">
+          Credentials
+        </span>
+      </button>
+      {expanded && !loaded && (
+        <div className="mt-2 text-[10px]" style={{ color: page.statusFg }}>
+          Loading...
+        </div>
+      )}
+      {expanded && loaded && (
+        <div className="mt-2 space-y-2">
+          <CredentialField
+            label="Session Key"
+            value={maskedKey}
+            placeholder="sk-ant-sid01-..."
+            emptyLabel="Not set"
+            secret
+            editing={editingKey}
+            draft={keyDraft}
+            onEdit={() => {
+              setEditingKey(true);
+              setKeyDraft("");
+            }}
+            onCancel={() => {
+              setEditingKey(false);
+              setKeyDraft("");
+            }}
+            onDraftChange={setKeyDraft}
+            inputStyle={inputStyle}
+            statusFg={page.statusFg}
+          />
+          <CredentialField
+            label="Organization ID"
+            value={maskedOrg}
+            placeholder="UUID (auto-detected if blank)"
+            emptyLabel="Auto-detected"
+            editing={editingOrg}
+            draft={orgDraft}
+            onEdit={() => {
+              setEditingOrg(true);
+              setOrgDraft("");
+            }}
+            onCancel={() => {
+              setEditingOrg(false);
+              setOrgDraft("");
+            }}
+            onDraftChange={setOrgDraft}
+            inputStyle={inputStyle}
+            statusFg={page.statusFg}
+          />
+          {error && (
+            <div
+              className="rounded px-2 py-1.5"
+              style={{ background: "#ea6c7315", color: "#ea6c73" }}
+            >
+              {error}
+            </div>
+          )}
+          {hasPending && (
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{
+                background: saved ? "#238636" : "#16825d",
+                color: "#fff",
+              }}
+            >
+              {saveButtonLabel(saving, saved)}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface UsagePanelProps {
   data: RateLimitData;
   displayMode: DisplayMode;
   onDisplayModeChange: (mode: DisplayMode) => void;
   onClose: () => void;
+  onRefetch?: () => void;
   toggleRef?: React.RefObject<HTMLElement | null>;
 }
 
@@ -92,6 +358,7 @@ export function UsagePanel({
   displayMode,
   onDisplayModeChange,
   onClose,
+  onRefetch,
   toggleRef,
 }: UsagePanelProps) {
   const theme = useStore((s) => s.theme);
@@ -232,6 +499,9 @@ export function UsagePanel({
       <div className="mt-2" style={{ color: page.statusFg }}>
         Updated {timeAgo(data.fetchedAt)}
       </div>
+
+      {/* Credentials config */}
+      <CredentialsSection page={page} onRefetch={onRefetch} />
     </div>
   );
 }

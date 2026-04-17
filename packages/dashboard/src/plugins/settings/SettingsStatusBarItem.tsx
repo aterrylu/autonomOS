@@ -621,30 +621,6 @@ export function SettingsPanel({
         <div style={labelStyle}>Loading...</div>
       ) : (
         <div className="space-y-2.5">
-          <div
-            className="text-[10px] font-medium uppercase tracking-wide"
-            style={labelStyle}
-          >
-            Claude Usage
-          </div>
-          <SettingRow
-            label="Session Key"
-            value={settings?.claudeSessionKey ?? null}
-            placeholder="sk-ant-sid01-..."
-            secret
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => setPending((p) => ({ ...p, claudeSessionKey: v }))}
-          />
-          <SettingRow
-            label="Organization ID"
-            value={settings?.claudeOrgId ?? null}
-            placeholder="UUID (auto-detected if blank)"
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => setPending((p) => ({ ...p, claudeOrgId: v }))}
-          />
-
           <div className="flex items-center justify-between">
             <div
               className="text-[10px] font-medium uppercase tracking-wide"

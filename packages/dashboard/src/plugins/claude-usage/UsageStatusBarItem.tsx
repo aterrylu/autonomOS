@@ -385,6 +385,7 @@ export function UsageStatusBarItem() {
           displayMode={displayMode}
           onDisplayModeChange={setDisplayMode}
           onClose={() => setPanel("none")}
+          onRefetch={refetch}
           toggleRef={toggleRef}
         />
       )}
