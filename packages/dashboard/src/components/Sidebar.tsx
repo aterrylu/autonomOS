@@ -22,6 +22,11 @@ import type {
 import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
 import {
+  mergeOrgWithSessions,
+  type OrgNode,
+  type SidebarHierarchyNode,
+} from "./mergeOrgWithSessions";
+import {
   type AgentStatus,
   AgentStatusIcon,
   agentStatusLabel,
@@ -81,119 +86,55 @@ type DisplayItem =
   | { type: "session"; session: SessionInfo; pane: ActivePane }
   | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
 
-// ── Hierarchy tree types ────────────────────────────────────────────────
-
-interface OrgNode {
-  name: string;
-  claudeSessionId?: string;
-  status?: string;
-  template?: string;
-  project?: string;
-  children: OrgNode[];
-}
-
-interface SidebarHierarchyNode {
-  /** The org chart node (name, template, children) */
-  org: OrgNode;
-  /** Matching live session, if any */
-  session: SessionInfo | undefined;
-  children: SidebarHierarchyNode[];
-}
-
 /**
- * Merge org chart tree with live sessions.
- * Each org node is matched to a live session by name (case-insensitive).
- * When hideStopped is true, prune nodes that have no live session AND
- * no descendants with live sessions.
+ * Poll the org chart endpoint, expose a manual refresh trigger, and surface
+ * fetch errors so the UI can warn instead of silently hiding agents.
+ *
+ * `refreshKey` is a monotonic counter — when bumped, the hook immediately
+ * refetches. Callers use this to sync org chart refreshes with session changes
+ * rather than waiting for the next 5s tick.
  */
-function mergeOrgWithSessions(
-  orgRoots: OrgNode[],
-  sessions: SessionInfo[],
-  hideStopped: boolean,
-  order: Record<string, string[]>,
-): SidebarHierarchyNode[] {
-  const sessionByName = new Map<string, SessionInfo>();
-  for (const s of sessions) {
-    if (s.name) sessionByName.set(s.name.toLowerCase(), s);
-  }
-
-  /** Sort nodes according to stored order for a given group key */
-  function applyOrder(
-    nodes: SidebarHierarchyNode[],
-    groupKey: string,
-  ): SidebarHierarchyNode[] {
-    const savedOrder = order[groupKey];
-    if (!savedOrder || savedOrder.length === 0) return nodes;
-    const byName = new Map<string, SidebarHierarchyNode>();
-    for (const n of nodes) {
-      if (n.org.name) byName.set(n.org.name.toLowerCase(), n);
-    }
-    const result: SidebarHierarchyNode[] = [];
-    const placed = new Set<string>();
-    for (const name of savedOrder) {
-      if (!name) continue;
-      const key = name.toLowerCase();
-      const node = byName.get(key);
-      if (node) {
-        result.push(node);
-        placed.add(key);
-      }
-    }
-    // Append any new nodes not in saved order
-    for (const n of nodes) {
-      const nKey = n.org.name?.toLowerCase();
-      if (!nKey || !placed.has(nKey)) result.push(n);
-    }
-    return result;
-  }
-
-  function merge(node: OrgNode): SidebarHierarchyNode {
-    const children = (node.children ?? []).map(merge);
-    const groupKey = (node.name ?? "").toLowerCase();
-    return {
-      org: node,
-      session: sessionByName.get(groupKey),
-      children: applyOrder(children, groupKey),
-    };
-  }
-
-  /** Returns true if node or any descendant has a live session */
-  function hasLiveDescendant(node: SidebarHierarchyNode): boolean {
-    if (node.session) return true;
-    return node.children.some(hasLiveDescendant);
-  }
-
-  /** Recursively filter out stopped-only subtrees */
-  function prune(node: SidebarHierarchyNode): SidebarHierarchyNode | null {
-    if (!hasLiveDescendant(node)) return null;
-    return {
-      ...node,
-      children: node.children
-        .map(prune)
-        .filter(Boolean) as SidebarHierarchyNode[],
-    };
-  }
-
-  const merged = applyOrder(orgRoots.map(merge), "__root__");
-  if (!hideStopped) return merged;
-  return merged.map(prune).filter(Boolean) as SidebarHierarchyNode[];
-}
-
-/** Hook to poll the org chart endpoint */
-function useOrgChartData() {
+function useOrgChartData(refreshKey: number) {
   const [chart, setChart] = useState<OrgNode[]>([]);
+  /** Tracks whether the most recent fetch succeeded. "unknown" = pre-first-fetch. */
+  const [status, setStatus] = useState<"unknown" | "ok" | "error">("unknown");
 
   useEffect(() => {
     let cancelled = false;
 
     async function fetchChart() {
       try {
-        const res = await fetch("/api/org");
-        if (!res.ok) return;
+        // `refreshKey` as query param gives biome a real dependency edge so
+        // the hook re-runs when the key changes. `cache: "no-store"` avoids
+        // relying on proxies to honor cache-busting query params.
+        const res = await fetch(`/api/org?k=${refreshKey}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          console.error(
+            "[useOrgChartData] /api/org returned",
+            res.status,
+            res.statusText,
+          );
+          if (!cancelled) setStatus("error");
+          return;
+        }
         const data = await res.json();
-        if (!cancelled && Array.isArray(data)) setChart(data);
-      } catch {
-        // silently retry
+        if (cancelled) return;
+        if (Array.isArray(data)) {
+          setChart(data);
+          setStatus("ok");
+        } else {
+          // Defensive: server contract is `OrgNode[]`. A non-array means the
+          // server regressed or auth-gated the endpoint with a 200 + error
+          // envelope — treat as a real failure rather than silently keeping
+          // stale chart state forever.
+          console.error("[useOrgChartData] unexpected response shape", data);
+          setStatus("error");
+        }
+      } catch (err) {
+        console.error("[useOrgChartData] fetch failed", err);
+        if (!cancelled) setStatus("error");
       }
     }
 
@@ -203,9 +144,9 @@ function useOrgChartData() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [refreshKey]);
 
-  return chart;
+  return { chart, status };
 }
 
 function _DiffStat({
@@ -290,8 +231,32 @@ export function Sidebar() {
     return result;
   }, [sidebarItems]);
 
+  // Compute a stable fingerprint of the session fields that affect the org
+  // chart. When this changes (spawn, kill, rename, set_manager, status flip),
+  // we bump `orgRefreshKey` to force an immediate /api/org refetch — otherwise
+  // the hierarchy lags by up to 5s behind the flat view.
+  const sessionFingerprint = useMemo(
+    () =>
+      sessions
+        .map(
+          (s) =>
+            `${s.id}:${s.name}:${s.claudeSessionId ?? ""}:${s.manager ?? ""}:${s.template ?? ""}:${s.status}`,
+        )
+        .sort()
+        .join("|"),
+    [sessions],
+  );
+  const [orgRefreshKey, setOrgRefreshKey] = useState(0);
+  const prevFingerprintRef = useRef(sessionFingerprint);
+  useEffect(() => {
+    if (prevFingerprintRef.current !== sessionFingerprint) {
+      prevFingerprintRef.current = sessionFingerprint;
+      setOrgRefreshKey((k) => k + 1);
+    }
+  }, [sessionFingerprint]);
+
   // Fetch org chart for hierarchy view
-  const orgChart = useOrgChartData();
+  const { chart: orgChart, status: orgStatus } = useOrgChartData(orgRefreshKey);
 
   // Merge org chart tree with live sessions (hide stopped when eye is off)
   const hierarchyTree = useMemo(
@@ -304,6 +269,19 @@ export function Sidebar() {
       ),
     [orgChart, sessions, showExitedAgents, hierarchyOrder],
   );
+
+  /**
+   * Hierarchy is "degraded" when the user has live sessions we can't show in
+   * the tree, OR when /api/org is outright broken. `HierarchyFallbackNotice`
+   * renders a banner with a one-click escape hatch to the flat view — it does
+   * NOT render an inline flat list (the user opts in via the button).
+   *
+   * We surface the `"error"` state even with zero sessions so a broken org
+   * endpoint is visible to the user instead of masquerading as "No agents".
+   */
+  const hierarchyDegraded =
+    orgStatus === "error" ||
+    (sessions.length > 0 && hierarchyTree.length === 0);
 
   // Collapsed state for hierarchy groups (manager name → collapsed)
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
@@ -611,7 +589,16 @@ export function Sidebar() {
       ) : (
         /* ── Hierarchy view ───────────────────────────────────── */
         <div className="py-1">
-          {hierarchyTree.length === 0 && (
+          {hierarchyDegraded && (
+            <HierarchyFallbackNotice
+              orgStatus={orgStatus}
+              sessionCount={sessions.length}
+              onSwitchToFlat={toggleSidebarViewMode}
+              page={page}
+            />
+          )}
+
+          {!hierarchyDegraded && hierarchyTree.length === 0 && (
             <p
               className="px-3 py-3 text-center text-xs"
               style={{ color: page.statusFg }}
@@ -620,68 +607,69 @@ export function Sidebar() {
             </p>
           )}
 
-          {hierarchyTree.map((node, idx) => (
-            <HierarchyNodeRow
-              key={node.org.name ?? node.org.claudeSessionId ?? `node-${idx}`}
-              node={node}
-              depth={0}
-              groupKey="__root__"
-              indexInGroup={idx}
-              isLastChild={idx === hierarchyTree.length - 1}
-              ancestorIsLast={[]}
-              page={page}
-              isPaneActive={isPaneActive}
-              visiblePaneIds={visiblePaneIds}
-              sessionMetaMap={sessionMetaMap}
-              agentStatuses={agentStatuses}
-              notificationCounts={notificationCounts}
-              collapsedGroups={collapsedGroups}
-              toggleCollapsed={toggleCollapsed}
-              switchPane={switchPane}
-              markNotificationsRead={markNotificationsRead}
-              onReorder={(gk, from, to) => {
-                // Initialize order for this group if not yet stored
-                const existing = hierarchyOrder[gk];
-                if (!existing || existing.length === 0) {
-                  // Determine current sibling names for this group
-                  const siblings =
-                    gk === "__root__"
-                      ? hierarchyTree.map((n) =>
-                          (n.org.name ?? "").toLowerCase(),
-                        )
-                      : (() => {
-                          // Find parent node and get its children names
-                          function findChildren(
-                            nodes: SidebarHierarchyNode[],
-                          ): string[] | null {
-                            for (const n of nodes) {
-                              if ((n.org.name ?? "").toLowerCase() === gk)
-                                return n.children.map((c) =>
-                                  (c.org.name ?? "").toLowerCase(),
-                                );
-                              const found = findChildren(n.children);
-                              if (found) return found;
+          {!hierarchyDegraded &&
+            hierarchyTree.map((node, idx) => (
+              <HierarchyNodeRow
+                key={node.org.name ?? node.org.claudeSessionId ?? `node-${idx}`}
+                node={node}
+                depth={0}
+                groupKey="__root__"
+                indexInGroup={idx}
+                isLastChild={idx === hierarchyTree.length - 1}
+                ancestorIsLast={[]}
+                page={page}
+                isPaneActive={isPaneActive}
+                visiblePaneIds={visiblePaneIds}
+                sessionMetaMap={sessionMetaMap}
+                agentStatuses={agentStatuses}
+                notificationCounts={notificationCounts}
+                collapsedGroups={collapsedGroups}
+                toggleCollapsed={toggleCollapsed}
+                switchPane={switchPane}
+                markNotificationsRead={markNotificationsRead}
+                onReorder={(gk, from, to) => {
+                  // Initialize order for this group if not yet stored
+                  const existing = hierarchyOrder[gk];
+                  if (!existing || existing.length === 0) {
+                    // Determine current sibling names for this group
+                    const siblings =
+                      gk === "__root__"
+                        ? hierarchyTree.map((n) =>
+                            (n.org.name ?? "").toLowerCase(),
+                          )
+                        : (() => {
+                            // Find parent node and get its children names
+                            function findChildren(
+                              nodes: SidebarHierarchyNode[],
+                            ): string[] | null {
+                              for (const n of nodes) {
+                                if ((n.org.name ?? "").toLowerCase() === gk)
+                                  return n.children.map((c) =>
+                                    (c.org.name ?? "").toLowerCase(),
+                                  );
+                                const found = findChildren(n.children);
+                                if (found) return found;
+                              }
+                              return null;
                             }
-                            return null;
-                          }
-                          return findChildren(hierarchyTree) ?? [];
-                        })();
-                  // Set it first, then reorder
-                  const order = [...siblings];
-                  const [moved] = order.splice(from, 1);
-                  order.splice(to, 0, moved);
-                  useStore.setState((prev) => ({
-                    hierarchyOrder: { ...prev.hierarchyOrder, [gk]: order },
-                  }));
-                } else {
-                  reorderHierarchy(gk, from, to);
-                }
-              }}
-              hierDrag={hierDrag}
-              hierDropTarget={hierDropTarget}
-              setHierDropTarget={setHierDropTarget}
-            />
-          ))}
+                            return findChildren(hierarchyTree) ?? [];
+                          })();
+                    // Set it first, then reorder
+                    const order = [...siblings];
+                    const [moved] = order.splice(from, 1);
+                    order.splice(to, 0, moved);
+                    useStore.setState((prev) => ({
+                      hierarchyOrder: { ...prev.hierarchyOrder, [gk]: order },
+                    }));
+                  } else {
+                    reorderHierarchy(gk, from, to);
+                  }
+                }}
+                hierDrag={hierDrag}
+                hierDropTarget={hierDropTarget}
+                setHierDropTarget={setHierDropTarget}
+              />
+            ))}
 
           {/* Exited agents under hierarchy */}
           {showExitedAgents &&
@@ -980,6 +968,51 @@ function SessionRow({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Hierarchy fallback notice ───────────────────────────────────────────
+//
+// Safety net for the case where the hierarchy would otherwise show "No agents"
+// despite live sessions existing — e.g. /api/org errored, or name-matching
+// failed for every org node. Shows a one-line banner with a "Switch to flat
+// view" button so the user always has a path back to their agents.
+function HierarchyFallbackNotice({
+  orgStatus,
+  sessionCount,
+  onSwitchToFlat,
+  page,
+}: {
+  orgStatus: "unknown" | "ok" | "error";
+  sessionCount: number;
+  onSwitchToFlat: () => void;
+  page: PageTheme;
+}) {
+  const agentWord = sessionCount === 1 ? "agent" : "agents";
+  const message =
+    orgStatus === "error"
+      ? `Hierarchy unavailable — ${sessionCount} live ${agentWord} hidden`
+      : `Hierarchy syncing — ${sessionCount} live ${agentWord} not yet matched`;
+
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-2 text-[10px]"
+      style={{
+        color: page.statusFg,
+        borderBottom: `1px solid ${page.border}`,
+      }}
+    >
+      <span className="flex-1">{message}</span>
+      <button
+        type="button"
+        onClick={onSwitchToFlat}
+        className="shrink-0 rounded px-1.5 py-0.5 cursor-pointer"
+        style={{ color: page.fg, border: `1px solid ${page.border}` }}
+        title="Switch to flat view"
+      >
+        Show flat
+      </button>
     </div>
   );
 }
