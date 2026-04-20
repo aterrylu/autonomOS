@@ -105,10 +105,6 @@ describe("scheduler engine", () => {
       });
       const schedule = createSchedule(config);
 
-      // Simulate an active run
-      schedule.state.currentRunId = "active-run-id";
-      saveSchedule("skip-overlap", schedule);
-
       // Set a mock executor that should NOT be called
       let executorCalled = false;
       _setExecutors(() => {
@@ -116,6 +112,11 @@ describe("scheduler engine", () => {
       }, null);
 
       initScheduler();
+
+      // Simulate an active run AFTER init (init clears stale currentRunId)
+      schedule.state.currentRunId = "active-run-id";
+      saveSchedule("skip-overlap", schedule);
+
       const result = runScheduleNow("skip-overlap");
 
       assert.ok(result.error?.includes("Skipped"));
@@ -138,9 +139,6 @@ describe("scheduler engine", () => {
       });
       const schedule = createSchedule(config);
 
-      schedule.state.currentRunId = "active-run-id";
-      saveSchedule("allow-overlap", schedule);
-
       let executorCalled = false;
       _setExecutors((_name, _schedule, _runState) => {
         executorCalled = true;
@@ -149,6 +147,11 @@ describe("scheduler engine", () => {
       }, null);
 
       initScheduler();
+
+      // Simulate an active run AFTER init (init clears stale currentRunId)
+      schedule.state.currentRunId = "active-run-id";
+      saveSchedule("allow-overlap", schedule);
+
       const result = runScheduleNow("allow-overlap");
 
       assert.equal(result.error, undefined);
@@ -163,10 +166,13 @@ describe("scheduler engine", () => {
         overlapPolicy: "queue",
       });
       const schedule = createSchedule(config);
+
+      initScheduler();
+
+      // Simulate an active run AFTER init (init clears stale currentRunId)
       schedule.state.currentRunId = "active-run-id";
       saveSchedule("queue-policy", schedule);
 
-      initScheduler();
       const result = runScheduleNow("queue-policy");
       assert.ok(result.error?.includes("not yet supported"));
     });
@@ -615,6 +621,98 @@ describe("scheduler engine", () => {
       // Should not throw, but nextRunAt should be null
       const schedule = getSchedule("bad-cron");
       assert.equal(schedule!.state.nextRunAt, null);
+    });
+  });
+
+  // ── Crash recovery ─────────────────────────────────────────
+
+  describe("crash recovery on init", () => {
+    it("clears stale currentRunId left from unclean shutdown", () => {
+      const config = makeSchedule({
+        name: "crash-victim",
+        overlapPolicy: "skip",
+      });
+      const schedule = createSchedule(config);
+
+      // Simulate crash mid-run: currentRunId on disk, no live process
+      schedule.state.currentRunId = "stale-run-from-previous-process";
+      saveSchedule("crash-victim", schedule);
+
+      initScheduler();
+
+      // Init should have wiped the stale flag
+      const reloaded = getSchedule("crash-victim");
+      assert.equal(
+        reloaded!.state.currentRunId,
+        null,
+        "stale currentRunId should be cleared on init",
+      );
+
+      // And the schedule should now be able to fire under skip policy
+      let executorCalled = false;
+      _setExecutors(() => {
+        executorCalled = true;
+      }, null);
+
+      runScheduleNow("crash-victim");
+      assert.ok(
+        executorCalled,
+        "schedule should fire after stale flag cleared",
+      );
+    });
+
+    it("does not clear currentRunId for schedules with none set", () => {
+      createSchedule(makeSchedule({ name: "healthy" }));
+      initScheduler();
+      const reloaded = getSchedule("healthy");
+      assert.equal(reloaded!.state.currentRunId, null);
+    });
+  });
+
+  // ── removeScheduleJob queue cleanup ────────────────────────
+
+  describe("removeScheduleJob: queue cleanup", () => {
+    it("removes the schedule from runQueue when deleted while queued", () => {
+      // Fill up concurrent slots with long-running schedules
+      for (let i = 0; i < 3; i++) {
+        createSchedule(makeSchedule({ name: `busy-${i}` }));
+      }
+      createSchedule(makeSchedule({ name: "will-be-deleted" }));
+      createSchedule(makeSchedule({ name: "next-in-line" }));
+
+      // Never-completing executor so slots stay full
+      _setExecutors(() => {
+        /* never complete */
+      }, null);
+
+      initScheduler();
+      for (let i = 0; i < 3; i++) runScheduleNow(`busy-${i}`);
+      assert.equal(getActiveRunCount(), 3);
+
+      // Queue two more; both should land in the queue
+      runScheduleNow("will-be-deleted");
+      runScheduleNow("next-in-line");
+      assert.equal(getQueuedRunCount(), 2);
+
+      // Delete the first queued schedule
+      removeScheduleJob("will-be-deleted");
+      assert.equal(
+        getQueuedRunCount(),
+        1,
+        "runQueue should no longer contain the deleted schedule",
+      );
+
+      // Completing one busy run should now dispatch "next-in-line" directly,
+      // not waste the drain on the deleted schedule.
+      let nextDispatched = false;
+      _setExecutors((name) => {
+        if (name === "next-in-line") nextDispatched = true;
+      }, null);
+      _onRunCompleted("busy-0", { status: "success" });
+      assert.ok(
+        nextDispatched,
+        "next-in-line should dispatch after one completion (no wasted drain)",
+      );
     });
   });
 });
