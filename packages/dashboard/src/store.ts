@@ -68,6 +68,12 @@ export interface SessionInfo {
   manager?: string;
   createdAt: number;
   updatedAt: number;
+  /** When this session transitioned to status "exited". Only set for exited rows;
+   *  missing on pre-schema records so the sidebar falls back to updatedAt. */
+  exitedAt?: number;
+  /** Why the session stopped — surfaced in the exited-row tooltip for triage.
+   *  Missing on pre-schema records. */
+  exitReason?: "user_killed" | "self_exited" | "crashed";
 }
 
 /** A Claude Code session from the SDK's listSessions() */

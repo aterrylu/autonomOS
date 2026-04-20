@@ -117,6 +117,12 @@ sessionRouter.get("/", async (c) => {
       template: p.template,
       manager: p.manager,
       project: p.project,
+      // Used by the dashboard to filter stale entries and show relative
+      // timestamps. Pre-schema records predate this field.
+      exitedAt: p.exitedAt,
+      // Surfaced in the exited-row tooltip so a crash is visually
+      // distinguishable from an intentional kill on hover.
+      exitReason: p.exitReason,
     }));
 
   return c.json([...enriched, ...exitedSessions]);

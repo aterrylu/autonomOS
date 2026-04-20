@@ -16,6 +16,15 @@ import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureConfigDir, getConfigDir } from "./configDir.js";
 
+/**
+ * Why a session stopped, for UI triage.
+ * - "user_killed": explicitly killed from the dashboard or via API
+ * - "self_exited": agent called self_exit() (normal task completion)
+ * - "crashed": process died on its own (non-zero exit, signal, or resume failure)
+ * Missing `exitReason` on an exited record means "pre-schema" — treated as unknown.
+ */
+export type ExitReason = "user_killed" | "self_exited" | "crashed";
+
 export interface PersistedSession {
   claudeSessionId: string;
   workingDirectory: string;
@@ -30,6 +39,10 @@ export interface PersistedSession {
   project?: string;
   /** Session lifecycle status. Missing means "running" (backward compat). */
   status?: "running" | "exited";
+  /** Timestamp when status flipped to "exited". Missing on pre-schema records. */
+  exitedAt?: number;
+  /** Why the session stopped. Missing on pre-schema records. */
+  exitReason?: ExitReason;
 }
 
 function getSessionsFile(): string {
@@ -131,14 +144,37 @@ export function persistSession(session: PersistedSession): void {
   if (idx >= 0) {
     // Merge: preserve existing optional fields when new values are undefined.
     // This prevents losing manager/template/project during re-persist on resume.
+    // On resume (status "running"), clear exit metadata so stale reason/timestamp
+    // doesn't linger on a session that's now live again.
     const existing = sessions[idx];
+    const nextStatus = session.status ?? existing.status;
+    const clearExitMeta = nextStatus === "running";
+    // When status flips to "running" we erase exit metadata (normal resume
+    // path). If this branch actually clears previously-set values, emit a
+    // breadcrumb so unexpected erasure (a regression, a stray re-persist on
+    // a live record) is traceable in the log — otherwise it disappears silently.
+    if (
+      clearExitMeta &&
+      (existing.exitedAt !== undefined || existing.exitReason !== undefined)
+    ) {
+      console.log(
+        `[persistSession] clearing exit metadata on resume of ${existing.name} ` +
+          `(was ${existing.exitReason ?? "unknown"} at ${existing.exitedAt ?? "?"})`,
+      );
+    }
     sessions[idx] = {
       ...existing,
       ...session,
       template: session.template ?? existing.template,
       manager: session.manager ?? existing.manager,
       project: session.project ?? existing.project,
-      status: session.status ?? existing.status,
+      status: nextStatus,
+      exitedAt: clearExitMeta
+        ? undefined
+        : (session.exitedAt ?? existing.exitedAt),
+      exitReason: clearExitMeta
+        ? undefined
+        : (session.exitReason ?? existing.exitReason),
     };
   } else {
     // Clean up exited sessions with the same name to prevent duplicate accumulation.
@@ -170,13 +206,42 @@ export function removePersistedSession(claudeSessionId: string): boolean {
   return false;
 }
 
-/** Mark a persisted session as exited (instead of deleting it) */
-export function markSessionExited(claudeSessionId: string): void {
+/**
+ * Mark a persisted session as exited (instead of deleting it).
+ *
+ * `reason` distinguishes deliberate kills from crashes and self-exits — the
+ * dashboard uses this to triage what the user should pay attention to after a
+ * server restart. Records migrated from pre-schema data may lack a reason;
+ * callers should treat missing reason as "unknown".
+ */
+export function markSessionExited(
+  claudeSessionId: string,
+  reason: ExitReason,
+): void {
   const sessions = readSessions();
   const idx = sessions.findIndex((s) => s.claudeSessionId === claudeSessionId);
-  if (idx < 0) return;
-  if (sessions[idx].status === "exited") return;
-  sessions[idx].status = "exited";
+  if (idx < 0) {
+    // Rare but diagnostic-worthy: a concurrent path (test reset, manual edit,
+    // removePersistedSession race) dropped the record between the caller's
+    // read and this mark. Silently no-opping here hides the very zombie state
+    // the caller was trying to fix.
+    console.warn(
+      `[markSessionExited] no persisted session for ${claudeSessionId} (reason: ${reason})`,
+    );
+    return;
+  }
+  const existing = sessions[idx];
+  // If already exited with a reason, respect the first reason — subsequent
+  // calls (e.g. permanentlyRemoveSession after killSession) shouldn't overwrite
+  // the original context. Backfill a reason if the record was already exited
+  // without one.
+  if (existing.status === "exited" && existing.exitReason) return;
+  sessions[idx] = {
+    ...existing,
+    status: "exited",
+    exitedAt: existing.exitedAt ?? Date.now(),
+    exitReason: existing.exitReason ?? reason,
+  };
   writeSessions(sessions);
 }
 

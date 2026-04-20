@@ -80,6 +80,14 @@ function useSidebarActions() {
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
+/**
+ * Exited agents older than this window are hidden behind a "Show older"
+ * toggle. The 24h default matches the "what happened since I was last here"
+ * mental model — sessions stopped days/weeks ago rarely represent work the
+ * user still wants to resume.
+ */
+const EXITED_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 // ── Display list types ──────────────────────────────────────────────────────
 
 type DisplayItem =
@@ -358,6 +366,37 @@ export function Sidebar() {
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   // Confirm-remove state for exited agents
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
+  // Whether to reveal exited agents older than the recent window. Default off
+  // so the list stays focused on agents stopped in the last 24h — older entries
+  // accumulate over weeks and flood the view if unfiltered.
+  const [showOlderExited, setShowOlderExited] = useState(false);
+
+  // Split exited agents into recent (<24h) and older. Falls back to updatedAt
+  // for pre-schema records that lack exitedAt; records with no finite timestamp
+  // at all fall into "older" so they don't masquerade as fresh activity.
+  const { recentExited, olderExited } = useMemo(() => {
+    const cutoff = Date.now() - EXITED_RECENT_WINDOW_MS;
+    const recent: SessionInfo[] = [];
+    const older: SessionInfo[] = [];
+    for (const s of exitedSessions) {
+      const ts = s.exitedAt ?? s.updatedAt;
+      if (Number.isFinite(ts) && ts >= cutoff) recent.push(s);
+      else older.push(s);
+    }
+    return { recentExited: recent, olderExited: older };
+  }, [exitedSessions]);
+
+  // Title text for the eye toggle. Computed as a plain if/else chain rather
+  // than a nested ternary inside JSX for readability.
+  const exitedToggleTitle = (() => {
+    if (showExitedAgents) return "Hide stopped agents";
+    if (recentExited.length > 0) {
+      const olderSuffix =
+        olderExited.length > 0 ? ` (+ ${olderExited.length} older)` : "";
+      return `Show ${recentExited.length} recently stopped${olderSuffix}`;
+    }
+    return `Show ${olderExited.length} older stopped`;
+  })();
   function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
     dragIdx.current = idx;
     const data = { pane };
@@ -454,11 +493,7 @@ export function Sidebar() {
             onClick={toggleShowExitedAgents}
             className="text-[10px] cursor-pointer px-1 rounded transition-colors"
             style={{ color: page.statusFg }}
-            title={
-              showExitedAgents
-                ? "Hide stopped agents"
-                : `Show ${exitedSessions.length} stopped`
-            }
+            title={exitedToggleTitle}
           >
             <Codicon name={showExitedAgents ? "eye" : "eye-closed"} size={12} />
           </button>
@@ -573,18 +608,19 @@ export function Sidebar() {
             })}
           </div>
 
-          {/* Exited agents (toggleable) */}
-          {showExitedAgents &&
-            exitedSessions.map((s) => (
-              <ExitedRow
-                key={`exited-${s.id}`}
-                session={s}
-                page={page}
-                confirmRemoveId={confirmRemoveId}
-                onConfirmRemove={setConfirmRemoveId}
-                onRemove={removeSession}
-              />
-            ))}
+          {/* Exited agents (toggleable) — recent first, older gated behind a second click */}
+          {showExitedAgents && (
+            <ExitedAgentsList
+              recent={recentExited}
+              older={olderExited}
+              showOlder={showOlderExited}
+              setShowOlder={setShowOlderExited}
+              page={page}
+              confirmRemoveId={confirmRemoveId}
+              onConfirmRemove={setConfirmRemoveId}
+              onRemove={removeSession}
+            />
+          )}
         </>
       ) : (
         /* ── Hierarchy view ───────────────────────────────────── */
@@ -671,18 +707,19 @@ export function Sidebar() {
               />
             ))}
 
-          {/* Exited agents under hierarchy */}
-          {showExitedAgents &&
-            exitedSessions.map((s) => (
-              <ExitedRow
-                key={`exited-${s.id}`}
-                session={s}
-                page={page}
-                confirmRemoveId={confirmRemoveId}
-                onConfirmRemove={setConfirmRemoveId}
-                onRemove={removeSession}
-              />
-            ))}
+          {/* Exited agents under hierarchy — recent first, older gated behind a second click */}
+          {showExitedAgents && (
+            <ExitedAgentsList
+              recent={recentExited}
+              older={olderExited}
+              showOlder={showOlderExited}
+              setShowOlder={setShowOlderExited}
+              page={page}
+              confirmRemoveId={confirmRemoveId}
+              onConfirmRemove={setConfirmRemoveId}
+              onRemove={removeSession}
+            />
+          )}
         </div>
       )}
 
@@ -1017,6 +1054,87 @@ function HierarchyFallbackNotice({
   );
 }
 
+/**
+ * Renders the exited-agents section for either sidebar view mode.
+ *
+ * Recent entries (<24h) render unconditionally once the user has clicked
+ * the eye toggle. Older entries are gated behind an in-list "Show N older"
+ * button so stale entries from weeks ago don't flood the view in normal use
+ * but remain reachable when the user genuinely wants the full history.
+ */
+function ExitedAgentsList({
+  recent,
+  older,
+  showOlder,
+  setShowOlder,
+  page,
+  confirmRemoveId,
+  onConfirmRemove,
+  onRemove,
+}: {
+  recent: SessionInfo[];
+  older: SessionInfo[];
+  showOlder: boolean;
+  setShowOlder: (v: boolean) => void;
+  page: PageTheme;
+  confirmRemoveId: string | null;
+  onConfirmRemove: (id: string | null) => void;
+  onRemove: (id: string) => Promise<void>;
+}) {
+  // Nothing to render — parent gates on showExitedAgents, so reaching here
+  // with zero entries means both lists are empty.
+  if (recent.length === 0 && older.length === 0) return null;
+
+  return (
+    <>
+      {recent.map((s) => (
+        <ExitedRow
+          key={`exited-${s.id}`}
+          session={s}
+          page={page}
+          confirmRemoveId={confirmRemoveId}
+          onConfirmRemove={onConfirmRemove}
+          onRemove={onRemove}
+        />
+      ))}
+
+      {older.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowOlder(!showOlder)}
+          className="flex w-full items-center gap-1.5 px-3 py-1 text-[10px] cursor-pointer"
+          style={{ color: page.statusFg, opacity: 0.7 }}
+          title={
+            showOlder
+              ? "Hide older stopped agents"
+              : "Show older stopped agents"
+          }
+        >
+          <Codicon
+            name={showOlder ? "chevron-down" : "chevron-right"}
+            size={10}
+          />
+          <span>
+            {showOlder ? "Hide" : "Show"} {older.length} older stopped
+          </span>
+        </button>
+      )}
+
+      {showOlder &&
+        older.map((s) => (
+          <ExitedRow
+            key={`exited-older-${s.id}`}
+            session={s}
+            page={page}
+            confirmRemoveId={confirmRemoveId}
+            onConfirmRemove={onConfirmRemove}
+            onRemove={onRemove}
+          />
+        ))}
+    </>
+  );
+}
+
 function ExitedRow({
   session: s,
   page,
@@ -1033,6 +1151,18 @@ function ExitedRow({
   indent?: number;
 }) {
   const paddingLeft = 9 + indent * 16;
+  // Prefer exitedAt for the timestamp — that's the moment the user cares about
+  // ("when did this stop?"). Fall back to updatedAt for pre-schema records.
+  const ts = s.exitedAt ?? s.updatedAt;
+  const hasValidTs = Number.isFinite(ts);
+  // Tooltip surfaces triage context: why the agent stopped + an absolute
+  // timestamp when available. The list label stays a neutral "stopped Nh"
+  // so crashed/killed/self-exited agents don't visually shout past the
+  // current 24h window design; hover reveals the detail.
+  const absoluteTs = hasValidTs ? new Date(ts).toLocaleString() : null;
+  const tooltip = [exitReasonLabel(s.exitReason), absoluteTs]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <div
       className="group flex w-full items-center gap-1.5 py-1 text-left"
@@ -1050,8 +1180,9 @@ function ExitedRow({
           <span
             className="shrink-0 text-[10px]"
             style={{ color: page.statusFg }}
+            title={tooltip || undefined}
           >
-            stopped
+            stopped {formatAge(ts)}
           </span>
         </div>
       </div>
@@ -1063,8 +1194,15 @@ function ExitedRow({
               try {
                 await onRemove(s.id);
                 onConfirmRemove(null);
-              } catch {
-                // Keep confirm visible on failure
+              } catch (err) {
+                // Keep confirm visible so the user can retry — the store
+                // already logs the HTTP error, but also log here so the
+                // breadcrumb has the session ID attached for correlation.
+                console.error(
+                  "[ExitedRow] failed to remove session",
+                  s.id,
+                  err,
+                );
               }
             }}
             className="text-[10px] px-1 rounded cursor-pointer"
@@ -1580,11 +1718,33 @@ const ProjectItem = React.memo(function ProjectItem({
 });
 
 function formatAge(timestamp: number): string {
+  // Guard against missing/NaN/negative timestamps — a pre-schema record with
+  // neither exitedAt nor updatedAt would otherwise render as "NaNd".
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 0) return "now"; // clock skew — display cleanly
   if (seconds < 60) return "now";
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * Human-readable label for why a session stopped — shown in the exited-row
+ * tooltip so users can distinguish a crash from an intentional kill without
+ * visual noise in the list itself.
+ */
+function exitReasonLabel(reason: SessionInfo["exitReason"]): string {
+  switch (reason) {
+    case "crashed":
+      return "Crashed";
+    case "user_killed":
+      return "Killed by user";
+    case "self_exited":
+      return "Self-exited";
+    default:
+      return "Stopped";
+  }
 }
