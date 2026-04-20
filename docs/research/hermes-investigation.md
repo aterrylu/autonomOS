@@ -10,8 +10,9 @@
 - **"Hermes agent" disambiguated** → **Nous Research's Hermes Agent** (`github.com/NousResearch/hermes-agent`) — launched Feb 25, 2026; ~95K GitHub stars in ~7 weeks; v0.10 (git tag `v2026.4.16`, "Tool Gateway" release) released 2026-04-16. Not to be confused with the **Hermes 4/4.3** *model* series (separate product).
 - **Runtime model** → **daemon-style**, closer to OpenClaw than Claude Code. The CLI (`hermes`), gateway daemon (`hermes gateway`), and ACP JSON-RPC mode (`hermes acp`) are three parallel entry points over a shared `AIAgent` core. The CLI is **not** a thin client over the daemon; they share only SQLite state + skills/memory on disk. See §3.
 - **Fit with current autonomOS** → **poor**. Our `AgentProvider` interface (`packages/server/src/providers/index.ts`) is tightly coupled to the CLI-spawn-via-PTY model. Hermes and OpenClaw do not satisfy its shape. See §6.
-- **Recommendation** → **pursue-conditional.** *(a)* Close the loop on the existing 3 CLI providers first. *(b)* If we want daemon-style support at all, introduce a **second abstraction** (`SessionProvider` or similar) in `packages/core/` rather than bending `AgentProvider`. *(c)* Of the two daemon-style candidates, **Hermes's ACP stdio mode is the cheapest bridge** — it gives us structured JSON-RPC events over stdin/stdout, similar enough to our PTY+hooks mental model to slot in without a full architectural rewrite. See §7–§9.
-- **Effort** → XS to prototype ACP stdio adapter for Hermes (~1–2 days, read-only session surfacing). M–L to build a proper daemon `SessionProvider` abstraction that covers both Hermes gateway and OpenClaw (~1–2 weeks).
+- **Recommendation** → **pursue-conditional, narrower than originally scoped.** *(a)* Close the loop on the existing 3 CLI providers first. *(b)* For **multi-agent messaging**, PTY injection remains the only viable path for Codex/Gemini — accept the tier difference from Claude Code and invest in reliability, per the Addendum below. *(c)* For **agents without a native interactive TUI** (Hermes, OpenClaw, Pi, etc.), Hermes's ACP stdio mode remains the cheapest first bridge. *(d)* A dashboard-side ACP panel is **not recommended today** (UX loss, ~5 weeks, no React reference to fork). See §7–§9 and the Addendum.
+- **Effort** → ~1 week to harden PTY injection reliability for Codex/Gemini. XS to prototype ACP stdio adapter for Hermes (~1–2 days, read-only). M–L to build a proper daemon `SessionProvider` abstraction for agents with no native TUI (~1–2 weeks). ACP-native dashboard panel (~5 weeks) **NOT recommended** — see Addendum.
+- **Addendum (2026-04-19)** → Three follow-up investigations tested whether ACP could replace PTY injection for multi-agent messaging into Codex/Gemini. **Verdict: no, not cleanly.** Running interactive TUI + ACP in one process is source-level impossible (Gemini [PR #10089](https://github.com/google-gemini/gemini-cli/pull/10089), `codex-acp` stdio ownership). Sharing one session between two processes is unsafe ([openai/codex#11435](https://github.com/openai/codex/issues/11435), unlocked `~/.gemini/tmp/chats/*.json`). ACP-only with a custom dashboard panel is technically viable but a UX regression. The "sibling pair" workaround (two isolated sessions under one agent identity) was drafted, then discarded — it hides the gap instead of fixing it. See the Addendum section for the full investigation.
 
 ---
 
@@ -401,6 +402,83 @@ See existing [`autonomos-integration.md`](./openclaw/autonomos-integration.md) f
 1. **ADR-003 status** — do you want me to draft a superseding decision record, or is that team-lead work?
 2. **Multi-provider scope** — is "finish Codex/Gemini CLI support" the right stopping point, or is the broader plan to cover daemon-style agents sooner?
 3. **Who owns Hermes integration** if we go ahead? A fresh worker, or extension of MultiProvider@autonomOS's scope?
+
+---
+
+## Addendum — 2026-04-19: ACP and multi-agent message delivery
+
+> This addendum captures a follow-up investigation triggered by Terry's observation that autonomOS has a **tier difference** between Claude Code (first-class multi-agent messaging via `--channels`) and Codex/Gemini (degraded to PTY injection). The body of this doc implied ACP might be the cheapest fix. Closer investigation showed otherwise — and that changes the recommendation.
+
+### A.1 The motivating question
+
+Claude Code has a privileged inbound-delivery path: the `--channels` flag + the injected `autonomos:` MCP channel server lets the gateway push messages *into* a running CC session as first-class events that land in the same turn queue as user input. Codex and Gemini have no equivalent — we currently write raw text to PTY stdin ("PTY injection"), which is fragile: it races with the user's typing, carries no structured metadata, and can get scrambled when the agent is mid-response.
+
+The hypothesis was: if Codex/Gemini speak ACP (`codex acp`, `gemini --acp`), we could replace PTY injection with structured `session/prompt` JSON-RPC calls. Three sub-hypotheses were tested in parallel by specialised investigation agents.
+
+### A.2 Four hypotheses, four verdicts
+
+| Hypothesis | Verdict | Evidence |
+|---|---|---|
+| **H1** — One process, both modes (interactive TUI + ACP simultaneously) | ❌ Dead | Gemini [PR #10089](https://github.com/google-gemini/gemini-cli/pull/10089) explicitly added `!isAcpMode` to the interactive check — ACP forces non-interactive. `codex-acp`'s `AgentSideConnection::new(agent, stdout, stdin, ...)` exclusively claims stdin/stdout. Architecturally mutually exclusive. |
+| **H2** — Two processes sharing one session | ❌ Dead for Codex; unsafe for Gemini | [openai/codex#11435](https://github.com/openai/codex/issues/11435) — *"multiple parallel codex exec instances interfere via shared session restore"* (documented cross-contamination). Gemini has no documented session-store locking at `~/.gemini/tmp/<project_hash>/chats/*.json` — last-write-wins corruption; Google's own docs tell users to use git worktrees for parallel sessions. |
+| **H3** — ACP-only with autonomOS rendering a custom panel | ⚠️ Technically viable, UX regression | ~5 weeks of work. No React ACP client to fork (Zed is Rust/GPUI, VS Code ACP Client is webview, JetBrains is Kotlin). Sacrifices native TUI richness (progress indicators, syntax highlighting, boxed prompts). Zed discussion [#49452](https://github.com/zed-industries/zed/discussions/49452) documents 40–60% of multi-agent activity becoming invisible because subagent spawns render as `continue`. Verdict from UX investigation: *"wash trending toward loss for autonomOS users."* |
+| **H4** — ACP sidecar on a *different* session + file-tail bridging to primary | ❌ Worse than PTY injection | Extra subprocess, extra OpenAI billing for Codex (two billable contexts per agent), still no structured write path into the user's actual session. |
+
+### A.3 The sibling-pair detour (and why it fails)
+
+During the investigation I floated a **"sibling pair"** model: run one PTY process for the user + one headless ACP sidecar for inter-agent messaging as two independent sessions sharing an agent identity (addressable as `agent://gemini-worker`). Terry correctly pushed back — this doesn't solve the use case that motivated the question.
+
+Concretely: if Terry is driving Gemini on feature X in the PTY and another agent sends context relevant to feature X, that message lands in the **sidecar's isolated session**. Gemini-in-PTY never sees it. The sibling model reduces to *"other agents can talk to a ghost instance of Gemini that knows nothing about what the user is doing."* Decorative, not useful.
+
+The property that makes CC's `--channels` work is **shared session state across all message sources** — user input, agent-to-agent messages, and broadcasts all land in one turn queue. Gemini and Codex have no mechanism to push into a running session's queue from outside while the native TUI is rendering. Not "hard" — confirmed architecturally impossible given how the CLIs are built today.
+
+### A.4 Revised recommendation
+
+Given the constraint space:
+
+1. **Keep PTY injection as the only inbound-delivery path for Codex/Gemini in the near term.** Accept the tier difference from CC and document it explicitly in `DECISIONS.md`.
+2. **Invest ~1 week in PTY-injection reliability.** Concrete work: structured prefix format (`[from agent://X] ...`), prompt-state detection to avoid racing with user input, retry-on-failure, clearer error surfacing when a message can't be delivered. Get to ~95% reliability at a fraction of the cost of an ACP panel.
+3. **Before any ACP-panel commitment, spend ~2 hours investigating `codex app-server`.** The Codex investigation flagged this as a subcommand (distinct from `mcp-server` and `codex-acp`) whose surface was unexplored. If it's a first-party control plane that allows external injection into a running session, it would reshape the Codex answer entirely.
+4. **Keep the ACP-panel path on the roadmap as a real option**, triggered by any of: *(a)* `codex-acp` graduating to first-party status with OpenAI, *(b)* a concrete user-pain ticket justifying ~5 weeks of work, *(c)* a dashboard rebuild that lets the panel fall out naturally.
+5. **ACP remains the correct integration surface for agents with NO native interactive TUI** (Hermes, OpenClaw's `acpx`, Pi, Cursor CLI, etc.). For those, there's no TUI to preserve — an ACP client in `packages/server/src/providers/` is the right shape.
+6. **Do not ship sibling-pair.** It doesn't solve the problem.
+
+### A.5 Implications for the original recommendation (§9)
+
+§9 suggested Hermes's ACP stdio mode as the "cheapest first bridge" partly because it looked like a way to address multi-provider inter-agent messaging simultaneously. The multi-provider-messaging half of that reasoning is wrong: ACP doesn't cleanly deliver inter-agent messages into a running CC/Codex/Gemini interactive session. For the Hermes-specific case — where there's no native TUI to preserve — Path A (ACP stdio adapter) is still valid, but as a Hermes-only win, not a general multi-provider-messaging unlock.
+
+### A.6 Asymmetry between Codex and Gemini
+
+Worth flagging for future planning:
+
+- **Gemini's ACP** is first-party, production-grade. Graduated from `--experimental-acp` to `--acp`. Zed's launch integration (Aug 2025). Documented method surface (`initialize`, `authenticate`, `newSession`, `loadSession`, `prompt`, `cancel`, `setSessionMode`, `unstable_setSessionModel`). Multi-client consumers: Zed, IntelliJ, Kiro.
+- **Codex's ACP** is third-party. Not a subcommand of OpenAI's `codex` — it's a separate binary `codex-acp` published by Zed Industries (`npx @zed-industries/codex-acp`). Statically links `codex-core` at a pinned version (currently `rust-v0.117.0` while the main CLI is at 0.121+). Will continue to lag.
+
+If we ever build an ACP-only provider tier, Gemini is the safer first target.
+
+### A.7 Open questions added to §10
+
+4. **`codex app-server`** — first-party control plane or something else? Cheap investigation (~2 hours).
+5. **Is the tier difference acceptable?** — Do we document *"CC has first-class multi-agent messaging; Codex/Gemini are best-effort via PTY injection"* as a known platform limitation and ship it?
+6. **PTY-injection reliability target** — what's the minimum acceptable delivery rate, and how do we measure it?
+
+### Addendum sources
+
+- [google-gemini/gemini-cli PR #10089 — `--experimental-acp` no longer stops the world in tty mode](https://github.com/google-gemini/gemini-cli/pull/10089)
+- [openai/codex issue #11435 — multiple parallel codex exec instances interfere via shared session restore](https://github.com/openai/codex/issues/11435)
+- [openai/codex issue #11852 — stale working state on resume after reconnect](https://github.com/openai/codex/issues/11852)
+- [zed-industries/codex-acp repo](https://github.com/zed-industries/codex-acp)
+- [Zed — External Agents docs](https://zed.dev/docs/ai/external-agents)
+- [Zed blog — Bring Your Own Agent to Zed (Gemini launch, Aug 2025)](https://zed.dev/blog/bring-your-own-agent-to-zed)
+- [Zed blog — Claude Code: Now in Beta in Zed](https://zed.dev/blog/claude-code-via-acp)
+- [ACP Brings JetBrains on Board (Jan 2026)](https://zed.dev/blog/jetbrains-on-acp)
+- [VS Code ACP Client extension (formulahendry)](https://github.com/formulahendry/vscode-acp)
+- [Zed discussion #49206 — Better UX for running agentic CLIs in the agent panel](https://github.com/zed-industries/zed/discussions/49206)
+- [Zed discussion #49452 — Surface Claude Code subagent/team activity](https://github.com/zed-industries/zed/discussions/49452)
+- [Zed issue #51648 — ACP agents limited context window](https://github.com/zed-industries/zed/issues/51648)
+- [Zed issue #43819 — External agents fail to init after 30s](https://github.com/zed-industries/zed/issues/43819)
+- [Agent Client Protocol — schema](https://agentclientprotocol.com/protocol/schema)
+- [Gemini CLI ACP mode docs](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/acp-mode.md)
 
 ---
 
