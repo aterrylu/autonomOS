@@ -50,6 +50,10 @@ export interface AgentState {
   toolDetail?: string;
   lastEvent: string;
   updatedAt: number;
+  /** Status saved when entering "compacting" so PostCompact can restore it.
+   *  Cleared on PostCompact. Undefined when no meaningful baseline exists
+   *  (e.g., cold-start + auto-compact on session resume). */
+  preCompactStatus?: AgentStatus;
 }
 
 const DEFAULT_AGENT_STATE: AgentState = {
@@ -174,7 +178,12 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
       return { status: "compacting" };
 
     case "PostCompact":
-      return { status: "working", ...CLEAR_TOOL };
+      // Handler restores the saved preCompactStatus when present. This
+      // "ready" is the safe fallback when we have no baseline — e.g.,
+      // auto-compact on session resume, where the in-memory state was
+      // empty before compaction started. "working" would leave the UI
+      // stuck spinning since no subsequent Stop event fires in that case.
+      return { status: "ready", ...CLEAR_TOOL };
 
     case "SessionEnd":
       return { status: "stopped", ...CLEAR_TOOL };
@@ -232,18 +241,53 @@ hooksRouter.post("/:sessionId", async (c) => {
     if (isSticky && !IDLE_EXIT_EVENTS.has(event)) {
       // Drop the transition — the agent is done with this turn
     } else {
-      if (
-        statusUpdate.status === "needs_input" ||
-        statusUpdate.status === "error"
-      ) {
+      // Compact transitions: save prev status on entering "compacting" so
+      // PostCompact can restore it. Without this, a session that auto-
+      // compacts on resume (no active turn) would get stuck at "working".
+      // Invariant: preCompactStatus is only set while status === "compacting".
+      let nextStatus = statusUpdate.status;
+      let nextPreCompact: AgentStatus | undefined = prev.preCompactStatus;
+
+      const enteringCompacting =
+        statusUpdate.status === "compacting" &&
+        prev.status !== "compacting" &&
+        prev.status !== "unknown";
+      if (enteringCompacting) {
+        nextPreCompact = prev.status;
+      } else if (event === "PostCompact" && prev.preCompactStatus) {
+        // These statuses reflect transient conditions (in-flight tool,
+        // permission prompt, error) that don't survive the JSONL collapse
+        // — coerce to "working" so the agent continues its turn cleanly.
+        const stalePreCompact = new Set<AgentStatus>([
+          "tool_running",
+          "needs_input",
+          "error",
+        ]);
+        nextStatus = stalePreCompact.has(prev.preCompactStatus)
+          ? "working"
+          : prev.preCompactStatus;
+        nextPreCompact = undefined;
+      } else if (nextStatus !== "compacting") {
+        // Exiting compacting via any other path (SessionEnd, duplicate
+        // PostCompact, etc.) — clear the stale baseline.
+        nextPreCompact = undefined;
+      }
+
+      if (nextStatus === "needs_input" || nextStatus === "error") {
         console.log(
-          `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${statusUpdate.status}` +
+          `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${nextStatus}` +
             ` (event=${event}, notification_type=${body.notification_type ?? "none"})`,
         );
       }
       agentStates.set(sessionId, {
         ...prev,
         ...statusUpdate,
+        // currentTool/toolDetail are always stale after compaction —
+        // clear explicitly so the invariant doesn't depend on deriveStatus
+        // continuing to include CLEAR_TOOL for PostCompact.
+        ...(event === "PostCompact" ? CLEAR_TOOL : {}),
+        status: nextStatus,
+        preCompactStatus: nextPreCompact,
         lastEvent: event,
         updatedAt: timestamp,
       });

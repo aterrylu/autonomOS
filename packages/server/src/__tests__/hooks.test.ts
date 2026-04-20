@@ -105,11 +105,76 @@ describe("hooks — agent status derivation", () => {
     assert.equal(getAgentState(sid).status, "compacting");
   });
 
-  it("PostCompact → working (exits compacting)", async () => {
+  it("PostCompact from unknown baseline → ready (fallback)", async () => {
+    // No prior status — PreCompact from "unknown" doesn't save a baseline.
+    // PostCompact falls back to "ready" so the UI doesn't spin forever.
     await postHookEvent(sid, { hook_event_name: "PreCompact" });
     assert.equal(getAgentState(sid).status, "compacting");
     await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    assert.equal(getAgentState(sid).status, "ready");
+  });
+
+  it("PreCompact → PostCompact restores pre-compact working status", async () => {
+    // Mid-turn /compact: agent was working, stays working after compaction.
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
     assert.equal(getAgentState(sid).status, "working");
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    assert.equal(getAgentState(sid).status, "compacting");
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    const state = getAgentState(sid);
+    assert.equal(state.status, "working");
+    assert.equal(state.currentTool, undefined);
+    assert.equal(state.toolDetail, undefined);
+    // Baseline must be cleared — a stale baseline would corrupt later cycles.
+    assert.equal(state.preCompactStatus, undefined);
+  });
+
+  it("SessionStart source=compact → PostCompact → ready (resume auto-compact)", async () => {
+    // Regression: after server restart, sessions auto-compact on resume.
+    // Previously stuck at "working" forever; now falls back to "ready".
+    await postHookEvent(sid, {
+      hook_event_name: "SessionStart",
+      source: "compact",
+    });
+    assert.equal(getAgentState(sid).status, "compacting");
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    assert.equal(getAgentState(sid).status, "ready");
+  });
+
+  it("tool_running → PreCompact → PostCompact coerces to working (stale tool)", async () => {
+    // The in-flight tool is gone after compaction — don't show stale tool.
+    await postHookEvent(sid, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    assert.equal(getAgentState(sid).status, "tool_running");
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    const state = getAgentState(sid);
+    assert.equal(state.status, "working");
+    assert.equal(state.currentTool, undefined);
+    assert.equal(state.toolDetail, undefined);
+  });
+
+  it("needs_input → PreCompact → PostCompact coerces to working (stale prompt)", async () => {
+    // A permission prompt in flight before compaction is gone afterward —
+    // restore to working so the UI doesn't show a phantom prompt badge.
+    await postHookEvent(sid, { hook_event_name: "PermissionRequest" });
+    assert.equal(getAgentState(sid).status, "needs_input");
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    assert.equal(getAgentState(sid).status, "working");
+  });
+
+  it("compacting → Stop → idle clears preCompactStatus (no leak across cycles)", async () => {
+    // User cancels mid-compact. Baseline must not leak into the next cycle.
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    const state = getAgentState(sid);
+    assert.equal(state.status, "idle");
+    assert.equal(state.preCompactStatus, undefined);
   });
 
   it("SessionEnd → stopped", async () => {
