@@ -24,6 +24,7 @@ import {
   getSchedule,
   listSchedules,
   updateSchedule,
+  validateScheduleInput,
 } from "./schedules.js";
 import {
   createSession,
@@ -405,6 +406,13 @@ function createMcpServer(): McpServer {
       try {
         const config =
           args as unknown as import("@autonomos/core").ScheduleConfig;
+        const validationError = validateScheduleInput(config);
+        if (validationError) {
+          return {
+            content: [{ type: "text", text: `Failed: ${validationError}` }],
+            isError: true,
+          };
+        }
         const schedule = createSchedule(config);
         addScheduleJob(schedule.name, schedule);
         // Re-read from disk — addScheduleJob updates nextRunAt on disk
@@ -492,6 +500,17 @@ function createMcpServer(): McpServer {
     async (args) => {
       try {
         const { name, ...partial } = args;
+        const existing = getSchedule(name);
+        const validationError = validateScheduleInput(
+          partial as import("@autonomos/core").ScheduleConfig,
+          { existing: existing ?? undefined },
+        );
+        if (validationError) {
+          return {
+            content: [{ type: "text", text: `Failed: ${validationError}` }],
+            isError: true,
+          };
+        }
         const updated = updateSchedule(
           name,
           partial as Record<string, unknown>,

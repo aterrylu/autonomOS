@@ -6,8 +6,6 @@
  */
 
 import type { ScheduleConfig } from "@autonomos/core";
-import { SUPPORTED_OVERLAP_POLICIES } from "@autonomos/core";
-import { Cron } from "croner";
 import { Hono } from "hono";
 import {
   addScheduleJob,
@@ -25,6 +23,7 @@ import {
   getSchedule,
   listSchedules,
   updateSchedule,
+  validateScheduleInput,
 } from "../schedules.js";
 import { getSettings, updateSettings } from "../settings.js";
 
@@ -62,53 +61,18 @@ scheduleRouter.post("/", async (c) => {
   if (typeof workingDirectory !== "string" || !workingDirectory.trim())
     return c.json({ error: "workingDirectory is required" }, 400);
 
-  // Validate target format
-  if (
-    target !== "isolated" &&
-    !(typeof target === "string" && target.startsWith("agent:"))
-  ) {
-    return c.json(
-      {
-        error: `Invalid target "${target}": must be "isolated" or "agent:<name>"`,
-      },
-      400,
-    );
-  }
-
-  // Validate cron expression / one-time date
-  if (typeof schedule === "string" && !schedule.startsWith("once:")) {
-    try {
-      const tz = typeof body.timezone === "string" ? body.timezone : undefined;
-      new Cron(schedule, { timezone: tz || undefined });
-    } catch (err) {
-      return c.json(
-        {
-          error: `Invalid cron expression: ${err instanceof Error ? err.message : err}`,
-        },
-        400,
-      );
-    }
-  } else if (typeof schedule === "string" && schedule.startsWith("once:")) {
-    const d = new Date(schedule.slice("once:".length));
-    if (Number.isNaN(d.getTime())) {
-      return c.json({ error: "Invalid one-time date format" }, 400);
-    }
-  }
-
-  // Validate overlap policy
   const overlapPolicy =
     typeof body.overlapPolicy === "string" ? body.overlapPolicy : undefined;
-  if (
-    overlapPolicy &&
-    !SUPPORTED_OVERLAP_POLICIES.includes(overlapPolicy as "skip" | "allow")
-  ) {
-    return c.json(
-      {
-        error: `Unsupported overlap policy: "${overlapPolicy}". Supported: ${SUPPORTED_OVERLAP_POLICIES.join(", ")}`,
-      },
-      400,
-    );
-  }
+  const timezone =
+    typeof body.timezone === "string" ? body.timezone : undefined;
+
+  const validationError = validateScheduleInput({
+    schedule,
+    target,
+    timezone,
+    overlapPolicy: overlapPolicy as ScheduleConfig["overlapPolicy"],
+  });
+  if (validationError) return c.json({ error: validationError }, 400);
 
   try {
     const config: ScheduleConfig = {
@@ -119,7 +83,7 @@ scheduleRouter.post("/", async (c) => {
       workingDirectory: workingDirectory.trim(),
       description:
         typeof body.description === "string" ? body.description : undefined,
-      timezone: typeof body.timezone === "string" ? body.timezone : undefined,
+      timezone,
       template: typeof body.template === "string" ? body.template : undefined,
       autonomous: typeof body.autonomous === "boolean" ? body.autonomous : true,
       overlapPolicy: overlapPolicy as ScheduleConfig["overlapPolicy"],
@@ -200,20 +164,13 @@ scheduleRouter.put("/:name", async (c) => {
         (partial as Record<string, unknown>)[key] = body[key];
     }
 
-    // Validate overlapPolicy if provided
-    if (
-      partial.overlapPolicy &&
-      !SUPPORTED_OVERLAP_POLICIES.includes(
-        partial.overlapPolicy as "skip" | "allow",
-      )
-    ) {
-      return c.json(
-        {
-          error: `Unsupported overlap policy: "${partial.overlapPolicy}"`,
-        },
-        400,
-      );
-    }
+    // Validate partial input against existing config — cron is checked
+    // against the effective timezone (new if provided, else existing).
+    const existing = getSchedule(name);
+    const validationError = validateScheduleInput(partial, {
+      existing: existing ?? undefined,
+    });
+    if (validationError) return c.json({ error: validationError }, 400);
 
     const updated = updateSchedule(name, partial);
 

@@ -26,7 +26,7 @@ const {
   listSchedules,
   saveSchedule,
   updateSchedule,
-  updateScheduleState,
+  validateScheduleInput,
   appendRun,
   getRecentRuns,
   pruneRuns,
@@ -296,33 +296,78 @@ describe("schedules CRUD", () => {
     });
   });
 
-  // ── updateScheduleState ────────────────────────────────────
+  // ── validateScheduleInput ──────────────────────────────────
 
-  describe("updateScheduleState", () => {
-    it("merges state fields", () => {
-      createSchedule(makeConfig({ name: "stateful" }));
-      const updated = updateScheduleState("stateful", {
-        lastRunAt: "2026-01-01T00:00:00Z",
-        runCount: 5,
+  describe("validateScheduleInput", () => {
+    it("accepts valid cron", () => {
+      assert.equal(validateScheduleInput({ schedule: "0 9 * * 1-5" }), null);
+    });
+
+    it("accepts valid once: date", () => {
+      assert.equal(
+        validateScheduleInput({ schedule: "once:2026-12-31T12:00:00Z" }),
+        null,
+      );
+    });
+
+    it("rejects invalid cron", () => {
+      const err = validateScheduleInput({ schedule: "not a cron" });
+      assert.ok(err);
+      assert.match(err!, /Invalid cron expression/);
+    });
+
+    it("rejects invalid once: date", () => {
+      const err = validateScheduleInput({ schedule: "once:totally-bogus" });
+      assert.equal(err, "Invalid one-time date format");
+    });
+
+    it("rejects empty schedule string", () => {
+      const err = validateScheduleInput({ schedule: "   " });
+      assert.equal(err, "schedule must be a non-empty string");
+    });
+
+    it("rejects invalid target", () => {
+      const err = validateScheduleInput({ target: "local" });
+      assert.ok(err);
+      assert.match(err!, /must be "isolated" or "agent:<name>"/);
+    });
+
+    it("accepts isolated and agent: targets", () => {
+      assert.equal(validateScheduleInput({ target: "isolated" }), null);
+      assert.equal(validateScheduleInput({ target: "agent:worker" }), null);
+    });
+
+    it("rejects invalid overlap policy", () => {
+      const err = validateScheduleInput({
+        overlapPolicy: "queue" as unknown as "skip",
       });
-
-      assert.ok(updated);
-      assert.equal(updated.state.lastRunAt, "2026-01-01T00:00:00Z");
-      assert.equal(updated.state.runCount, 5);
-      assert.equal(updated.state.currentRunId, null); // unchanged
+      assert.ok(err);
+      assert.match(err!, /Unsupported overlap policy/);
     });
 
-    it("returns null for non-existent schedule", () => {
-      assert.equal(updateScheduleState("ghost", { runCount: 1 }), null);
+    it("accepts partial input (missing fields OK)", () => {
+      assert.equal(validateScheduleInput({ prompt: "new prompt" }), null);
     });
 
-    it("persists to disk", () => {
-      createSchedule(makeConfig({ name: "persist-state" }));
-      updateScheduleState("persist-state", { consecutiveFailures: 3 });
-
-      const fromDisk = getSchedule("persist-state");
-      assert.ok(fromDisk);
-      assert.equal(fromDisk.state.consecutiveFailures, 3);
+    it("uses existing timezone on partial update when none provided", () => {
+      const existing: Schedule = {
+        ...makeConfig({ name: "tz-test" }),
+        timezone: "America/Los_Angeles",
+        state: {
+          lastRunAt: null,
+          lastRunStatus: null,
+          nextRunAt: null,
+          runCount: 0,
+          consecutiveFailures: 0,
+          currentRunId: null,
+        },
+      };
+      // Updating only the schedule with a valid cron should pass,
+      // validator resolves timezone from existing config.
+      assert.equal(
+        validateScheduleInput({ schedule: "0 5 * * *" }, { existing }),
+        null,
+      );
     });
   });
 });

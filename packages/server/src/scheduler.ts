@@ -104,6 +104,29 @@ export function initScheduler(): void {
     return;
   }
 
+  // Crash recovery: clear stale currentRunId. A previous process may have
+  // died uncleanly (SIGKILL / OOM / power loss) with a run in flight; the
+  // flag stays on disk but no run is actually active. Without this, the
+  // default `skip` overlap policy would silently skip every future fire.
+  // Isolate per-schedule so one failing saveSchedule (disk full, perms)
+  // doesn't abort recovery for the rest.
+  for (const name of names) {
+    const sched = schedules[name];
+    if (!sched.state.currentRunId) continue;
+    try {
+      console.log(
+        `[scheduler] Clearing stale currentRunId for "${name}" (crash recovery)`,
+      );
+      sched.state.currentRunId = null;
+      saveSchedule(name, sched);
+    } catch (err) {
+      console.error(
+        `[scheduler] Failed to clear stale currentRunId for "${name}":`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   console.log(`[scheduler] Loading ${names.length} schedule(s)...`);
 
   for (const name of names) {
@@ -201,6 +224,13 @@ export function removeScheduleJob(name: string): void {
   if (timer) {
     clearTimeout(timer);
     oneTimeTimers.delete(name);
+  }
+  // Purge from the run queue too — otherwise drainQueue will shift this
+  // name off the queue, find no schedule on disk, and waste that drain
+  // opportunity (drainQueue only dispatches one per completion).
+  const queueIdx = runQueue.indexOf(name);
+  if (queueIdx >= 0) {
+    runQueue.splice(queueIdx, 1);
   }
 }
 

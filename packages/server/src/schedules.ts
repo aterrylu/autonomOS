@@ -22,6 +22,8 @@ import type {
   ScheduleConfig,
   ScheduleState,
 } from "@autonomos/core";
+import { SUPPORTED_OVERLAP_POLICIES } from "@autonomos/core";
+import { Cron } from "croner";
 import { CONFIG_DIR } from "./configDir.js";
 
 const SCHEDULES_DIR = join(CONFIG_DIR, "schedules");
@@ -218,18 +220,58 @@ export function pruneRuns(name: string, maxLines = 2000): void {
   }
 }
 
+// ── Input validation ────────────────────────────────────────────
+
 /**
- * Update only the state section of a schedule on disk.
- * Used by the scheduler engine to persist run status without
- * touching config fields.
+ * Validate schedule config input. Used by REST + MCP create/update handlers
+ * so invalid cron, `once:` dates, targets, or overlap policies are rejected
+ * up-front instead of silently disabling the schedule in `addScheduleJob`.
+ *
+ * Pass `existing` on update so cron is validated against the effective
+ * timezone (new value if provided, else existing).
+ * Returns null on success, or an error message suitable for a 400 response.
  */
-export function updateScheduleState(
-  name: string,
-  state: Partial<ScheduleState>,
-): Schedule | null {
-  const existing = getSchedule(name);
-  if (!existing) return null;
-  existing.state = { ...existing.state, ...state };
-  saveSchedule(name, existing);
-  return existing;
+export function validateScheduleInput(
+  input: Partial<ScheduleConfig>,
+  opts: { existing?: Schedule } = {},
+): string | null {
+  if (input.schedule !== undefined) {
+    if (typeof input.schedule !== "string" || !input.schedule.trim()) {
+      return "schedule must be a non-empty string";
+    }
+    if (input.schedule.startsWith("once:")) {
+      const d = new Date(input.schedule.slice("once:".length));
+      if (Number.isNaN(d.getTime())) {
+        return "Invalid one-time date format";
+      }
+    } else {
+      const tz = input.timezone ?? opts.existing?.timezone;
+      try {
+        new Cron(input.schedule, { timezone: tz || undefined });
+      } catch (err) {
+        return `Invalid cron expression: ${err instanceof Error ? err.message : err}`;
+      }
+    }
+  }
+
+  if (input.target !== undefined) {
+    if (typeof input.target !== "string" || !input.target.trim()) {
+      return "target must be a non-empty string";
+    }
+    if (input.target !== "isolated" && !input.target.startsWith("agent:")) {
+      return `Invalid target "${input.target}": must be "isolated" or "agent:<name>"`;
+    }
+  }
+
+  if (input.overlapPolicy !== undefined) {
+    if (
+      !SUPPORTED_OVERLAP_POLICIES.includes(
+        input.overlapPolicy as "skip" | "allow",
+      )
+    ) {
+      return `Unsupported overlap policy: "${input.overlapPolicy}". Supported: ${SUPPORTED_OVERLAP_POLICIES.join(", ")}`;
+    }
+  }
+
+  return null;
 }

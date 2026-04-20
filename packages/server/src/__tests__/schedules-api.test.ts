@@ -15,6 +15,7 @@ const { scheduleRouter, schedulerRouter } = await import(
 );
 const { _resetForTesting, _setExecutors, _onRunCompleted, initScheduler } =
   await import("../scheduler.js");
+const { getSchedule } = await import("../schedules.js");
 
 function createApp() {
   const app = new Hono();
@@ -401,6 +402,61 @@ describe("PUT /api/schedules/:name", () => {
     );
     assert.equal(status, 400);
     assert.ok((json.error as string).includes("Unsupported overlap policy"));
+  });
+
+  it("rejects invalid cron expression on update", async () => {
+    const app = createApp();
+    await req(app, "POST", "/api/schedules", {
+      ...validBody,
+      name: "update-bad-cron",
+    });
+
+    const { status, json } = await req(
+      app,
+      "PUT",
+      "/api/schedules/update-bad-cron",
+      { schedule: "not a cron" },
+    );
+    assert.equal(status, 400);
+    assert.ok((json.error as string).includes("Invalid cron expression"));
+
+    // On-disk schedule should be unchanged (not corrupted)
+    const fromDisk = getSchedule("update-bad-cron");
+    assert.equal(fromDisk!.schedule, "0 9 * * 1-5");
+  });
+
+  it("rejects invalid once: date on update", async () => {
+    const app = createApp();
+    await req(app, "POST", "/api/schedules", {
+      ...validBody,
+      name: "update-bad-date",
+    });
+
+    const { status, json } = await req(
+      app,
+      "PUT",
+      "/api/schedules/update-bad-date",
+      { schedule: "once:not-a-date" },
+    );
+    assert.equal(status, 400);
+    assert.equal(json.error, "Invalid one-time date format");
+  });
+
+  it("rejects invalid target on update", async () => {
+    const app = createApp();
+    await req(app, "POST", "/api/schedules", {
+      ...validBody,
+      name: "update-bad-target",
+    });
+
+    const { status, json } = await req(
+      app,
+      "PUT",
+      "/api/schedules/update-bad-target",
+      { target: "local" },
+    );
+    assert.equal(status, 400);
+    assert.ok((json.error as string).includes("must be"));
   });
 });
 
