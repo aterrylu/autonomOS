@@ -12,7 +12,7 @@ import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { resolveAuthToken } from "./auth.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
-import { getPersistedSessions } from "./persisted.js";
+import { getPersistedSessions, markSessionExited } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
@@ -274,10 +274,18 @@ function resumePersistedSessions() {
       console.log(`  ✓ ${p.name} (${p.claudeSessionId.slice(0, 8)}...)`);
       resumed++;
     } catch (err) {
-      console.error(
-        `  ✗ Failed to resume ${p.name}:`,
-        err instanceof Error ? err.message : err,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      // Include stack for diagnosability — this catch is deliberately broad
+      // (any failure during resume lands here: invalid cwd, provider missing,
+      // spawn errors, template lookup bugs). The stack is how you tell a
+      // transient env issue apart from a programming regression.
+      const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
+      console.error(`  ✗ Failed to resume ${p.name}: ${message}${stack}`);
+      // Mark the failed session as exited/crashed so the exited list reflects
+      // reality — without this, the session sits in persistence as "running"
+      // forever with no live PTY (a zombie) and the user has no way to tell
+      // a zombie from a live agent.
+      markSessionExited(p.claudeSessionId, "crashed");
     }
   }
   if (resumed < toResume.length) {

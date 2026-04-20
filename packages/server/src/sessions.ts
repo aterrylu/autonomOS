@@ -220,9 +220,13 @@ export function createSession(options: SpawnOptions): ManagedSession {
     }
 
     if (!shuttingDown) {
-      // Natural exit (Ctrl+C, agent finished, crash) — mark as exited in persistence
+      // Natural exit — mark as exited in persistence. A clean exit (exitCode 0,
+      // no signal) is almost always self_exit() or an agent finishing its work;
+      // anything else is treated as a crash for triage purposes.
       if (session.claudeSessionId) {
-        markSessionExited(session.claudeSessionId);
+        const reason: "self_exited" | "crashed" =
+          exitCode === 0 && !signal ? "self_exited" : "crashed";
+        markSessionExited(session.claudeSessionId, reason);
       }
       sessions.delete(id);
     }
@@ -244,7 +248,7 @@ export function killSession(id: string): boolean {
   managed.session.status = "stopped";
   managed.session.updatedAt = Date.now();
   if (managed.session.claudeSessionId) {
-    markSessionExited(managed.session.claudeSessionId);
+    markSessionExited(managed.session.claudeSessionId, "user_killed");
   }
   sessions.delete(id);
   return true;
