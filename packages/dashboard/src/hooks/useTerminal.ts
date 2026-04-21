@@ -229,7 +229,15 @@ export function useTerminal(
 
         ws.onmessage = (event) => {
           if (disposed) return;
-          terminal!.write(event.data);
+          try {
+            terminal!.write(event.data);
+          } catch (err) {
+            // xterm.js v6.0.0 has a bug in its DECRQM ($p) handler that throws
+            // on certain escape sequences emitted by Ink (used by Claude Code).
+            // An uncaught throw mid-write freezes the terminal — isolate it here
+            // so the next chunk still renders.
+            console.warn("terminal.write() threw, continuing:", err);
+          }
           if (!userScrolledUp) {
             if (scrollTimer) clearTimeout(scrollTimer);
             scrollTimer = setTimeout(() => {

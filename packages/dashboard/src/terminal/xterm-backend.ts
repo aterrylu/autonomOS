@@ -28,6 +28,20 @@ export function createXtermBackend(options: TerminalOptions): TerminalBackend {
   terminal.loadAddon(unicodeAddon);
   terminal.unicode.activeVersion = "11";
 
+  // xterm.js 6.0.0 has a bug where its built-in DECRQM (mode report) handler
+  // throws `ReferenceError: t is not defined` on `CSI $ p` / `CSI ? $ p` —
+  // Ink (used by Claude Code) emits `CSI ? 2026 $ p` to probe synchronized-output
+  // support, which freezes the terminal mid-write. Shadow both handlers with a
+  // safe no-op before the built-in runs.
+  terminal.parser.registerCsiHandler(
+    { intermediates: "$", final: "p" },
+    () => true,
+  );
+  terminal.parser.registerCsiHandler(
+    { prefix: "?", intermediates: "$", final: "p" },
+    () => true,
+  );
+
   return {
     terminal: terminal as unknown as TerminalBackend["terminal"],
     fitAddon,
