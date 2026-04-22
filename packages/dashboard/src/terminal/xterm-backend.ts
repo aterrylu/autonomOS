@@ -42,6 +42,25 @@ export function createXtermBackend(options: TerminalOptions): TerminalBackend {
     () => true,
   );
 
+  // OSC 52 writes to the system clipboard. Read requests (`?`) are dropped so
+  // a remote process can't exfiltrate the user's clipboard.
+  terminal.parser.registerOscHandler(52, (data) => {
+    const semi = data.indexOf(";");
+    if (semi === -1) return true;
+    const payload = data.slice(semi + 1);
+    if (payload === "?") return true;
+    try {
+      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
+      navigator.clipboard.writeText(text).catch((err) => {
+        console.warn("OSC 52 clipboard write failed:", err);
+      });
+    } catch (err) {
+      console.warn("OSC 52 decode failed:", err);
+    }
+    return true;
+  });
+
   return {
     terminal: terminal as unknown as TerminalBackend["terminal"],
     fitAddon,
