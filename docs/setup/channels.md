@@ -14,12 +14,15 @@ Telegram and Discord channels from scratch.
 
 ## 1. Install the plugin on the host
 
-```bash
-claude plugin install telegram@claude-plugins-official
-claude plugin install discord@claude-plugins-official
+From inside any Claude Code session:
+
+```
+/plugin install telegram@claude-plugins-official
+/plugin install discord@claude-plugins-official
+/reload-plugins
 ```
 
-`claude plugin list` should now show both plugins with
+`claude plugin list` (from a terminal) should now show both plugins with
 `Status: ✔ enabled`. The autonomOS dashboard reads the same list to
 populate the Channels section.
 
@@ -65,10 +68,12 @@ subsequent session spawn (including `claude --resume`) will receive the
 
 - **✓ green** — plugin installed, enabled, selectable.
 - **🔒 greyed out + "Not installed"** — the plugin is missing. The tooltip
-  shows the exact `claude plugin install ...` command to fix it. You
+  shows the exact `/plugin install ...` command to fix it. You
   can't toggle ON until you install it (the server rejects the save too).
 - **🔒 greyed out + "Disabled"** — the plugin is present but disabled via
-  `claude plugin disable ...`. Tooltip shows the re-enable command.
+  `/plugin disable ...`. Tooltip shows the same `/plugin install ...`
+  command — it re-enables the plugin in one step (no separate `enable`
+  command to remember).
 - **"Status unknown"** — the subprocess probe failed. Toggle stays
   interactive so a flaky environment doesn't lock you out of settings.
 
@@ -101,8 +106,8 @@ Official plugins gate inbound messages on a sender allowlist. To pair:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Toggle is greyed out with "Not installed" | Plugin not on host | Run `claude plugin install <id>` |
-| Toggle is greyed out with "Disabled" | Plugin disabled | Run `claude plugin enable <id>` |
+| Toggle is greyed out with "Not installed" | Plugin not on host | Run `/plugin install <id>` in any CC session, then `/reload-plugins` |
+| Toggle is greyed out with "Disabled" | Plugin disabled | Run `/plugin install <id>` — this also re-enables disabled plugins |
 | Bot doesn't respond to DMs | Not paired yet | Run `/telegram:access pair <code>` |
 | Pairing code doesn't appear | Session has no tty output, or plugin not loaded | Verify `--channels` flag with `ps` or check terminal output |
 | New sessions lack the flag after toggle | Old sessions need a restart | Existing PTYs don't re-read settings; use the Restart All button |

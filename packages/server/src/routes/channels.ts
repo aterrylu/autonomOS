@@ -129,8 +129,12 @@ export interface ChannelStatusEntry {
 function fixCommand(id: string, status: ChannelStatus): string | null {
   if (!id.startsWith("plugin:")) return null;
   const pluginId = id.replace(/^plugin:/, "");
-  if (status === "not-installed") return `claude plugin install ${pluginId}`;
-  if (status === "disabled") return `claude plugin enable ${pluginId}`;
+  // `/plugin install` is the universal fix — works for both "not installed"
+  // (installs fresh) and "disabled" (reinstall + enable in one step). Using
+  // one command across both states avoids the `enable`/`install` confusion.
+  if (status === "not-installed" || status === "disabled") {
+    return `/plugin install ${pluginId}`;
+  }
   return null;
 }
 

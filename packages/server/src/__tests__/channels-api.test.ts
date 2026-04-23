@@ -88,11 +88,11 @@ describe("GET /api/channels/status", () => {
     assert.equal(discord?.status, "not-installed");
     assert.equal(
       discord?.fix,
-      "claude plugin install discord@claude-plugins-official",
+      "/plugin install discord@claude-plugins-official",
     );
   });
 
-  it("reports disabled with an enable command for disabled plugins", async () => {
+  it("reports disabled with an install command for disabled plugins", async () => {
     _setInstalledPluginsForTesting([
       { id: "telegram@claude-plugins-official", enabled: false },
       { id: "discord@claude-plugins-official", enabled: true },
@@ -105,10 +105,9 @@ describe("GET /api/channels/status", () => {
       (c) => c.id === "plugin:telegram@claude-plugins-official",
     );
     assert.equal(tg?.status, "disabled");
-    assert.equal(
-      tg?.fix,
-      "claude plugin enable telegram@claude-plugins-official",
-    );
+    // `/plugin install` is the universal fix — works for both not-installed
+    // and disabled states in one command.
+    assert.equal(tg?.fix, "/plugin install telegram@claude-plugins-official");
   });
 });
 
