@@ -45,13 +45,15 @@ function ToggleSwitch({
   );
 }
 
-const AVAILABLE_CHANNELS = [
-  {
-    id: "server:autonomos",
-    label: "autonomOS Gateway",
-    icon: "radio-tower",
-  },
-] as const;
+type ChannelStatus = "ok" | "disabled" | "not-installed" | "unknown";
+
+interface ChannelStatusEntry {
+  id: string;
+  label: string;
+  icon: string;
+  status: ChannelStatus;
+  fix: string | null;
+}
 
 function SettingRow({
   label,
@@ -130,38 +132,88 @@ function SettingRow({
   );
 }
 
+function channelStatusLabel(status: ChannelStatus): string | null {
+  switch (status) {
+    case "not-installed":
+      return "Not installed";
+    case "disabled":
+      return "Disabled";
+    case "unknown":
+      return "Status unknown";
+    default:
+      return null;
+  }
+}
+
 function ChannelToggle({
   label,
   icon,
   enabled,
+  status,
+  fix,
   page,
   onToggle,
 }: {
   label: string;
   icon: CodiconName;
   enabled: boolean;
+  status: ChannelStatus;
+  fix: string | null;
   page: PageTheme;
   onToggle: () => void;
 }) {
+  // "unknown" (detection failed) stays interactive so a flaky subprocess
+  // doesn't lock the user out of settings they already had configured.
+  const lockedOff =
+    !enabled && (status === "not-installed" || status === "disabled");
+  const statusLabel = channelStatusLabel(status);
+
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="flex items-center gap-2 w-full rounded px-2 py-1.5 text-xs cursor-pointer"
-      style={{
-        background: enabled ? "#16825d20" : page.border,
-        border: enabled ? "1px solid #16825d50" : "1px solid transparent",
-        color: page.fg,
-      }}
-    >
-      <Codicon name={icon} size={14} />
-      <span className="flex-1 text-left">{label}</span>
-      <Codicon
-        name={enabled ? "check" : "circle-large"}
-        size={14}
-        style={{ color: enabled ? "#16825d" : page.statusFg }}
-      />
-    </button>
+    <div className="space-y-0.5">
+      <button
+        type="button"
+        onClick={lockedOff ? undefined : onToggle}
+        disabled={lockedOff}
+        title={fix ?? undefined}
+        className="flex items-center gap-2 w-full rounded px-2 py-1.5 text-xs"
+        style={{
+          background: enabled ? "#16825d20" : page.border,
+          border: enabled ? "1px solid #16825d50" : "1px solid transparent",
+          color: page.fg,
+          cursor: lockedOff ? "not-allowed" : "pointer",
+          opacity: lockedOff ? 0.55 : 1,
+        }}
+      >
+        <Codicon name={icon} size={14} />
+        <span className="flex-1 text-left">{label}</span>
+        <Codicon
+          name={lockedOff ? "lock" : enabled ? "check" : "circle-large"}
+          size={14}
+          style={{ color: enabled ? "#16825d" : page.statusFg }}
+        />
+      </button>
+      {statusLabel && (
+        <div
+          className="text-[10px] px-2"
+          style={{
+            color: status === "unknown" ? page.statusFg : "#ea6c73",
+          }}
+        >
+          {statusLabel}
+          {fix && (
+            <>
+              {" — run "}
+              <code
+                className="rounded px-1"
+                style={{ background: page.border }}
+              >
+                {fix}
+              </code>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -498,6 +550,9 @@ export function SettingsPanel({
   const [pendingEnvVars, setPendingEnvVars] = useState<EnvVarEntry[] | null>(
     null,
   );
+  const [channelStatuses, setChannelStatuses] = useState<
+    ChannelStatusEntry[] | null
+  >(null);
   const envIdCounter = useRef(0);
 
   const toggleSetting = useCallback(
@@ -523,6 +578,19 @@ export function SettingsPanel({
     [],
   );
 
+  const refreshChannelStatuses = useCallback(async () => {
+    try {
+      const r = await fetch("/api/channels/status");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data: { channels: ChannelStatusEntry[] } = await r.json();
+      setChannelStatuses(data.channels);
+    } catch {
+      // Leave channelStatuses null so toggles render with "unknown" state —
+      // never a hard UI failure just because detection flaked.
+      setChannelStatuses(null);
+    }
+  }, []);
+
   useEffect(() => {
     fetch("/api/settings")
       .then((r) => {
@@ -539,7 +607,9 @@ export function SettingsPanel({
         );
         setLoaded(true);
       });
-  }, []);
+
+    refreshChannelStatuses();
+  }, [refreshChannelStatuses]);
 
   async function handleSave() {
     const hasTextChanges = Object.keys(pending).length > 0;
@@ -568,7 +638,17 @@ export function SettingsPanel({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        setError(`Failed to save (HTTP ${res.status})`);
+        // Surface the actionable error message the server returns
+        // (e.g. "Refusing to save channels that would silently no-op...").
+        const data = await res.json().catch(() => null);
+        setError(
+          data && typeof data.error === "string"
+            ? data.error
+            : `Failed to save (HTTP ${res.status})`,
+        );
+        // Plugin state may have flipped since the panel opened — refresh
+        // so the banner error lines up with what the toggles show.
+        refreshChannelStatuses();
         return;
       }
       const updated: MaskedSettings = await res.json();
@@ -695,30 +775,35 @@ export function SettingsPanel({
           >
             Channels
           </div>
-          <div className="space-y-1">
-            {AVAILABLE_CHANNELS.map((ch) => {
-              const current = pendingChannels ?? settings?.channels ?? [];
-              const isEnabled = current.includes(ch.id);
-              return (
-                <ChannelToggle
-                  key={ch.id}
-                  label={ch.label}
-                  icon={ch.icon}
-                  enabled={isEnabled}
-                  page={page}
-                  onToggle={() => {
-                    const base = pendingChannels ?? [
-                      ...(settings?.channels ?? []),
-                    ];
-                    setPendingChannels(
-                      isEnabled
-                        ? base.filter((c) => c !== ch.id)
-                        : [...base, ch.id],
-                    );
-                  }}
-                />
-              );
-            })}
+          <div className="space-y-1.5">
+            {channelStatuses === null ? (
+              <div className="text-[10px]" style={labelStyle}>
+                Loading channels...
+              </div>
+            ) : (
+              channelStatuses.map((ch) => {
+                const current = pendingChannels ?? settings?.channels ?? [];
+                const isEnabled = current.includes(ch.id);
+                return (
+                  <ChannelToggle
+                    key={ch.id}
+                    label={ch.label}
+                    icon={ch.icon as CodiconName}
+                    enabled={isEnabled}
+                    status={ch.status}
+                    fix={ch.fix}
+                    page={page}
+                    onToggle={() => {
+                      setPendingChannels(
+                        isEnabled
+                          ? current.filter((c) => c !== ch.id)
+                          : [...current, ch.id],
+                      );
+                    }}
+                  />
+                );
+              })
+            )}
           </div>
           <div className="text-[10px]" style={labelStyle}>
             Enabled channels are injected into every new session via --channels.

@@ -1,6 +1,8 @@
 import { Hono } from "hono";
+import { channelStatus, isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
 import { type AppSettings, getSettings, updateSettings } from "../settings.js";
+import { readInstalledPlugins } from "./channels.js";
 
 export const settingsRouter = new Hono();
 
@@ -61,9 +63,51 @@ settingsRouter.put("/", async (c) => {
     partial.autoTrust = body.autoTrust;
   }
   if (Array.isArray(body.channels)) {
-    partial.channels = body.channels.filter(
-      (c): c is string => typeof c === "string" && c.trim().length > 0,
-    );
+    const requested = body.channels
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .map((v) => v.trim());
+
+    const invalid = requested.filter((id) => !isValidChannelId(id));
+    if (invalid.length > 0) {
+      return c.json(
+        {
+          error: `Invalid channel identifier(s): ${invalid.join(", ")}. Expected plugin:<name>@<marketplace> or server:<name>.`,
+        },
+        400,
+      );
+    }
+
+    // When detection fails, readInstalledPlugins returns null, which
+    // channelStatus() translates to "unknown" — deliberately fail-open
+    // so a transient subprocess problem doesn't block legitimate saves.
+    let installed: Awaited<ReturnType<typeof readInstalledPlugins>>;
+    try {
+      installed = await readInstalledPlugins();
+    } catch (err) {
+      console.error("[settings] channel detection threw:", err);
+      return c.json(
+        { error: "Could not verify channel status — try again." },
+        500,
+      );
+    }
+
+    const broken: string[] = [];
+    for (const id of requested) {
+      const status = channelStatus(id, installed);
+      if (status === "not-installed" || status === "disabled") {
+        broken.push(`${id} (${status})`);
+      }
+    }
+    if (broken.length > 0) {
+      return c.json(
+        {
+          error: `Refusing to save channels that would silently no-op at spawn: ${broken.join(", ")}. Install or enable the plugin first.`,
+        },
+        400,
+      );
+    }
+
+    partial.channels = requested;
   }
   if (
     body.terminalRenderer === "xterm" ||
