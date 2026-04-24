@@ -29,6 +29,16 @@ export interface AppSettings {
    *   "server:autonomos"
    */
   channels?: string[];
+  /**
+   * Name of the agent that gets plugin:* channels (Telegram, Discord, etc).
+   * Only ONE session can hold a given plugin's lock — Telegram's getUpdates
+   * API enforces a single concurrent poller per bot token, and the plugin
+   * implements this with a PID file that evicts previous holders. Pinning
+   * plugin channels to one agent avoids the random-last-wins routing you'd
+   * otherwise get when many sessions resume in parallel.
+   * Default: "Dispatcher". Non-matching sessions still get server:* channels.
+   */
+  inboxAgent?: string;
   /** Gateway platform adapter config */
   gateway?: {
     discord?: { enabled: boolean };
@@ -54,6 +64,12 @@ function settingsFile(): string {
 }
 
 const DEFAULT_CHANNELS = ["server:autonomos"];
+const DEFAULT_INBOX_AGENT = "Dispatcher";
+
+export function getInboxAgent(settings: AppSettings): string {
+  const name = settings.inboxAgent?.trim();
+  return name && name.length > 0 ? name : DEFAULT_INBOX_AGENT;
+}
 
 export function getSettings(): AppSettings {
   let data: AppSettings;

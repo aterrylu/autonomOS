@@ -1,7 +1,12 @@
 import { Hono } from "hono";
 import { channelStatus, isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
-import { type AppSettings, getSettings, updateSettings } from "../settings.js";
+import {
+  type AppSettings,
+  getInboxAgent,
+  getSettings,
+  updateSettings,
+} from "../settings.js";
 import { readInstalledPlugins } from "./channels.js";
 
 export const settingsRouter = new Hono();
@@ -25,6 +30,7 @@ function maskSettings(settings: AppSettings) {
     anthropicAuthToken: redact(settings.anthropicAuthToken),
     anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
     channels: settings.channels ?? [],
+    inboxAgent: getInboxAgent(settings),
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
     terminalRenderer: settings.terminalRenderer ?? "xterm",
@@ -61,6 +67,9 @@ settingsRouter.put("/", async (c) => {
   }
   if (typeof body.autoTrust === "boolean") {
     partial.autoTrust = body.autoTrust;
+  }
+  if (typeof body.inboxAgent === "string") {
+    partial.inboxAgent = body.inboxAgent.trim();
   }
   if (Array.isArray(body.channels)) {
     const requested = body.channels

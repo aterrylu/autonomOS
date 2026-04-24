@@ -60,9 +60,33 @@ not inside the dashboard settings.
 2. Click the gear icon in the status bar → scroll to **Channels**.
 3. Toggle the desired channel(s) on. Click **Save changes**.
 
-Once saved, `settings.channels` gets the new identifier. Every
-subsequent session spawn (including `claude --resume`) will receive the
+Once saved, `settings.channels` gets the new identifier. The next spawn
+of the **inbox agent** (see below) will receive the
 `--channels plugin:telegram@claude-plugins-official` flag.
+
+### Inbox agent (only ONE session gets plugin channels)
+
+Telegram and Discord plugins each enforce a single-poller lock per bot —
+Telegram's `getUpdates` API returns `409 Conflict` if two processes poll
+the same token, and the plugin handles this by killing the previous
+holder via SIGTERM. If every autonomOS session got `--channels
+plugin:telegram@...`, the 10 pollers racing at server-start would
+produce random-last-wins routing for your DMs.
+
+The **Inbox Agent** setting (just below the Channels section) pins
+plugin channels to exactly one agent by name. Default: `Dispatcher`.
+Other agents still get `server:autonomos` for inter-agent communication,
+so they can still `send(to: "agent://...")` through the gateway — they
+just don't try to poll Telegram.
+
+Concretely:
+- Agent whose `name` matches `inboxAgent` → gets `--channels plugin:*`
+  AND `--dangerously-load-development-channels server:*`
+- All other agents → get `--dangerously-load-development-channels
+  server:*` only (no plugin channels)
+
+If you change the inbox agent, only newly-spawned sessions pick up the
+change. Restart existing sessions with the Restart All button to apply.
 
 ### What the UI shows
 

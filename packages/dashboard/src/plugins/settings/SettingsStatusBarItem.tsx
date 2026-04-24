@@ -10,6 +10,7 @@ interface MaskedSettings {
   anthropicAuthToken: string | null;
   anthropicOverrideEnabled: boolean;
   channels: string[];
+  inboxAgent: string;
   autoTrust: boolean;
   customEnvVars: Record<string, string>;
   terminalRenderer: "xterm" | "ghostty-web";
@@ -808,6 +809,27 @@ export function SettingsPanel({
           <div className="text-[10px]" style={labelStyle}>
             Enabled channels are injected into every new session via --channels.
             Requires Claude Code v2.1.80+.
+          </div>
+
+          <div
+            className="text-[10px] font-medium uppercase tracking-wide mt-3"
+            style={labelStyle}
+          >
+            Inbox Agent
+          </div>
+          <SettingRow
+            label="Agent name"
+            value={settings?.inboxAgent ?? null}
+            placeholder="Dispatcher"
+            inputStyle={inputStyle}
+            labelStyle={labelStyle}
+            onChange={(v) => setPending((p) => ({ ...p, inboxAgent: v }))}
+          />
+          <div className="text-[10px]" style={labelStyle}>
+            Only this agent receives plugin channels (Telegram, Discord). Other
+            agents still get the autonomOS gateway. Prevents the
+            random-last-wins routing you'd otherwise hit when many sessions
+            resume at once.
           </div>
 
           <div
