@@ -7,7 +7,8 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR, ensureConfigDir } from "./configDir.js";
+import { isValidChannelId } from "./channels.js";
+import { ensureConfigDir, getConfigDir } from "./configDir.js";
 
 export interface AppSettings {
   /** Claude session key for usage plugin (sk-ant-sid01-...) */
@@ -28,6 +29,16 @@ export interface AppSettings {
    *   "server:autonomos"
    */
   channels?: string[];
+  /**
+   * Name of the agent that gets plugin:* channels (Telegram, Discord, etc).
+   * Only ONE session can hold a given plugin's lock — Telegram's getUpdates
+   * API enforces a single concurrent poller per bot token, and the plugin
+   * implements this with a PID file that evicts previous holders. Pinning
+   * plugin channels to one agent avoids the random-last-wins routing you'd
+   * otherwise get when many sessions resume in parallel.
+   * Default: "Dispatcher". Non-matching sessions still get server:* channels.
+   */
+  inboxAgent?: string;
   /** Gateway platform adapter config */
   gateway?: {
     discord?: { enabled: boolean };
@@ -48,14 +59,23 @@ export interface AppSettings {
   };
 }
 
-const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
+function settingsFile(): string {
+  return join(getConfigDir(), "settings.json");
+}
 
 const DEFAULT_CHANNELS = ["server:autonomos"];
+const DEFAULT_INBOX_AGENT = "Dispatcher";
+
+export function getInboxAgent(settings: AppSettings): string {
+  const name = settings.inboxAgent?.trim();
+  return name && name.length > 0 ? name : DEFAULT_INBOX_AGENT;
+}
 
 export function getSettings(): AppSettings {
   let data: AppSettings;
+  const file = settingsFile();
   try {
-    const raw = readFileSync(SETTINGS_FILE, "utf-8");
+    const raw = readFileSync(file, "utf-8");
     const parsed = JSON.parse(raw);
     if (
       typeof parsed !== "object" ||
@@ -63,7 +83,7 @@ export function getSettings(): AppSettings {
       Array.isArray(parsed)
     ) {
       console.warn(
-        `Settings file ${SETTINGS_FILE} does not contain a JSON object — ignoring`,
+        `Settings file ${file} does not contain a JSON object — ignoring`,
       );
       data = {};
     } else {
@@ -83,7 +103,20 @@ export function getSettings(): AppSettings {
   if (data.channels == null || !Array.isArray(data.channels)) {
     data.channels = DEFAULT_CHANNELS;
   } else if (data.channels.length > 0) {
-    data.channels = [...new Set(data.channels)];
+    // Sanitize: strip non-strings and malformed tags so bad values
+    // written out-of-band (hand-edit, older builds) don't silently
+    // re-persist on the next `updateSettings()` merge or crash the
+    // spawn path via non-string entries.
+    const sanitized = data.channels
+      .filter((c): c is string => typeof c === "string")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0 && isValidChannelId(c));
+    if (sanitized.length !== data.channels.length) {
+      console.warn(
+        `[settings] Dropped ${data.channels.length - sanitized.length} invalid channels entries from settings.json`,
+      );
+    }
+    data.channels = [...new Set(sanitized)];
   }
 
   return data;
@@ -100,7 +133,7 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
     }
   }
   ensureConfigDir();
-  writeFileSync(SETTINGS_FILE, `${JSON.stringify(updated, null, 2)}\n`, {
+  writeFileSync(settingsFile(), `${JSON.stringify(updated, null, 2)}\n`, {
     mode: 0o600,
   });
   return updated;
