@@ -5,7 +5,11 @@
  * Key differences from Claude Code:
  * - System prompt via `-c 'instructions="..."'` (not --append-system-prompt)
  * - MCP via `-c 'mcp_servers...'` (not --mcp-config)
- * - Hooks are file-based (~/.codex/hooks.json), activated via --enable codex_hooks
+ * - No hook mechanism today. The `codex_hooks` feature flag is "under
+ *   development" per `codex features list` and has no user-facing config
+ *   surface. Codex agents run but do not emit lifecycle events to the
+ *   autonomOS hook endpoint. Real integration would go through
+ *   `codex app-server --listen ws://` (JSON-RPC WebSocket) — deferred.
  * - No --session-id, --name, or --brief flags
  * - Auto mode via --dangerously-bypass-approvals-and-sandbox
  */
@@ -25,7 +29,8 @@ export const codexProvider: AgentProvider = {
   displayName: "Codex CLI",
 
   capabilities: {
-    hooks: { eventCount: 5, perSession: false, requiresSetup: true },
+    // No hook mechanism in Codex today — agents are status-blind.
+    hooks: { eventCount: 0, perSession: false, requiresSetup: false },
     mcp: { supported: true, perSession: true },
     systemPrompt: { supported: true, method: "flag" },
     messaging: { outbound: true, inbound: false, inboundMethod: "none" },
@@ -45,9 +50,6 @@ export const codexProvider: AgentProvider = {
 
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
-
-    // Activate hooks (feature-flagged off by default in Codex)
-    args.push("--enable", "codex_hooks");
 
     // Auto mode
     if (options.autonomousMode) {

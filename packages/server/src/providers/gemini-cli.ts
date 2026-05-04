@@ -21,15 +21,40 @@ import {
   resolveBinaryFromCandidates,
 } from "./shared.js";
 
-const GEMINI_HOOK_EVENTS = [
-  "SessionStart",
-  "SessionEnd",
-  "BeforeTool",
-  "AfterTool",
-  "Notification",
-  "BeforeAgent",
-  "AfterAgent",
-] as const;
+/**
+ * Gemini-native event → CC-style event name. Keys are the events we register
+ * in the settings file; unmapped Gemini events are dropped by normalizeEvent.
+ */
+const GEMINI_TO_CC_EVENT: Record<string, string> = {
+  SessionStart: "SessionStart",
+  SessionEnd: "SessionEnd",
+  BeforeTool: "PreToolUse",
+  AfterTool: "PostToolUse",
+  BeforeAgent: "UserPromptSubmit",
+  AfterAgent: "Stop",
+  Notification: "Notification",
+};
+
+/**
+ * Gemini events we deliberately drop (no useful CC equivalent).
+ * Anything outside this set that goes unmapped is flagged as possible
+ * vocabulary drift in a future Gemini release.
+ *  - BeforeModel / BeforeToolSelection: no status-driving CC equivalent
+ *  - AfterModel: fires per streaming chunk, too noisy
+ *  - PreCompress: semantic mismatch — Gemini fires this *unconditionally*
+ *    on every turn (gemini-cli-core/services/chatCompressionService.ts) as
+ *    a "we're checking if we should compress" hook, not "compression is
+ *    starting." Mapping it to CC's PreCompact would flash the agent into
+ *    "compacting" status on every message even when no compression happens.
+ *    Gemini also has no PostCompress counterpart, so we can't model the
+ *    state-machine pair anyway.
+ */
+const INTENTIONAL_DROPS = new Set([
+  "BeforeModel",
+  "AfterModel",
+  "BeforeToolSelection",
+  "PreCompress",
+]);
 
 const binaryCache = { path: null as string | null };
 
@@ -97,6 +122,43 @@ export const geminiCliProvider: AgentProvider = {
     return env;
   },
 
+  normalizeEvent(raw: Record<string, unknown>): Record<string, unknown> | null {
+    const nativeName = raw.hook_event_name;
+    if (typeof nativeName !== "string") {
+      console.warn(
+        "[gemini-cli] dropping malformed hook event (no hook_event_name field)",
+      );
+      return null;
+    }
+
+    const mapped = GEMINI_TO_CC_EVENT[nativeName];
+    if (!mapped) {
+      // Unknown event names that aren't in our deliberate-drop list are
+      // potential vocabulary drift signals — log loudly so we notice when
+      // a new Gemini release adds an event we should map.
+      if (!INTENTIONAL_DROPS.has(nativeName)) {
+        console.warn(
+          `[gemini-cli] dropping unknown hook event: ${nativeName} ` +
+            "(possible vocabulary drift — update GEMINI_TO_CC_EVENT)",
+        );
+      }
+      return null;
+    }
+
+    const out: Record<string, unknown> = { ...raw, hook_event_name: mapped };
+
+    // Gemini tags permission alerts as "ToolPermission"; CC's deriveStatus
+    // looks for "permission_prompt" to transition to needs_input.
+    if (
+      mapped === "Notification" &&
+      raw.notification_type === "ToolPermission"
+    ) {
+      out.notification_type = "permission_prompt";
+    }
+
+    return out;
+  },
+
   // No startup prompts to dismiss for Gemini
 };
 
@@ -119,12 +181,20 @@ export function writeGeminiSettings(channelServerScript: string): void {
     hooks: [{ type: "command", command: HOOK_CMD, timeout }],
   });
 
+  // The Gemini settings schema separates hook system toggles from event
+  // arrays — `hooksConfig.enabled` (boolean) is the master switch;
+  // `hooks.<EventName>` only accepts arrays of hook definitions. Putting
+  // `enabled: true` inside `hooks` trips schema validation even though
+  // the registry's back-compat code would have skipped it. We set
+  // `hooksConfig.enabled` explicitly rather than relying on Gemini's
+  // documented default — if a future release flips the default, our
+  // hooks would silently stop firing and the dashboard would go blind.
   const settings = {
     _autonomos: { version: 1 },
-    hooks: {
-      enabled: true,
-      ...Object.fromEntries(GEMINI_HOOK_EVENTS.map((e) => [e, [hookEntry()]])),
-    },
+    hooksConfig: { enabled: true },
+    hooks: Object.fromEntries(
+      Object.keys(GEMINI_TO_CC_EVENT).map((e) => [e, [hookEntry()]]),
+    ),
     mcpServers: {
       autonomos: {
         command: "node",

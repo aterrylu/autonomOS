@@ -47,6 +47,16 @@ export interface AgentProvider {
   attachStartupWatcher?(pty: PtyHandle, options: ResolvedSpawnOptions): void;
 
   /**
+   * Optional: translate a native hook event into CC-shaped vocabulary so the
+   * shared status derivation can consume it. Return null to drop the event
+   * (e.g. streaming chunks with no lifecycle meaning). The returned object
+   * must use CC event names (PreToolUse, PostToolUse, UserPromptSubmit, Stop,
+   * SessionStart, SessionEnd, Notification, PermissionRequest, PreCompact,
+   * PostCompact, SubagentStart, SubagentStop, PostToolUseFailure).
+   */
+  normalizeEvent?(raw: Record<string, unknown>): Record<string, unknown> | null;
+
+  /**
    * Provider capabilities — what this backend supports.
    * Used by the dashboard to show feature availability.
    */
