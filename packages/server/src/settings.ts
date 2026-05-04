@@ -57,6 +57,15 @@ export interface AppSettings {
   scheduler?: {
     maxConcurrentRuns?: number;
   };
+  /**
+   * Statusline injected into spawned CC sessions.
+   * When `enabled` (default true), an autonomOS-aware statusline replaces
+   * the user's personal `~/.claude/settings.json` statusLine for spawned
+   * sessions only. Set `enabled: false` to fall back to the personal config.
+   */
+  statusLine?: {
+    enabled: boolean;
+  };
 }
 
 function settingsFile(): string {

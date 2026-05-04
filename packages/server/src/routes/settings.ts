@@ -34,6 +34,7 @@ function maskSettings(settings: AppSettings) {
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
     terminalRenderer: settings.terminalRenderer ?? "xterm",
+    statusLine: { enabled: settings.statusLine?.enabled !== false },
   };
 }
 
@@ -123,6 +124,12 @@ settingsRouter.put("/", async (c) => {
     body.terminalRenderer === "ghostty-web"
   ) {
     partial.terminalRenderer = body.terminalRenderer;
+  }
+  if (
+    isPlainObject(body.statusLine) &&
+    typeof body.statusLine.enabled === "boolean"
+  ) {
+    partial.statusLine = { enabled: body.statusLine.enabled };
   }
   if (isPlainObject(body.customEnvVars)) {
     const vars: Record<string, string> = {};

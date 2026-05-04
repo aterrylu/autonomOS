@@ -14,6 +14,7 @@ interface MaskedSettings {
   autoTrust: boolean;
   customEnvVars: Record<string, string>;
   terminalRenderer: "xterm" | "ghostty-web";
+  statusLine: { enabled: boolean };
 }
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -768,6 +769,30 @@ export function SettingsPanel({
           <div className="text-[10px]" style={labelStyle}>
             Auto-dismiss workspace trust and dev channel prompts on session
             start.
+          </div>
+
+          <div className="flex items-center justify-between mt-3">
+            <div
+              className="text-[10px] font-medium uppercase tracking-wide"
+              style={labelStyle}
+            >
+              autonomOS Statusline
+            </div>
+            <ToggleSwitch
+              // Default-on: only off when explicitly set to false.
+              enabled={settings?.statusLine?.enabled !== false}
+              inactiveBackground={page.border}
+              onClick={() =>
+                toggleSetting("statusLine", {
+                  enabled: settings?.statusLine?.enabled === false,
+                })
+              }
+            />
+          </div>
+          <div className="text-[10px]" style={labelStyle}>
+            Show an autonomOS-aware statusline in spawned agents (replaces
+            personal ~/.claude/settings.json statusLine for spawned sessions
+            only). Applies to newly spawned agents.
           </div>
 
           <div

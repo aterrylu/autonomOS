@@ -3,6 +3,7 @@
  * CC-specific CLI flags, env vars, and startup handling.
  */
 
+import { resolve } from "node:path";
 import type {
   AgentProvider,
   PtyHandle,
@@ -16,6 +17,10 @@ import {
   HOOK_CMD,
   resolveBinaryFromCandidates,
 } from "./shared.js";
+
+// ── Statusline renderer (sibling .mjs file, no build step) ─────
+const STATUSLINE_SCRIPT = resolve(import.meta.dirname, "statusline.mjs");
+const STATUSLINE_REFRESH_SECONDS = 5;
 
 // ── Hook relay ─────────────────────────────────────────────────
 const HOOK_ENTRY = {
@@ -177,13 +182,24 @@ export const claudeCodeProvider: AgentProvider = {
       }
     }
 
-    // Hook relay — posts events to /api/hooks
-    args.push(
-      "--settings",
-      JSON.stringify({
-        hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
-      }),
-    );
+    // Inline --settings payload:
+    //   - hooks: relay every CC event to /api/hooks
+    //   - statusLine (optional, default on): autonomOS-aware bar at the bottom
+    //     of the CC terminal. Replaces the user's personal statusLine for
+    //     spawned sessions only. CC merges these as parallel keys at the root.
+    const settingsPayload: Record<string, unknown> = {
+      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
+    };
+    if (settings.statusLine?.enabled !== false) {
+      // JSON.stringify produces a properly-escaped, double-quoted path —
+      // safe against install paths containing spaces, quotes, $, backticks.
+      settingsPayload.statusLine = {
+        type: "command",
+        command: `node ${JSON.stringify(STATUSLINE_SCRIPT)}`,
+        refreshInterval: STATUSLINE_REFRESH_SECONDS,
+      };
+    }
+    args.push("--settings", JSON.stringify(settingsPayload));
 
     // User prompt (must be last, after --)
     if (options.prompt) {
