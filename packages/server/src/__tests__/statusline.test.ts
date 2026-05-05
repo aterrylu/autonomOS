@@ -225,9 +225,7 @@ describe("getAutonomosMeta", () => {
   });
 
   it("returns null when session not found in list", async () => {
-    mockFetch([
-      { claudeSessionId: "other-session", name: "Other", manager: null },
-    ]);
+    mockFetch([{ id: "other-session", name: "Other", manager: null }]);
     const meta = await getAutonomosMeta("session-123", "http://localhost:3101");
     assert.equal(meta, null);
   });
@@ -235,19 +233,19 @@ describe("getAutonomosMeta", () => {
   it("resolves manager and counts direct reports for a manager", async () => {
     mockFetch([
       {
-        claudeSessionId: "lead-id",
+        id: "lead-id",
         name: "TeamLead@x",
         manager: "Dispatcher",
         status: "running",
       },
       {
-        claudeSessionId: "w1",
+        id: "w1",
         name: "Worker-1",
         manager: "TeamLead@x",
         status: "running",
       },
       {
-        claudeSessionId: "w2",
+        id: "w2",
         name: "Worker-2",
         manager: "TeamLead@x",
         status: "running",
@@ -264,19 +262,19 @@ describe("getAutonomosMeta", () => {
   it("excludes exited sessions from direct-report count", async () => {
     mockFetch([
       {
-        claudeSessionId: "lead-id",
+        id: "lead-id",
         name: "Lead",
         manager: null,
         status: "running",
       },
       {
-        claudeSessionId: "w1",
+        id: "w1",
         name: "Worker-1",
         manager: "Lead",
         status: "running",
       },
       {
-        claudeSessionId: "w2",
+        id: "w2",
         name: "Worker-2",
         manager: "Lead",
         status: "exited",
@@ -287,14 +285,44 @@ describe("getAutonomosMeta", () => {
   });
 
   it("falls back to 'Agent' when name missing on persisted record", async () => {
-    mockFetch([{ claudeSessionId: "x", manager: null }]);
+    mockFetch([{ id: "x", manager: null }]);
     const meta = await getAutonomosMeta("x", "http://localhost:3101");
     assert.equal(meta?.name, "Agent");
   });
 
   it("returns null manager (not undefined) when session has no manager", async () => {
-    mockFetch([{ claudeSessionId: "x", name: "Lone" }]);
+    mockFetch([{ id: "x", name: "Lone" }]);
     const meta = await getAutonomosMeta("x", "http://localhost:3101");
     assert.equal(meta?.manager, null);
+  });
+
+  it("sends Authorization: Bearer header when token provided", async () => {
+    let capturedHeaders: Record<string, string> | undefined;
+    globalThis.fetch = (async (
+      _url: string,
+      init: { headers?: Record<string, string> } = {},
+    ) => {
+      capturedHeaders = init.headers;
+      return { ok: true, json: async () => [] };
+    }) as unknown as typeof fetch;
+
+    await getAutonomosMeta("x", "http://localhost:3101", "secret-token-9758");
+
+    assert.equal(capturedHeaders?.Authorization, "Bearer secret-token-9758");
+  });
+
+  it("omits Authorization header when token absent", async () => {
+    let capturedHeaders: Record<string, string> | undefined;
+    globalThis.fetch = (async (
+      _url: string,
+      init: { headers?: Record<string, string> } = {},
+    ) => {
+      capturedHeaders = init.headers;
+      return { ok: true, json: async () => [] };
+    }) as unknown as typeof fetch;
+
+    await getAutonomosMeta("x", "http://localhost:3101");
+
+    assert.equal(capturedHeaders?.Authorization, undefined);
   });
 });

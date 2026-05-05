@@ -29,4 +29,5 @@ export function formatDuration(ms: number | null | undefined): string;
 export function getAutonomosMeta(
   sessionId: string,
   serverUrl: string,
+  token?: string,
 ): Promise<AutonomosMeta | null>;

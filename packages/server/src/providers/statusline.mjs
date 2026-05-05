@@ -33,9 +33,11 @@ async function readStdin() {
 
 // ── Network helpers ───────────────────────────────────────────
 
-async function fetchJson(url) {
+async function fetchJson(url, token) {
   try {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const res = await fetch(url, {
+      headers,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) return null;
@@ -56,14 +58,18 @@ async function fetchJson(url) {
  * endpoint /api/sessions/:id returns a bare Session without those fields,
  * so it can't answer "who is my manager" for the renderer.
  *
- * One fetch covers both queries: find self by claudeSessionId, then filter
- * the same array for `manager === self.name` to count direct reports.
+ * One fetch covers both queries: find self by `id` (the autonomOS session
+ * id, NOT claudeSessionId — those are different fields), then filter the
+ * same array for `manager === self.name` to count direct reports.
+ *
+ * Auth: AUTONOMOS_TOKEN is inherited from the autonomos process env when
+ * CC spawns this script. Without it, /api/sessions returns 401.
  */
-async function getAutonomosMeta(sessionId, serverUrl) {
-  const sessions = await fetchJson(`${serverUrl}/api/sessions`);
+async function getAutonomosMeta(sessionId, serverUrl, token) {
+  const sessions = await fetchJson(`${serverUrl}/api/sessions`, token);
   if (!Array.isArray(sessions)) return null;
 
-  const me = sessions.find((s) => s?.claudeSessionId === sessionId);
+  const me = sessions.find((s) => s?.id === sessionId);
   if (!me) return null;
 
   const name = me.name ?? "Agent";
@@ -151,6 +157,7 @@ async function main() {
 
   const sessionId = process.env.AUTONOMOS_SESSION_ID;
   const serverUrl = process.env.AUTONOMOS_SERVER;
+  const token = process.env.AUTONOMOS_TOKEN;
 
   // Invoked outside autonomOS (env not injected) → no hierarchy to render
   if (!sessionId || !serverUrl) {
@@ -159,7 +166,7 @@ async function main() {
     return;
   }
 
-  const meta = await getAutonomosMeta(sessionId, serverUrl);
+  const meta = await getAutonomosMeta(sessionId, serverUrl, token);
 
   if (!meta) {
     // Env vars present but server unreachable / session not yet persisted —
