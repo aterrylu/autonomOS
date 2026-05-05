@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import type { Session } from "@autonomos/core";
 import {
   clearAgentState,
   clearNotifications,
   getAgentState,
   hooksRouter,
 } from "../routes/hooks.js";
+import { _injectSessionForTesting, _resetForTesting } from "../sessions.js";
 
 // Helper: simulate a hook event POST
 async function postHookEvent(
@@ -349,5 +351,145 @@ describe("hooks — notifications", () => {
     const bulk = await hooksRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread ?? 0, 0);
+  });
+});
+
+// ── Provider-aware event translation (Gemini) ─────────────────────────
+//
+// Gemini emits native event names (BeforeTool, AfterAgent, etc.) that the
+// gemini-cli provider's normalizeEvent maps to CC-shaped vocabulary before
+// deriveStatus consumes them. Verifies the full round-trip via the hook route.
+
+describe("hooks — Gemini event translation", () => {
+  const sid = "test-gemini-001";
+
+  beforeEach(() => {
+    const session: Session = {
+      id: sid,
+      name: "gemini-test",
+      status: "running",
+      workingDirectory: "/tmp",
+      provider: "gemini-cli",
+      claudeSessionId: sid,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    _injectSessionForTesting(sid, session);
+  });
+
+  afterEach(() => {
+    clearNotifications(sid);
+    clearAgentState(sid);
+    _resetForTesting();
+  });
+
+  it("BeforeAgent → UserPromptSubmit → working", async () => {
+    await postHookEvent(sid, { hook_event_name: "BeforeAgent" });
+    assert.equal(getAgentState(sid).status, "working");
+  });
+
+  it("BeforeTool → PreToolUse → tool_running", async () => {
+    await postHookEvent(sid, {
+      hook_event_name: "BeforeTool",
+      tool_name: "run_shell_command",
+      tool_input: { command: "ls" },
+    });
+    const state = getAgentState(sid);
+    assert.equal(state.status, "tool_running");
+    assert.equal(state.currentTool, "run_shell_command");
+  });
+
+  it("AfterTool → PostToolUse → working (clears tool)", async () => {
+    await postHookEvent(sid, {
+      hook_event_name: "BeforeTool",
+      tool_name: "read_file",
+    });
+    await postHookEvent(sid, { hook_event_name: "AfterTool" });
+    const state = getAgentState(sid);
+    assert.equal(state.status, "working");
+    assert.equal(state.currentTool, undefined);
+  });
+
+  it("AfterAgent → Stop → idle (end of turn)", async () => {
+    await postHookEvent(sid, { hook_event_name: "BeforeAgent" });
+    await postHookEvent(sid, { hook_event_name: "AfterAgent" });
+    assert.equal(getAgentState(sid).status, "idle");
+  });
+
+  it("Notification (ToolPermission) → needs_input", async () => {
+    // Gemini uses "ToolPermission" — translator must map to "permission_prompt"
+    // so CC's deriveStatus flips to needs_input.
+    await postHookEvent(sid, {
+      hook_event_name: "Notification",
+      notification_type: "ToolPermission",
+    });
+    assert.equal(getAgentState(sid).status, "needs_input");
+  });
+
+  it("SessionStart and SessionEnd are pass-through", async () => {
+    await postHookEvent(sid, { hook_event_name: "SessionStart" });
+    assert.equal(getAgentState(sid).status, "ready");
+    await postHookEvent(sid, { hook_event_name: "SessionEnd" });
+    assert.equal(getAgentState(sid).status, "stopped");
+  });
+
+  it("PreCompress is dropped (no status change)", async () => {
+    // Gemini fires PreCompress unconditionally on every turn as a
+    // "should we compress?" check, not "compression is starting." Mapping
+    // it to CC's PreCompact would flash the agent into "compacting" on
+    // every message — see INTENTIONAL_DROPS in gemini-cli.ts.
+    await postHookEvent(sid, { hook_event_name: "BeforeAgent" });
+    assert.equal(getAgentState(sid).status, "working");
+    const res = await postHookEvent(sid, {
+      hook_event_name: "PreCompress",
+      trigger: "auto",
+    });
+    const body = (await res.json()) as { event: string };
+    assert.equal(body.event, "dropped");
+    assert.equal(getAgentState(sid).status, "working");
+  });
+
+  it("unmapped Gemini events are dropped (no status change)", async () => {
+    // Put the session in a known state first
+    await postHookEvent(sid, { hook_event_name: "BeforeAgent" });
+    assert.equal(getAgentState(sid).status, "working");
+
+    // AfterModel fires per streaming chunk — translator returns null
+    const res = await postHookEvent(sid, {
+      hook_event_name: "AfterModel",
+      llm_response: { candidates: [] },
+    });
+    const body = (await res.json()) as { event: string };
+    assert.equal(body.event, "dropped");
+    assert.equal(getAgentState(sid).status, "working");
+  });
+
+  it("CC sessions still use identity (no translator regression)", async () => {
+    const ccSid = "test-cc-regression-001";
+    // No session for ccSid → translation skipped (unknown session path),
+    // raw event passes through. CC event names match deriveStatus directly.
+    await postHookEvent(ccSid, { hook_event_name: "UserPromptSubmit" });
+    assert.equal(getAgentState(ccSid).status, "working");
+    clearAgentState(ccSid);
+  });
+
+  it("malformed event (no hook_event_name) is dropped", async () => {
+    // Translator returns null for malformed input; route returns dropped.
+    await postHookEvent(sid, { tool_name: "Bash" /* missing event name */ });
+    // Status untouched
+    assert.equal(getAgentState(sid).status, "unknown");
+  });
+
+  it("unknown Gemini event (vocabulary drift) is dropped without crashing", async () => {
+    // A future Gemini release could add a new event. Translator drops it
+    // (with a warn log) rather than passing untranslated to deriveStatus.
+    await postHookEvent(sid, { hook_event_name: "BeforeAgent" });
+    assert.equal(getAgentState(sid).status, "working");
+    const res = await postHookEvent(sid, {
+      hook_event_name: "SomeBrandNewGeminiEvent",
+    });
+    const body = (await res.json()) as { event: string };
+    assert.equal(body.event, "dropped");
+    assert.equal(getAgentState(sid).status, "working");
   });
 });

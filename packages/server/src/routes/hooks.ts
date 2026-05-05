@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { getAllSessions } from "../sessions.js";
+import { getProvider } from "../providers/index.js";
+import { getAllSessions, getSession } from "../sessions.js";
 
 /**
  * Hook events received from Claude Code sessions via autonomos-relay.sh.
@@ -213,12 +214,15 @@ function extractToolDetail(event: HookEvent): string | undefined {
 
 export const hooksRouter = new Hono();
 
-// Receive hook events from Claude Code sessions
+// Receive hook events from agent sessions (any provider).
+// Providers may emit native event names (e.g. Gemini's "BeforeTool") — the
+// provider's optional normalizeEvent() translates them to CC-shaped vocabulary
+// before deriveStatus consumes them. CC has no translator (identity).
 hooksRouter.post("/:sessionId", async (c) => {
   const sessionId = c.req.param("sessionId");
-  let body: HookEvent;
+  let rawBody: Record<string, unknown>;
   try {
-    body = await c.req.json();
+    rawBody = await c.req.json();
   } catch (err) {
     console.warn(
       `[hooks] ${sessionId.slice(0, 8)} invalid JSON from hook relay:`,
@@ -227,6 +231,30 @@ hooksRouter.post("/:sessionId", async (c) => {
     return c.json({ error: "Invalid JSON" }, 400);
   }
 
+  // Translate provider-native event names to CC vocabulary if the provider
+  // supplies a normalizer. Skip translation when the session is unknown —
+  // silently coercing a stale hook to "claude-code" would mistranslate a
+  // straggling Gemini event from a session that already exited.
+  const session = getSession(sessionId);
+  let body: HookEvent;
+  if (!session) {
+    console.debug(
+      `[hooks] ${sessionId.slice(0, 8)} hook for unknown session — passing through without translation (raw=${String(rawBody.hook_event_name)})`,
+    );
+    body = rawBody as HookEvent;
+  } else {
+    const provider = getProvider(session.session.provider ?? "claude-code");
+    const normalized = provider.normalizeEvent?.(rawBody);
+    if (normalized === null) {
+      // Provider explicitly dropped this event (logged with reason at
+      // provider level). Echo at the route level for sessionId correlation.
+      console.debug(
+        `[hooks] ${sessionId.slice(0, 8)} provider=${provider.name} dropped event: ${String(rawBody.hook_event_name)}`,
+      );
+      return c.json({ ok: true, event: "dropped", sessionId });
+    }
+    body = (normalized ?? rawBody) as HookEvent;
+  }
   const event = body.hook_event_name ?? "unknown";
   const timestamp = Date.now();
 
