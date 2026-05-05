@@ -1,32 +1,124 @@
 /**
- * Agent template types — blueprints for spawning agents.
+ * Agent entity — the canonical durable record for an autonomOS agent.
  *
- * Templates live at ~/.autonomos/templates/{name}.json and define
- * reusable agent configurations (role, system prompt, capabilities).
- * Agents themselves are ephemeral sessions with persisted metadata
- * (template, manager, project) stored in sessions.json.
+ * Stored as one JSON file per agent at ~/.autonomos/agents/{id}.json.
+ * Identity is durable (id is stable across restarts and process deaths).
+ * Hierarchy references use ids, not names — names are display-only and may
+ * change freely without affecting structure.
+ *
+ * Lifecycle: an Agent exists from spawn until permanent removal. Its `status`
+ * field tracks whether the underlying PTY is currently running or has exited.
  */
 
-/** Blueprint for creating agents — lives at ~/.autonomos/templates/{name}.json */
-export interface AgentTemplate {
-  /** Human-readable role name (e.g. "Team Lead", "Worker") */
-  role: string;
-  /** Short description of what this template is for */
-  description: string;
-  /** System prompt injected into the agent's CC session */
-  systemPrompt: string;
-  /** Which autonomOS capabilities the agent has access to */
-  capabilities: AgentCapability[];
-  /** Whether to skip permission prompts (default: true) */
-  autonomousMode?: boolean;
-  /** Model override for litellm routing (e.g. "opus", "haiku"). Omit for CC default */
-  model?: string;
+export type UUID = string;
+
+export type Provider = "claude-code" | "codex" | "gemini";
+
+/** Lifecycle status. Two values today; future states (archived, detached) are
+ *  strictly additive — clients should treat unknown values as "exited". */
+export type AgentStatus = "running" | "exited";
+
+/** Why a session stopped, for UI triage. */
+export type ExitReason = "user_killed" | "self_exited" | "crashed";
+
+export interface Agent {
+  /** Schema version for forward-compatible reads. Current: 1. */
+  schemaVersion: 1;
+
+  /** Stable primary key. UUIDv4 for new agents; for migrated agents this is
+   *  the original `claudeSessionId` to preserve continuity (Option A). */
+  id: UUID;
+
+  /** Display name. Mutable, human-facing, never an FK target. */
+  name: string;
+
+  /** FK to another Agent.id, or null for root-level agents. */
+  managerId: UUID | null;
+
+  /** Optional template the agent was spawned from. */
+  template?: string;
+
+  /** Optional project scope (e.g. "autonomOS", "homelab"). */
+  project?: string;
+
+  /** Working directory the PTY runs in. */
+  workingDirectory: string;
+
+  /** Whether to skip permission prompts on the underlying CC session. */
+  autonomousMode: boolean;
+
+  /** Lifecycle status. */
+  status: AgentStatus;
+
+  /** Why the PTY stopped. Only set when status === "exited". */
+  exitReason?: ExitReason;
+
+  /** Timestamp the PTY transitioned to exited. Only set when status === "exited". */
+  exitedAt?: number;
+
+  /** Provider that backs this agent's PTY. */
+  provider: Provider;
+
+  /** Provider-specific session id. For claude-code, this is the CC sessionId
+   *  used by --resume. For migrated agents, equals `id`. */
+  providerSessionId: string;
+
+  /** Most recent PTY-spawn timestamp (initial create or resume). */
+  startedAt: number;
+
+  /** Initial creation timestamp. Never changes once set. */
+  createdAt: number;
+
+  /** Updated on any mutation. */
+  updatedAt: number;
+
+  /** Optimistic-concurrency counter. Mutations bump this by 1. */
+  version: number;
 }
 
-/** Capabilities that can be granted to an agent */
-export type AgentCapability =
-  | "send"
-  | "list_agents"
-  | "create_agent"
-  | "kill_agent"
-  | "self_exit";
+/**
+ * WebSocket delta events streamed from server → dashboard.
+ *
+ * Six granular events plus `reconcile` (full snapshot, sent on every connect/
+ * reconnect). All event names are past-tense single words for consistent
+ * client-side switch-case rendering.
+ *
+ * Forward-compat: client should ignore unknown event types rather than crash.
+ */
+export type AgentEvent =
+  /** New agent appeared (fresh spawn, includes initial PTY attach). */
+  | { type: "agent.created"; agent: Agent }
+  /** Non-structural field change (name via /rename, future PATCH endpoints). */
+  | {
+      type: "agent.updated";
+      id: UUID;
+      patch: Partial<Agent>;
+      version: number;
+    }
+  /** managerId changed via set_manager. Triggers tree restructure on the client. */
+  | {
+      type: "agent.reparented";
+      id: UUID;
+      managerId: UUID | null;
+      version: number;
+    }
+  /** Exited agent resumed (status: exited → running). */
+  | {
+      type: "agent.attached";
+      id: UUID;
+      provider: Provider;
+      providerSessionId: string;
+      version: number;
+    }
+  /** PTY died (user_killed / self_exited / crashed). */
+  | {
+      type: "agent.exited";
+      id: UUID;
+      exitReason: ExitReason;
+      version: number;
+    }
+  /** Hard delete — file removed. */
+  | { type: "agent.deleted"; id: UUID }
+  /** Full snapshot — sent on connect and reconnect. Client replaces local
+   *  state wholesale. */
+  | { type: "reconcile"; agents: Agent[] };
