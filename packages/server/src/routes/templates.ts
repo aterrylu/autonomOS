@@ -1,14 +1,12 @@
 /**
- * REST API routes for org chart and templates.
+ * REST API for agent templates (~/.autonomos/templates/<name>.json).
  *
- * Org chart is derived from persisted session metadata (manager field).
- * Templates are read from ~/.autonomos/templates/*.json.
+ * Templates are blueprints for agents — role, system prompt, capabilities.
+ * Extracted from the legacy routes/hierarchy.ts on the unified-Agent refactor.
  */
 
 import type { AgentCapability } from "@autonomos/core";
 import { Hono } from "hono";
-import { buildOrgChart } from "../orgChart.js";
-import { updatePersistedSessionByName } from "../persisted.js";
 import {
   deleteTemplate,
   getTemplate,
@@ -16,47 +14,7 @@ import {
   saveTemplate,
 } from "../templates.js";
 
-export const orgRouter = new Hono();
 export const templateRouter = new Hono();
-
-// ── Org Chart ───────────────────────────────────────────────────
-
-orgRouter.get("/", (c) => {
-  const includeExited = c.req.query("includeExited") === "true";
-  return c.json(buildOrgChart(includeExited));
-});
-
-orgRouter.put("/manager", async (c) => {
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-
-  const agent = body.agent;
-  const manager = body.manager;
-
-  if (typeof agent !== "string") {
-    return c.json({ error: "agent is required" }, 400);
-  }
-
-  const ok = updatePersistedSessionByName(agent, {
-    manager: typeof manager === "string" ? manager : undefined,
-  });
-  if (!ok) {
-    return c.json({ error: `Agent "${agent}" not found` }, 404);
-  }
-
-  return c.json({
-    ok: true,
-    message: manager
-      ? `Set ${agent}'s manager to ${manager}`
-      : `Removed ${agent}'s manager`,
-  });
-});
-
-// ── Templates ───────────────────────────────────────────────────
 
 templateRouter.get("/", (c) => {
   try {

@@ -15,12 +15,12 @@ import type {
   PlatformAdapter,
 } from "@autonomos/core";
 import type { WSContext } from "hono/ws";
-import { getAllSessions } from "../sessions.js";
+import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache.js";
 
 // ── Registry ──────────────────────────────────────────────────────
 
-/** Connected channel MCP server WebSockets, keyed by autonomOS session ID */
+/** Connected channel MCP server WebSockets, keyed by autonomOS agent id. */
 const sessionClients = new Map<string, WSContext>();
 
 /** Connected dashboard WebSockets (for observability — all messages fanned out) */
@@ -29,21 +29,21 @@ const dashboardClients = new Set<WSContext>();
 /** Platform adapters, keyed by platform name */
 const adapters = new Map<string, PlatformAdapter>();
 
-/** Routing table: (platform, chatId) → sessionId */
+/** Routing table: (platform, chatId) → agent id */
 let routes: ChannelRoute[] = [];
 
 // ── Public API ────────────────────────────────────────────────────
 
 export function registerSessionClient(sessionId: string, ws: WSContext): void {
   sessionClients.set(sessionId, ws);
-  console.log(`[gateway] session ${sessionId} connected`);
+  console.log(`[gateway] agent ${sessionId} connected`);
 }
 
 export function unregisterSessionClient(ws: WSContext): void {
   for (const [id, client] of sessionClients) {
     if (client === ws) {
       sessionClients.delete(id);
-      console.log(`[gateway] session ${id} disconnected`);
+      console.log(`[gateway] agent ${id} disconnected`);
       break;
     }
   }
@@ -109,10 +109,8 @@ export async function routeMessage(
 // ── Inbound: platform → CC session ────────────────────────────────
 
 function routeInbound(msg: GatewayMessage): void {
-  // Fan out to dashboard for observability
   fanOutToDashboard({ type: "message", payload: msg });
 
-  // Find route
   const route = routes.find(
     (r) => r.platform === msg.platform && r.chatId === msg.chatId,
   );
@@ -127,7 +125,7 @@ function routeInbound(msg: GatewayMessage): void {
   const client = sessionClients.get(route.sessionId);
   if (!client) {
     console.log(
-      `[gateway] session ${route.sessionId} not connected — dropping message from ${msg.platform}:${msg.chatId}`,
+      `[gateway] agent ${route.sessionId} not connected — dropping message from ${msg.platform}:${msg.chatId}`,
     );
     return;
   }
@@ -136,53 +134,46 @@ function routeInbound(msg: GatewayMessage): void {
   try {
     client.send(JSON.stringify(wsMsg));
   } catch (err) {
-    console.error(
-      `[gateway] failed to send to session ${route.sessionId}:`,
-      err,
-    );
+    console.error(`[gateway] failed to send to agent ${route.sessionId}:`, err);
   }
 }
 
 // ── Agent routing ─────────────────────────────────────────────────
 
 /**
- * Resolve agent by name. Exact case-insensitive match.
- * Uses the same title-resolution logic as getAgentList() so the names
- * returned by list_agents actually work with send().
+ * Resolve agent by id-or-name. Returns [agentId, ws] on success.
  */
-async function resolveAgent(name: string): Promise<[string, WSContext] | null> {
-  // Exact session ID match (UUID)
-  const byId = sessionClients.get(name);
-  if (byId) return [name, byId];
+async function resolveConnectedAgent(
+  idOrName: string,
+): Promise<[string, WSContext] | null> {
+  // Exact id match (UUID)
+  const byId = sessionClients.get(idOrName);
+  if (byId) return [idOrName, byId];
 
-  const sessions = getAllSessions();
-
-  // First try raw s.name match (cheap, no async)
-  const rawMatch = sessions.find(
-    (s) => s.name.toLowerCase() === name.toLowerCase(),
-  );
-  if (rawMatch) {
-    const ws = sessionClients.get(rawMatch.id);
-    if (ws) return [rawMatch.id, ws];
+  // Direct name match via store (case-insensitive, prefer running)
+  const direct = resolveAgentByName(idOrName);
+  if (direct) {
+    const ws = sessionClients.get(direct.id);
+    if (ws) return [direct.id, ws];
   }
 
-  // Then try title-resolved names (from JSONL, same as getAgentList)
-  const withClaude = sessions
-    .filter((s) => s.claudeSessionId)
-    .map((s) => ({
-      sessionId: s.claudeSessionId!,
-      cwd: s.workingDirectory,
-    }));
-  if (withClaude.length > 0) {
-    const titles = await batchGetTitles(withClaude).catch(
+  // Title-resolved name (from JSONL — handles /rename windows where the
+  // store hasn't picked up the new name yet).
+  const all = listAgents().filter((a) => a.providerSessionId);
+  const lookups = all.map((a) => ({
+    sessionId: a.providerSessionId,
+    cwd: a.workingDirectory,
+  }));
+  if (lookups.length > 0) {
+    const titles = await batchGetTitles(lookups).catch(
       () => new Map<string, string>(),
     );
-    for (const s of sessions) {
-      const resolved =
-        (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name;
-      if (resolved.toLowerCase() === name.toLowerCase()) {
-        const ws = sessionClients.get(s.id);
-        if (ws) return [s.id, ws];
+    const needle = idOrName.toLowerCase();
+    for (const a of all) {
+      const resolved = titles.get(a.providerSessionId) ?? a.name;
+      if (resolved.toLowerCase() === needle) {
+        const ws = sessionClients.get(a.id);
+        if (ws) return [a.id, ws];
       }
     }
   }
@@ -190,23 +181,23 @@ async function resolveAgent(name: string): Promise<[string, WSContext] | null> {
   return null;
 }
 
-/** Resolve the display name for a session ID (enriched via titleCache) */
-async function resolveSessionName(sessionId: string): Promise<string> {
-  const session = getAllSessions().find((s) => s.id === sessionId);
-  if (!session) return `Agent ${sessionId.slice(0, 8)}`;
+/** Resolve the display name for an agent id (enriched via titleCache) */
+async function resolveAgentName(agentId: string): Promise<string> {
+  const agent = getAgent(agentId);
+  if (!agent) return `Agent ${agentId.slice(0, 8)}`;
 
-  if (session.claudeSessionId) {
+  if (agent.providerSessionId) {
     const titles = await batchGetTitles([
-      { sessionId: session.claudeSessionId, cwd: session.workingDirectory },
+      { sessionId: agent.providerSessionId, cwd: agent.workingDirectory },
     ]).catch((err) => {
       console.warn(`[gateway] title resolution failed:`, err);
       return new Map<string, string>();
     });
-    const title = titles.get(session.claudeSessionId);
+    const title = titles.get(agent.providerSessionId);
     if (title) return title;
   }
 
-  return session.name;
+  return agent.name;
 }
 
 /** Build a GatewayMessage for agent-to-agent communication */
@@ -233,19 +224,18 @@ async function routeToAgent(
   targetName: string,
   content: string,
 ): Promise<string | null> {
-  const resolved = await resolveAgent(targetName);
+  const resolved = await resolveConnectedAgent(targetName);
   if (!resolved) {
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
     return `Agent "${targetName}" not found or not connected. Use list_agents to see available agents.`;
   }
   const [targetSessionId, target] = resolved;
 
-  // Self-send guard
   if (targetSessionId === fromSessionId) {
     return "Cannot send to yourself.";
   }
 
-  const senderName = await resolveSessionName(fromSessionId);
+  const senderName = await resolveAgentName(fromSessionId);
   const wsMsg: GatewayWsMessage = {
     type: "message",
     payload: buildAgentMessage(fromSessionId, senderName, content),
@@ -285,7 +275,7 @@ function routeToPlatform(
 // ── Broadcast ─────────────────────────────────────────────────────
 
 function broadcastToAllAgents(fromSessionId: string, content: string): void {
-  resolveSessionName(fromSessionId).then((senderName) => {
+  resolveAgentName(fromSessionId).then((senderName) => {
     const wsMsg: GatewayWsMessage = {
       type: "message",
       payload: buildAgentMessage(fromSessionId, senderName, content),
@@ -298,7 +288,7 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
         client.send(json);
       } catch (err) {
         console.warn(
-          `[gateway] broadcast to session ${sessionId} failed, removing:`,
+          `[gateway] broadcast to agent ${sessionId} failed, removing:`,
           err,
         );
         sessionClients.delete(sessionId);
@@ -311,27 +301,27 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
 // ── Agent discovery ───────────────────────────────────────────────
 
 export async function getAgentList(): Promise<AgentInfo[]> {
-  const sessions = getAllSessions();
+  const agents = listAgents().filter((a) => a.status === "running");
 
-  const withClaude = sessions
-    .filter((s) => s.claudeSessionId)
-    .map((s) => ({
-      sessionId: s.claudeSessionId!,
-      cwd: s.workingDirectory,
+  const lookups = agents
+    .filter((a) => a.providerSessionId)
+    .map((a) => ({
+      sessionId: a.providerSessionId,
+      cwd: a.workingDirectory,
     }));
 
   const titles =
-    withClaude.length > 0
-      ? await batchGetTitles(withClaude).catch(() => new Map<string, string>())
+    lookups.length > 0
+      ? await batchGetTitles(lookups).catch(() => new Map<string, string>())
       : new Map<string, string>();
 
-  return sessions.map((s) => {
-    const name = (s.claudeSessionId && titles.get(s.claudeSessionId)) ?? s.name;
+  return agents.map((a) => {
+    const name = titles.get(a.providerSessionId) ?? a.name;
     return {
-      sessionId: s.id,
+      sessionId: a.id,
       name,
       uri: `agent://${name}`,
-      status: s.status,
+      status: "running",
     };
   });
 }

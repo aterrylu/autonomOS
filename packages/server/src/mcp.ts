@@ -6,12 +6,17 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
+  killAttachment,
+  resolveAgentId,
+  spawnAgent,
+} from "./agents/runtime.js";
+import { listAgents, resolveAgentByName, setManager } from "./agents/store.js";
+import { emitAgentDelta } from "./events/agents.js";
+import {
   DEFAULT_CAPABILITIES,
   MCP_INSTRUCTIONS_EXTERNAL,
   MCP_SERVER_INFO,
 } from "./mcp/tools.js";
-import { buildOrgChart } from "./orgChart.js";
-import { updatePersistedSessionByName } from "./persisted.js";
 import {
   addScheduleJob,
   removeScheduleJob,
@@ -26,17 +31,51 @@ import {
   updateSchedule,
   validateScheduleInput,
 } from "./schedules.js";
-import {
-  createSession,
-  getAllSessions,
-  killSession,
-  resolveSessionId,
-} from "./sessions.js";
 import { getTemplate, listTemplates, saveTemplate } from "./templates.js";
 
 // ── MCP Server (HTTP transport — for external clients) ─────────────────
 // Claude Desktop, CI pipelines, other MCP clients can connect here.
 // Does NOT include `send` tool — that requires the gateway WebSocket.
+
+/** Server-side org chart node for get_org_chart MCP tool. */
+interface OrgNode {
+  id: string;
+  name: string;
+  template?: string;
+  project?: string;
+  status: "running" | "exited";
+  children: OrgNode[];
+}
+
+function buildOrgChartFromAgents(includeExited = false): OrgNode[] {
+  const all = listAgents();
+  const visible = includeExited
+    ? all
+    : all.filter((a) => a.status === "running");
+  const byId = new Map(visible.map((a) => [a.id, a]));
+  const nodeById = new Map<string, OrgNode>();
+  for (const a of visible) {
+    nodeById.set(a.id, {
+      id: a.id,
+      name: a.name,
+      template: a.template,
+      project: a.project,
+      status: a.status,
+      children: [],
+    });
+  }
+  const roots: OrgNode[] = [];
+  for (const a of visible) {
+    const node = nodeById.get(a.id)!;
+    const parent =
+      a.managerId && byId.has(a.managerId)
+        ? nodeById.get(a.managerId)
+        : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
 
 function createMcpServer(): McpServer {
   const server = new McpServer(
@@ -68,12 +107,14 @@ function createMcpServer(): McpServer {
       resumeSessionId: z
         .string()
         .optional()
-        .describe("Claude Code session ID to resume"),
+        .describe(
+          "Agent id to resume (was: claudeSessionId). For migrated agents these are equal.",
+        ),
       forkFrom: z
         .string()
         .optional()
         .describe(
-          "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+          "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
         ),
       autonomousMode: z
         .boolean()
@@ -95,7 +136,6 @@ function createMcpServer(): McpServer {
     },
     async (args) => {
       try {
-        // Resolve template if provided
         const tmpl = args.template ? getTemplate(args.template) : null;
         if (args.template && !tmpl) {
           return {
@@ -109,26 +149,43 @@ function createMcpServer(): McpServer {
           };
         }
 
-        // Determine system prompt: explicit > template > none
+        // Resolve manager name → managerId (if provided)
+        let managerId: string | null = null;
+        if (args.manager) {
+          const mgr = resolveAgentByName(args.manager);
+          if (!mgr) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Manager "${args.manager}" not found. Spawn it first or omit the manager argument.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          managerId = mgr.id;
+        }
+
         const systemPrompt = args.systemPrompt ?? tmpl?.systemPrompt;
         const autonomousMode =
           args.autonomousMode ?? tmpl?.autonomousMode ?? true;
 
-        const managed = createSession({
+        const result = spawnAgent({
           workingDirectory: args.workingDirectory,
           prompt: args.prompt,
           name: args.name,
-          resumeSessionId: args.resumeSessionId,
-          forkFrom: args.forkFrom,
+          resumeAgentId: args.resumeSessionId,
+          forkFromAgentId: args.forkFrom,
           autonomousMode,
           appendSystemPrompt: systemPrompt,
           template: args.template,
-          manager: args.manager,
+          managerId,
           project: args.project,
         });
         return {
           content: [
-            { type: "text", text: JSON.stringify(managed.session, null, 2) },
+            { type: "text", text: JSON.stringify(result.agent, null, 2) },
           ],
         };
       } catch (err) {
@@ -148,15 +205,15 @@ function createMcpServer(): McpServer {
     "List all active agents with their status, working directory, and metadata.",
     {},
     async () => {
-      const sessions = getAllSessions();
+      const agents = listAgents();
       return {
         content: [
           {
             type: "text",
             text:
-              sessions.length === 0
-                ? "No active agents."
-                : JSON.stringify(sessions, null, 2),
+              agents.length === 0
+                ? "No agents."
+                : JSON.stringify(agents, null, 2),
           },
         ],
       };
@@ -165,16 +222,13 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "kill_agent",
-    "Terminate an active agent by name or session ID.",
+    "Terminate an active agent by name or id.",
     {
-      agent: z
-        .string()
-        .optional()
-        .describe("Agent name or session ID to terminate"),
+      agent: z.string().optional().describe("Agent name or id to terminate"),
       name: z
         .string()
         .optional()
-        .describe("Alias for 'agent' — agent name or session ID to terminate"),
+        .describe("Alias for 'agent' — agent name or id to terminate"),
     },
     async (args) => {
       const target = args.agent || args.name;
@@ -189,26 +243,19 @@ function createMcpServer(): McpServer {
           isError: true,
         };
       }
-      // Try exact ID match first
-      if (killSession(target)) {
-        return {
-          content: [{ type: "text", text: `Agent "${target}" terminated.` }],
-        };
-      }
-      // Fall back to name resolution (case-insensitive, titleCache)
-      const resolved = await resolveSessionId(target);
+      const resolved = await resolveAgentId(target);
       if ("error" in resolved) {
         return {
           content: [{ type: "text", text: resolved.error }],
           isError: true,
         };
       }
-      if (!killSession(resolved.id)) {
+      if (!killAttachment(resolved.id)) {
         return {
           content: [
             {
               type: "text",
-              text: `Agent "${target}" was found but exited before it could be terminated.`,
+              text: `Agent "${target}" was found but had no live attachment to terminate.`,
             },
           ],
           isError: true,
@@ -252,20 +299,55 @@ function createMcpServer(): McpServer {
           isError: true,
         };
       }
-      const ok = updatePersistedSessionByName(target, {
-        manager: args.manager ?? undefined,
-      });
-      if (!ok) {
+      const agent = resolveAgentByName(target);
+      if (!agent) {
+        return {
+          content: [{ type: "text", text: `Agent "${target}" not found.` }],
+          isError: true,
+        };
+      }
+
+      let managerId: string | null = null;
+      if (args.manager) {
+        const mgr = resolveAgentByName(args.manager);
+        if (!mgr) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Manager "${args.manager}" not found.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        managerId = mgr.id;
+      }
+
+      const result = setManager(agent.id, managerId);
+      if (result === "cycle") {
         return {
           content: [
             {
               type: "text",
-              text: `Agent "${target}" not found.`,
+              text: `Cycle: "${args.manager}" is a descendant of "${target}".`,
             },
           ],
           isError: true,
         };
       }
+      if (result === "stale" || !result || typeof result === "string") {
+        return {
+          content: [{ type: "text", text: `Failed to set manager.` }],
+          isError: true,
+        };
+      }
+      emitAgentDelta({
+        type: "agent.reparented",
+        id: result.id,
+        managerId: result.managerId,
+        version: result.version,
+      });
       return {
         content: [
           {
@@ -289,7 +371,7 @@ function createMcpServer(): McpServer {
         .describe("Include exited agents (default: false, only running)"),
     },
     async ({ includeExited }) => {
-      const chart = buildOrgChart(includeExited);
+      const chart = buildOrgChartFromAgents(includeExited);
       return {
         content: [
           {
@@ -382,7 +464,7 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Schedule tools ───────────────────────────────────────────────
+  // ── Schedule tools (unchanged) ──────────────────────────────────
 
   server.tool(
     "create_schedule",
@@ -415,7 +497,6 @@ function createMcpServer(): McpServer {
         }
         const schedule = createSchedule(config);
         addScheduleJob(schedule.name, schedule);
-        // Re-read from disk — addScheduleJob updates nextRunAt on disk
         const fresh = getSchedule(schedule.name) ?? schedule;
         return {
           content: [

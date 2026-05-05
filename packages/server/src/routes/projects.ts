@@ -6,7 +6,7 @@ import {
   type SDKSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Hono } from "hono";
-import { getPersistedSessions } from "../persisted.js";
+import { getAgent, listAgents } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache";
 
 const execFileAsync = promisify(execFile);
@@ -32,13 +32,13 @@ export interface ProjectSession {
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
   gitDiffStat?: GitDiffStat;
-  /** True if this session is managed by autonomOS (has a persisted session entry) */
+  /** True if this session is managed by autonomOS (has an agent record) */
   isAutonomosAgent?: boolean;
   /** Lifecycle status for autonomOS agents: "running" or "exited" */
   autonomosStatus?: "running" | "exited";
   /** Template used to spawn this agent */
   template?: string;
-  /** Manager in the org chart */
+  /** Manager display name in the org chart (resolved from managerId) */
   manager?: string;
   /** Project scope */
   project?: string;
@@ -60,9 +60,6 @@ projectRouter.get("/", async (c) => {
     );
   }
 
-  // Batch-resolve custom titles for sessions where SDK returns none.
-  // This reads the actual JSONL files (with mtime caching) to work around
-  // the SDK's 64KB head/tail buffer limitation.
   const needsTitleLookup = sessions
     .filter((s) => !s.customTitle && s.cwd)
     .map((s) => ({ sessionId: s.sessionId, cwd: s.cwd! }));
@@ -88,7 +85,6 @@ projectRouter.get("/", async (c) => {
     });
   }
 
-  // Build project list, each with sessions sorted by recency
   const projects: ProjectInfo[] = Array.from(
     projectMap,
     ([path, projectSessions]) => {
@@ -102,23 +98,28 @@ projectRouter.get("/", async (c) => {
     },
   );
 
-  // Cross-reference with autonomOS persisted sessions to enrich metadata
-  const persisted = getPersistedSessions();
-  const persistedMap = new Map(persisted.map((p) => [p.claudeSessionId, p]));
+  // Cross-reference with autonomOS agent records to enrich metadata.
+  // Agent.id === providerSessionId for migrated agents; for fresh agents the
+  // providerSessionId is the canonical CC sessionId, so we key off that.
+  const agents = listAgents();
+  const byProviderSessionId = new Map(
+    agents.map((a) => [a.providerSessionId, a]),
+  );
   for (const p of projects) {
     for (const s of p.sessions) {
-      const entry = persistedMap.get(s.sessionId);
+      const entry = byProviderSessionId.get(s.sessionId);
       if (entry) {
         s.isAutonomosAgent = true;
-        s.autonomosStatus = entry.status ?? "running";
+        s.autonomosStatus = entry.status;
         s.template = entry.template;
-        s.manager = entry.manager;
+        s.manager = entry.managerId
+          ? (getAgent(entry.managerId)?.name ?? undefined)
+          : undefined;
         s.project = entry.project;
       }
     }
   }
 
-  // Fetch git diff stats per session (branch vs main) in parallel
   const allSessions = projects.flatMap((p) =>
     p.sessions.map((s) => ({ session: s, cwd: p.path })),
   );
@@ -138,13 +139,11 @@ async function getGitDiffStat(
   _branch: string,
 ): Promise<GitDiffStat | undefined> {
   try {
-    // Diff branch against main (three-dot = changes since branch diverged)
     const { stdout } = await execFileAsync(
       "git",
       ["diff", "main...HEAD", "--shortstat"],
       { cwd, timeout: 5000 },
     );
-    // Output: " 3 files changed, 101 insertions(+), 5 deletions(-)"
     const ins = stdout.match(/(\d+) insertion/);
     const del = stdout.match(/(\d+) deletion/);
     const insertions = ins ? Number.parseInt(ins[1], 10) : 0;

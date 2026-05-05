@@ -7,3 +7,4 @@ export * from "./types/provider";
 export * from "./types/render";
 export * from "./types/schedule";
 export * from "./types/session";
+export * from "./types/template";

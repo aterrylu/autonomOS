@@ -382,14 +382,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       try {
-        return await serverFetch("/api/sessions", {
+        return await serverFetch("/api/agents", {
           method: "POST",
           body: JSON.stringify({
             workingDirectory,
             name: agentName,
             prompt,
-            resumeSessionId,
-            forkFrom,
+            resumeAgentId: resumeSessionId,
+            forkFromAgentId: forkFrom,
             autonomousMode: autonomousMode ?? true,
             appendSystemPrompt: systemPrompt,
             template,
@@ -428,8 +428,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         const result = await serverFetch(
-          `/api/sessions/${encodeURIComponent(target)}`,
-          { method: "DELETE" },
+          `/api/agents/${encodeURIComponent(target)}/kill`,
+          { method: "POST" },
         );
         if (result.isError) return result;
         return {
@@ -470,16 +470,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      return serverFetch("/api/org/manager", {
-        method: "PUT",
-        body: JSON.stringify({ agent: setTarget, manager: manager ?? null }),
-      });
+      return serverFetch(
+        `/api/agents/${encodeURIComponent(setTarget)}/manager`,
+        {
+          method: "POST",
+          body: JSON.stringify({ manager: manager ?? null }),
+        },
+      );
     }
 
     case "get_org_chart": {
       const { includeExited } = args as { includeExited?: boolean };
       const qs = includeExited ? "?includeExited=true" : "";
-      return serverFetch(`/api/org${qs}`);
+      return serverFetch(`/api/agents/tree${qs}`);
     }
 
     case "create_template": {
@@ -496,7 +499,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "self_exit": {
       // Fire-and-forget: the DELETE kills our PTY (and this subprocess).
       // The response may or may not reach the agent before the process dies.
-      serverFetch(`/api/sessions/${encodeURIComponent(SESSION_ID!)}`, {
+      serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID!)}`, {
         method: "DELETE",
       }).catch((err) => {
         process.stderr.write(

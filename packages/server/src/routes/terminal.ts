@@ -1,6 +1,6 @@
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import type { IDisposable } from "node-pty";
-import { getSession } from "../sessions.js";
+import { getAttachment as getSession } from "../agents/runtime.js";
 
 interface PtyBinding {
   sessionId: string;
