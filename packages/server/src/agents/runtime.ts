@@ -5,17 +5,16 @@
  * resuming, and shutting down PTY processes. The durable Agent record lives
  * in agents/store.ts; this module owns the in-memory PTY map keyed by agent.id.
  *
- * Every state-changing operation emits the appropriate AgentEvent so the
+ * Every state-changing operation emits the appropriate AgentDelta so the
  * WebSocket broadcaster can fan it out to connected dashboards.
  */
 
 import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import type { Agent, Provider, UUID } from "@autonomos/core";
-import type { SpawnOptions } from "@autonomos/core";
+import type { Agent, Provider, SpawnOptions, UUID } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { emitAgentEvent } from "../events/agents.js";
+import { emitAgentDelta } from "../events/agents.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { getSettings } from "../settings.js";
@@ -30,7 +29,6 @@ import {
   markExited,
   markRunning,
   resolveAgent as resolveAgentFromStore,
-  resolveAgentByName,
 } from "./store.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
@@ -104,7 +102,11 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
   if (params.name) {
     const needle = params.name.toLowerCase();
     for (const a of listAgents()) {
-      if (a.status === "running" && live.has(a.id) && a.name.toLowerCase() === needle) {
+      if (
+        a.status === "running" &&
+        live.has(a.id) &&
+        a.name.toLowerCase() === needle
+      ) {
         throw new Error(
           `An active agent named "${params.name}" is already running (id: ${a.id}). ` +
             `Kill it first, or choose a different name.`,
@@ -186,7 +188,10 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
 
   // Build provider args + env
   const { channels } = getSettings();
-  const channelScript = resolve(import.meta.dirname, "../channel-server/dist.mjs");
+  const channelScript = resolve(
+    import.meta.dirname,
+    "../channel-server/dist.mjs",
+  );
 
   const resolved = {
     ...params,
@@ -254,7 +259,7 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
 
   // Emit the appropriate event
   if (isResume) {
-    emitAgentEvent({
+    emitAgentDelta({
       type: "agent.attached",
       id: persisted.id,
       provider: providerName,
@@ -262,7 +267,7 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
       version: persisted.version,
     });
   } else {
-    emitAgentEvent({ type: "agent.created", agent: persisted });
+    emitAgentDelta({ type: "agent.created", agent: persisted });
   }
 
   // PTY data → output buffer (used by terminal WS streaming)
@@ -308,7 +313,7 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
       const updated = markExited(persisted.id, reason);
       live.delete(persisted.id);
       if (updated) {
-        emitAgentEvent({
+        emitAgentDelta({
           type: "agent.exited",
           id: persisted.id,
           exitReason: reason,
@@ -339,7 +344,7 @@ export function killAttachment(agentId: UUID): boolean {
   const updated = markExited(agentId, "user_killed");
   live.delete(agentId);
   if (updated) {
-    emitAgentEvent({
+    emitAgentDelta({
       type: "agent.exited",
       id: agentId,
       exitReason: "user_killed",
@@ -364,7 +369,7 @@ export function deleteAgent(agentId: UUID): boolean {
   }
   const removed = deleteAgentRaw(agentId);
   if (removed) {
-    emitAgentEvent({ type: "agent.deleted", id: agentId });
+    emitAgentDelta({ type: "agent.deleted", id: agentId });
   }
   return removed || wasLive;
 }
@@ -433,7 +438,7 @@ export function resumeActiveAgents(): void {
       console.error(`  ✗ Failed to resume ${a.name}: ${message}${stack}`);
       const updated = markExited(a.id, "crashed");
       if (updated) {
-        emitAgentEvent({
+        emitAgentDelta({
           type: "agent.exited",
           id: a.id,
           exitReason: "crashed",
@@ -531,9 +536,7 @@ export async function resolveAgentId(
     });
     if (matches.length === 1) return { id: matches[0].id };
     if (matches.length > 1) {
-      const list = matches
-        .map((a) => `  ${a.name} (id: ${a.id})`)
-        .join("\n");
+      const list = matches.map((a) => `  ${a.name} (id: ${a.id})`).join("\n");
       return {
         error: `Multiple agents named "${idOrName}". Specify by id:\n${list}`,
       };

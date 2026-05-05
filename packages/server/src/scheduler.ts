@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunRecord, RunStatus, Schedule } from "@autonomos/core";
 import { Cron } from "croner";
+import { resolveClaudePath } from "./agents/runtime.js";
 import { CONFIG_DIR } from "./configDir.js";
 import {
   appendRun,
@@ -21,7 +22,6 @@ import {
   pruneRuns,
   saveSchedule,
 } from "./schedules.js";
-import { resolveClaudePath } from "./sessions.js";
 import { getSettings } from "./settings.js";
 
 // ── Constants ───────────────────────────────────────────────────

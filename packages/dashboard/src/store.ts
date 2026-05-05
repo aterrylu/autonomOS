@@ -561,10 +561,23 @@ async function spawnSession(
   if (status === "spawning..." || status === "resuming...") return;
   set({ status: pendingStatus });
 
-  const res = await fetch("/api/sessions", {
+  // Translate the legacy SessionInfo-shaped body into the new /api/agents shape.
+  // - resumeSessionId → resumeAgentId (same value: agent.id == old claudeSessionId)
+  // - forkFrom → forkFromAgentId (same value)
+  // The server still accepts `manager` (name) at the API boundary.
+  const agentBody: Record<string, unknown> = { ...body };
+  if (typeof agentBody.resumeSessionId === "string") {
+    agentBody.resumeAgentId = agentBody.resumeSessionId;
+    delete agentBody.resumeSessionId;
+  }
+  if (typeof agentBody.forkFrom === "string") {
+    agentBody.forkFromAgentId = agentBody.forkFrom;
+    delete agentBody.forkFrom;
+  }
+  const res = await fetch("/api/agents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(agentBody),
   }).catch(() => null);
 
   if (!res) {
@@ -576,7 +589,22 @@ async function spawnSession(
     return;
   }
 
-  const session: SessionInfo = await res.json();
+  // Server returns an Agent; translate to SessionInfo for legacy code paths.
+  const agent = await res.json();
+  const session: SessionInfo = {
+    id: agent.id,
+    name: agent.name,
+    status: agent.status,
+    workingDirectory: agent.workingDirectory,
+    provider: agent.provider,
+    claudeSessionId: agent.providerSessionId,
+    template: agent.template,
+    manager: undefined, // managerId is a UUID; resolve to name happens via store.agents
+    createdAt: agent.createdAt,
+    updatedAt: agent.updatedAt,
+    exitedAt: agent.exitedAt,
+    exitReason: agent.exitReason,
+  };
   if (onSuccess) {
     onSuccess(session);
   } else {
@@ -736,9 +764,43 @@ export const useStore = create<AppState>()(
         },
 
         fetchSessions: async () => {
-          const res = await fetch("/api/sessions").catch(() => null);
+          const res = await fetch("/api/agents").catch(() => null);
           if (!res?.ok) return;
-          const allSessions: SessionInfo[] = await res.json();
+          // Server returns Agent[] from /api/agents; translate to SessionInfo[]
+          // for legacy dashboard code that still keys off the old shape. The
+          // mapping is mechanical — id, name, status, etc. line up directly.
+          const agents = (await res.json()) as Array<{
+            id: string;
+            name: string;
+            status: "running" | "exited";
+            workingDirectory: string;
+            provider: string;
+            providerSessionId: string;
+            template?: string;
+            managerId: string | null;
+            project?: string;
+            createdAt: number;
+            updatedAt: number;
+            exitedAt?: number;
+            exitReason?: "user_killed" | "self_exited" | "crashed";
+          }>;
+          // Resolve manager name client-side so the existing UI continues to
+          // surface a human-readable label without an extra round-trip.
+          const byId = new Map(agents.map((a) => [a.id, a]));
+          const allSessions: SessionInfo[] = agents.map((a) => ({
+            id: a.id,
+            name: a.name,
+            status: a.status,
+            workingDirectory: a.workingDirectory,
+            provider: a.provider,
+            claudeSessionId: a.providerSessionId,
+            template: a.template,
+            manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
+            createdAt: a.createdAt,
+            updatedAt: a.updatedAt,
+            exitedAt: a.exitedAt,
+            exitReason: a.exitReason,
+          }));
           // Filter out exited sessions — they have no PTY and would create
           // broken terminals with perpetual WebSocket reconnect loops.
           const sessions = allSessions.filter((s) => s.status !== "exited");
@@ -924,7 +986,7 @@ export const useStore = create<AppState>()(
           // which re-resolves the template and restores full config.
           if (opts?.isAutonomosAgent) {
             set({ status: "resuming..." });
-            const res = await fetch(`/api/sessions/${claudeSessionId}/resume`, {
+            const res = await fetch(`/api/agents/${claudeSessionId}/attach`, {
               method: "POST",
             }).catch(() => null);
             if (!res?.ok) {
@@ -979,7 +1041,7 @@ export const useStore = create<AppState>()(
           );
         },
         killSession: async (id) => {
-          await fetch(`/api/sessions/${id}`, { method: "DELETE" }).catch(
+          await fetch(`/api/agents/${id}/kill`, { method: "POST" }).catch(
             () => null,
           );
           const { activePane } = get();
@@ -1246,7 +1308,7 @@ export const useStore = create<AppState>()(
         },
 
         removeSession: async (id) => {
-          const res = await fetch(`/api/sessions/${id}?permanent=true`, {
+          const res = await fetch(`/api/agents/${id}?force=true`, {
             method: "DELETE",
           }).catch(() => null);
           if (!res?.ok) {

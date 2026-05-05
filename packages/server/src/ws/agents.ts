@@ -3,21 +3,21 @@
  *
  * Each connected dashboard client receives:
  *   1. On connect: `{ type: "reconcile", agents: Agent[] }` (full snapshot)
- *   2. Thereafter: per-event AgentEvent deltas as they happen
+ *   2. Thereafter: per-event AgentDelta deltas as they happen
  *
  * On reconnect (network blip, server restart, laptop wake), the client sends
  * a fresh subscription and gets a new reconcile — recovers fully without
  * relying on missed-event replay or sequence numbers.
  */
 
-import type { AgentEvent } from "@autonomos/core";
+import type { AgentDelta } from "@autonomos/core";
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
-import { onAgentEvent } from "../events/agents.js";
 import { listAgents } from "../agents/store.js";
+import { onAgentDelta } from "../events/agents.js";
 
 const clients = new Set<WSContext>();
 
-function safeSend(ws: WSContext, payload: AgentEvent): void {
+function safeSend(ws: WSContext, payload: AgentDelta): void {
   try {
     ws.send(JSON.stringify(payload));
   } catch {
@@ -30,7 +30,7 @@ let listenerInstalled = false;
 /** Install the global event-bus subscriber. Idempotent. */
 function ensureListenerInstalled(): void {
   if (listenerInstalled) return;
-  onAgentEvent((event) => {
+  onAgentDelta((event) => {
     for (const ws of clients) safeSend(ws, event);
   });
   listenerInstalled = true;
@@ -51,7 +51,9 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
       },
 
       onError(event, ws) {
-        console.error(`[ws/agents] error: ${JSON.stringify(event).slice(0, 200)}`);
+        console.error(
+          `[ws/agents] error: ${JSON.stringify(event).slice(0, 200)}`,
+        );
         clients.delete(ws);
       },
     };

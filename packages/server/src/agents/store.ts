@@ -17,8 +17,8 @@
 
 import {
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -135,9 +135,7 @@ export function listAgents(): Agent[] {
  *  most recently updated. Returns undefined if no match. */
 export function resolveAgentByName(name: string): Agent | undefined {
   const needle = name.toLowerCase();
-  const matches = listAgents().filter(
-    (a) => a.name.toLowerCase() === needle,
-  );
+  const matches = listAgents().filter((a) => a.name.toLowerCase() === needle);
   if (matches.length === 0) return undefined;
   if (matches.length === 1) return matches[0];
   const running = matches.filter((a) => a.status === "running");

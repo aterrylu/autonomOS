@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { Session } from "@autonomos/core";
+import {
+  _resetCacheForTesting as _resetAgentsForTesting,
+  buildAgent,
+  insertAgent,
+} from "../agents/store.js";
 import {
   clearAgentState,
   clearNotifications,
   getAgentState,
   hooksRouter,
 } from "../routes/hooks.js";
-import { _injectSessionForTesting, _resetForTesting } from "../sessions.js";
 
 // Helper: simulate a hook event POST
 async function postHookEvent(
@@ -364,23 +367,23 @@ describe("hooks — Gemini event translation", () => {
   const sid = "test-gemini-001";
 
   beforeEach(() => {
-    const session: Session = {
-      id: sid,
-      name: "gemini-test",
-      status: "running",
-      workingDirectory: "/tmp",
-      provider: "gemini-cli",
-      claudeSessionId: sid,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    _injectSessionForTesting(sid, session);
+    _resetAgentsForTesting();
+    insertAgent(
+      buildAgent({
+        id: sid,
+        name: "gemini-test",
+        workingDirectory: "/tmp",
+        provider: "gemini-cli",
+        providerSessionId: sid,
+        autonomousMode: true,
+      }),
+    );
   });
 
   afterEach(() => {
     clearNotifications(sid);
     clearAgentState(sid);
-    _resetForTesting();
+    _resetAgentsForTesting();
   });
 
   it("BeforeAgent → UserPromptSubmit → working", async () => {

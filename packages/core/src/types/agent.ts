@@ -12,7 +12,7 @@
 
 export type UUID = string;
 
-export type Provider = "claude-code" | "codex" | "gemini";
+export type Provider = "claude-code" | "codex" | "gemini-cli";
 
 /** Lifecycle status. Two values today; future states (archived, detached) are
  *  strictly additive — clients should treat unknown values as "exited". */
@@ -85,7 +85,7 @@ export interface Agent {
  *
  * Forward-compat: client should ignore unknown event types rather than crash.
  */
-export type AgentEvent =
+export type AgentDelta =
   /** New agent appeared (fresh spawn, includes initial PTY attach). */
   | { type: "agent.created"; agent: Agent }
   /** Non-structural field change (name via /rename, future PATCH endpoints). */

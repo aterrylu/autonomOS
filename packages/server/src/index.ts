@@ -10,27 +10,31 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { migrateIfNeeded } from "./agents/migrate.js";
+import {
+  resumeActiveAgents,
+  shutdownAllAttachments,
+} from "./agents/runtime.js";
 import { resolveAuthToken } from "./auth.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
-import { getPersistedSessions, markSessionExited } from "./persisted.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
+import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
-import { orgRouter, templateRouter } from "./routes/hierarchy.js";
 import { hooksRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
-import { sessionRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
+import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
-import { createSession, shutdownAllSessions } from "./sessions.js";
-import { getTemplate, seedDefaultTemplates } from "./templates.js";
+import { seedDefaultTemplates } from "./templates.js";
+import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
 
 // Seed default templates on fresh install
 seedDefaultTemplates();
@@ -69,6 +73,19 @@ if (isProviderInstalled("gemini-cli")) {
   }
 }
 
+// Run sessions.json → per-file agents migration if needed.
+// MUST happen before resumeActiveAgents() reads from the new layout.
+// Process-manager-agnostic: works under pm2, npx, bun, manual node, or
+// desktop-bootstrapped SSH server.
+const migrationResult = migrateIfNeeded();
+if (migrationResult.status === "migrated") {
+  console.log(
+    `[startup] migrated ${migrationResult.agents} agent(s) from sessions.json (` +
+      `${migrationResult.managersResolved} managers resolved, ` +
+      `${migrationResult.orphaned} orphaned)`,
+  );
+}
+
 type NodeEnv = {
   Bindings: {
     incoming: IncomingMessage;
@@ -84,8 +101,6 @@ const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 const dashboardDist = resolve(import.meta.dirname, "../../dashboard/dist");
 const isProduction = existsSync(dashboardDist);
 
-// In production (serving dashboard from same origin), CORS is unnecessary.
-// In dev, allow the Vite dev server origin.
 const corsOrigin =
   process.env.CORS_ORIGIN ||
   (isProduction ? undefined : "http://localhost:5173");
@@ -93,7 +108,6 @@ if (corsOrigin) {
   app.use("*", cors({ origin: corsOrigin }));
 }
 
-// Auth is always enabled — token resolved from env var, file, or auto-generated
 const AUTH_TOKEN = resolveAuthToken();
 
 function safeEqual(a: string, b: string): boolean {
@@ -104,14 +118,11 @@ function safeEqual(a: string, b: string): boolean {
 function extractToken(c: Context): string | undefined {
   const cookie = getCookie(c, "autonomos_token");
   if (cookie) return cookie;
-
   const header = c.req.header("Authorization");
   if (header?.startsWith("Bearer ")) return header.slice(7);
-
   return undefined;
 }
 
-// Token exchange: POST { token } sets a cookie and returns 200
 app.post("/auth", async (c) => {
   const body = await c.req.json().catch(() => null);
   const token = typeof body?.token === "string" ? body.token : null;
@@ -126,21 +137,15 @@ app.post("/auth", async (c) => {
     sameSite: "Lax",
     secure: isHttps,
     path: "/",
-    maxAge: 60 * 60 * 24 * 365, // 1 year
+    maxAge: 60 * 60 * 24 * 365,
   });
   return c.json({ ok: true });
 });
 
-// Protect API and WS routes — static assets pass through so the
-// dashboard can load and show a "not authenticated" state.
 const requireAuth: MiddlewareHandler = async (c, next) => {
-  // Hook relay POST is unauthenticated (called from PTY sessions via curl).
   if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
     return next();
-  // Host info is unauthenticated — used by dashboard status bar before login.
   if (c.req.method === "GET" && c.req.path === "/api/host") return next();
-  // Accept token from cookie, Authorization header, or ?token= query param.
-  // Query param is used by the channel server subprocess (can't set headers on WebSocket).
   const token = extractToken(c) ?? c.req.query("token") ?? undefined;
   if (token && safeEqual(token, AUTH_TOKEN)) return next();
   return c.json(
@@ -152,19 +157,15 @@ const requireAuth: MiddlewareHandler = async (c, next) => {
 app.use("/api/*", requireAuth);
 app.use("/ws/*", requireAuth);
 
-// Server info — lightweight, no auth required for status bar
 app.get("/api/host", (c) => c.json({ hostname: hostname() }));
 
-// Hook relay — no auth (called from PTY sessions via curl, no cookie available).
-// POST only accepts events; GET endpoints are behind auth via the wildcard above.
 app.route("/api/hooks", hooksRouter);
 
 // REST API (behind auth)
 app.route("/api/conversation", conversationRouter);
 app.route("/api/files", fileRouter);
 app.route("/api/projects", projectRouter);
-app.route("/api/org", orgRouter);
-app.route("/api/sessions", sessionRouter);
+app.route("/api/agents", agentsRouter);
 app.route("/api/settings", settingsRouter);
 app.route("/api/channels", channelsRouter);
 app.route("/api/templates", templateRouter);
@@ -179,7 +180,6 @@ app.post("/mcp", async (c) => {
   const res = c.env.outgoing as ServerResponse;
   const body = await c.req.json().catch(() => undefined);
   await handleMcpRequest(req, res, body);
-  // Response already sent by MCP transport — return empty to avoid double-write
   return new Response(null);
 });
 app.get("/mcp", async (c) => {
@@ -195,24 +195,21 @@ app.delete("/mcp", async (c) => {
   return new Response(null);
 });
 
-// WebSocket — terminal PTY streaming, file watching, gateway channels
+// WebSocket — terminal PTY streaming, file watching, gateway, agent deltas
 app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
 app.get("/ws/files/watch", fileWatchRouter(upgradeWebSocket));
 app.get("/ws/gateway", gatewayRouter(upgradeWebSocket));
+app.get("/ws/agents", agentsWsRouter(upgradeWebSocket));
 
 if (isProduction) {
   console.log(`Serving dashboard from ${dashboardDist}`);
 
-  // JSON 404 for unmatched API/WS/MCP routes (all methods).
-  // Must be registered BEFORE serveStatic so it takes priority.
   app.all("/api/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
   app.all("/ws/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
   app.all("/mcp", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
 
-  // Serve static dashboard assets (JS, CSS, images)
   app.use("/*", serveStatic({ root: dashboardDist }));
 
-  // SPA fallback — serve index.html for page routes
   const indexHtml = readFileSync(resolve(dashboardDist, "index.html"), "utf-8");
   app.get("*", (c) => c.html(indexHtml));
 }
@@ -231,80 +228,28 @@ const server = serve({ fetch: app.fetch, port }, () => {
     initGateway().catch((err) => console.error("[gateway] init failed:", err));
   });
 
-  // Auto-resume persisted sessions after startup
-  resumePersistedSessions();
+  // Auto-resume agents whose persisted status is "running" — handles all
+  // failure modes (cwd missing, provider gone, etc) by marking the failed
+  // ones exited/crashed so they don't zombie.
+  resumeActiveAgents();
 
-  // Start scheduler AFTER sessions are up so agent:<name> targets resolve
+  // Start scheduler AFTER agents are up so agent:<name> targets resolve
   initScheduler();
 });
 
 injectWebSocket(server);
 
-function resumePersistedSessions() {
-  const persisted = getPersistedSessions();
-  if (persisted.length === 0) return;
-
-  const toResume = persisted.filter((p) => p.status !== "exited");
-  const exitedCount = persisted.length - toResume.length;
-  if (exitedCount > 0) {
-    console.log(`  Skipping ${exitedCount} exited session(s)`);
-  }
-  if (toResume.length === 0) return;
-
-  console.log(`Resuming ${toResume.length} session(s)...`);
-  let resumed = 0;
-  for (const p of toResume) {
-    try {
-      // Re-resolve template system prompt so agents keep their role context
-      const tmpl = p.template ? getTemplate(p.template) : null;
-      if (p.template && !tmpl) {
-        console.warn(
-          `  ⚠ Template "${p.template}" not found for ${p.name} — agent will resume without role context`,
-        );
-      }
-
-      createSession({
-        workingDirectory: p.workingDirectory,
-        resumeSessionId: p.claudeSessionId,
-        name: p.name,
-        autonomousMode: p.autonomousMode,
-        appendSystemPrompt: tmpl?.systemPrompt,
-        template: p.template,
-        manager: p.manager,
-        project: p.project,
-      });
-      console.log(`  ✓ ${p.name} (${p.claudeSessionId.slice(0, 8)}...)`);
-      resumed++;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Include stack for diagnosability — this catch is deliberately broad
-      // (any failure during resume lands here: invalid cwd, provider missing,
-      // spawn errors, template lookup bugs). The stack is how you tell a
-      // transient env issue apart from a programming regression.
-      const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
-      console.error(`  ✗ Failed to resume ${p.name}: ${message}${stack}`);
-      // Mark the failed session as exited/crashed so the exited list reflects
-      // reality — without this, the session sits in persistence as "running"
-      // forever with no live PTY (a zombie) and the user has no way to tell
-      // a zombie from a live agent.
-      markSessionExited(p.claudeSessionId, "crashed");
-    }
-  }
-  if (resumed < toResume.length) {
-    console.warn(`Resumed ${resumed} of ${toResume.length} sessions`);
-  }
-}
-
-// Clean up all PTY processes on shutdown
+// Clean up all PTY processes on shutdown. Agents stay in persistence as
+// "running" so they auto-resume on next boot.
 function shutdown() {
   console.log(
-    "Shutting down — killing PTYs (sessions will resume on next start)...",
+    "Shutting down — killing PTYs (agents will resume on next start)...",
   );
   stopScheduler();
   import("./gateway/index.js")
     .then(({ shutdownGateway }) => shutdownGateway())
     .catch(() => {});
-  shutdownAllSessions();
+  shutdownAllAttachments();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

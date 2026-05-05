@@ -1,6 +1,6 @@
 import { Hono } from "hono";
+import { getAgent, listAgents } from "../agents/store.js";
 import { getProvider } from "../providers/index.js";
-import { getAllSessions, getSession } from "../sessions.js";
 
 /**
  * Hook events received from Claude Code sessions via autonomos-relay.sh.
@@ -235,15 +235,15 @@ hooksRouter.post("/:sessionId", async (c) => {
   // supplies a normalizer. Skip translation when the session is unknown —
   // silently coercing a stale hook to "claude-code" would mistranslate a
   // straggling Gemini event from a session that already exited.
-  const session = getSession(sessionId);
+  const agent = getAgent(sessionId);
   let body: HookEvent;
-  if (!session) {
+  if (!agent) {
     console.debug(
       `[hooks] ${sessionId.slice(0, 8)} hook for unknown session — passing through without translation (raw=${String(rawBody.hook_event_name)})`,
     );
     body = rawBody as HookEvent;
   } else {
-    const provider = getProvider(session.session.provider ?? "claude-code");
+    const provider = getProvider(agent.provider ?? "claude-code");
     const normalized = provider.normalizeEvent?.(rawBody);
     if (normalized === null) {
       // Provider explicitly dropped this event (logged with reason at
@@ -378,8 +378,8 @@ hooksRouter.get("/:sessionId/status", (c) => {
 
 // Bulk notifications across all sessions (for notification panel)
 hooksRouter.get("/notifications", (c) => {
-  const allSessions = getAllSessions();
-  const sessionNames = new Map(allSessions.map((s) => [s.id, s.name]));
+  const allAgents = listAgents();
+  const sessionNames = new Map(allAgents.map((a) => [a.id, a.name]));
 
   const all: Array<
     SessionNotification & { sessionId: string; sessionName: string }

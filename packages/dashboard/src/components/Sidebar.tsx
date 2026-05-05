@@ -115,12 +115,12 @@ function useOrgChartData(refreshKey: number) {
         // `refreshKey` as query param gives biome a real dependency edge so
         // the hook re-runs when the key changes. `cache: "no-store"` avoids
         // relying on proxies to honor cache-busting query params.
-        const res = await fetch(`/api/org?k=${refreshKey}`, {
+        const res = await fetch(`/api/agents/tree?k=${refreshKey}`, {
           cache: "no-store",
         });
         if (!res.ok) {
           console.error(
-            "[useOrgChartData] /api/org returned",
+            "[useOrgChartData] /api/agents/tree returned",
             res.status,
             res.statusText,
           );

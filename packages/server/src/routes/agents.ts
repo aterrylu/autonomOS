@@ -6,8 +6,13 @@
  * cannot disagree about what exists.
  */
 
-import { Hono } from "hono";
 import type { Provider, UUID } from "@autonomos/core";
+import { Hono } from "hono";
+import {
+  killAttachment,
+  deleteAgent as runtimeDeleteAgent,
+  spawnAgent,
+} from "../agents/runtime.js";
 import {
   childrenOf,
   deleteAgentRaw,
@@ -15,14 +20,10 @@ import {
   listAgents,
   patchAgent,
   resolveAgent,
+  resolveAgentByName,
   setManager,
 } from "../agents/store.js";
-import {
-  deleteAgent as runtimeDeleteAgent,
-  killAttachment,
-  spawnAgent,
-} from "../agents/runtime.js";
-import { emitAgentEvent } from "../events/agents.js";
+import { emitAgentDelta } from "../events/agents.js";
 import { getTemplate } from "../templates.js";
 
 export const agentsRouter = new Hono();
@@ -31,6 +32,51 @@ export const agentsRouter = new Hono();
 
 agentsRouter.get("/", (c) => {
   return c.json(listAgents());
+});
+
+// Tree-shape variant for clients that can't build the tree themselves
+// (e.g. external MCP clients). Same data, just nested by managerId.
+agentsRouter.get("/tree", (c) => {
+  const includeExited = c.req.query("includeExited") === "true";
+  const all = listAgents();
+  const visible = includeExited
+    ? all
+    : all.filter((a) => a.status === "running");
+  const byId = new Map(visible.map((a) => [a.id, a]));
+  interface Node {
+    id: string;
+    /** Alias of `id`, kept for dashboard-side compatibility with the legacy
+     *  OrgNode shape that pre-dates the Agent/Session merger. */
+    claudeSessionId: string;
+    name: string;
+    template?: string;
+    project?: string;
+    status: string;
+    children: Node[];
+  }
+  const nodeById = new Map<string, Node>();
+  for (const a of visible) {
+    nodeById.set(a.id, {
+      id: a.id,
+      claudeSessionId: a.id,
+      name: a.name,
+      template: a.template,
+      project: a.project,
+      status: a.status,
+      children: [],
+    });
+  }
+  const roots: Node[] = [];
+  for (const a of visible) {
+    const node = nodeById.get(a.id)!;
+    const parent =
+      a.managerId && byId.has(a.managerId)
+        ? nodeById.get(a.managerId)
+        : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return c.json(roots);
 });
 
 agentsRouter.get("/:id", (c) => {
@@ -62,14 +108,18 @@ agentsRouter.post("/", async (c) => {
     return c.json({ error: `Template "${templateName}" not found` }, 400);
   }
 
-  // Resolve manager (if provided as id; name resolution lives at MCP layer)
+  // Resolve manager — accept either managerId (UUID) or manager (name).
+  // Name takes precedence if both supplied since MCP/UI surfaces use names.
   let managerId: UUID | null = null;
-  if (typeof body.managerId === "string") {
+  if (typeof body.manager === "string" && body.manager.length > 0) {
+    const mgr = resolveAgentByName(body.manager);
+    if (!mgr) {
+      return c.json({ error: `Manager "${body.manager}" not found` }, 400);
+    }
+    managerId = mgr.id;
+  } else if (typeof body.managerId === "string") {
     if (!getAgent(body.managerId)) {
-      return c.json(
-        { error: `managerId "${body.managerId}" not found` },
-        400,
-      );
+      return c.json({ error: `managerId "${body.managerId}" not found` }, 400);
     }
     managerId = body.managerId;
   }
@@ -78,8 +128,7 @@ agentsRouter.post("/", async (c) => {
     typeof body.appendSystemPrompt === "string"
       ? body.appendSystemPrompt
       : tmpl?.systemPrompt;
-  const autonomousMode =
-    (body.autonomousMode ?? tmpl?.autonomousMode) === true;
+  const autonomousMode = (body.autonomousMode ?? tmpl?.autonomousMode) === true;
 
   try {
     const result = spawnAgent({
@@ -87,9 +136,7 @@ agentsRouter.post("/", async (c) => {
       name: typeof body.name === "string" ? body.name : undefined,
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
       resumeAgentId:
-        typeof body.resumeAgentId === "string"
-          ? body.resumeAgentId
-          : undefined,
+        typeof body.resumeAgentId === "string" ? body.resumeAgentId : undefined,
       forkFromAgentId:
         typeof body.forkFromAgentId === "string"
           ? body.forkFromAgentId
@@ -122,7 +169,10 @@ agentsRouter.post("/", async (c) => {
 // ── Patch (rename / template / project) ────────────────────────────
 
 agentsRouter.patch("/:id", async (c) => {
-  const id = c.req.param("id");
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+
   let body: Record<string, unknown>;
   try {
     body = await c.req.json();
@@ -142,20 +192,20 @@ agentsRouter.patch("/:id", async (c) => {
   if (typeof body.autonomousMode === "boolean")
     patch.autonomousMode = body.autonomousMode;
 
-  const result = patchAgent(id, patch, versionNumber);
+  const result = patchAgent(agent.id, patch, versionNumber);
   if (result === undefined) {
-    return c.json({ error: `Agent "${id}" not found` }, 404);
+    return c.json({ error: `Agent "${param}" not found` }, 404);
   }
   if (result === "stale") {
     return c.json(
       {
         error: "Version mismatch — refresh and retry",
-        currentVersion: getAgent(id)?.version,
+        currentVersion: getAgent(agent.id)?.version,
       },
       409,
     );
   }
-  emitAgentEvent({
+  emitAgentDelta({
     type: "agent.updated",
     id: result.id,
     patch,
@@ -167,7 +217,10 @@ agentsRouter.patch("/:id", async (c) => {
 // ── Set manager ────────────────────────────────────────────────────
 
 agentsRouter.post("/:id/manager", async (c) => {
-  const id = c.req.param("id");
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+
   let body: Record<string, unknown>;
   try {
     body = await c.req.json();
@@ -175,9 +228,15 @@ agentsRouter.post("/:id/manager", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  // Allow null to clear
+  // Accept either managerId (UUID) or manager (name). Null/undefined clears.
   let managerId: UUID | null;
-  if (body.managerId === null || body.managerId === undefined) {
+  if (typeof body.manager === "string" && body.manager.length > 0) {
+    const mgr = resolveAgentByName(body.manager);
+    if (!mgr) {
+      return c.json({ error: `Manager "${body.manager}" not found` }, 404);
+    }
+    managerId = mgr.id;
+  } else if (body.managerId === null || body.managerId === undefined) {
     managerId = null;
   } else if (typeof body.managerId === "string") {
     managerId = body.managerId;
@@ -188,12 +247,9 @@ agentsRouter.post("/:id/manager", async (c) => {
   const expectedVersion =
     typeof body.version === "number" ? body.version : undefined;
 
-  const result = setManager(id, managerId, expectedVersion);
+  const result = setManager(agent.id, managerId, expectedVersion);
   if (result === undefined) {
-    return c.json(
-      { error: `Agent "${id}" or managerId not found` },
-      404,
-    );
+    return c.json({ error: `Agent "${param}" or managerId not found` }, 404);
   }
   if (result === "cycle") {
     return c.json(
@@ -205,12 +261,12 @@ agentsRouter.post("/:id/manager", async (c) => {
     return c.json(
       {
         error: "Version mismatch — refresh and retry",
-        currentVersion: getAgent(id)?.version,
+        currentVersion: getAgent(agent.id)?.version,
       },
       409,
     );
   }
-  emitAgentEvent({
+  emitAgentDelta({
     type: "agent.reparented",
     id: result.id,
     managerId: result.managerId,
@@ -222,9 +278,9 @@ agentsRouter.post("/:id/manager", async (c) => {
 // ── Attach (resume) ────────────────────────────────────────────────
 
 agentsRouter.post("/:id/attach", (c) => {
-  const id = c.req.param("id");
-  const agent = getAgent(id);
-  if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
 
   try {
     const result = spawnAgent({
@@ -254,9 +310,10 @@ agentsRouter.post("/:id/attach", (c) => {
 // ?force=true              — orphan children to root, then delete.
 
 agentsRouter.delete("/:id", (c) => {
-  const id = c.req.param("id");
-  const agent = getAgent(id);
-  if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const id = agent.id;
 
   const reassignTo = c.req.query("reassignTo");
   const force = c.req.query("force") === "true";
@@ -285,7 +342,7 @@ agentsRouter.delete("/:id", (c) => {
     for (const child of children) {
       const updated = setManager(child.id, newParent);
       if (updated && typeof updated !== "string") {
-        emitAgentEvent({
+        emitAgentDelta({
           type: "agent.reparented",
           id: updated.id,
           managerId: updated.managerId,
@@ -307,15 +364,15 @@ agentsRouter.delete("/:id", (c) => {
 // ── Kill (PTY only, keep agent record) ─────────────────────────────
 
 agentsRouter.post("/:id/kill", (c) => {
-  const id = c.req.param("id");
-  const agent = getAgent(id);
-  if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
-  const killed = killAttachment(id);
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const killed = killAttachment(agent.id);
   if (!killed) {
     return c.json(
-      { error: `Agent "${id}" has no live attachment to kill` },
+      { error: `Agent "${param}" has no live attachment to kill` },
       409,
     );
   }
-  return c.json({ ok: true, id });
+  return c.json({ ok: true, id: agent.id });
 });

@@ -49,7 +49,7 @@ export function useOrgChart() {
 
     async function fetchChart() {
       try {
-        const res = await fetch("/api/org");
+        const res = await fetch("/api/agents/tree");
         if (!res.ok) {
           if (!cancelled) setError(`Server error (${res.status})`);
           return;
