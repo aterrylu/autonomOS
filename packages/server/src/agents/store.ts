@@ -44,6 +44,29 @@ function getAgentFile(id: UUID): string {
   return join(getAgentsDir(), `${id}.json`);
 }
 
+/** Sentinel file written after migration finishes successfully. Migration
+ *  uses this — not directory presence — to detect "already migrated".
+ *  Otherwise a mid-migration crash that wrote the first agent file would
+ *  permanently mark the dir as "migrated" and silently orphan the rest. */
+export function getMigrationCompleteMarker(): string {
+  return join(getAgentsDir(), ".migration-complete");
+}
+
+/** Touch the migration-complete sentinel. Idempotent — safe to call multiple times. */
+export function markMigrationComplete(): void {
+  ensureAgentsDir();
+  writeFileSync(getMigrationCompleteMarker(), "", { mode: 0o600 });
+}
+
+/** Has the migration completed (or was this a fresh install)? */
+export function isMigrationComplete(): boolean {
+  try {
+    return statSync(getMigrationCompleteMarker()).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function ensureAgentsDir(): void {
   ensureConfigDir();
   mkdirSync(getAgentsDir(), { recursive: true, mode: 0o700 });
@@ -155,11 +178,14 @@ export function resolveAgent(idOrName: string): Agent | undefined {
 // ── Write API ──────────────────────────────────────────────────────
 
 function writeAgentFile(agent: Agent): void {
+  // Throw rather than silently return — callers update the in-memory cache
+  // immediately after writeAgentFile() returns, so a silent skip causes the
+  // cache to diverge from disk. Surfacing the error keeps the two in sync
+  // and forces the operator to inspect the underlying load failure.
   if (lastReadFailed) {
-    console.error(
+    throw new Error(
       `Refusing to write agent ${agent.id} — last cache load failed (would risk data loss). Inspect ${getAgentsDir()} and restart.`,
     );
-    return;
   }
   ensureAgentsDir();
   const finalPath = getAgentFile(agent.id);
@@ -294,6 +320,46 @@ export function deleteAgentRaw(id: UUID): boolean {
 /** Get the ids of all agents that name `parentId` as their manager. */
 export function childrenOf(parentId: UUID): Agent[] {
   return listAgents().filter((a) => a.managerId === parentId);
+}
+
+// ── Tree builder ───────────────────────────────────────────────────
+
+/**
+ * Build a parent→child tree from the agent collection. Shared between the
+ * REST `/api/agents/tree` endpoint and the MCP `get_org_chart` tool so the
+ * two views can never disagree on shape.
+ *
+ * - `includeExited`: when false (default), exited agents are filtered out
+ *   before building the tree. Their children become roots.
+ * - `mapNode`: projects each Agent to the consumer's preferred node shape
+ *   (e.g. dashboard wants a `claudeSessionId` alias for legacy compat).
+ */
+export function buildAgentTree<
+  N extends { id: string; children: N[] },
+>(options: {
+  includeExited?: boolean;
+  mapNode: (a: Agent) => Omit<N, "children">;
+}): N[] {
+  const all = listAgents();
+  const visible = options.includeExited
+    ? all
+    : all.filter((a) => a.status === "running");
+  const byId = new Map(visible.map((a) => [a.id, a]));
+  const nodeById = new Map<string, N>();
+  for (const a of visible) {
+    nodeById.set(a.id, { ...options.mapNode(a), children: [] } as unknown as N);
+  }
+  const roots: N[] = [];
+  for (const a of visible) {
+    const node = nodeById.get(a.id)!;
+    const parent =
+      a.managerId && byId.has(a.managerId)
+        ? nodeById.get(a.managerId)
+        : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

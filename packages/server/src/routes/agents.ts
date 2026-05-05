@@ -14,6 +14,7 @@ import {
   spawnAgent,
 } from "../agents/runtime.js";
 import {
+  buildAgentTree,
   childrenOf,
   deleteAgentRaw,
   getAgent,
@@ -34,54 +35,40 @@ agentsRouter.get("/", (c) => {
   return c.json(listAgents());
 });
 
+/** Node shape returned by `/api/agents/tree`. The `claudeSessionId` alias
+ *  is kept for dashboard-side compatibility with the legacy OrgNode shape
+ *  that pre-dates the Agent/Session merger. */
+interface AgentTreeApiNode {
+  id: string;
+  claudeSessionId: string;
+  name: string;
+  template?: string;
+  project?: string;
+  status: string;
+  children: AgentTreeApiNode[];
+}
+
 // Tree-shape variant for clients that can't build the tree themselves
 // (e.g. external MCP clients). Same data, just nested by managerId.
 agentsRouter.get("/tree", (c) => {
   const includeExited = c.req.query("includeExited") === "true";
-  const all = listAgents();
-  const visible = includeExited
-    ? all
-    : all.filter((a) => a.status === "running");
-  const byId = new Map(visible.map((a) => [a.id, a]));
-  interface Node {
-    id: string;
-    /** Alias of `id`, kept for dashboard-side compatibility with the legacy
-     *  OrgNode shape that pre-dates the Agent/Session merger. */
-    claudeSessionId: string;
-    name: string;
-    template?: string;
-    project?: string;
-    status: string;
-    children: Node[];
-  }
-  const nodeById = new Map<string, Node>();
-  for (const a of visible) {
-    nodeById.set(a.id, {
+  const tree = buildAgentTree<AgentTreeApiNode>({
+    includeExited,
+    mapNode: (a) => ({
       id: a.id,
       claudeSessionId: a.id,
       name: a.name,
       template: a.template,
       project: a.project,
       status: a.status,
-      children: [],
-    });
-  }
-  const roots: Node[] = [];
-  for (const a of visible) {
-    const node = nodeById.get(a.id)!;
-    const parent =
-      a.managerId && byId.has(a.managerId)
-        ? nodeById.get(a.managerId)
-        : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  }
-  return c.json(roots);
+    }),
+  });
+  return c.json(tree);
 });
 
 agentsRouter.get("/:id", (c) => {
   const id = c.req.param("id");
-  const agent = getAgent(id) ?? resolveAgent(id);
+  const agent = resolveAgent(id);
   if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
   return c.json(agent);
 });
@@ -339,24 +326,54 @@ agentsRouter.delete("/:id", (c) => {
       }
       newParent = reassignTo;
     }
+    // Reparent children, collecting any failure. We commit per-child (no
+    // transaction available against the file store), so on the first failure
+    // we abort and surface a 409 with what succeeded — leaving a clear
+    // partial-state signal rather than silently dropping children.
+    const reparented: { id: UUID; name: string }[] = [];
     for (const child of children) {
       const updated = setManager(child.id, newParent);
-      if (updated && typeof updated !== "string") {
-        emitAgentDelta({
-          type: "agent.reparented",
-          id: updated.id,
-          managerId: updated.managerId,
-          version: updated.version,
-        });
+      if (typeof updated === "string" || updated === undefined) {
+        return c.json(
+          {
+            error: `Aborted partway: setManager(${child.id}) returned ${updated ?? "not-found"}. ${reparented.length} child(ren) already reparented; ${children.length - reparented.length} remaining; agent NOT deleted.`,
+            reparented,
+            failedAt: {
+              id: child.id,
+              name: child.name,
+              reason: updated ?? "not-found",
+            },
+          },
+          409,
+        );
       }
+      emitAgentDelta({
+        type: "agent.reparented",
+        id: updated.id,
+        managerId: updated.managerId,
+        version: updated.version,
+      });
+      reparented.push({ id: child.id, name: child.name });
     }
   }
 
-  // Kill PTY if attached, then delete record + emit
+  // Kill PTY if attached, then delete record + emit. Surface real failure
+  // rather than silently 200ing — silent success after a filesystem error
+  // makes "why is this agent still here?" very hard to debug.
   const removed = runtimeDeleteAgent(id);
   if (!removed) {
-    // Race: agent vanished between the check and the call. Treat as success.
-    deleteAgentRaw(id);
+    // Race: agent vanished between the check and the call, OR the file
+    // remove genuinely failed. Try one more raw-delete; if THAT fails, surface.
+    const rawRemoved = deleteAgentRaw(id);
+    if (!rawRemoved) {
+      console.error(
+        `[agents] DELETE /:id ${id} — runtime delete returned false AND deleteAgentRaw returned false (filesystem error?)`,
+      );
+      return c.json(
+        { error: `Failed to delete agent "${id}" — see server logs` },
+        500,
+      );
+    }
   }
   return c.json({ ok: true, id });
 });

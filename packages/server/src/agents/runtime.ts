@@ -143,36 +143,18 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     }
     providerSessionId = existing.providerSessionId;
     agent = existing;
-  } else if (params.forkFromAgentId) {
-    const parent = getAgent(params.forkFromAgentId);
-    if (!parent) {
+  } else {
+    // Fresh spawn or fork — both create a new Agent record with a new id
+    // and a new providerSessionId. For fork, CC creates the new session by
+    // --resume'ing the parent then --fork-session'ing it (handled below
+    // via params.forkFromAgentId in the resolved args).
+    if (params.forkFromAgentId && !getAgent(params.forkFromAgentId)) {
       throw new Error(`forkFromAgentId "${params.forkFromAgentId}" not found`);
     }
-    // New agent, new provider-session for the fork; CC will create the new session
-    // by --resume'ing the parent then --fork-session'ing it.
     providerSessionId = crypto.randomUUID();
-    const dirName = basename(cwd) || cwd;
     const id = crypto.randomUUID();
-    const shortId = id.slice(0, 4);
-    const defaultName = params.name || `${dirName} · ${shortId}`;
-    agent = buildAgent({
-      id,
-      name: defaultName,
-      workingDirectory: cwd,
-      provider: providerName,
-      providerSessionId,
-      autonomousMode: !!params.autonomousMode,
-      template: params.template,
-      managerId: params.managerId ?? null,
-      project: params.project,
-    });
-  } else {
-    // Fresh spawn
-    providerSessionId = crypto.randomUUID();
     const dirName = basename(cwd) || cwd;
-    const id = crypto.randomUUID();
-    const shortId = id.slice(0, 4);
-    const defaultName = params.name || `${dirName} · ${shortId}`;
+    const defaultName = params.name || `${dirName} · ${id.slice(0, 4)}`;
     agent = buildAgent({
       id,
       name: defaultName,
@@ -296,6 +278,17 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
 
+    // Guard against stale onExit handlers firing after the same agent.id has
+    // been respawned. node-pty's onExit is async, so during restartAllAttachments
+    // (kill → spawn) the killed PTY's onExit can fire AFTER the new attachment
+    // is registered. Without this check, the stale handler would mark the
+    // freshly-spawned agent as exited and drop its live entry. Comparing the
+    // captured `pty` reference to the currently-registered attachment lets us
+    // no-op cleanly when our PTY is no longer the canonical one.
+    if (live.get(persisted.id)?.pty !== pty) {
+      return;
+    }
+
     if (lifetime < 5_000 && exitCode !== 0) {
       console.error(
         `[runtime] ${persisted.id.slice(0, 8)} died immediately (${lifetime}ms), code=${exitCode}` +
@@ -319,6 +312,10 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
           exitReason: reason,
           version: updated.version,
         });
+      } else {
+        console.warn(
+          `[runtime] PTY for ${persisted.id} exited (${reason}) but agent missing from store — possibly deleted concurrently`,
+        );
       }
     }
     // When shuttingDown is true, keep agent in store as "running" so it
@@ -398,6 +395,24 @@ function resetShuttingDown(): void {
   shuttingDown = false;
 }
 
+/** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
+ *  from the persisted Agent record so the resumed PTY matches the original
+ *  configuration. */
+function respawnAgent(a: Agent): void {
+  const tmpl = a.template ? getTemplate(a.template) : null;
+  spawnAgent({
+    workingDirectory: a.workingDirectory,
+    resumeAgentId: a.id,
+    name: a.name,
+    autonomousMode: a.autonomousMode,
+    appendSystemPrompt: tmpl?.systemPrompt,
+    template: a.template,
+    managerId: a.managerId,
+    project: a.project,
+    provider: a.provider,
+  });
+}
+
 /**
  * Resume all agents whose persisted status is "running" (typical post-startup
  * recovery path). Called once from server startup.
@@ -412,24 +427,13 @@ export function resumeActiveAgents(): void {
   console.log(`Resuming ${agents.length} agent(s)...`);
   let resumed = 0;
   for (const a of agents) {
+    if (a.template && !getTemplate(a.template)) {
+      console.warn(
+        `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
+      );
+    }
     try {
-      const tmpl = a.template ? getTemplate(a.template) : null;
-      if (a.template && !tmpl) {
-        console.warn(
-          `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
-        );
-      }
-      spawnAgent({
-        workingDirectory: a.workingDirectory,
-        resumeAgentId: a.id,
-        name: a.name,
-        autonomousMode: a.autonomousMode,
-        appendSystemPrompt: tmpl?.systemPrompt,
-        template: a.template,
-        managerId: a.managerId,
-        project: a.project,
-        provider: a.provider,
-      });
+      respawnAgent(a);
       console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...)`);
       resumed++;
     } catch (err) {
@@ -478,18 +482,7 @@ export function restartAllAttachments(): Record<UUID, UUID> {
     const a = getAgent(agentId);
     if (!a) continue;
     try {
-      const tmpl = a.template ? getTemplate(a.template) : null;
-      spawnAgent({
-        workingDirectory: a.workingDirectory,
-        resumeAgentId: a.id,
-        name: a.name,
-        autonomousMode: a.autonomousMode,
-        appendSystemPrompt: tmpl?.systemPrompt,
-        template: a.template,
-        managerId: a.managerId,
-        project: a.project,
-        provider: a.provider,
-      });
+      respawnAgent(a);
       idMap[a.id] = a.id;
     } catch (err) {
       console.error(

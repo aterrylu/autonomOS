@@ -20,8 +20,16 @@ const clients = new Set<WSContext>();
 function safeSend(ws: WSContext, payload: AgentDelta): void {
   try {
     ws.send(JSON.stringify(payload));
-  } catch {
-    // Client disconnected mid-broadcast; will be cleaned up by onClose.
+  } catch (err) {
+    // Disconnect-during-broadcast is the common case (no log noise needed).
+    // But if ws.send throws synchronously without a subsequent onClose, the
+    // dead client stays in `clients` and gets hit on every future broadcast,
+    // each silently failing — a slow leak. Drop the client here as defense
+    // in depth so the set stays bounded.
+    clients.delete(ws);
+    if (err instanceof Error && !/closed|disconnect/i.test(err.message)) {
+      console.warn(`[ws/agents] safeSend dropped a client: ${err.message}`);
+    }
   }
 }
 

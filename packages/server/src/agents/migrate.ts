@@ -20,7 +20,12 @@ import { existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { Agent, ExitReason, Provider } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
-import { agentsDirExists, buildAgent, insertAgent } from "./store.js";
+import {
+  buildAgent,
+  insertAgent,
+  isMigrationComplete,
+  markMigrationComplete,
+} from "./store.js";
 
 interface LegacyPersistedSession {
   claudeSessionId: string;
@@ -55,11 +60,17 @@ export function migrateIfNeeded(): {
   managersResolved?: number;
   orphaned?: number;
 } {
-  if (agentsDirExists()) return { status: "skipped" };
+  // Idempotency: a sentinel file written ONLY after a successful migration
+  // (or a fresh install) lets a mid-crash retry re-attempt cleanly. Using
+  // the agents/ dir's existence here would mark partial state as "done"
+  // because writing the first per-agent file creates the dir.
+  if (isMigrationComplete()) return { status: "skipped" };
 
   const sessionsPath = getSessionsJsonPath();
   if (!existsSync(sessionsPath)) {
-    // Fresh install — no source file. Caller should still ensure agents/ exists.
+    // Fresh install — no source file. Mark complete so we don't re-check
+    // every startup forever.
+    markMigrationComplete();
     return { status: "no-source" };
   }
 
@@ -166,21 +177,30 @@ export function migrateIfNeeded(): {
     agents.push(agent);
   }
 
-  // Write all per-file records FIRST. If any throws, leave sessions.json untouched.
+  // Write all per-file records FIRST. If any throws, leave sessions.json
+  // untouched AND skip writing the migration-complete marker — the next
+  // startup will retry. insertAgent overwrites by id, so re-running is
+  // safe (idempotent on the per-agent files).
   for (const agent of agents) {
     insertAgent(agent);
   }
 
   // All writes succeeded — rename the source as the rollback artifact.
+  // We must throw on rename failure (not just warn) so the marker isn't
+  // written: leaving the source in place AND marking complete would let
+  // a future reset of agents/ silently re-introduce stale records.
   const backupPath = `${sessionsPath}.premigration-${timestampSuffix()}`;
   try {
     renameSync(sessionsPath, backupPath);
   } catch (err) {
-    console.warn(
-      `[migrate] migrated ${agents.length} agents successfully but failed to rename source file: ${err}. ` +
-        `Manually move ${sessionsPath} → ${backupPath} to suppress repeat-migration attempts.`,
+    throw new Error(
+      `[migrate] wrote ${agents.length} agent files but FAILED to rename ${sessionsPath} → ${backupPath}: ${err instanceof Error ? err.message : err}. ` +
+        `Resolve the rename (likely a permissions or read-only-fs issue) and restart.`,
     );
   }
+
+  // Atomically signal "migration done" so subsequent startups skip the work.
+  markMigrationComplete();
 
   console.log(
     `[migrate] migrated ${agents.length} agent(s) from sessions.json ` +
