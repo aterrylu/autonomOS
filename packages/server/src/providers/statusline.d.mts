@@ -16,11 +16,15 @@ export interface HierarchyContext {
 export interface AutonomosMeta {
   name: string;
   manager: string | null;
+  project: string | null;
   directReports: number;
 }
 
 export function formatHierarchy(ctx: HierarchyContext): string;
-export function formatActivity(cc: Record<string, unknown>): string;
+export function formatActivity(
+  cc: Record<string, unknown>,
+  meta?: AutonomosMeta | null,
+): string;
 export function buildBar(
   pct: number | null | undefined,
   width?: number,
