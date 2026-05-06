@@ -18,6 +18,11 @@ import {
   getAutonomosMeta,
 } from "../providers/statusline.mjs";
 
+// Strip ANSI escape codes so content assertions stay readable. Colors
+// are verified separately in the "colorization" describe block.
+const ANSI = /\x1b\[[0-9;]*m/g;
+const plain = (s: string) => s.replace(ANSI, "");
+
 // ── formatHierarchy ───────────────────────────────────────────
 
 describe("formatHierarchy", () => {
@@ -27,7 +32,7 @@ describe("formatHierarchy", () => {
       manager: null,
       directReports: 0,
     });
-    assert.equal(out, "[Agent@autonomos · standalone]");
+    assert.equal(plain(out), "[Agent@autonomos · standalone]");
   });
 
   it("renders worker (manager only)", () => {
@@ -36,7 +41,7 @@ describe("formatHierarchy", () => {
       manager: "TeamLead",
       directReports: 0,
     });
-    assert.equal(out, "[Worker@autonomos · ↑TeamLead]");
+    assert.equal(plain(out), "[Worker@autonomos · ↑TeamLead]");
   });
 
   it("renders top-of-chart agent (reports only)", () => {
@@ -45,7 +50,7 @@ describe("formatHierarchy", () => {
       manager: null,
       directReports: 3,
     });
-    assert.equal(out, "[Dispatcher@autonomos · ↓3 reports]");
+    assert.equal(plain(out), "[Dispatcher@autonomos · ↓3 reports]");
   });
 
   it("renders middle-of-chart agent (manager + reports)", () => {
@@ -54,7 +59,7 @@ describe("formatHierarchy", () => {
       manager: "Dispatcher",
       directReports: 2,
     });
-    assert.equal(out, "[TeamLead@autonomos · ↑Dispatcher · ↓2 reports]");
+    assert.equal(plain(out), "[TeamLead@autonomos · ↑Dispatcher · ↓2 reports]");
   });
 
   it("treats directReports = 0 as no reports segment", () => {
@@ -73,7 +78,7 @@ describe("formatHierarchy", () => {
       directReports: -1,
     });
     // Negative is non-positive, no segment; standalone tag fires
-    assert.equal(out, "[X · standalone]");
+    assert.equal(plain(out), "[X · standalone]");
   });
 });
 
@@ -140,21 +145,33 @@ describe("formatDuration", () => {
 
 describe("formatActivity", () => {
   it("renders all fields when present", () => {
-    const out = formatActivity({
-      model: { display_name: "Opus" },
-      context_window: { used_percentage: 45 },
-      cost: { total_cost_usd: 0.18, total_duration_ms: 125_000 },
-      workspace: { git_worktree: "terry/feat-x" },
-    });
-    assert.match(out, /^⚡Opus/);
-    assert.match(out, /45%/);
-    assert.match(out, /\$0\.18/);
-    assert.match(out, /2m05s/);
+    const out = plain(
+      formatActivity(
+        {
+          model: { display_name: "Opus" },
+          context_window: { used_percentage: 45 },
+          cost: { total_cost_usd: 0.18, total_duration_ms: 125_000 },
+          workspace: { git_worktree: "terry/feat-x" },
+        },
+        {
+          name: "Worker@x",
+          manager: null,
+          project: "x",
+          directReports: 0,
+        },
+      ),
+    );
+    // Order: project → branch → cost → model → ctx → duration
+    assert.match(out, /^x/, "project leads the line");
     assert.match(out, /🌿 terry\/feat-x/);
+    assert.match(out, /\$0\.18/);
+    assert.match(out, /⚡Opus/);
+    assert.match(out, /45%/);
+    assert.match(out, /2m05s/);
   });
 
   it("uses defaults for empty stdin", () => {
-    const out = formatActivity({});
+    const out = plain(formatActivity({}));
     assert.match(out, /⚡\?/);
     assert.match(out, /0%/);
     assert.match(out, /\$0\.00/);
@@ -162,31 +179,99 @@ describe("formatActivity", () => {
     assert.ok(!out.includes("🌿"), "no branch when workspace absent");
   });
 
+  it("drops project segment when meta has no project", () => {
+    const out = plain(
+      formatActivity(
+        { model: { display_name: "Opus" } },
+        { name: "X", manager: null, project: null, directReports: 0 },
+      ),
+    );
+    // Should start with cost or branch, not the project name
+    assert.match(out, /^\$/);
+  });
+
   it("drops branch segment when git_worktree absent", () => {
-    const out = formatActivity({
-      model: { display_name: "Opus" },
-      context_window: { used_percentage: 10 },
-    });
+    const out = plain(
+      formatActivity({
+        model: { display_name: "Opus" },
+        context_window: { used_percentage: 10 },
+      }),
+    );
     assert.ok(!out.includes("🌿"), `unexpected branch segment: ${out}`);
   });
 
   it("falls back to worktree.branch when git_worktree missing", () => {
-    const out = formatActivity({
-      worktree: { branch: "feature/x" },
-    });
+    const out = plain(formatActivity({ worktree: { branch: "feature/x" } }));
     assert.match(out, /🌿 feature\/x/);
   });
 
   it("survives null nested fields", () => {
-    const out = formatActivity({
-      model: null,
-      context_window: null,
-      cost: null,
-      workspace: null,
-    });
-    // Should not throw, should produce a sensible string
+    const out = plain(
+      formatActivity({
+        model: null,
+        context_window: null,
+        cost: null,
+        workspace: null,
+      }),
+    );
     assert.match(out, /⚡\?/);
     assert.match(out, /0%/);
+  });
+});
+
+// ── colorization (verifies ANSI escapes are present) ──────────
+
+describe("colorization", () => {
+  it("agent name gets bright cyan + project gets blue", () => {
+    const out = formatHierarchy({
+      name: "Worker@autonomos",
+      manager: null,
+      directReports: 0,
+    });
+    assert.match(out, /\x1b\[1;36mWorker/, "agent role in bright cyan");
+    assert.match(
+      out,
+      /\x1b\[38;2;103;164;250m@autonomos/,
+      "project segment in true-color blue",
+    );
+  });
+
+  it("name without @ uses agent color only (no project color)", () => {
+    const out = formatHierarchy({
+      name: "Dispatcher",
+      manager: null,
+      directReports: 0,
+    });
+    assert.match(out, /\x1b\[1;36mDispatcher/);
+    assert.ok(
+      !out.includes("\x1b[38;2;103;164;250m"),
+      "no project color when no @ in name",
+    );
+  });
+
+  it("context bar is green when usage < 70%", () => {
+    const out = formatActivity({ context_window: { used_percentage: 45 } });
+    assert.match(out, /\x1b\[32m▓+░+ 45%/);
+  });
+
+  it("context bar is yellow when usage 70-89%", () => {
+    const out = formatActivity({ context_window: { used_percentage: 75 } });
+    assert.match(out, /\x1b\[33m▓+░+ 75%/);
+  });
+
+  it("context bar is red when usage >= 90%", () => {
+    const out = formatActivity({ context_window: { used_percentage: 92 } });
+    assert.match(out, /\x1b\[31m▓+░+ 92%/);
+  });
+
+  it("branch segment is green", () => {
+    const out = formatActivity({ workspace: { git_worktree: "feature/x" } });
+    assert.match(out, /\x1b\[32m🌿 feature\/x/);
+  });
+
+  it("cost segment is yellow", () => {
+    const out = formatActivity({ cost: { total_cost_usd: 1.23 } });
+    assert.match(out, /\x1b\[33m\$1\.23/);
   });
 });
 
@@ -212,44 +297,48 @@ describe("getAutonomosMeta", () => {
     }) as unknown as typeof fetch;
   }
 
-  it("returns null when /api/sessions errors out", async () => {
+  it("returns null when /api/agents errors out", async () => {
     mockFetchError();
     const meta = await getAutonomosMeta("session-123", "http://localhost:3101");
     assert.equal(meta, null);
   });
 
-  it("returns null when /api/sessions returns non-array", async () => {
+  it("returns null when /api/agents returns non-array", async () => {
     mockFetch({ error: "boom" });
     const meta = await getAutonomosMeta("session-123", "http://localhost:3101");
     assert.equal(meta, null);
   });
 
-  it("returns null when session not found in list", async () => {
-    mockFetch([
-      { claudeSessionId: "other-session", name: "Other", manager: null },
-    ]);
+  it("returns null when agent not found in list", async () => {
+    mockFetch([{ id: "other-id", name: "Other", managerId: null }]);
     const meta = await getAutonomosMeta("session-123", "http://localhost:3101");
     assert.equal(meta, null);
   });
 
-  it("resolves manager and counts direct reports for a manager", async () => {
+  it("resolves manager name from managerId and counts direct reports", async () => {
     mockFetch([
       {
-        claudeSessionId: "lead-id",
+        id: "dispatcher-id",
+        name: "Dispatcher",
+        managerId: null,
+        status: "running",
+      },
+      {
+        id: "lead-id",
         name: "TeamLead@x",
-        manager: "Dispatcher",
+        managerId: "dispatcher-id",
         status: "running",
       },
       {
-        claudeSessionId: "w1",
+        id: "w1",
         name: "Worker-1",
-        manager: "TeamLead@x",
+        managerId: "lead-id",
         status: "running",
       },
       {
-        claudeSessionId: "w2",
+        id: "w2",
         name: "Worker-2",
-        manager: "TeamLead@x",
+        managerId: "lead-id",
         status: "running",
       },
     ]);
@@ -257,44 +346,90 @@ describe("getAutonomosMeta", () => {
     assert.deepEqual(meta, {
       name: "TeamLead@x",
       manager: "Dispatcher",
+      project: null,
       directReports: 2,
     });
   });
 
-  it("excludes exited sessions from direct-report count", async () => {
+  it("excludes exited agents from direct-report count", async () => {
     mockFetch([
-      {
-        claudeSessionId: "lead-id",
-        name: "Lead",
-        manager: null,
-        status: "running",
-      },
-      {
-        claudeSessionId: "w1",
-        name: "Worker-1",
-        manager: "Lead",
-        status: "running",
-      },
-      {
-        claudeSessionId: "w2",
-        name: "Worker-2",
-        manager: "Lead",
-        status: "exited",
-      },
+      { id: "lead-id", name: "Lead", managerId: null, status: "running" },
+      { id: "w1", name: "Worker-1", managerId: "lead-id", status: "running" },
+      { id: "w2", name: "Worker-2", managerId: "lead-id", status: "exited" },
     ]);
     const meta = await getAutonomosMeta("lead-id", "http://localhost:3101");
     assert.equal(meta?.directReports, 1);
   });
 
   it("falls back to 'Agent' when name missing on persisted record", async () => {
-    mockFetch([{ claudeSessionId: "x", manager: null }]);
+    mockFetch([{ id: "x", managerId: null }]);
     const meta = await getAutonomosMeta("x", "http://localhost:3101");
     assert.equal(meta?.name, "Agent");
   });
 
-  it("returns null manager (not undefined) when session has no manager", async () => {
-    mockFetch([{ claudeSessionId: "x", name: "Lone" }]);
+  it("returns null manager (not undefined) when agent has no managerId", async () => {
+    mockFetch([{ id: "x", name: "Lone" }]);
     const meta = await getAutonomosMeta("x", "http://localhost:3101");
     assert.equal(meta?.manager, null);
+  });
+
+  it("returns null manager when managerId references a deleted agent", async () => {
+    mockFetch([{ id: "x", name: "Orphan", managerId: "ghost-id" }]);
+    const meta = await getAutonomosMeta("x", "http://localhost:3101");
+    assert.equal(meta?.manager, null);
+  });
+
+  it("strips ANSI/control characters from name and manager (security)", async () => {
+    mockFetch([
+      {
+        id: "evil-id",
+        name: "Evil\x1b[2J@x",
+        managerId: "boss-id",
+        status: "running",
+      },
+      {
+        id: "boss-id",
+        name: "Boss\nname\x1b[31m",
+        managerId: null,
+        status: "running",
+      },
+    ]);
+    const meta = await getAutonomosMeta("evil-id", "http://localhost:3101");
+    assert.equal(meta?.name, "Evil@x", "ANSI stripped from name");
+    assert.equal(
+      meta?.manager,
+      "Bossname",
+      "control chars stripped from manager",
+    );
+  });
+
+  it("sends Authorization: Bearer header when token provided", async () => {
+    let capturedHeaders: Record<string, string> | undefined;
+    globalThis.fetch = (async (
+      _url: string,
+      init: { headers?: Record<string, string> } = {},
+    ) => {
+      capturedHeaders = init.headers;
+      return { ok: true, json: async () => [] };
+    }) as unknown as typeof fetch;
+
+    await getAutonomosMeta("x", "http://localhost:3101", "secret-token-9758");
+
+    assert.equal(capturedHeaders?.Authorization, "Bearer secret-token-9758");
+  });
+
+  it("omits Authorization header when token absent", async () => {
+    let capturedHeaders: Record<string, string> | undefined;
+    globalThis.fetch = (async (
+      _url: string,
+      init: { headers?: Record<string, string> } = {},
+    ) => {
+      capturedHeaders = init.headers;
+      return { ok: true, json: async () => [] };
+    }) as unknown as typeof fetch;
+
+    await getAutonomosMeta("x", "http://localhost:3101");
+
+    assert.equal(capturedHeaders?.Authorization, undefined);
   });
 });
