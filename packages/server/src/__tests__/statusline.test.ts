@@ -396,7 +396,11 @@ describe("getAutonomosMeta", () => {
     ]);
     const meta = await getAutonomosMeta("evil-id", "http://localhost:3101");
     assert.equal(meta?.name, "Evil@x", "ANSI stripped from name");
-    assert.equal(meta?.manager, "Bossname", "control chars stripped from manager");
+    assert.equal(
+      meta?.manager,
+      "Bossname",
+      "control chars stripped from manager",
+    );
   });
 
   it("sends Authorization: Bearer header when token provided", async () => {
