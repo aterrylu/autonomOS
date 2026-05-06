@@ -597,9 +597,12 @@ async function spawnSession(
     status: agent.status,
     workingDirectory: agent.workingDirectory,
     provider: agent.provider,
-    claudeSessionId: agent.providerSessionId,
+    // SessionInfo.claudeSessionId is the dashboard's stable lookup key —
+    // must equal agent.id to align with /api/agents/tree, useAgentStatusById,
+    // and the /api/agents/:id/* route URLs. See fetchSessions for full rationale.
+    claudeSessionId: agent.id,
     template: agent.template,
-    manager: undefined, // managerId is a UUID; resolve to name happens via store.agents
+    manager: undefined, // managerId is a UUID; resolve to name handled in fetchSessions
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
@@ -787,13 +790,22 @@ export const useStore = create<AppState>()(
           // Resolve manager name client-side so the existing UI continues to
           // surface a human-readable label without an extra round-trip.
           const byId = new Map(agents.map((a) => [a.id, a]));
+          // SessionInfo.claudeSessionId is the dashboard's stable lookup key
+          // — it's consumed by useAgentStatusById (HierarchyPanel) and the
+          // /api/agents/:id/attach URL builder (resumeSession). For both to
+          // align with /api/agents/tree (which sets node.claudeSessionId =
+          // agent.id as a backward-compat alias), we set it to agent.id
+          // here too. Using providerSessionId would split the key space:
+          // migrated agents (id == providerSessionId) would still work, but
+          // freshly-spawned agents (different UUIDs) would silently drop
+          // status/activity in the org chart card view.
           const allSessions: SessionInfo[] = agents.map((a) => ({
             id: a.id,
             name: a.name,
             status: a.status,
             workingDirectory: a.workingDirectory,
             provider: a.provider,
-            claudeSessionId: a.providerSessionId,
+            claudeSessionId: a.id,
             template: a.template,
             manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
             createdAt: a.createdAt,
