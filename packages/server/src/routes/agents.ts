@@ -15,6 +15,7 @@ import {
 } from "../agents/runtime.js";
 import {
   buildAgentTree,
+  CachePoisonedError,
   childrenOf,
   deleteAgentRaw,
   getAgent,
@@ -28,6 +29,35 @@ import { emitAgentDelta } from "../events/agents.js";
 import { getTemplate } from "../templates.js";
 
 export const agentsRouter = new Hono();
+
+// Map cache-poisoned writes to a stable 503 across the whole agents
+// surface. Without this, every patchAgent / setManager / insertAgent
+// caller (PATCH /api/agents/:id, PUT /:id/manager, POST /, MCP tools
+// reaching the same store, etc.) would bubble a generic 500 with only
+// a stack in logs — clients can't distinguish "transient miss, retry"
+// from "server's view of disk is broken, retrying is pointless until
+// the operator restarts." 503 + stable error code = explicit signal.
+//
+// The DELETE handler still catches the throw locally because it has
+// in-flight reparent state (pendingDeltas) that needs to be flushed
+// to keep WS clients in sync with disk before the response goes out.
+// This onError covers the simpler routes that don't have that.
+agentsRouter.onError((err, c) => {
+  if (err instanceof CachePoisonedError) {
+    console.error(`[agents] CACHE_POISONED on ${c.req.method} ${c.req.path}`);
+    return c.json(
+      {
+        error: err.message,
+        code: err.code,
+        retryable: false,
+      },
+      503,
+    );
+  }
+  // Re-throw so Hono's default handler produces a 500 with a stack
+  // (preserves prior behavior for everything else).
+  throw err;
+});
 
 // ── Read ───────────────────────────────────────────────────────────
 
@@ -517,7 +547,43 @@ agentsRouter.delete("/:id", (c) => {
   // between our GET-check and the call (file is now ENOENT, both deletes
   // legitimately return false), and (b) the unlink genuinely failed.
   // Re-checking `getAgent(id)` distinguishes them.
-  const removed = runtimeDeleteAgent(id);
+  //
+  // runtimeDeleteAgent itself can THROW synchronously: pty.kill is caught
+  // internally, but deleteAgentRaw → unlinkSync can throw on EPERM/EBUSY,
+  // and emitAgentDelta can throw if a listener throws. Without the catch,
+  // those bypass the post-delete code entirely and the buffered reparent
+  // deltas are never flushed — disk shows children moved while WS clients
+  // see them under the still-existing parent. Catch, flush deltas (so WS
+  // state matches actual disk), then either re-throw CachePoisonedError
+  // (router onError maps it to 503) or return 500 with the same shape
+  // the inner branch produces.
+  let removed: boolean;
+  try {
+    removed = runtimeDeleteAgent(id);
+  } catch (deleteErr) {
+    const errMsg =
+      deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+    console.error(
+      `[agents] DELETE /:id ${id} — runtimeDeleteAgent THREW: ${errMsg}`,
+    );
+    // Flush buffered reparent deltas FIRST so WS clients converge to
+    // actual disk state before the error response.
+    for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
+    // CachePoisonedError → re-throw so the router-level onError handler
+    // maps it to 503 (stable code, distinguishes degraded server from
+    // routine 500). Anything else → structured 500 mirroring the inner
+    // delete-failure branch below.
+    if (deleteErr instanceof CachePoisonedError) {
+      throw deleteErr;
+    }
+    return c.json(
+      {
+        error: `Failed to delete agent "${id}" — see server logs (${errMsg}). ${reparented.length > 0 ? `Note: ${reparented.length} child(ren) were already reassigned and remain reassigned. Retry the DELETE; the reparent step is now a no-op.` : ""}`,
+        ...(reparented.length > 0 && { reparented }),
+      },
+      500,
+    );
+  }
   if (!removed) {
     const rawRemoved = deleteAgentRaw(id);
     if (!rawRemoved && getAgent(id) !== undefined) {

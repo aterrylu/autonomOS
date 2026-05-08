@@ -179,13 +179,32 @@ export function resolveAgent(idOrName: string): Agent | undefined {
 
 // ── Write API ──────────────────────────────────────────────────────
 
+/** Thrown by writeAgentFile when the in-memory cache is known-stale
+ *  (last `loadAll()` failed and the cache may be missing entries). The
+ *  REST router catches this and maps it to 503 with a stable error code
+ *  so dashboard/MCP clients can distinguish "server is in a degraded
+ *  state, retry pointless until operator restarts" from a routine
+ *  optimistic-concurrency miss or 500.
+ *
+ *  The single dedicated class lets every patchAgent / setManager /
+ *  insertAgent / markExited / markRunning caller bubble this up
+ *  naturally — Hono's onError() catches it once at the router level
+ *  rather than every caller wrapping individually. */
+export class CachePoisonedError extends Error {
+  readonly code = "CACHE_POISONED" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "CachePoisonedError";
+  }
+}
+
 function writeAgentFile(agent: Agent): void {
   // Throw rather than silently return — callers update the in-memory cache
   // immediately after writeAgentFile() returns, so a silent skip causes the
   // cache to diverge from disk. Surfacing the error keeps the two in sync
   // and forces the operator to inspect the underlying load failure.
   if (lastReadFailed) {
-    throw new Error(
+    throw new CachePoisonedError(
       `Refusing to write agent ${agent.id} — last cache load failed (would risk data loss). Inspect ${getAgentsDir()} and restart.`,
     );
   }
