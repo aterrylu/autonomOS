@@ -285,6 +285,14 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     // freshly-spawned agent as exited and drop its live entry. Comparing the
     // captured `pty` reference to the currently-registered attachment lets us
     // no-op cleanly when our PTY is no longer the canonical one.
+    //
+    // Resource-disposal note: nothing else in this closure needs explicit
+    // cleanup on the stale-handler branch. The captured outputBuffer lives on
+    // the dropped ManagedAttachment which is GC'd once it leaves the live map;
+    // node-pty owns the underlying file descriptors and releases them when the
+    // PTY actually exits (which is what triggered this handler). If a future
+    // change adds captured streams/timers/listeners to the spawn closure, they
+    // must be disposed here BEFORE the early return.
     if (live.get(persisted.id)?.pty !== pty) {
       return;
     }

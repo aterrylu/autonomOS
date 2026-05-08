@@ -200,7 +200,18 @@ export function migrateIfNeeded(): {
   }
 
   // Atomically signal "migration done" so subsequent startups skip the work.
-  markMigrationComplete();
+  // If this throws (disk full, EPERM on the marker), don't fail startup —
+  // the migration itself succeeded (per-agent files written, source renamed).
+  // Worst case: next startup takes the no-source path and writes the marker
+  // there. A noisy fatal exit on the marker write would mask the success.
+  try {
+    markMigrationComplete();
+  } catch (err) {
+    console.warn(
+      `[migrate] migration succeeded but marker write failed: ${err instanceof Error ? err.message : err}. ` +
+        `Next startup will reconcile via the no-source path.`,
+    );
+  }
 
   console.log(
     `[migrate] migrated ${agents.length} agent(s) from sessions.json ` +

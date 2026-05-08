@@ -326,23 +326,56 @@ agentsRouter.delete("/:id", (c) => {
       }
       newParent = reassignTo;
     }
-    // Reparent children, collecting any failure. We commit per-child (no
-    // transaction available against the file store), so on the first failure
-    // we abort and surface a 409 with what succeeded — leaving a clear
-    // partial-state signal rather than silently dropping children.
+    // Reparent children, with best-effort rollback on failure. We commit
+    // per-child (no transaction against the file store), so capturing each
+    // child's original managerId BEFORE the loop lets us reverse partial
+    // progress if one of them fails. Without rollback, the operator sees a
+    // 409 but the tree has been silently mutated — half the children moved
+    // under newParent, the rest still under the (not-yet-deleted) original.
+    const originalManagers = new Map(children.map((c) => [c.id, c.managerId]));
     const reparented: { id: UUID; name: string }[] = [];
     for (const child of children) {
       const updated = setManager(child.id, newParent);
       if (typeof updated === "string" || updated === undefined) {
+        // Rollback: walk back through the already-reparented children and
+        // restore each one to its captured original managerId. Best-effort —
+        // if a rollback step itself fails, log loudly and report what's left
+        // unreverted so the operator can fix manually.
+        const rollbackFailures: { id: UUID; name: string; reason: string }[] =
+          [];
+        for (const r of [...reparented].reverse()) {
+          const orig = originalManagers.get(r.id) ?? null;
+          const restored = setManager(r.id, orig);
+          if (typeof restored === "string" || restored === undefined) {
+            rollbackFailures.push({
+              id: r.id,
+              name: r.name,
+              reason: restored ?? "not-found",
+            });
+            console.error(
+              `[agents] DELETE rollback FAILED for ${r.id} (${r.name}): ${restored ?? "not-found"} — child remains under newParent`,
+            );
+          } else {
+            emitAgentDelta({
+              type: "agent.reparented",
+              id: restored.id,
+              managerId: restored.managerId,
+              version: restored.version,
+            });
+          }
+        }
         return c.json(
           {
-            error: `Aborted partway: setManager(${child.id}) returned ${updated ?? "not-found"}. ${reparented.length} child(ren) already reparented; ${children.length - reparented.length} remaining; agent NOT deleted.`,
-            reparented,
+            error: `Aborted: setManager(${child.id}) returned ${updated ?? "not-found"}. ${rollbackFailures.length === 0 ? "All previously-reparented children were rolled back." : `${rollbackFailures.length} rollback failure(s) — tree IS in inconsistent state, see rollbackFailures.`} Agent NOT deleted.`,
             failedAt: {
               id: child.id,
               name: child.name,
               reason: updated ?? "not-found",
             },
+            rolledBack: reparented.filter(
+              (r) => !rollbackFailures.some((f) => f.id === r.id),
+            ),
+            rollbackFailures,
           },
           409,
         );
@@ -357,23 +390,26 @@ agentsRouter.delete("/:id", (c) => {
     }
   }
 
-  // Kill PTY if attached, then delete record + emit. Surface real failure
-  // rather than silently 200ing — silent success after a filesystem error
-  // makes "why is this agent still here?" very hard to debug.
+  // Kill PTY if attached, then delete record + emit. Distinguish "the agent
+  // is now gone" (desired post-state achieved — return 200) from "we tried
+  // to delete and failed" (real fs error — return 500). Two paths land at
+  // both-returned-false: (a) benign race where another caller deleted it
+  // between our GET-check and the call (file is now ENOENT, both deletes
+  // legitimately return false), and (b) the unlink genuinely failed.
+  // Re-checking `getAgent(id)` distinguishes them.
   const removed = runtimeDeleteAgent(id);
   if (!removed) {
-    // Race: agent vanished between the check and the call, OR the file
-    // remove genuinely failed. Try one more raw-delete; if THAT fails, surface.
     const rawRemoved = deleteAgentRaw(id);
-    if (!rawRemoved) {
+    if (!rawRemoved && getAgent(id) !== undefined) {
       console.error(
-        `[agents] DELETE /:id ${id} — runtime delete returned false AND deleteAgentRaw returned false (filesystem error?)`,
+        `[agents] DELETE /:id ${id} — both removes returned false AND record still in store (real filesystem error)`,
       );
       return c.json(
         { error: `Failed to delete agent "${id}" — see server logs` },
         500,
       );
     }
+    // Else: agent is genuinely gone (race resolved itself) — fall through to 200.
   }
   return c.json({ ok: true, id });
 });
