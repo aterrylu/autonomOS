@@ -170,7 +170,9 @@ export function resolveAgentByName(name: string): Agent | undefined {
   return best;
 }
 
-/** Resolve agent by id-or-name (id wins on exact match). */
+/** Resolve agent by id-or-name. Always tries the O(1) cache.get() first
+ *  before falling back to the O(N) name scan in resolveAgentByName, so
+ *  UUID hits (the hot path for /api/agents/:id endpoints) stay constant-time. */
 export function resolveAgent(idOrName: string): Agent | undefined {
   return readCache().get(idOrName) ?? resolveAgentByName(idOrName);
 }

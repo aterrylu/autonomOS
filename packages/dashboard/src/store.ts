@@ -63,7 +63,18 @@ export interface SessionInfo {
   status: string;
   workingDirectory: string;
   provider: string;
+  /** Stable lookup key shared with /api/agents/tree's `claudeSessionId`
+   *  alias and the /api/agents/:id route params. Equals `id` (the agent UUID)
+   *  in the new model — NOT the Claude Code provider session id. The legacy
+   *  field name is kept for now to avoid touching every consumer; if you
+   *  need the actual CC session id (e.g. to invoke `claude --resume`),
+   *  read `providerSessionId` instead. */
   claudeSessionId?: string;
+  /** Provider-specific session id (CC's session id, Codex's, Gemini's).
+   *  Use this when invoking provider CLIs directly or reading the JSONL
+   *  transcript. Decoupled from `id` for fresh agents (only equal for
+   *  Option-A migrated records). */
+  providerSessionId?: string;
   template?: string;
   manager?: string;
   createdAt: number;
@@ -601,6 +612,9 @@ async function spawnSession(
     // must equal agent.id to align with /api/agents/tree, useAgentStatusById,
     // and the /api/agents/:id/* route URLs. See fetchSessions for full rationale.
     claudeSessionId: agent.id,
+    // Actual CC session id — kept distinct so callers that need to invoke
+    // `claude --resume` or read CC's JSONL have access.
+    providerSessionId: agent.providerSessionId,
     template: agent.template,
     manager: undefined, // managerId is a UUID; resolve to name handled in fetchSessions
     createdAt: agent.createdAt,
@@ -806,6 +820,7 @@ export const useStore = create<AppState>()(
             workingDirectory: a.workingDirectory,
             provider: a.provider,
             claudeSessionId: a.id,
+            providerSessionId: a.providerSessionId,
             template: a.template,
             manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
             createdAt: a.createdAt,

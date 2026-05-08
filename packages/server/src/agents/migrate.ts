@@ -69,8 +69,18 @@ export function migrateIfNeeded(): {
   const sessionsPath = getSessionsJsonPath();
   if (!existsSync(sessionsPath)) {
     // Fresh install — no source file. Mark complete so we don't re-check
-    // every startup forever.
-    markMigrationComplete();
+    // every startup forever. Wrapped to match the post-rename branch:
+    // a transient marker-write failure shouldn't crashloop the server
+    // with a misleading "investigate sessions.json" message when there
+    // was never a sessions.json. Re-checking every startup is harmless
+    // (single stat call).
+    try {
+      markMigrationComplete();
+    } catch (err) {
+      console.warn(
+        `[migrate] no source file but marker write failed: ${err instanceof Error ? err.message : err}. Will retry next startup.`,
+      );
+    }
     return { status: "no-source" };
   }
 

@@ -326,36 +326,72 @@ agentsRouter.delete("/:id", (c) => {
       }
       newParent = reassignTo;
     }
-    // Reparent children, with best-effort rollback on failure. We commit
-    // per-child (no transaction against the file store), so capturing each
-    // child's original managerId BEFORE the loop lets us reverse partial
-    // progress if one of them fails. Without rollback, the operator sees a
-    // 409 but the tree has been silently mutated — half the children moved
-    // under newParent, the rest still under the (not-yet-deleted) original.
+    // Reparent children with best-effort rollback. We commit per-child
+    // (no transaction against the file store), so on failure we walk
+    // already-reparented children in reverse and restore each one to
+    // its original managerId.
+    //
+    // Two changes vs naive:
+    //
+    // 1. EVENTS BUFFERED. agent.reparented deltas are queued, not emitted,
+    //    until the whole loop succeeds. WS clients (HierarchyPanel) would
+    //    otherwise see N forward moves followed by N reverse moves on
+    //    rollback — visible flicker, possibly missed events on a coalescing
+    //    client. Net state is unchanged for clients on rollback, so
+    //    emitting nothing is correct.
+    //
+    // 2. STATUS CODE distinguishes clean rollback (409 — caller can retry)
+    //    from rollback that itself partially failed (500 — tree is in
+    //    inconsistent state, manual operator action required, do NOT retry).
+    //
+    // 3. setManager calls in the rollback loop are wrapped in try/catch.
+    //    writeAgentFile throws on lastReadFailed; without the wrap, a
+    //    transient FS error mid-rollback would short-circuit past the
+    //    structured response and crash the handler with a generic 500.
     const originalManagers = new Map(children.map((c) => [c.id, c.managerId]));
     const reparented: { id: UUID; name: string }[] = [];
+    const pendingDeltas: Parameters<typeof emitAgentDelta>[0][] = [];
     for (const child of children) {
       const updated = setManager(child.id, newParent);
       if (typeof updated === "string" || updated === undefined) {
-        // Rollback: walk back through the already-reparented children and
-        // restore each one to its captured original managerId. Best-effort —
-        // if a rollback step itself fails, log loudly and report what's left
-        // unreverted so the operator can fix manually.
+        // Rollback path — buffered forward deltas are dropped (never emitted).
         const rollbackFailures: { id: UUID; name: string; reason: string }[] =
           [];
         for (const r of [...reparented].reverse()) {
           const orig = originalManagers.get(r.id) ?? null;
-          const restored = setManager(r.id, orig);
-          if (typeof restored === "string" || restored === undefined) {
+          let restored: ReturnType<typeof setManager> = undefined;
+          let threw = false;
+          try {
+            restored = setManager(r.id, orig);
+          } catch (rollbackErr) {
+            // writeAgentFile may throw on lastReadFailed mid-rollback.
+            // Treat the throw the same as restored===undefined so the
+            // structured response still gets produced rather than crashing
+            // the handler with a generic 500.
+            console.error(
+              `[agents] DELETE rollback THREW for ${r.id} (${r.name}): ${rollbackErr instanceof Error ? rollbackErr.message : rollbackErr}`,
+            );
+            threw = true;
+          }
+          const failureReason: string | null = threw
+            ? "throw"
+            : typeof restored === "string"
+              ? restored
+              : restored === undefined
+                ? "not-found"
+                : null;
+          if (failureReason !== null) {
             rollbackFailures.push({
               id: r.id,
               name: r.name,
-              reason: restored ?? "not-found",
+              reason: failureReason,
             });
             console.error(
-              `[agents] DELETE rollback FAILED for ${r.id} (${r.name}): ${restored ?? "not-found"} — child remains under newParent`,
+              `[agents] DELETE rollback FAILED for ${r.id} (${r.name}) — child remains under newParent (${failureReason})`,
             );
-          } else {
+          } else if (restored && typeof restored !== "string") {
+            // Rollback succeeded for this child — emit the reparent-back
+            // event so clients converge to the correct state.
             emitAgentDelta({
               type: "agent.reparented",
               id: restored.id,
@@ -364,23 +400,29 @@ agentsRouter.delete("/:id", (c) => {
             });
           }
         }
+        const rolledBackOk = reparented.filter(
+          (r) => !rollbackFailures.some((f) => f.id === r.id),
+        );
+        const cleanRollback = rollbackFailures.length === 0;
         return c.json(
           {
-            error: `Aborted: setManager(${child.id}) returned ${updated ?? "not-found"}. ${rollbackFailures.length === 0 ? "All previously-reparented children were rolled back." : `${rollbackFailures.length} rollback failure(s) — tree IS in inconsistent state, see rollbackFailures.`} Agent NOT deleted.`,
+            error: cleanRollback
+              ? `Aborted: setManager(${child.id}) returned ${updated ?? "not-found"}. All previously-reparented children were rolled back. Agent NOT deleted; safe to retry.`
+              : `Aborted: setManager(${child.id}) returned ${updated ?? "not-found"} AND ${rollbackFailures.length} rollback step(s) failed. Tree IS in inconsistent state — DO NOT retry; manual reconciliation required (see rollbackFailures).`,
             failedAt: {
               id: child.id,
               name: child.name,
               reason: updated ?? "not-found",
             },
-            rolledBack: reparented.filter(
-              (r) => !rollbackFailures.some((f) => f.id === r.id),
-            ),
+            rolledBack: rolledBackOk,
             rollbackFailures,
           },
-          409,
+          // 409 only when caller can safely retry (clean rollback);
+          // 500 when the tree is left mutated and retrying would compound.
+          cleanRollback ? 409 : 500,
         );
       }
-      emitAgentDelta({
+      pendingDeltas.push({
         type: "agent.reparented",
         id: updated.id,
         managerId: updated.managerId,
@@ -388,6 +430,8 @@ agentsRouter.delete("/:id", (c) => {
       });
       reparented.push({ id: child.id, name: child.name });
     }
+    // All reparents succeeded — flush buffered deltas to clients.
+    for (const delta of pendingDeltas) emitAgentDelta(delta);
   }
 
   // Kill PTY if attached, then delete record + emit. Distinguish "the agent
