@@ -350,7 +350,11 @@ agentsRouter.delete("/:id", (c) => {
     //    structured response and crash the handler with a generic 500.
     const originalManagers = new Map(children.map((c) => [c.id, c.managerId]));
     const reparented: { id: UUID; name: string }[] = [];
-    const pendingDeltas: Parameters<typeof emitAgentDelta>[0][] = [];
+    // Forward deltas keyed by id so we can selectively emit them on
+    // rollback-failure (children whose forward write succeeded but whose
+    // rollback failed need the FORWARD delta so WS clients converge to
+    // the actual disk state — they're stuck under newParent).
+    const pendingDeltas = new Map<UUID, Parameters<typeof emitAgentDelta>[0]>();
     for (const child of children) {
       // setManager → writeAgentFile is throw-capable on lastReadFailed
       // (per the store's cache/disk-divergence guard). Wrap it so the
@@ -403,6 +407,13 @@ agentsRouter.delete("/:id", (c) => {
             console.error(
               `[agents] DELETE rollback FAILED for ${r.id} (${r.name}) — child remains under newParent (${failureReason})`,
             );
+            // Disk is still under newParent for this child. Emit the
+            // FORWARD delta so WS clients converge to actual disk state,
+            // rather than staying stuck on stale "under original parent"
+            // until they reconnect-and-reconcile. The 500 response tells
+            // the operator to act; the delta keeps the dashboard honest.
+            const forwardDelta = pendingDeltas.get(r.id);
+            if (forwardDelta) emitAgentDelta(forwardDelta);
           } else if (restored && typeof restored !== "string") {
             // Rollback succeeded for this child — emit the reparent-back
             // event so clients converge to the correct state.
@@ -436,7 +447,7 @@ agentsRouter.delete("/:id", (c) => {
           cleanRollback ? 409 : 500,
         );
       }
-      pendingDeltas.push({
+      pendingDeltas.set(child.id, {
         type: "agent.reparented",
         id: updated.id,
         managerId: updated.managerId,
@@ -445,7 +456,7 @@ agentsRouter.delete("/:id", (c) => {
       reparented.push({ id: child.id, name: child.name });
     }
     // All reparents succeeded — flush buffered deltas to clients.
-    for (const delta of pendingDeltas) emitAgentDelta(delta);
+    for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
   }
 
   // Kill PTY if attached, then delete record + emit. Distinguish "the agent

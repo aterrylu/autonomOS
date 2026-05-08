@@ -85,29 +85,42 @@ export function migrateIfNeeded(): {
     return { status: "no-source" };
   }
 
-  // Detect upgrade-from-prior-version-with-warn-only-rename inconsistent state.
-  // Pre-#166 code wrote per-agent files first and only console.warn'd on
-  // renameSync failure, so a user could end up with: agents/*.json populated,
-  // sessions.json STILL present, NO .migration-complete marker. If we just
-  // proceed, insertAgent overwrites every agents/*.json with sessions.json
-  // data — silently clobbering any mutations the user made via new write
-  // paths (set_manager, rename, etc.) in the interim window.
-  // Refuse to proceed and surface a clear actionable error instead.
+  // Detect inconsistent state: agents/*.json populated AND sessions.json
+  // STILL present AND no .migration-complete marker. Two ways to arrive here:
+  //   1. Pre-#166 code: wrote per-agent files first, only console.warn'd on
+  //      renameSync failure — silently left this exact state.
+  //   2. Current code: throwing renameSync hit transient EPERM/EROFS, so
+  //      migrateIfNeeded threw mid-loop. Some agent files may be on disk
+  //      (write loop ran before the rename throw); marker not written.
+  // If we proceed naively, insertAgent overwrites every agents/*.json
+  // from sessions.json — silently clobbering either (a) post-old-migration
+  // mutations the user made via new write paths (set_manager, rename), or
+  // (b) the partial state of an interrupted current-version migration.
+  // Refuse to proceed and surface a neutral, actionable error.
   let preExistingAgentFileCount = 0;
   try {
     preExistingAgentFileCount = readdirSync(getAgentsDir()).filter((n) =>
       n.endsWith(".json"),
     ).length;
-  } catch {
-    // Dir doesn't exist yet — clean state, proceed.
+  } catch (err) {
+    // ENOENT = dir doesn't exist yet (clean state, proceed). Anything else
+    // (EACCES, EIO, etc.) means the safety check itself can't run — refuse
+    // rather than silently bypassing the guard.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      throw new Error(
+        `[migrate] cannot inspect ${getAgentsDir()} to verify safe-to-migrate state: ${err instanceof Error ? err.message : err}. ` +
+          `Resolve the access error and restart.`,
+      );
+    }
   }
   if (preExistingAgentFileCount > 0) {
     throw new Error(
       `[migrate] inconsistent state: ${preExistingAgentFileCount} agent file(s) exist in ${getAgentsDir()} ` +
         `but no .migration-complete marker AND ${sessionsPath} still present. ` +
-        `This usually means a prior migration's source-rename hit warn-only failure (pre-#166 code). ` +
-        `Resolve manually: either (a) delete sessions.json if the per-agent files reflect current state, then touch the marker; ` +
-        `or (b) move agents/ aside and let migration re-run from sessions.json.`,
+        `Caused either by a pre-#166 silent rename failure OR a current-version migration that crashed after writing per-agent file(s) but before/during the source rename. ` +
+        `Resolve manually: prefer (b) unless you have manually verified every per-agent file is complete and current. ` +
+        `(a) delete ${sessionsPath} ONLY if the per-agent files reflect current intended state, then touch ${getAgentsDir()}/.migration-complete; ` +
+        `or (b) move ${getAgentsDir()} aside and let migration re-run cleanly from ${sessionsPath}.`,
     );
   }
 

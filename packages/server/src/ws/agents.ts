@@ -72,7 +72,14 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
         // Send full snapshot as the first frame. Use the same serialization
         // guard so a non-serializable Agent in the cache (shouldn't happen
         // — Agent is plain JSON — but defense in depth) drops just this
-        // client's reconcile rather than crashing the open handler.
+        // client rather than crashing the open handler.
+        //
+        // On serialization failure: drop the client AND close the socket.
+        // Leaving the ws subscribed without a baseline reconcile means
+        // future deltas arrive at a client with no prior state, which the
+        // dashboard would either silently ignore or use to corrupt its
+        // local model. Closing forces a reconnect-and-retry cycle, which
+        // is the recoverable path.
         try {
           const json = JSON.stringify({
             type: "reconcile" as const,
@@ -83,6 +90,12 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
           console.error(
             `[ws/agents] reconcile serialization failed: ${err instanceof Error ? err.message : err}`,
           );
+          clients.delete(ws);
+          try {
+            ws.close(1011, "reconcile failed");
+          } catch {
+            // socket already torn down
+          }
         }
       },
 
