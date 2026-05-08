@@ -16,12 +16,13 @@
  * any external references (schedules with `target: agent:<id>`, scripts, etc.).
  */
 
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { Agent, ExitReason, Provider } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
 import {
   buildAgent,
+  getAgentsDir,
   insertAgent,
   isMigrationComplete,
   markMigrationComplete,
@@ -82,6 +83,32 @@ export function migrateIfNeeded(): {
       );
     }
     return { status: "no-source" };
+  }
+
+  // Detect upgrade-from-prior-version-with-warn-only-rename inconsistent state.
+  // Pre-#166 code wrote per-agent files first and only console.warn'd on
+  // renameSync failure, so a user could end up with: agents/*.json populated,
+  // sessions.json STILL present, NO .migration-complete marker. If we just
+  // proceed, insertAgent overwrites every agents/*.json with sessions.json
+  // data — silently clobbering any mutations the user made via new write
+  // paths (set_manager, rename, etc.) in the interim window.
+  // Refuse to proceed and surface a clear actionable error instead.
+  let preExistingAgentFileCount = 0;
+  try {
+    preExistingAgentFileCount = readdirSync(getAgentsDir()).filter((n) =>
+      n.endsWith(".json"),
+    ).length;
+  } catch {
+    // Dir doesn't exist yet — clean state, proceed.
+  }
+  if (preExistingAgentFileCount > 0) {
+    throw new Error(
+      `[migrate] inconsistent state: ${preExistingAgentFileCount} agent file(s) exist in ${getAgentsDir()} ` +
+        `but no .migration-complete marker AND ${sessionsPath} still present. ` +
+        `This usually means a prior migration's source-rename hit warn-only failure (pre-#166 code). ` +
+        `Resolve manually: either (a) delete sessions.json if the per-agent files reflect current state, then touch the marker; ` +
+        `or (b) move agents/ aside and let migration re-run from sessions.json.`,
+    );
   }
 
   let raw: string;

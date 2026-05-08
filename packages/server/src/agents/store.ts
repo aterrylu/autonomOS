@@ -241,7 +241,17 @@ export function patchAgent(
 
 /** Set or clear an agent's manager. Cycle-checked.
  *  Returns the new record, "cycle" if the change would create one,
- *  "stale" on version mismatch, or undefined if id not found. */
+ *  "stale" on version mismatch, or undefined if id not found.
+ *
+ *  No-op short-circuit: if `managerId` already equals `existing.managerId`,
+ *  return the existing record unchanged (no version bump, no disk write,
+ *  no event). This matters during DELETE-with-reassignTo rollback: the
+ *  forward pass moved children to newParent, the rollback restores them
+ *  to their original managerId. Without this short-circuit, the rollback
+ *  would re-bump version even though the net managerId is unchanged —
+ *  silently invalidating optimistic-concurrency tokens held by clients
+ *  that issued unrelated edits (rename, autonomousMode toggle, etc.) on
+ *  those children. */
 export function setManager(
   id: UUID,
   managerId: UUID | null,
@@ -253,6 +263,8 @@ export function setManager(
   if (expectedVersion !== undefined && existing.version !== expectedVersion) {
     return "stale";
   }
+  // No-op: managerId already matches — skip write entirely (preserves version).
+  if (existing.managerId === managerId) return existing;
   if (managerId !== null) {
     if (managerId === id) return "cycle";
     if (!cache.has(managerId)) return undefined; // unresolvable manager

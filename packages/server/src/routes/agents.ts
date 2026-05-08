@@ -358,7 +358,7 @@ agentsRouter.delete("/:id", (c) => {
       // mid-loop throw bypasses the structured rollback path entirely
       // and the handler crashes to a generic 500 with the disk already
       // mutated and pendingDeltas un-flushed.
-      let updated: ReturnType<typeof setManager> = undefined;
+      let updated: ReturnType<typeof setManager>;
       try {
         updated = setManager(child.id, newParent);
       } catch (forwardErr) {
@@ -373,7 +373,7 @@ agentsRouter.delete("/:id", (c) => {
           [];
         for (const r of [...reparented].reverse()) {
           const orig = originalManagers.get(r.id) ?? null;
-          let restored: ReturnType<typeof setManager> = undefined;
+          let restored: ReturnType<typeof setManager>;
           let threw = false;
           try {
             restored = setManager(r.id, orig);
