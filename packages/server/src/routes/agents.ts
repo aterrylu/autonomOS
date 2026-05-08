@@ -352,7 +352,21 @@ agentsRouter.delete("/:id", (c) => {
     const reparented: { id: UUID; name: string }[] = [];
     const pendingDeltas: Parameters<typeof emitAgentDelta>[0][] = [];
     for (const child of children) {
-      const updated = setManager(child.id, newParent);
+      // setManager → writeAgentFile is throw-capable on lastReadFailed
+      // (per the store's cache/disk-divergence guard). Wrap it so the
+      // existing failure branch handles throws too — without this, a
+      // mid-loop throw bypasses the structured rollback path entirely
+      // and the handler crashes to a generic 500 with the disk already
+      // mutated and pendingDeltas un-flushed.
+      let updated: ReturnType<typeof setManager> = undefined;
+      try {
+        updated = setManager(child.id, newParent);
+      } catch (forwardErr) {
+        console.error(
+          `[agents] DELETE setManager THREW for ${child.id} (${child.name}): ${forwardErr instanceof Error ? forwardErr.message : forwardErr}`,
+        );
+        // updated stays undefined — falls into the rollback branch below.
+      }
       if (typeof updated === "string" || updated === undefined) {
         // Rollback path — buffered forward deltas are dropped (never emitted).
         const rollbackFailures: { id: UUID; name: string; reason: string }[] =
