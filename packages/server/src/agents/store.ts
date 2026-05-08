@@ -290,11 +290,22 @@ export function setManager(
   if (expectedVersion !== undefined && existing.version !== expectedVersion) {
     return "stale";
   }
-  // No-op: managerId already matches — skip write entirely (preserves version).
+  // Validate manager existence FIRST — even before the no-op short-circuit.
+  // The dangling-ref scenario: a caller passes managerId === existing.managerId
+  // where existing.managerId points to a manager that's been deleted from
+  // disk but the in-memory cache hasn't been reloaded yet (rare, but reachable
+  // via idempotent set_manager retries / stale UI / migration windows).
+  // Without the up-front check, the no-op would silently re-affirm a dangling
+  // pointer; the read-time scrub would then fix it on next loadAll, but the
+  // write returned "success" in the meantime. Returning undefined surfaces
+  // the missing manager to the caller so they can refetch and re-target.
+  if (managerId !== null && !cache.has(managerId)) return undefined;
+  if (managerId === id) return "cycle"; // self-loop can't be a no-op (id must exist)
+  // No-op: managerId already matches AND has been validated above. Skip
+  // write entirely (preserves version, no event, no cache divergence).
   if (existing.managerId === managerId) return existing;
   if (managerId !== null) {
-    if (managerId === id) return "cycle";
-    if (!cache.has(managerId)) return undefined; // unresolvable manager
+    // Existence was checked above; only the ancestor walk remains.
     // Walk up the proposed parent's ancestor chain. If we hit `id`, cycle.
     let cursor: UUID | null = managerId;
     const seen = new Set<UUID>();

@@ -54,9 +54,18 @@ agentsRouter.onError((err, c) => {
       503,
     );
   }
-  // Re-throw so Hono's default handler produces a 500 with a stack
-  // (preserves prior behavior for everything else).
-  throw err;
+  // For any other error, log it and return an explicit 500 response
+  // (rather than `throw err` which relies on undocumented Hono behavior
+  // — depending on version, a re-throw from onError can surface as an
+  // unhandled rejection or connection drop instead of the structured
+  // 500 the operator expects). The logged stack is the canonical
+  // record; the response carries enough context for the dashboard.
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(
+    `[agents] unhandled ${err instanceof Error ? err.name : "error"} on ${c.req.method} ${c.req.path}: ${message}`,
+    err instanceof Error ? err.stack : undefined,
+  );
+  return c.json({ error: message }, 500);
 });
 
 // ── Read ───────────────────────────────────────────────────────────
