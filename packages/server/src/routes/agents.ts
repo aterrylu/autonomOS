@@ -10,6 +10,7 @@ import type { Provider, UUID } from "@autonomos/core";
 import { Hono } from "hono";
 import {
   killAttachment,
+  restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
   spawnAgent,
 } from "../agents/runtime.js";
@@ -773,4 +774,23 @@ agentsRouter.post("/:id/kill", (c) => {
     );
   }
   return c.json({ ok: true, id: agent.id });
+});
+
+// ── Restart all (kill + respawn every live PTY) ────────────────────
+//
+// Replaces the pre-unification `POST /api/sessions/restart-all`. The
+// runtime function preserves agent ids across the restart so the
+// dashboard's layout/groups/panes stay valid; the returned `idMap` is
+// kept for caller compat (currently identity since ids no longer
+// change, but the field stays so older clients don't crash).
+//
+// `failures` carries per-agent respawn errors so the dashboard can
+// distinguish "all good" from "5 of 7 came back, 2 are gone" instead
+// of showing a uniform "done" green state. The route always returns
+// 200 — partial success is still success at the route level — and the
+// caller decides how to surface non-empty `failures`.
+
+agentsRouter.post("/restart-all", (c) => {
+  const { idMap, failures } = restartAllAttachments();
+  return c.json({ idMap, failures });
 });

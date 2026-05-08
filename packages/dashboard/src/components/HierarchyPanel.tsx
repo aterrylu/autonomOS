@@ -171,7 +171,7 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
   const [isResuming, setIsResuming] = useState(false);
 
   // Look up the session (live or exited) by claudeSessionId — unique even
-  // across name collisions. The store id is what DELETE /api/sessions/:id
+  // across name collisions. The store id is what DELETE /api/agents/:id
   // expects, so we need the SessionInfo, not just the claudeSessionId.
   const targetSession = useMemo(() => {
     const id = node.claudeSessionId;

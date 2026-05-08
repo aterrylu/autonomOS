@@ -4,7 +4,7 @@ import { mergeOrgWithSessions } from "./mergeOrgWithSessions";
 
 /**
  * Tests for mergeOrgWithSessions — the client-side logic that joins the org
- * chart tree from /api/org with the live sessions from /api/sessions.
+ * chart tree from /api/agents/tree with the live sessions from /api/agents.
  *
  * These guard against the reliability bugs fixed in this change:
  *  - Match by claudeSessionId so rename drift doesn't sever org nodes from
@@ -63,7 +63,7 @@ describe("mergeOrgWithSessions", () => {
   });
 
   it("does not prune the tree when sessions is empty (startup race)", () => {
-    // On first mount, /api/org may resolve before /api/sessions. If we pruned
+    // On first mount, /api/agents/tree may resolve before /api/agents. If we pruned
     // eagerly here, every node would vanish because none can match an empty
     // sessions array — user sees "No active agents" until sessions arrive.
     const orgRoots = [

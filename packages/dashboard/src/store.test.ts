@@ -400,6 +400,89 @@ describe("closeLeaf", () => {
   });
 });
 
+// ── closeTab ─────────────────────────────────────────────────────────
+//
+// These tests exist because of a UX regression where the X button on a
+// tab silently no-op'd when there was only one leaf with one tab —
+// closeTab forwarded to closeLeaf, which refused to remove the last
+// leaf, and the click went nowhere. The fix lets closeTab fall through
+// to removeTab so the leaf becomes empty (rendered as the
+// "Create or select an agent" placeholder).
+
+describe("closeTab", () => {
+  it("removes a tab from a leaf with multiple tabs (no leaf change)", () => {
+    setupSinglePane("s1");
+    const { focusedLeafId } = useStore.getState();
+    // Add a second tab to the same leaf
+    useStore.getState().addTabToLeaf(focusedLeafId, sessionPane("s2"));
+
+    const state = useStore.getState();
+    const leaf = findLeafByPaneId(state.layout, "s2")!;
+    expect(leaf.tabs.length).toBe(2);
+    const s1Tab = leaf.tabs.find((t) => t.pane.id === "s1")!;
+
+    useStore.getState().closeTab(leaf.id, s1Tab.id);
+
+    const after = useStore.getState();
+    const afterLeaf = findLeafByPaneId(after.layout, "s2");
+    expect(afterLeaf).not.toBeNull();
+    expect(afterLeaf!.tabs.length).toBe(1);
+    expect(afterLeaf!.tabs[0].pane.id).toBe("s2");
+  });
+
+  it("collapses the leaf when closing its last tab — sibling takes over", () => {
+    const { pane1, pane2 } = setupSplitView("s1", "s2");
+    const state = useStore.getState();
+    const leaf2 = findLeafByPaneId(state.layout, "s2")!;
+    const tab = leaf2.tabs[0];
+
+    useStore.getState().closeTab(leaf2.id, tab.id);
+
+    const after = useStore.getState();
+    expect(after.layout.kind).toBe("leaf");
+    expect(after.activePane).toEqual(sessionPane("s1"));
+  });
+
+  it("ignores a stale tabId without mutating layout (defensive guard)", () => {
+    // A stale tabId can sneak in from a cached event handler, a WS race,
+    // or a missed remap entry. Without the guard, the empty-leaf
+    // fall-through below would silently no-op and the X click would feel
+    // dead — the same UX the regression fix was meant to eliminate.
+    setupSinglePane("s1");
+    const beforeState = useStore.getState();
+    const leaf = findLeafByPaneId(beforeState.layout, "s1")!;
+
+    useStore.getState().closeTab(leaf.id, "tab-that-does-not-exist");
+
+    const after = useStore.getState();
+    // Layout reference must be untouched — no spurious set() write.
+    expect(after.layout).toBe(beforeState.layout);
+    expect(after.activePane).toEqual(beforeState.activePane);
+  });
+
+  it("REGRESSION: empties the leaf when closing the last tab of the only leaf", () => {
+    // Pre-fix: closeTab → closeLeaf → removeLeaf returned null on the only
+    // leaf, closeLeaf returned silently, X button appeared dead.
+    setupSinglePane("s1");
+    const state = useStore.getState();
+    const leaf = findLeafByPaneId(state.layout, "s1")!;
+    const tab = leaf.tabs[0];
+    expect(leaf.tabs.length).toBe(1);
+
+    useStore.getState().closeTab(leaf.id, tab.id);
+
+    const after = useStore.getState();
+    // The leaf still exists (layout invariant: at least one leaf).
+    expect(after.layout.kind).toBe("leaf");
+    // But it has no tabs — the placeholder ("Create or select an agent")
+    // renders for empty leaves via activePane === null.
+    if (after.layout.kind === "leaf") {
+      expect(after.layout.tabs).toEqual([]);
+    }
+    expect(after.activePane).toBeNull();
+  });
+});
+
 // ── Group helpers ────────────────────────────────────────────────────
 
 describe("getGroupForPane", () => {

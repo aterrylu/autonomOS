@@ -1537,11 +1537,50 @@ export const useStore = create<AppState>()(
           const { layout, focusedLeafId, activeGroupId, groups } = get();
           const leaf = findLeaf(layout, leafId);
           if (!leaf) return;
-
-          // If this is the last tab, close the leaf entirely
-          if (leaf.tabs.length <= 1) {
-            get().closeLeaf(leafId);
+          // Defensive guard for stale tabIds (cached event handlers, races
+          // with WS-driven tab removals, missed remap entries from
+          // RestartAllButton). Without this, the empty-leaf fall-through
+          // below would call removeTab with a non-existent tabId — which
+          // returns the layout unchanged AND we'd still write a no-op
+          // set(), producing the same "X click does nothing" UX the
+          // fix above was meant to eliminate. Warn so the cause shows
+          // up in dev console.
+          if (!leaf.tabs.some((t) => t.id === tabId)) {
+            console.warn(
+              `[layout] closeTab: tabId "${tabId}" not found in leaf "${leafId}" — ignoring stale call`,
+            );
             return;
+          }
+
+          // Last tab in this leaf — try to collapse the leaf so a sibling
+          // takes its place. If this IS the only leaf, removeLeaf returns
+          // null (the layout invariant requires at least one leaf), and
+          // we deliberately fall through to removeTab below — that produces
+          // an empty leaf which renders as the "Create or select an agent"
+          // placeholder. Without the fall-through, the X click would
+          // silently no-op when only one tab is open.
+          if (leaf.tabs.length <= 1) {
+            const newRoot = removeLeaf(layout, leafId);
+            if (newRoot) {
+              const newFocused =
+                focusedLeafId === leafId
+                  ? nextLeafId(newRoot, leafId)
+                  : focusedLeafId;
+              const groupUpdates = syncGroupAfterRemoval(
+                groups,
+                activeGroupId,
+                newRoot,
+                newFocused,
+              );
+              set({
+                layout: newRoot,
+                focusedLeafId: newFocused,
+                activePane: derivedActivePane(newRoot, newFocused),
+                ...groupUpdates,
+              });
+              return;
+            }
+            // Fall through: only leaf in tree → empty its tabs.
           }
 
           const updated = removeTab(layout, leafId, tabId);

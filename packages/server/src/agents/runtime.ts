@@ -467,18 +467,35 @@ export function resumeActiveAgents(): void {
 /**
  * Restart all live attachments — kills each PTY and respawns with fresh env.
  * Preserves agent ids so the dashboard's layout/groups/panes remain valid.
+ *
+ * Returns both `idMap` (the agents that successfully respawned, identity-mapped
+ * since post-unification ids are stable across restart) AND `failures` (per-agent
+ * error reports for anything that didn't come back). The route handler surfaces
+ * `failures` to the dashboard so a partial-success doesn't show as silently
+ * "done" when N of M agents failed to respawn — the previous shape returned
+ * Record<UUID, UUID> only and lost that distinction in the response body.
  */
-export function restartAllAttachments(): Record<UUID, UUID> {
+export function restartAllAttachments(): {
+  idMap: Record<UUID, UUID>;
+  failures: Array<{ id: UUID; name: string; error: string }>;
+} {
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
+  const failures: Array<{ id: UUID; name: string; error: string }> = [];
 
   // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
   shuttingDown = true;
-  for (const [, managed] of live) {
+  for (const [id, managed] of live) {
     try {
       managed.pty.kill();
-    } catch {
-      // best-effort
+    } catch (err) {
+      // pty.kill is rare-throw on macOS but reachable on Windows / when the
+      // process is already exiting. Log so operators see the cause; we still
+      // proceed because live.clear() below makes the dead reference unreachable.
+      console.error(
+        `[runtime] restart-all: pty.kill threw for agent ${id}:`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
   live.clear();
@@ -488,18 +505,28 @@ export function restartAllAttachments(): Record<UUID, UUID> {
   const idMap: Record<UUID, UUID> = {};
   for (const agentId of toRestart) {
     const a = getAgent(agentId);
-    if (!a) continue;
+    if (!a) {
+      // Persisted record vanished between snapshot and respawn — shouldn't
+      // happen in practice (no other writer mutates the store mid-restart),
+      // but if it does, surface it instead of silently dropping the agent.
+      const msg = "agent record missing from store";
+      console.error(`[runtime] restart-all: ${msg} (id=${agentId})`);
+      failures.push({ id: agentId, name: "<unknown>", error: msg });
+      continue;
+    }
     try {
       respawnAgent(a);
       idMap[a.id] = a.id;
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error(
-        `Failed to restart agent ${a.id}:`,
-        err instanceof Error ? err.message : err,
+        `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
+        msg,
       );
+      failures.push({ id: a.id, name: a.name, error: msg });
     }
   }
-  return idMap;
+  return { idMap, failures };
 }
 
 // ── Resolve by name-or-id (for MCP tool boundary) ─────────────────────

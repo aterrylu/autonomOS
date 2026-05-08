@@ -352,11 +352,24 @@ function RestartAllButton({ page }: { page: PageTheme }) {
     setState("restarting");
     setError(null);
     try {
-      const res = await fetch("/api/sessions/restart-all", { method: "POST" });
+      const res = await fetch("/api/agents/restart-all", { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { idMap } = await res.json();
+      const { idMap, failures } = (await res.json()) as {
+        idMap?: Record<string, string>;
+        failures?: Array<{ id: string; name: string; error: string }>;
+      };
       if (idMap && Object.keys(idMap).length > 0) {
         useStore.getState().remapSessionIds(idMap);
+      }
+      // Partial-success path: route returned 200 but some agents failed
+      // to respawn. Surface them so the user can investigate (server logs
+      // carry the full per-agent stack); without this the green "done"
+      // state masks N agents that didn't come back.
+      if (Array.isArray(failures) && failures.length > 0) {
+        const names = failures.map((f) => f.name).join(", ");
+        setError(`${failures.length} agent(s) failed to restart: ${names}`);
+        setState("idle");
+        return;
       }
       setState("done");
       setTimeout(() => setState("idle"), 2000);
