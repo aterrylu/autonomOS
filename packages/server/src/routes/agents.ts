@@ -363,12 +363,14 @@ agentsRouter.delete("/:id", (c) => {
       // and the handler crashes to a generic 500 with the disk already
       // mutated and pendingDeltas un-flushed.
       let updated: ReturnType<typeof setManager>;
+      let forwardThrew = false;
       try {
         updated = setManager(child.id, newParent);
       } catch (forwardErr) {
         console.error(
           `[agents] DELETE setManager THREW for ${child.id} (${child.name}): ${forwardErr instanceof Error ? forwardErr.message : forwardErr}`,
         );
+        forwardThrew = true;
         // updated stays undefined — falls into the rollback branch below.
       }
       if (typeof updated === "string" || updated === undefined) {
@@ -429,15 +431,24 @@ agentsRouter.delete("/:id", (c) => {
           (r) => !rollbackFailures.some((f) => f.id === r.id),
         );
         const cleanRollback = rollbackFailures.length === 0;
+        // Distinguish throw from "not-found" / cycle / stale in the
+        // structured response so operators see the real cause (FS/cache
+        // divergence vs id-not-in-store) rather than a misleading
+        // "not-found" attribution. Mirrors the rollback-branch pattern.
+        const forwardReason: string = forwardThrew
+          ? "throw"
+          : typeof updated === "string"
+            ? updated
+            : "not-found";
         return c.json(
           {
             error: cleanRollback
-              ? `Aborted: setManager(${child.id}) returned ${updated ?? "not-found"}. All previously-reparented children were rolled back. Agent NOT deleted; safe to retry.`
-              : `Aborted: setManager(${child.id}) returned ${updated ?? "not-found"} AND ${rollbackFailures.length} rollback step(s) failed. Tree IS in inconsistent state — DO NOT retry; manual reconciliation required (see rollbackFailures).`,
+              ? `Aborted: setManager(${child.id}) returned ${forwardReason}. All previously-reparented children were rolled back. Agent NOT deleted; safe to retry.`
+              : `Aborted: setManager(${child.id}) returned ${forwardReason} AND ${rollbackFailures.length} rollback step(s) failed. Tree IS in inconsistent state — DO NOT retry; manual reconciliation required (see rollbackFailures).`,
             failedAt: {
               id: child.id,
               name: child.name,
-              reason: updated ?? "not-found",
+              reason: forwardReason,
             },
             rolledBack: rolledBackOk,
             rollbackFailures,
