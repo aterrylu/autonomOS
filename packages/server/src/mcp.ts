@@ -12,6 +12,7 @@ import {
 } from "./agents/runtime.js";
 import {
   buildAgentTree,
+  CachePoisonedError,
   listAgents,
   resolveAgentByName,
   setManager,
@@ -312,7 +313,32 @@ function createMcpServer(): McpServer {
         managerId = mgr.id;
       }
 
-      const result = setManager(agent.id, managerId);
+      // setManager → writeAgentFile is throw-capable on lastReadFailed
+      // (cache/disk divergence guard added by the agent-unification PR).
+      // Catch and surface the same CACHE_POISONED signal the REST surface
+      // emits via 503, so MCP clients see a stable error code instead of
+      // a generic "Failed to set manager" attribution that would imply
+      // a transient issue safe to retry.
+      let result: ReturnType<typeof setManager>;
+      try {
+        result = setManager(agent.id, managerId);
+      } catch (err) {
+        if (err instanceof CachePoisonedError) {
+          console.error(
+            `[mcp] set_manager hit CACHE_POISONED for ${target}: ${err.message}`,
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: `CACHE_POISONED: ${err.message} (server's view of disk is degraded; retry pointless until the operator restarts the server).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        throw err;
+      }
       if (result === "cycle") {
         return {
           content: [

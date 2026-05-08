@@ -422,12 +422,23 @@ agentsRouter.delete("/:id", (c) => {
         // updated stays undefined — falls into the rollback branch below.
       }
       if (typeof updated === "string" || updated === undefined) {
+        // Hoisted: forwardReason is computed once and reused by both the
+        // CachePoisonedError branches AND the regular 409/500 path below.
+        // Previously each branch re-derived it (or hardcoded "throw"),
+        // which silently misattributed forward "cycle"/"not-found"
+        // failures as throws when the rollback hit CachePoisonedError.
+        const forwardReason: string = forwardThrew
+          ? "throw"
+          : typeof updated === "string"
+            ? updated
+            : "not-found";
         // Fast path: forward CachePoisonedError. Every rollback iteration
         // would just throw CachePoisonedError too (writeAgentFile checks
         // lastReadFailed unconditionally). Skip the rollback loop, flush
         // pendingDeltas (prior reparents already persisted to disk), and
-        // return 503 with the same body shape every other CachePoisonedError
-        // path uses: { error, code, retryable, reparented? }.
+        // return 503 with the standard CachePoisonedError envelope PLUS
+        // the failedAt structure every other DELETE error response uses,
+        // so clients have one shape to parse regardless of failure mode.
         if (cachePoisonedErr) {
           for (const d of pendingDeltas.values()) emitAgentDelta(d);
           return c.json(
@@ -435,6 +446,14 @@ agentsRouter.delete("/:id", (c) => {
               error: cachePoisonedErr.message,
               code: cachePoisonedErr.code,
               retryable: false,
+              failedAt: {
+                id: child.id,
+                name: child.name,
+                reason: forwardReason,
+                ...(forwardErrorMessage !== null && {
+                  message: forwardErrorMessage,
+                }),
+              },
               ...(reparented.length > 0 && { reparented }),
             },
             503,
@@ -535,11 +554,22 @@ agentsRouter.delete("/:id", (c) => {
               error: cachePoisonedErr.message,
               code: cachePoisonedErr.code,
               retryable: false,
+              // Use the hoisted forwardReason (computed once at the top
+              // of this branch) instead of hardcoding "throw" — the
+              // forward could have returned "cycle"/"not-found" cleanly
+              // and only the rollback hit CachePoisonedError. Hardcoding
+              // "throw" here misattributes those forward failure modes
+              // as transient FS errors, contradicting the actual cause.
+              // Caller's error message remains the rollback-poison cause
+              // (cachePoisonedErr.message); failedAt.message reports the
+              // distinct forward error if there was one.
               failedAt: {
                 id: child.id,
                 name: child.name,
-                reason: "throw",
-                message: cachePoisonedErr.message,
+                reason: forwardReason,
+                ...(forwardErrorMessage !== null && {
+                  message: forwardErrorMessage,
+                }),
               },
               rolledBack: rolledBackOk,
               rollbackFailures,
@@ -547,15 +577,6 @@ agentsRouter.delete("/:id", (c) => {
             503,
           );
         }
-        // Distinguish throw from "not-found" / cycle / stale in the
-        // structured response so operators see the real cause (FS/cache
-        // divergence vs id-not-in-store) rather than a misleading
-        // "not-found" attribution. Mirrors the rollback-branch pattern.
-        const forwardReason: string = forwardThrew
-          ? "throw"
-          : typeof updated === "string"
-            ? updated
-            : "not-found";
         // Retry hint is conditional on the forward reason — only "throw"
         // is plausibly transient (FS hiccup) and safe to retry with the
         // same args. "cycle" and "not-found" are deterministic given the

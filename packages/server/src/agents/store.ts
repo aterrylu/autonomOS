@@ -370,9 +370,13 @@ export function childrenOf(parentId: UUID): Agent[] {
  * REST `/api/agents/tree` endpoint and the MCP `get_org_chart` tool so the
  * two views can never disagree on shape.
  *
- * - `includeExited`: when false (default), only `exited` agents are filtered
- *   out — transient states like `starting` and `running` are both visible.
- *   Their children become roots when their manager is filtered.
+ * - `includeExited`: when false (default), only agents with
+ *   `status === "running"` are visible. Exited agents AND transient
+ *   states (`starting`, etc.) are both filtered out. Their children
+ *   become roots when their manager is filtered. This preserves the
+ *   pre-refactor `buildOrgChartFromAgents` behavior — widening to
+ *   `status !== "exited"` would be a user-visible API change for
+ *   existing MCP/REST consumers.
  * - `mapNode`: projects each Agent to the consumer's preferred node shape
  *   (e.g. dashboard wants a `claudeSessionId` alias for legacy compat).
  */
@@ -383,13 +387,13 @@ export function buildAgentTree<
   mapNode: (a: Agent) => Omit<N, "children">;
 }): N[] {
   const all = listAgents();
-  // Filter only exited (not just-running) so transient states like
-  // `starting` still appear in the tree — matches the docstring's
-  // promise and the operator mental model that "anything not exited
-  // is something I might want to see."
+  // Strict `running`-only filter: matches the prior canonical helper
+  // that this PR consolidates. Transient states (`starting`) appear
+  // in flat /api/agents queries but are deliberately omitted from the
+  // tree view so the org chart stays stable while a session warms up.
   const visible = options.includeExited
     ? all
-    : all.filter((a) => a.status !== "exited");
+    : all.filter((a) => a.status === "running");
   const byId = new Map(visible.map((a) => [a.id, a]));
   const nodeById = new Map<string, N>();
   for (const a of visible) {
