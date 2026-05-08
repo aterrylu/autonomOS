@@ -569,12 +569,22 @@ agentsRouter.delete("/:id", (c) => {
     // Flush buffered reparent deltas FIRST so WS clients converge to
     // actual disk state before the error response.
     for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
-    // CachePoisonedError → re-throw so the router-level onError handler
-    // maps it to 503 (stable code, distinguishes degraded server from
-    // routine 500). Anything else → structured 500 mirroring the inner
-    // delete-failure branch below.
+    // CachePoisonedError → return 503 directly (NOT bare-throw to onError)
+    // so the response body still carries the `reparented` info the global
+    // handler doesn't know about. The router-level onError keeps the
+    // simpler routes (POST, PATCH, PUT) covered with a stable 503 +
+    // CACHE_POISONED code; here we mirror that shape but add the
+    // in-flight state.
     if (deleteErr instanceof CachePoisonedError) {
-      throw deleteErr;
+      return c.json(
+        {
+          error: deleteErr.message,
+          code: deleteErr.code,
+          retryable: false,
+          ...(reparented.length > 0 && { reparented }),
+        },
+        503,
+      );
     }
     return c.json(
       {
@@ -585,7 +595,43 @@ agentsRouter.delete("/:id", (c) => {
     );
   }
   if (!removed) {
-    const rawRemoved = deleteAgentRaw(id);
+    // Same throw-guard pattern as runtimeDeleteAgent above. deleteAgentRaw
+    // calls readCache (which can throw if loadAll throws — rare, but
+    // possible) and unlinkSync (currently caught internally and returns
+    // false, but a future patch may surface CachePoisonedError or other
+    // throws here). Without the wrap, an exception bypasses the
+    // pendingDeltas flush below — exact same divergence the
+    // runtimeDeleteAgent guard prevents in the live-PTY path.
+    let rawRemoved: boolean;
+    try {
+      rawRemoved = deleteAgentRaw(id);
+    } catch (rawErr) {
+      const errMsg = rawErr instanceof Error ? rawErr.message : String(rawErr);
+      console.error(
+        `[agents] DELETE /:id ${id} — deleteAgentRaw THREW: ${errMsg}`,
+      );
+      for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
+      // Same direct-503 pattern as the runtimeDeleteAgent branch above —
+      // preserve `reparented` info that onError can't see.
+      if (rawErr instanceof CachePoisonedError) {
+        return c.json(
+          {
+            error: rawErr.message,
+            code: rawErr.code,
+            retryable: false,
+            ...(reparented.length > 0 && { reparented }),
+          },
+          503,
+        );
+      }
+      return c.json(
+        {
+          error: `Failed to delete agent "${id}" — see server logs (${errMsg}). ${reparented.length > 0 ? `Note: ${reparented.length} child(ren) were already reassigned and remain reassigned. Retry the DELETE; the reparent step is now a no-op.` : ""}`,
+          ...(reparented.length > 0 && { reparented }),
+        },
+        500,
+      );
+    }
     if (!rawRemoved && getAgent(id) !== undefined) {
       console.error(
         `[agents] DELETE /:id ${id} — both removes returned false AND record still in store (real filesystem error)`,

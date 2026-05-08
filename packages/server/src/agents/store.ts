@@ -370,8 +370,9 @@ export function childrenOf(parentId: UUID): Agent[] {
  * REST `/api/agents/tree` endpoint and the MCP `get_org_chart` tool so the
  * two views can never disagree on shape.
  *
- * - `includeExited`: when false (default), exited agents are filtered out
- *   before building the tree. Their children become roots.
+ * - `includeExited`: when false (default), only `exited` agents are filtered
+ *   out — transient states like `starting` and `running` are both visible.
+ *   Their children become roots when their manager is filtered.
  * - `mapNode`: projects each Agent to the consumer's preferred node shape
  *   (e.g. dashboard wants a `claudeSessionId` alias for legacy compat).
  */
@@ -382,13 +383,25 @@ export function buildAgentTree<
   mapNode: (a: Agent) => Omit<N, "children">;
 }): N[] {
   const all = listAgents();
+  // Filter only exited (not just-running) so transient states like
+  // `starting` still appear in the tree — matches the docstring's
+  // promise and the operator mental model that "anything not exited
+  // is something I might want to see."
   const visible = options.includeExited
     ? all
-    : all.filter((a) => a.status === "running");
+    : all.filter((a) => a.status !== "exited");
   const byId = new Map(visible.map((a) => [a.id, a]));
   const nodeById = new Map<string, N>();
   for (const a of visible) {
-    nodeById.set(a.id, { ...options.mapNode(a), children: [] } as unknown as N);
+    // Construct the full node shape directly. The constraint
+    // `N extends { id: string; children: N[] }` means
+    // `Omit<N, "children"> & { children: N[] }` is structurally
+    // identical to N — but TS's structural inference can't prove that
+    // through a spread, so a single `as N` (without `as unknown`)
+    // bridges the gap. Type-safe at the call site because
+    // mapNode's return type IS Omit<N, "children">.
+    const node = { ...options.mapNode(a), children: [] as N[] } as N;
+    nodeById.set(a.id, node);
   }
   const roots: N[] = [];
   for (const a of visible) {
