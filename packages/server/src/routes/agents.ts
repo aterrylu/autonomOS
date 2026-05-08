@@ -306,6 +306,17 @@ agentsRouter.delete("/:id", (c) => {
   const force = c.req.query("force") === "true";
   const children = childrenOf(id);
 
+  // Lifted to handler scope so the post-delete code path can flush deltas
+  // / inspect reparent state regardless of whether children existed.
+  // Forward deltas keyed by id — they reflect changes already persisted
+  // to disk, but are NOT broadcast until the delete itself confirms. If
+  // the delete then fails (parent still on disk), we still emit the
+  // forward deltas so WS clients converge to actual disk state, even
+  // though the original goal (delete) didn't complete.
+  const pendingDeltas = new Map<UUID, Parameters<typeof emitAgentDelta>[0]>();
+  const reparented: { id: UUID; name: string }[] = [];
+  let originalManagers = new Map<UUID, UUID | null>();
+
   if (children.length > 0) {
     if (reassignTo === undefined && !force) {
       return c.json(
@@ -348,13 +359,7 @@ agentsRouter.delete("/:id", (c) => {
     //    writeAgentFile throws on lastReadFailed; without the wrap, a
     //    transient FS error mid-rollback would short-circuit past the
     //    structured response and crash the handler with a generic 500.
-    const originalManagers = new Map(children.map((c) => [c.id, c.managerId]));
-    const reparented: { id: UUID; name: string }[] = [];
-    // Forward deltas keyed by id so we can selectively emit them on
-    // rollback-failure (children whose forward write succeeded but whose
-    // rollback failed need the FORWARD delta so WS clients converge to
-    // the actual disk state — they're stuck under newParent).
-    const pendingDeltas = new Map<UUID, Parameters<typeof emitAgentDelta>[0]>();
+    originalManagers = new Map(children.map((c) => [c.id, c.managerId]));
     for (const child of children) {
       // setManager → writeAgentFile is throw-capable on lastReadFailed
       // (per the store's cache/disk-divergence guard). Wrap it so the
@@ -364,23 +369,31 @@ agentsRouter.delete("/:id", (c) => {
       // mutated and pendingDeltas un-flushed.
       let updated: ReturnType<typeof setManager>;
       let forwardThrew = false;
+      let forwardErrorMessage: string | null = null;
       try {
         updated = setManager(child.id, newParent);
       } catch (forwardErr) {
+        forwardErrorMessage =
+          forwardErr instanceof Error ? forwardErr.message : String(forwardErr);
         console.error(
-          `[agents] DELETE setManager THREW for ${child.id} (${child.name}): ${forwardErr instanceof Error ? forwardErr.message : forwardErr}`,
+          `[agents] DELETE setManager THREW for ${child.id} (${child.name}): ${forwardErrorMessage}`,
         );
         forwardThrew = true;
         // updated stays undefined — falls into the rollback branch below.
       }
       if (typeof updated === "string" || updated === undefined) {
         // Rollback path — buffered forward deltas are dropped (never emitted).
-        const rollbackFailures: { id: UUID; name: string; reason: string }[] =
-          [];
+        const rollbackFailures: {
+          id: UUID;
+          name: string;
+          reason: string;
+          message?: string;
+        }[] = [];
         for (const r of [...reparented].reverse()) {
           const orig = originalManagers.get(r.id) ?? null;
           let restored: ReturnType<typeof setManager>;
           let threw = false;
+          let rollbackErrorMessage: string | null = null;
           try {
             restored = setManager(r.id, orig);
           } catch (rollbackErr) {
@@ -388,8 +401,12 @@ agentsRouter.delete("/:id", (c) => {
             // Treat the throw the same as restored===undefined so the
             // structured response still gets produced rather than crashing
             // the handler with a generic 500.
+            rollbackErrorMessage =
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr);
             console.error(
-              `[agents] DELETE rollback THREW for ${r.id} (${r.name}): ${rollbackErr instanceof Error ? rollbackErr.message : rollbackErr}`,
+              `[agents] DELETE rollback THREW for ${r.id} (${r.name}): ${rollbackErrorMessage}`,
             );
             threw = true;
           }
@@ -405,6 +422,9 @@ agentsRouter.delete("/:id", (c) => {
               id: r.id,
               name: r.name,
               reason: failureReason,
+              ...(rollbackErrorMessage !== null && {
+                message: rollbackErrorMessage,
+              }),
             });
             console.error(
               `[agents] DELETE rollback FAILED for ${r.id} (${r.name}) — child remains under newParent (${failureReason})`,
@@ -440,15 +460,33 @@ agentsRouter.delete("/:id", (c) => {
           : typeof updated === "string"
             ? updated
             : "not-found";
+        // Retry hint is conditional on the forward reason — only "throw"
+        // is plausibly transient (FS hiccup) and safe to retry with the
+        // same args. "cycle" and "not-found" are deterministic given the
+        // requested reassignTo target, so retrying without changing
+        // arguments would just re-fail the same way.
+        const retryHint = cleanRollback
+          ? forwardReason === "throw"
+            ? "Likely transient (filesystem error); safe to retry the DELETE with the same args."
+            : forwardReason === "cycle"
+              ? `Cannot reassign to "${newParent ?? "null"}" — would create a cycle. Choose a different reassignTo target and retry.`
+              : // "not-found": the reassignTo target (newParent) was deleted between
+                // the pre-check and the loop, OR a child went missing. Re-fetch the
+                // tree before retrying.
+                `reassignTo target "${newParent ?? "null"}" or child "${child.id}" no longer exists. Refetch the tree, choose a new target, and retry.`
+          : "";
         return c.json(
           {
             error: cleanRollback
-              ? `Aborted: setManager(${child.id}) returned ${forwardReason}. All previously-reparented children were rolled back. Agent NOT deleted; safe to retry.`
+              ? `Aborted: setManager(${child.id}) returned ${forwardReason}. All previously-reparented children were rolled back. Agent NOT deleted. ${retryHint}`
               : `Aborted: setManager(${child.id}) returned ${forwardReason} AND ${rollbackFailures.length} rollback step(s) failed. Tree IS in inconsistent state — DO NOT retry; manual reconciliation required (see rollbackFailures).`,
             failedAt: {
               id: child.id,
               name: child.name,
               reason: forwardReason,
+              ...(forwardErrorMessage !== null && {
+                message: forwardErrorMessage,
+              }),
             },
             rolledBack: rolledBackOk,
             rollbackFailures,
@@ -466,8 +504,10 @@ agentsRouter.delete("/:id", (c) => {
       });
       reparented.push({ id: child.id, name: child.name });
     }
-    // All reparents succeeded — flush buffered deltas to clients.
-    for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
+    // NOTE: reparents have committed to disk, but pendingDeltas are NOT
+    // flushed yet. Flush is deferred to after the delete itself confirms,
+    // so a delete failure doesn't leave WS clients announcing "children
+    // moved away from a parent that still exists" — see post-delete code.
   }
 
   // Kill PTY if attached, then delete record + emit. Distinguish "the agent
@@ -484,13 +524,30 @@ agentsRouter.delete("/:id", (c) => {
       console.error(
         `[agents] DELETE /:id ${id} — both removes returned false AND record still in store (real filesystem error)`,
       );
+      // Reparents committed to disk before the delete failed. The original
+      // goal (delete) didn't complete, but the children DID move. Emit the
+      // forward deltas so WS clients converge to actual disk state — same
+      // pattern as the rollback-failure branch above. The 500 tells the
+      // operator the delete itself failed; the deltas keep the dashboard
+      // honest about where children currently sit. A retry will skip the
+      // (now-empty) reparent loop and try the delete again.
+      for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
       return c.json(
-        { error: `Failed to delete agent "${id}" — see server logs` },
+        {
+          error: `Failed to delete agent "${id}" — see server logs. ${reparented.length > 0 ? `Note: ${reparented.length} child(ren) were already reassigned and remain reassigned. Retry the DELETE; the reparent step is now a no-op.` : ""}`,
+          ...(reparented.length > 0 && { reparented }),
+        },
         500,
       );
     }
     // Else: agent is genuinely gone (race resolved itself) — fall through to 200.
   }
+  // Delete confirmed — flush the deferred reparent deltas now. Emit AFTER
+  // the runtime's own agent.deleted event (which fired inside
+  // runtimeDeleteAgent) so clients see deletion before reparents land,
+  // which matches the operator's mental model: parent gone → children
+  // adopted by reassignTo target.
+  for (const delta of pendingDeltas.values()) emitAgentDelta(delta);
   return c.json({ ok: true, id });
 });
 

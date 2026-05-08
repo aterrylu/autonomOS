@@ -245,13 +245,21 @@ export function patchAgent(
  *
  *  No-op short-circuit: if `managerId` already equals `existing.managerId`,
  *  return the existing record unchanged (no version bump, no disk write,
- *  no event). This matters during DELETE-with-reassignTo rollback: the
- *  forward pass moved children to newParent, the rollback restores them
- *  to their original managerId. Without this short-circuit, the rollback
- *  would re-bump version even though the net managerId is unchanged —
- *  silently invalidating optimistic-concurrency tokens held by clients
- *  that issued unrelated edits (rename, autonomousMode toggle, etc.) on
- *  those children. */
+ *  no event). Catches genuine no-op caller flows — e.g. an MCP user
+ *  invoking `set_manager(agent, current_parent)` or a UI re-issuing the
+ *  same drag — so optimistic-concurrency tokens held by other clients
+ *  aren't invalidated by a write that doesn't actually change state.
+ *
+ *  Note: this short-circuit does NOT cover the DELETE-with-reassignTo
+ *  rollback path. During rollback `existing.managerId` is `newParent`
+ *  (the post-forward state on disk) and the proposed value is the
+ *  original — they differ, so the short-circuit is skipped and rollback
+ *  WILL re-bump version on each restored child. That's accepted: a
+ *  successful rollback is itself a meaningful state change worth
+ *  signaling, and it's strictly preferable to the alternative (silent
+ *  data loss when the rollback path is itself buggy). Callers holding
+ *  stale version tokens for those children get a "stale" on retry,
+ *  which is the correct signal. */
 export function setManager(
   id: UUID,
   managerId: UUID | null,
