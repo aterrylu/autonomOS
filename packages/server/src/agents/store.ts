@@ -44,6 +44,29 @@ function getAgentFile(id: UUID): string {
   return join(getAgentsDir(), `${id}.json`);
 }
 
+/** Sentinel file written after migration finishes successfully. Migration
+ *  uses this — not directory presence — to detect "already migrated".
+ *  Otherwise a mid-migration crash that wrote the first agent file would
+ *  permanently mark the dir as "migrated" and silently orphan the rest. */
+export function getMigrationCompleteMarker(): string {
+  return join(getAgentsDir(), ".migration-complete");
+}
+
+/** Touch the migration-complete sentinel. Idempotent — safe to call multiple times. */
+export function markMigrationComplete(): void {
+  ensureAgentsDir();
+  writeFileSync(getMigrationCompleteMarker(), "", { mode: 0o600 });
+}
+
+/** Has the migration completed (or was this a fresh install)? */
+export function isMigrationComplete(): boolean {
+  try {
+    return statSync(getMigrationCompleteMarker()).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function ensureAgentsDir(): void {
   ensureConfigDir();
   mkdirSync(getAgentsDir(), { recursive: true, mode: 0o700 });
@@ -147,19 +170,43 @@ export function resolveAgentByName(name: string): Agent | undefined {
   return best;
 }
 
-/** Resolve agent by id-or-name (id wins on exact match). */
+/** Resolve agent by id-or-name. Always tries the O(1) cache.get() first
+ *  before falling back to the O(N) name scan in resolveAgentByName, so
+ *  UUID hits (the hot path for /api/agents/:id endpoints) stay constant-time. */
 export function resolveAgent(idOrName: string): Agent | undefined {
   return readCache().get(idOrName) ?? resolveAgentByName(idOrName);
 }
 
 // ── Write API ──────────────────────────────────────────────────────
 
+/** Thrown by writeAgentFile when the in-memory cache is known-stale
+ *  (last `loadAll()` failed and the cache may be missing entries). The
+ *  REST router catches this and maps it to 503 with a stable error code
+ *  so dashboard/MCP clients can distinguish "server is in a degraded
+ *  state, retry pointless until operator restarts" from a routine
+ *  optimistic-concurrency miss or 500.
+ *
+ *  The single dedicated class lets every patchAgent / setManager /
+ *  insertAgent / markExited / markRunning caller bubble this up
+ *  naturally — Hono's onError() catches it once at the router level
+ *  rather than every caller wrapping individually. */
+export class CachePoisonedError extends Error {
+  readonly code = "CACHE_POISONED" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "CachePoisonedError";
+  }
+}
+
 function writeAgentFile(agent: Agent): void {
+  // Throw rather than silently return — callers update the in-memory cache
+  // immediately after writeAgentFile() returns, so a silent skip causes the
+  // cache to diverge from disk. Surfacing the error keeps the two in sync
+  // and forces the operator to inspect the underlying load failure.
   if (lastReadFailed) {
-    console.error(
+    throw new CachePoisonedError(
       `Refusing to write agent ${agent.id} — last cache load failed (would risk data loss). Inspect ${getAgentsDir()} and restart.`,
     );
-    return;
   }
   ensureAgentsDir();
   const finalPath = getAgentFile(agent.id);
@@ -213,7 +260,25 @@ export function patchAgent(
 
 /** Set or clear an agent's manager. Cycle-checked.
  *  Returns the new record, "cycle" if the change would create one,
- *  "stale" on version mismatch, or undefined if id not found. */
+ *  "stale" on version mismatch, or undefined if id not found.
+ *
+ *  No-op short-circuit: if `managerId` already equals `existing.managerId`,
+ *  return the existing record unchanged (no version bump, no disk write,
+ *  no event). Catches genuine no-op caller flows — e.g. an MCP user
+ *  invoking `set_manager(agent, current_parent)` or a UI re-issuing the
+ *  same drag — so optimistic-concurrency tokens held by other clients
+ *  aren't invalidated by a write that doesn't actually change state.
+ *
+ *  Note: this short-circuit does NOT cover the DELETE-with-reassignTo
+ *  rollback path. During rollback `existing.managerId` is `newParent`
+ *  (the post-forward state on disk) and the proposed value is the
+ *  original — they differ, so the short-circuit is skipped and rollback
+ *  WILL re-bump version on each restored child. That's accepted: a
+ *  successful rollback is itself a meaningful state change worth
+ *  signaling, and it's strictly preferable to the alternative (silent
+ *  data loss when the rollback path is itself buggy). Callers holding
+ *  stale version tokens for those children get a "stale" on retry,
+ *  which is the correct signal. */
 export function setManager(
   id: UUID,
   managerId: UUID | null,
@@ -225,9 +290,22 @@ export function setManager(
   if (expectedVersion !== undefined && existing.version !== expectedVersion) {
     return "stale";
   }
+  // Validate manager existence FIRST — even before the no-op short-circuit.
+  // The dangling-ref scenario: a caller passes managerId === existing.managerId
+  // where existing.managerId points to a manager that's been deleted from
+  // disk but the in-memory cache hasn't been reloaded yet (rare, but reachable
+  // via idempotent set_manager retries / stale UI / migration windows).
+  // Without the up-front check, the no-op would silently re-affirm a dangling
+  // pointer; the read-time scrub would then fix it on next loadAll, but the
+  // write returned "success" in the meantime. Returning undefined surfaces
+  // the missing manager to the caller so they can refetch and re-target.
+  if (managerId !== null && !cache.has(managerId)) return undefined;
+  if (managerId === id) return "cycle"; // self-loop can't be a no-op (id must exist)
+  // No-op: managerId already matches AND has been validated above. Skip
+  // write entirely (preserves version, no event, no cache divergence).
+  if (existing.managerId === managerId) return existing;
   if (managerId !== null) {
-    if (managerId === id) return "cycle";
-    if (!cache.has(managerId)) return undefined; // unresolvable manager
+    // Existence was checked above; only the ancestor walk remains.
     // Walk up the proposed parent's ancestor chain. If we hit `id`, cycle.
     let cursor: UUID | null = managerId;
     const seen = new Set<UUID>();
@@ -294,6 +372,63 @@ export function deleteAgentRaw(id: UUID): boolean {
 /** Get the ids of all agents that name `parentId` as their manager. */
 export function childrenOf(parentId: UUID): Agent[] {
   return listAgents().filter((a) => a.managerId === parentId);
+}
+
+// ── Tree builder ───────────────────────────────────────────────────
+
+/**
+ * Build a parent→child tree from the agent collection. Shared between the
+ * REST `/api/agents/tree` endpoint and the MCP `get_org_chart` tool so the
+ * two views can never disagree on shape.
+ *
+ * - `includeExited`: when false (default), only agents with
+ *   `status === "running"` are visible. Exited agents AND transient
+ *   states (`starting`, etc.) are both filtered out. Their children
+ *   become roots when their manager is filtered. This preserves the
+ *   pre-refactor `buildOrgChartFromAgents` behavior — widening to
+ *   `status !== "exited"` would be a user-visible API change for
+ *   existing MCP/REST consumers.
+ * - `mapNode`: projects each Agent to the consumer's preferred node shape
+ *   (e.g. dashboard wants a `claudeSessionId` alias for legacy compat).
+ */
+export function buildAgentTree<
+  N extends { id: string; children: N[] },
+>(options: {
+  includeExited?: boolean;
+  mapNode: (a: Agent) => Omit<N, "children">;
+}): N[] {
+  const all = listAgents();
+  // Strict `running`-only filter: matches the prior canonical helper
+  // that this PR consolidates. Transient states (`starting`) appear
+  // in flat /api/agents queries but are deliberately omitted from the
+  // tree view so the org chart stays stable while a session warms up.
+  const visible = options.includeExited
+    ? all
+    : all.filter((a) => a.status === "running");
+  const byId = new Map(visible.map((a) => [a.id, a]));
+  const nodeById = new Map<string, N>();
+  for (const a of visible) {
+    // Construct the full node shape directly. The constraint
+    // `N extends { id: string; children: N[] }` means
+    // `Omit<N, "children"> & { children: N[] }` is structurally
+    // identical to N — but TS's structural inference can't prove that
+    // through a spread, so a single `as N` (without `as unknown`)
+    // bridges the gap. Type-safe at the call site because
+    // mapNode's return type IS Omit<N, "children">.
+    const node = { ...options.mapNode(a), children: [] as N[] } as N;
+    nodeById.set(a.id, node);
+  }
+  const roots: N[] = [];
+  for (const a of visible) {
+    const node = nodeById.get(a.id)!;
+    const parent =
+      a.managerId && byId.has(a.managerId)
+        ? nodeById.get(a.managerId)
+        : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

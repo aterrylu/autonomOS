@@ -77,13 +77,25 @@ if (isProviderInstalled("gemini-cli")) {
 // MUST happen before resumeActiveAgents() reads from the new layout.
 // Process-manager-agnostic: works under pm2, npx, bun, manual node, or
 // desktop-bootstrapped SSH server.
-const migrationResult = migrateIfNeeded();
-if (migrationResult.status === "migrated") {
-  console.log(
-    `[startup] migrated ${migrationResult.agents} agent(s) from sessions.json (` +
-      `${migrationResult.managersResolved} managers resolved, ` +
-      `${migrationResult.orphaned} orphaned)`,
+//
+// We exit non-zero on failure so pm2/systemd flag the unhealthy boot
+// rather than letting the server come up with a half-migrated state
+// where /api/agents would silently be missing records.
+try {
+  const migrationResult = migrateIfNeeded();
+  if (migrationResult.status === "migrated") {
+    console.log(
+      `[startup] migrated ${migrationResult.agents} agent(s) from sessions.json (` +
+        `${migrationResult.managersResolved} managers resolved, ` +
+        `${migrationResult.orphaned} orphaned)`,
+    );
+  }
+} catch (err) {
+  console.error(
+    "MIGRATION FAILED — investigate ~/.autonomos/sessions.json and ~/.autonomos/agents/ before restarting.",
   );
+  console.error(err instanceof Error ? (err.stack ?? err.message) : err);
+  process.exit(2);
 }
 
 type NodeEnv = {

@@ -10,7 +10,13 @@ import {
   resolveAgentId,
   spawnAgent,
 } from "./agents/runtime.js";
-import { listAgents, resolveAgentByName, setManager } from "./agents/store.js";
+import {
+  buildAgentTree,
+  CachePoisonedError,
+  listAgents,
+  resolveAgentByName,
+  setManager,
+} from "./agents/store.js";
 import { emitAgentDelta } from "./events/agents.js";
 import {
   DEFAULT_CAPABILITIES,
@@ -48,33 +54,16 @@ interface OrgNode {
 }
 
 function buildOrgChartFromAgents(includeExited = false): OrgNode[] {
-  const all = listAgents();
-  const visible = includeExited
-    ? all
-    : all.filter((a) => a.status === "running");
-  const byId = new Map(visible.map((a) => [a.id, a]));
-  const nodeById = new Map<string, OrgNode>();
-  for (const a of visible) {
-    nodeById.set(a.id, {
+  return buildAgentTree<OrgNode>({
+    includeExited,
+    mapNode: (a) => ({
       id: a.id,
       name: a.name,
       template: a.template,
       project: a.project,
       status: a.status,
-      children: [],
-    });
-  }
-  const roots: OrgNode[] = [];
-  for (const a of visible) {
-    const node = nodeById.get(a.id)!;
-    const parent =
-      a.managerId && byId.has(a.managerId)
-        ? nodeById.get(a.managerId)
-        : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  }
-  return roots;
+    }),
+  });
 }
 
 function createMcpServer(): McpServer {
@@ -324,7 +313,32 @@ function createMcpServer(): McpServer {
         managerId = mgr.id;
       }
 
-      const result = setManager(agent.id, managerId);
+      // setManager → writeAgentFile is throw-capable on lastReadFailed
+      // (cache/disk divergence guard added by the agent-unification PR).
+      // Catch and surface the same CACHE_POISONED signal the REST surface
+      // emits via 503, so MCP clients see a stable error code instead of
+      // a generic "Failed to set manager" attribution that would imply
+      // a transient issue safe to retry.
+      let result: ReturnType<typeof setManager>;
+      try {
+        result = setManager(agent.id, managerId);
+      } catch (err) {
+        if (err instanceof CachePoisonedError) {
+          console.error(
+            `[mcp] set_manager hit CACHE_POISONED for ${target}: ${err.message}`,
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: `CACHE_POISONED: ${err.message} (server's view of disk is degraded; retry pointless until the operator restarts the server).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        throw err;
+      }
       if (result === "cycle") {
         return {
           content: [
@@ -336,7 +350,9 @@ function createMcpServer(): McpServer {
           isError: true,
         };
       }
-      if (result === "stale" || !result || typeof result === "string") {
+      // setManager returns Agent | undefined | "cycle" | "stale".
+      // "cycle" handled above; everything other than an Agent is a failure.
+      if (!result || typeof result === "string") {
         return {
           content: [{ type: "text", text: `Failed to set manager.` }],
           isError: true,
@@ -464,7 +480,7 @@ function createMcpServer(): McpServer {
     },
   );
 
-  // ── Schedule tools (unchanged) ──────────────────────────────────
+  // ── Schedule tools ──────────────────────────────────────────────
 
   server.tool(
     "create_schedule",

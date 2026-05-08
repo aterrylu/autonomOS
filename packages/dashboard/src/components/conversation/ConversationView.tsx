@@ -409,13 +409,21 @@ export function ConversationView() {
   const activeSessionId =
     activePane?.type === "session" ? activePane.id : undefined;
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const claudeSessionId = activeSession?.claudeSessionId;
+  // /api/conversation/:id reads ~/.claude/projects/<cwd>/<id>.jsonl, which
+  // CC writes keyed on its own session UUID. After the agent-unification
+  // PR, SessionInfo.claudeSessionId is repurposed to mean `agent.id` (a
+  // dashboard-internal stable lookup key) — for migrated agents it
+  // happens to equal the CC session id (Option-A), but for any agent
+  // spawned post-merge the two diverge and the JSONL file doesn't
+  // exist. Use providerSessionId here, which is the field explicitly
+  // carrying the CC-side identifier.
+  const providerSessionId = activeSession?.providerSessionId;
   // sessions is transient — wait for it to be populated before erroring
   const sessionsLoaded = sessions.length > 0;
 
   useEffect(() => {
     if (!sessionsLoaded) return; // still loading
-    if (!claudeSessionId) {
+    if (!providerSessionId) {
       setLoading(false);
       setError("No conversation history for this session yet");
       return;
@@ -424,7 +432,7 @@ export function ConversationView() {
     setLoading(true);
     setError(null);
 
-    fetch(`/api/conversation/${claudeSessionId}`)
+    fetch(`/api/conversation/${providerSessionId}`)
       .then(async (res) => {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -442,7 +450,7 @@ export function ConversationView() {
         setError(err.message);
         setLoading(false);
       });
-  }, [claudeSessionId, sessionsLoaded]);
+  }, [providerSessionId, sessionsLoaded]);
 
   const placeholder = (msg: string) => (
     <div

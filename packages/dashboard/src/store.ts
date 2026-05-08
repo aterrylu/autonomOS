@@ -63,7 +63,18 @@ export interface SessionInfo {
   status: string;
   workingDirectory: string;
   provider: string;
+  /** Stable lookup key shared with /api/agents/tree's `claudeSessionId`
+   *  alias and the /api/agents/:id route params. Equals `id` (the agent UUID)
+   *  in the new model — NOT the Claude Code provider session id. The legacy
+   *  field name is kept for now to avoid touching every consumer; if you
+   *  need the actual CC session id (e.g. to invoke `claude --resume`),
+   *  read `providerSessionId` instead. */
   claudeSessionId?: string;
+  /** Provider-specific session id (CC's session id, Codex's, Gemini's).
+   *  Use this when invoking provider CLIs directly or reading the JSONL
+   *  transcript. Decoupled from `id` for fresh agents (only equal for
+   *  Option-A migrated records). */
+  providerSessionId?: string;
   template?: string;
   manager?: string;
   createdAt: number;
@@ -597,9 +608,15 @@ async function spawnSession(
     status: agent.status,
     workingDirectory: agent.workingDirectory,
     provider: agent.provider,
-    claudeSessionId: agent.providerSessionId,
+    // SessionInfo.claudeSessionId is the dashboard's stable lookup key —
+    // must equal agent.id to align with /api/agents/tree, useAgentStatusById,
+    // and the /api/agents/:id/* route URLs. See fetchSessions for full rationale.
+    claudeSessionId: agent.id,
+    // Actual CC session id — kept distinct so callers that need to invoke
+    // `claude --resume` or read CC's JSONL have access.
+    providerSessionId: agent.providerSessionId,
     template: agent.template,
-    manager: undefined, // managerId is a UUID; resolve to name happens via store.agents
+    manager: undefined, // managerId is a UUID; resolve to name handled in fetchSessions
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
@@ -787,13 +804,23 @@ export const useStore = create<AppState>()(
           // Resolve manager name client-side so the existing UI continues to
           // surface a human-readable label without an extra round-trip.
           const byId = new Map(agents.map((a) => [a.id, a]));
+          // SessionInfo.claudeSessionId is the dashboard's stable lookup key
+          // — it's consumed by useAgentStatusById (HierarchyPanel) and the
+          // /api/agents/:id/attach URL builder (resumeSession). For both to
+          // align with /api/agents/tree (which sets node.claudeSessionId =
+          // agent.id as a backward-compat alias), we set it to agent.id
+          // here too. Using providerSessionId would split the key space:
+          // migrated agents (id == providerSessionId) would still work, but
+          // freshly-spawned agents (different UUIDs) would silently drop
+          // status/activity in the org chart card view.
           const allSessions: SessionInfo[] = agents.map((a) => ({
             id: a.id,
             name: a.name,
             status: a.status,
             workingDirectory: a.workingDirectory,
             provider: a.provider,
-            claudeSessionId: a.providerSessionId,
+            claudeSessionId: a.id,
+            providerSessionId: a.providerSessionId,
             template: a.template,
             manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
             createdAt: a.createdAt,
