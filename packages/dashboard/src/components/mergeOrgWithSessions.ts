@@ -1,6 +1,6 @@
 import type { SessionInfo } from "../store";
 
-/** Org chart node as returned by /api/org. */
+/** Org chart node as returned by /api/agents/tree. */
 export interface OrgNode {
   name: string;
   claudeSessionId?: string;

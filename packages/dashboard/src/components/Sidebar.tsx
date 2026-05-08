@@ -241,8 +241,8 @@ export function Sidebar() {
 
   // Compute a stable fingerprint of the session fields that affect the org
   // chart. When this changes (spawn, kill, rename, set_manager, status flip),
-  // we bump `orgRefreshKey` to force an immediate /api/org refetch — otherwise
-  // the hierarchy lags by up to 5s behind the flat view.
+  // we bump `orgRefreshKey` to force an immediate /api/agents/tree refetch —
+  // otherwise the hierarchy lags by up to 5s behind the flat view.
   const sessionFingerprint = useMemo(
     () =>
       sessions
@@ -280,12 +280,14 @@ export function Sidebar() {
 
   /**
    * Hierarchy is "degraded" when the user has live sessions we can't show in
-   * the tree, OR when /api/org is outright broken. `HierarchyFallbackNotice`
-   * renders a banner with a one-click escape hatch to the flat view — it does
-   * NOT render an inline flat list (the user opts in via the button).
+   * the tree, OR when /api/agents/tree is outright broken.
+   * `HierarchyFallbackNotice` renders a banner with a one-click escape hatch
+   * to the flat view — it does NOT render an inline flat list (the user opts
+   * in via the button).
    *
-   * We surface the `"error"` state even with zero sessions so a broken org
-   * endpoint is visible to the user instead of masquerading as "No agents".
+   * We surface the `"error"` state even with zero sessions so a broken
+   * tree endpoint is visible to the user instead of masquerading as
+   * "No agents".
    */
   const hierarchyDegraded =
     orgStatus === "error" ||
@@ -1012,9 +1014,9 @@ function SessionRow({
 // ── Hierarchy fallback notice ───────────────────────────────────────────
 //
 // Safety net for the case where the hierarchy would otherwise show "No agents"
-// despite live sessions existing — e.g. /api/org errored, or name-matching
-// failed for every org node. Shows a one-line banner with a "Switch to flat
-// view" button so the user always has a path back to their agents.
+// despite live sessions existing — e.g. /api/agents/tree errored, or name-
+// matching failed for every node. Shows a one-line banner with a "Switch to
+// flat view" button so the user always has a path back to their agents.
 function HierarchyFallbackNotice({
   orgStatus,
   sessionCount,

@@ -99,13 +99,27 @@ export function App() {
   const viewportHeight = useViewportHeight();
   const [authState, setAuthState] = useState<AuthState>("checking");
 
-  // Check auth on mount by hitting a protected endpoint
+  // Check auth on mount by hitting a protected endpoint. Three-state
+  // classification (not just `=== 401 ? "unauthenticated" : "authenticated"`)
+  // so a 5xx / 404 / 403 from the probe doesn't masquerade as authenticated
+  // and silently land the user on a broken main UI — the "Cannot connect
+  // to server" screen with a Retry button is the better landing.
   useEffect(() => {
-    fetch("/api/sessions")
+    fetch("/api/agents")
       .then((res) => {
-        setAuthState(res.status === 401 ? "unauthenticated" : "authenticated");
+        if (res.status === 401) {
+          setAuthState("unauthenticated");
+        } else if (res.ok) {
+          setAuthState("authenticated");
+        } else {
+          console.error(`[auth] probe returned HTTP ${res.status}`);
+          setAuthState("error");
+        }
       })
-      .catch(() => setAuthState("error"));
+      .catch((err) => {
+        console.error("[auth] probe network failure:", err);
+        setAuthState("error");
+      });
   }, []);
 
   // Global keyboard shortcuts
@@ -199,13 +213,27 @@ export function App() {
             style={{ background: page.border, color: page.fg }}
             onClick={() => {
               setAuthState("checking");
-              fetch("/api/sessions")
-                .then((res) =>
-                  setAuthState(
-                    res.status === 401 ? "unauthenticated" : "authenticated",
-                  ),
-                )
-                .catch(() => setAuthState("error"));
+              // Same three-state classification as the mount-time probe
+              // above — 5xx / 404 / 403 must NOT slip through as
+              // authenticated (would put the user back on a broken
+              // main UI with no retry path).
+              fetch("/api/agents")
+                .then((res) => {
+                  if (res.status === 401) {
+                    setAuthState("unauthenticated");
+                  } else if (res.ok) {
+                    setAuthState("authenticated");
+                  } else {
+                    console.error(
+                      `[auth] retry probe returned HTTP ${res.status}`,
+                    );
+                    setAuthState("error");
+                  }
+                })
+                .catch((err) => {
+                  console.error("[auth] retry probe network failure:", err);
+                  setAuthState("error");
+                });
             }}
           >
             Retry
