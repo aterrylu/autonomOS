@@ -400,6 +400,13 @@ agentsRouter.delete("/:id", (c) => {
       let updated: ReturnType<typeof setManager>;
       let forwardThrew = false;
       let forwardErrorMessage: string | null = null;
+      // Track CachePoisonedError separately from generic throws — it has
+      // different semantics (persistent server degradation, NOT safe to
+      // retry until restart) and the response must escalate to 503 with
+      // CACHE_POISONED code to match the contract enforced by the
+      // runtimeDeleteAgent / deleteAgentRaw / router-onError paths in
+      // this same handler.
+      let cachePoisonedErr: CachePoisonedError | null = null;
       try {
         updated = setManager(child.id, newParent);
       } catch (forwardErr) {
@@ -409,9 +416,30 @@ agentsRouter.delete("/:id", (c) => {
           `[agents] DELETE setManager THREW for ${child.id} (${child.name}): ${forwardErrorMessage}`,
         );
         forwardThrew = true;
+        if (forwardErr instanceof CachePoisonedError) {
+          cachePoisonedErr = forwardErr;
+        }
         // updated stays undefined — falls into the rollback branch below.
       }
       if (typeof updated === "string" || updated === undefined) {
+        // Fast path: forward CachePoisonedError. Every rollback iteration
+        // would just throw CachePoisonedError too (writeAgentFile checks
+        // lastReadFailed unconditionally). Skip the rollback loop, flush
+        // pendingDeltas (prior reparents already persisted to disk), and
+        // return 503 with the same body shape every other CachePoisonedError
+        // path uses: { error, code, retryable, reparented? }.
+        if (cachePoisonedErr) {
+          for (const d of pendingDeltas.values()) emitAgentDelta(d);
+          return c.json(
+            {
+              error: cachePoisonedErr.message,
+              code: cachePoisonedErr.code,
+              retryable: false,
+              ...(reparented.length > 0 && { reparented }),
+            },
+            503,
+          );
+        }
         // Rollback path — buffered forward deltas are dropped (never emitted).
         const rollbackFailures: {
           id: UUID;
@@ -439,6 +467,18 @@ agentsRouter.delete("/:id", (c) => {
               `[agents] DELETE rollback THREW for ${r.id} (${r.name}): ${rollbackErrorMessage}`,
             );
             threw = true;
+            // CachePoisonedError mid-rollback signals all subsequent
+            // setManager calls will throw the same way. We don't abort
+            // the loop (each remaining iteration's predictable throw
+            // correctly flushes its forward delta below), but we DO
+            // record the first occurrence so the post-loop response
+            // escalates to 503 instead of 500.
+            if (
+              rollbackErr instanceof CachePoisonedError &&
+              !cachePoisonedErr
+            ) {
+              cachePoisonedErr = rollbackErr;
+            }
           }
           const failureReason: string | null = threw
             ? "throw"
@@ -481,6 +521,32 @@ agentsRouter.delete("/:id", (c) => {
           (r) => !rollbackFailures.some((f) => f.id === r.id),
         );
         const cleanRollback = rollbackFailures.length === 0;
+        // Cache-poisoned during rollback → escalate to 503. Cannot be a
+        // 500 because the response code carries a contract: 500 means
+        // "transient, try again," 503 + CACHE_POISONED means "server's
+        // view of disk is broken; restart the server, retry is pointless."
+        // Forward deltas were already emitted per-iteration in the loop
+        // above for each failed rollback (every iter throws CachePoisonedError
+        // here, so every iter went through the failure branch and flushed
+        // its forward delta). We don't re-flush.
+        if (cachePoisonedErr) {
+          return c.json(
+            {
+              error: cachePoisonedErr.message,
+              code: cachePoisonedErr.code,
+              retryable: false,
+              failedAt: {
+                id: child.id,
+                name: child.name,
+                reason: "throw",
+                message: cachePoisonedErr.message,
+              },
+              rolledBack: rolledBackOk,
+              rollbackFailures,
+            },
+            503,
+          );
+        }
         // Distinguish throw from "not-found" / cycle / stale in the
         // structured response so operators see the real cause (FS/cache
         // divergence vs id-not-in-store) rather than a misleading
