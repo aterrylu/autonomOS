@@ -412,6 +412,65 @@ export const TOOL_RUN_SCHEDULE: ToolDef = {
   },
 };
 
+// ── Memory Tool ─────────────────────────────────────────────────
+
+export const TOOL_MEMORY_QUERY: ToolDef = {
+  name: "memory_query",
+  description:
+    "Read the cross-agent memory log. Hierarchical: start at L0 (catalog), drill to L1 (project summary), L2 (timeline / daily), or L3 (raw events). Default level is L0. See ~/.autonomos/memory/SCHEMA.md for the full data model.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      level: {
+        type: "string",
+        enum: ["L0", "L1", "L2", "L3"],
+        description:
+          "L0=index.md catalog (default); L1=projects/<slug>/summary.md; L2=projects/<slug>/timeline.md or daily/<date>.md; L3=raw events.",
+      },
+      project: {
+        type: "string",
+        description:
+          'Project slug. Required for L1. For L2 with no `date`, returns the per-project timeline. For L3, filters events. Use "untagged" to match events with no project.',
+      },
+      date: {
+        type: "string",
+        description:
+          'L2 only — date as "YYYY-MM-DD". With no `project`, returns the cross-project daily rollup.',
+      },
+      id: {
+        type: "string",
+        description:
+          "L3 only — fetch a specific event by id. Bypasses other L3 filters.",
+      },
+      since: {
+        type: "number",
+        description:
+          "L3 only — inclusive lower bound on ts (epoch milliseconds).",
+      },
+      until: {
+        type: "number",
+        description:
+          "L3 only — exclusive upper bound on ts (epoch milliseconds).",
+      },
+      type: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "L3 only — restrict to event types (e.g. ['agent_message', 'agent_created']).",
+      },
+      actor: {
+        type: "string",
+        description:
+          "L3 only — restrict to events whose actor agentName matches (case-insensitive).",
+      },
+      limit: {
+        type: "number",
+        description: "L3 only — max events to return. Default 100, max 1000.",
+      },
+    },
+  },
+};
+
 /** All tools — channel MCP gets these (filtered by capabilities) */
 export const ALL_TOOLS: ToolDef[] = [
   TOOL_CREATE_AGENT,
@@ -429,6 +488,7 @@ export const ALL_TOOLS: ToolDef[] = [
   TOOL_UPDATE_SCHEDULE,
   TOOL_DELETE_SCHEDULE,
   TOOL_RUN_SCHEDULE,
+  TOOL_MEMORY_QUERY,
 ];
 
 /** Tools available without gateway connection (HTTP MCP for external clients) */
@@ -446,6 +506,7 @@ export const SERVER_TOOLS: ToolDef[] = [
   TOOL_UPDATE_SCHEDULE,
   TOOL_DELETE_SCHEDULE,
   TOOL_RUN_SCHEDULE,
+  TOOL_MEMORY_QUERY,
 ];
 
 /**

@@ -550,6 +550,38 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       );
     }
 
+    case "memory_query": {
+      // Forward as a GET with query params; the server route is a thin
+      // adapter over queryMemory() and owns validation/level-routing.
+      const params = new URLSearchParams();
+      const memArgs = args as {
+        level?: string;
+        project?: string;
+        date?: string;
+        id?: string;
+        since?: number;
+        until?: number;
+        type?: string[];
+        actor?: string;
+        limit?: number;
+      };
+      if (memArgs.level) params.set("level", memArgs.level);
+      if (memArgs.project) params.set("project", memArgs.project);
+      if (memArgs.date) params.set("date", memArgs.date);
+      if (memArgs.id) params.set("id", memArgs.id);
+      if (memArgs.since !== undefined)
+        params.set("since", String(memArgs.since));
+      if (memArgs.until !== undefined)
+        params.set("until", String(memArgs.until));
+      if (memArgs.actor) params.set("actor", memArgs.actor);
+      if (memArgs.limit !== undefined)
+        params.set("limit", String(memArgs.limit));
+      if (memArgs.type && memArgs.type.length > 0)
+        params.set("type", memArgs.type.join(","));
+      const qs = params.toString();
+      return serverFetch(`/api/memory${qs ? `?${qs}` : ""}`);
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

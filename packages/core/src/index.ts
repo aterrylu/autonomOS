@@ -2,6 +2,7 @@ export * from "./parsers/claude-code";
 export * from "./types/agent";
 export * from "./types/events";
 export * from "./types/gateway";
+export * from "./types/memory";
 export * from "./types/parser";
 export * from "./types/provider";
 export * from "./types/render";

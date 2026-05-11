@@ -16,6 +16,7 @@ import type {
 } from "@autonomos/core";
 import type { WSContext } from "hono/ws";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
+import { recordEvent } from "../memory/events.js";
 import { batchGetTitles } from "../titleCache.js";
 
 // ── Registry ──────────────────────────────────────────────────────
@@ -247,6 +248,15 @@ async function routeToAgent(
     return `Failed to deliver message to agent "${targetName}"`;
   }
   fanOutToDashboard(wsMsg);
+
+  recordEvent({
+    type: "agent_message",
+    actorAgentId: fromSessionId,
+    summary: `→ agent://${targetName}: ${content}`,
+    refs: { agentIds: [targetSessionId] },
+    payload: { to: `agent://${targetName}`, content },
+  });
+
   return null;
 }
 
@@ -282,10 +292,12 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
     };
     const json = JSON.stringify(wsMsg);
 
+    const delivered: string[] = [];
     for (const [sessionId, client] of sessionClients) {
       if (sessionId === fromSessionId) continue;
       try {
         client.send(json);
+        delivered.push(sessionId);
       } catch (err) {
         console.warn(
           `[gateway] broadcast to agent ${sessionId} failed, removing:`,
@@ -295,6 +307,14 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
       }
     }
     fanOutToDashboard(wsMsg);
+
+    recordEvent({
+      type: "agent_message",
+      actorAgentId: fromSessionId,
+      summary: `→ broadcast://all (${delivered.length} recipients): ${content}`,
+      refs: { agentIds: delivered },
+      payload: { to: "broadcast://all", content },
+    });
   });
 }
 

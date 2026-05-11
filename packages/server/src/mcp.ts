@@ -17,6 +17,7 @@ import {
   MCP_INSTRUCTIONS_EXTERNAL,
   MCP_SERVER_INFO,
 } from "./mcp/tools.js";
+import { queryMemory } from "./memory/events.js";
 import {
   addScheduleJob,
   removeScheduleJob,
@@ -657,6 +658,49 @@ function createMcpServer(): McpServer {
       return {
         content: [{ type: "text", text: `Schedule "${args.name}" triggered.` }],
       };
+    },
+  );
+
+  // ── Memory ─────────────────────────────────────────────────────
+  server.tool(
+    "memory_query",
+    "Read the cross-agent memory log. Hierarchical: start at L0 (catalog), drill to L1 (project summary), L2 (timeline / daily), or L3 (raw events). Default level is L0. See ~/.autonomos/memory/SCHEMA.md for the full data model.",
+    {
+      level: z.enum(["L0", "L1", "L2", "L3"]).optional(),
+      project: z.string().optional(),
+      date: z.string().optional(),
+      id: z.string().optional(),
+      since: z.number().optional(),
+      until: z.number().optional(),
+      type: z.array(z.string()).optional(),
+      actor: z.string().optional(),
+      limit: z.number().optional(),
+    },
+    async (args) => {
+      try {
+        const result = queryMemory({
+          level: args.level,
+          project: args.project,
+          date: args.date,
+          id: args.id,
+          since: args.since,
+          until: args.until,
+          type: args.type as
+            | import("@autonomos/core").MemoryEventType[]
+            | undefined,
+          actor: args.actor,
+          limit: args.limit,
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [{ type: "text", text: message }],
+          isError: true,
+        };
+      }
     },
   );
 

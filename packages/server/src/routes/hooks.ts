@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
+import { recordEvent } from "../memory/events.js";
 import { getProvider } from "../providers/index.js";
 
 /**
@@ -86,6 +87,15 @@ const IDLE_EXIT_EVENTS = new Set([
 
 /** Events that generate a user-visible notification badge */
 const NOTIFY_EVENTS = new Set(["Notification", "Stop", "PermissionRequest"]);
+
+/** Hook events captured as `notification`-type memory entries — coarse
+ *  agent-state signals. NOTIFY_EVENTS plus SubagentStart. */
+const MEMORY_NOTIFICATION_EVENTS = new Set([
+  "Stop",
+  "Notification",
+  "PermissionRequest",
+  "SubagentStart",
+]);
 
 // ── Notification helpers ─────────────────────────────────────────────
 
@@ -359,12 +369,51 @@ hooksRouter.post("/:sessionId", async (c) => {
           `[hooks] ${sessionId.slice(0, 8)} proactive: ${msg.slice(0, 80)}`,
         );
       }
+
+      recordEvent({
+        type: "brief",
+        actorAgentId: sessionId,
+        summary: `brief from ${agent?.name ?? sessionId.slice(0, 8)}: ${msg}`,
+        payload: {
+          message: msg,
+          proactive: body.tool_input?.status === "proactive" || false,
+        },
+      });
     } else {
       console.warn(
         `[hooks] ${sessionId.slice(0, 8)} SendUserMessage with missing/empty message` +
           ` (keys: ${body.tool_input ? Object.keys(body.tool_input).join(",") : "none"})`,
       );
     }
+  }
+
+  if (event === "UserPromptSubmit") {
+    const prompt =
+      typeof body.prompt === "string"
+        ? body.prompt
+        : typeof rawBody.prompt === "string"
+          ? rawBody.prompt
+          : "";
+    recordEvent({
+      type: "prompt_received",
+      actorAgentId: sessionId,
+      summary: prompt
+        ? `prompt: ${prompt}`
+        : `prompt_received by ${agent?.name ?? sessionId.slice(0, 8)}`,
+      payload: prompt ? { prompt } : undefined,
+    });
+  } else if (MEMORY_NOTIFICATION_EVENTS.has(event)) {
+    recordEvent({
+      type: "notification",
+      actorAgentId: sessionId,
+      summary: `${event}${
+        body.notification_type ? ` (${body.notification_type})` : ""
+      } — ${agent?.name ?? sessionId.slice(0, 8)}`,
+      payload: {
+        hookEvent: event,
+        notificationType: body.notification_type,
+      },
+    });
   }
 
   return c.json({ ok: true, event, sessionId });

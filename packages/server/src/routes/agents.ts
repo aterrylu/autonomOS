@@ -24,6 +24,7 @@ import {
   setManager,
 } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
+import { recordEvent } from "../memory/events.js";
 import { getTemplate } from "../templates.js";
 
 export const agentsRouter = new Hono();
@@ -153,6 +154,21 @@ agentsRouter.post("/", async (c) => {
           ? (body.provider as Provider)
           : undefined,
     });
+    recordEvent({
+      type: "agent_created",
+      actorAgentId: result.agent.id,
+      summary: `created agent ${result.agent.name}${
+        result.agent.template ? ` (template: ${result.agent.template})` : ""
+      }`,
+      project: result.agent.project ?? null,
+      payload: {
+        agentId: result.agent.id,
+        name: result.agent.name,
+        template: result.agent.template,
+        workingDirectory: result.agent.workingDirectory,
+        managerId: result.agent.managerId,
+      },
+    });
     return c.json(result.agent, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -272,6 +288,14 @@ agentsRouter.post("/:id/manager", async (c) => {
     managerId: result.managerId,
     version: result.version,
   });
+  recordEvent({
+    type: "manager_set",
+    actorAgentId: result.id,
+    summary: `${result.name} → manager=${managerId ?? "(cleared)"}`,
+    project: result.project ?? null,
+    refs: managerId ? { agentIds: [managerId] } : undefined,
+    payload: { agentId: result.id, managerId },
+  });
   return c.json(result);
 });
 
@@ -292,6 +316,13 @@ agentsRouter.post("/:id/attach", (c) => {
       managerId: agent.managerId,
       project: agent.project,
       provider: agent.provider,
+    });
+    recordEvent({
+      type: "agent_resumed",
+      actorAgentId: result.agent.id,
+      summary: `resumed agent ${result.agent.name}`,
+      project: result.agent.project ?? null,
+      payload: { agentId: result.agent.id, name: result.agent.name },
     });
     return c.json(result.agent);
   } catch (err) {
@@ -358,6 +389,13 @@ agentsRouter.delete("/:id", (c) => {
     // Race: agent vanished between the check and the call. Treat as success.
     deleteAgentRaw(id);
   }
+  recordEvent({
+    type: "agent_exited",
+    actorAgentId: id,
+    summary: `deleted agent ${agent.name}`,
+    project: agent.project ?? null,
+    payload: { agentId: id, name: agent.name, reason: "delete" },
+  });
   return c.json({ ok: true, id });
 });
 
@@ -374,5 +412,12 @@ agentsRouter.post("/:id/kill", (c) => {
       409,
     );
   }
+  recordEvent({
+    type: "agent_exited",
+    actorAgentId: agent.id,
+    summary: `killed agent ${agent.name}`,
+    project: agent.project ?? null,
+    payload: { agentId: agent.id, name: agent.name, reason: "kill" },
+  });
   return c.json({ ok: true, id: agent.id });
 });

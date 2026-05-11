@@ -15,6 +15,7 @@ import type { RunRecord, RunStatus, Schedule } from "@autonomos/core";
 import { Cron } from "croner";
 import { resolveClaudePath } from "./agents/runtime.js";
 import { CONFIG_DIR } from "./configDir.js";
+import { recordEvent } from "./memory/events.js";
 import {
   appendRun,
   getSchedule,
@@ -395,6 +396,13 @@ function dispatchOrQueue(name: string, schedule: Schedule): { error?: string } {
   const runState: RunState = { runId, scheduleName: name, startedAt };
   runningRuns.set(name, runState);
 
+  recordEvent({
+    type: "schedule_fired",
+    summary: `schedule "${name}" fired (target=${schedule.target})`,
+    refs: { schedules: [name] },
+    payload: { name, runId, target: schedule.target },
+  });
+
   // Execute based on target (use overrides if set, for testing)
   if (schedule.target === "isolated") {
     if (_isolatedExecutor) {
@@ -616,6 +624,21 @@ function onRunCompleted(name: string, result: RunResult): void {
       );
     });
   }
+
+  recordEvent({
+    type: "schedule_completed",
+    summary: `schedule "${name}" completed: ${result.status}${
+      result.error ? ` — ${result.error}` : ""
+    }`,
+    refs: { schedules: [name] },
+    payload: {
+      name,
+      runId: run.runId,
+      status: result.status,
+      durationMs,
+      error: result.error,
+    },
+  });
 
   pruneRuns(name);
   drainQueue();

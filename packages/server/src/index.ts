@@ -17,6 +17,7 @@ import {
 } from "./agents/runtime.js";
 import { resolveAuthToken } from "./auth.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
+import { initMemory } from "./memory/events.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
@@ -26,6 +27,7 @@ import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { hooksRouter } from "./routes/hooks.js";
+import { memoryRouter } from "./routes/memory.js";
 import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
@@ -38,6 +40,10 @@ import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
 
 // Seed default templates on fresh install
 seedDefaultTemplates();
+
+// Initialise hierarchical memory: writes SCHEMA.md, ensures directory layout,
+// warms project-stats cache, and emits an initial L0 index.md.
+initMemory();
 
 // Validate provider binaries at startup.
 // Claude Code is required (default provider) — others are optional.
@@ -172,6 +178,7 @@ app.route("/api/templates", templateRouter);
 app.route("/api/providers", providerRouter);
 app.route("/api/schedules", scheduleRouter);
 app.route("/api/scheduler", schedulerRouter);
+app.route("/api/memory", memoryRouter);
 app.route("/api/plugins/claude-usage", claudeUsageRouter);
 
 // MCP — Streamable HTTP transport for agent-to-agent communication
