@@ -34,6 +34,7 @@ import {
 } from "./embedded-mode.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
+import { getServerVersion } from "./version.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
@@ -47,25 +48,12 @@ import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
 import { settingsRouter } from "./routes/settings.js";
+import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
-
-// Lazy version lookup. We read package.json once at startup so the PID file
-// can carry a useful version string. The bundled binary still has access to
-// its package.json via bun --target=node bundling.
-function readServerVersion(): string {
-  try {
-    const pkg = JSON.parse(
-      readFileSync(resolve(import.meta.dirname, "../package.json"), "utf-8"),
-    );
-    return typeof pkg.version === "string" ? pkg.version : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
 
 type NodeEnv = {
   Bindings: {
@@ -247,6 +235,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
+  app.route("/api/system", systemRouter);
 
   // MCP — Streamable HTTP transport for agent-to-agent communication
   app.post("/mcp", async (c) => {
@@ -326,7 +315,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           writePidFile({
             pid: process.pid,
             port: actualPort,
-            version: readServerVersion(),
+            version: getServerVersion(),
             startedAt: new Date().toISOString(),
           });
         } catch (err) {

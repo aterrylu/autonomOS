@@ -16,6 +16,7 @@ import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
 import { runUninstallServiceCommand } from "./commands/uninstall-service.js";
+import { runUpgradeCommand } from "./commands/upgrade.js";
 
 const USAGE = `Usage: autonomos <command> [options]
 
@@ -28,6 +29,7 @@ Commands:
                        Options: --prefix=DIR, --no-activate, --bin=PATH, --force
   uninstall-service    Stop daemon and remove the service file
                        Options: --prefix=DIR
+  upgrade              Fetch latest release, verify, atomic swap, restart daemon
   help, --help, -h     Print this message
 
 Examples:
@@ -66,6 +68,8 @@ async function main(): Promise<number> {
       return await runInstallServiceCommand(argv.slice(1));
     case "uninstall-service":
       return await runUninstallServiceCommand(argv.slice(1));
+    case "upgrade":
+      return await runUpgradeCommand();
     case "help":
       process.stdout.write(USAGE);
       return 0;

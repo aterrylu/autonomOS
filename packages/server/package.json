@@ -7,7 +7,9 @@
     ".": "./src/index.ts",
     "./run.js": "./src/run.ts",
     "./pid-file.js": "./src/pid-file.ts",
-    "./configDir.js": "./src/configDir.ts"
+    "./configDir.js": "./src/configDir.ts",
+    "./upgrade.js": "./src/upgrade.ts",
+    "./version.js": "./src/version.ts"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

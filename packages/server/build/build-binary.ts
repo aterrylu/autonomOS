@@ -22,7 +22,14 @@
 // to keep responsibilities clean — the root build:binary script chains them.
 
 import { $ } from "bun";
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { arch as nodeArch, platform as nodePlatform } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -84,6 +91,15 @@ for (const target of targets) {
   const dashCopy = resolve(outdir, "_embedded_dashboard");
   rmSync(dashCopy, { recursive: true, force: true });
   cpSync(embeddedDashboard, dashCopy, { recursive: true });
+  // Also write a minimal package.json so the bundled version-reader and the
+  // upgrade flow can read the version string at runtime.
+  const serverPkg = JSON.parse(
+    readFileSync(resolve(serverRoot, "package.json"), "utf-8"),
+  ) as { name: string; version: string };
+  writeFileSync(
+    resolve(outdir, "package.json"),
+    `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
+  );
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
 
   if (wantTarball) {
