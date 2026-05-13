@@ -1,0 +1,19 @@
+{
+  "name": "@autonomos/cli",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "autonomos": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@autonomos/core": "workspace:*",
+    "@autonomos/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.21.0"
+  }
+}
