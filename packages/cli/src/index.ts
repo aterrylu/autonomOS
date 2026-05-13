@@ -11,25 +11,33 @@
 // treat it as an implicit `start` — preserves the Phase 1A.1 invocation
 // pattern `node bundle.js --port=N --embedded`.
 
+import { runInstallServiceCommand } from "./commands/install-service.js";
 import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
+import { runUninstallServiceCommand } from "./commands/uninstall-service.js";
 
 const USAGE = `Usage: autonomos <command> [options]
 
 Commands:
-  start [options]    Run the server in the foreground (default if no command)
-                     Options: --port=N, --embedded
-  stop               Gracefully stop a running daemon (SIGTERM)
-  status             Print running daemon's state
-  help, --help, -h   Print this message
+  start [options]      Run the server in the foreground (default if no command)
+                       Options: --port=N, --embedded
+  stop                 Gracefully stop a running daemon (SIGTERM)
+  status               Print running daemon's state
+  install-service      Install OS-native supervisor (launchd / systemd-user)
+                       Options: --prefix=DIR, --no-activate, --bin=PATH, --force
+  uninstall-service    Stop daemon and remove the service file
+                       Options: --prefix=DIR
+  help, --help, -h     Print this message
 
 Examples:
-  autonomos                      # start the server with defaults
-  autonomos start --port=3100    # start on a specific port
-  autonomos --embedded --port=0  # embedded mode (Electron child)
-  autonomos status               # check if a daemon is running
-  autonomos stop                 # stop the running daemon
+  autonomos                         # start the server with defaults
+  autonomos start --port=3100       # start on a specific port
+  autonomos --embedded --port=0     # embedded mode (Electron child)
+  autonomos status                  # check if a daemon is running
+  autonomos stop                    # stop the running daemon
+  autonomos install-service         # install as a persistent service
+  autonomos uninstall-service       # remove the service installation
 `;
 
 async function main(): Promise<number> {
@@ -54,6 +62,10 @@ async function main(): Promise<number> {
       return await runStopCommand();
     case "status":
       return await runStatusCommand();
+    case "install-service":
+      return await runInstallServiceCommand(argv.slice(1));
+    case "uninstall-service":
+      return await runUninstallServiceCommand(argv.slice(1));
     case "help":
       process.stdout.write(USAGE);
       return 0;
