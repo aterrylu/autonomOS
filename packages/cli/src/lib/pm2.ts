@@ -12,12 +12,31 @@ import { run } from "./shell.js";
 type Pm2Process = {
   name: string;
   pid?: number;
-  pm2_env?: { status?: string };
+  pm2_env?: {
+    status?: string;
+    env?: Record<string, string | number | undefined>;
+  };
 };
 
 export type Pm2Detection =
   | { managed: false }
-  | { managed: true; processes: Pm2Process[] };
+  | { managed: true; processes: Pm2Process[]; port: number | undefined };
+
+/**
+ * Extract the PORT env var from any of the discovered pm2 processes. Used by
+ * migrate-from-pm2 to preserve the port when handing off to install-service.
+ */
+function extractPort(processes: Pm2Process[]): number | undefined {
+  for (const p of processes) {
+    const raw = p.pm2_env?.env?.PORT;
+    if (typeof raw === "number" && Number.isInteger(raw)) return raw;
+    if (typeof raw === "string") {
+      const n = Number(raw);
+      if (Number.isInteger(n) && n > 0 && n <= 65535) return n;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Detect whether pm2 is installed AND has a process named "autonomos" in its
@@ -30,7 +49,11 @@ export function detectPm2Install(): Pm2Detection {
     const all = JSON.parse(listed.stdout) as Pm2Process[];
     const autonomos = all.filter((p) => p.name === "autonomos");
     if (autonomos.length === 0) return { managed: false };
-    return { managed: true, processes: autonomos };
+    return {
+      managed: true,
+      processes: autonomos,
+      port: extractPort(autonomos),
+    };
   } catch {
     return { managed: false };
   }

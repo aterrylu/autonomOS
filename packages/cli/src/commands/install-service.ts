@@ -33,6 +33,7 @@ type InstallFlags = {
   noActivate: boolean;
   bin: string | undefined;
   force: boolean;
+  port: number | undefined;
 };
 
 function parseFlags(argv: readonly string[]): InstallFlags {
@@ -40,6 +41,7 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   let noActivate = false;
   let bin: string | undefined;
   let force = false;
+  let port: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--no-activate") noActivate = true;
@@ -48,9 +50,17 @@ function parseFlags(argv: readonly string[]): InstallFlags {
     else if (a === "--prefix") prefix = argv[++i] ?? defaultPrefix();
     else if (a.startsWith("--bin=")) bin = a.slice("--bin=".length);
     else if (a === "--bin") bin = argv[++i];
+    else if (a.startsWith("--port=")) port = Number(a.slice("--port=".length));
+    else if (a === "--port") port = Number(argv[++i]);
     else throw new Error(`Unknown flag: ${a}`);
   }
-  return { prefix, noActivate, bin, force };
+  if (
+    port !== undefined &&
+    (!Number.isInteger(port) || port < 0 || port > 65535)
+  ) {
+    throw new Error(`Invalid --port value: must be 0-65535`);
+  }
+  return { prefix, noActivate, bin, force, port };
 }
 
 export async function runInstallServiceCommand(
@@ -95,8 +105,11 @@ export async function runInstallServiceCommand(
     return 1;
   }
 
-  // Program-args either auto-detected or overridden via --bin
-  const programArgs = flags.bin ? [flags.bin, "start"] : detectProgramArgs();
+  // Program-args either auto-detected or overridden via --bin. Append --port
+  // when explicitly requested (preserves the port on pm2 migrations).
+  const baseArgs = flags.bin ? [flags.bin, "start"] : detectProgramArgs();
+  const programArgs =
+    flags.port !== undefined ? [...baseArgs, `--port=${flags.port}`] : baseArgs;
 
   mkdirSync(paths.serviceDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });

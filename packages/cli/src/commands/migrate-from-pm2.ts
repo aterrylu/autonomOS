@@ -22,6 +22,9 @@ export async function runMigrateFromPm2Command(
   console.log(
     `Detected ${detection.processes.length} pm2-managed autonomos process(es). Migrating...`,
   );
+  if (detection.port !== undefined) {
+    console.log(`  Preserving PORT=${detection.port} from pm2 setup.`);
+  }
   const result = migrateFromPm2();
   if (!result.ok) {
     console.error(`✗ pm2 migration failed: ${result.message}`);
@@ -30,7 +33,16 @@ export async function runMigrateFromPm2Command(
   console.log(`✓ Stopped + deregistered ${result.stopped} pm2 process(es).`);
 
   console.log("Installing OS-native supervisor (launchd/systemd-user)...");
-  const installCode = await runInstallServiceCommand([...argv, "--force"]);
+  // Carry pm2's PORT through to the new supervisor's ExecStart so existing
+  // clients pointed at the old port keep working post-migration.
+  const installArgs = [...argv, "--force"];
+  if (
+    detection.port !== undefined &&
+    !installArgs.some((a) => a === "--port" || a.startsWith("--port="))
+  ) {
+    installArgs.push(`--port=${detection.port}`);
+  }
+  const installCode = await runInstallServiceCommand(installArgs);
   if (installCode !== 0) {
     console.error(
       "✗ install-service failed after pm2 migration. Your daemon is currently NOT running.\n" +
