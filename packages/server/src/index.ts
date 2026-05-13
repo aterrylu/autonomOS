@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
@@ -11,6 +12,16 @@ import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { migrateIfNeeded } from "./agents/migrate.js";
+import { parseCliArgs, printUsage } from "./cli-args.js";
+import { announceEmbeddedReady, resolveEmbeddedConfig } from "./embedded-mode.js";
+
+// Parse CLI flags early. --help short-circuits before any startup work.
+const cliArgs = parseCliArgs(process.argv.slice(2));
+if (cliArgs.help) {
+  printUsage();
+  process.exit(0);
+}
+const embeddedConfig = resolveEmbeddedConfig(cliArgs.embedded);
 import {
   resumeActiveAgents,
   shutdownAllAttachments,
@@ -109,9 +120,25 @@ const app = new Hono<NodeEnv>();
 
 const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
-// Serve dashboard static files in production
-const dashboardDist = resolve(import.meta.dirname, "../../dashboard/dist");
-const isProduction = existsSync(dashboardDist);
+// Serve dashboard static files in production.
+//
+// Path resolution order:
+//   1. ./src/_embedded_dashboard/    — populated at binary build time
+//                                      (see build/embed-dashboard.ts).
+//   2. ../../dashboard/dist          — local dev fallback when running via
+//                                      tsx without the embed step.
+//
+// We check for index.html specifically (not just dir existence) because
+// tooling like `tsc -b` may create the dist directory with .d.ts files
+// without producing a Vite bundle.
+const dashboardCandidates = [
+  resolve(import.meta.dirname, "_embedded_dashboard"),
+  resolve(import.meta.dirname, "../../dashboard/dist"),
+];
+const dashboardDist =
+  dashboardCandidates.find((d) => existsSync(resolve(d, "index.html"))) ??
+  null;
+const isProduction = dashboardDist !== null;
 
 const corsOrigin =
   process.env.CORS_ORIGIN ||
@@ -226,28 +253,47 @@ if (isProduction) {
   app.get("*", (c) => c.html(indexHtml));
 }
 
-const port = Number(process.env.PORT) || 3000;
+// Port precedence: --port CLI flag > PORT env > 3000 default.
+// --port=0 asks the OS to assign a free port (used in embedded mode).
+const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
 
-const server = serve({ fetch: app.fetch, port }, () => {
-  const base = `http://localhost:${port}`;
-  console.log(`autonomOS server listening on ${base}`);
-  console.log(
-    `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
-  );
+const server = serve(
+  {
+    fetch: app.fetch,
+    port: requestedPort,
+    hostname: embeddedConfig.bindHost,
+  },
+  () => {
+    // When --port=0 the OS assigned us a real port; read it from the listener.
+    const addr = server.address() as AddressInfo | null;
+    const actualPort = addr?.port ?? requestedPort;
+    const host = embeddedConfig.bindHost ?? "localhost";
+    const base = `http://${host}:${actualPort}`;
+    console.log(`autonomOS server listening on ${base}`);
+    console.log(
+      `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
+    );
 
-  // Initialize gateway (platform adapters, routing table)
-  import("./gateway/index.js").then(({ initGateway }) => {
-    initGateway().catch((err) => console.error("[gateway] init failed:", err));
-  });
+    // Embedded-mode contract: emit structured readiness signal so the parent
+    // process (Electron desktop) can discover the actual port.
+    if (cliArgs.embedded) {
+      announceEmbeddedReady(actualPort);
+    }
 
-  // Auto-resume agents whose persisted status is "running" — handles all
-  // failure modes (cwd missing, provider gone, etc) by marking the failed
-  // ones exited/crashed so they don't zombie.
-  resumeActiveAgents();
+    // Initialize gateway (platform adapters, routing table)
+    import("./gateway/index.js").then(({ initGateway }) => {
+      initGateway().catch((err) => console.error("[gateway] init failed:", err));
+    });
 
-  // Start scheduler AFTER agents are up so agent:<name> targets resolve
-  initScheduler();
-});
+    // Auto-resume agents whose persisted status is "running" — handles all
+    // failure modes (cwd missing, provider gone, etc) by marking the failed
+    // ones exited/crashed so they don't zombie.
+    resumeActiveAgents();
+
+    // Start scheduler AFTER agents are up so agent:<name> targets resolve
+    initScheduler();
+  },
+);
 
 injectWebSocket(server);
 

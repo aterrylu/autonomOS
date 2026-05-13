@@ -1,6 +1,10 @@
 node_modules/
 dist/
 build/
+# Phase 1A.1: server build scripts (committed) — override generic build/ ignore
+!packages/server/build/
+# Phase 1A.1: staging dir for dashboard assets copied at binary build time
+packages/server/src/_embedded_dashboard/
 .env
 .env.local
 .DS_Store
