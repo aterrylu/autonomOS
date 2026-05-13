@@ -121,17 +121,38 @@ EOF
 esac
 
 # ── pm2 migration (if applicable) ─────────────────────────────────────────
-# Existing users who installed via `make prod` will have a pm2-managed
-# autonomos. Detect that and migrate before installing the new supervisor.
-if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]] \
-  && command -v pm2 >/dev/null 2>&1 \
-  && pm2 jlist 2>/dev/null | grep -q '"name":"autonomos"'; then
-  echo "[install] Detected existing pm2-managed autonomos. Migrating..."
-  "$WRAPPER" migrate-from-pm2
-  echo "[install] ✓ Migration complete."
-elif [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
-  echo "[install] Running 'autonomos install-service'..."
-  "$WRAPPER" install-service
+# Existing users who installed via `make prod` typically have pm2 at one of:
+#   $HOME/.bun/bin/pm2     (bun add -g pm2 — the existing Makefile install path)
+#   $HOME/.local/bin/pm2
+#   /usr/local/bin/pm2
+#   /opt/homebrew/bin/pm2
+# Walk all of them; default PATH alone misses bun-installed pm2 in
+# non-interactive shells like `curl install.sh | bash`.
+find_pm2() {
+  if command -v pm2 >/dev/null 2>&1; then echo "pm2"; return 0; fi
+  for p in "$HOME/.bun/bin/pm2" "$HOME/.local/bin/pm2" "$HOME/.volta/bin/pm2" \
+           "/usr/local/bin/pm2" "/opt/homebrew/bin/pm2"; do
+    [[ -x "$p" ]] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+PM2_BIN="$(find_pm2 || true)"
+PM2_MANAGED=0
+if [[ -n "$PM2_BIN" ]] \
+  && "$PM2_BIN" jlist 2>/dev/null | grep -q '"name":"autonomos"'; then
+  PM2_MANAGED=1
+fi
+
+if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
+  if [[ "$PM2_MANAGED" == "1" ]]; then
+    echo "[install] Detected existing pm2-managed autonomos. Migrating..."
+    "$WRAPPER" migrate-from-pm2
+    echo "[install] ✓ Migration complete."
+  else
+    echo "[install] Running 'autonomos install-service'..."
+    "$WRAPPER" install-service
+  fi
 fi
 
 echo ""

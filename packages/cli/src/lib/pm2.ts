@@ -7,7 +7,37 @@
 // (so it doesn't try to restart on reboot), then let install-service handle
 // the new supervisor.
 
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { run } from "./shell.js";
+
+/**
+ * pm2 often lives outside the default PATH (e.g., $HOME/.bun/bin/pm2 when
+ * installed via `bun add -g pm2`, which is what the existing `make prod`
+ * deployment does). Walk a few well-known locations explicitly so that
+ * non-interactive shells (CI runners, install.sh sourced from curl) can
+ * find an installed pm2 reliably.
+ *
+ * Returns the path to a runnable pm2 binary, or null if none found.
+ */
+function findPm2Binary(): string | null {
+  const home = homedir();
+  const candidates = [
+    "pm2", // try plain PATH first
+    `${home}/.bun/bin/pm2`,
+    `${home}/.local/bin/pm2`,
+    `${home}/.volta/bin/pm2`,
+    "/usr/local/bin/pm2",
+    "/opt/homebrew/bin/pm2",
+  ];
+  for (const path of candidates) {
+    // For absolute paths, fs.existsSync gives a fast no-op when missing
+    if (path.startsWith("/") && !existsSync(path)) continue;
+    const probe = run(path, ["--version"]);
+    if (probe.ok) return path;
+  }
+  return null;
+}
 
 type Pm2Process = {
   name: string;
@@ -43,8 +73,10 @@ function extractPort(processes: Pm2Process[]): number | undefined {
  * list. Returns { managed: false } if pm2 is absent or has no autonomos entry.
  */
 export function detectPm2Install(): Pm2Detection {
-  const listed = run("pm2", ["jlist"]);
-  if (!listed.ok) return { managed: false }; // pm2 not installed or errored
+  const pm2Bin = findPm2Binary();
+  if (!pm2Bin) return { managed: false }; // pm2 not installed anywhere we know
+  const listed = run(pm2Bin, ["jlist"]);
+  if (!listed.ok) return { managed: false };
   try {
     const all = JSON.parse(listed.stdout) as Pm2Process[];
     const autonomos = all.filter((p) => p.name === "autonomos");
@@ -76,9 +108,19 @@ export function migrateFromPm2(): Pm2MigrationResult {
     return { ok: true, stopped: 0 };
   }
 
+  const pm2Bin = findPm2Binary();
+  if (!pm2Bin) {
+    // Defensive: if detectPm2Install said managed=true, findPm2Binary should
+    // also have succeeded. Surface a useful error rather than crashing.
+    return {
+      ok: false,
+      message: "pm2 binary not found despite earlier detection",
+    };
+  }
+
   const count = detection.processes.length;
 
-  const stop = run("pm2", ["stop", "autonomos"]);
+  const stop = run(pm2Bin, ["stop", "autonomos"]);
   if (!stop.ok) {
     return {
       ok: false,
@@ -86,7 +128,7 @@ export function migrateFromPm2(): Pm2MigrationResult {
     };
   }
 
-  const del = run("pm2", ["delete", "autonomos"]);
+  const del = run(pm2Bin, ["delete", "autonomos"]);
   if (!del.ok) {
     return {
       ok: false,
@@ -97,7 +139,7 @@ export function migrateFromPm2(): Pm2MigrationResult {
   // Persist pm2's process list so it doesn't try to bring autonomos back on
   // boot. Best-effort — `pm2 save` can return non-zero in some setups but
   // the migration is still valid.
-  run("pm2", ["save"]);
+  run(pm2Bin, ["save"]);
 
   return { ok: true, stopped: count };
 }
