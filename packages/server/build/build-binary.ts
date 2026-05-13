@@ -29,9 +29,19 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverRoot = resolve(here, "..");
-const entry = resolve(serverRoot, "src/index.ts");
+const repoRoot = resolve(serverRoot, "../..");
+// Phase 1C: the CLI is the top-level entry — it dispatches to server runServer()
+// for the `start` subcommand (or argv-only invocation per Phase 1B contract).
+// One bundle produces both the CLI tools (status/stop/install-service/...)
+// AND the server it manages.
+const entry = resolve(repoRoot, "packages/cli/src/index.ts");
 const distDir = resolve(serverRoot, "dist");
 const embeddedDashboard = resolve(serverRoot, "src/_embedded_dashboard");
+
+// Bun's CLI eats unknown long-flags before passing argv to the script, so we
+// use an env var instead. Set TARBALL=1 to produce per-platform .tar.gz
+// alongside the bundle directories.
+const wantTarball = process.env.TARBALL === "1";
 
 if (!existsSync(embeddedDashboard)) {
   console.error(
@@ -75,6 +85,15 @@ for (const target of targets) {
   rmSync(dashCopy, { recursive: true, force: true });
   cpSync(embeddedDashboard, dashCopy, { recursive: true });
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
+
+  if (wantTarball) {
+    const tarball = resolve(distDir, `autonomos-${suffix}.tar.gz`);
+    rmSync(tarball, { force: true });
+    // -C the outdir then tar `.` so the archive doesn't carry a useless
+    // parent directory prefix; consumers (install.sh) untar into a clean dir.
+    await $`tar -czf ${tarball} -C ${outdir} .`;
+    console.log(`[build-binary] ✓ ${tarball}`);
+  }
 }
 console.log(
   `[build-binary] Done. ${targets.length} bundle${targets.length === 1 ? "" : "s"} in ${distDir}.\n` +
