@@ -34,7 +34,6 @@ import {
 } from "./embedded-mode.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
-import { getServerVersion } from "./version.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
@@ -53,6 +52,7 @@ import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { seedDefaultTemplates } from "./templates.js";
+import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
 
 type NodeEnv = {

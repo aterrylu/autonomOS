@@ -12,10 +12,7 @@
 //   2 — unsupported platform
 
 import { existsSync, unlinkSync } from "node:fs";
-import {
-  defaultPrefix,
-  getServicePaths,
-} from "../lib/service-paths.js";
+import { defaultPrefix, getServicePaths } from "../lib/service-paths.js";
 import { runIgnoring } from "../lib/shell.js";
 
 function parseFlags(argv: readonly string[]): { prefix: string } {

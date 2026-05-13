@@ -14,18 +14,19 @@
 //   1 — failure (file write, launchctl/systemctl, etc.)
 //   2 — unsupported platform
 
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
+import { detectPm2Install } from "../lib/pm2.js";
 import {
   defaultPrefix,
   detectProgramArgs,
   getServicePaths,
 } from "../lib/service-paths.js";
-import { run, runIgnoring, runOrThrow } from "../lib/shell.js";
 import {
   renderLaunchAgentPlist,
   renderSystemdUserUnit,
 } from "../lib/service-templates.js";
+import { runIgnoring, runOrThrow } from "../lib/shell.js";
 
 type InstallFlags = {
   prefix: string;
@@ -71,6 +72,21 @@ export async function runInstallServiceCommand(
     return 2;
   }
 
+  // Refuse to install on top of a pm2-managed autonomos — would race on port
+  // 3100 and confuse the user. Direct them to migrate-from-pm2 explicitly.
+  if (!flags.force) {
+    const pm2 = detectPm2Install();
+    if (pm2.managed) {
+      console.error(
+        `Detected pm2-managed autonomos (${pm2.processes.length} process(es)).\n` +
+          `Run \`autonomos migrate-from-pm2\` to switch supervisors cleanly,\n` +
+          `or re-run with --force to install anyway (NOT recommended — will\n` +
+          `cause port collision unless you stop pm2 first).`,
+      );
+      return 1;
+    }
+  }
+
   if (existsSync(paths.serviceFile) && !flags.force) {
     console.error(
       `Service file already exists at ${paths.serviceFile}.\n` +
@@ -80,9 +96,7 @@ export async function runInstallServiceCommand(
   }
 
   // Program-args either auto-detected or overridden via --bin
-  const programArgs = flags.bin
-    ? [flags.bin, "start"]
-    : detectProgramArgs();
+  const programArgs = flags.bin ? [flags.bin, "start"] : detectProgramArgs();
 
   mkdirSync(paths.serviceDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });

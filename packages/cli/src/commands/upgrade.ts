@@ -61,7 +61,9 @@ export async function runUpgradeCommand(): Promise<number> {
         console.warn(
           `  Could not signal daemon: ${err instanceof Error ? err.message : err}`,
         );
-        console.warn("  Restart it manually: autonomos stop && autonomos start");
+        console.warn(
+          "  Restart it manually: autonomos stop && autonomos start",
+        );
       }
     } else {
       console.log(

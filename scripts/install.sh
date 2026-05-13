@@ -120,8 +120,16 @@ EOF
     ;;
 esac
 
-# ── install-service ───────────────────────────────────────────────────────
-if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
+# ── pm2 migration (if applicable) ─────────────────────────────────────────
+# Existing users who installed via `make prod` will have a pm2-managed
+# autonomos. Detect that and migrate before installing the new supervisor.
+if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]] \
+  && command -v pm2 >/dev/null 2>&1 \
+  && pm2 jlist 2>/dev/null | grep -q '"name":"autonomos"'; then
+  echo "[install] Detected existing pm2-managed autonomos. Migrating..."
+  "$WRAPPER" migrate-from-pm2
+  echo "[install] ✓ Migration complete."
+elif [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
   echo "[install] Running 'autonomos install-service'..."
   "$WRAPPER" install-service
 fi

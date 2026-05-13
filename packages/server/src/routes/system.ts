@@ -10,11 +10,7 @@
 // succeeds but the user has to start the daemon themselves.
 
 import { Hono } from "hono";
-import {
-  deriveBundleDir,
-  detectPlatform,
-  performUpgrade,
-} from "../upgrade.js";
+import { deriveBundleDir, detectPlatform, performUpgrade } from "../upgrade.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();

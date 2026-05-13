@@ -12,6 +12,7 @@
 // pattern `node bundle.js --port=N --embedded`.
 
 import { runInstallServiceCommand } from "./commands/install-service.js";
+import { runMigrateFromPm2Command } from "./commands/migrate-from-pm2.js";
 import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
@@ -30,6 +31,8 @@ Commands:
   uninstall-service    Stop daemon and remove the service file
                        Options: --prefix=DIR
   upgrade              Fetch latest release, verify, atomic swap, restart daemon
+  migrate-from-pm2     Stop pm2's autonomos process and install the new
+                       OS-native supervisor (one-shot migration for old users)
   help, --help, -h     Print this message
 
 Examples:
@@ -70,6 +73,8 @@ async function main(): Promise<number> {
       return await runUninstallServiceCommand(argv.slice(1));
     case "upgrade":
       return await runUpgradeCommand();
+    case "migrate-from-pm2":
+      return await runMigrateFromPm2Command(argv.slice(1));
     case "help":
       process.stdout.write(USAGE);
       return 0;

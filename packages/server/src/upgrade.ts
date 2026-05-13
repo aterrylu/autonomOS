@@ -18,7 +18,15 @@
 // a broken upgrade can roll back manually:  mv share/autonomos.previous → share/autonomos.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 
@@ -202,13 +210,11 @@ async function downloadTo(url: string, dest: string): Promise<void> {
     throw new Error(`Download failed (${resp.status}) for ${url}`);
   }
   const buf = Buffer.from(await resp.arrayBuffer());
-  const { writeFileSync } = await import("node:fs");
   writeFileSync(dest, buf);
 }
 
 function computeSha256(path: string): string {
   // node:crypto for portability — shasum may not be available on every host.
-  const { createHash } = require("node:crypto") as typeof import("node:crypto");
   const hash = createHash("sha256");
   hash.update(readFileSync(path));
   return hash.digest("hex");
