@@ -137,6 +137,22 @@ showItemInFolder, setBadge, openDevTools. Terry can extend.
 
 ---
 
+## Phase 1A.1 ↔ Phase 1B integration contract
+
+The contract is intentionally minimal — three things:
+
+1. **Spawn**: `node dist/<platform>/index.js --port=0 --embedded`
+2. **Discovery**: parse `AUTONOMOS_READY port=<N>` from child stdout
+3. **Shutdown**: send SIGTERM; child exits cleanly within ~2s
+
+**Readiness semantics** (from Phase 1A.1 PR review): the `AUTONOMOS_READY` signal
+means "HTTP listener is accepting connections" — NOT "all agent state is fully
+hydrated." Gateway init, agent resumption, and scheduler startup run in the same
+tick but may finish slightly later. The dashboard already handles this gracefully
+(agents stream in via WebSocket as they hydrate). Electron should load the
+webview as soon as the signal fires; "fully populated UI" will lag by ~ms in
+the typical case.
+
 ## After Phase 1B lands
 
 Phase 1C (Server distribution polish) can begin. The autonomos-server binary

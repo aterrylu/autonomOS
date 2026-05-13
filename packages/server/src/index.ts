@@ -12,21 +12,16 @@ import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { migrateIfNeeded } from "./agents/migrate.js";
-import { parseCliArgs, printUsage } from "./cli-args.js";
-import { announceEmbeddedReady, resolveEmbeddedConfig } from "./embedded-mode.js";
-
-// Parse CLI flags early. --help short-circuits before any startup work.
-const cliArgs = parseCliArgs(process.argv.slice(2));
-if (cliArgs.help) {
-  printUsage();
-  process.exit(0);
-}
-const embeddedConfig = resolveEmbeddedConfig(cliArgs.embedded);
 import {
   resumeActiveAgents,
   shutdownAllAttachments,
 } from "./agents/runtime.js";
 import { resolveAuthToken } from "./auth.js";
+import { parseCliArgs, printUsage } from "./cli-args.js";
+import {
+  announceEmbeddedReady,
+  resolveEmbeddedConfig,
+} from "./embedded-mode.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
@@ -46,6 +41,18 @@ import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
+
+// Parse CLI flags early. --help short-circuits before any startup work
+// (provider validation, seedDefaultTemplates, migrateIfNeeded). All imports
+// have been resolved before this point regardless — ESM module-load side
+// effects still run — so --help avoids the expensive imperative work but
+// not pure import-time initialization.
+const cliArgs = parseCliArgs(process.argv.slice(2));
+if (cliArgs.help) {
+  printUsage();
+  process.exit(0);
+}
+const embeddedConfig = resolveEmbeddedConfig(cliArgs.embedded);
 
 // Seed default templates on fresh install
 seedDefaultTemplates();
@@ -136,8 +143,7 @@ const dashboardCandidates = [
   resolve(import.meta.dirname, "../../dashboard/dist"),
 ];
 const dashboardDist =
-  dashboardCandidates.find((d) => existsSync(resolve(d, "index.html"))) ??
-  null;
+  dashboardCandidates.find((d) => existsSync(resolve(d, "index.html"))) ?? null;
 const isProduction = dashboardDist !== null;
 
 const corsOrigin =
@@ -282,7 +288,9 @@ const server = serve(
 
     // Initialize gateway (platform adapters, routing table)
     import("./gateway/index.js").then(({ initGateway }) => {
-      initGateway().catch((err) => console.error("[gateway] init failed:", err));
+      initGateway().catch((err) =>
+        console.error("[gateway] init failed:", err),
+      );
     });
 
     // Auto-resume agents whose persisted status is "running" — handles all

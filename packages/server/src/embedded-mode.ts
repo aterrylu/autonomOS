@@ -45,6 +45,14 @@ export function resolveEmbeddedConfig(embedded: boolean): EmbeddedConfig {
  *
  * Stdout (not stderr) so parents using { stdio: ['ignore', 'pipe', 'inherit'] }
  * pick it up while letting log output flow through naturally.
+ *
+ * **Readiness semantics**: this signal means "the HTTP listener is accepting
+ * connections" — NOT "all agent state is fully hydrated." Background work
+ * (initGateway, resumeActiveAgents, initScheduler) starts in the same tick but
+ * may finish slightly later. The dashboard handles this gracefully: agents
+ * stream in via WebSocket as they hydrate. Parent processes (Electron) can
+ * load the webview as soon as this signal fires; user-visible "ready" will
+ * lag by milliseconds in the typical case.
  */
 export function announceEmbeddedReady(actualPort: number): void {
   process.stdout.write(`AUTONOMOS_READY port=${actualPort}\n`);
