@@ -2,6 +2,13 @@
   "name": "autonomos",
   "private": true,
   "workspaces": ["packages/*"],
+  "scripts": {
+    "build:dashboard": "bun --filter @autonomos/dashboard build",
+    "build:embed-dashboard": "bun packages/server/build/embed-dashboard.ts",
+    "build:binary": "bun run build:dashboard && bun run build:embed-dashboard && bun packages/server/build/build-binary.ts",
+    "build:binary:all": "bun run build:dashboard && bun run build:embed-dashboard && bun packages/server/build/build-binary.ts --all",
+    "test:1a1": "bash scripts/test-1a1-isolated.sh"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.6"
   },
