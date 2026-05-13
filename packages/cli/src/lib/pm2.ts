@@ -136,10 +136,16 @@ export function migrateFromPm2(): Pm2MigrationResult {
     };
   }
 
-  // Persist pm2's process list so it doesn't try to bring autonomos back on
-  // boot. Best-effort — `pm2 save` can return non-zero in some setups but
-  // the migration is still valid.
-  run(pm2Bin, ["save"]);
+  // Persist pm2's empty (or no-autonomos) process list so it doesn't try to
+  // bring autonomos back on boot via `pm2 resurrect`. `pm2 save` without
+  // --force REFUSES to overwrite the dump if the current process list is
+  // empty (safety against accidental wipe) — but that's exactly our case
+  // after deleting autonomos, so --force is mandatory here.
+  //
+  // Note: if the user has other apps managed by pm2 besides autonomos,
+  // `pm2 save --force` correctly preserves them in the dump while dropping
+  // the autonomos entry. Same path either way.
+  run(pm2Bin, ["save", "--force"]);
 
   return { ok: true, stopped: count };
 }
