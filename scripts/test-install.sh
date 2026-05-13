@@ -15,13 +15,34 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_PREFIX=/tmp/autonomos-install-test
 TEST_CFG=/tmp/autonomos-install-cfg
 TEST_PORT=7889
+SERVER_LOG=/tmp/autonomos-test-server.log
+STUB_DIR=""
 
 cleanup() {
   rm -rf "$TEST_PREFIX" "$TEST_CFG" "$ROOT/packages/server/dist/SHA256SUMS" 2>/dev/null || true
+  [[ -n "$STUB_DIR" ]] && rm -rf "$STUB_DIR"
 }
-trap cleanup EXIT
+trap 'rc=$?; if [[ $rc -ne 0 ]] && [[ -f "$SERVER_LOG" ]]; then echo ""; echo "=== server log (failure dump) ==="; tail -50 "$SERVER_LOG"; echo "================================="; fi; cleanup; exit $rc' EXIT
 
 cd "$ROOT"
+
+# ── claude stub for CI (provider validation requires `claude` in PATH) ───
+# The runtime check in run.ts exits the server if claude-code can't be
+# resolved. CI runners don't have claude installed. Provide a stub so the
+# daemon can start; agent spawning would fail at runtime, but the lifecycle
+# tests here don't spawn agents.
+if ! command -v claude >/dev/null 2>&1; then
+  STUB_DIR=$(mktemp -d)
+  cat > "$STUB_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+# CI stub. The real Claude Code CLI isn't installed; this exists only so the
+# server's provider validation passes.
+echo "claude (test stub)"
+STUB
+  chmod +x "$STUB_DIR/claude"
+  export PATH="$STUB_DIR:$PATH"
+  echo "==> Installed claude stub at $STUB_DIR (CI environment without real Claude Code CLI)"
+fi
 
 # ── build ────────────────────────────────────────────────────────────────
 echo "==> Building dashboard + bundle + tarball"
