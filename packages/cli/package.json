@@ -1,0 +1,17 @@
+{
+  "name": "@autonomos/cli",
+  "version": "0.0.1",
+  "type": "module",
+  "_comment_no_bin": "We ship via curl install.sh | bash (extracts the bundle and writes a node-wrapper at $PREFIX/bin/autonomos). A bin field pointing at .ts would silently fail under `npm i -g`; pointing at dist/index.js requires consumers to run the build first. Removed until/unless we add an npm-publish path.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@autonomos/core": "workspace:*",
+    "@autonomos/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.21.0"
+  }
+}

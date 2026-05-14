@@ -1,0 +1,85 @@
+name: Release
+
+# Triggered by pushing a `v*` tag. Produces 4 platform tarballs + SHA256SUMS,
+# attached to a GitHub Release. install.sh fetches:
+#   https://github.com/<owner>/autonomOS/releases/latest/download/autonomos-<platform>.tar.gz
+#   https://github.com/<owner>/autonomOS/releases/latest/download/SHA256SUMS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runs-on: macos-14
+          - target: darwin-x64
+            runs-on: macos-13
+          - target: linux-x64
+            runs-on: ubuntu-latest
+          - target: linux-arm64
+            runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install
+
+      - name: Build dashboard
+        run: bun --filter @autonomos/dashboard build
+
+      - name: Embed dashboard
+        run: bun packages/server/build/embed-dashboard.ts
+
+      - name: Build bundle + tarball
+        run: TARBALL=1 bun packages/server/build/build-binary.ts
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: autonomos-${{ matrix.target }}
+          path: packages/server/dist/autonomos-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform tarballs
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten into one directory
+        run: |
+          mkdir -p release
+          find artifacts -name 'autonomos-*.tar.gz' -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Compute SHA256SUMS
+        working-directory: release
+        run: shasum -a 256 autonomos-*.tar.gz > SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/autonomos-*.tar.gz
+            release/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -1,0 +1,38 @@
+name: Test install
+
+# Runs the hermetic install/CLI test on a Mac and Linux runner. Catches
+# breakage where the install.sh + CLI lifecycle doesn't work on a clean OS.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runs-on: macos-14
+          - target: linux-x64
+            runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install deps
+        run: bun install
+
+      - name: Run install test
+        run: bash scripts/test-install.sh

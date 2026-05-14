@@ -22,16 +22,33 @@
 // to keep responsibilities clean — the root build:binary script chains them.
 
 import { $ } from "bun";
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { arch as nodeArch, platform as nodePlatform } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverRoot = resolve(here, "..");
-const entry = resolve(serverRoot, "src/index.ts");
+const repoRoot = resolve(serverRoot, "../..");
+// Phase 1C: the CLI is the top-level entry — it dispatches to server runServer()
+// for the `start` subcommand (or argv-only invocation per Phase 1B contract).
+// One bundle produces both the CLI tools (status/stop/install-service/...)
+// AND the server it manages.
+const entry = resolve(repoRoot, "packages/cli/src/index.ts");
 const distDir = resolve(serverRoot, "dist");
 const embeddedDashboard = resolve(serverRoot, "src/_embedded_dashboard");
+
+// Bun's CLI eats unknown long-flags before passing argv to the script, so we
+// use an env var instead. Set TARBALL=1 to produce per-platform .tar.gz
+// alongside the bundle directories.
+const wantTarball = process.env.TARBALL === "1";
 
 if (!existsSync(embeddedDashboard)) {
   console.error(
@@ -74,7 +91,25 @@ for (const target of targets) {
   const dashCopy = resolve(outdir, "_embedded_dashboard");
   rmSync(dashCopy, { recursive: true, force: true });
   cpSync(embeddedDashboard, dashCopy, { recursive: true });
+  // Also write a minimal package.json so the bundled version-reader and the
+  // upgrade flow can read the version string at runtime.
+  const serverPkg = JSON.parse(
+    readFileSync(resolve(serverRoot, "package.json"), "utf-8"),
+  ) as { name: string; version: string };
+  writeFileSync(
+    resolve(outdir, "package.json"),
+    `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
+  );
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
+
+  if (wantTarball) {
+    const tarball = resolve(distDir, `autonomos-${suffix}.tar.gz`);
+    rmSync(tarball, { force: true });
+    // -C the outdir then tar `.` so the archive doesn't carry a useless
+    // parent directory prefix; consumers (install.sh) untar into a clean dir.
+    await $`tar -czf ${tarball} -C ${outdir} .`;
+    console.log(`[build-binary] ✓ ${tarball}`);
+  }
 }
 console.log(
   `[build-binary] Done. ${targets.length} bundle${targets.length === 1 ? "" : "s"} in ${distDir}.\n` +
