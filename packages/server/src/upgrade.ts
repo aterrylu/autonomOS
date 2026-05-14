@@ -125,7 +125,10 @@ export async function performUpgrade(
   }
 
   const latestVersion = release.tag_name.replace(/^v/, "");
-  if (latestVersion === opts.currentVersion) {
+  // Refuse to "upgrade" when current is the same as latest OR already ahead
+  // (manual install / dev build / users on a beta that's newer than `latest`).
+  // Equality alone would silently downgrade an ahead-of-release install.
+  if (compareSemver(opts.currentVersion, latestVersion) >= 0) {
     return { status: "up-to-date", version: latestVersion };
   }
 
@@ -202,6 +205,30 @@ export async function performUpgrade(
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/**
+ * Compare two semver-ish version strings (e.g. "0.0.10" vs "0.0.9"). Returns
+ * 1 if a > b, -1 if a < b, 0 if equal. Pre-release suffixes are ignored.
+ * Designed to be tiny — we only need numeric "x.y.z" comparison for the
+ * upgrade flow's downgrade-guard.
+ */
+function compareSemver(a: string, b: string): -1 | 0 | 1 {
+  const parse = (s: string): number[] =>
+    s
+      .replace(/-.*$/, "")
+      .split(".")
+      .map((n) => Number.parseInt(n, 10) || 0);
+  const aa = parse(a);
+  const bb = parse(b);
+  const len = Math.max(aa.length, bb.length);
+  for (let i = 0; i < len; i++) {
+    const av = aa[i] ?? 0;
+    const bv = bb[i] ?? 0;
+    if (av > bv) return 1;
+    if (av < bv) return -1;
+  }
+  return 0;
 }
 
 async function downloadTo(url: string, dest: string): Promise<void> {

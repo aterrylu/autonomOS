@@ -75,9 +75,13 @@ echo "==> Verifying --help"
 echo "==> ✓ --help OK"
 
 # ── start daemon in background ───────────────────────────────────────────
+# AUTONOMOS_TOKEN overrides ~/.autonomos/token resolution, keeping the test
+# hermetic from the user's real auth token (token file lives outside
+# AUTONOMOS_CONFIG_DIR by design — it's per-machine, not per-worktree).
+TEST_TOKEN="test-token-1c-hermetic-$$"
 echo "==> Starting daemon on port $TEST_PORT"
-AUTONOMOS_CONFIG_DIR="$TEST_CFG" "$WRAPPER" start --port="$TEST_PORT" \
-  >/tmp/autonomos-test-server.log 2>&1 &
+AUTONOMOS_CONFIG_DIR="$TEST_CFG" AUTONOMOS_TOKEN="$TEST_TOKEN" \
+  "$WRAPPER" start --port="$TEST_PORT" >"$SERVER_LOG" 2>&1 &
 SVR=$!
 trap "cleanup; kill -9 $SVR 2>/dev/null || true" EXIT
 
@@ -109,10 +113,13 @@ echo "==> ✓ /api/host returned 200"
 
 # ── /api/system/version (Phase 1C addition) ──────────────────────────────
 echo "==> Verifying /api/system/version"
-# Note: this is behind auth, so we need the token. Easier: hit it via the running
-# server's stdout log which prints the token at startup. Parse it.
-TOKEN=$(grep -o "Auth token: [a-z0-9]\{4\}\.\.\.[a-z0-9]\{4\}" /tmp/autonomos-test-server.log | head -1)
-echo "==> Token preview: $TOKEN"
+VERSION_JSON=$(curl -sf -H "Authorization: Bearer $TEST_TOKEN" \
+  "http://127.0.0.1:$TEST_PORT/api/system/version")
+echo "  $VERSION_JSON"
+echo "$VERSION_JSON" | grep -q '"version"' || {
+  echo "  FAIL: /api/system/version did not return a version field"; exit 1;
+}
+echo "  ✓ /api/system/version OK"
 
 # ── stop ─────────────────────────────────────────────────────────────────
 echo "==> Stopping daemon"
