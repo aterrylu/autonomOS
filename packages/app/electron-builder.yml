@@ -1,0 +1,74 @@
+# electron-builder configuration for autonomOS Desktop.
+#
+# Signing infrastructure is wired but disabled by default. To enable code-
+# signing + notarization once the Apple Developer Program enrollment is
+# complete, set these env vars before running `bun run build:dmg`:
+#
+#   CSC_LINK=path/to/cert.p12          (or use keychain via CSC_NAME)
+#   CSC_KEY_PASSWORD=...
+#   APPLE_ID=you@example.com
+#   APPLE_APP_SPECIFIC_PASSWORD=...    (app-specific password from appleid.apple.com)
+#   APPLE_TEAM_ID=...                  (10-char team ID from developer.apple.com)
+#
+# When those are unset, electron-builder produces an unsigned .app. Users on
+# macOS Sequoia (15) will see the "cannot be opened — Apple cannot check it"
+# Gatekeeper warning until they approve via System Settings → Privacy & Security.
+
+appId: cloud.terrylu.autonomos
+productName: autonomOS
+copyright: Copyright © 2026 Terry Lu
+
+directories:
+  output: out
+  buildResources: build-resources
+
+# Files included in the .app bundle
+files:
+  - "dist/**/*"
+  - "node_modules/**/*"
+  - "!node_modules/**/{*.md,*.markdown,LICENSE,license,COPYING,changelog,CHANGELOG*}"
+
+# The autonomos-server bundle is placed under Resources/ by the beforeBuild
+# hook (see scripts/electron-before-build.sh). It's NOT in `files` above
+# because it's a directory of pre-built artifacts, not source.
+extraResources:
+  - from: "resources/server"
+    to: "server"
+    filter: ["**/*"]
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  # SIGNING — env-var-gated. Leave identity unset to skip signing.
+  # When CSC_LINK / CSC_NAME is set, electron-builder picks it up automatically.
+  identity: null
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  # Notarization (env-var-gated, only attempted when creds are present).
+  # `notarize` is a boolean OR an object; we let env vars drive it.
+  notarize: false
+
+dmg:
+  title: "autonomOS ${version}"
+  # icon: build-resources/icon.icns — TODO (1B.5): real app icon
+  iconSize: 100
+  contents:
+    - x: 380
+      y: 240
+      type: link
+      path: /Applications
+    - x: 120
+      y: 240
+      type: file
+
+# Note: the autonomos-server bundle is copied into resources/server/ by
+# scripts/electron-before-build.sh, which is invoked manually by the
+# `prep:resources` script in package.json BEFORE electron-builder runs.
+# (electron-builder's beforeBuild hook expects a JS module, not a shell
+# script, so we just chain it via npm scripts instead.)

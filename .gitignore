@@ -5,6 +5,9 @@ build/
 !packages/server/build/
 # Phase 1A.1: staging dir for dashboard assets copied at binary build time
 packages/server/src/_embedded_dashboard/
+# Phase 1B.1: electron-builder output + bundled server staging
+packages/app/out/
+packages/app/resources/server/
 .env
 .env.local
 .DS_Store

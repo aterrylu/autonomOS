@@ -7,7 +7,11 @@
     "build:embed-dashboard": "bun packages/server/build/embed-dashboard.ts",
     "build:binary": "bun run build:dashboard && bun run build:embed-dashboard && bun packages/server/build/build-binary.ts",
     "build:binary:all": "bun run build:dashboard && bun run build:embed-dashboard && bun packages/server/build/build-binary.ts --all",
-    "test:1a1": "bash scripts/test-1a1-isolated.sh"
+    "test:1a1": "bash scripts/test-1a1-isolated.sh",
+    "test:install": "bash scripts/test-install.sh",
+    "test:app": "bash scripts/test-app-smoke.sh",
+    "dev:app": "bun run build:binary && bun --cwd packages/app run dev",
+    "build:dmg": "bun --cwd packages/app run build:dmg"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.6"

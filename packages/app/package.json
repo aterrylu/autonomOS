@@ -1,0 +1,23 @@
+{
+  "name": "@autonomos/app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "autonomOS Desktop — native Electron app wrapping the autonomos-server",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "prep:resources": "bash scripts/electron-before-build.sh",
+    "dev": "bun run build:main && electron dist/main.js",
+    "build:dmg": "bun run prep:resources && bun run build:main && electron-builder --mac dmg --publish never"
+  },
+  "dependencies": {},
+  "//comment_no_workspace_deps": "Intentionally no workspace deps. The autonomos-server bundle is copied into extraResources/server/ at build time by scripts/electron-before-build.sh — NOT imported as a Node module. Adding @autonomos/server here would make electron-builder try to rebuild node-pty against Electron's ABI, which fails because (a) we ship the .node files prebuilt for plain Node and (b) node-gyp can't rebuild on Python 3.12+.",
+  "devDependencies": {
+    "@types/node": "^22",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.4"
+  }
+}
