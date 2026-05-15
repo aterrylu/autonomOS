@@ -10,7 +10,7 @@
 //   - Dev / unpackaged:           ../../server/dist/<host-platform>/index.js
 //                                  (built via `bun run build:binary` from repo root)
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { arch, platform } from "node:os";

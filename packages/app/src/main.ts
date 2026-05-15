@@ -8,13 +8,13 @@
 //   4. Open a BrowserWindow pointed at the spawned server
 //   5. On quit, SIGTERM the server child (L1 — Pattern 2 + state recovery)
 
-import { app, BrowserWindow, session } from "electron";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, session } from "electron";
 import {
+  type ServerHandle,
   shutdownServer,
   spawnServer,
-  type ServerHandle,
 } from "./server-supervisor.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
