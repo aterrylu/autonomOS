@@ -1,0 +1,150 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a0e14;
+  --bg-elev: rgba(255, 255, 255, 0.04);
+  --bg-elev-hover: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text: #cbd5e1;
+  --text-muted: #64748b;
+  --text-bright: #f1f5f9;
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --danger: #f87171;
+  --danger-bg: rgba(248, 113, 113, 0.08);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root { height: 100%; display: flex; }
+
+button {
+  background: var(--bg-elev);
+  color: var(--text-bright);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+button:hover:not(:disabled) {
+  background: var(--bg-elev-hover);
+  border-color: var(--border-strong);
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary { background: var(--accent); color: #0a0e14; border-color: var(--accent); }
+button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+input[type="text"], input[type="url"], input[type="password"] {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text-bright);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+
+.welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  gap: 24px;
+  -webkit-app-region: drag;
+}
+.welcome h1 { margin: 0; color: var(--text-bright); font-size: 28px; font-weight: 600; }
+.welcome p.tagline { margin: 0; color: var(--text-muted); max-width: 520px; text-align: center; }
+.welcome .cards { display: flex; gap: 16px; margin-top: 12px; -webkit-app-region: no-drag; }
+.welcome .card {
+  width: 280px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.welcome .card h2 { margin: 0; font-size: 15px; color: var(--text-bright); font-weight: 600; }
+.welcome .card p { margin: 0; color: var(--text-muted); font-size: 13px; flex: 1; }
+.welcome .card button { margin-top: 12px; }
+.welcome .footer { color: var(--text-muted); font-size: 12px; max-width: 600px; text-align: center; -webkit-app-region: no-drag; }
+.welcome .footer code {
+  background: var(--bg-elev);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  user-select: all;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-close-overlay {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: default;
+  z-index: 0;
+}
+.modal-close-overlay:focus { outline: none; }
+.modal {
+  position: relative;
+  z-index: 1;
+  background: #0f1419;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 24px;
+  width: 480px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal h2 { margin: 0; color: var(--text-bright); font-size: 17px; }
+.modal .field { display: flex; flex-direction: column; gap: 6px; }
+.modal .field label { font-size: 12px; color: var(--text-muted); }
+.modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.modal .warning {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+.modal .error { color: var(--danger); font-size: 12px; }
+.modal .hint { color: var(--text-muted); font-size: 12px; }
+
+.connected {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}

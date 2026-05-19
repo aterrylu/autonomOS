@@ -7,16 +7,24 @@
   "type": "module",
   "scripts": {
     "build:main": "tsc -p tsconfig.json",
-    "dev": "bun run build:main && electron dist/main/main.js",
-    "build:dmg": "bun run build:main && electron-builder --mac dmg --publish never",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build:renderer": "vite build",
+    "build": "bun run build:main && bun run build:renderer",
+    "dev": "bun run build && electron dist/main/main.js",
+    "build:dmg": "bun run build && electron-builder --mac dmg --publish never",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^22",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "tsx": "^4.21.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vite": "^8.0.13"
   }
 }

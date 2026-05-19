@@ -22,6 +22,7 @@ import {
 } from "electron";
 
 import { URL_SCHEME } from "../shared/constants.js";
+import { registerIpc } from "./ipc.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -54,32 +55,7 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  // TODO(1B.2.2): replace with renderer bundle. Placeholder data: URL
-  // exists only so the dev workflow has a visible window pre-renderer.
-  window.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(`
-      <!DOCTYPE html>
-      <html><head><meta charset="utf-8">
-      <title>autonomOS — Phase 1B.2 scaffolding</title>
-      <style>
-        body { margin: 0; padding: 0; background: #0a0e14; color: #cbd5e1;
-               font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-               display: flex; align-items: center; justify-content: center;
-               height: 100vh; }
-        .pill { padding: 12px 20px; border-radius: 12px;
-                background: rgba(255,255,255,0.04); font-size: 14px;
-                border: 1px solid rgba(255,255,255,0.06); }
-        code { background: rgba(255,255,255,0.06); padding: 2px 6px;
-               border-radius: 4px; }
-      </style>
-      </head><body>
-      <div class="pill">
-        autonomOS Desktop · scaffolding · renderer not yet wired ·
-        next: <code>1B.2.2</code> welcome + add connection
-      </div>
-      </body></html>
-    `)}`,
-  );
+  window.loadFile(resolve(__dirname, "../renderer/index.html"));
 
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
@@ -127,6 +103,7 @@ function bootstrap(): void {
   app
     .whenReady()
     .then(() => {
+      registerIpc();
       mainWindow = createMainWindow();
       // 1B.2.4 will drain pendingDeepLinks here and route to the modal.
 

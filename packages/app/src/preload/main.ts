@@ -1,24 +1,38 @@
-/**
- * Preload bridge exposed to the renderer process.
- *
- * Phase 1B.2.0: minimal — only exposes `shell` info (platform, version) so
- * the renderer can detect "I am running inside the desktop app." Actual
- * IPC API surface (`connections.*`, `localServer.*`, deep-link events)
- * lands in 1B.2.2+.
- *
- * `contextIsolation: true` is mandatory; everything the renderer sees is
- * funneled through `contextBridge.exposeInMainWorld`.
- */
+// Preload bridge exposed to the renderer process. All renderer-facing IPC
+// goes through here; the renderer never touches `electron` directly.
 
-import { contextBridge } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 
-contextBridge.exposeInMainWorld("autonomosShell", {
-  /** Bumped when the preload contract changes in a breaking way. */
+import type {
+  AddConnectionInput,
+  AddConnectionResult,
+  AutonomosAPI,
+  LocalServerStatus,
+} from "../shared/api.js";
+import { IPC } from "../shared/constants.js";
+import type { Connection } from "../types/connection.js";
+
+const api: AutonomosAPI = {
   version: 1,
-  platform: process.platform,
-  arch: process.arch,
-  /** True iff this is the Electron-hosted desktop app, false in a plain
-   *  browser visiting the web dashboard. Renderer code can use this to
-   *  enable/disable desktop-specific UI (workspace sidebar, etc.). */
-  isDesktop: true,
-} as const);
+  connections: {
+    list: (): Promise<Connection[]> => ipcRenderer.invoke(IPC.CONNECTIONS_LIST),
+    add: (input: AddConnectionInput): Promise<AddConnectionResult> =>
+      ipcRenderer.invoke(IPC.CONNECTIONS_ADD, input),
+    remove: (id: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.CONNECTIONS_REMOVE, id),
+    setDefault: (id: string | null): Promise<void> =>
+      ipcRenderer.invoke(IPC.CONNECTIONS_SET_DEFAULT, id),
+    getDefault: (): Promise<string | null> =>
+      ipcRenderer.invoke("connections:get-default"),
+  },
+  localServer: {
+    status: (): Promise<LocalServerStatus> =>
+      ipcRenderer.invoke(IPC.LOCAL_SERVER_STATUS),
+  },
+  encryption: {
+    isAvailable: (): Promise<boolean> =>
+      ipcRenderer.invoke("encryption:is-available"),
+  },
+};
+
+contextBridge.exposeInMainWorld("autonomos", api);
