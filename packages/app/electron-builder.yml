@@ -1,0 +1,76 @@
+# electron-builder configuration for autonomOS Desktop.
+#
+# Phase 1B.2: desktop is a THIN CLIENT. We bundle the autonomos-server binary
+# in extraResources/server/ so the "Set up local server on this Mac" Welcome
+# flow can invoke `autonomos install-service` from it. We do NOT spawn the
+# server as a child process from Electron in production.
+#
+# Signing infrastructure is wired but disabled by default. To enable code-
+# signing + notarization once Apple Developer Program enrollment completes,
+# set these env vars before running `bun run build:dmg`:
+#
+#   CSC_LINK=path/to/cert.p12          (or use keychain via CSC_NAME)
+#   CSC_KEY_PASSWORD=...
+#   APPLE_ID=you@example.com
+#   APPLE_APP_SPECIFIC_PASSWORD=...    (app-specific password from appleid.apple.com)
+#   APPLE_TEAM_ID=...                  (10-char team ID from developer.apple.com)
+#
+# When those are unset, electron-builder produces an unsigned .app. Users on
+# macOS Sequoia (15) will see the "cannot be opened" Gatekeeper warning until
+# they approve via System Settings → Privacy & Security.
+
+appId: cloud.terrylu.autonomos
+productName: autonomOS
+copyright: Copyright © 2026 Terry Lu
+
+directories:
+  output: out
+  buildResources: build-resources
+
+files:
+  - "dist/**/*"
+  - "node_modules/**/*"
+  - "!node_modules/**/{*.md,*.markdown,LICENSE,license,COPYING,changelog,CHANGELOG*}"
+
+# The autonomos-server bundle is copied into resources/server/ by the
+# prep:resources script in root package.json (`bun run build:dmg`) which
+# chains: build the server binary → copy into packages/app/resources/server/
+# → run electron-builder. The bundle is used ONLY by the local-install flow,
+# never spawned as a child by Electron in production.
+extraResources:
+  - from: "resources/server"
+    to: "server"
+    filter: ["**/*"]
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  identity: null
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  notarize: false
+
+dmg:
+  title: "autonomOS ${version}"
+  iconSize: 100
+  contents:
+    - x: 380
+      y: 240
+      type: link
+      path: /Applications
+    - x: 120
+      y: 240
+      type: file
+
+# Protocol scheme registration (Phase 1B.2.4 — deep links).
+# macOS reads this from Info.plist; electron-builder synthesizes it from here.
+protocols:
+  - name: autonomOS Connect
+    schemes:
+      - autonomos

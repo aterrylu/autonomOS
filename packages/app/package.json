@@ -1,0 +1,23 @@
+{
+  "name": "@autonomos/app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "autonomOS Desktop — thin Electron client over autonomos-server daemons",
+  "main": "dist/main/main.js",
+  "type": "module",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "dev": "bun run build:main && electron dist/main/main.js",
+    "build:dmg": "bun run build:main && electron-builder --mac dmg --publish never",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {},
+  "//comment_no_workspace_deps": "Intentionally no workspace deps. The bundled autonomos-server lives in extraResources/server/ at build time, NOT in node_modules. Adding @autonomos/server here would make electron-builder try to rebuild node-pty against Electron's ABI.",
+  "devDependencies": {
+    "@types/node": "^22",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.4"
+  }
+}
