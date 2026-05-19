@@ -32,15 +32,14 @@ files:
   - "node_modules/**/*"
   - "!node_modules/**/{*.md,*.markdown,LICENSE,license,COPYING,changelog,CHANGELOG*}"
 
-# The autonomos-server bundle is copied into resources/server/ by the
-# prep:resources script in root package.json (`bun run build:dmg`) which
-# chains: build the server binary → copy into packages/app/resources/server/
-# → run electron-builder. The bundle is used ONLY by the local-install flow,
-# never spawned as a child by Electron in production.
-extraResources:
-  - from: "resources/server"
-    to: "server"
-    filter: ["**/*"]
+# extraResources for the bundled autonomos-server lives here. Restored in
+# Phase 1B.2.5 when the local-install flow ships and actually invokes the
+# bundled binary's `install-service` subcommand. For 1B.2.0-2.3 there's
+# no consumer for the bundle, so we omit it to keep the .dmg smaller.
+# extraResources:
+#   - from: "resources/server"
+#     to: "server"
+#     filter: ["**/*"]
 
 mac:
   category: public.app-category.developer-tools

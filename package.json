@@ -11,7 +11,7 @@
     "dev:app": "bun --cwd packages/app run dev",
     "build:app": "bun --cwd packages/app run build:main",
     "typecheck:app": "bun --cwd packages/app run typecheck",
-    "build:dmg": "bun run build:binary && mkdir -p packages/app/resources && cp -R packages/server/dist/$(node -e \"console.log(process.platform+'-'+process.arch.replace('x64','x64').replace('arm64','arm64'))\") packages/app/resources/server && bun --cwd packages/app run build:dmg"
+    "build:dmg": "bun --cwd packages/app run build:dmg"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.6"
