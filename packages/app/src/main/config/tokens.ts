@@ -1,35 +1,57 @@
-/**
- * Encrypted token storage for Connection bearer tokens.
- *
- * Uses Electron's `safeStorage` API which delegates to:
- *   macOS:   Keychain Services (via Security framework)
- *   Linux:   libsecret (when available) / kwallet / plaintext fallback
- *   Windows: DPAPI (Data Protection API)
- *
- * If `safeStorage.isEncryptionAvailable()` returns false, we fall back
- * to a plain JSON file with a flag the UI can use to warn the user.
- * Better than Open WebUI Desktop's approach (sniff token out of webview
- * `localStorage` into a mutable global at runtime — never persisted).
- *
- * Layout on disk (inside `app.getPath("userData")/tokens.dat`):
- *   {
- *     "encryptionAvailable": true,
- *     "tokens": {
- *       "<connection-id>": "<base64-encrypted-blob>" | "<plaintext>"
- *     }
- *   }
- */
+// Encrypted token storage for Connection bearer tokens.
+//
+// Encrypted via Electron `safeStorage` (Keychain on macOS, libsecret on
+// Linux, DPAPI on Windows). Per-token encrypted-flag so we don't misread
+// an encrypted blob as plaintext after a mid-session keychain flip.
+// File is mode 0o600 always — consistent with how the server enforces
+// it on token-bearing files (`packages/server/src/auth.ts:54`).
+//
+// On-disk shape inside `app.getPath("userData")/tokens.dat`:
+//   { "encryptionAvailable": bool,
+//     "tokens": { "<connection-id>": { encrypted: bool, value: string } } }
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { app, safeStorage } from "electron";
 
 import { TOKENS_FILENAME } from "../../shared/constants.js";
 
+interface StoredToken {
+  encrypted: boolean;
+  value: string;
+}
+
 interface TokensFile {
   encryptionAvailable: boolean;
-  tokens: Record<string, string>;
+  tokens: Record<string, StoredToken>;
+}
+
+function isStoredToken(x: unknown): x is StoredToken {
+  return (
+    typeof x === "object" &&
+    x !== null &&
+    typeof (x as StoredToken).encrypted === "boolean" &&
+    typeof (x as StoredToken).value === "string"
+  );
+}
+
+function isTokensFile(x: unknown): x is TokensFile {
+  if (typeof x !== "object" || x === null) return false;
+  const f = x as TokensFile;
+  if (typeof f.encryptionAvailable !== "boolean") return false;
+  if (typeof f.tokens !== "object" || f.tokens === null) return false;
+  for (const v of Object.values(f.tokens)) {
+    if (!isStoredToken(v)) return false;
+  }
+  return true;
+}
+
+function emptyFile(): TokensFile {
+  return {
+    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    tokens: {},
+  };
 }
 
 let cached: TokensFile | null = null;
@@ -41,27 +63,22 @@ function tokensPath(): string {
 
 async function load(): Promise<TokensFile> {
   if (cached) return cached;
-
   const path = tokensPath();
   if (!existsSync(path)) {
-    cached = {
-      encryptionAvailable: safeStorage.isEncryptionAvailable(),
-      tokens: {},
-    };
+    cached = emptyFile();
     return cached;
   }
-
   try {
     const raw = await readFile(path, "utf-8");
-    const parsed = JSON.parse(raw) as TokensFile;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isTokensFile(parsed)) {
+      throw new Error("tokens.dat shape invalid");
+    }
     cached = parsed;
     return parsed;
   } catch (err) {
     console.error("[tokens] Failed to parse tokens.dat:", err);
-    cached = {
-      encryptionAvailable: safeStorage.isEncryptionAvailable(),
-      tokens: {},
-    };
+    cached = emptyFile();
     return cached;
   }
 }
@@ -76,45 +93,56 @@ async function persist(next: TokensFile): Promise<void> {
   try {
     await previous;
     const path = tokensPath();
-    await mkdir(dirname(path), { recursive: true });
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(next, null, 2), "utf-8");
-    await rename(tmpPath, path);
+    try {
+      await writeFile(tmpPath, JSON.stringify(next, null, 2), {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
+      await rename(tmpPath, path);
+    } catch (err) {
+      // Clean up orphan tmpfile on failure so we don't accumulate cruft.
+      await unlink(tmpPath).catch(() => undefined);
+      throw err;
+    }
     cached = next;
   } finally {
     release();
   }
 }
 
-/** Store a token for the given connection id, encrypting via safeStorage
- *  when available. Overwrites any existing token for the same id. */
+/** Store a token for the given connection id. Each token records whether
+ *  it was encrypted at write time, so a later keychain-lock doesn't cause
+ *  us to misread an encrypted blob as plaintext (or vice versa). */
 export async function setToken(
   connectionId: string,
   token: string,
 ): Promise<void> {
   const file = await load();
-  const stored = safeStorage.isEncryptionAvailable()
-    ? safeStorage.encryptString(token).toString("base64")
-    : token;
+  const canEncrypt = safeStorage.isEncryptionAvailable();
+  const stored: StoredToken = canEncrypt
+    ? {
+        encrypted: true,
+        value: safeStorage.encryptString(token).toString("base64"),
+      }
+    : { encrypted: false, value: token };
   await persist({
-    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    encryptionAvailable: canEncrypt,
     tokens: { ...file.tokens, [connectionId]: stored },
   });
 }
 
-/** Retrieve a token for the given connection id, decrypting if necessary.
- *  Returns null if no token is stored. */
+/** Retrieve a token. Returns null if no token is stored OR decryption fails
+ *  (e.g., keychain locked, migrated machine). UI can prompt for re-entry. */
 export async function getToken(connectionId: string): Promise<string | null> {
   const file = await load();
-  const stored = file.tokens[connectionId];
-  if (!stored) return null;
-  if (!file.encryptionAvailable) return stored;
+  const entry = file.tokens[connectionId];
+  if (!entry) return null;
+  if (!entry.encrypted) return entry.value;
   try {
-    return safeStorage.decryptString(Buffer.from(stored, "base64"));
+    return safeStorage.decryptString(Buffer.from(entry.value, "base64"));
   } catch (err) {
-    // Decryption can fail if the user's keychain is locked or if the encrypted
-    // blob was migrated from another machine. Surface as null so the UI can
-    // prompt for re-entry; logging at warn level.
     console.warn(
       `[tokens] Failed to decrypt token for connection ${connectionId}:`,
       err,
@@ -123,7 +151,6 @@ export async function getToken(connectionId: string): Promise<string | null> {
   }
 }
 
-/** Remove a token from storage. No-op if the id isn't present. */
 export async function removeToken(connectionId: string): Promise<void> {
   const file = await load();
   if (!(connectionId in file.tokens)) return;
@@ -135,15 +162,10 @@ export async function removeToken(connectionId: string): Promise<void> {
 }
 
 /** Whether tokens are being stored encrypted on this machine. Renderer
- *  can use this to show a warning banner when false ("Tokens are NOT
- *  encrypted on this system — install gnome-keyring or KWallet"). */
+ *  surfaces a warning banner when false. Re-queries safeStorage on each
+ *  call because keychain availability can flip mid-session (sleep+lock). */
 export async function isEncryptionAvailable(): Promise<boolean> {
+  const live = safeStorage.isEncryptionAvailable();
   const file = await load();
-  return file.encryptionAvailable;
-}
-
-/** TEST-ONLY: reset the in-memory cache + write lock. */
-export function _resetForTesting(): void {
-  cached = null;
-  writeLock = Promise.resolve();
+  return live && file.encryptionAvailable;
 }

@@ -106,15 +106,12 @@ export interface Connection {
    *  E.g. "http://127.0.0.1:5050" or "https://forge.terrylu.cloud:7421" */
   url: string;
 
-  /** Bearer token for HTTP Authorization. Stored separately via safeStorage
-   *  on macOS Keychain when available; falls back to plaintext in JSON for
-   *  Linux/Windows where Keychain isn't present. Not in the JSON config. */
-  token: string;
-
   /** ISO timestamp of last successful connection. Used for sorting recent. */
   lastConnectedAt?: string;
 }
 ```
+
+**Note:** the `Connection` interface deliberately does NOT carry the bearer token. Tokens are stored separately, keyed by `id`, encrypted via Electron `safeStorage` — see `main/config/tokens.ts`. This keeps tokens out of the main config file (which is meant to be human-readable / hand-editable) and lets us apply 0o600 permissions to the much smaller token file only.
 
 Note: following Open WebUI Desktop's pattern, the **local connection is virtual** — synthesized at runtime from `localServerInfo` instead of stored in the array. This keeps "local is special" out of every iteration. The JSON config only stores remote connections.
 
@@ -132,11 +129,11 @@ export interface AppConfig {
   /** Which connection to auto-open on launch. null = show picker. */
   defaultConnectionId: string | null;
 
-  /** Whether local server is installed (LaunchAgent exists, daemon health-checks). */
+  /** Whether local server is installed (LaunchAgent exists, daemon health-checks).
+   *  Source of truth for the daemon's port/pid/version is `~/.autonomos/autonomos.pid`
+   *  (read fresh at every connect attempt — no cached port to go stale). */
   localServer: {
     installed: boolean;
-    /** Last-known port from ~/.autonomos/server-state.json (server writes this on boot) */
-    port: number | null;
   };
 
   /** UI preferences */
@@ -149,7 +146,7 @@ export interface AppConfig {
 
 ### `LocalServerInfo` (read from disk, not part of AppConfig)
 
-The autonomos-server daemon writes `~/.autonomos/server-state.json` at startup containing `{ port, pid, version, startedAt }`. The desktop reads this to find the daemon and detect version mismatches. This is a small Phase 1C addition (~10 LOC server-side).
+**Correction post-design-audit:** the autonomos-server daemon ALREADY writes this file. It lives at `~/.autonomos/autonomos.pid` (see `packages/server/src/pid-file.ts`) and contains exactly `{ pid, port, version, startedAt }` — the same shape we need. No server-side changes required for Phase 1B.2. The desktop reads this file fresh at every connect attempt (no caching) so kernel-assigned-port restarts are handled gracefully.
 
 ## Persistence
 
@@ -157,8 +154,7 @@ The autonomos-server daemon writes `~/.autonomos/server-state.json` at startup c
 |---|---|---|---|
 | `config.json` | `app.getPath("userData")/config.json` | AppConfig (no tokens) | Desktop app |
 | `tokens.dat` | `app.getPath("userData")/tokens.dat` | Map<connectionId, encryptedToken> via Electron `safeStorage` | Desktop app |
-| `server-state.json` | `~/.autonomos/server-state.json` | LocalServerInfo, written by daemon at boot | Server (Phase 1C addition) |
-| `server.pid` | `~/.autonomos/server.pid` | Daemon PID (already exists from Phase 1C) | Server |
+| `autonomos.pid` | `~/.autonomos/autonomos.pid` | `{pid, port, version, startedAt}` — already shipping per `packages/server/src/pid-file.ts` | Server (no changes needed) |
 
 **Atomic config writes**: borrow Open WebUI Desktop's pattern — `tmpfile → fsync → rename`, serialized via an in-process Promise lock. ~25 lines, skip `electron-store`.
 
@@ -211,7 +207,8 @@ The autonomos-server daemon writes `~/.autonomos/server-state.json` at startup c
 ### "Connect to existing server" flow
 
 1. User pastes URL + token (+ optional name) in the form
-2. Desktop validates by hitting `${url}/api/host` with `Authorization: Bearer ${token}` (need 5s timeout)
+2. Desktop validates by hitting an **authenticated** endpoint: `GET ${url}/api/system/version` with `Authorization: Bearer ${token}` and a 5s timeout
+   - **Correction post-design-audit:** the doc originally said `/api/host`, but `/api/host` is auth-bypassed (used for unauth'd liveness probes). Using it would say "Connected!" with a bad token and fail on the next call. `/api/system/version` requires the token and returns `{version, platform, arch}`, so a 200 confirms both reachability AND token validity.
 3. If 200: connection saved, becomes active
 4. If 401: "Invalid token"
 5. If timeout / connection refused: "Server unreachable. Check the URL and that the server is running."
@@ -236,9 +233,21 @@ The user clicks the link. macOS routes the URL to our `.app` via `LSSetDefaultHa
 
 In both cases, the handler parses the URL, opens the Add Connection modal pre-filled with URL + token + name. User clicks "Connect" — same as the manual flow.
 
+**Security mitigations (deep links are a phishing surface):**
+
+A malicious webpage can fire `window.location = "autonomos://connect?url=evil.com&token=stolen"` and macOS will route it to autonomOS.app without a browser confirmation dialog (custom schemes don't prompt the way `mailto:` does). Without mitigation, a user clicking a hostile link could one-click-add an attacker-controlled "server" and then leak credentials through subsequent in-app actions. Required mitigations:
+
+1. **The modal must pre-fill, never auto-save.** User must press the "Connect" button explicitly. No keyboard auto-focus on a default button that would submit on Enter.
+2. **HTTP non-loopback URLs show a red warning banner.** `http://evil.com:7421` produces "This is an unencrypted connection over the public internet — only proceed if you trust this network." Loopback (`127.0.0.1`, `localhost`, `::1`) and HTTPS are quiet.
+3. **Deep-linked connections never auto-become `defaultConnectionId`.** The user has to explicitly switch to a deep-link-originated connection from the sidebar. This means a one-click attack can add a connection but not immediately put the user inside the attacker's UI.
+4. **Welcome-screen helper text explicitly tells users where deep links come from:** "Deep links should come from your terminal after running `install.sh`. If a webpage just opened this dialog, close it and report the page."
+5. **Future hardening (post-1B.2, defer):** A `state` nonce mechanism — `install.sh` would write the URL to a local file the user clicks rather than embedding in the printed text. Or: rate-limit deep-link handling to one per N seconds. Not needed for 1B.2 given the single-user threat model.
+
 ### Switch connection
 
-Sidebar shows all connections (local pinned at top, then remotes). Click switches the active webview. Webviews use `partition="persist:connection-${id}"` so cookies/auth state are isolated per server (no leaking forge's session into local Mac's session). ⌘+1 through ⌘+9 switch by index.
+Sidebar shows all connections (local pinned at top, then remotes). Click switches the active `BrowserWindow` (or `WebContentsView` — see below). Per-connection `partition: persist:connection-${id}` on the session isolates cookies/auth state between servers (no leaking forge's session into local Mac's session). ⌘+1 through ⌘+9 switch by index.
+
+**Correction post-design-audit:** earlier draft of this doc said `<webview>` tag. Chromium has deprecated `<webview>` for years and Electron docs steer toward `BrowserWindow` with `partition` (or the newer `WebContentsView`/`BaseWindow` API in Electron 30+). Open WebUI Desktop actually uses separate `BrowserWindow`s, not `<webview>` — I misread earlier. Switch to `BrowserWindow` (or `WebContentsView` if we want the inline-in-app feel). Cookies set via `session.fromPartition(\`persist:connection-${id}\`).cookies.set(...)`, NOT `session.defaultSession` (which would leak across connections).
 
 ### Server crash / disconnect
 
@@ -431,8 +440,7 @@ The `AUTONOMOS_READY port=N` stdout contract (Phase 1A.1) stays — useful in de
 
 ### Sub-phase 1B.2.5 — Local server install flow (~1-1.5 days)
 - `main/local-server/installer.ts`: runs the bundled install logic via the existing Phase 1C `autonomos` CLI in `Resources/server/`
-- Readiness polling via `~/.autonomos/server-state.json` watch
-- Server-side: add ~10 LOC to write `server-state.json` at boot (Phase 1C addition)
+- Readiness polling via `~/.autonomos/autonomos.pid` watch (file already shipped by `pid-file.ts` — zero server-side changes needed)
 - Renderer: "Installing autonomOS Server..." progress state
 
 ### Sub-phase 1B.2.6 — Multi-connection sidebar (~½ day)

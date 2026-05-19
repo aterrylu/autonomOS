@@ -12,7 +12,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {},
-  "//comment_no_workspace_deps": "Intentionally no workspace deps. The bundled autonomos-server lives in extraResources/server/ at build time, NOT in node_modules. Adding @autonomos/server here would make electron-builder try to rebuild node-pty against Electron's ABI.",
   "devDependencies": {
     "@types/node": "^22",
     "electron": "^35.0.0",

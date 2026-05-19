@@ -1,86 +1,85 @@
-/**
- * Schema migrations for AppConfig.
- *
- * Pragmatic pattern (borrowed from Open WebUI Desktop, src/main/index.ts:2177):
- * migrations are inline functions keyed by source version. We don't pull in
- * a migrations framework because schema changes will be rare for this
- * single-app config file.
- *
- * To add a migration when bumping schemaVersion from N → N+1:
- *   1. Bump AppConfig.schemaVersion type literal to N+1
- *   2. Add a function `migrateV${N}toV${N+1}(prev)` that returns the new shape
- *   3. Add a case to the switch in `migrateConfig`
- *   4. Write a unit test pinning the migration's behavior
- *
- * Old fields that the new schema doesn't use can be either dropped silently
- * (preferred) or logged via console.warn — the user's data is lost unless
- * the new schema captures it, so prefer migrations that PRESERVE information
- * even if the new code doesn't read it yet.
- */
+// Schema migrations for AppConfig. Pragmatic switch-on-version pattern;
+// schema changes will be rare for this single-app config file.
+//
+// To bump schemaVersion N → N+1:
+//   1. Update CURRENT_SCHEMA_VERSION + AppConfig.schemaVersion literal
+//   2. Add `case N:` that returns the new shape
+//   3. Test pinning the migration's behavior
 
 import { type AppConfig, defaultAppConfig } from "../../types/config.js";
+import type { Connection } from "../../types/connection.js";
 
-/** Migrate a raw parsed JSON object to the current AppConfig schema.
- *  Tolerant of garbage input — falls back to defaults if the input doesn't
- *  look like a config at all. */
+export const CURRENT_SCHEMA_VERSION = 1;
+
+/** Validate a Connection entry from disk. Defensive against hand-edited
+ *  config.json where a user might have deleted a required field. */
+function isValidConnection(x: unknown): x is Connection {
+  if (typeof x !== "object" || x === null) return false;
+  const c = x as Connection;
+  return (
+    typeof c.id === "string" &&
+    c.id.length > 0 &&
+    typeof c.name === "string" &&
+    (c.type === "local" || c.type === "remote") &&
+    typeof c.url === "string" &&
+    c.url.length > 0 &&
+    (c.lastConnectedAt === undefined || typeof c.lastConnectedAt === "string")
+  );
+}
+
 export function migrateConfig(raw: unknown): AppConfig {
   if (typeof raw !== "object" || raw === null) {
     return defaultAppConfig();
   }
   const config = raw as Partial<AppConfig> & { schemaVersion?: unknown };
 
-  // No version field → either a brand-new file or pre-versioning. Either way,
-  // try to interpret what we have at the current schema and fill gaps.
   const fromVersion =
     typeof config.schemaVersion === "number" ? config.schemaVersion : 0;
 
-  let current: AppConfig;
+  let current: Partial<AppConfig>;
   switch (fromVersion) {
     case 0:
-      current = fromV0(config);
+      current = config;
       break;
-    case 1:
-      current = config as AppConfig;
+    case CURRENT_SCHEMA_VERSION:
+      current = config;
       break;
     default:
-      // Newer schema than we know about → treat as current and hope for the
-      // best. Don't downgrade silently.
       console.warn(
-        `[config] Config schemaVersion ${fromVersion} is newer than supported ` +
-          `(${1}). Loading as-is; some fields may be ignored.`,
+        `[config] schemaVersion ${fromVersion} is newer than supported ` +
+          `(${CURRENT_SCHEMA_VERSION}). Loading as-is; some fields may be ignored.`,
       );
-      current = config as AppConfig;
+      current = config;
       break;
   }
 
-  // Always ensure required nested fields exist (defaults merge), so future
-  // additions to AppConfig don't crash on old configs that lack them.
   const defaults = defaultAppConfig();
   return {
-    schemaVersion: 1,
-    connections: current.connections ?? defaults.connections,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    connections: Array.isArray(current.connections)
+      ? current.connections.filter(isValidConnection)
+      : defaults.connections,
     defaultConnectionId:
-      current.defaultConnectionId ?? defaults.defaultConnectionId,
+      typeof current.defaultConnectionId === "string"
+        ? current.defaultConnectionId
+        : defaults.defaultConnectionId,
     localServer: {
       installed:
-        current.localServer?.installed ?? defaults.localServer.installed,
-      port: current.localServer?.port ?? defaults.localServer.port,
+        typeof current.localServer?.installed === "boolean"
+          ? current.localServer.installed
+          : defaults.localServer.installed,
     },
     ui: {
-      sidebarWidth: current.ui?.sidebarWidth ?? defaults.ui.sidebarWidth,
-      theme: current.ui?.theme ?? defaults.ui.theme,
+      sidebarWidth:
+        typeof current.ui?.sidebarWidth === "number"
+          ? current.ui.sidebarWidth
+          : defaults.ui.sidebarWidth,
+      theme:
+        current.ui?.theme === "system" ||
+        current.ui?.theme === "light" ||
+        current.ui?.theme === "dark"
+          ? current.ui.theme
+          : defaults.ui.theme,
     },
-  };
-}
-
-/** Pre-versioning shape → v1. Used when the file has no `schemaVersion`. */
-function fromV0(prev: Partial<AppConfig>): AppConfig {
-  const defaults = defaultAppConfig();
-  return {
-    schemaVersion: 1,
-    connections: Array.isArray(prev.connections) ? prev.connections : [],
-    defaultConnectionId: prev.defaultConnectionId ?? null,
-    localServer: prev.localServer ?? defaults.localServer,
-    ui: prev.ui ?? defaults.ui,
   };
 }
