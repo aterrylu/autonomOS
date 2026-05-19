@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ipcMain, net } from "electron";
+import { ipcMain, net, session } from "electron";
 import type {
   AddConnectionInput,
   AddConnectionResult,
@@ -213,6 +213,43 @@ export function registerIpc(): void {
     "internal:get-token",
     async (_event, id: string): Promise<string | null> => {
       return getToken(id);
+    },
+  );
+
+  /** Prepares a partition's session to load the connection's web dashboard
+   *  by setting the `autonomos_token` cookie. autonomos-server's run.ts
+   *  reads this cookie via `getCookie(c, "autonomos_token")` for HTTP auth
+   *  on browser-loaded pages (Bearer is for headless API calls). Called
+   *  by the renderer immediately before mounting a <webview>. */
+  ipcMain.handle(
+    "connections:prepare-webview",
+    async (
+      _event,
+      id: string,
+    ): Promise<{ ok: boolean; url: string } | { ok: false }> => {
+      const config = await getConfig();
+      const conn = config.connections.find((c) => c.id === id);
+      if (!conn) return { ok: false };
+      const token = await getToken(id);
+      if (!token) return { ok: false };
+
+      // session.fromPartition() — NOT session.defaultSession (would leak
+      // cookies across connections). Per ADR-028 post-audit correction.
+      const partition = `persist:connection-${id}`;
+      const ses = session.fromPartition(partition);
+      const parsed = new URL(conn.url);
+      // Cookie scoped to the server's hostname; secure flag honors HTTPS.
+      await ses.cookies.set({
+        url: conn.url,
+        name: "autonomos_token",
+        value: token,
+        domain: parsed.hostname,
+        path: "/",
+        secure: parsed.protocol === "https:",
+        httpOnly: false,
+        sameSite: "lax",
+      });
+      return { ok: true, url: conn.url };
     },
   );
 }

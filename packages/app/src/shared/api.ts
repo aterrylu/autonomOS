@@ -46,6 +46,13 @@ export interface AutonomosAPI {
   encryption: {
     isAvailable(): Promise<boolean>;
   };
+  webview: {
+    /** Prepare a partition's session to load the connection's dashboard
+     *  by setting the `autonomos_token` cookie. Call immediately before
+     *  mounting a <webview> with partition="persist:connection-${id}".
+     *  Returns the URL to load on success. */
+    prepare(id: string): Promise<{ ok: true; url: string } | { ok: false }>;
+  };
   /** Bumped when the contract changes in a breaking way. */
   version: number;
 }

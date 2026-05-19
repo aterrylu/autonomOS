@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Connection } from "../types/connection.js";
 import { AddConnectionModal } from "./AddConnectionModal.js";
+import { ConnectionWebview } from "./ConnectionWebview.js";
 import { Welcome } from "./Welcome.js";
 
 type View =
@@ -65,21 +66,5 @@ export function App(): React.ReactElement {
   }
 
   // view.kind === "connected"
-  return (
-    <div className="connected">
-      <div style={{ textAlign: "center", maxWidth: 420 }}>
-        <p style={{ color: "#f1f5f9", fontSize: 16, margin: 0 }}>
-          Connected to <strong>{view.connection.name}</strong>
-        </p>
-        <p style={{ marginTop: 8, color: "#64748b", fontSize: 12 }}>
-          <code>{view.connection.url}</code>
-        </p>
-        <p style={{ marginTop: 24, color: "#64748b", fontSize: 12 }}>
-          The webview that loads this connection&apos;s dashboard ships in Phase
-          1B.2.3. For now you can verify the connection record persists across
-          app restarts.
-        </p>
-      </div>
-    </div>
-  );
+  return <ConnectionWebview connection={view.connection} />;
 }

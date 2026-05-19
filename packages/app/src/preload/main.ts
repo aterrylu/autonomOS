@@ -33,6 +33,10 @@ const api: AutonomosAPI = {
     isAvailable: (): Promise<boolean> =>
       ipcRenderer.invoke("encryption:is-available"),
   },
+  webview: {
+    prepare: (id: string) =>
+      ipcRenderer.invoke("connections:prepare-webview", id),
+  },
 };
 
 contextBridge.exposeInMainWorld("autonomos", api);
