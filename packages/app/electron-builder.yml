@@ -43,6 +43,7 @@ files:
 
 mac:
   category: public.app-category.developer-tools
+  icon: build-resources/icon.icns
   target:
     - target: dmg
       arch:
@@ -57,6 +58,7 @@ mac:
 
 dmg:
   title: "autonomOS ${version}"
+  icon: build-resources/icon.icns
   iconSize: 100
   contents:
     - x: 380
