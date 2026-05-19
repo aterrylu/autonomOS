@@ -44,6 +44,7 @@ export function AddConnectionModal({
   const [name, setName] = useState(prefill?.name ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tokenVisible, setTokenVisible] = useState(false);
   const urlInputRef = useRef<HTMLInputElement>(null);
 
   // Esc closes; focus URL input on open (only for non-prefilled — prefilled
@@ -106,12 +107,17 @@ export function AddConnectionModal({
             <input
               id="url"
               ref={urlInputRef}
-              type="url"
-              placeholder="https://forge.example.com:7421"
+              type="text"
+              placeholder="https://forge.example.com:7421  or  localhost:3100"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               required
+              autoComplete="off"
+              spellCheck={false}
             />
+            <span className="hint">
+              http:// is added automatically if omitted. localhost works.
+            </span>
           </div>
           {plaintextWarn && (
             <div className="warning">
@@ -121,14 +127,26 @@ export function AddConnectionModal({
             </div>
           )}
           <div className="field" style={{ marginTop: 12 }}>
-            <label htmlFor="token">Token</label>
+            <label htmlFor="token">
+              Token
+              <button
+                type="button"
+                className="token-toggle"
+                onClick={() => setTokenVisible((v) => !v)}
+                aria-label={tokenVisible ? "Hide token" : "Show token"}
+              >
+                {tokenVisible ? "Hide" : "Show"}
+              </button>
+            </label>
             <input
               id="token"
-              type="password"
+              type={tokenVisible ? "text" : "password"}
               placeholder="64-character bearer token from install.sh"
               value={token}
               onChange={(e) => setToken(e.target.value)}
               required
+              autoComplete="off"
+              spellCheck={false}
             />
           </div>
           <div className="field" style={{ marginTop: 12 }}>

@@ -66,51 +66,80 @@ function deriveNameFromUrl(url: string): string {
   }
 }
 
-function normalizeUrl(url: string): string {
-  return url.replace(/\/+$/, "");
+/** Normalize a user-typed URL: trim whitespace, strip trailing slashes,
+ *  auto-prepend `http://` if the user typed a bare host[:port]. This is
+ *  the most-common UX papercut — "localhost:3100" should Just Work. */
+function normalizeUrl(raw: string): string {
+  let url = raw.trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(url)) {
+    url = `http://${url}`;
+  }
+  return url;
 }
 
 type ValidationError = Extract<AddConnectionResult, { ok: false }>["error"];
 
+interface ValidationOutcome {
+  error: ValidationError | null;
+  /** Detail to surface to the user (underlying net error code, status, etc.). */
+  details?: string;
+}
+
 /** Validate a remote server by hitting its authenticated /api/system/version
- *  with a 5s timeout. Returns null iff status 200, else the error code. */
+ *  with a 5s timeout. Returns `{ error: null }` iff status 200. */
 async function validateRemote(
   url: string,
   token: string,
-): Promise<ValidationError | null> {
+): Promise<ValidationOutcome> {
   let parsed: URL;
   try {
     parsed = new URL(url);
-  } catch {
-    return "invalid-url";
+  } catch (err) {
+    return {
+      error: "invalid-url",
+      details: err instanceof Error ? err.message : String(err),
+    };
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return "invalid-url";
+    return {
+      error: "invalid-url",
+      details: `Protocol ${parsed.protocol} not supported — use http:// or https://`,
+    };
   }
 
   return new Promise((resolve) => {
-    const req = net.request({
-      method: "GET",
-      url: `${normalizeUrl(url)}/api/system/version`,
-    });
+    const requestUrl = `${url}/api/system/version`;
+    const req = net.request({ method: "GET", url: requestUrl });
     req.setHeader("Authorization", `Bearer ${token}`);
     const timer = setTimeout(() => {
       req.abort();
-      resolve("unreachable");
+      resolve({
+        error: "unreachable",
+        details: `Timed out after 5s on ${requestUrl}`,
+      });
     }, 5000);
     req.on("response", (res) => {
       clearTimeout(timer);
-      // Drain body so the request closes cleanly.
       res.on("data", () => undefined);
       res.on("end", () => undefined);
-      if (res.statusCode === 200) resolve(null);
+      if (res.statusCode === 200) resolve({ error: null });
       else if (res.statusCode === 401 || res.statusCode === 403)
-        resolve("invalid-token");
-      else resolve("unknown");
+        resolve({
+          error: "invalid-token",
+          details: `Server returned ${res.statusCode} on /api/system/version`,
+        });
+      else
+        resolve({
+          error: "unknown",
+          details: `Server returned ${res.statusCode} on /api/system/version`,
+        });
     });
-    req.on("error", () => {
+    req.on("error", (err) => {
       clearTimeout(timer);
-      resolve("unreachable");
+      resolve({
+        error: "unreachable",
+        details: `${err.message} (${requestUrl})`,
+      });
     });
     req.end();
   });
@@ -126,19 +155,22 @@ export function registerIpc(): void {
     IPC.CONNECTIONS_ADD,
     async (_event, input: AddConnectionInput): Promise<AddConnectionResult> => {
       const url = normalizeUrl(input.url);
-      const validationError = await validateRemote(url, input.token);
-      if (validationError) {
+      const outcome = await validateRemote(url, input.token);
+      if (outcome.error) {
+        const baseMessage =
+          outcome.error === "invalid-url"
+            ? "Not a valid URL."
+            : outcome.error === "unreachable"
+              ? "Server unreachable. Check the URL and that the daemon is running."
+              : outcome.error === "invalid-token"
+                ? "Invalid token."
+                : "Unknown error contacting the server.";
         return {
           ok: false,
-          error: validationError,
-          message:
-            validationError === "invalid-url"
-              ? "Not a valid http(s):// URL."
-              : validationError === "unreachable"
-                ? "Server unreachable. Check the URL and that the daemon is running."
-                : validationError === "invalid-token"
-                  ? "Invalid token."
-                  : "Unknown error contacting the server.",
+          error: outcome.error,
+          message: outcome.details
+            ? `${baseMessage} (${outcome.details})`
+            : baseMessage,
         };
       }
 
