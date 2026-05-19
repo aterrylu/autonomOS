@@ -8,7 +8,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SVG="${REPO_ROOT}/packages/dashboard/public/favicon.svg"
+# packages/app/build-resources/icon.svg is sized for app-icon use (1024x1024
+# viewBox + large letter). The browser favicon at packages/dashboard/public/
+# favicon.svg is intentionally 32x32 and renders too small as a .icns source —
+# qlmanage rasterizes the SVG at its declared `width` and pads the rest with
+# white, so a 32x32 source produces a tiny speck in a huge white square.
+SVG="${REPO_ROOT}/packages/app/build-resources/icon.svg"
 OUT="${REPO_ROOT}/packages/app/build-resources/icon.icns"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -25,10 +30,11 @@ if [[ "$(uname)" != "Darwin" ]]; then
 fi
 
 # Rasterize SVG → 1024x1024 PNG (qlmanage's QuickLook SVG handler).
+# qlmanage names the output as `${basename ${SVG}}.png`, so derive accordingly.
 qlmanage -t -s 1024 -o "${WORK}" "${SVG}" >/dev/null 2>&1
-SRC_PNG="${WORK}/favicon.svg.png"
+SRC_PNG="${WORK}/$(basename "${SVG}").png"
 if [[ ! -f "${SRC_PNG}" ]]; then
-  echo "error: qlmanage failed to render ${SVG}"
+  echo "error: qlmanage failed to render ${SVG} (expected ${SRC_PNG})"
   exit 1
 fi
 
