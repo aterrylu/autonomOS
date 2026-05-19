@@ -1,4 +1,4 @@
-import type { Connection } from "./connection.ts";
+import type { Connection } from "./connection.js";
 
 /**
  * Persistent application configuration written to
