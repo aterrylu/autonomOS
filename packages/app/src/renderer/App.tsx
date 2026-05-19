@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Connection } from "../types/connection.js";
 import { AddConnectionModal } from "./AddConnectionModal.js";
 import { ConnectionWebview } from "./ConnectionWebview.js";
+import { TitleBar } from "./TitleBar.js";
 import { Welcome } from "./Welcome.js";
 
 type View =
@@ -16,7 +17,6 @@ export function App(): React.ReactElement {
     { url: string; token: string; name?: string } | undefined
   >(undefined);
 
-  // Load initial state from main process.
   useEffect(() => {
     (async () => {
       const defaultId = await window.autonomos.connections.getDefault();
@@ -34,37 +34,51 @@ export function App(): React.ReactElement {
     void window.autonomos.connections.setDefault(connection.id);
   };
 
-  if (view.kind === "loading") {
-    return <div className="connected">Loading…</div>;
-  }
+  const handleDisconnect = (): void => {
+    setView({ kind: "welcome" });
+    void window.autonomos.connections.setDefault(null);
+  };
 
-  if (view.kind === "welcome") {
-    return (
-      <>
-        <Welcome
-          onConnectRemote={() => {
-            setModalPrefill(undefined);
-            setModalOpen(true);
-          }}
-          onSetupLocal={() => {
-            // 1B.2.5 wires the actual install flow.
-            alert("Set up local server is shipping in Phase 1B.2.5.");
-          }}
-        />
-        {modalOpen && (
-          <AddConnectionModal
-            prefill={modalPrefill}
-            onClose={() => setModalOpen(false)}
-            onAdded={(c) => {
-              setModalOpen(false);
-              handleConnectionAdded(c);
+  const titleLabel =
+    view.kind === "connected" ? view.connection.name : "autonomOS";
+
+  const titleActions =
+    view.kind === "connected" ? (
+      <button type="button" onClick={handleDisconnect}>
+        Disconnect
+      </button>
+    ) : null;
+
+  return (
+    <>
+      <TitleBar label={titleLabel}>{titleActions}</TitleBar>
+      <div className="view">
+        {view.kind === "loading" && <div className="connected">Loading…</div>}
+        {view.kind === "welcome" && (
+          <Welcome
+            onConnectRemote={() => {
+              setModalPrefill(undefined);
+              setModalOpen(true);
+            }}
+            onSetupLocal={() => {
+              alert("Set up local server is shipping in Phase 1B.2.5.");
             }}
           />
         )}
-      </>
-    );
-  }
-
-  // view.kind === "connected"
-  return <ConnectionWebview connection={view.connection} />;
+        {view.kind === "connected" && (
+          <ConnectionWebview connection={view.connection} />
+        )}
+      </div>
+      {modalOpen && (
+        <AddConnectionModal
+          prefill={modalPrefill}
+          onClose={() => setModalOpen(false)}
+          onAdded={(c) => {
+            setModalOpen(false);
+            handleConnectionAdded(c);
+          }}
+        />
+      )}
+    </>
+  );
 }
