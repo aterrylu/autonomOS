@@ -13,13 +13,9 @@ export interface AddConnectionInput {
 }
 
 export interface LocalServerStatus {
-  /** LaunchAgent / systemd-user service has been installed for this binary. */
   installed: boolean;
-  /** A daemon is currently responding (autonomos.pid exists, pid alive). */
   running: boolean;
-  /** Port from ~/.autonomos/autonomos.pid (read fresh; null if not running). */
   port: number | null;
-  /** Server version from autonomos.pid (null if not running). */
   version: string | null;
 }
 
@@ -37,8 +33,6 @@ export interface AutonomosAPI {
     list(): Promise<Connection[]>;
     add(input: AddConnectionInput): Promise<AddConnectionResult>;
     remove(id: string): Promise<void>;
-    setDefault(id: string | null): Promise<void>;
-    getDefault(): Promise<string | null>;
   };
   localServer: {
     status(): Promise<LocalServerStatus>;
@@ -47,18 +41,22 @@ export interface AutonomosAPI {
     isAvailable(): Promise<boolean>;
   };
   webview: {
-    /** Prepare a partition's session to load the connection's dashboard
-     *  by setting the `autonomos_token` cookie. Call immediately before
-     *  mounting a <webview> with partition="persist:connection-${id}".
-     *  Returns the URL to load on success. */
     prepare(id: string): Promise<{ ok: true; url: string } | { ok: false }>;
+  };
+  windows: {
+    /** Open a new BrowserWindow for the given connection (or focus the
+     *  existing one if it's already open). */
+    openConnection(id: string): Promise<void>;
+    /** Open a fresh Welcome window for adding a new connection. */
+    newWelcome(): Promise<void>;
+    /** Close the BrowserWindow that owns the calling renderer. */
+    closeSelf(): Promise<void>;
   };
   /** Bumped when the contract changes in a breaking way. */
   version: number;
 }
 
-/** Augmentation for the renderer-side `window` object. Renderer code can
- *  `window.autonomos.connections.list()` with full type safety. */
+/** Augmentation for the renderer-side `window` object. */
 declare global {
   interface Window {
     autonomos: AutonomosAPI;

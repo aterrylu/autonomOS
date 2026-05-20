@@ -15,8 +15,10 @@ export interface AppConfig {
    *  from `~/.autonomos/autonomos.pid` and is never stored here. */
   connections: Connection[];
 
-  /** Which connection to auto-open on launch. null = show Welcome picker. */
-  defaultConnectionId: string | null;
+  /** Connection IDs whose windows were open at last quit, restored on
+   *  next launch (VS Code "reopen workspaces" behavior). Updated whenever
+   *  a connection window opens or closes. */
+  openWindows: string[];
 
   /** Whether a local autonomos-server LaunchAgent / systemd-user service
    *  has been installed on this machine. Source of truth for the live
@@ -39,7 +41,7 @@ export function defaultAppConfig(): AppConfig {
   return {
     schemaVersion: 1,
     connections: [],
-    defaultConnectionId: null,
+    openWindows: [],
     localServer: { installed: false },
     ui: { sidebarWidth: 240, theme: "system" },
   };

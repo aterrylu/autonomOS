@@ -20,10 +20,6 @@ const api: AutonomosAPI = {
       ipcRenderer.invoke(IPC.CONNECTIONS_ADD, input),
     remove: (id: string): Promise<void> =>
       ipcRenderer.invoke(IPC.CONNECTIONS_REMOVE, id),
-    setDefault: (id: string | null): Promise<void> =>
-      ipcRenderer.invoke(IPC.CONNECTIONS_SET_DEFAULT, id),
-    getDefault: (): Promise<string | null> =>
-      ipcRenderer.invoke("connections:get-default"),
   },
   localServer: {
     status: (): Promise<LocalServerStatus> =>
@@ -36,6 +32,12 @@ const api: AutonomosAPI = {
   webview: {
     prepare: (id: string) =>
       ipcRenderer.invoke("connections:prepare-webview", id),
+  },
+  windows: {
+    openConnection: (id: string): Promise<void> =>
+      ipcRenderer.invoke("windows:open-connection", id),
+    newWelcome: (): Promise<void> => ipcRenderer.invoke("windows:new-welcome"),
+    closeSelf: (): Promise<void> => ipcRenderer.invoke("windows:close-self"),
   },
 };
 

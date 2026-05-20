@@ -4,7 +4,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ipcMain, net, session } from "electron";
+import { BrowserWindow, ipcMain, net, session } from "electron";
+
 import type {
   AddConnectionInput,
   AddConnectionResult,
@@ -19,9 +20,11 @@ import {
   removeToken,
   setToken,
 } from "./config/tokens.js";
+import { buildMenu } from "./menu.js";
+import { openConnectionWindow, openWelcomeWindow } from "./window-manager.js";
 
-/** Read ~/.autonomos/autonomos.pid (the source of truth for the local
- *  daemon's port/pid/version). Returns null on missing/corrupt/dead-process. */
+/** Read ~/.autonomos/autonomos.pid (source of truth for the local daemon's
+ *  port/pid/version). Returns null on missing/corrupt/dead-process. */
 function readLocalPidFile(): {
   pid: number;
   port: number;
@@ -46,7 +49,6 @@ function readLocalPidFile(): {
       port: number;
       version: string;
     };
-    // POSIX kill(pid, 0) — sends no signal, throws if process doesn't exist.
     try {
       process.kill(pid, 0);
     } catch {
@@ -66,9 +68,8 @@ function deriveNameFromUrl(url: string): string {
   }
 }
 
-/** Normalize a user-typed URL: trim whitespace, strip trailing slashes,
- *  auto-prepend `http://` if the user typed a bare host[:port]. This is
- *  the most-common UX papercut — "localhost:3100" should Just Work. */
+/** Normalize a user-typed URL: trim, strip trailing slashes, auto-prepend
+ *  http:// if the user typed a bare host[:port]. */
 function normalizeUrl(raw: string): string {
   let url = raw.trim().replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(url)) {
@@ -81,12 +82,9 @@ type ValidationError = Extract<AddConnectionResult, { ok: false }>["error"];
 
 interface ValidationOutcome {
   error: ValidationError | null;
-  /** Detail to surface to the user (underlying net error code, status, etc.). */
   details?: string;
 }
 
-/** Validate a remote server by hitting its authenticated /api/system/version
- *  with a 5s timeout. Returns `{ error: null }` iff status 200. */
 async function validateRemote(
   url: string,
   token: string,
@@ -188,6 +186,8 @@ export function registerIpc(): void {
         ...current,
         connections: [...current.connections, connection],
       }));
+      // Connections changed — rebuild the File > Recent Servers menu.
+      await buildMenu();
       return { ok: true, connection };
     },
   );
@@ -199,26 +199,9 @@ export function registerIpc(): void {
       await setConfig((current) => ({
         ...current,
         connections: current.connections.filter((c) => c.id !== id),
-        defaultConnectionId:
-          current.defaultConnectionId === id
-            ? null
-            : current.defaultConnectionId,
+        openWindows: current.openWindows.filter((wid) => wid !== id),
       }));
-    },
-  );
-
-  ipcMain.handle(
-    IPC.CONNECTIONS_SET_DEFAULT,
-    async (_event, id: string | null): Promise<void> => {
-      await setConfig((current) => ({ ...current, defaultConnectionId: id }));
-    },
-  );
-
-  ipcMain.handle(
-    "connections:get-default",
-    async (): Promise<string | null> => {
-      const config = await getConfig();
-      return config.defaultConnectionId;
+      await buildMenu();
     },
   );
 
@@ -240,7 +223,6 @@ export function registerIpc(): void {
     return isEncryptionAvailable();
   });
 
-  // For 1B.2.3+ — internal use only, not on the AutonomosAPI surface yet.
   ipcMain.handle(
     "internal:get-token",
     async (_event, id: string): Promise<string | null> => {
@@ -249,28 +231,22 @@ export function registerIpc(): void {
   );
 
   /** Prepares a partition's session to load the connection's web dashboard
-   *  by setting the `autonomos_token` cookie. autonomos-server's run.ts
-   *  reads this cookie via `getCookie(c, "autonomos_token")` for HTTP auth
-   *  on browser-loaded pages (Bearer is for headless API calls). Called
-   *  by the renderer immediately before mounting a <webview>. */
+   *  by setting the `autonomos_token` cookie. */
   ipcMain.handle(
     "connections:prepare-webview",
     async (
       _event,
       id: string,
-    ): Promise<{ ok: boolean; url: string } | { ok: false }> => {
+    ): Promise<{ ok: true; url: string } | { ok: false }> => {
       const config = await getConfig();
       const conn = config.connections.find((c) => c.id === id);
       if (!conn) return { ok: false };
       const token = await getToken(id);
       if (!token) return { ok: false };
 
-      // session.fromPartition() — NOT session.defaultSession (would leak
-      // cookies across connections). Per ADR-028 post-audit correction.
       const partition = `persist:connection-${id}`;
       const ses = session.fromPartition(partition);
       const parsed = new URL(conn.url);
-      // Cookie scoped to the server's hostname; secure flag honors HTTPS.
       await ses.cookies.set({
         url: conn.url,
         name: "autonomos_token",
@@ -284,4 +260,18 @@ export function registerIpc(): void {
       return { ok: true, url: conn.url };
     },
   );
+
+  // ── Window management ──────────────────────────────────────────────
+
+  ipcMain.handle("windows:open-connection", (_event, id: string): void => {
+    openConnectionWindow(id);
+  });
+
+  ipcMain.handle("windows:new-welcome", (): void => {
+    openWelcomeWindow();
+  });
+
+  ipcMain.handle("windows:close-self", (event): void => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
 }

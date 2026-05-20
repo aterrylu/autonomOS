@@ -209,3 +209,17 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-col
   color: var(--text-muted);
   font-size: 13px;
 }
+
+/* Used by ConnectionWindow for loading / missing states. Fills the entire
+ * window since the connected window has no title bar. */
+.full-bleed-message {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding-top: 38px; /* clear traffic lights */
+}
+.full-bleed-message button { margin-top: 16px; }

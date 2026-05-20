@@ -59,10 +59,11 @@ export function migrateConfig(raw: unknown): AppConfig {
     connections: Array.isArray(current.connections)
       ? current.connections.filter(isValidConnection)
       : defaults.connections,
-    defaultConnectionId:
-      typeof current.defaultConnectionId === "string"
-        ? current.defaultConnectionId
-        : defaults.defaultConnectionId,
+    openWindows: Array.isArray(current.openWindows)
+      ? current.openWindows.filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        )
+      : defaults.openWindows,
     localServer: {
       installed:
         typeof current.localServer?.installed === "boolean"
