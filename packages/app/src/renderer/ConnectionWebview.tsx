@@ -5,7 +5,7 @@ interface ConnectionWebviewProps {
   connection: Connection;
 }
 
-/** CSS + JS injected into every dashboard load so the macOS traffic lights
+/** CSS injected into every dashboard load so the macOS traffic lights
  *  integrate with the dashboard chrome.
  *
  *  The dashboard layout (packages/dashboard/src/App.tsx:261) is:
@@ -13,35 +13,43 @@ interface ConnectionWebviewProps {
  *    <Sidebar+Content row>
  *    <StatusBar />
  *
- *  Earlier we pushed the sidebar's first child down 38px, but the actual
- *  overlap is in the <Header> — its hamburger button and "autonomOS" h1
- *  sit at the top-left where the traffic-light buttons land. The fix is
- *  to push the entire header's content right of the lights via
- *  padding-left, which the dashboard's Tailwind `px-5` is overridden by.
+ *  Strategy:
+ *    1. Push the header's content right of the traffic-light reserve
+ *       (88px = 70px lights + 18px breathing) by overriding Tailwind's px-5.
+ *    2. Make the entire header element a window drag region — this gives
+ *       the user a generous drag affordance for the empty padding area
+ *       on the left (between traffic lights and hamburger) AND for the
+ *       h1 text on the right.
+ *    3. Exempt interactive children (buttons, links, inputs) from the
+ *       drag region so they still receive clicks. This is the canonical
+ *       Electron + macOS pattern.
  *
- *  Also overlays a transparent drag region across the top 36px of the
- *  body so the user can still drag the window from the empty area —
- *  pointer-events: none lets clicks pass through to the header's
- *  hamburger button below. */
+ *  Lesson from the previous iteration: `pointer-events: none` on a fixed
+ *  div with `-webkit-app-region: drag` does NOT work — Electron's hit
+ *  testing for window drag also needs pointer events. The fix is to
+ *  attach drag-region to the actual interactive element (the header)
+ *  and exempt only the clickable children. */
 const INTEGRATION_CSS = `
-  /* Reserve space for the macOS traffic-light buttons by pushing the
-   * dashboard's top header to the right. 88px = 70px lights + 18px breathing. */
+  /* Reserve space for the macOS traffic-light buttons and make the
+   * header a window drag region (so users can move the window from
+   * any empty area in the top bar). */
   header.flex.items-center.gap-4 {
     padding-left: 88px !important;
+    -webkit-app-region: drag !important;
+    app-region: drag !important;
+  }
+  /* Interactive header children stay clickable; exempt them from drag. */
+  header.flex.items-center.gap-4 button,
+  header.flex.items-center.gap-4 a,
+  header.flex.items-center.gap-4 input,
+  header.flex.items-center.gap-4 select,
+  header.flex.items-center.gap-4 textarea {
+    -webkit-app-region: no-drag !important;
+    app-region: no-drag !important;
   }
 `;
 
-const INTEGRATION_JS = `
-  (() => {
-    if (document.getElementById('__autonomos_drag_region')) return;
-    const drag = document.createElement('div');
-    drag.id = '__autonomos_drag_region';
-    drag.style.cssText =
-      'position:fixed;top:0;left:0;right:0;height:36px;' +
-      '-webkit-app-region:drag;z-index:9999;pointer-events:none;';
-    document.body.appendChild(drag);
-  })();
-`;
+const INTEGRATION_JS = "";
 
 /** Electron's <webview> element type — augmented because React 19's JSX
  *  doesn't ship it by default. */
@@ -82,7 +90,9 @@ export function ConnectionWebview({
     if (!webview || !ready) return;
     const onDomReady = (): void => {
       void webview.insertCSS(INTEGRATION_CSS);
-      void webview.executeJavaScript(INTEGRATION_JS);
+      if (INTEGRATION_JS.length > 0) {
+        void webview.executeJavaScript(INTEGRATION_JS);
+      }
     };
     webview.addEventListener("dom-ready", onDomReady);
     return () => webview.removeEventListener("dom-ready", onDomReady);
