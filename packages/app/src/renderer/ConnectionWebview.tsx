@@ -6,14 +6,28 @@ interface ConnectionWebviewProps {
 }
 
 /** CSS + JS injected into every dashboard load so the macOS traffic lights
- *  integrate cleanly with the dashboard's own sidebar. The dashboard's
- *  `<aside>` (sidebar) extends to the top of the page — we just push its
- *  first child down 38px to clear the lights, and overlay a transparent
- *  drag region across the top 36px so the user can still move the window. */
+ *  integrate with the dashboard chrome.
+ *
+ *  The dashboard layout (packages/dashboard/src/App.tsx:261) is:
+ *    <Header />        ← top bar with hamburger + "autonomOS" h1
+ *    <Sidebar+Content row>
+ *    <StatusBar />
+ *
+ *  Earlier we pushed the sidebar's first child down 38px, but the actual
+ *  overlap is in the <Header> — its hamburger button and "autonomOS" h1
+ *  sit at the top-left where the traffic-light buttons land. The fix is
+ *  to push the entire header's content right of the lights via
+ *  padding-left, which the dashboard's Tailwind `px-5` is overridden by.
+ *
+ *  Also overlays a transparent drag region across the top 36px of the
+ *  body so the user can still drag the window from the empty area —
+ *  pointer-events: none lets clicks pass through to the header's
+ *  hamburger button below. */
 const INTEGRATION_CSS = `
-  /* Push the dashboard's first sidebar item below the traffic-light area */
-  aside.absolute.inset-y-0.left-0 > :first-child {
-    margin-top: 38px !important;
+  /* Reserve space for the macOS traffic-light buttons by pushing the
+   * dashboard's top header to the right. 88px = 70px lights + 18px breathing. */
+  header.flex.items-center.gap-4 {
+    padding-left: 88px !important;
   }
 `;
 
