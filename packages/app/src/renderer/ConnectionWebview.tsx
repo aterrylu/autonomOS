@@ -5,28 +5,34 @@ interface ConnectionWebviewProps {
   connection: Connection;
 }
 
-/** CSS injected into the dashboard webview.
+/** CSS injected into the dashboard webview to integrate the traffic
+ *  lights with the dashboard's <Header>.
  *
- *  Critical finding from real-use testing: `-webkit-app-region: drag`
- *  does NOT work inside Electron's <webview> tag. The webview runs in an
- *  isolated guest process and Chromium ignores app-region inside it. So
- *  any "make the dashboard header draggable" approach via CSS injection
- *  is fundamentally broken.
- *
- *  Solution: render a draggable title bar in the HOST renderer (outside
- *  the webview), and HIDE the dashboard's own <Header> here so we don't
- *  show two horizontal bars. The host title bar carries the "autonomOS"
- *  branding + connection name and is the one true drag affordance.
- *
- *  The hamburger button (sidebar toggle in the dashboard header) goes
- *  away with this; the dashboard sidebar defaults to open. We can add
- *  a sidebar-toggle action to the host title bar later if needed. */
+ *  Strategy:
+ *    1. Reserve 88px on the left of the header (clears traffic lights).
+ *    2. Make the header a window drag region.
+ *    3. Exempt only interactive children (button/a/input) — they keep
+ *       their clicks. The h1 text "autonomOS" stays draggable.
+ *    4. user-select: none on the h1 so mousedown doesn't start a text
+ *       selection (which would intercept the drag hit-test). */
 const INTEGRATION_CSS = `
-  /* Hide the dashboard's own header — the host's title bar replaces it
-   * with a draggable equivalent (the dashboard header can't be made
-   * draggable due to <webview> guest-process isolation). */
   header.flex.items-center.gap-4 {
-    display: none !important;
+    padding-left: 88px !important;
+    -webkit-app-region: drag !important;
+    app-region: drag !important;
+  }
+  header.flex.items-center.gap-4 h1 {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    cursor: default !important;
+  }
+  header.flex.items-center.gap-4 button,
+  header.flex.items-center.gap-4 a,
+  header.flex.items-center.gap-4 input,
+  header.flex.items-center.gap-4 select,
+  header.flex.items-center.gap-4 textarea {
+    -webkit-app-region: no-drag !important;
+    app-region: no-drag !important;
   }
 `;
 
