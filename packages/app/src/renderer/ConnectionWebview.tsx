@@ -5,47 +5,28 @@ interface ConnectionWebviewProps {
   connection: Connection;
 }
 
-/** CSS injected into every dashboard load so the macOS traffic lights
- *  integrate with the dashboard chrome.
+/** CSS injected into the dashboard webview.
  *
- *  The dashboard layout (packages/dashboard/src/App.tsx:261) is:
- *    <Header />        ← top bar with hamburger + "autonomOS" h1
- *    <Sidebar+Content row>
- *    <StatusBar />
+ *  Critical finding from real-use testing: `-webkit-app-region: drag`
+ *  does NOT work inside Electron's <webview> tag. The webview runs in an
+ *  isolated guest process and Chromium ignores app-region inside it. So
+ *  any "make the dashboard header draggable" approach via CSS injection
+ *  is fundamentally broken.
  *
- *  Strategy:
- *    1. Push the header's content right of the traffic-light reserve
- *       (88px = 70px lights + 18px breathing) by overriding Tailwind's px-5.
- *    2. Make the entire header element a window drag region — this gives
- *       the user a generous drag affordance for the empty padding area
- *       on the left (between traffic lights and hamburger) AND for the
- *       h1 text on the right.
- *    3. Exempt interactive children (buttons, links, inputs) from the
- *       drag region so they still receive clicks. This is the canonical
- *       Electron + macOS pattern.
+ *  Solution: render a draggable title bar in the HOST renderer (outside
+ *  the webview), and HIDE the dashboard's own <Header> here so we don't
+ *  show two horizontal bars. The host title bar carries the "autonomOS"
+ *  branding + connection name and is the one true drag affordance.
  *
- *  Lesson from the previous iteration: `pointer-events: none` on a fixed
- *  div with `-webkit-app-region: drag` does NOT work — Electron's hit
- *  testing for window drag also needs pointer events. The fix is to
- *  attach drag-region to the actual interactive element (the header)
- *  and exempt only the clickable children. */
+ *  The hamburger button (sidebar toggle in the dashboard header) goes
+ *  away with this; the dashboard sidebar defaults to open. We can add
+ *  a sidebar-toggle action to the host title bar later if needed. */
 const INTEGRATION_CSS = `
-  /* Reserve space for the macOS traffic-light buttons and make the
-   * header a window drag region (so users can move the window from
-   * any empty area in the top bar). */
+  /* Hide the dashboard's own header — the host's title bar replaces it
+   * with a draggable equivalent (the dashboard header can't be made
+   * draggable due to <webview> guest-process isolation). */
   header.flex.items-center.gap-4 {
-    padding-left: 88px !important;
-    -webkit-app-region: drag !important;
-    app-region: drag !important;
-  }
-  /* Interactive header children stay clickable; exempt them from drag. */
-  header.flex.items-center.gap-4 button,
-  header.flex.items-center.gap-4 a,
-  header.flex.items-center.gap-4 input,
-  header.flex.items-center.gap-4 select,
-  header.flex.items-center.gap-4 textarea {
-    -webkit-app-region: no-drag !important;
-    app-region: no-drag !important;
+    display: none !important;
   }
 `;
 
