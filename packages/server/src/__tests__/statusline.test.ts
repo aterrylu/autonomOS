@@ -118,26 +118,56 @@ describe("buildBar", () => {
 // ── formatDuration ────────────────────────────────────────────
 
 describe("formatDuration", () => {
-  it("renders 0ms as 0m00s", () => {
-    assert.equal(formatDuration(0), "0m00s");
+  // Seconds band (< 1 minute)
+  it("renders 0ms as 0s", () => {
+    assert.equal(formatDuration(0), "0s");
   });
 
-  it("pads seconds < 10", () => {
-    assert.equal(formatDuration(5_000), "0m05s");
+  it("renders sub-minute durations in seconds only", () => {
+    assert.equal(formatDuration(45_000), "45s");
   });
 
-  it("renders minutes correctly", () => {
-    assert.equal(formatDuration(125_000), "2m05s");
+  // Minute boundary
+  it("rolls over to minutes at exactly 60s", () => {
+    assert.equal(formatDuration(60_000), "1m 0s");
+  });
+
+  // Minutes band (1 minute to < 1 hour)
+  it("renders minutes + seconds without zero-padding", () => {
+    assert.equal(formatDuration(125_000), "2m 5s");
+  });
+
+  it("renders large minute values correctly (was '705m05s' bug)", () => {
+    // 11h 45m 5s — the bug previously rendered this as "705m05s"
+    assert.equal(
+      formatDuration(11 * 3_600_000 + 45 * 60_000 + 5_000),
+      "11h 45m",
+    );
+  });
+
+  // Hour boundary
+  it("rolls over to hours at exactly 60m", () => {
+    assert.equal(formatDuration(3_600_000), "1h 0m");
+  });
+
+  // Hours band (1 hour to < 24 hours)
+  it("renders hours + minutes", () => {
+    assert.equal(formatDuration(2 * 3_600_000 + 15 * 60_000), "2h 15m");
+  });
+
+  // Day boundary
+  it("rolls over to days at exactly 24h", () => {
+    assert.equal(formatDuration(24 * 3_600_000), "1d 0h");
+  });
+
+  // Days band (>= 24 hours)
+  it("renders days + hours", () => {
+    assert.equal(formatDuration(3 * 86_400_000 + 2 * 3_600_000), "3d 2h");
   });
 
   it("handles null/undefined input", () => {
-    assert.equal(formatDuration(null), "0m00s");
-    assert.equal(formatDuration(undefined), "0m00s");
-  });
-
-  it("renders large durations without crashing", () => {
-    // 99 minutes — exceeds typical session length but should not break
-    assert.equal(formatDuration(99 * 60_000), "99m00s");
+    assert.equal(formatDuration(null), "0s");
+    assert.equal(formatDuration(undefined), "0s");
   });
 });
 
@@ -167,7 +197,7 @@ describe("formatActivity", () => {
     assert.match(out, /\$0\.18/);
     assert.match(out, /⚡Opus/);
     assert.match(out, /45%/);
-    assert.match(out, /2m05s/);
+    assert.match(out, /⏱ 2m 5s/);
   });
 
   it("uses defaults for empty stdin", () => {
@@ -175,7 +205,7 @@ describe("formatActivity", () => {
     assert.match(out, /⚡\?/);
     assert.match(out, /0%/);
     assert.match(out, /\$0\.00/);
-    assert.match(out, /0m00s/);
+    assert.match(out, /⏱ 0s/);
     assert.ok(!out.includes("🌿"), "no branch when workspace absent");
   });
 
