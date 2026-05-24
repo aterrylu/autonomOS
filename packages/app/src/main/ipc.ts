@@ -274,4 +274,46 @@ export function registerIpc(): void {
   ipcMain.handle("windows:close-self", (event): void => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
+
+  /** Manual window drag for the BrowserWindow that owns the calling
+   *  renderer. Used by ConnectionWebview when a mousedown lands in the
+   *  dashboard's <header> — `-webkit-app-region: drag` doesn't propagate
+   *  from <webview> guest pages to the host BrowserWindow.
+   *
+   *  Protocol:
+   *    windows:drag-start  → record the offset from cursor to window origin
+   *    windows:drag-move   → setBounds keeping that offset (called on
+   *                          mousemove, throttled by the renderer)
+   *  The drag-move handler stops setting position once the offset is
+   *  cleared on mouseup. Implementation is in the renderer (no main-process
+   *  mouseup listener needed). */
+  const dragOffsets = new Map<number, { dx: number; dy: number }>();
+
+  ipcMain.on(
+    "windows:drag-start",
+    (event, { cursorX, cursorY }: { cursorX: number; cursorY: number }) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win) return;
+      const pos = win.getPosition();
+      const winX = pos[0] ?? 0;
+      const winY = pos[1] ?? 0;
+      dragOffsets.set(win.id, { dx: cursorX - winX, dy: cursorY - winY });
+    },
+  );
+
+  ipcMain.on(
+    "windows:drag-move",
+    (event, { cursorX, cursorY }: { cursorX: number; cursorY: number }) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win) return;
+      const offset = dragOffsets.get(win.id);
+      if (!offset) return;
+      win.setPosition(cursorX - offset.dx, cursorY - offset.dy, false);
+    },
+  );
+
+  ipcMain.on("windows:drag-end", (event): void => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) dragOffsets.delete(win.id);
+  });
 }

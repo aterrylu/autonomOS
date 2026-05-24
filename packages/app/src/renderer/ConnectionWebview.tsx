@@ -5,38 +5,32 @@ interface ConnectionWebviewProps {
   connection: Connection;
 }
 
-/** CSS injected into the dashboard webview to integrate the traffic
- *  lights with the dashboard's <Header>.
- *
- *  Strategy:
- *    1. Reserve 88px on the left of the header (clears traffic lights).
- *    2. Make the header a window drag region.
- *    3. Exempt only interactive children (button/a/input) — they keep
- *       their clicks. The h1 text "autonomOS" stays draggable.
- *    4. user-select: none on the h1 so mousedown doesn't start a text
- *       selection (which would intercept the drag hit-test). */
+/** CSS injected into the dashboard webview so the macOS traffic lights
+ *  visually clear the dashboard's <Header>. NOTE: drag-region CSS does
+ *  NOT work here — Chromium does not propagate hit-test regions from a
+ *  <webview> guest page to the host BrowserWindow. We bridge dragging
+ *  via mousedown → ipc-message → host → startWindowDrag() instead. */
 const INTEGRATION_CSS = `
+  /* Reserve space for macOS traffic lights at the top-left. */
   header.flex.items-center.gap-4 {
     padding-left: 88px !important;
-    -webkit-app-region: drag !important;
-    app-region: drag !important;
   }
+  /* Block text-selection on the header title so dragging from it
+   * feels native (no selection caret on mousedown). */
   header.flex.items-center.gap-4 h1 {
     -webkit-user-select: none !important;
     user-select: none !important;
     cursor: default !important;
   }
-  header.flex.items-center.gap-4 button,
-  header.flex.items-center.gap-4 a,
-  header.flex.items-center.gap-4 input,
-  header.flex.items-center.gap-4 select,
-  header.flex.items-center.gap-4 textarea {
-    -webkit-app-region: no-drag !important;
-    app-region: no-drag !important;
-  }
 `;
 
-const INTEGRATION_JS = "";
+/** Drag-bridge logic lives in the webview preload script
+ *  (preload/webview.ts), wired via the `preload` attribute on the
+ *  <webview> below. Earlier approach (webview.executeJavaScript with
+ *  inline require('electron')) didn't work because the dashboard page
+ *  runs WITHOUT nodeIntegration — require is undefined. A webview
+ *  preload script has access to ipcRenderer regardless of the page's
+ *  nodeIntegration setting. */
 
 /** Electron's <webview> element type — augmented because React 19's JSX
  *  doesn't ship it by default. */
@@ -47,6 +41,10 @@ interface WebviewElement extends HTMLElement {
   executeJavaScript(code: string): Promise<unknown>;
   addEventListener(type: string, listener: EventListener): void;
   removeEventListener(type: string, listener: EventListener): void;
+}
+
+interface IpcMessageEvent extends Event {
+  channel: string;
 }
 
 export function ConnectionWebview({
@@ -75,14 +73,38 @@ export function ConnectionWebview({
   useEffect(() => {
     const webview = webviewRef.current;
     if (!webview || !ready) return;
+
     const onDomReady = (): void => {
       void webview.insertCSS(INTEGRATION_CSS);
-      if (INTEGRATION_JS.length > 0) {
-        void webview.executeJavaScript(INTEGRATION_JS);
+    };
+    const onIpcMessage = (event: Event): void => {
+      const msg = event as IpcMessageEvent & {
+        args: [{ cursorX: number; cursorY: number } | undefined];
+      };
+      switch (msg.channel) {
+        case "drag-start": {
+          const { cursorX = 0, cursorY = 0 } = msg.args?.[0] ?? {};
+          window.autonomos.windows.dragStart(cursorX, cursorY);
+          break;
+        }
+        case "drag-move": {
+          const { cursorX = 0, cursorY = 0 } = msg.args?.[0] ?? {};
+          window.autonomos.windows.dragMove(cursorX, cursorY);
+          break;
+        }
+        case "drag-end": {
+          window.autonomos.windows.dragEnd();
+          break;
+        }
       }
     };
+
     webview.addEventListener("dom-ready", onDomReady);
-    return () => webview.removeEventListener("dom-ready", onDomReady);
+    webview.addEventListener("ipc-message", onIpcMessage);
+    return () => {
+      webview.removeEventListener("dom-ready", onDomReady);
+      webview.removeEventListener("ipc-message", onIpcMessage);
+    };
   }, [ready]);
 
   if (error) {
@@ -99,6 +121,15 @@ export function ConnectionWebview({
     );
   }
 
+  // Webview preload script that bridges window-drag mousedown/move/up
+  // events out via ipcRenderer.sendToHost. Path is resolved relative to
+  // the renderer's dist (preload bundled there by tsc, alongside the
+  // host preload).
+  const webviewPreload = new URL(
+    "../preload/webview.js",
+    window.location.href,
+  ).toString();
+
   return (
     <webview
       // biome-ignore lint/correctness/useUniqueElementIds: single instance per window
@@ -106,6 +137,7 @@ export function ConnectionWebview({
       ref={webviewRef as unknown as React.Ref<HTMLElement>}
       src={connection.url}
       partition={`persist:connection-${connection.id}`}
+      preload={webviewPreload}
       style={{
         flex: 1,
         display: "flex",
@@ -126,6 +158,7 @@ declare module "react" {
         React.HTMLAttributes<HTMLElement> & {
           src?: string;
           partition?: string;
+          preload?: string;
           allowpopups?: string;
         },
         HTMLElement
