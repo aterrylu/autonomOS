@@ -57,7 +57,11 @@ mac:
   notarize: false
 
 dmg:
-  title: "autonomOS ${version}"
+  # Volume title shown when the DMG is mounted. Including the build SHA
+  # (env-injected at build time, defaults to "dev") makes /Volumes/ paths
+  # unique per build so re-mounting after a build doesn't collide on
+  # lingering mounts from the previous run.
+  title: "autonomOS ${version} ${env.AUTONOMOS_BUILD_SHA}"
   icon: build-resources/icon.icns
   iconSize: 100
   contents:

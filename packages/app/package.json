@@ -11,6 +11,7 @@
     "build": "bun run build:main && bun run build:renderer",
     "dev": "bun run build && electron dist/main/main.js",
     "build:dmg": "bun run build && electron-builder --mac dmg --publish never",
+    "build:dmg:tagged": "bash scripts/build-dmg.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json"
   },
   "dependencies": {},
