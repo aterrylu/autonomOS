@@ -35,7 +35,7 @@ mount | awk -F' on ' '/autonomOS/ {print $2}' | awk '{print $1}' | while read -r
 done
 
 rm -rf out
-AUTONOMOS_BUILD_SHA="${SHA}" bun run build:dmg
+bun run build:dmg
 
 # electron-builder produces autonomOS-<version>-arm64.dmg by default —
 # rename to include the SHA + timestamp for easy comparison.
@@ -49,4 +49,4 @@ cp "out/${NEW_NAME}" "${DEST}"
 
 echo "[build-dmg] ✓ ${DEST}"
 echo "[build-dmg]   size: $(du -h "${DEST}" | cut -f1)"
-echo "[build-dmg]   volume title on mount: 'autonomOS ${VERSION} ${SHA}'"
+echo "[build-dmg]   volume title on mount: 'autonomOS ${VERSION}' (SHA is in filename only)"

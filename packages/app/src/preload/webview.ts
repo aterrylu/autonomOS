@@ -14,9 +14,6 @@
 // biome-ignore lint/correctness/noNodejsModules: webview preload uses CJS require
 import { ipcRenderer } from "electron";
 
-// biome-ignore lint/suspicious/noConsole: load-time diagnostic
-console.log("[autonomos webview preload] loaded");
-
 const INTERACTIVE_SELECTOR = "button, a, input, select, textarea";
 const HEADER_SELECTOR = "header.flex.items-center.gap-4";
 
@@ -35,9 +32,6 @@ function init(): void {
   if (w.__autonomosDragWired) return;
   w.__autonomosDragWired = true;
 
-  // biome-ignore lint/suspicious/noConsole: load-time diagnostic
-  console.log("[autonomos webview preload] init complete, listeners attached");
-
   let dragging = false;
   let lastSent = 0;
 
@@ -45,17 +39,8 @@ function init(): void {
     "mousedown",
     (e) => {
       if (e.button !== 0) return;
-      const inHeader = inDraggableHeader(e.target);
-      const interactive = isInteractive(e.target);
-      // biome-ignore lint/suspicious/noConsole: drag diagnostic
-      console.log(
-        "[preload] mousedown inHeader=",
-        inHeader,
-        "interactive=",
-        interactive,
-      );
-      if (!inHeader) return;
-      if (interactive) return;
+      if (!inDraggableHeader(e.target)) return;
+      if (isInteractive(e.target)) return;
       dragging = true;
       lastSent = 0;
       ipcRenderer.sendToHost("drag-start", {

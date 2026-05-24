@@ -57,11 +57,13 @@ mac:
   notarize: false
 
 dmg:
-  # Volume title shown when the DMG is mounted. Including the build SHA
-  # (env-injected at build time, defaults to "dev") makes /Volumes/ paths
-  # unique per build so re-mounting after a build doesn't collide on
-  # lingering mounts from the previous run.
-  title: "autonomOS ${version} ${env.AUTONOMOS_BUILD_SHA}"
+  # Volume title shown when the DMG is mounted. Stayed simple — earlier
+  # attempt at "${version} ${env.AUTONOMOS_BUILD_SHA}" failed because
+  # electron-builder 25.1.8 doesn't interpolate env vars in dmg.title,
+  # leaving the literal "${env.…}" in the volume name and causing hdiutil
+  # detach to fail. The output filename already carries the SHA + timestamp
+  # for build-to-build differentiation (see scripts/build-dmg.sh).
+  title: "autonomOS ${version}"
   icon: build-resources/icon.icns
   iconSize: 100
   contents:

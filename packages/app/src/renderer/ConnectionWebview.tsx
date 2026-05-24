@@ -15,13 +15,18 @@ const INTEGRATION_CSS = `
   header.flex.items-center.gap-4 {
     padding-left: 88px !important;
   }
-  /* Block text-selection on the header title so dragging from it
-   * feels native (no selection caret on mousedown). */
-  header.flex.items-center.gap-4 h1 {
+  /* Suppress text/element selection across the entire header so
+   * dragging the window doesn't flash a selection highlight on
+   * the hamburger icon, h1, or any other header child. */
+  header.flex.items-center.gap-4,
+  header.flex.items-center.gap-4 * {
     -webkit-user-select: none !important;
     user-select: none !important;
-    cursor: default !important;
   }
+  /* Buttons explicitly get their pointer cursor back (the broad
+   * rule above doesn't change cursor, but spell it out). */
+  header.flex.items-center.gap-4 h1 { cursor: default !important; }
+  header.flex.items-center.gap-4 button { cursor: pointer !important; }
 `;
 
 /** Drag-bridge logic lives in the webview preload script
@@ -45,12 +50,6 @@ interface WebviewElement extends HTMLElement {
 
 interface IpcMessageEvent extends Event {
   channel: string;
-}
-
-interface WebviewWithDevTools extends WebviewElement {
-  openDevTools(): void;
-  getWebContentsId(): number;
-  getAttribute(name: string): string | null;
 }
 
 export function ConnectionWebview({
@@ -80,33 +79,13 @@ export function ConnectionWebview({
     const webview = webviewRef.current;
     if (!webview || !ready) return;
 
-    const wv = webview as WebviewWithDevTools;
     const onDomReady = (): void => {
       void webview.insertCSS(INTEGRATION_CSS);
-      // Diagnostic: open the webview's DevTools so we can see whether
-      // the preload script ran. To disable: remove this line.
-      try {
-        wv.openDevTools();
-      } catch {
-        // openDevTools throws if devtools window is already open; ignore.
-      }
-      // biome-ignore lint/suspicious/noConsole: diagnostic
-      console.log(
-        "[host] dom-ready; preload attr =",
-        wv.getAttribute("preload"),
-      );
     };
     const onIpcMessage = (event: Event): void => {
       const msg = event as IpcMessageEvent & {
         args: [{ cursorX: number; cursorY: number } | undefined];
       };
-      // biome-ignore lint/suspicious/noConsole: diagnostic
-      console.log(
-        "[host] ipc-message channel =",
-        msg.channel,
-        "args =",
-        msg.args,
-      );
       switch (msg.channel) {
         case "drag-start": {
           const { cursorX = 0, cursorY = 0 } = msg.args?.[0] ?? {};
