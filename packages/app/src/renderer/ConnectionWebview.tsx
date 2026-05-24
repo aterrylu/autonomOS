@@ -83,24 +83,14 @@ export function ConnectionWebview({
       void webview.insertCSS(INTEGRATION_CSS);
     };
     const onIpcMessage = (event: Event): void => {
-      const msg = event as IpcMessageEvent & {
-        args: [{ cursorX: number; cursorY: number } | undefined];
-      };
+      const msg = event as IpcMessageEvent;
       switch (msg.channel) {
-        case "drag-start": {
-          const { cursorX = 0, cursorY = 0 } = msg.args?.[0] ?? {};
-          window.autonomos.windows.dragStart(cursorX, cursorY);
+        case "drag-start":
+          window.autonomos.windows.dragStart();
           break;
-        }
-        case "drag-move": {
-          const { cursorX = 0, cursorY = 0 } = msg.args?.[0] ?? {};
-          window.autonomos.windows.dragMove(cursorX, cursorY);
-          break;
-        }
-        case "drag-end": {
+        case "drag-end":
           window.autonomos.windows.dragEnd();
           break;
-        }
       }
     };
 

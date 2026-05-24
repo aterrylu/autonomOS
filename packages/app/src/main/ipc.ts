@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BrowserWindow, ipcMain, net, session } from "electron";
+import { BrowserWindow, ipcMain, net, screen, session } from "electron";
 
 import type {
   AddConnectionInput,
@@ -280,40 +280,74 @@ export function registerIpc(): void {
    *  dashboard's <header> — `-webkit-app-region: drag` doesn't propagate
    *  from <webview> guest pages to the host BrowserWindow.
    *
+   *  Implementation: instead of following webview mousemove events
+   *  (which stop firing the instant the cursor exits the window — fast
+   *  drags would lose tracking near the window edge), we poll the
+   *  cursor position from the main process via screen.getCursorScreenPoint()
+   *  at ~120Hz until the renderer signals drag-end. This is how
+   *  native window drags behave: the OS captures the cursor for the
+   *  duration of the drag regardless of which window it's over.
+   *
    *  Protocol:
-   *    windows:drag-start  → record the offset from cursor to window origin
-   *    windows:drag-move   → setBounds keeping that offset (called on
-   *                          mousemove, throttled by the renderer)
-   *  The drag-move handler stops setting position once the offset is
-   *  cleared on mouseup. Implementation is in the renderer (no main-process
-   *  mouseup listener needed). */
-  const dragOffsets = new Map<number, { dx: number; dy: number }>();
+   *    drag-start → record cursor-to-window offset, start polling
+   *    drag-end   → stop polling */
+  interface DragState {
+    offsetX: number;
+    offsetY: number;
+    interval: NodeJS.Timeout;
+  }
+  const drags = new Map<number, DragState>();
 
-  ipcMain.on(
-    "windows:drag-start",
-    (event, { cursorX, cursorY }: { cursorX: number; cursorY: number }) => {
-      const win = BrowserWindow.fromWebContents(event.sender);
-      if (!win) return;
-      const pos = win.getPosition();
-      const winX = pos[0] ?? 0;
-      const winY = pos[1] ?? 0;
-      dragOffsets.set(win.id, { dx: cursorX - winX, dy: cursorY - winY });
-    },
-  );
+  function endDrag(winId: number): void {
+    const state = drags.get(winId);
+    if (!state) return;
+    clearInterval(state.interval);
+    drags.delete(winId);
+  }
 
-  ipcMain.on(
-    "windows:drag-move",
-    (event, { cursorX, cursorY }: { cursorX: number; cursorY: number }) => {
-      const win = BrowserWindow.fromWebContents(event.sender);
-      if (!win) return;
-      const offset = dragOffsets.get(win.id);
-      if (!offset) return;
-      win.setPosition(cursorX - offset.dx, cursorY - offset.dy, false);
-    },
-  );
+  ipcMain.on("windows:drag-start", (event): void => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    endDrag(win.id); // belt-and-suspenders: clear any stale interval
+
+    // Read cursor and window position TOGETHER so the offset is computed
+    // from a consistent snapshot. Using getCursorScreenPoint() here
+    // (rather than trusting the mousedown event's screenX/Y) means we
+    // don't have to ship coords through IPC and don't have to worry
+    // about Retina scaling — getCursorScreenPoint() returns the same
+    // coordinate space as setPosition().
+    const cursor = screen.getCursorScreenPoint();
+    const pos = win.getPosition();
+    const winX = pos[0] ?? 0;
+    const winY = pos[1] ?? 0;
+    const offsetX = cursor.x - winX;
+    const offsetY = cursor.y - winY;
+
+    // Poll cursor at ~120Hz (8.33ms). setPosition under that flickers
+    // anyway; this matches what native drag handlers produce.
+    const interval = setInterval(() => {
+      const c = screen.getCursorScreenPoint();
+      // win.isDestroyed() guards against the window closing mid-drag.
+      if (win.isDestroyed()) {
+        endDrag(win.id);
+        return;
+      }
+      win.setPosition(c.x - offsetX, c.y - offsetY, false);
+    }, 8);
+
+    drags.set(win.id, { offsetX, offsetY, interval });
+  });
 
   ipcMain.on("windows:drag-end", (event): void => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (win) dragOffsets.delete(win.id);
+    if (win) endDrag(win.id);
+  });
+
+  // Kept for backwards-compat with the renderer's API surface; now a
+  // no-op since the main process polls the cursor on its own. The
+  // renderer's mousemove → dragMove pathway just becomes wasted IPC
+  // traffic during a drag, harmless but unnecessary.
+  ipcMain.on("windows:drag-move", (): void => {
+    // intentionally empty
   });
 }

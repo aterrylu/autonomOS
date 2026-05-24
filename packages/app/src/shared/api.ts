@@ -51,16 +51,14 @@ export interface AutonomosAPI {
     newWelcome(): Promise<void>;
     /** Close the BrowserWindow that owns the calling renderer. */
     closeSelf(): Promise<void>;
-    /** Manual window-drag protocol. Renderer calls dragStart with the
-     *  cursor's *screen* coordinates on mousedown, dragMove repeatedly
-     *  with new cursor screen coordinates on mousemove, and dragEnd on
-     *  mouseup. The main process tracks the offset from cursor to
-     *  window origin at drag-start and calls win.setPosition to keep
-     *  it constant during dragMove. Replaces -webkit-app-region: drag
-     *  for <webview> content where the CSS property doesn't propagate
-     *  to the host BrowserWindow. */
-    dragStart(cursorX: number, cursorY: number): void;
-    dragMove(cursorX: number, cursorY: number): void;
+    /** Manual window-drag protocol. The webview preload signals
+     *  "drag-start" on mousedown in the dashboard header and "drag-end"
+     *  on mouseup; the main process polls the cursor via
+     *  screen.getCursorScreenPoint() at ~120Hz between those events
+     *  and calls win.setPosition() each tick. Replaces
+     *  -webkit-app-region: drag for <webview> content where the CSS
+     *  property doesn't propagate to the host BrowserWindow. */
+    dragStart(): void;
     dragEnd(): void;
   };
   /** Bumped when the contract changes in a breaking way. */

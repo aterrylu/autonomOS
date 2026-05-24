@@ -38,11 +38,8 @@ const api: AutonomosAPI = {
       ipcRenderer.invoke("windows:open-connection", id),
     newWelcome: (): Promise<void> => ipcRenderer.invoke("windows:new-welcome"),
     closeSelf: (): Promise<void> => ipcRenderer.invoke("windows:close-self"),
-    dragStart: (cursorX: number, cursorY: number): void => {
-      ipcRenderer.send("windows:drag-start", { cursorX, cursorY });
-    },
-    dragMove: (cursorX: number, cursorY: number): void => {
-      ipcRenderer.send("windows:drag-move", { cursorX, cursorY });
+    dragStart: (): void => {
+      ipcRenderer.send("windows:drag-start");
     },
     dragEnd: (): void => {
       ipcRenderer.send("windows:drag-end");

@@ -4,12 +4,18 @@
 // the guest renderer process, regardless of package.json "type": "module".
 // This file is built with a dedicated tsconfig.webview-preload.json that
 // emits CommonJS, then a build step renames the output to `.cjs` so
-// Node/Electron unambiguously load it as CommonJS even though our
-// packages/app/package.json says "type": "module".
+// Node/Electron unambiguously load it as CommonJS.
 //
-// Wires window-drag bridging: mousedown in dashboard <header>
-// → ipcRenderer.sendToHost → host renderer's onIpcMessage → IPC to main
-// → BrowserWindow.setPosition (see main/ipc.ts windows:drag-* handlers).
+// Wires window-drag signaling: mousedown in dashboard <header> sends
+// "drag-start" to the host; mouseup sends "drag-end". The main process
+// polls the cursor independently via screen.getCursorScreenPoint() —
+// see main/ipc.ts windows:drag-start handler.
+//
+// We do NOT forward mousemove or mouseleave events:
+//   - mousemove is unused because the main process polls instead.
+//   - mouseleave was a bug: during fast drags the cursor exits the
+//     webview document, mouseleave fires, drag ends prematurely.
+//     Drags should ONLY end on a real mouseup.
 
 // biome-ignore lint/correctness/noNodejsModules: webview preload uses CJS require
 import { ipcRenderer } from "electron";
@@ -33,7 +39,6 @@ function init(): void {
   w.__autonomosDragWired = true;
 
   let dragging = false;
-  let lastSent = 0;
 
   document.addEventListener(
     "mousedown",
@@ -42,39 +47,32 @@ function init(): void {
       if (!inDraggableHeader(e.target)) return;
       if (isInteractive(e.target)) return;
       dragging = true;
-      lastSent = 0;
-      ipcRenderer.sendToHost("drag-start", {
-        cursorX: e.screenX,
-        cursorY: e.screenY,
-      });
+      ipcRenderer.sendToHost("drag-start");
     },
     true,
   );
 
+  // mouseup with capture-phase on document → fires even if the cursor
+  // moved off the original element (implicit pointer capture during
+  // mousedown-held state). This is the primary drag-end signal.
   document.addEventListener(
-    "mousemove",
-    (e) => {
+    "mouseup",
+    () => {
       if (!dragging) return;
-      const now = performance.now();
-      if (now - lastSent < 8) return;
-      lastSent = now;
-      ipcRenderer.sendToHost("drag-move", {
-        cursorX: e.screenX,
-        cursorY: e.screenY,
-      });
+      dragging = false;
+      ipcRenderer.sendToHost("drag-end");
     },
     true,
   );
 
-  const end = (): void => {
+  // Blur fallback: if the user alt-tabs away or the window loses focus
+  // during a drag for any reason, end the drag so we don't keep polling
+  // the cursor and dragging the window forever.
+  window.addEventListener("blur", () => {
     if (!dragging) return;
     dragging = false;
     ipcRenderer.sendToHost("drag-end");
-  };
-
-  document.addEventListener("mouseup", end, true);
-  document.addEventListener("mouseleave", end, true);
-  window.addEventListener("blur", end, true);
+  });
 }
 
 if (document.readyState === "loading") {
