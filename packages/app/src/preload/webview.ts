@@ -1,23 +1,21 @@
-// Preload script loaded INSIDE the dashboard <webview>. Separate from
-// preload/main.ts which loads in the host BrowserWindow.
+// Preload script loaded INSIDE the dashboard <webview>.
 //
-// Wires up window-drag bridging: mousedown in the dashboard's <header>
+// CRITICAL: <webview> preloads are loaded via CommonJS `require()` in
+// the guest renderer process, regardless of package.json "type": "module".
+// This file is built with a dedicated tsconfig.webview-preload.json that
+// emits CommonJS, then a build step renames the output to `.cjs` so
+// Node/Electron unambiguously load it as CommonJS even though our
+// packages/app/package.json says "type": "module".
+//
+// Wires window-drag bridging: mousedown in dashboard <header>
 // → ipcRenderer.sendToHost → host renderer's onIpcMessage → IPC to main
 // → BrowserWindow.setPosition (see main/ipc.ts windows:drag-* handlers).
-//
-// This file runs in the webview's renderer process WITHOUT
-// contextIsolation by default (Electron's webview preload runs in the
-// same JS context as the page). We don't expose anything to the page —
-// the listeners are document-level and only communicate via the
-// ipc-message channel to the host renderer.
 
+// biome-ignore lint/correctness/noNodejsModules: webview preload uses CJS require
 import { ipcRenderer } from "electron";
 
-declare global {
-  interface Window {
-    __autonomosDragWired?: boolean;
-  }
-}
+// biome-ignore lint/suspicious/noConsole: load-time diagnostic
+console.log("[autonomos webview preload] loaded");
 
 const INTERACTIVE_SELECTOR = "button, a, input, select, textarea";
 const HEADER_SELECTOR = "header.flex.items-center.gap-4";
@@ -33,8 +31,12 @@ function inDraggableHeader(target: EventTarget | null): boolean {
 }
 
 function init(): void {
-  if (window.__autonomosDragWired) return;
-  window.__autonomosDragWired = true;
+  const w = window as Window & { __autonomosDragWired?: boolean };
+  if (w.__autonomosDragWired) return;
+  w.__autonomosDragWired = true;
+
+  // biome-ignore lint/suspicious/noConsole: load-time diagnostic
+  console.log("[autonomos webview preload] init complete, listeners attached");
 
   let dragging = false;
   let lastSent = 0;
@@ -43,8 +45,17 @@ function init(): void {
     "mousedown",
     (e) => {
       if (e.button !== 0) return;
-      if (!inDraggableHeader(e.target)) return;
-      if (isInteractive(e.target)) return;
+      const inHeader = inDraggableHeader(e.target);
+      const interactive = isInteractive(e.target);
+      // biome-ignore lint/suspicious/noConsole: drag diagnostic
+      console.log(
+        "[preload] mousedown inHeader=",
+        inHeader,
+        "interactive=",
+        interactive,
+      );
+      if (!inHeader) return;
+      if (interactive) return;
       dragging = true;
       lastSent = 0;
       ipcRenderer.sendToHost("drag-start", {
@@ -59,7 +70,6 @@ function init(): void {
     "mousemove",
     (e) => {
       if (!dragging) return;
-      // Throttle to ~120fps; setPosition under that flickers anyway.
       const now = performance.now();
       if (now - lastSent < 8) return;
       lastSent = now;

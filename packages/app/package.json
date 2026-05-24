@@ -7,8 +7,9 @@
   "type": "module",
   "scripts": {
     "build:main": "tsc -p tsconfig.json",
+    "build:webview-preload": "tsc -p tsconfig.webview-preload.json && mv dist/preload/webview.js dist/preload/webview.cjs",
     "build:renderer": "vite build",
-    "build": "bun run build:main && bun run build:renderer",
+    "build": "bun run build:main && bun run build:webview-preload && bun run build:renderer",
     "dev": "bun run build && electron dist/main/main.js",
     "build:dmg": "bun run build && electron-builder --mac dmg --publish never",
     "build:dmg:tagged": "bash scripts/build-dmg.sh",

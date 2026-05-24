@@ -12,9 +12,15 @@
   },
   "include": [
     "src/main/**/*.ts",
-    "src/preload/**/*.ts",
+    "src/preload/main.ts",
     "src/shared/**/*.ts",
     "src/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "dist", "out", "src/renderer"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "out",
+    "src/renderer",
+    "src/preload/webview.ts"
+  ]
 }

@@ -47,6 +47,12 @@ interface IpcMessageEvent extends Event {
   channel: string;
 }
 
+interface WebviewWithDevTools extends WebviewElement {
+  openDevTools(): void;
+  getWebContentsId(): number;
+  getAttribute(name: string): string | null;
+}
+
 export function ConnectionWebview({
   connection,
 }: ConnectionWebviewProps): React.ReactElement {
@@ -74,13 +80,33 @@ export function ConnectionWebview({
     const webview = webviewRef.current;
     if (!webview || !ready) return;
 
+    const wv = webview as WebviewWithDevTools;
     const onDomReady = (): void => {
       void webview.insertCSS(INTEGRATION_CSS);
+      // Diagnostic: open the webview's DevTools so we can see whether
+      // the preload script ran. To disable: remove this line.
+      try {
+        wv.openDevTools();
+      } catch {
+        // openDevTools throws if devtools window is already open; ignore.
+      }
+      // biome-ignore lint/suspicious/noConsole: diagnostic
+      console.log(
+        "[host] dom-ready; preload attr =",
+        wv.getAttribute("preload"),
+      );
     };
     const onIpcMessage = (event: Event): void => {
       const msg = event as IpcMessageEvent & {
         args: [{ cursorX: number; cursorY: number } | undefined];
       };
+      // biome-ignore lint/suspicious/noConsole: diagnostic
+      console.log(
+        "[host] ipc-message channel =",
+        msg.channel,
+        "args =",
+        msg.args,
+      );
       switch (msg.channel) {
         case "drag-start": {
           const { cursorX = 0, cursorY = 0 } = msg.args?.[0] ?? {};
@@ -122,11 +148,12 @@ export function ConnectionWebview({
   }
 
   // Webview preload script that bridges window-drag mousedown/move/up
-  // events out via ipcRenderer.sendToHost. Path is resolved relative to
-  // the renderer's dist (preload bundled there by tsc, alongside the
-  // host preload).
+  // events out via ipcRenderer.sendToHost. Compiled to CommonJS with .cjs
+  // extension (build:webview-preload script) because Electron's <webview>
+  // preload loader uses require() under the hood and ignores
+  // package.json "type": "module".
   const webviewPreload = new URL(
-    "../preload/webview.js",
+    "../preload/webview.cjs",
     window.location.href,
   ).toString();
 
