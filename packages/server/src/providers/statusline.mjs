@@ -186,9 +186,12 @@ function buildBar(pct, width = 10) {
 
 function formatDuration(ms) {
   const sec = Math.floor((ms ?? 0) / 1000);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m${s.toString().padStart(2, "0")}s`;
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ${min % 60}m`;
+  return `${Math.floor(hr / 24)}d ${hr % 24}h`;
 }
 
 function ctxColor(pct) {
@@ -277,7 +280,7 @@ function formatActivity(cc, meta) {
   parts.push(`${C.cost}$${cost.toFixed(2)}${C.reset}`);
   parts.push(`${C.model}⚡${model}${C.reset}`);
   parts.push(`${ctxC}${buildBar(pct)} ${Math.floor(pct)}%${C.reset}`);
-  parts.push(`${C.duration}⏱${formatDuration(dur)}${C.reset}`);
+  parts.push(`${C.duration}⏱ ${formatDuration(dur)}${C.reset}`);
   return parts.join(SEP);
 }
 
