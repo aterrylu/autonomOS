@@ -15,7 +15,11 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserWindow, type BrowserWindowConstructorOptions } from "electron";
+import {
+  BrowserWindow,
+  type BrowserWindowConstructorOptions,
+  screen,
+} from "electron";
 
 import { setConfig } from "./config/store.js";
 
@@ -23,6 +27,63 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const windowsByConnectionId = new Map<string, BrowserWindow>();
 const welcomeWindows = new Set<BrowserWindow>();
+
+// ── Manual window drag state ────────────────────────────────────────
+// Lifted to module scope so before-quit and window-closed handlers can
+// clean up the polling intervals. Keyed by BrowserWindow.id. See
+// startDrag() / endDrag() exported below.
+
+interface DragState {
+  offsetX: number;
+  offsetY: number;
+  interval: NodeJS.Timeout;
+}
+const drags = new Map<number, DragState>();
+
+export function startDrag(win: BrowserWindow): void {
+  endDrag(win.id); // belt-and-suspenders: clear any stale interval
+
+  // Read cursor and window position TOGETHER so the offset is computed
+  // from a consistent snapshot. screen.getCursorScreenPoint() returns
+  // the same coordinate space as win.setPosition() — no Retina conversion
+  // needed.
+  const cursor = screen.getCursorScreenPoint();
+  const pos = win.getPosition();
+  const winX = pos[0] ?? 0;
+  const winY = pos[1] ?? 0;
+  const offsetX = cursor.x - winX;
+  const offsetY = cursor.y - winY;
+
+  const interval = setInterval(() => {
+    if (win.isDestroyed()) {
+      endDrag(win.id);
+      return;
+    }
+    const c = screen.getCursorScreenPoint();
+    win.setPosition(c.x - offsetX, c.y - offsetY, false);
+  }, 8);
+
+  drags.set(win.id, { offsetX, offsetY, interval });
+}
+
+export function endDrag(winId: number): void {
+  const state = drags.get(winId);
+  if (!state) return;
+  clearInterval(state.interval);
+  drags.delete(winId);
+}
+
+/** Called from app.on("before-quit") to clean up any in-flight drag
+ *  polling timers before the process exits. Without this, a setInterval
+ *  could keep the Node event loop alive past app.quit() (Electron
+ *  normally still tears down, but defensive cleanup avoids edge cases
+ *  + helper-process leaks reported in the wild). */
+export function cleanupAllDrags(): void {
+  for (const state of drags.values()) {
+    clearInterval(state.interval);
+  }
+  drags.clear();
+}
 
 function macWindowOptions(): Partial<BrowserWindowConstructorOptions> {
   if (process.platform !== "darwin") return {};
@@ -59,6 +120,7 @@ export function openWelcomeWindow(): BrowserWindow {
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
     welcomeWindows.delete(window);
+    endDrag(window.id);
   });
   return window;
 }
@@ -76,6 +138,7 @@ export function openConnectionWindow(connectionId: string): BrowserWindow {
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
     windowsByConnectionId.delete(connectionId);
+    endDrag(window.id);
     void persistOpenWindows();
   });
   void persistOpenWindows();

@@ -9,12 +9,13 @@
 // connection handled by macOS window management, not an in-app sidebar.
 // See docs/research/desktop-as-thin-client.md.
 
-import { app } from "electron";
+import { app, BrowserWindow } from "electron";
 
 import { URL_SCHEME } from "../shared/constants.js";
 import { registerIpc } from "./ipc.js";
 import { buildMenu } from "./menu.js";
 import {
+  cleanupAllDrags,
   hasAnyWindow,
   openWelcomeWindow,
   restoreOpenWindows,
@@ -66,9 +67,25 @@ function bootstrap(): void {
   });
 
   app.on("window-all-closed", () => {
-    // On macOS, apps traditionally stay alive even with all windows closed
-    // (the user can ⌘N to reopen). On other platforms, quit.
-    if (process.platform !== "darwin") app.quit();
+    // Quit on all platforms when the last window closes. The traditional
+    // macOS "stay alive in Dock" pattern is for apps where the running
+    // process does work in the background (Slack, Mail, etc.). autonomOS
+    // Desktop is a window into a server — when no window is open, the
+    // app has nothing to do. Quitting also prevents helper-process leaks
+    // that users reported when the app sat invisibly in the Dock for
+    // long periods.
+    app.quit();
+  });
+
+  // Belt-and-suspenders cleanup before the process exits. Electron
+  // normally tears down child processes automatically, but persistent
+  // webview partition sessions + our drag-polling setIntervals are the
+  // kind of state that can leak if we exit unexpectedly.
+  app.on("before-quit", () => {
+    cleanupAllDrags();
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.destroy();
+    }
   });
 }
 

@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BrowserWindow, ipcMain, net, screen, session } from "electron";
+import { BrowserWindow, ipcMain, net, session } from "electron";
 
 import type {
   AddConnectionInput,
@@ -21,7 +21,12 @@ import {
   setToken,
 } from "./config/tokens.js";
 import { buildMenu } from "./menu.js";
-import { openConnectionWindow, openWelcomeWindow } from "./window-manager.js";
+import {
+  endDrag,
+  openConnectionWindow,
+  openWelcomeWindow,
+  startDrag,
+} from "./window-manager.js";
 
 /** Read ~/.autonomos/autonomos.pid (source of truth for the local daemon's
  *  port/pid/version). Returns null on missing/corrupt/dead-process. */
@@ -275,79 +280,16 @@ export function registerIpc(): void {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
 
-  /** Manual window drag for the BrowserWindow that owns the calling
-   *  renderer. Used by ConnectionWebview when a mousedown lands in the
-   *  dashboard's <header> — `-webkit-app-region: drag` doesn't propagate
-   *  from <webview> guest pages to the host BrowserWindow.
-   *
-   *  Implementation: instead of following webview mousemove events
-   *  (which stop firing the instant the cursor exits the window — fast
-   *  drags would lose tracking near the window edge), we poll the
-   *  cursor position from the main process via screen.getCursorScreenPoint()
-   *  at ~120Hz until the renderer signals drag-end. This is how
-   *  native window drags behave: the OS captures the cursor for the
-   *  duration of the drag regardless of which window it's over.
-   *
-   *  Protocol:
-   *    drag-start → record cursor-to-window offset, start polling
-   *    drag-end   → stop polling */
-  interface DragState {
-    offsetX: number;
-    offsetY: number;
-    interval: NodeJS.Timeout;
-  }
-  const drags = new Map<number, DragState>();
-
-  function endDrag(winId: number): void {
-    const state = drags.get(winId);
-    if (!state) return;
-    clearInterval(state.interval);
-    drags.delete(winId);
-  }
-
+  // Manual window drag — see window-manager.ts startDrag/endDrag for
+  // implementation. -webkit-app-region: drag doesn't propagate from
+  // <webview> guests, so we drive the drag from the main process by
+  // polling screen.getCursorScreenPoint() while a drag is active.
   ipcMain.on("windows:drag-start", (event): void => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win) return;
-    endDrag(win.id); // belt-and-suspenders: clear any stale interval
-
-    // Read cursor and window position TOGETHER so the offset is computed
-    // from a consistent snapshot. Using getCursorScreenPoint() here
-    // (rather than trusting the mousedown event's screenX/Y) means we
-    // don't have to ship coords through IPC and don't have to worry
-    // about Retina scaling — getCursorScreenPoint() returns the same
-    // coordinate space as setPosition().
-    const cursor = screen.getCursorScreenPoint();
-    const pos = win.getPosition();
-    const winX = pos[0] ?? 0;
-    const winY = pos[1] ?? 0;
-    const offsetX = cursor.x - winX;
-    const offsetY = cursor.y - winY;
-
-    // Poll cursor at ~120Hz (8.33ms). setPosition under that flickers
-    // anyway; this matches what native drag handlers produce.
-    const interval = setInterval(() => {
-      const c = screen.getCursorScreenPoint();
-      // win.isDestroyed() guards against the window closing mid-drag.
-      if (win.isDestroyed()) {
-        endDrag(win.id);
-        return;
-      }
-      win.setPosition(c.x - offsetX, c.y - offsetY, false);
-    }, 8);
-
-    drags.set(win.id, { offsetX, offsetY, interval });
+    if (win) startDrag(win);
   });
-
   ipcMain.on("windows:drag-end", (event): void => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) endDrag(win.id);
-  });
-
-  // Kept for backwards-compat with the renderer's API surface; now a
-  // no-op since the main process polls the cursor on its own. The
-  // renderer's mousemove → dragMove pathway just becomes wasted IPC
-  // traffic during a drag, harmless but unnecessary.
-  ipcMain.on("windows:drag-move", (): void => {
-    // intentionally empty
   });
 }
