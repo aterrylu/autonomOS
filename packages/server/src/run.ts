@@ -33,7 +33,7 @@ import {
   resolveEmbeddedConfig,
 } from "./embedded-mode.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
-import { removePidFile, writePidFile } from "./pid-file.js";
+import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
@@ -303,28 +303,53 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
       );
 
-      // Embedded-mode contract: emit structured readiness signal so the parent
-      // process (Electron desktop) can discover the actual port.
-      if (cliArgs.embedded) {
-        announceEmbeddedReady(actualPort);
-      } else {
-        // Standalone mode: write PID file so the CLI's stop/status/upgrade
-        // commands can find us. Skip in embedded mode — Electron tracks the
-        // child PID directly.
-        try {
-          writePidFile({
-            pid: process.pid,
-            port: actualPort,
-            version: getServerVersion(),
-            startedAt: new Date().toISOString(),
-          });
-        } catch (err) {
+      // ADR-029 mutual exclusion: BOTH embedded and standalone modes
+      // must claim the pid file. This is the contract that prevents two
+      // servers from competing for the same ~/.autonomos/ state (the PR
+      // #172 bug). The pid file's port field also lets the Desktop / CLI
+      // discover and connect to an existing owner.
+      acquireOwnership(process.pid, actualPort, getServerVersion())
+        .then((result) => {
+          if (result.status === "already-running") {
+            // Another server already owns this config dir. Close our
+            // socket (we already bound a port we won't use) and exit
+            // gracefully with a message the caller can parse.
+            console.warn(
+              `[startup] Another autonomos-server is already running ` +
+                `(pid ${result.owner.pid}, port ${result.owner.port}, ` +
+                `version ${result.owner.version}). Connect to it instead.`,
+            );
+            if (cliArgs.embedded) {
+              // Embedded contract: tell the parent Electron process the
+              // existing port so it can switch to thin-client mode
+              // instead of treating this as a startup failure.
+              process.stdout.write(
+                `AUTONOMOS_ALREADY_RUNNING port=${result.owner.port} ` +
+                  `pid=${result.owner.pid}\n`,
+              );
+            }
+            server.close(() => process.exit(0));
+            return;
+          }
+
+          // We are the owner. Emit the readiness signal (embedded mode)
+          // or just log (standalone mode).
+          if (cliArgs.embedded) {
+            announceEmbeddedReady(actualPort);
+          }
+        })
+        .catch((err) => {
           console.warn(
-            "[startup] Failed to write PID file — `autonomos status/stop` won't work:",
+            "[startup] Failed to acquire pid-file ownership — proceeding " +
+              "without mutual exclusion (the `autonomos status/stop` CLI " +
+              "and Desktop mode-detection won't work):",
             err instanceof Error ? err.message : err,
           );
-        }
-      }
+          // Still emit ready in embedded mode so the parent doesn't hang.
+          if (cliArgs.embedded) {
+            announceEmbeddedReady(actualPort);
+          }
+        });
 
       // Initialize gateway (platform adapters, routing table)
       import("./gateway/index.js").then(({ initGateway }) => {
@@ -356,8 +381,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       .then(({ shutdownGateway }) => shutdownGateway())
       .catch(() => {});
     shutdownAllAttachments();
-    // Clean up the PID file we wrote at startup (no-op in embedded mode).
-    if (!cliArgs.embedded) removePidFile();
+    // Release the pid file (claimed via acquireOwnership at startup).
+    // This is now done in BOTH embedded and standalone modes per ADR-029.
+    removePidFile();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
