@@ -178,15 +178,13 @@ async function persistOpenWindows(): Promise<void> {
 }
 
 export async function restoreOpenWindows(): Promise<void> {
-  const { getConfig } = await import("./config/store.js");
-  const config = await getConfig();
-  const ids = config.openWindows ?? [];
-  let restored = 0;
-  for (const id of ids) {
-    if (id === "local" || config.connections.some((c) => c.id === id)) {
-      openConnectionWindow(id);
-      restored++;
-    }
-  }
-  if (restored === 0) openConnectionWindow("local");
+  // ADR-029: at every launch, open the "local" (This Mac) window FIRST.
+  // The local server is the primary surface for our app — Built-in or
+  // Always-on. Saved remote connections were previously auto-opened on
+  // restart, but that caused stale-token confusion (user sees the
+  // dashboard's built-in login form instead of their dashboard) when a
+  // remote URL or token had drifted. Remote connections now open via
+  // explicit user action: File > Open Recent Server menu, ⌘N, or future
+  // sidebar.
+  openConnectionWindow("local");
 }
