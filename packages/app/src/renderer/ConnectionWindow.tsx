@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Connection } from "../types/connection.js";
 import { ConnectionWebview } from "./ConnectionWebview.js";
 import { SettingsPanel } from "./SettingsPanel.js";
@@ -16,25 +16,30 @@ export function ConnectionWindow({
 }: ConnectionWindowProps): React.ReactElement {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [missing, setMissing] = useState(false);
+  const [localFailed, setLocalFailed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mode, setMode] = useState<"built-in" | "always-on" | null>(null);
+
+  const loadLocal = useCallback(async (): Promise<void> => {
+    setLocalFailed(false);
+    const info = await window.autonomos.localServer.info();
+    if (!info) {
+      setLocalFailed(true);
+      return;
+    }
+    setMode(info.mode);
+    setConnection({
+      id: "local",
+      name: "This Mac",
+      type: "local",
+      url: `http://127.0.0.1:${info.port}`,
+    });
+  }, []);
 
   useEffect(() => {
     (async () => {
       if (connectionId === "local") {
-        // Synthesize the local connection from the active server.
-        const info = await window.autonomos.localServer.info();
-        if (!info) {
-          setMissing(true);
-          return;
-        }
-        setMode(info.mode);
-        setConnection({
-          id: "local",
-          name: "This Mac",
-          type: "local",
-          url: `http://127.0.0.1:${info.port}`,
-        });
+        await loadLocal();
         return;
       }
       const list = await window.autonomos.connections.list();
@@ -42,7 +47,7 @@ export function ConnectionWindow({
       if (found) setConnection(found);
       else setMissing(true);
     })();
-  }, [connectionId]);
+  }, [connectionId, loadLocal]);
 
   // Keyboard shortcut for settings (⌘,) on the local connection window.
   useEffect(() => {
@@ -56,6 +61,70 @@ export function ConnectionWindow({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [connectionId]);
+
+  // Local-server startup failed. Common causes: no `node` binary on the
+  // .app's launchd-inherited PATH, port collision with an older daemon,
+  // bundled server missing from Resources/. Give the user a useful screen.
+  if (localFailed && connectionId === "local") {
+    return (
+      <div className="full-bleed-message">
+        <div style={{ maxWidth: 480 }}>
+          <p style={{ color: "var(--text-bright)", fontSize: 15 }}>
+            autonomOS Server couldn&apos;t start
+          </p>
+          <p
+            style={{
+              color: "var(--text-muted)",
+              fontSize: 12,
+              marginTop: 12,
+              textAlign: "left",
+            }}
+          >
+            The Desktop tried to start the Built-in server but failed. Common
+            causes:
+          </p>
+          <ul
+            style={{
+              color: "var(--text-muted)",
+              fontSize: 12,
+              textAlign: "left",
+              paddingLeft: 18,
+              marginTop: 4,
+            }}
+          >
+            <li>
+              Node.js isn&apos;t in this app&apos;s PATH (install Node 22+ from
+              nodejs.org)
+            </li>
+            <li>Another version of autonomOS is using port 3100</li>
+            <li>The bundled server is missing or corrupted</li>
+          </ul>
+          <div
+            style={{
+              marginTop: 20,
+              display: "flex",
+              gap: 8,
+              justifyContent: "center",
+            }}
+          >
+            <button
+              type="button"
+              className="primary"
+              onClick={() => loadLocal()}
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={() => window.autonomos.windows.closeSelf()}
+            >
+              Close window
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (missing) {
     return (

@@ -12,12 +12,85 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { arch, homedir, platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "electron";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+interface PidFileContents {
+  pid: number;
+  port: number;
+  version: string;
+  startedAt: string;
+}
+
+/** Read ~/.autonomos/autonomos.pid. Returns null on missing/corrupt. */
+function readPidFile(): PidFileContents | null {
+  const path = resolve(homedir(), ".autonomos", "autonomos.pid");
+  if (!existsSync(path)) return null;
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8")) as PidFileContents;
+    if (
+      typeof data.pid !== "number" ||
+      typeof data.port !== "number" ||
+      typeof data.version !== "string"
+    ) {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** GET http://127.0.0.1:<port>/api/system/version with a short timeout.
+ *  Returns true on any HTTP response (auth doesn't matter — we only need
+ *  to know "is something listening and responding"). */
+async function isPortResponsive(
+  port: number,
+  timeoutMs = 800,
+): Promise<boolean> {
+  return new Promise((resolveFn) => {
+    let settled = false;
+    const settle = (v: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolveFn(v);
+    };
+    const req = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        path: "/api/system/version",
+        method: "GET",
+        timeout: timeoutMs,
+      },
+      (res) => {
+        res.on("data", () => undefined);
+        res.on("end", () => undefined);
+        settle(true);
+      },
+    );
+    req.on("error", () => settle(false));
+    req.on("timeout", () => {
+      req.destroy();
+      settle(false);
+    });
+    req.end();
+  });
+}
 
 export interface BuiltInServer {
   mode: "built-in";
@@ -86,19 +159,45 @@ function readExistingToken(): string | null {
   }
 }
 
-/** Phase 1B.2.10 entry point: returns either a Built-in or Always-on server.
+/** Returns either a Built-in or Always-on server.
  *
- *  Strategy:
- *    1. Spawn a Built-in server child with --embedded --port=0.
- *    2. Watch stdout for one of two contracts:
- *         AUTONOMOS_READY port=N           → we got the lock; Built-in mode.
- *         AUTONOMOS_ALREADY_RUNNING port=N → another server owns the pid
- *                                            file; we kill our child and
- *                                            connect to that server.
- *    3. If the child exits before signaling either, reject. */
+ *  Strategy (revised after real-world test on a machine with a pre-1B.2.8
+ *  LaunchAgent that doesn't know about acquireOwnership):
+ *
+ *    1. Read ~/.autonomos/autonomos.pid directly. If a live owner exists,
+ *       use it AS-IS — no spawn needed. This works regardless of whether
+ *       the running server has the new mutual-exclusion code.
+ *    2. Only if NO live owner exists, spawn a Built-in server child.
+ *       The child will claim the pid file on startup.
+ *    3. Watch stdout for AUTONOMOS_READY port=N (or AUTONOMOS_ALREADY_RUNNING
+ *       if we race against another startup).
+ *
+ *  This shortcut also avoids needing a `node` binary on the user's PATH
+ *  when an Always-on server is already running — we never spawn in that
+ *  case. node is still required for the Built-in spawn path. */
 export async function acquireOrConnect(): Promise<LocalServer> {
   if (activeServer) return activeServer;
 
+  // Fast path: an existing daemon is already running. Just use it.
+  const existing = readPidFile();
+  if (
+    existing &&
+    isPidAlive(existing.pid) &&
+    (await isPortResponsive(existing.port))
+  ) {
+    const token = readExistingToken() ?? "";
+    const server: AlwaysOnServer = {
+      mode: "always-on",
+      port: existing.port,
+      pid: existing.pid,
+      token,
+      version: existing.version,
+    };
+    activeServer = server;
+    return server;
+  }
+
+  // No live owner — we'll spawn a Built-in server.
   const entry = findServerEntry();
   if (!entry) {
     throw new Error(
