@@ -25,6 +25,12 @@ import {
  *  Welcome window once 1B.2.4 wires the protocol handler logic. */
 const pendingDeepLinks: string[] = [];
 
+/** Set to true when the user has actively requested quit (⌘Q, Dock menu →
+ *  Quit, app.quit() programmatically). On macOS, window-all-closed without
+ *  this flag means "user closed all windows but didn't quit" — we keep the
+ *  app alive in the Dock (VS Code / standard Mac app pattern). */
+let quitRequested = false;
+
 function bootstrap(): void {
   if (!app.requestSingleInstanceLock()) {
     app.quit();
@@ -67,25 +73,45 @@ function bootstrap(): void {
   });
 
   app.on("window-all-closed", () => {
-    // Quit on all platforms when the last window closes. The traditional
-    // macOS "stay alive in Dock" pattern is for apps where the running
-    // process does work in the background (Slack, Mail, etc.). autonomOS
-    // Desktop is a window into a server — when no window is open, the
-    // app has nothing to do. Quitting also prevents helper-process leaks
-    // that users reported when the app sat invisibly in the Dock for
-    // long periods.
-    app.quit();
+    // VS Code pattern (verified against vscode/src/vs/platform/lifecycle/
+    // electron-main/lifecycleMainService.ts):
+    //   * Linux/Windows: quit when last window closes
+    //   * macOS: quit ONLY if quit was already requested (⌘Q, Dock → Quit)
+    //     — otherwise stay alive in Dock so the user can ⌘N to reopen
+    //
+    // This matches the standard Mac app convention. The user can quit via
+    // ⌘Q or right-click Dock icon → Quit.
+    if (quitRequested || process.platform !== "darwin") {
+      app.quit();
+    }
   });
 
-  // Belt-and-suspenders cleanup before the process exits. Electron
-  // normally tears down child processes automatically, but persistent
-  // webview partition sessions + our drag-polling setIntervals are the
-  // kind of state that can leak if we exit unexpectedly.
   app.on("before-quit", () => {
+    quitRequested = true;
+
+    // Cleanup drag-polling setIntervals so they don't hold the event
+    // loop open past app.exit().
     cleanupAllDrags();
+
+    // Destroy all windows so their webview renderer + GPU helper
+    // processes get torn down promptly. win.destroy() (unlike win.close())
+    // bypasses any beforeunload handlers and synchronously kills the
+    // window's webContents — including embedded <webview> children.
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.destroy();
     }
+
+    // Belt-and-suspenders force-exit fallback: if the renderers are
+    // taking too long to acknowledge shutdown (this is the bug that
+    // leaks helper processes — Electron's graceful quit waits for the
+    // renderer to confirm, and if it's stuck, it never confirms),
+    // hard-exit the process after 1 second. VS Code does the same in
+    // its kill() path.
+    setTimeout(() => {
+      // biome-ignore lint/suspicious/noConsole: diagnostic on forced exit
+      console.warn("[main] forced exit — renderers did not quit in 1s");
+      app.exit(0);
+    }, 1000).unref();
   });
 }
 
