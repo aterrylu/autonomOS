@@ -252,17 +252,31 @@ export function registerIpc(): void {
         if (!server) return { ok: false };
         const url = `http://127.0.0.1:${server.port}`;
         const partition = "persist:connection-local";
-        const ses = session.fromPartition(partition);
-        await ses.cookies.set({
-          url,
-          name: "autonomos_token",
-          value: server.token,
-          domain: "127.0.0.1",
-          path: "/",
-          secure: false,
-          httpOnly: false,
-          sameSite: "lax",
-        });
+        // Only set the cookie if we actually have a token. Older daemons
+        // (pre-1B.2.8) don't write ~/.autonomos/token, so server.token may
+        // be empty. Empty-value cookies break Electron's cookies.set, and
+        // even when they don't, the server rejects empty tokens. Letting
+        // the dashboard's built-in login form appear is the right fallback —
+        // the user pastes their token once and it goes into localStorage.
+        if (server.token.length > 0) {
+          try {
+            const ses = session.fromPartition(partition);
+            await ses.cookies.set({
+              url,
+              name: "autonomos_token",
+              value: server.token,
+              domain: "127.0.0.1",
+              path: "/",
+              secure: false,
+              httpOnly: false,
+              sameSite: "lax",
+            });
+          } catch (err) {
+            // Cookie set failed — log but don't fail the prepare. The
+            // webview will load and the dashboard will show its login form.
+            console.warn("[ipc] cookie.set for local failed:", err);
+          }
+        }
         return { ok: true, url };
       }
 

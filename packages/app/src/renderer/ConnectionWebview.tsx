@@ -62,13 +62,25 @@ export function ConnectionWebview({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const result = await window.autonomos.webview.prepare(connection.id);
-      if (cancelled) return;
-      if (result.ok) setReady(true);
-      else
-        setError(
-          "Failed to prepare connection (missing token?). Remove and re-add.",
+      try {
+        const result = await window.autonomos.webview.prepare(connection.id);
+        if (cancelled) return;
+        if (result.ok) setReady(true);
+        else
+          setError(
+            "Failed to prepare connection (missing token?). Remove and re-add.",
+          );
+      } catch (err) {
+        if (cancelled) return;
+        // Don't leave the user stuck on "Connecting…" if the IPC rejects.
+        // Mount the webview anyway — worst case the dashboard's built-in
+        // login form appears and the user can re-authenticate.
+        console.warn(
+          "[ConnectionWebview] prepare threw, mounting anyway:",
+          err,
         );
+        setReady(true);
+      }
     })();
     return () => {
       cancelled = true;
