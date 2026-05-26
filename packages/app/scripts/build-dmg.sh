@@ -23,6 +23,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."  # → packages/app/
 VERSION=$(node -p "require('./package.json').version")
 SHA=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
 TS=$(date +%Y%m%d-%H%M%S)
+
+# Detect uncommitted changes in tracked files. If the working tree is
+# dirty, the SHA in the output filename would be a LIE — it'd be HEAD's
+# SHA, but the build includes uncommitted modifications. Append "-dirty"
+# to the filename so it's unambiguous.
+if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+  SHA="${SHA}-dirty"
+fi
+
 SUFFIX="${VERSION}-${SHA}-${TS}-arm64"
 
 echo "[build-dmg] version=${VERSION} sha=${SHA} ts=${TS}"
@@ -65,3 +74,17 @@ cp "out/${NEW_NAME}" "${DEST}"
 echo "[build-dmg] ✓ ${DEST}"
 echo "[build-dmg]   size: $(du -h "${DEST}" | cut -f1)"
 echo "[build-dmg]   volume title on mount: 'autonomOS ${VERSION}' (SHA is in filename only)"
+
+# Auto-clean older DMGs in ~/Downloads with the same version prefix —
+# keep only the 3 most recent so the folder doesn't accumulate. Older
+# ones are deleted, not archived.
+KEEP=3
+PATTERN="${HOME}/Downloads/autonomOS-${VERSION}-*-arm64.dmg"
+# shellcheck disable=SC2086  # we want glob expansion
+TO_DELETE=$(ls -t ${PATTERN} 2>/dev/null | tail -n +$((KEEP + 1)))
+if [ -n "${TO_DELETE}" ]; then
+  echo "${TO_DELETE}" | while read -r f; do
+    echo "[build-dmg]   pruning older: $(basename "${f}")"
+    rm -f "${f}"
+  done
+fi
