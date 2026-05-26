@@ -17,7 +17,6 @@
 //     webview document, mouseleave fires, drag ends prematurely.
 //     Drags should ONLY end on a real mouseup.
 
-// biome-ignore lint/correctness/noNodejsModules: webview preload uses CJS require
 import { ipcRenderer } from "electron";
 
 const INTERACTIVE_SELECTOR = "button, a, input, select, textarea";

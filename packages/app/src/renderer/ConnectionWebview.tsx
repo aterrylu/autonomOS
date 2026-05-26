@@ -128,8 +128,6 @@ export function ConnectionWebview({
 
   return (
     <webview
-      // biome-ignore lint/correctness/useUniqueElementIds: single instance per window
-      id="connection-webview"
       ref={webviewRef as unknown as React.Ref<HTMLElement>}
       src={connection.url}
       partition={`persist:connection-${connection.id}`}

@@ -21,6 +21,8 @@ import {
   setToken,
 } from "./config/tokens.js";
 import { buildMenu } from "./menu.js";
+import { migrateToAlwaysOn, migrateToBuiltIn } from "./migrate.js";
+import { acquireOrConnect, getActiveServer } from "./server-supervisor.js";
 import {
   endDrag,
   openConnectionWindow,
@@ -243,6 +245,27 @@ export function registerIpc(): void {
       _event,
       id: string,
     ): Promise<{ ok: true; url: string } | { ok: false }> => {
+      // Special-case "local" — synthesized from the active server, not from
+      // the stored connections list.
+      if (id === "local") {
+        const server = getActiveServer();
+        if (!server) return { ok: false };
+        const url = `http://127.0.0.1:${server.port}`;
+        const partition = "persist:connection-local";
+        const ses = session.fromPartition(partition);
+        await ses.cookies.set({
+          url,
+          name: "autonomos_token",
+          value: server.token,
+          domain: "127.0.0.1",
+          path: "/",
+          secure: false,
+          httpOnly: false,
+          sameSite: "lax",
+        });
+        return { ok: true, url };
+      }
+
       const config = await getConfig();
       const conn = config.connections.find((c) => c.id === id);
       if (!conn) return { ok: false };
@@ -263,6 +286,74 @@ export function registerIpc(): void {
         sameSite: "lax",
       });
       return { ok: true, url: conn.url };
+    },
+  );
+
+  // ── Local server lifecycle (ADR-029) ──────────────────────────────
+
+  ipcMain.handle(
+    "local-server:info",
+    (): {
+      mode: "built-in" | "always-on";
+      port: number;
+      version: string;
+    } | null => {
+      const server = getActiveServer();
+      if (!server) return null;
+      return { mode: server.mode, port: server.port, version: server.version };
+    },
+  );
+
+  ipcMain.handle(
+    "local-server:migrate-to-always-on",
+    async (): Promise<{ ok: boolean; message: string }> => {
+      const result = await migrateToAlwaysOn();
+      if (!result.ok) {
+        return {
+          ok: false,
+          message: result.stderr || result.stdout || "Migration failed",
+        };
+      }
+      // Re-acquire to pick up the new Always-on server.
+      try {
+        await acquireOrConnect();
+        await buildMenu();
+        return {
+          ok: true,
+          message: "autonomOS is now running in the background.",
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          message:
+            "install-service succeeded but reconnect failed: " +
+            (err instanceof Error ? err.message : String(err)),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "local-server:migrate-to-built-in",
+    async (): Promise<{ ok: boolean; message: string }> => {
+      const result = await migrateToBuiltIn();
+      if (!result.ok) {
+        return {
+          ok: false,
+          message: result.stderr || result.stdout || "Migration failed",
+        };
+      }
+      try {
+        await acquireOrConnect();
+        return { ok: true, message: "autonomOS is back to Built-in mode." };
+      } catch (err) {
+        return {
+          ok: false,
+          message:
+            "uninstall-service succeeded but reconnect failed: " +
+            (err instanceof Error ? err.message : String(err)),
+        };
+      }
     },
   );
 

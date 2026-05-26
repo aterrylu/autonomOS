@@ -1,17 +1,8 @@
-// Multi-window BrowserWindow lifecycle. One window per connection (VS Code
-// model). Welcome windows are connectionless until the user adds one.
+// Multi-window BrowserWindow lifecycle.
 //
-// Key invariants:
-//   - A connection has AT MOST one window open. Reopening focuses the
-//     existing window instead of spawning a duplicate.
-//   - Window state (which connections are open) persists across app quits;
-//     restored on next launch via restoreOpenWindows().
-//   - Welcome windows are NOT persisted — they're transient by design.
-//
-// Each connected window's BrowserWindow loads dist/renderer/index.html with
-// a URL hash of the connection id. The renderer reads window.location.hash
-// to decide whether to render the Welcome view (empty hash) or the
-// ConnectionWebview (hash = connection id).
+// ADR-029 (Built-in / Always-on server): the first window opened at app
+// launch represents the "This Mac" connection — managed by the server-
+// supervisor. Welcome windows (for adding remote connections) remain.
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,11 +18,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const windowsByConnectionId = new Map<string, BrowserWindow>();
 const welcomeWindows = new Set<BrowserWindow>();
+let splashWindow: BrowserWindow | null = null;
 
 // ── Manual window drag state ────────────────────────────────────────
-// Lifted to module scope so before-quit and window-closed handlers can
-// clean up the polling intervals. Keyed by BrowserWindow.id. See
-// startDrag() / endDrag() exported below.
 
 interface DragState {
   offsetX: number;
@@ -41,19 +30,13 @@ interface DragState {
 const drags = new Map<number, DragState>();
 
 export function startDrag(win: BrowserWindow): void {
-  endDrag(win.id); // belt-and-suspenders: clear any stale interval
-
-  // Read cursor and window position TOGETHER so the offset is computed
-  // from a consistent snapshot. screen.getCursorScreenPoint() returns
-  // the same coordinate space as win.setPosition() — no Retina conversion
-  // needed.
+  endDrag(win.id);
   const cursor = screen.getCursorScreenPoint();
   const pos = win.getPosition();
   const winX = pos[0] ?? 0;
   const winY = pos[1] ?? 0;
   const offsetX = cursor.x - winX;
   const offsetY = cursor.y - winY;
-
   const interval = setInterval(() => {
     if (win.isDestroyed()) {
       endDrag(win.id);
@@ -62,7 +45,6 @@ export function startDrag(win: BrowserWindow): void {
     const c = screen.getCursorScreenPoint();
     win.setPosition(c.x - offsetX, c.y - offsetY, false);
   }, 8);
-
   drags.set(win.id, { offsetX, offsetY, interval });
 }
 
@@ -73,17 +55,12 @@ export function endDrag(winId: number): void {
   drags.delete(winId);
 }
 
-/** Called from app.on("before-quit") to clean up any in-flight drag
- *  polling timers before the process exits. Without this, a setInterval
- *  could keep the Node event loop alive past app.quit() (Electron
- *  normally still tears down, but defensive cleanup avoids edge cases
- *  + helper-process leaks reported in the wild). */
 export function cleanupAllDrags(): void {
-  for (const state of drags.values()) {
-    clearInterval(state.interval);
-  }
+  for (const state of drags.values()) clearInterval(state.interval);
   drags.clear();
 }
+
+// ── BrowserWindow factory ───────────────────────────────────────────
 
 function macWindowOptions(): Partial<BrowserWindowConstructorOptions> {
   if (process.platform !== "darwin") return {};
@@ -112,6 +89,44 @@ function makeBrowserWindow(): BrowserWindow {
 function rendererHtmlPath(): string {
   return resolve(__dirname, "../renderer/index.html");
 }
+
+// ── Splash ──────────────────────────────────────────────────────────
+
+export function openSplashWindow(): BrowserWindow {
+  if (splashWindow && !splashWindow.isDestroyed()) return splashWindow;
+  splashWindow = new BrowserWindow({
+    width: 480,
+    height: 320,
+    backgroundColor: "#0a0e14",
+    frame: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    show: false,
+    webPreferences: {
+      preload: resolve(__dirname, "../preload/main.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  splashWindow.loadFile(rendererHtmlPath(), { hash: "splash" });
+  splashWindow.once("ready-to-show", () => splashWindow?.show());
+  splashWindow.on("closed", () => {
+    splashWindow = null;
+  });
+  return splashWindow;
+}
+
+export function closeSplash(): void {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.close();
+  }
+  splashWindow = null;
+}
+
+// ── Welcome / Connection windows ────────────────────────────────────
 
 export function openWelcomeWindow(): BrowserWindow {
   const window = makeBrowserWindow();
@@ -145,12 +160,16 @@ export function openConnectionWindow(connectionId: string): BrowserWindow {
   return window;
 }
 
-export function getOpenConnectionIds(): string[] {
-  return Array.from(windowsByConnectionId.keys());
+export function hasAnyWindow(): boolean {
+  return (
+    windowsByConnectionId.size > 0 ||
+    welcomeWindows.size > 0 ||
+    splashWindow !== null
+  );
 }
 
-export function hasAnyWindow(): boolean {
-  return windowsByConnectionId.size > 0 || welcomeWindows.size > 0;
+export function getConnectionWindow(id: string): BrowserWindow | undefined {
+  return windowsByConnectionId.get(id);
 }
 
 async function persistOpenWindows(): Promise<void> {
@@ -158,19 +177,16 @@ async function persistOpenWindows(): Promise<void> {
   await setConfig((current) => ({ ...current, openWindows: ids }));
 }
 
-/** Restore windows for connections that were open at last quit. If none,
- *  shows a single Welcome window. */
 export async function restoreOpenWindows(): Promise<void> {
-  // Import dynamically to avoid an import cycle (store ↔ window-manager).
   const { getConfig } = await import("./config/store.js");
   const config = await getConfig();
   const ids = config.openWindows ?? [];
   let restored = 0;
   for (const id of ids) {
-    if (config.connections.some((c) => c.id === id)) {
+    if (id === "local" || config.connections.some((c) => c.id === id)) {
       openConnectionWindow(id);
       restored++;
     }
   }
-  if (restored === 0) openWelcomeWindow();
+  if (restored === 0) openConnectionWindow("local");
 }

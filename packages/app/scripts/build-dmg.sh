@@ -35,6 +35,21 @@ mount | awk -F' on ' '/autonomOS/ {print $2}' | awk '{print $1}' | while read -r
 done
 
 rm -rf out
+
+# Stage the host-platform server bundle into resources/server/ so
+# electron-builder's extraResources picks it up. Build it first if not
+# already present.
+HOST_PLATFORM="$(uname -s | tr 'A-Z' 'a-z')-$(uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')"
+SERVER_DIST="$(cd ../.. && pwd)/packages/server/dist/${HOST_PLATFORM}"
+if [ ! -f "${SERVER_DIST}/index.js" ]; then
+  echo "[build-dmg] Server bundle missing; building..."
+  (cd ../.. && bun run build:binary)
+fi
+mkdir -p resources/server
+rm -rf resources/server/*
+cp -R "${SERVER_DIST}/." resources/server/
+echo "[build-dmg] Staged server bundle from ${SERVER_DIST}"
+
 bun run build:dmg
 
 # electron-builder produces autonomOS-<version>-arm64.dmg by default —

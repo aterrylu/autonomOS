@@ -36,6 +36,16 @@ export interface AutonomosAPI {
   };
   localServer: {
     status(): Promise<LocalServerStatus>;
+    /** Mode of the currently-active "This Mac" server, or null if none. */
+    info(): Promise<{
+      mode: "built-in" | "always-on";
+      port: number;
+      version: string;
+    } | null>;
+    /** Built-in → Always-on (installs LaunchAgent / systemd-user). */
+    migrateToAlwaysOn(): Promise<{ ok: boolean; message: string }>;
+    /** Always-on → Built-in (uninstalls LaunchAgent). */
+    migrateToBuiltIn(): Promise<{ ok: boolean; message: string }>;
   };
   encryption: {
     isAvailable(): Promise<boolean>;

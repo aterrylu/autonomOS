@@ -24,6 +24,11 @@ const api: AutonomosAPI = {
   localServer: {
     status: (): Promise<LocalServerStatus> =>
       ipcRenderer.invoke(IPC.LOCAL_SERVER_STATUS),
+    info: () => ipcRenderer.invoke("local-server:info"),
+    migrateToAlwaysOn: () =>
+      ipcRenderer.invoke("local-server:migrate-to-always-on"),
+    migrateToBuiltIn: () =>
+      ipcRenderer.invoke("local-server:migrate-to-built-in"),
   },
   encryption: {
     isAvailable: (): Promise<boolean> =>

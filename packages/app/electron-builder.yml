@@ -32,14 +32,15 @@ files:
   - "node_modules/**/*"
   - "!node_modules/**/{*.md,*.markdown,LICENSE,license,COPYING,changelog,CHANGELOG*}"
 
-# extraResources for the bundled autonomos-server lives here. Restored in
-# Phase 1B.2.5 when the local-install flow ships and actually invokes the
-# bundled binary's `install-service` subcommand. For 1B.2.0-2.3 there's
-# no consumer for the bundle, so we omit it to keep the .dmg smaller.
-# extraResources:
-#   - from: "resources/server"
-#     to: "server"
-#     filter: ["**/*"]
+# ADR-029 — the bundled autonomos-server lives in Resources/server/ inside
+# the .app. The Desktop's server-supervisor spawns it at launch (Built-in
+# mode) or, for "Always-on" migration, invokes its install-service CLI
+# subcommand. Staged into packages/app/resources/server by the build-dmg.sh
+# pre-step.
+extraResources:
+  - from: "resources/server"
+    to: "server"
+    filter: ["**/*"]
 
 mac:
   category: public.app-category.developer-tools
