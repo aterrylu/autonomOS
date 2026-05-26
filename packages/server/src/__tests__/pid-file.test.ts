@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,12 +31,17 @@ const LOCK_FILE = join(TEST_DIR, "autonomos.pid.lock");
 
 /** Spin up a minimal HTTP server that responds to /api/system/version.
  *  Used by tests to simulate a "live" prior owner. */
-async function makeLiveServer(): Promise<{ port: number; close: () => Promise<void> }> {
+async function makeLiveServer(): Promise<{
+  port: number;
+  close: () => Promise<void>;
+}> {
   return new Promise((resolve, reject) => {
     const server: Server = createServer((req, res) => {
       if (req.url === "/api/system/version") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ version: "test", platform: "test", arch: "test" }));
+        res.end(
+          JSON.stringify({ version: "test", platform: "test", arch: "test" }),
+        );
         return;
       }
       res.writeHead(404);
