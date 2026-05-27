@@ -64,7 +64,11 @@ export function cleanupAllDrags(): void {
 
 function macWindowOptions(): Partial<BrowserWindowConstructorOptions> {
   if (process.platform !== "darwin") return {};
-  return { titleBarStyle: "hiddenInset", vibrancy: "sidebar" };
+  // No `vibrancy` — stacking macOS vibrancy under CSS `backdrop-filter` pegged
+  // the GPU compositor at ~100% (one entire core) on idle Welcome windows
+  // because the OS-level backdrop kept invalidating every frame. The window
+  // has a solid dark `backgroundColor` anyway, so vibrancy was invisible.
+  return { titleBarStyle: "hiddenInset" };
 }
 
 function makeBrowserWindow(): BrowserWindow {
