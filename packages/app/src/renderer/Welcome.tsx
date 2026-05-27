@@ -34,10 +34,12 @@ export function Welcome({
     })();
   }, []);
 
+  // When a daemon is detected, the "This Mac" card gets the active treatment
+  // (indigo glow) — it's the highlighted default action.
   const localCard = detected?.running ? (
     <button
       type="button"
-      className="welcome-card welcome-card-local"
+      className="welcome-card welcome-card-local welcome-card-active"
       onClick={() => {
         if (busy) return;
         setBusy(true);
@@ -45,7 +47,7 @@ export function Welcome({
       }}
       disabled={busy}
     >
-      <div className="welcome-card-badge welcome-badge-on">● Always-on</div>
+      <div className="welcome-card-badge welcome-badge-on">Always-on</div>
       <h2>This Mac</h2>
       <p>
         Detected running daemon
@@ -56,7 +58,7 @@ export function Welcome({
   ) : (
     <button
       type="button"
-      className="welcome-card welcome-card-local"
+      className="welcome-card welcome-card-local welcome-card-active"
       onClick={() => {
         if (busy) return;
         setBusy(true);
@@ -64,9 +66,7 @@ export function Welcome({
       }}
       disabled={busy}
     >
-      <div className="welcome-card-badge welcome-badge-built-in">
-        ○ Built-in
-      </div>
+      <div className="welcome-card-badge welcome-badge-built-in">Built-in</div>
       <h2>This Mac</h2>
       <p>
         Run autonomOS Server inside this app.
@@ -80,7 +80,7 @@ export function Welcome({
     <div className="welcome">
       <div className="welcome-mark">a</div>
       <h1>Welcome to autonomOS</h1>
-      <p className="tagline">Pick a server to connect to</p>
+      <p className="tagline">Choose a server to get started</p>
 
       <div className="welcome-cards">
         {localCard}
@@ -98,7 +98,7 @@ export function Welcome({
             disabled={busy}
           >
             <div className="welcome-card-badge welcome-badge-remote">
-              ▷ Remote
+              Remote
             </div>
             <h2>{r.name}</h2>
             <p>{r.url}</p>

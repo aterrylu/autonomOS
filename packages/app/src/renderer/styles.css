@@ -1,15 +1,20 @@
 :root {
   color-scheme: dark;
-  --bg: #0a0e14;
+  /* Option 2 palette: warmer dark, refined / Notion-style.
+   * The Welcome screen + chrome share this palette. */
+  --bg: #0F1216;
   --bg-elev: rgba(255, 255, 255, 0.04);
   --bg-elev-hover: rgba(255, 255, 255, 0.07);
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
-  --text: #cbd5e1;
-  --text-muted: #64748b;
-  --text-bright: #f1f5f9;
-  --accent: #60a5fa;
-  --accent-hover: #93c5fd;
+  --text: #E5E7EB;
+  --text-muted: #9CA3AF;
+  --text-bright: #F9FAFB;
+  --accent: #818CF8; /* indigo-400 */
+  --accent-hover: #A5B4FC;
+  --accent-glow: rgba(99, 102, 241, 0.5); /* indigo-500 @ 50% */
+  --accent-glow-soft: rgba(99, 102, 241, 0.2);
+  --on: #34D399; /* emerald-400 for Always-on status */
   --danger: #f87171;
   --danger-bg: rgba(248, 113, 113, 0.08);
 }
@@ -19,10 +24,16 @@ html, body { margin: 0; padding: 0; height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Subtle indigo radial glow in the corners — the Notion-style ambient
+   * lift that makes the dark feel warmer without being noisy. */
+  background-image:
+    radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.06) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(99, 102, 241, 0.05) 0%, transparent 50%);
+  background-attachment: fixed;
 }
 
 #root { height: 100%; display: flex; flex-direction: column; }
@@ -110,92 +121,148 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-col
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
-  gap: 16px;
+  padding: 48px 24px;
+  gap: 8px;
   overflow-y: auto;
+  width: 100%;
 }
 .welcome-mark {
-  width: 64px;
-  height: 64px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 16px;
+  width: 72px;
+  height: 72px;
+  background: linear-gradient(180deg, #1A1F26 0%, #131820 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 48px;
+  font-size: 42px;
   font-weight: 600;
   color: var(--text-bright);
   padding-top: 4px;
-  margin-bottom: 8px;
+  margin-bottom: 16px;
+  box-shadow:
+    0 0 24px var(--accent-glow-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-.welcome h1 { margin: 0; color: var(--text-bright); font-size: 22px; font-weight: 600; }
-.welcome p.tagline { margin: 0; color: var(--text-muted); }
+.welcome h1 {
+  margin: 0;
+  color: var(--text-bright);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.welcome p.tagline {
+  margin: 0 0 32px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
 .welcome-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
   width: 100%;
-  max-width: 720px;
-  margin-top: 8px;
+  max-width: 960px;
 }
 .welcome-card {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.015) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 20px;
   text-align: left;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 110px;
-  transition: background 120ms ease, border-color 120ms ease;
+  min-height: 138px;
+  transition: all 180ms ease;
+  backdrop-filter: blur(8px);
 }
 .welcome-card:hover:not(:disabled) {
-  background: var(--bg-elev-hover);
-  border-color: var(--border-strong);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0.025) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
 }
 .welcome-card:disabled { opacity: 0.5; cursor: not-allowed; }
+.welcome-card.welcome-card-active {
+  border-color: var(--accent-glow);
+  background: linear-gradient(
+    180deg,
+    rgba(99, 102, 241, 0.12) 0%,
+    rgba(99, 102, 241, 0.04) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(99, 102, 241, 0.3),
+    0 0 24px rgba(99, 102, 241, 0.2);
+}
 .welcome-card h2 {
-  margin: 0;
-  font-size: 14px;
+  margin: 4px 0 0;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-bright);
 }
 .welcome-card p {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: 1.5;
   flex: 1;
 }
 .welcome-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
+  font-weight: 600;
 }
-.welcome-badge-on { color: #34d399; }
+.welcome-badge-on { color: var(--on); }
+.welcome-badge-on::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--on);
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+}
 .welcome-badge-built-in { color: var(--text-muted); }
+.welcome-badge-built-in::before { content: "○"; }
 .welcome-badge-remote { color: var(--accent); }
-.welcome-card-add { border-style: dashed; }
+.welcome-badge-remote::before { content: "▷"; }
+.welcome-card-add { border-style: dashed; background: transparent; }
 .welcome-card-add h2 { color: var(--text-muted); }
-.welcome-footer {
-  margin-top: 16px;
+.welcome-card-add .plus {
+  font-size: 24px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-weight: 300;
+}
+.welcome-footer {
+  margin-top: 32px;
+  color: var(--text-muted);
+  font-size: 12px;
   text-align: center;
   max-width: 600px;
 }
 .welcome-footer code {
-  background: var(--bg-elev);
-  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 3px 8px;
   border-radius: 4px;
-  font-size: 10px;
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 11px;
+  color: #D1D5DB;
   user-select: all;
 }
-.welcome-busy, .welcome-error {
+.welcome-busy,
+.welcome-error {
   position: fixed;
   bottom: 24px;
   left: 50%;
@@ -207,6 +274,7 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-col
   font-size: 12px;
   color: var(--text);
   max-width: 90%;
+  backdrop-filter: blur(8px);
 }
 .welcome-error { border-color: var(--danger); color: var(--danger); }
 .welcome .card {
