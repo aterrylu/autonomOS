@@ -2,10 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { Connection } from "../types/connection.js";
 
 interface AddConnectionModalProps {
-  /** Pre-filled from a deep link (autonomos://connect?...). When set, the
-   *  modal shows the source-of-pre-fill hint but still requires explicit
-   *  user click to save — never auto-submits. */
-  prefill?: { url: string; token: string; name?: string };
   onClose: () => void;
   onAdded: (c: Connection) => void;
 }
@@ -71,26 +67,25 @@ function CliBlock({
 }
 
 export function AddConnectionModal({
-  prefill,
   onClose,
   onAdded,
 }: AddConnectionModalProps): React.ReactElement {
-  const [url, setUrl] = useState(prefill?.url ?? "");
-  const [token, setToken] = useState(prefill?.token ?? "");
-  const [name, setName] = useState(prefill?.name ?? "");
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tokenVisible, setTokenVisible] = useState(false);
   const urlInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!prefill) urlInputRef.current?.focus();
+    urlInputRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape" && !busy) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [prefill, onClose, busy]);
+  }, [onClose, busy]);
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -133,14 +128,6 @@ export function AddConnectionModal({
           below on the machine where you want the server to live, then paste the
           URL and token here.
         </p>
-
-        {prefill && (
-          <div className="hint" style={{ marginTop: 8 }}>
-            <strong>Pre-filled from a deep link.</strong> Deep links should come
-            from your terminal after pairing. If a webpage opened this dialog,
-            close it and report the page.
-          </div>
-        )}
 
         <form onSubmit={handleSubmit}>
           {/* Step 1 — install the CLI */}

@@ -1,35 +1,26 @@
 // Electron main process entry point.
 //
 // ADR-029 flow:
-//   1. Single-instance lock.
-//   2. Splash window shows immediately.
-//   3. Background: server-supervisor.acquireOrConnect() spawns or detects
-//      a server (Built-in or Always-on).
-//   4. Splash closes; "This Mac" connection window opens loaded with the
-//      server's URL (cookie auth via existing webview pipeline).
+//   1. Single-instance lock (so two Desktops can't race for the same
+//      ~/.autonomos/ config).
+//   2. Open Welcome window — every launch shows the picker.
+//   3. User picks: Built-in / Always-on / Remote.
+//   4. WelcomeWindow handles the IPC → spawns a connection window for
+//      the chosen target and closes itself.
 //   5. before-quit: shutdown Built-in server child (if any), clear drag
 //      intervals, force-exit after 1s.
 
 import { app, BrowserWindow } from "electron";
 
-import { URL_SCHEME } from "../shared/constants.js";
 import { registerIpc } from "./ipc.js";
 import { buildMenu } from "./menu.js";
-import {
-  acquireOrConnect,
-  shutdownBuiltInServer,
-} from "./server-supervisor.js";
+import { shutdownBuiltInServer } from "./server-supervisor.js";
 import {
   cleanupAllDrags,
-  closeSplash,
   hasAnyWindow,
-  openConnectionWindow,
-  openSplashWindow,
   openWelcomeWindow,
-  restoreOpenWindows,
 } from "./window-manager.js";
 
-const pendingDeepLinks: string[] = [];
 let quitRequested = false;
 
 function bootstrap(): void {
@@ -38,18 +29,11 @@ function bootstrap(): void {
     return;
   }
 
-  app.on("second-instance", (_event, argv) => {
-    const url = argv.find((arg) => arg.startsWith(`${URL_SCHEME}://`));
-    if (url) pendingDeepLinks.push(url);
+  // Second-instance launch (user double-clicked the .app while already
+  // running) — surface the existing window or open Welcome.
+  app.on("second-instance", () => {
     if (!hasAnyWindow()) openWelcomeWindow();
   });
-
-  app.on("open-url", (event, url) => {
-    event.preventDefault();
-    pendingDeepLinks.push(url);
-  });
-
-  app.setAsDefaultProtocolClient(URL_SCHEME);
 
   app
     .whenReady()
@@ -58,14 +42,9 @@ function bootstrap(): void {
       await buildMenu();
 
       // Welcome-every-launch (per user UX decision): show the picker
-      // every time the app opens. The Welcome window itself can DETECT
-      // an existing daemon and surface it as a one-click option, but
-      // we don't auto-connect — the user explicitly picks.
-      //
-      // No splash window here — the Welcome window IS the first thing
-      // the user sees, so the splash would just flash briefly and feel
-      // janky. We removed it from the launch flow; Welcome opens fast
-      // enough that an interstitial isn't needed.
+      // every time the app opens. The Welcome window itself DETECTs an
+      // existing daemon and surfaces it as a one-click option, but we
+      // don't auto-connect — the user explicitly picks.
       openWelcomeWindow();
     })
     .catch((err) => {

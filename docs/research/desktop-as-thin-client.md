@@ -1,8 +1,10 @@
 # Desktop as Thin Client — Phase 1B.2 Design
 
-**Status:** Approved for implementation (2026-05-18)
+**Status:** Approved for implementation (2026-05-18). Superseded in part by ADR-029 (Built-in/Server modes).
 **Replaces:** PR #172 (Phase 1B.1 embedded-server design)
 **Decided by:** Terry + Feature Worker (CC session)
+
+> **Update 2026-05-27:** The `autonomos://` deep-link handler described in this document was **dropped before shipping**. Sections referencing "deep link flow", `autonomos://connect`, the protocol handler, and Sub-phase 1B.2.4 are kept for historical context but are no longer load-bearing. See ADR-029-follow-up in [`docs/DECISIONS.md`](../DECISIONS.md) for the rationale. The "Add a server" modal accepts paste-in URL + token only.
 
 ## TL;DR
 

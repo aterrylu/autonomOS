@@ -77,10 +77,3 @@ dmg:
     - x: 120
       y: 240
       type: file
-
-# Protocol scheme registration (Phase 1B.2.4 — deep links).
-# macOS reads this from Info.plist; electron-builder synthesizes it from here.
-protocols:
-  - name: autonomOS Connect
-    schemes:
-      - autonomos

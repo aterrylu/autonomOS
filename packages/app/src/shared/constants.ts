@@ -3,15 +3,6 @@
  * No imports from electron/node/dom — must be safe to import from any context.
  */
 
-/** Custom URL scheme registered via `app.setAsDefaultProtocolClient()`.
- *  See `main/deep-links.ts` for handler implementation. */
-export const URL_SCHEME = "autonomos" as const;
-
-/** Path under `~/.autonomos/` that the autonomos-server daemon writes at
- *  startup containing `{ port, pid, version, startedAt }`. The desktop
- *  polls / watches this to discover the running daemon. */
-export const SERVER_STATE_FILENAME = "server-state.json" as const;
-
 /** Filename for the encrypted-tokens store inside `app.getPath("userData")`. */
 export const TOKENS_FILENAME = "tokens.dat" as const;
 
@@ -31,9 +22,6 @@ export const IPC = {
   LOCAL_SERVER_INSTALL: "local-server:install",
   LOCAL_SERVER_STATUS: "local-server:status",
   LOCAL_SERVER_RESTART: "local-server:restart",
-
-  // Deep links
-  DEEP_LINK_RECEIVED: "deep-link:received",
 } as const;
 
 /** Polling interval (ms) when waiting for the local server to come up
