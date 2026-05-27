@@ -150,7 +150,10 @@ export function openConnectionWindow(connectionId: string): BrowserWindow {
   const window = makeBrowserWindow();
   windowsByConnectionId.set(connectionId, window);
   window.loadFile(rendererHtmlPath(), { hash: connectionId });
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    window.show();
+    window.focus();
+  });
   window.on("closed", () => {
     windowsByConnectionId.delete(connectionId);
     endDrag(window.id);
@@ -158,6 +161,34 @@ export function openConnectionWindow(connectionId: string): BrowserWindow {
   });
   void persistOpenWindows();
   return window;
+}
+
+/** Wait for a connection window to be fully ready (renderer first frame
+ *  painted). Used by Welcome's "open then close self" handoff so the new
+ *  window is definitely visible before we close the Welcome window —
+ *  without this, on some macOS versions the new window opens behind the
+ *  closing Welcome and never surfaces. */
+export async function waitForConnectionWindowReady(
+  connectionId: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  const win = windowsByConnectionId.get(connectionId);
+  if (!win) return;
+  if (win.isVisible()) return;
+  await new Promise<void>((resolveFn) => {
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      resolveFn();
+    };
+    const onShow = (): void => settle();
+    win.once("show", onShow);
+    setTimeout(() => {
+      win.removeListener("show", onShow);
+      settle();
+    }, timeoutMs);
+  });
 }
 
 export function hasAnyWindow(): boolean {

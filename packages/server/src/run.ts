@@ -303,6 +303,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
       );
 
+      // --print-url: emit the full URL + token in one human-readable line
+      // suitable for copy-paste into the Desktop's "Add server" dialog.
+      // The Welcome flow's Add-server modal references this command.
+      if (cliArgs.printUrl) {
+        console.log(`URL: ${base}  token: ${AUTH_TOKEN}`);
+      }
+
       // ADR-029 mutual exclusion: BOTH embedded and standalone modes
       // must claim the pid file. This is the contract that prevents two
       // servers from competing for the same ~/.autonomos/ state (the PR

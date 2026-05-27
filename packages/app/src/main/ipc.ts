@@ -28,6 +28,7 @@ import {
   openConnectionWindow,
   openWelcomeWindow,
   startDrag,
+  waitForConnectionWindowReady,
 } from "./window-manager.js";
 
 /** Read ~/.autonomos/autonomos.pid (source of truth for the local daemon's
@@ -373,9 +374,18 @@ export function registerIpc(): void {
 
   // ── Window management ──────────────────────────────────────────────
 
-  ipcMain.handle("windows:open-connection", (_event, id: string): void => {
-    openConnectionWindow(id);
-  });
+  ipcMain.handle(
+    "windows:open-connection",
+    async (_event, id: string): Promise<void> => {
+      openConnectionWindow(id);
+      // Wait for the new window to actually be visible before returning,
+      // so the calling renderer (e.g. WelcomeWindow.handlePickLocal) can
+      // safely close itself without the new window getting orphaned
+      // behind the closing one. macOS-specific glitch but cheap insurance
+      // everywhere.
+      await waitForConnectionWindowReady(id);
+    },
+  );
 
   ipcMain.handle("windows:new-welcome", (): void => {
     openWelcomeWindow();

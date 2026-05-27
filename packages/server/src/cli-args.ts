@@ -4,26 +4,37 @@
 // Recognized flags:
 //   --port=N | --port N    Override the listen port (env PORT also works)
 //   --embedded             Enable embedded-mode behavior (see embedded-mode.ts)
+//   --print-url            On listen, print "URL: http://host:port  token: …"
+//                          for easy copy-paste into autonomOS Desktop
 //   --help                 Print usage and exit 0
 
 export type CliArgs = {
   port: number | undefined;
   embedded: boolean;
+  printUrl: boolean;
   help: boolean;
 };
 
 const USAGE = `Usage: autonomos-server [options]
 
 Options:
-  --port=N      Listen on port N (default: 3000, env PORT)
-  --embedded    Run as a child of a parent process (Electron desktop app).
-                Binds to 127.0.0.1 only and emits a structured readiness
-                signal on stdout: AUTONOMOS_READY port=<N>
-  --help        Print this message and exit
+  --port=N        Listen on port N (default: 3000, env PORT)
+  --embedded      Run as a child of a parent process (Electron desktop app).
+                  Binds to 127.0.0.1 only and emits a structured readiness
+                  signal on stdout: AUTONOMOS_READY port=<N>
+  --print-url     After startup, print a human-readable line:
+                  "URL: http://host:port  token: …" for easy copy-paste
+                  into autonomOS Desktop's "Add server" dialog.
+  --help          Print this message and exit
 `;
 
 export function parseCliArgs(argv: readonly string[]): CliArgs {
-  const args: CliArgs = { port: undefined, embedded: false, help: false };
+  const args: CliArgs = {
+    port: undefined,
+    embedded: false,
+    printUrl: false,
+    help: false,
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -33,6 +44,10 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     }
     if (arg === "--embedded") {
       args.embedded = true;
+      continue;
+    }
+    if (arg === "--print-url") {
+      args.printUrl = true;
       continue;
     }
     if (arg.startsWith("--port=")) {
