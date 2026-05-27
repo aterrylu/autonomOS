@@ -321,15 +321,87 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-col
 .modal {
   position: relative;
   z-index: 1;
-  background: #0f1419;
+  background: #131820;
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  padding: 24px;
+  border-radius: 14px;
+  padding: 28px;
   width: 480px;
   max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+.modal.modal-wide { width: 560px; }
+
+/* Step-by-step CLI guidance inside modals (Add server flow). */
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.step-text {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.cli-block {
+  position: relative;
+  background: #0A0D12;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-top: 2px;
+}
+.cli-block-cmd {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 12px;
+  color: var(--text-bright);
+  word-break: break-all;
+}
+.cli-block-prompt {
+  color: var(--accent);
+  user-select: none;
+  margin-right: 4px;
+}
+.cli-block-out {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.cli-block-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.cli-block-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-bright);
 }
 .modal h2 { margin: 0; color: var(--text-bright); font-size: 17px; }
 .modal .field { display: flex; flex-direction: column; gap: 6px; }

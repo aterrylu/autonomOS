@@ -34,6 +34,42 @@ function isPublicPlaintext(url: string): boolean {
   }
 }
 
+/** A copyable inline CLI block. Click → clipboard. */
+function CliBlock({
+  command,
+  out,
+}: {
+  command: string;
+  out?: string;
+}): React.ReactElement {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // No-op if clipboard blocked.
+    }
+  };
+  return (
+    <div className="cli-block">
+      <button
+        type="button"
+        className="cli-block-copy"
+        onClick={onCopy}
+        title="Copy to clipboard"
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <div className="cli-block-cmd">
+        <span className="cli-block-prompt">$</span> {command}
+      </div>
+      {out && <div className="cli-block-out">→ {out}</div>}
+    </div>
+  );
+}
+
 export function AddConnectionModal({
   prefill,
   onClose,
@@ -47,8 +83,6 @@ export function AddConnectionModal({
   const [tokenVisible, setTokenVisible] = useState(false);
   const urlInputRef = useRef<HTMLInputElement>(null);
 
-  // Esc closes; focus URL input on open (only for non-prefilled — prefilled
-  // dialogs deliberately don't auto-focus to discourage immediate Enter).
   useEffect(() => {
     if (!prefill) urlInputRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
@@ -88,20 +122,54 @@ export function AddConnectionModal({
         disabled={busy}
       />
       <div
-        className="modal"
+        className="modal modal-wide"
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
       >
-        <h2 id="modal-title">Connect to autonomOS Server</h2>
+        <h2 id="modal-title">Add a server</h2>
+        <p className="hint">
+          Connect autonomOS Desktop to a server you control. Run the commands
+          below on the machine where you want the server to live, then paste the
+          URL and token here.
+        </p>
+
         {prefill && (
-          <div className="hint">
-            Pre-filled from a deep link. Deep links should come from your
-            terminal after running <code>install.sh</code>. If a webpage opened
-            this dialog, close it and report the page.
+          <div className="hint" style={{ marginTop: 8 }}>
+            <strong>Pre-filled from a deep link.</strong> Deep links should come
+            from your terminal after pairing. If a webpage opened this dialog,
+            close it and report the page.
           </div>
         )}
+
         <form onSubmit={handleSubmit}>
+          {/* Step 1 — install the CLI */}
+          <div className="step">
+            <span className="step-num">1</span>
+            <span className="step-text">
+              Install the autonomos CLI (skip if already installed):
+            </span>
+          </div>
+          <CliBlock command="brew install autonomos" />
+
+          {/* Step 2 — start the server and grab its URL + token */}
+          <div className="step">
+            <span className="step-num">2</span>
+            <span className="step-text">
+              Start the server and get its URL + token:
+            </span>
+          </div>
+          <CliBlock
+            command="autonomos serve --print-url"
+            out="http://yourhost:3100   token: abc123…"
+          />
+
+          {/* Step 3 — paste URL + token + name */}
+          <div className="step" style={{ marginTop: 6 }}>
+            <span className="step-num">3</span>
+            <span className="step-text">Paste them here:</span>
+          </div>
+
           <div className="field">
             <label htmlFor="url">URL</label>
             <input
@@ -119,6 +187,7 @@ export function AddConnectionModal({
               http:// is added automatically if omitted. localhost works.
             </span>
           </div>
+
           {plaintextWarn && (
             <div className="warning">
               This is an unencrypted HTTP connection over the public internet.
@@ -126,6 +195,7 @@ export function AddConnectionModal({
               network.
             </div>
           )}
+
           <div className="field" style={{ marginTop: 12 }}>
             <label htmlFor="token">
               Token
@@ -141,7 +211,7 @@ export function AddConnectionModal({
             <input
               id="token"
               type={tokenVisible ? "text" : "password"}
-              placeholder="64-character bearer token from install.sh"
+              placeholder="64-character bearer token from the command above"
               value={token}
               onChange={(e) => setToken(e.target.value)}
               required
@@ -149,6 +219,7 @@ export function AddConnectionModal({
               spellCheck={false}
             />
           </div>
+
           <div className="field" style={{ marginTop: 12 }}>
             <label htmlFor="name">Name (optional)</label>
             <input
@@ -159,17 +230,19 @@ export function AddConnectionModal({
               onChange={(e) => setName(e.target.value)}
             />
           </div>
+
           {error && (
             <div className="error" style={{ marginTop: 8 }}>
               {error}
             </div>
           )}
+
           <div className="actions">
             <button type="button" onClick={onClose} disabled={busy}>
               Cancel
             </button>
             <button type="submit" className="primary" disabled={busy}>
-              {busy ? "Connecting…" : "Connect"}
+              {busy ? "Connecting…" : "Add server"}
             </button>
           </div>
         </form>

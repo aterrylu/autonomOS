@@ -115,8 +115,8 @@ export function Welcome({
           disabled={busy}
         >
           <div className="welcome-card-badge">＋</div>
-          <h2>Add server</h2>
-          <p>Paste URL + token from `install.sh` output</p>
+          <h2>Add a server</h2>
+          <p>Connect to a local or remote autonomos instance</p>
         </button>
       </div>
 
