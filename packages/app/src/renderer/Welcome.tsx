@@ -50,7 +50,7 @@ export function Welcome({
       <div className="welcome-card-badge welcome-badge-on">Always-on</div>
       <h2>This Mac</h2>
       <p>
-        Detected running daemon
+        Detected daemon
         <br />
         port {detected.port} · v{detected.version}
       </p>
@@ -67,9 +67,9 @@ export function Welcome({
       disabled={busy}
     >
       <div className="welcome-card-badge welcome-badge-built-in">Built-in</div>
-      <h2>This Mac</h2>
+      <h2>Built-in app server</h2>
       <p>
-        Run autonomOS Server inside this app.
+        Run agents inside autonomOS Desktop.
         <br />
         Agents pause when you close the app.
       </p>
