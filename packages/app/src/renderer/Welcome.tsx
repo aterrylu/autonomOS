@@ -123,7 +123,11 @@ export function Welcome({
       <p className="welcome-footer">
         Don&apos;t have a server yet? Run on any Mac or Linux box:
         <br />
-        <code>curl -fsSL https://autonomos.cloud/install.sh | sh</code>
+        <code>
+          curl -fsSL
+          https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh
+          | sh
+        </code>
       </p>
     </div>
   );
