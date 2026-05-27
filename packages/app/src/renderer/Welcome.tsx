@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import type { Connection } from "../types/connection.js";
 
 interface WelcomeProps {
+  /** Pick the detected daemon / spawn a Built-in if none. */
   onPickLocal: () => void;
+  /** User wants Built-in even though Always-on is running.
+   *  Caller must confirm + migrate. */
+  onPickBuiltInSwitch: () => void;
   onPickRemote: (id: string) => void;
   onAddRemote: () => void;
 }
@@ -11,11 +15,9 @@ type DetectResult =
   | { running: true; port: number; pid: number; version: string }
   | { running: false };
 
-/** Welcome screen — shown every launch (per UX decision: never auto-
- *  connect). Lists detected local daemon, saved remote connections,
- *  and actions to add a remote or run Built-in. */
 export function Welcome({
   onPickLocal,
+  onPickBuiltInSwitch,
   onPickRemote,
   onAddRemote,
 }: WelcomeProps): React.ReactElement {
@@ -29,14 +31,37 @@ export function Welcome({
         window.autonomos.connections.list(),
         window.autonomos.localServer.detect(),
       ]);
-      setRemotes(list.filter((c) => c.type === "remote"));
+      // Belt-and-suspenders: migration also de-dupes localhost remotes,
+      // but if any survive (e.g. user added one between launches), hide
+      // them here too — they're functionally identical to "This Mac."
+      setRemotes(
+        list.filter((c) => {
+          if (c.type !== "remote") return false;
+          try {
+            const host = new URL(c.url).hostname.toLowerCase();
+            if (
+              host === "localhost" ||
+              host === "127.0.0.1" ||
+              host === "::1" ||
+              host === "0.0.0.0"
+            ) {
+              return false;
+            }
+          } catch {
+            // Malformed URL → keep, user can see + fix it.
+          }
+          return true;
+        }),
+      );
       setDetected(det);
     })();
   }, []);
 
-  // When a daemon is detected, the "This Mac" card gets the active treatment
-  // (indigo glow) — it's the highlighted default action.
-  const localCard = detected?.running ? (
+  const isDetected = detected?.running === true;
+
+  // Primary local card — the recommended path. When Always-on is detected,
+  // it gets the indigo "active" glow and shows the daemon's metadata.
+  const primaryLocalCard = isDetected ? (
     <button
       type="button"
       className="welcome-card welcome-card-local welcome-card-active"
@@ -76,6 +101,29 @@ export function Welcome({
     </button>
   );
 
+  // Secondary "Switch to Built-in" card. Only shown when Always-on is
+  // running — gives the power user a way to opt out of persistence.
+  // Clicking opens a confirmation in WelcomeWindow (caller).
+  const switchToBuiltInCard = isDetected ? (
+    <button
+      type="button"
+      className="welcome-card"
+      onClick={() => {
+        if (busy) return;
+        onPickBuiltInSwitch();
+      }}
+      disabled={busy}
+    >
+      <div className="welcome-card-badge welcome-badge-built-in">Built-in</div>
+      <h2>Built-in app server</h2>
+      <p>
+        Switch from Always-on.
+        <br />
+        Agents will pause when you close the app.
+      </p>
+    </button>
+  ) : null;
+
   return (
     <div className="welcome">
       <div className="welcome-mark">a</div>
@@ -83,7 +131,8 @@ export function Welcome({
       <p className="tagline">Choose a server to get started</p>
 
       <div className="welcome-cards">
-        {localCard}
+        {primaryLocalCard}
+        {switchToBuiltInCard}
 
         {remotes.map((r) => (
           <button

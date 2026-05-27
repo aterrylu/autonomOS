@@ -27,6 +27,25 @@ function isValidConnection(x: unknown): x is Connection {
   );
 }
 
+/** A "remote" connection pointing at localhost / 127.0.0.1 is functionally
+ *  identical to the synthesized local connection. Early testing left
+ *  duplicates accumulating in config.json. This filter strips them on load
+ *  so the Welcome screen doesn't show stale dupes. */
+function isLocalhostRemote(c: Connection): boolean {
+  if (c.type !== "remote") return false;
+  try {
+    const host = new URL(c.url).hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host === "0.0.0.0"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function migrateConfig(raw: unknown): AppConfig {
   if (typeof raw !== "object" || raw === null) {
     return defaultAppConfig();
@@ -54,11 +73,24 @@ export function migrateConfig(raw: unknown): AppConfig {
   }
 
   const defaults = defaultAppConfig();
+  const validConnections = Array.isArray(current.connections)
+    ? current.connections.filter(isValidConnection)
+    : defaults.connections;
+  // Dedupe: drop saved "remote" connections that point at localhost — they
+  // duplicate the synthesized "This Mac" local card. Logged once at load
+  // time so users with prior config can see what got cleaned up.
+  const dedupedConnections = validConnections.filter((c) => {
+    if (isLocalhostRemote(c)) {
+      console.log(
+        `[config] removing localhost remote duplicate of This Mac: ${c.url}`,
+      );
+      return false;
+    }
+    return true;
+  });
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    connections: Array.isArray(current.connections)
-      ? current.connections.filter(isValidConnection)
-      : defaults.connections,
+    connections: dedupedConnections,
     openWindows: Array.isArray(current.openWindows)
       ? current.openWindows.filter(
           (id): id is string => typeof id === "string" && id.length > 0,
