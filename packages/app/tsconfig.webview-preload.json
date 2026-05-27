@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "target": "ES2022",
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "declaration": false,
+    "declarationMap": false,
+    "composite": false
+  },
+  "include": ["src/preload/webview.ts"],
+  "exclude": ["node_modules", "dist", "out"]
+}

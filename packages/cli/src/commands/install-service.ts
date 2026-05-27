@@ -82,6 +82,38 @@ export async function runInstallServiceCommand(
     return 2;
   }
 
+  // Refuse to install on top of a running server (ADR-029 mutual exclusion).
+  // The pid file is the source of truth — if a live owner exists, the user
+  // must stop it first before LaunchAgent takes over.
+  if (!flags.force) {
+    try {
+      const { readPidFile, isPidAlive, isPortResponsive } = await import(
+        "@autonomos/server/pid-file.js"
+      );
+      const owner = readPidFile();
+      if (
+        owner &&
+        isPidAlive(owner.pid) &&
+        (await isPortResponsive(owner.port))
+      ) {
+        console.error(
+          `Another autonomos-server is already running:\n` +
+            `  pid:     ${owner.pid}\n` +
+            `  port:    ${owner.port}\n` +
+            `  version: ${owner.version}\n\n` +
+            `If this is autonomOS Desktop's Built-in server, quit the\n` +
+            `Desktop app first, then re-run install-service.\n\n` +
+            `Otherwise stop the server with \`autonomos stop\`, then\n` +
+            `re-run install-service.\n\n` +
+            `Or use --force to install anyway (risks port collision).`,
+        );
+        return 1;
+      }
+    } catch {
+      // Best-effort — if pid-file APIs aren't available, fall through.
+    }
+  }
+
   // Refuse to install on top of a pm2-managed autonomos — would race on port
   // 3100 and confuse the user. Direct them to migrate-from-pm2 explicitly.
   if (!flags.force) {

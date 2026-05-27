@@ -748,3 +748,109 @@ query({
 **Lesson during QA — semantic mismatch on `PreCompress`:**
 Initial mapping included `PreCompress → PreCompact`, justified by upstream docs ("PreCompress fires before history summarization"). Live QA showed every Gemini turn flashing the dashboard into "compacting" status, even when no compression was happening. Reading `gemini-cli-core/services/chatCompressionService.ts` revealed that `PreCompress` fires *unconditionally* at the start of every turn as a "we're entering the compression decision tree" hook — the threshold check that decides whether to actually compress runs *after* the hook. That's structurally different from CC's `PreCompact`, which only fires when compaction is actively starting. There's also no `PostCompress` counterpart in Gemini, so we couldn't model the start/end pair anyway. Fix: drop `PreCompress` from `GEMINI_TO_CC_EVENT` and add to `INTENTIONAL_DROPS`. Generalization: for translator-based provider abstractions, **vendor docs give you event *names*; only vendor *source* gives you event *firing semantics*** — verify both before mapping.
 
+---
+
+## ADR-028: Desktop App is a Thin Client, Not a Server
+**Date:** 2026-05-18
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Claude Code session (Phase 1B.2 design — post-1B.1 PTY corruption bug)
+
+**Context:** PR #172 (Phase 1B.1) shipped a desktop app that spawned `autonomos-server` as an Electron child process. Real-world test exposed a destructive race: when both the desktop-spawned server AND the Phase 1C-installed LaunchAgent server ran simultaneously, both attached to the same `~/.autonomos/` state and the same PTY children, corrupting session state and breaking active Claude Code agents. The root cause was conflating *transport* (how UI talks to server) with *supervision* (what keeps the server alive). Investigation of the broader landscape revealed: (1) n8n Desktop was sunset in 2023 because the "bundled-server-with-GUI" model loses to either Cloud or self-hosted server in the long run — users who want background work converge on a real server; (2) Terry's actual usage is "deploy autonomos-server to forge + access via web," structurally identical to n8n self-hosted; (3) the AI/agent desktop category today is dominated by bundled-stack designs (AnythingLLM, LobeChat, Cmux) that share n8n's structural problem; (4) the database-tooling lineage (MongoDB Compass, Lens, Beekeeper Studio, Open WebUI Desktop) has a well-validated alternative — pure thin Electron client over an independently-supervised daemon — that survives users graduating from local to remote deployment.
+
+**Decision:** The autonomOS Desktop app is a **pure thin Electron client**. It does NOT embed or supervise a server in production builds. It connects to one or more `autonomos-server` daemons — each supervised independently by launchd (macOS) or systemd-user (Linux) per Phase 1C. The desktop manages a list of `Connection` records (id, name, type: local|remote, url, encrypted-token), with the local connection synthesized at runtime from `~/.autonomos/server-state.json` rather than stored in the list. Multi-connection is first-class with VS-Code-Recent-Folders-style sidebar switching. First-launch UX offers "Set up local server on this Mac" (which invokes the existing Phase 1C `autonomos install-service` from the bundled server in `extraResources/server/`) AND "Connect to existing server" (paste URL + token). A custom `autonomos://connect?url=...&token=...` URL scheme provides the magical-feel "click after install.sh prints it" bridge between server install and desktop pairing. Quitting the desktop NEVER touches any server — daemons stay running across desktop quits, reboots, and uninstalls. Auth uses bearer tokens stored via Electron `safeStorage` (Keychain on macOS, libsecret on Linux, DPAPI on Windows). PR #172 is closed unmerged because its architecture is incompatible with this design.
+
+**Rationale:**
+- **Fixes today's bug structurally.** Two servers competing for the same state cannot happen when the desktop never runs a server.
+- **Aligns with Phase 1C investment.** The LaunchAgent / systemd-user supervision shipped in #170 is the *correct* daemon supervisor; the desktop should be a client of it, not a competitor.
+- **Matches the dominant pattern in the analogous category.** MongoDB Compass, Lens, Beekeeper Studio, and Open WebUI Desktop all use this pattern. Open WebUI Desktop (LLM-tool space) is a near-perfect precedent.
+- **Decouples lifecycles correctly for an agent platform.** Agents must run while the user is asleep. This means server-supervision belongs to the OS init system, not to a GUI session. VS Code Remote-SSH does the opposite (vscode-server dies with the editor session) because editors have no work to do without the user — agents do.
+- **Multi-connection is the right primitive.** Terry uses both forge (remote) and may use a local Mac server. The desktop being able to hold both, like VS Code holding multiple workspaces, is the survival pattern.
+- **`autonomos://` deep links bridge the "two products" feel without coupling.** install.sh prints the URL, user clicks it, the OS launches the desktop with the URL as argv. ~30 LOC of code, zero coupling between server and desktop releases.
+
+**Alternatives considered:**
+- **Sandbox the desktop app to a separate state dir** (Option A from the design discussion). Fast (~30 min fix), but splits Terry's world — agents on forge wouldn't appear in the local desktop view. Rejected because the value proposition of autonomOS is a *unified* command center across deployments.
+- **Shared state + lockfile mediation** (Option B). Conceptually clean but unprecedented in the macOS app landscape — no production GUI+daemon app on macOS uses this pattern. Specifically dies on PTY ownership (node-pty FDs can't be handed off across processes), making the lockfile only advisory and the bug always-possible if one process misbehaves.
+- **Bundled daemon with adoption logic** (Option D, an earlier draft). Cleaner than B but still has the desktop responsible for daemon lifecycle in some scenarios. Open WebUI Desktop researched this approach and found it more brittle than pure client mode. Discarded in favor of full Option E.
+- **Pure-SaaS thin client (no local mode)** (Option C-strict). Cleanest for forge users, but excludes anyone trying autonomOS without a server first. The n8n autopsy shows those users churn, BUT the addition of bundled `install-service` makes the friction trivial — a single click in the Welcome flow. So we keep the local-server option without inheriting the n8n trap.
+- **SSH-based remote install from the desktop.** Considered: have the desktop SSH to a remote box and run install.sh there. Rejected: massive scope creep (SSH credentials in the app, sudo prompt handling, distro detection), no reference app does this, and `curl install.sh | sh` + paste-URL+token is already 30 seconds.
+
+**Implications:**
+- **PR #172 closed unmerged.** Branch `terry/phase-1b1-electron-shell` can be deleted. Salvageable bits (electron-builder.yml, entitlements, smoke-test harness) carried forward into Phase 1B.2 branch via fresh writes.
+- **Phase 1B.4 (electron-updater) becomes simpler.** Desktop and server upgrade independently — `autonomos upgrade` updates the daemon, electron-updater updates the desktop, neither blocks the other.
+- **No tray/menubar mode in 1B.2.** Out of scope; reconsidered if user demand surfaces.
+- **Zero server-side changes required.** Original draft of this ADR claimed a "~10 LOC server-side addition" to write a `server-state.json` file. Audit (a7e63bbfa230a898f) caught that `packages/server/src/pid-file.ts` already writes the identical schema (`{pid, port, version, startedAt}`) to `~/.autonomos/autonomos.pid` at every daemon boot. The desktop reads from there. The 1B.2 PR ships purely client-side.
+
+**Post-design audit corrections (2026-05-18):**
+- **Deep links MUST gate on explicit user gesture, not pre-fill-then-Enter.** A malicious webpage can fire `window.location = "autonomos://connect?url=evil.com&token=stolen"`; macOS routes the URL to autonomOS.app with no browser confirmation dialog. The Add Connection modal opened from a deep link MUST require an explicit "Connect" click; default focus must not be on the submit button. HTTP non-loopback URLs show a red warning banner. Deep-linked connections never auto-become `defaultConnectionId`. Helper text in the Welcome screen explicitly tells users where deep links come from (terminal output, NOT webpages).
+- **Token validation uses an authenticated endpoint.** Earlier draft used `GET /api/host`, which is auth-bypassed (liveness probe). Replaced with `GET /api/system/version` which requires `Authorization: Bearer ${token}` and returns `{version, platform, arch}` — a 200 confirms reachability AND token validity in one call.
+- **Per-connection isolation uses `BrowserWindow` (or `WebContentsView`), not the deprecated `<webview>` tag.** Cookies set via `session.fromPartition(\`persist:connection-${id}\`).cookies.set(...)`, NOT `session.defaultSession` (which would leak across connections). Open WebUI Desktop's actual code uses `BrowserWindow`, despite an earlier misread of their pattern.
+- **Single-instance lock is a top-level requirement**, not just a deep-link feature. Acquired in `bootstrap()` before any window creation or config touch. Without it, two desktop processes pointing at the same `tokens.dat` / `config.json` torn-write — the Promise-chain lock in `store.ts` is process-local.
+- **`tokens.dat` is written with mode `0o600` and its parent dir with `0o700`.** Consistent with the rest of autonomOS, which enforces this on every token-bearing file (`auth.ts`, `settings.ts`, `schedules.ts`, `templates.ts`, `scheduler.ts`).
+
+**Design doc:** `docs/research/desktop-as-thin-client.md`
+
+---
+
+## ADR-029: Desktop Embeds Built-in Server (Reverses Part of ADR-028)
+**Date:** 2026-05-25
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Claude Code session (Phase 1B.2 testing — discovered after the thin-client architecture was working end-to-end)
+
+**Context:** Phase 1B.2 shipped the pure thin-client architecture per ADR-028: Desktop never runs a server, always connects to a daemon supervised by launchd/systemd-user (or a remote server). Worked correctly — drag, multi-window, clean quit-cleanup, all functioning. Then Terry pushed back on the UX: requiring a separate `curl install.sh | sh` step before the Desktop is usable is a substantial friction barrier for new users. Comparable apps that ship Built-in functionality (Docker Desktop, OrbStack, Postgres.app — Built-in everything; the GUI is the runtime) achieve a "open the app, it just works" experience that pure thin-client architectures cannot. The pure-thin-client design from ADR-028 is *correct* for forge-style deployments but *wrong* for a new-user-first-launch UX. We need both: zero-friction Built-in mode for new/casual users, AND the existing thin-client mode for users who already have a daemon or want to connect to a remote server.
+
+The original PR #172 / Phase 1B.1 attempt at an embedded server failed because of a destructive PTY corruption race: two servers (the embedded child AND a separately-installed LaunchAgent daemon) attached to the same `~/.autonomos/` state simultaneously. ADR-028 over-corrected by banning embedded mode entirely. ADR-029 reintroduces embedded mode WITH a mutual-exclusion contract that prevents the original race.
+
+**Decision:** The autonomOS Desktop app supports **two modes**, mutually exclusive on any single Mac for any single `AUTONOMOS_CONFIG_DIR`:
+
+1. **Built-in:** The Desktop spawns `autonomos-server` as an Electron child process at app launch. The server lives + dies with the Desktop process. Agents pause when the Desktop quits (state persists on disk; resumed next launch via `claude --resume` per the L1 persistence model from Phase 1A.1 design notes). This is the **default** mode at first launch for a user with no existing daemon.
+
+2. **Server:** The Desktop is a pure thin client over an `autonomos-server` reachable at a URL+token. The server may be a launchd/systemd-user daemon on this Mac (set up via `autonomos install-service`) OR a remote server (forge, VPS). From the Desktop's perspective these are **the same mode** — both are "connect to a URL." The distinction "local persistent vs remote" exists only in the install flow (where the user runs `curl install.sh`) and the UI label (e.g. "This Mac (Always-on)" vs "forge"). Internally a `Connection` is `{ id, name, url, token }` regardless of where the URL points.
+
+**Mutual exclusion contract** (the fix for the PR #172 PTY race):
+
+- The pid file at `~/.autonomos/autonomos.pid` (already shipping from `packages/server/src/pid-file.ts`) is the single source of truth for "is there an owner of this config dir?" Format: `{ pid, port, version, startedAt }`.
+- Any process that wants to start a server (Desktop Built-in, `autonomos start` CLI, LaunchAgent) must atomically claim the pid file. If a live owner exists (pid alive via `process.kill(pid, 0)` AND port responsive on `/api/system/version`), the new process MUST NOT start its own server. Instead:
+  - Desktop in Built-in mode → switches to thin-client mode, connects to the existing server at `localhost:<that-port>`.
+  - `autonomos install-service` → refuses with a clear error message instructing the user to quit the Desktop first.
+- Stale pid file (pid dead OR port unresponsive) → cleaned up and overwritten.
+- On clean shutdown, the owning process removes its pid file.
+
+**Migration paths between modes** (in-app, no Terminal required):
+
+- **Built-in → Server (persistent local):** Settings panel toggle *"Keep autonomOS running in the background"* → ON. Triggers in-process `autonomos install-service` invocation, which sets up the LaunchAgent / systemd-user service. The Built-in server child is gracefully shut down; the LaunchAgent picks up the same `~/.autonomos/` state. Desktop reconnects as a thin client to the new daemon. Progress is shown via an in-app dialog (no Terminal output).
+- **Server (persistent local) → Built-in:** Same toggle → OFF. Uninstalls the LaunchAgent via in-process `autonomos uninstall-service`. Desktop spawns a Built-in server on its next agent-needing action.
+- **Quit-time prompt:** when in Built-in mode and quitting with running agents, a non-modal banner offers: *"Make autonomOS Server always-on"* (one-click migration to persistent mode) or *"Quit anyway"*. Power-user graceful path without requiring Settings panel discovery.
+
+**UI vocabulary** (no engineering jargon exposed to users):
+- "Built-in" = embedded mode (Desktop owns the server's lifecycle).
+- "Always-on" or "Persistent" = LaunchAgent/systemd-user mode.
+- "Remote" = HTTP connection to another machine.
+- Never expose "daemon", "launchd", "embedded", or "thin client" in UI copy.
+
+**First-launch UX:** zero-friction. No Welcome screen for a brand-new user. The Desktop boots into a brief splash ("Starting autonomOS…", ~1-2s while the Built-in server comes up), then the dashboard appears. The Welcome screen is now reserved for "Add another Server" flows from the Connection sidebar.
+
+**Connection sidebar:** retained from ADR-028's design. Even with Built-in being the dominant path, power users with multiple servers (this Mac + forge) appreciate the multi-window switching. Collapsed by default when only one connection exists. "This Mac" is always pinned at the top with a subtitle indicating its mode ("Built-in" or "Always-on").
+
+**Rationale:**
+- **Fixes the ADR-028 UX friction without re-introducing the PR #172 bug.** The mutual-exclusion contract (atomic pid-file claim + liveness check) structurally prevents two servers from ever competing for the same `~/.autonomos/` state. The bug was caused by ADR-028's predecessor lacking this contract, not by embedded mode itself.
+- **Matches Docker Desktop, OrbStack, Postgres.app.** Those apps own everything in-process for casual users AND offer an "always-on" upgrade path for power users. Their users describe this as "magic." Our Phase 1B.2 thin-client requirement is comparatively friction-heavy.
+- **Preserves the thin-client model for everyone who already wants it.** Forge users, anyone with an existing LaunchAgent, anyone connecting to a remote server — these flows are unchanged. ADR-029 is **additive**, not a replacement.
+- **Persistent-local and remote collapsing into one "Server" mode is architecturally clean.** Both are `{ url, token }`. The Desktop's connection-handling code path is one path, not two.
+- **The quit-time "Make always-on" prompt is a Trojan horse for the right behavior.** Users who run agents long enough to hit the "agents will pause" warning are exactly the users who benefit from persistent mode. The UI catches them at the right moment.
+
+**Alternatives considered:**
+- **Three modes (Built-in, persistent-local, remote).** Initially proposed; collapsed into two when Terry observed that persistent-local and remote are architecturally identical from the Desktop's perspective.
+- **Stick with pure thin-client (ADR-028).** Rejected because the first-launch friction is a genuine product-experience problem. n8n Desktop was sunset partly because casual users couldn't get started fast enough — ADR-028's predecessor was making the same mistake.
+- **Two modes with totally separate UI surfaces.** Considered: "Local mode" tab vs "Connections" tab. Rejected because users don't think in modes; they think in "where is my work running." Unifying persistent-local and remote into one "Server" concept is the user-facing simplification.
+- **Built-in default + "install-service" as the only persistence path (no in-app toggle).** Rejected: discoverability is poor. The Settings toggle + quit-time prompt are the affordances that surface the persistence option to users who'd benefit.
+
+**Implications:**
+- **Phase 1B.2's thin-client code stays.** It IS the implementation of the "Server" mode. Built-in mode adds a new code path; remote mode is unchanged.
+- **The webview drag, multi-window, quit-cleanup work from Phase 1B.2 all carries forward.** No rework of those pieces.
+- **PR #172's salvageable code re-enters circulation.** The `server-supervisor.ts` from that PR (which spawned the embedded server) is the seed of the new Built-in implementation, but rewritten with the mutual-exclusion contract.
+- **Server-side change required.** `packages/server/src/pid-file.ts` already writes the schema; we need to add an atomic-claim helper using `open(O_CREAT | O_EXCL)` (or equivalent) so two processes racing to claim the pid file can't both win. ~30 LOC.
+- **CLI changes required.** `autonomos install-service` and `autonomos start` must check the pid file and refuse with a helpful error if the Desktop already owns the config dir.
+- **Pure-thin-client ADR-028 is partially superseded.** ADR-028 said "Desktop never embeds." ADR-029 says "Desktop CAN embed, under a mutual-exclusion contract." The other ADR-028 elements (multi-window, cookie auth, deep links, audit fixes, etc.) all remain in force.
+
+**Design doc:** `docs/research/desktop-embedded-server.md`
+
