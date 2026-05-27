@@ -102,7 +102,17 @@ export async function migrateToAlwaysOn(): Promise<MigrateResult> {
   return runCli(["install-service"]);
 }
 
-/** Always-on → Built-in. */
+/** Always-on → Built-in. Mirrors migrateToAlwaysOn's cache-invalidation
+ *  discipline: clears the cached `activeServer` so the next
+ *  acquireOrConnect() picks up the new (no-daemon) state instead of
+ *  reusing the stale AlwaysOnServer reference pointing at a now-dead pid. */
 export async function migrateToBuiltIn(): Promise<MigrateResult> {
-  return runCli(["uninstall-service"]);
+  const result = await runCli(["uninstall-service"]);
+  if (result.ok) {
+    detachActiveServer();
+    // Brief delay so launchctl's bootout / process teardown completes
+    // before the next acquireOrConnect() runs.
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return result;
 }

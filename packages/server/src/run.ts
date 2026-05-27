@@ -313,14 +313,23 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // ADR-029 mutual exclusion: BOTH embedded and standalone modes
       // must claim the pid file. This is the contract that prevents two
       // servers from competing for the same ~/.autonomos/ state (the PR
-      // #172 bug). The pid file's port field also lets the Desktop / CLI
-      // discover and connect to an existing owner.
+      // #172 bug).
+      //
+      // CRITICAL ordering: gateway init, resumeActiveAgents, and
+      // initScheduler MUST run inside the "acquired" branch only. The
+      // earlier version fired acquireOwnership without awaiting + ran
+      // those side-effect inits synchronously below, which meant the
+      // "already-running" branch could win the file check AFTER PTYs
+      // had already been respawned into the legitimate owner's state.
+      // That's the PR #172 PTY-corruption bug, narrower timing window.
       acquireOwnership(process.pid, actualPort, getServerVersion())
         .then((result) => {
           if (result.status === "already-running") {
             // Another server already owns this config dir. Close our
             // socket (we already bound a port we won't use) and exit
             // gracefully with a message the caller can parse.
+            // We DID NOT spawn PTYs or arm timers yet — those live in
+            // the "acquired" branch below.
             console.warn(
               `[startup] Another autonomos-server is already running ` +
                 `(pid ${result.owner.pid}, port ${result.owner.port}, ` +
@@ -340,10 +349,29 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           }
 
           // We are the owner. Emit the readiness signal (embedded mode)
-          // or just log (standalone mode).
+          // or just log (standalone mode), then arm the destructive
+          // inits.
           if (cliArgs.embedded) {
             announceEmbeddedReady(actualPort);
           }
+
+          // Initialize gateway (platform adapters, routing table).
+          import("./gateway/index.js").then(({ initGateway }) => {
+            initGateway().catch((err) =>
+              console.error("[gateway] init failed:", err),
+            );
+          });
+
+          // Auto-resume agents whose persisted status is "running" — handles
+          // all failure modes (cwd missing, provider gone, etc) by marking
+          // the failed ones exited/crashed so they don't zombie. Spawns
+          // PTYs into ~/.autonomos/ — must NOT run if we lost the claim.
+          resumeActiveAgents();
+
+          // Start scheduler AFTER agents are up so agent:<name> targets
+          // resolve. Arms timers that write into ~/.autonomos/ — must NOT
+          // run if we lost the claim.
+          initScheduler();
         })
         .catch((err) => {
           console.warn(
@@ -356,22 +384,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           if (cliArgs.embedded) {
             announceEmbeddedReady(actualPort);
           }
+          // Acquisition failed but we're proceeding — arm the inits as
+          // we would in the "acquired" branch. This preserves the prior
+          // behavior of "graceful degradation" when the lock can't be
+          // acquired for some unrelated reason (filesystem error, etc).
+          import("./gateway/index.js").then(({ initGateway }) => {
+            initGateway().catch((gwErr) =>
+              console.error("[gateway] init failed:", gwErr),
+            );
+          });
+          resumeActiveAgents();
+          initScheduler();
         });
-
-      // Initialize gateway (platform adapters, routing table)
-      import("./gateway/index.js").then(({ initGateway }) => {
-        initGateway().catch((err) =>
-          console.error("[gateway] init failed:", err),
-        );
-      });
-
-      // Auto-resume agents whose persisted status is "running" — handles all
-      // failure modes (cwd missing, provider gone, etc) by marking the failed
-      // ones exited/crashed so they don't zombie.
-      resumeActiveAgents();
-
-      // Start scheduler AFTER agents are up so agent:<name> targets resolve
-      initScheduler();
     },
   );
 
