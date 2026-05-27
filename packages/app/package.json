@@ -1,6 +1,6 @@
 {
   "name": "@autonomos/app",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "autonomOS Desktop — thin Electron client over autonomos-server daemons",
   "main": "dist/main/main.js",
