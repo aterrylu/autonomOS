@@ -59,6 +59,13 @@ rm -rf resources/server/*
 cp -R "${SERVER_DIST}/." resources/server/
 echo "[build-dmg] Staged server bundle from ${SERVER_DIST}"
 
+# Bundle Node binary so brand-new Macs without Node installed can run
+# Built-in mode. ~50MB compressed; ~110MB on disk.
+if [ ! -f resources/node/bin/node ]; then
+  echo "[build-dmg] Node binary not bundled yet; running bundle-node.sh"
+  bash scripts/bundle-node.sh
+fi
+
 bun run build:dmg
 
 # electron-builder produces autonomOS-<version>-arm64.dmg by default —

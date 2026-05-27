@@ -32,14 +32,16 @@ files:
   - "node_modules/**/*"
   - "!node_modules/**/{*.md,*.markdown,LICENSE,license,COPYING,changelog,CHANGELOG*}"
 
-# ADR-029 — the bundled autonomos-server lives in Resources/server/ inside
-# the .app. The Desktop's server-supervisor spawns it at launch (Built-in
-# mode) or, for "Always-on" migration, invokes its install-service CLI
-# subcommand. Staged into packages/app/resources/server by the build-dmg.sh
-# pre-step.
+# ADR-029 — bundled autonomos-server + Node runtime live in Resources/
+# inside the .app. The Desktop's server-supervisor spawns the bundled
+# server with the bundled Node binary so brand-new Macs without Node
+# installed can run Built-in mode. Both staged by scripts/build-dmg.sh.
 extraResources:
   - from: "resources/server"
     to: "server"
+    filter: ["**/*"]
+  - from: "resources/node"
+    to: "node"
     filter: ["**/*"]
 
 mac:

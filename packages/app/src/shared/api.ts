@@ -42,6 +42,15 @@ export interface AutonomosAPI {
       port: number;
       version: string;
     } | null>;
+    /** Detect whether a daemon is already running on this Mac WITHOUT
+     *  claiming it. Used by the Welcome screen. */
+    detect(): Promise<
+      | { running: true; port: number; pid: number; version: string }
+      | { running: false }
+    >;
+    /** Acquire the local server (Built-in spawn if no owner, else connect
+     *  to existing daemon). Called when user picks "This Mac" in Welcome. */
+    acquire(): Promise<{ ok: boolean; message?: string }>;
     /** Built-in → Always-on (installs LaunchAgent / systemd-user). */
     migrateToAlwaysOn(): Promise<{ ok: boolean; message: string }>;
     /** Always-on → Built-in (uninstalls LaunchAgent). */

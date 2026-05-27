@@ -57,21 +57,16 @@ function bootstrap(): void {
       registerIpc();
       await buildMenu();
 
-      // Show splash immediately for snappy feedback while the server boots.
-      openSplashWindow();
-
-      // Kick off Built-in / Always-on detection. Doesn't block UI thread.
-      try {
-        await acquireOrConnect();
-      } catch (err) {
-        console.error("[main] Server acquire failed:", err);
-        // If server can't start, still show Welcome so user can add a
-        // remote connection.
-      }
-
-      // Restore last-open windows (or open the local "This Mac" window).
-      await restoreOpenWindows();
-      closeSplash();
+      // Welcome-every-launch (per user UX decision): show the picker
+      // every time the app opens. The Welcome window itself can DETECT
+      // an existing daemon and surface it as a one-click option, but
+      // we don't auto-connect — the user explicitly picks.
+      //
+      // No splash window here — the Welcome window IS the first thing
+      // the user sees, so the splash would just flash briefly and feel
+      // janky. We removed it from the launch flow; Welcome opens fast
+      // enough that an interstitial isn't needed.
+      openWelcomeWindow();
     })
     .catch((err) => {
       console.error("[main] Bootstrap failed:", err);
@@ -79,7 +74,7 @@ function bootstrap(): void {
     });
 
   app.on("activate", () => {
-    if (!hasAnyWindow()) openConnectionWindow("local");
+    if (!hasAnyWindow()) openWelcomeWindow();
   });
 
   app.on("window-all-closed", () => {

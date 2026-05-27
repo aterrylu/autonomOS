@@ -116,10 +116,20 @@ export function getActiveServer(): LocalServer | null {
   return activeServer;
 }
 
-/** Locate a Node binary on the host. Electron's bundled Node cannot load
- *  node-pty's prebuilt .node files (ABI quirks), so we run the server with
- *  the user's system node. Phase 1B.5 will bundle Node inside the .app. */
+/** Locate a Node binary. Prefers the bundled binary in Resources/node/bin/node
+ *  (shipped via bundle-node.sh in the DMG build). Falls back to system node
+ *  for dev mode or if the bundled binary is missing.
+ *
+ *  Electron's own bundled Node cannot load node-pty's prebuilt .node files
+ *  (ABI quirks), so we MUST spawn the server with a real Node binary. */
 function findNodeBinary(): string {
+  // First: the bundled Node shipped inside the .app.
+  const bundled = app.isPackaged
+    ? resolve(process.resourcesPath, "node/bin/node")
+    : resolve(__dirname, "../../resources/node/bin/node");
+  if (existsSync(bundled)) return bundled;
+
+  // Fallback: system node (dev mode, or pre-bundled-node DMGs).
   const which = spawnSync("which", ["node"], { encoding: "utf-8" });
   if (which.status === 0 && which.stdout.trim()) return which.stdout.trim();
   const candidates = [
@@ -132,7 +142,8 @@ function findNodeBinary(): string {
     if (existsSync(path)) return path;
   }
   throw new Error(
-    "node binary not found. Install Node 22+ or use Always-on mode.",
+    "node binary not found. The bundled Node should be in Resources/node/. " +
+      "If running in dev mode, install Node 22+ on your PATH.",
   );
 }
 

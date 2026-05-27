@@ -8,6 +8,7 @@ packages/server/src/_embedded_dashboard/
 # Phase 1B.2: electron-builder output + bundled server staging
 packages/app/out/
 packages/app/resources/server/
+packages/app/resources/node/
 packages/app/dist/
 .env
 .env.local
