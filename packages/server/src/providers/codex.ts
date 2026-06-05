@@ -15,6 +15,7 @@
  */
 
 import type { AgentProvider, ResolvedSpawnOptions } from "@autonomos/core";
+import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -83,12 +84,15 @@ export const codexProvider: AgentProvider = {
         `mcp_servers.autonomos.env.AUTONOMOS_CAPABILITIES=${JSON.stringify(options.capabilities.join(","))}`,
       );
 
-      if (process.env.AUTONOMOS_TOKEN) {
-        args.push(
-          "-c",
-          `mcp_servers.autonomos.env.AUTONOMOS_TOKEN=${JSON.stringify(process.env.AUTONOMOS_TOKEN)}`,
-        );
-      }
+      // Forward the in-process auth token (set at server boot from
+      // resolveAuthToken(), which falls back to ~/.autonomos/token on disk).
+      // Reading from `process.env.AUTONOMOS_TOKEN` would be undefined when the
+      // server booted without that env var set, leaving the channel server
+      // tokenless and rejected by /ws/* auth.
+      args.push(
+        "-c",
+        `mcp_servers.autonomos.env.AUTONOMOS_TOKEN=${JSON.stringify(getAuthToken())}`,
+      );
     }
 
     // User prompt (positional arg for interactive mode)

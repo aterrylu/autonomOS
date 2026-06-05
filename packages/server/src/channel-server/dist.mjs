@@ -84,9 +84,12 @@ var TOOL_KILL_AGENT = {
       agent: {
         type: "string",
         description: "Agent name or session ID to terminate"
+      },
+      name: {
+        type: "string",
+        description: "Alias for 'agent' \u2014 agent name or session ID to terminate"
       }
-    },
-    required: ["agent"]
+    }
   }
 };
 var TOOL_SEND = {
@@ -117,12 +120,15 @@ var TOOL_SET_MANAGER = {
         type: "string",
         description: "Agent name (e.g. 'Dashboard@autonomOS')"
       },
+      name: {
+        type: "string",
+        description: "Alias for 'agent' \u2014 agent name (e.g. 'Dashboard@autonomOS')"
+      },
       manager: {
         type: "string",
         description: "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager."
       }
-    },
-    required: ["agent"]
+    }
   }
 };
 var TOOL_GET_ORG_CHART = {
@@ -569,6 +575,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       const { to, message } = args;
+      if (!to || !message) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing required parameter(s). Usage: send(to: "agent://name", message: "your message")`
+            }
+          ],
+          isError: true
+        };
+      }
       const requestId = crypto.randomUUID();
       const wsMsg = {
         type: "send",
@@ -637,14 +654,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         );
       }
       try {
-        return await serverFetch("/api/sessions", {
+        return await serverFetch("/api/agents", {
           method: "POST",
           body: JSON.stringify({
             workingDirectory,
             name: agentName,
             prompt,
-            resumeSessionId,
-            forkFrom,
+            resumeAgentId: resumeSessionId,
+            forkFromAgentId: forkFrom,
             autonomousMode: autonomousMode ?? true,
             appendSystemPrompt: systemPrompt,
             template,
@@ -665,15 +682,27 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
     case "kill_agent": {
-      const { agent } = args;
+      const { agent, name: nameAlias } = args;
+      const target = agent || nameAlias;
+      if (!target) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing parameter: provide 'agent' or 'name'. Usage: kill_agent(agent: "AgentName")`
+            }
+          ],
+          isError: true
+        };
+      }
       try {
         const result = await serverFetch(
-          `/api/sessions/${encodeURIComponent(agent)}`,
-          { method: "DELETE" }
+          `/api/agents/${encodeURIComponent(target)}/kill`,
+          { method: "POST" }
         );
         if (result.isError) return result;
         return {
-          content: [{ type: "text", text: `Agent "${agent}" terminated.` }]
+          content: [{ type: "text", text: `Agent "${target}" terminated.` }]
         };
       } catch (err) {
         return {
@@ -688,16 +717,35 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
     case "set_manager": {
-      const { agent, manager } = args;
-      return serverFetch("/api/org/manager", {
-        method: "PUT",
-        body: JSON.stringify({ agent, manager: manager ?? null })
-      });
+      const {
+        agent,
+        name: nameAlias,
+        manager
+      } = args;
+      const setTarget = agent || nameAlias;
+      if (!setTarget) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Missing parameter: provide 'agent' or 'name'. Usage: set_manager(agent: "AgentName", manager: "ManagerName")`
+            }
+          ],
+          isError: true
+        };
+      }
+      return serverFetch(
+        `/api/agents/${encodeURIComponent(setTarget)}/manager`,
+        {
+          method: "POST",
+          body: JSON.stringify({ manager: manager ?? null })
+        }
+      );
     }
     case "get_org_chart": {
       const { includeExited } = args;
       const qs = includeExited ? "?includeExited=true" : "";
-      return serverFetch(`/api/org${qs}`);
+      return serverFetch(`/api/agents/tree${qs}`);
     }
     case "create_template": {
       return serverFetch("/api/templates", {
@@ -709,7 +757,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return serverFetch("/api/templates");
     }
     case "self_exit": {
-      serverFetch(`/api/sessions/${encodeURIComponent(SESSION_ID)}`, {
+      serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID)}`, {
         method: "DELETE"
       }).catch((err) => {
         process.stderr.write(

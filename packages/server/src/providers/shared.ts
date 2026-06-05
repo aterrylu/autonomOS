@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
+import { getServerPort } from "../serverState.js";
 
 // ── Base context injected into every spawned agent session ────
 export const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
@@ -136,8 +137,7 @@ export function buildBaseEnv(
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
-  const port = process.env.PORT || "3000";
-  env.AUTONOMOS_SERVER = `http://localhost:${port}`;
+  env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
 

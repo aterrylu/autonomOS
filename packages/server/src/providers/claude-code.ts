@@ -9,6 +9,7 @@ import type {
   PtyHandle,
   ResolvedSpawnOptions,
 } from "@autonomos/core";
+import { getAuthToken } from "../serverState.js";
 import { getInboxAgent, getSettings } from "../settings.js";
 import {
   buildBaseEnv,
@@ -171,9 +172,14 @@ export const claudeCodeProvider: AgentProvider = {
                 AUTONOMOS_SESSION_ID: options.sessionId,
                 AUTONOMOS_AGENT_NAME: options.agentName,
                 AUTONOMOS_CAPABILITIES: options.capabilities.join(","),
-                ...(process.env.AUTONOMOS_TOKEN && {
-                  AUTONOMOS_TOKEN: process.env.AUTONOMOS_TOKEN,
-                }),
+                // Forward the in-process auth token (from serverState, set at
+                // server boot in run.ts) rather than `process.env.AUTONOMOS_TOKEN`.
+                // resolveAuthToken() falls back to ~/.autonomos/token on disk,
+                // so when the server boots without the env var set, the token
+                // lives only in module state — `process.env.AUTONOMOS_TOKEN`
+                // would be undefined and the channel server would be rejected
+                // by the gateway's /ws/* auth.
+                AUTONOMOS_TOKEN: getAuthToken(),
               },
             },
           },
