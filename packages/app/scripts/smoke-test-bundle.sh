@@ -54,6 +54,30 @@ for native in "${SERVER_DIR_ABS}"/*.node; do
   echo "[smoke-test] ✓ $(basename "${native}") loads under bundled Node"
 done
 
+# Universal-binary slice check. When SMOKE_EXPECT_UNIVERSAL=1 (the release CI
+# building the universal2 DMG), every bundled native module AND the bundled
+# Node binary MUST contain BOTH x86_64 and arm64 slices — otherwise the DMG
+# would ship broken on one architecture and an arm64-only load check (above)
+# would not catch it. Running the x64 slice for real needs Rosetta (absent on
+# arm64 CI runners); the release workflow's x64-runner job covers native
+# execution. Here we statically assert the slices are present.
+if [ "${SMOKE_EXPECT_UNIVERSAL:-0}" = "1" ]; then
+  check_universal() {
+    local f="$1"
+    local arches
+    arches="$(lipo -info "${f}" 2>/dev/null | sed 's/.*: //')"
+    if ! echo "${arches}" | grep -q "x86_64" || ! echo "${arches}" | grep -q "arm64"; then
+      echo "[smoke-test] FAIL: ${f} is not universal — slices: '${arches}'"
+      exit 1
+    fi
+    echo "[smoke-test] ✓ universal ($(echo "${arches}" | tr -s ' ')): $(basename "${f}")"
+  }
+  check_universal "${NODE_BIN}"
+  for native in "${SERVER_DIR_ABS}"/*.node; do
+    [ -f "${native}" ] && check_universal "${native}"
+  done
+fi
+
 # Boot the server in an isolated config dir on an ephemeral port. Token
 # is set explicitly so we can validate auth-protected endpoints.
 SMOKE_DIR=$(mktemp -d "/tmp/autonomos-smoke-XXXXXX")

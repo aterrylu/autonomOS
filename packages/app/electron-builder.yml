@@ -23,6 +23,15 @@ appId: cloud.terrylu.autonomos
 productName: autonomOS
 copyright: Copyright © 2026 Terry Lu
 
+# Auto-update feed — electron-updater reads latest-mac.yml + the .zip + .blockmap
+# from the GitHub Release. Setting publish here makes electron-builder GENERATE
+# those feed files at build time even when invoked with `--publish never` (the
+# release CI uploads them itself). Wired for electron-updater in PR #5.
+publish:
+  provider: github
+  owner: aterrylu
+  repo: autonomOS
+
 directories:
   output: out
   buildResources: build-resources
@@ -47,11 +56,21 @@ extraResources:
 mac:
   category: public.app-category.developer-tools
   icon: build-resources/icon.icns
+  # universal2 — a single artifact runs on both Apple Silicon and Intel. The
+  # bundled Node + native modules (extraResources) are lipo'd into universal
+  # binaries by scripts/bundle-node.sh + stage-universal-server.sh before this
+  # runs. The .zip target is REQUIRED by electron-updater (Squirrel.Mac updates
+  # from the zip, not the dmg); .blockmap files (auto-generated) enable delta
+  # downloads.
   target:
     - target: dmg
       arch:
-        - arm64
-        - x64
+        - universal
+    - target: zip
+      arch:
+        - universal
+  # identity/notarize stay off here — PR #4 flips both on with the Apple cert +
+  # App Store Connect API key. Until then the DMG is unsigned (Gatekeeper warns).
   identity: null
   hardenedRuntime: true
   gatekeeperAssess: false

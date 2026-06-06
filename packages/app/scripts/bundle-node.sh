@@ -5,7 +5,16 @@
 # server flow — no `brew install node` required.
 #
 # Outputs:
-#   resources/node/bin/node     (~50MB stripped binary)
+#   resources/node/bin/node     (host arch by default; universal2 when
+#                                BUNDLE_NODE_UNIVERSAL=1 on macOS)
+#
+# Modes:
+#   (default)                  Bundle the host arch only — fast, for local dev.
+#   BUNDLE_NODE_UNIVERSAL=1    macOS only: fetch BOTH darwin-arm64 + darwin-x64
+#                              and `lipo` them into one universal2 binary. The
+#                              release CI uses this so a single DMG runs on both
+#                              Apple Silicon and Intel. (Proven viable — a fat
+#                              .node/binary loads under both arches.)
 #
 # At runtime, server-supervisor.ts prefers this bundled node over the user's
 # PATH, so we don't depend on whatever shell they have configured.
@@ -14,58 +23,72 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."  # → packages/app/
 
-# MUST match the NODE_MODULE_VERSION (ABI) that the bundled `pty.node` (in
-# packages/server/dist/.../) was compiled against. The Bun build pulls
-# node-pty's prebuilt binary from npm matching the build machine's Node
-# major version. Today that's Node 25 → ABI 141. Bumping this requires
-# a coordinated rebuild of the server bundle.
+# MUST match the NODE_MODULE_VERSION (ABI) the bundled native modules (pty.node,
+# impit.node) were compiled against. The Bun build pulls node-pty's prebuilt
+# binary matching the build machine's Node major. Today that's Node 25 → ABI
+# 141. Bumping this requires a coordinated rebuild of the server bundle.
 NODE_VERSION="v25.9.0"
-ARCH="$(uname -m)"
-case "${ARCH}" in
-  arm64|aarch64) NODE_ARCH="arm64" ;;
-  x86_64) NODE_ARCH="x64" ;;
-  *) echo "[bundle-node] error: unsupported arch ${ARCH}"; exit 1 ;;
-esac
-
-OS="$(uname -s | tr 'A-Z' 'a-z')"
-case "${OS}" in
-  darwin) NODE_OS="darwin" ;;
-  linux) NODE_OS="linux" ;;
-  *) echo "[bundle-node] error: unsupported OS ${OS}"; exit 1 ;;
-esac
-
-NODE_TARBALL="node-${NODE_VERSION}-${NODE_OS}-${NODE_ARCH}.tar.gz"
-NODE_URL="https://nodejs.org/dist/${NODE_VERSION}/${NODE_TARBALL}"
 CACHE_DIR="${HOME}/.cache/autonomos-bundle-node"
-TARBALL_CACHE="${CACHE_DIR}/${NODE_TARBALL}"
-
 mkdir -p "${CACHE_DIR}"
 
-if [ ! -f "${TARBALL_CACHE}" ]; then
-  echo "[bundle-node] downloading ${NODE_URL}"
-  curl -fL "${NODE_URL}" -o "${TARBALL_CACHE}.tmp"
-  mv "${TARBALL_CACHE}.tmp" "${TARBALL_CACHE}"
-else
-  echo "[bundle-node] using cached ${TARBALL_CACHE}"
-fi
+OS="$(uname -s | tr 'A-Z' 'a-z')"
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}"' EXIT
-tar -xzf "${TARBALL_CACHE}" -C "${WORK}"
-
-EXTRACTED="${WORK}/node-${NODE_VERSION}-${NODE_OS}-${NODE_ARCH}"
-if [ ! -d "${EXTRACTED}" ]; then
-  echo "[bundle-node] error: extracted dir not found at ${EXTRACTED}"
-  exit 1
-fi
+# Fetch a Node tarball for a given os/arch and echo the path to its `node`
+# binary. Caches the tarball.
+fetch_node() {
+  local node_os="$1" node_arch="$2"
+  local tarball="node-${NODE_VERSION}-${node_os}-${node_arch}.tar.gz"
+  local cache="${CACHE_DIR}/${tarball}"
+  if [ ! -f "${cache}" ]; then
+    echo "[bundle-node] downloading ${tarball}" >&2
+    curl -fL "https://nodejs.org/dist/${NODE_VERSION}/${tarball}" -o "${cache}.tmp"
+    mv "${cache}.tmp" "${cache}"
+  else
+    echo "[bundle-node] using cached ${tarball}" >&2
+  fi
+  local work
+  work="$(mktemp -d)"
+  tar -xzf "${cache}" -C "${work}"
+  echo "${work}/node-${NODE_VERSION}-${node_os}-${node_arch}/bin/node"
+}
 
 mkdir -p resources/node/bin
-cp "${EXTRACTED}/bin/node" resources/node/bin/node
-chmod +x resources/node/bin/node
 
-# Verify it runs.
+if [ "${BUNDLE_NODE_UNIVERSAL:-0}" = "1" ]; then
+  if [ "${OS}" != "darwin" ]; then
+    echo "[bundle-node] error: BUNDLE_NODE_UNIVERSAL=1 is macOS-only" >&2
+    exit 1
+  fi
+  echo "[bundle-node] building universal2 Node (arm64 + x64)"
+  ARM_BIN="$(fetch_node darwin arm64)"
+  X64_BIN="$(fetch_node darwin x64)"
+  lipo -create "${ARM_BIN}" "${X64_BIN}" -output resources/node/bin/node
+  chmod +x resources/node/bin/node
+  echo "[bundle-node] universal slices: $(lipo -info resources/node/bin/node | sed 's/.*: //')"
+else
+  case "$(uname -m)" in
+    arm64 | aarch64) NODE_ARCH="arm64" ;;
+    x86_64) NODE_ARCH="x64" ;;
+    *)
+      echo "[bundle-node] error: unsupported arch $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+  case "${OS}" in
+    darwin | linux) NODE_OS="${OS}" ;;
+    *)
+      echo "[bundle-node] error: unsupported OS ${OS}" >&2
+      exit 1
+      ;;
+  esac
+  HOST_BIN="$(fetch_node "${NODE_OS}" "${NODE_ARCH}")"
+  cp "${HOST_BIN}" resources/node/bin/node
+  chmod +x resources/node/bin/node
+fi
+
+# Verify it runs (under the host arch — a universal binary runs natively here).
 if ! resources/node/bin/node --version >/dev/null 2>&1; then
-  echo "[bundle-node] error: bundled node binary doesn't execute"
+  echo "[bundle-node] error: bundled node binary doesn't execute" >&2
   exit 1
 fi
 
