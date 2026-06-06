@@ -1,19 +1,31 @@
 name: Release
 
-# Triggered by pushing a `v*` tag. Produces 4 platform tarballs + SHA256SUMS,
-# attached to a GitHub Release. install.sh fetches:
-#   https://github.com/<owner>/autonomOS/releases/latest/download/autonomos-<platform>.tar.gz
-#   https://github.com/<owner>/autonomOS/releases/latest/download/SHA256SUMS
+# Triggered by pushing a `v*` tag (created by version.yml when the "Version
+# Packages" PR merges). Produces:
+#   - 4 server tarballs (darwin/linux × arm64/x64) + SHA256SUMS  → install.sh
+#   - universal2 macOS DMG + ZIP + blockmap + latest-mac.yml     → Desktop app
+# all attached to a GitHub Release whose body is the CHANGELOG section.
+#
+# The macOS DMG is universal2: one artifact runs on Apple Silicon AND Intel.
+# The bundled Node binary and native modules are lipo'd from both arches
+# (see bundle-node.sh + stage-universal-server.sh). Signing/notarization is
+# added in a follow-up — this build is unsigned (Gatekeeper warns on install).
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
-    name: Build (${{ matrix.target }})
+  # ── 1. Server bundles ────────────────────────────────────────────────────
+  # Four platform tarballs for install.sh. The two darwin bundles are ALSO
+  # uploaded raw so the DMG job can lipo their native modules into universal.
+  build-server:
+    name: Server (${{ matrix.target }})
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -29,57 +41,148 @@ jobs:
             runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install bun
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
-      - name: Install deps
-        run: bun install
-
+      - run: bun install --frozen-lockfile
       - name: Build dashboard
         run: bun --filter @autonomos/dashboard build
-
       - name: Embed dashboard
         run: bun packages/server/build/embed-dashboard.ts
-
       - name: Build bundle + tarball
         run: TARBALL=1 bun packages/server/build/build-binary.ts
-
       - name: Upload tarball
         uses: actions/upload-artifact@v4
         with:
-          name: autonomos-${{ matrix.target }}
+          name: tarball-${{ matrix.target }}
           path: packages/server/dist/autonomos-${{ matrix.target }}.tar.gz
+      # darwin bundles feed the universal DMG's native-module lipo.
+      - name: Upload raw darwin bundle
+        if: startsWith(matrix.target, 'darwin')
+        uses: actions/upload-artifact@v4
+        with:
+          name: serverdist-${{ matrix.target }}
+          path: packages/server/dist/${{ matrix.target }}/
 
+  # ── 2. Universal2 macOS DMG ──────────────────────────────────────────────
+  # Built on Apple Silicon. Stages universal resources (lipo the two darwin
+  # server bundles + a universal Node), then electron-builder produces the
+  # universal2 .app/DMG/ZIP. Hard-gated by the headless smoke test.
+  build-dmg:
+    name: Universal DMG
+    needs: build-server
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+
+      - name: Download darwin server bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: serverdist
+          pattern: serverdist-darwin-*
+
+      - name: Stage universal server bundle (lipo native modules)
+        run: |
+          bash packages/app/scripts/stage-universal-server.sh \
+            serverdist/serverdist-darwin-arm64 \
+            serverdist/serverdist-darwin-x64 \
+            packages/app/resources/server
+
+      - name: Stage universal Node
+        run: BUNDLE_NODE_UNIVERSAL=1 bash packages/app/scripts/bundle-node.sh
+        working-directory: packages/app
+
+      - name: Smoke test (HARD GATE — universal slices + server boot + auth)
+        run: SMOKE_EXPECT_UNIVERSAL=1 bash scripts/smoke-test-bundle.sh
+        working-directory: packages/app
+
+      - name: Build app + universal DMG/ZIP
+        run: |
+          bun --cwd packages/app run build
+          bun --cwd packages/app exec electron-builder --mac dmg zip --publish never
+
+      # The full UI validation (launches Electron + drives via CDP). Whether
+      # this runs on a headless GitHub macOS runner is the one CI unknown, so
+      # it's non-blocking for now — we observe it in CI, then harden to a gate.
+      - name: Validate DMG end-to-end (CDP, observe-only for now)
+        continue-on-error: true
+        run: bash scripts/validate-dmg.sh "$(ls out/*.dmg | head -1)"
+        working-directory: packages/app
+
+      - name: Upload DMG + update feed
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: |
+            packages/app/out/*.dmg
+            packages/app/out/*.zip
+            packages/app/out/*.blockmap
+            packages/app/out/latest-mac.yml
+
+  # ── 3. Native Intel validation (HARD GATE) ───────────────────────────────
+  # Mount the universal DMG on REAL x64 hardware and run the bundle smoke test
+  # natively — proves the x64 slice actually executes (no Rosetta dependency).
+  validate-intel:
+    name: Validate on Intel
+    needs: build-dmg
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmg
+          path: dmg
+      - name: Mount + native x64 smoke test
+        run: |
+          DMG="$(ls dmg/*.dmg | head -1)"
+          echo "Mounting ${DMG} on $(uname -m)..."
+          hdiutil attach -nobrowse "${DMG}"
+          VOL="$(ls -d /Volumes/autonomOS* | head -1)"
+          APP="${VOL}/autonomOS.app/Contents/Resources"
+          bash packages/app/scripts/smoke-test-bundle.sh \
+            "${APP}/node/bin/node" "${APP}/server/index.js"
+          hdiutil detach "${VOL}" -force || true
+
+  # ── 4. Publish ───────────────────────────────────────────────────────────
   release:
     name: Publish release
-    needs: build
+    needs: [build-server, build-dmg, validate-intel]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all platform tarballs
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Flatten into one directory
+      - name: Assemble release directory
         run: |
           mkdir -p release
           find artifacts -name 'autonomos-*.tar.gz' -exec cp {} release/ \;
+          find artifacts -name '*.dmg'         -exec cp {} release/ \;
+          find artifacts -name '*.zip'         -exec cp {} release/ \;
+          find artifacts -name '*.blockmap'    -exec cp {} release/ \;
+          find artifacts -name 'latest-mac.yml' -exec cp {} release/ \;
+          (cd release && shasum -a 256 autonomos-*.tar.gz *.dmg > SHA256SUMS)
           ls -la release/
 
-      - name: Compute SHA256SUMS
-        working-directory: release
-        run: shasum -a 256 autonomos-*.tar.gz > SHA256SUMS
+      - name: Extract release notes from CHANGELOG
+        run: bun scripts/release-notes.ts > RELEASE_NOTES.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release/autonomos-*.tar.gz
-            release/SHA256SUMS
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
+          files: release/*
           fail_on_unmatched_files: true

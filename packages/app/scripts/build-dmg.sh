@@ -79,11 +79,17 @@ if ! bash scripts/smoke-test-bundle.sh; then
   exit 1
 fi
 
-bun run build:dmg
+# Local builds are single-arch (host) for speed. The release CI builds the
+# universal2 DMG (staging universal resources first); the `--arm64`/`--x64`
+# arch flag here overrides the electron-builder.yml `universal` target for
+# this local path.
+HOST_EB_ARCH="$(uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')"
+bun run build
+bunx electron-builder --mac dmg "--${HOST_EB_ARCH}" --publish never
 
-# electron-builder produces autonomOS-<version>-arm64.dmg by default —
+# electron-builder produces autonomOS-<version>-<arch>.dmg —
 # rename to include the SHA + timestamp for easy comparison.
-DEFAULT_NAME="autonomOS-${VERSION}-arm64.dmg"
+DEFAULT_NAME="autonomOS-${VERSION}-${HOST_EB_ARCH}.dmg"
 NEW_NAME="autonomOS-${SUFFIX}.dmg"
 mv "out/${DEFAULT_NAME}" "out/${NEW_NAME}"
 
