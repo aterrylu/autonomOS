@@ -57,6 +57,7 @@ export function ConnectionWebview({
 }: ConnectionWebviewProps): React.ReactElement {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [bootstrapToken, setBootstrapToken] = useState<string | null>(null);
   const webviewRef = useRef<WebviewElement | null>(null);
 
   useEffect(() => {
@@ -65,8 +66,10 @@ export function ConnectionWebview({
       try {
         const result = await window.autonomos.webview.prepare(connection.id);
         if (cancelled) return;
-        if (result.ok) setReady(true);
-        else
+        if (result.ok) {
+          if (result.bootstrapToken) setBootstrapToken(result.bootstrapToken);
+          setReady(true);
+        } else
           setError(
             "Failed to prepare connection (missing token?). Remove and re-add.",
           );
@@ -94,6 +97,48 @@ export function ConnectionWebview({
     const onDomReady = (): void => {
       void webview.insertCSS(INTEGRATION_CSS);
     };
+
+    /**
+     * Auth bootstrap fallback. The IPC's `cookies.set()` is the happy path
+     * (no flash of login form), but it has known silent-failure modes in
+     * Electron with `persist:` partitions on 127.0.0.1. As a belt-and-
+     * suspenders, on `did-finish-load` we POST to /auth from inside the
+     * webview (idempotent, no-ops if cookie already valid) and reload the
+     * frame so the dashboard's auth probe sees the cookie. SessionStorage
+     * flag prevents the reload loop.
+     *
+     * Security: only fires for connections that returned a `bootstrapToken`
+     * from prepare-webview, which means an embedded server (127.0.0.1-only)
+     * OR an explicitly-configured remote with a stored token. Token is
+     * embedded into the executed JS via JSON.stringify (safe quoting)
+     * and never appears in URL bars, network logs, or process args.
+     */
+    const onDidFinishLoad = (): void => {
+      if (!bootstrapToken) return;
+      void webview
+        .executeJavaScript(
+          `(async () => {
+            try {
+              if (sessionStorage.getItem("autonomos_bootstrapped") === "1") return;
+              const res = await fetch("/auth", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: ${JSON.stringify(bootstrapToken)} }),
+              });
+              if (res.ok) {
+                sessionStorage.setItem("autonomos_bootstrapped", "1");
+                location.reload();
+              }
+            } catch (err) {
+              console.warn("[autonomos] auth bootstrap failed:", err);
+            }
+          })()`,
+        )
+        .catch((err) => {
+          console.warn("[ConnectionWebview] auth bootstrap threw:", err);
+        });
+    };
+
     const onIpcMessage = (event: Event): void => {
       const msg = event as IpcMessageEvent;
       switch (msg.channel) {
@@ -107,12 +152,14 @@ export function ConnectionWebview({
     };
 
     webview.addEventListener("dom-ready", onDomReady);
+    webview.addEventListener("did-finish-load", onDidFinishLoad);
     webview.addEventListener("ipc-message", onIpcMessage);
     return () => {
       webview.removeEventListener("dom-ready", onDomReady);
+      webview.removeEventListener("did-finish-load", onDidFinishLoad);
       webview.removeEventListener("ipc-message", onIpcMessage);
     };
-  }, [ready]);
+  }, [ready, bootstrapToken]);
 
   if (error) {
     return (

@@ -64,7 +64,11 @@ export interface AutonomosAPI {
     isAvailable(): Promise<boolean>;
   };
   webview: {
-    prepare(id: string): Promise<{ ok: true; url: string } | { ok: false }>;
+    prepare(
+      id: string,
+    ): Promise<
+      { ok: true; url: string; bootstrapToken?: string } | { ok: false }
+    >;
   };
   windows: {
     /** Open a new BrowserWindow for the given connection (or focus the
