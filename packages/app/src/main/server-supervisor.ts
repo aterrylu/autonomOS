@@ -11,14 +11,7 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { arch, homedir, platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -244,6 +237,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
 
   return await new Promise<LocalServer>((resolveFn, rejectFn) => {
     let resolved = false;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
 
     child.stdout.on("data", (data: Buffer) => {
       const text = data.toString();
@@ -253,6 +247,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
       const ready = text.match(/AUTONOMOS_READY port=(\d+)/);
       if (ready) {
         resolved = true;
+        if (readyTimer) clearTimeout(readyTimer);
         const server: BuiltInServer = {
           mode: "built-in",
           port: Number(ready[1]),
@@ -270,6 +265,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
       );
       if (already) {
         resolved = true;
+        if (readyTimer) clearTimeout(readyTimer);
         // Our child will exit on its own (server.close() in run.ts). Kill
         // anyway as belt-and-suspenders so we don't leak the helper.
         child.kill("SIGTERM");
@@ -292,6 +288,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
 
     child.on("exit", (code, signal) => {
       if (!resolved) {
+        if (readyTimer) clearTimeout(readyTimer);
         rejectFn(
           new Error(
             `Server exited before signaling ready (code=${code} signal=${signal})`,
@@ -301,10 +298,13 @@ export async function acquireOrConnect(): Promise<LocalServer> {
     });
 
     child.on("error", (err) => {
-      if (!resolved) rejectFn(err);
+      if (!resolved) {
+        if (readyTimer) clearTimeout(readyTimer);
+        rejectFn(err);
+      }
     });
 
-    setTimeout(() => {
+    readyTimer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
         child.kill("SIGKILL");
@@ -395,6 +395,7 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
     });
 
     child.on("exit", (code, signal) => {
+      if (resolved) return;
       fail(
         new Error(
           `Try-It-Out server exited before signaling ready (code=${code} signal=${signal})`,
@@ -404,12 +405,9 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
 
     child.on("error", (err) => fail(err));
 
-    // Ready-timeout. Both the SIGKILL and the fail() MUST be gated behind
-    // `!resolved` — earlier revision (caught in PR #179 review by @nox-0x)
-    // had `child.kill("SIGKILL")` running unconditionally after fail()
-    // no-op'd, so a successfully-started Try-It-Out server got nuked
-    // exactly 30s after startup. We also clearTimeout on the success
-    // path so this never fires in the happy case.
+    // Both the SIGKILL and the fail() must be gated behind `!resolved` —
+    // otherwise a successful start would be SIGKILL'd 30s later because
+    // fail() no-ops but kill() would still run.
     readyTimer = setTimeout(() => {
       if (resolved) return;
       child.kill("SIGKILL");
@@ -462,33 +460,19 @@ export async function shutdownBuiltInServer(graceMs = 5000): Promise<void> {
   activeServer = null;
 }
 
-/** Best-effort cleanup of leaked ephemeral dirs from prior Desktop crashes.
- *  We scan os.tmpdir() for `autonomos-ephemeral-*` and remove any that are
- *  older than 1 hour. macOS auto-cleans $TMPDIR every ~3 days, but eager
- *  cleanup at boot keeps the dir count from drifting and surfaces stale
- *  state sooner. Called from main.ts during bootstrap. */
-export function cleanupLeakedEphemeralDirs(): void {
-  try {
-    const root = tmpdir();
-    const entries = readdirSync(root);
-    const ageThresholdMs = 60 * 60 * 1000; // 1 hour
-    const now = Date.now();
-    for (const name of entries) {
-      if (!name.startsWith("autonomos-ephemeral-")) continue;
-      const path = join(root, name);
-      try {
-        const stat = statSync(path);
-        if (now - stat.mtimeMs > ageThresholdMs) {
-          rmSync(path, { recursive: true, force: true });
-        }
-      } catch {
-        // Ignore — best-effort.
-      }
-    }
-  } catch {
-    // Ignore — tmpdir unreachable is non-fatal.
-  }
+/** Returns the path of the active ephemeral ("Try it out") config dir if
+ *  one is in use, otherwise null. Used by `before-quit` to rm-rf the dir
+ *  synchronously rather than racing the 1s force-exit window. */
+export function getActiveEphemeralDir(): string | null {
+  if (!activeServer) return null;
+  if (activeServer.mode !== "built-in") return null;
+  return activeServer.ephemeralDir ?? null;
 }
+
+// cleanupLeakedEphemeralDirs lives in ./ephemeral-cleanup so it can be
+// unit-tested without loading `electron`. Re-export here so existing
+// callers (main.ts) don't need to change their import path.
+export { cleanupLeakedEphemeralDirs } from "./ephemeral-cleanup.js";
 
 /** Forget the active server reference without killing anything. Used after
  *  migration to Always-on mode (LaunchAgent now owns the daemon; we just

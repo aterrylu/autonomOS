@@ -78,7 +78,7 @@ for i in $(seq 1 "${TIMEOUT_SECONDS}"); do
     echo "[smoke-test] stderr:"; cat /tmp/smoke-stderr.log
     exit 1
   fi
-  if PORT=$(grep -oE 'AUTONOMOS_READY port=[0-9]+' /tmp/smoke-stdout.log | head -1 | cut -d= -f2); [ -n "${PORT}" ]; then
+  if PORT=$(grep -oE 'AUTONOMOS_READY port=[0-9]+' /tmp/smoke-stdout.log | head -1 | cut -d= -f2); [ -n "${PORT}" ] && [ "${PORT}" -gt 0 ]; then
     echo "[smoke-test] ✓ server bound to ephemeral port ${PORT} after ${i}s"
     break
   fi

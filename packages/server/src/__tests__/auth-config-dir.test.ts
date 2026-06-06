@@ -66,11 +66,16 @@ describe("resolveAuthToken — CONFIG_DIR awareness", () => {
     );
   });
 
-  it("written token file has restrictive permissions (mode 0o600)", () => {
+  it("written token file has restrictive permissions (mode 0o600)", async () => {
     resolveAuthToken();
     const tokenFile = join(isolatedDir, "token");
     assert.ok(existsSync(tokenFile));
-    // Best-effort permission check — Node's statSync exposes mode bits.
-    // We just verify the file exists; mode is set explicitly in writeFileSync.
+    const { statSync } = await import("node:fs");
+    const mode = statSync(tokenFile).mode & 0o777;
+    assert.equal(
+      mode,
+      0o600,
+      `expected mode 0o600, got 0o${mode.toString(8).padStart(3, "0")}`,
+    );
   });
 });

@@ -447,8 +447,8 @@ interface AppState {
   exitedSessions: SessionInfo[];
   /** True once /api/agents has resolved at least once. Used by the
    *  first-run UX in App.tsx to distinguish "no agents yet" from
-   *  "still loading." Reset on disconnect so a fresh server reconnect
-   *  re-triggers the first-run flow when appropriate. */
+   *  "still loading." Once true for a tab session, stays true — the
+   *  first-run flow re-fires only on a fresh tab or page reload. */
   sessionsInitialFetchDone: boolean;
   showExitedAgents: boolean;
   projects: ProjectInfo[];
