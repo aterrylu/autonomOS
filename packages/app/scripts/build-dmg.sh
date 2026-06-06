@@ -66,6 +66,19 @@ if [ ! -f resources/node/bin/node ]; then
   bash scripts/bundle-node.sh
 fi
 
+# Bundle integrity check — verify the staged server + bundled Node compose
+# correctly (no ABI mismatches, all native modules load, server boots).
+# This is the line of defense between "build artifacts compile" and
+# "shipped DMG can actually run." Catches the class of failure where unit
+# tests pass but the .app crashes on launch (e.g., pty.node ABI mismatch
+# from a bundled-Node version bump without updating native modules).
+echo "[build-dmg] Running bundle smoke test..."
+if ! bash scripts/smoke-test-bundle.sh; then
+  echo "[build-dmg] ❌ smoke test FAILED — aborting before DMG build."
+  echo "[build-dmg] Fix the bundle integrity issue and rerun."
+  exit 1
+fi
+
 bun run build:dmg
 
 # electron-builder produces autonomOS-<version>-arm64.dmg by default —

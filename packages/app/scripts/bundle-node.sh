@@ -14,7 +14,12 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."  # → packages/app/
 
-NODE_VERSION="v22.13.0"
+# MUST match the NODE_MODULE_VERSION (ABI) that the bundled `pty.node` (in
+# packages/server/dist/.../) was compiled against. The Bun build pulls
+# node-pty's prebuilt binary from npm matching the build machine's Node
+# major version. Today that's Node 25 → ABI 141. Bumping this requires
+# a coordinated rebuild of the server bundle.
+NODE_VERSION="v25.9.0"
 ARCH="$(uname -m)"
 case "${ARCH}" in
   arm64|aarch64) NODE_ARCH="arm64" ;;
