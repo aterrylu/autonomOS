@@ -111,11 +111,8 @@ async function bootEmbedded(): Promise<BootedServer> {
   };
 }
 
-describe(
-  "embedded mode end-to-end",
-  { skip: !isClaudeCodeAvailable() },
-  () => {
-    let server: BootedServer;
+describe("embedded mode end-to-end", { skip: !isClaudeCodeAvailable() }, () => {
+  let server: BootedServer;
 
   before(async () => {
     server = await bootEmbedded();
