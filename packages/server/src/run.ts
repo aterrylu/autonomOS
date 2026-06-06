@@ -51,6 +51,7 @@ import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
+import { setAuthToken, setServerPort } from "./serverState.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
@@ -171,6 +172,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   }
 
   const AUTH_TOKEN = resolveAuthToken();
+  // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
+  // the in-process token without round-tripping through env or disk.
+  setAuthToken(AUTH_TOKEN);
 
   function safeEqual(a: string, b: string): boolean {
     if (a.length !== b.length) return false;
@@ -296,6 +300,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // When --port=0 the OS assigned us a real port; read it from the listener.
       const addr = server.address() as AddressInfo | null;
       const actualPort = addr?.port ?? requestedPort;
+      // Publish the OS-assigned port to serverState. Without this, spawned
+      // Claude Code sessions (runtime.ts:spawnAgent → providers/*.buildArgs)
+      // would still read `process.env.PORT || "3000"` and bake the wrong URL
+      // into their hook + MCP-gateway endpoints. In Built-in (embedded) mode
+      // we boot with --port=0, so actualPort is an ephemeral assignment.
+      setServerPort(actualPort);
       const host = embeddedConfig.bindHost ?? "localhost";
       const base = `http://${host}:${actualPort}`;
       console.log(`autonomOS server listening on ${base}`);

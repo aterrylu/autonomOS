@@ -17,6 +17,7 @@ import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
+import { getServerPort } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
@@ -191,7 +192,7 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     resumeSessionId: params.resumeAgentId ? providerSessionId : undefined,
     injectChannelServer: !!channels?.includes("server:autonomos"),
     channelServerScript: channelScript,
-    serverPort: process.env.PORT || "3000",
+    serverPort: String(getServerPort()),
     capabilities:
       (params.template ? getTemplate(params.template)?.capabilities : null) ??
       DEFAULT_CAPABILITIES,
