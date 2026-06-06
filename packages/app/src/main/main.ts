@@ -14,7 +14,10 @@ import { app, BrowserWindow } from "electron";
 
 import { registerIpc } from "./ipc.js";
 import { buildMenu } from "./menu.js";
-import { shutdownBuiltInServer } from "./server-supervisor.js";
+import {
+  cleanupLeakedEphemeralDirs,
+  shutdownBuiltInServer,
+} from "./server-supervisor.js";
 import {
   cleanupAllDrags,
   hasAnyWindow,
@@ -40,6 +43,11 @@ function bootstrap(): void {
     .then(async () => {
       registerIpc();
       await buildMenu();
+
+      // Eager-clean any ephemeral "Try it out" dirs left over from prior
+      // Desktop crashes (anything older than 1 hour). macOS auto-cleans
+      // $TMPDIR every ~3 days, but eager cleanup keeps the dir count low.
+      cleanupLeakedEphemeralDirs();
 
       // Welcome-every-launch (per user UX decision): show the picker
       // every time the app opens. The Welcome window itself DETECTs an

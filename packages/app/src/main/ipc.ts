@@ -22,7 +22,11 @@ import {
 } from "./config/tokens.js";
 import { buildMenu } from "./menu.js";
 import { migrateToAlwaysOn, migrateToBuiltIn } from "./migrate.js";
-import { acquireOrConnect, getActiveServer } from "./server-supervisor.js";
+import {
+  acquireEphemeral,
+  acquireOrConnect,
+  getActiveServer,
+} from "./server-supervisor.js";
 import {
   endDrag,
   openConnectionWindow,
@@ -417,6 +421,24 @@ export function registerIpc(): void {
     async (): Promise<{ ok: boolean; message?: string }> => {
       try {
         await acquireOrConnect();
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  /** Acquire an ephemeral "Try it out" server — spawn a fresh server in an
+   *  isolated temp config dir. Nothing touches the user's ~/.autonomos/.
+   *  The temp dir is rm-rf'd on Desktop quit via shutdownBuiltInServer(). */
+  ipcMain.handle(
+    "local-server:acquire-ephemeral",
+    async (): Promise<{ ok: boolean; message?: string }> => {
+      try {
+        await acquireEphemeral();
         return { ok: true };
       } catch (err) {
         return {

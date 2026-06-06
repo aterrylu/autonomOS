@@ -244,6 +244,25 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-col
   color: var(--text-muted);
   font-weight: 300;
 }
+.welcome-card-try {
+  border-style: dashed;
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(
+    180deg,
+    rgba(245, 158, 11, 0.05) 0%,
+    rgba(245, 158, 11, 0.02) 100%
+  );
+}
+.welcome-card-try:hover:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: linear-gradient(
+    180deg,
+    rgba(245, 158, 11, 0.08) 0%,
+    rgba(245, 158, 11, 0.03) 100%
+  );
+}
+.welcome-badge-try { color: rgb(245, 158, 11); }
+.welcome-badge-try::before { content: "✨"; }
 .welcome-footer {
   margin-top: 32px;
   color: var(--text-muted);

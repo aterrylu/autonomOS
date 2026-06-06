@@ -51,6 +51,10 @@ export interface AutonomosAPI {
     /** Acquire the local server (Built-in spawn if no owner, else connect
      *  to existing daemon). Called when user picks "This Mac" in Welcome. */
     acquire(): Promise<{ ok: boolean; message?: string }>;
+    /** Spawn an ephemeral "Try it out" server in an isolated temp dir.
+     *  No state persists — temp dir is cleared when the Desktop quits.
+     *  Never touches ~/.autonomos/. */
+    acquireEphemeral(): Promise<{ ok: boolean; message?: string }>;
     /** Built-in → Always-on (installs LaunchAgent / systemd-user). */
     migrateToAlwaysOn(): Promise<{ ok: boolean; message: string }>;
     /** Always-on → Built-in (uninstalls LaunchAgent). */

@@ -9,6 +9,9 @@ interface WelcomeProps {
   onPickBuiltInSwitch: () => void;
   onPickRemote: (id: string) => void;
   onAddRemote: () => void;
+  /** Spin up a throwaway autonomOS in an isolated temp dir.
+   *  Cleared when the Desktop quits. */
+  onPickTryItOut: () => void;
 }
 
 type DetectResult =
@@ -20,6 +23,7 @@ export function Welcome({
   onPickBuiltInSwitch,
   onPickRemote,
   onAddRemote,
+  onPickTryItOut,
 }: WelcomeProps): React.ReactElement {
   const [remotes, setRemotes] = useState<Connection[]>([]);
   const [detected, setDetected] = useState<DetectResult | null>(null);
@@ -166,6 +170,25 @@ export function Welcome({
           <div className="welcome-card-badge">＋</div>
           <h2>Add a server</h2>
           <p>Connect to a local or remote autonomos instance</p>
+        </button>
+
+        <button
+          type="button"
+          className="welcome-card welcome-card-try"
+          onClick={() => {
+            if (busy) return;
+            setBusy(true);
+            onPickTryItOut();
+          }}
+          disabled={busy}
+        >
+          <div className="welcome-card-badge welcome-badge-try">Try mode</div>
+          <h2>Try it out</h2>
+          <p>
+            Spin up a fresh autonomOS without touching anything.
+            <br />
+            Cleared when you quit.
+          </p>
         </button>
       </div>
 
