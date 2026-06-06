@@ -42,7 +42,12 @@ export function CreateAgentPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [name, setName] = useState("");
   const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
+  // Default the template to Dispatcher since it's the typical "first agent
+  // to spawn." Auto-default flips OFF the moment the user picks any template
+  // (including None) so we never override an explicit choice on later renders
+  // (e.g. when templates re-fetch and the effect would otherwise re-fire).
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
+  const [autoDefaulted, setAutoDefaulted] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("claude-code");
   const [selectedDir, setSelectedDir] = useState("~");
   const [customDir, setCustomDir] = useState("");
@@ -60,7 +65,30 @@ export function CreateAgentPanel() {
     fetchTemplates();
   }, [fetchProjects, fetchTemplates]);
 
+  // Auto-select Dispatcher on first render where templates include it AND
+  // the user hasn't already chosen something. Only runs once thanks to
+  // `autoDefaulted` — explicit user picks (including None) won't be
+  // overridden later when templates re-fetch.
+  useEffect(() => {
+    if (autoDefaulted) return;
+    if (selectedTemplate !== null) return;
+    if (!templates.dispatcher) return;
+    setSelectedTemplate("dispatcher");
+    setAutoDefaulted(true);
+    if (!nameManuallyEdited) {
+      const role = templates.dispatcher.role || "dispatcher";
+      setName(role.charAt(0).toUpperCase() + role.slice(1));
+    }
+  }, [templates, selectedTemplate, autoDefaulted, nameManuallyEdited]);
+
   const templateList = Object.entries(templates);
+  // Move Dispatcher to the front of the picker so the recommendation is the
+  // first option after "None".
+  templateList.sort(([a], [b]) => {
+    if (a === "dispatcher") return -1;
+    if (b === "dispatcher") return 1;
+    return 0;
+  });
 
   const knownDirs = projects
     .map((p) => ({
@@ -73,6 +101,9 @@ export function CreateAgentPanel() {
 
   function selectTemplate(tname: string | null) {
     setSelectedTemplate(tname);
+    // Explicit user pick — even if it's None, lock out the Dispatcher
+    // auto-default for the rest of this panel's lifetime.
+    setAutoDefaulted(true);
     if (!nameManuallyEdited) {
       if (tname && templates[tname]) {
         const role = templates[tname].role || tname;
@@ -180,7 +211,22 @@ export function CreateAgentPanel() {
                 onClick={() => selectTemplate(tname)}
                 page={page}
               >
-                <div className="font-medium text-sm">{tmpl.role || tname}</div>
+                <div className="flex items-center gap-1.5">
+                  <div className="font-medium text-sm">
+                    {tmpl.role || tname}
+                  </div>
+                  {tname === "dispatcher" && (
+                    <span
+                      className="text-[9px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
+                      style={{
+                        background: "rgba(35,134,54,0.25)",
+                        color: "#91b362",
+                      }}
+                    >
+                      Recommended
+                    </span>
+                  )}
+                </div>
                 <div
                   className="text-[10px] font-mono mt-0.5"
                   style={{ color: page.statusFg }}
