@@ -355,10 +355,12 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
 
   return await new Promise<BuiltInServer>((resolveFn, rejectFn) => {
     let resolved = false;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
 
     const fail = (err: Error): void => {
       if (resolved) return;
       resolved = true;
+      if (readyTimer) clearTimeout(readyTimer);
       try {
         rmSync(ephemeralDir, { recursive: true, force: true });
       } catch {
@@ -374,6 +376,7 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
       const ready = text.match(/AUTONOMOS_READY port=(\d+)/);
       if (ready) {
         resolved = true;
+        if (readyTimer) clearTimeout(readyTimer);
         const server: BuiltInServer = {
           mode: "built-in",
           port: Number(ready[1]),
@@ -401,9 +404,16 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
 
     child.on("error", (err) => fail(err));
 
-    setTimeout(() => {
-      fail(new Error("Try-It-Out server failed to signal ready within 30s"));
+    // Ready-timeout. Both the SIGKILL and the fail() MUST be gated behind
+    // `!resolved` — earlier revision (caught in PR #179 review by @nox-0x)
+    // had `child.kill("SIGKILL")` running unconditionally after fail()
+    // no-op'd, so a successfully-started Try-It-Out server got nuked
+    // exactly 30s after startup. We also clearTimeout on the success
+    // path so this never fires in the happy case.
+    readyTimer = setTimeout(() => {
+      if (resolved) return;
       child.kill("SIGKILL");
+      fail(new Error("Try-It-Out server failed to signal ready within 30s"));
     }, 30_000);
   });
 }
