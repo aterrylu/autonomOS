@@ -102,6 +102,60 @@ if [ "${HTTP_CODE}" != "200" ]; then
 fi
 echo "[smoke-test] ✓ /api/system/version returns 200"
 
+# Validate the auth-cookie bootstrap path the Desktop uses. The Desktop's
+# webview POSTs to /auth with the token, server sets an httpOnly cookie,
+# subsequent fetches authenticate via the cookie. This is what makes the
+# "Try it out" + Built-in dashboards skip the login prompt. If this regresses,
+# users will see "Enter your access token to continue" — silently breaking
+# the embedded-server UX in a way the Bearer-only tests above do NOT catch.
+AUTH_HEADERS=$(curl -s -i -X POST \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"${SMOKE_TOKEN}\"}" \
+  "http://127.0.0.1:${PORT}/auth" | tr -d '\r')
+if ! echo "${AUTH_HEADERS}" | head -1 | grep -q "200 OK"; then
+  echo "[smoke-test] FAIL: POST /auth did not return 200"
+  echo "${AUTH_HEADERS}"
+  exit 1
+fi
+SET_COOKIE=$(echo "${AUTH_HEADERS}" | awk -F': ' 'tolower($1)=="set-cookie"{print $2; exit}')
+if [ -z "${SET_COOKIE}" ]; then
+  echo "[smoke-test] FAIL: POST /auth did not Set-Cookie"
+  exit 1
+fi
+COOKIE_VALUE=$(echo "${SET_COOKIE}" | awk -F';' '{print $1}')
+if ! echo "${SET_COOKIE}" | grep -qi "httponly"; then
+  echo "[smoke-test] FAIL: auth cookie missing HttpOnly"
+  exit 1
+fi
+if ! echo "${SET_COOKIE}" | grep -qi "samesite=lax"; then
+  echo "[smoke-test] FAIL: auth cookie missing SameSite=Lax"
+  exit 1
+fi
+echo "[smoke-test] ✓ POST /auth sets HttpOnly + SameSite=Lax cookie"
+
+# With ONLY the cookie (no Bearer header), /api/agents must still
+# authenticate. This is the exact path the embedded-server dashboard hits
+# on first load — if it fails, the user sees the login form.
+COOKIE_CODE=$(curl -s -o /tmp/smoke-cookie.json -w "%{http_code}" \
+  -H "Cookie: ${COOKIE_VALUE}" \
+  "http://127.0.0.1:${PORT}/api/agents")
+if [ "${COOKIE_CODE}" != "200" ]; then
+  echo "[smoke-test] FAIL: GET /api/agents with auth cookie returned ${COOKIE_CODE}"
+  cat /tmp/smoke-cookie.json
+  exit 1
+fi
+echo "[smoke-test] ✓ GET /api/agents authenticates via cookie alone"
+
+# And it must REJECT requests with no cookie + no Bearer (regression guard
+# against accidental auth bypass).
+NOAUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  "http://127.0.0.1:${PORT}/api/agents")
+if [ "${NOAUTH_CODE}" != "401" ]; then
+  echo "[smoke-test] FAIL: GET /api/agents WITHOUT auth returned ${NOAUTH_CODE} (expected 401)"
+  exit 1
+fi
+echo "[smoke-test] ✓ unauthenticated requests are rejected (401)"
+
 # Confirm POST /api/agents (the spawn path that hit the #178 bug) works.
 SPAWN_RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer ${SMOKE_TOKEN}" \
