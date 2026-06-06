@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+
+/** The server requires the `claude` binary (default provider) on PATH at
+ *  startup or it `process.exit(1)`s. CI runners don't ship Claude Code,
+ *  so when it's absent we skip this entire integration suite — the unit
+ *  tests still exercise the per-module logic; this file is purely the
+ *  spawn-time end-to-end coverage. */
+function isClaudeCodeAvailable(): boolean {
+  const r = spawnSync("which", ["claude"], { encoding: "utf-8" });
+  return r.status === 0 && r.stdout.trim().length > 0;
+}
 
 /**
  * End-to-end integration test for embedded mode — boots the server as a
@@ -101,8 +111,11 @@ async function bootEmbedded(): Promise<BootedServer> {
   };
 }
 
-describe("embedded mode end-to-end", () => {
-  let server: BootedServer;
+describe(
+  "embedded mode end-to-end",
+  { skip: !isClaudeCodeAvailable() },
+  () => {
+    let server: BootedServer;
 
   before(async () => {
     server = await bootEmbedded();
