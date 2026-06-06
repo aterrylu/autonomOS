@@ -82,4 +82,4 @@ fmt:
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	$(TSX) --test packages/server/src/__tests__/*.test.ts
+	$(TSX) --test packages/server/src/__tests__/*.test.ts packages/app/src/main/__tests__/*.test.ts

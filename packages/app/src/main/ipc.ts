@@ -22,7 +22,11 @@ import {
 } from "./config/tokens.js";
 import { buildMenu } from "./menu.js";
 import { migrateToAlwaysOn, migrateToBuiltIn } from "./migrate.js";
-import { acquireOrConnect, getActiveServer } from "./server-supervisor.js";
+import {
+  acquireEphemeral,
+  acquireOrConnect,
+  getActiveServer,
+} from "./server-supervisor.js";
 import {
   endDrag,
   openConnectionWindow,
@@ -238,14 +242,38 @@ export function registerIpc(): void {
     },
   );
 
-  /** Prepares a partition's session to load the connection's web dashboard
-   *  by setting the `autonomos_token` cookie. */
+  /** Prepare a partition's session to load the connection's web dashboard.
+   *
+   *  We try two complementary auth-bootstrap paths and return whichever
+   *  context the host renderer needs to drive both:
+   *
+   *  1. `session.cookies.set()` — pre-seeds an `autonomos_token` cookie on
+   *     the webview's partition. When this works, the dashboard's auth
+   *     probe (GET /api/agents on mount) sees the cookie and proceeds
+   *     directly to the authenticated view — no flash of login form.
+   *
+   *  2. `bootstrapToken` returned to the host renderer — used as a
+   *     fallback by ConnectionWebview on `did-finish-load`: POST /auth
+   *     via executeJavaScript, which sets the server-side httpOnly cookie
+   *     and reloads. Same path as the dashboard's own login form, so it's
+   *     well-tested. Belt-and-suspenders against silent cookies.set bugs.
+   *
+   *  **Security model:** local-connection bootstrap is only ever exposed
+   *  to the in-process renderer of this Electron app — the embedded
+   *  server binds 127.0.0.1 only (see embedded-mode.ts), so no network
+   *  attacker reaches it. The token never appears in the URL, never
+   *  appears in process command-line args, and the cookie itself is
+   *  `httpOnly: true` (set server-side via POST /auth) so dashboard JS
+   *  can't read it.
+   */
   ipcMain.handle(
     "connections:prepare-webview",
     async (
       _event,
       id: string,
-    ): Promise<{ ok: true; url: string } | { ok: false }> => {
+    ): Promise<
+      { ok: true; url: string; bootstrapToken?: string } | { ok: false }
+    > => {
       // Special-case "local" — synthesized from the active server, not from
       // the stored connections list.
       if (id === "local") {
@@ -255,10 +283,7 @@ export function registerIpc(): void {
         const partition = "persist:connection-local";
         // Only set the cookie if we actually have a token. Older daemons
         // (pre-1B.2.8) don't write ~/.autonomos/token, so server.token may
-        // be empty. Empty-value cookies break Electron's cookies.set, and
-        // even when they don't, the server rejects empty tokens. Letting
-        // the dashboard's built-in login form appear is the right fallback —
-        // the user pastes their token once and it goes into localStorage.
+        // be empty.
         if (server.token.length > 0) {
           try {
             const ses = session.fromPartition(partition);
@@ -273,12 +298,20 @@ export function registerIpc(): void {
               sameSite: "lax",
             });
           } catch (err) {
-            // Cookie set failed — log but don't fail the prepare. The
-            // webview will load and the dashboard will show its login form.
+            // cookies.set failed — log but don't fail prepare. The
+            // bootstrapToken fallback below handles this case.
             console.warn("[ipc] cookie.set for local failed:", err);
           }
         }
-        return { ok: true, url };
+        // Return the token alongside the URL so the host renderer can
+        // bootstrap auth via POST /auth on did-finish-load. Safe to expose
+        // here: the host renderer is in-process Electron, same security
+        // boundary as the main process.
+        return {
+          ok: true,
+          url,
+          ...(server.token.length > 0 ? { bootstrapToken: server.token } : {}),
+        };
       }
 
       const config = await getConfig();
@@ -300,7 +333,8 @@ export function registerIpc(): void {
         httpOnly: false,
         sameSite: "lax",
       });
-      return { ok: true, url: conn.url };
+      // Remote connections get the same bootstrapToken safety net.
+      return { ok: true, url: conn.url, bootstrapToken: token };
     },
   );
 
@@ -417,6 +451,24 @@ export function registerIpc(): void {
     async (): Promise<{ ok: boolean; message?: string }> => {
       try {
         await acquireOrConnect();
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  /** Acquire an ephemeral "Try it out" server — spawn a fresh server in an
+   *  isolated temp config dir. Nothing touches the user's ~/.autonomos/.
+   *  The temp dir is rm-rf'd on Desktop quit via shutdownBuiltInServer(). */
+  ipcMain.handle(
+    "local-server:acquire-ephemeral",
+    async (): Promise<{ ok: boolean; message?: string }> => {
+      try {
+        await acquireEphemeral();
         return { ok: true };
       } catch (err) {
         return {

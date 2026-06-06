@@ -10,11 +10,15 @@
 //   5. before-quit: shutdown Built-in server child (if any), clear drag
 //      intervals, force-exit after 1s.
 
+import { rmSync } from "node:fs";
 import { app, BrowserWindow } from "electron";
-
 import { registerIpc } from "./ipc.js";
 import { buildMenu } from "./menu.js";
-import { shutdownBuiltInServer } from "./server-supervisor.js";
+import {
+  cleanupLeakedEphemeralDirs,
+  getActiveEphemeralDir,
+  shutdownBuiltInServer,
+} from "./server-supervisor.js";
 import {
   cleanupAllDrags,
   hasAnyWindow,
@@ -41,6 +45,11 @@ function bootstrap(): void {
       registerIpc();
       await buildMenu();
 
+      // Eager-clean any ephemeral "Try it out" dirs left over from prior
+      // Desktop crashes (anything older than 1 hour). macOS auto-cleans
+      // $TMPDIR every ~3 days, but eager cleanup keeps the dir count low.
+      cleanupLeakedEphemeralDirs();
+
       // Welcome-every-launch (per user UX decision): show the picker
       // every time the app opens. The Welcome window itself DETECTs an
       // existing daemon and surfaces it as a one-click option, but we
@@ -63,6 +72,21 @@ function bootstrap(): void {
   app.on("before-quit", () => {
     quitRequested = true;
     cleanupAllDrags();
+
+    // Rm-rf the ephemeral dir SYNCHRONOUSLY before kicking off shutdown.
+    // shutdownBuiltInServer waits up to 5s for the child to exit, but the
+    // force-exit timer below fires at 1s, so the async cleanup inside the
+    // supervisor would lose the race and leak the temp dir. The child
+    // holds file handles open inside the dir; Unix permits removing the
+    // dir while handles are open — the inodes are gc'd on close.
+    const ephemeral = getActiveEphemeralDir();
+    if (ephemeral) {
+      try {
+        rmSync(ephemeral, { recursive: true, force: true });
+      } catch {
+        // Best-effort. cleanupLeakedEphemeralDirs on next boot will retry.
+      }
+    }
 
     // Shutdown Built-in server (no-op if Always-on or no active server).
     void shutdownBuiltInServer().catch(() => undefined);

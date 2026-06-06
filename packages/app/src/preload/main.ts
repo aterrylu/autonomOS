@@ -27,6 +27,8 @@ const api: AutonomosAPI = {
     info: () => ipcRenderer.invoke("local-server:info"),
     detect: () => ipcRenderer.invoke("local-server:detect"),
     acquire: () => ipcRenderer.invoke("local-server:acquire"),
+    acquireEphemeral: () =>
+      ipcRenderer.invoke("local-server:acquire-ephemeral"),
     migrateToAlwaysOn: () =>
       ipcRenderer.invoke("local-server:migrate-to-always-on"),
     migrateToBuiltIn: () =>

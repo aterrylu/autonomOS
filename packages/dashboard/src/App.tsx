@@ -6,7 +6,12 @@ import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
 import { DragProvider } from "./layout/DragContext";
 import { LayoutProvider } from "./layout/LayoutContext";
-import { activeTabPane, allLeafIds, findLeaf } from "./layout/layoutTree";
+import {
+  activeTabPane,
+  allLeafIds,
+  findLeaf,
+  findLeafByPaneId,
+} from "./layout/layoutTree";
 import { SessionMountLayer } from "./layout/SessionMountLayer";
 import { requestNotificationPermission, THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
@@ -98,6 +103,24 @@ export function App() {
   const page = THEMES[theme].page;
   const viewportHeight = useViewportHeight();
   const [authState, setAuthState] = useState<AuthState>("checking");
+  const sessionsCount = useStore((s) => s.sessions.length);
+  const sessionsInitialFetchDone = useStore((s) => s.sessionsInitialFetchDone);
+
+  /** First-run UX: when the user authenticates against an autonomos server
+   *  that has zero agents (fresh install, Try-It-Out mode, etc.), auto-open
+   *  the Create Agent panel so the next click already shapes a new agent.
+   *  Fires at most once per tab session — closing the panel without creating
+   *  an agent leaves them alone until the next reload. */
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    if (!sessionsInitialFetchDone) return;
+    if (sessionsCount > 0) return;
+    if (sessionStorage.getItem("autonomos_first_run_handled") === "1") return;
+    const { layout, openCreateAgent } = useStore.getState();
+    if (findLeafByPaneId(layout, "create-agent")) return;
+    sessionStorage.setItem("autonomos_first_run_handled", "1");
+    openCreateAgent();
+  }, [authState, sessionsCount, sessionsInitialFetchDone]);
 
   // Check auth on mount by hitting a protected endpoint. Three-state
   // classification (not just `=== 401 ? "unauthenticated" : "authenticated"`)

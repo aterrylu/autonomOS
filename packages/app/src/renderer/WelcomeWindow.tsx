@@ -32,6 +32,20 @@ export function WelcomeWindow(): React.ReactElement {
     await window.autonomos.windows.closeSelf();
   };
 
+  const handlePickTryItOut = async (): Promise<void> => {
+    setBusy(true);
+    setBusyMessage("Starting try mode…");
+    setAcquireError(null);
+    const result = await window.autonomos.localServer.acquireEphemeral();
+    if (!result.ok) {
+      setBusy(false);
+      setAcquireError(result.message ?? "Try mode couldn't start.");
+      return;
+    }
+    await window.autonomos.windows.openConnection("local");
+    await window.autonomos.windows.closeSelf();
+  };
+
   const handleAdded = async (c: Connection): Promise<void> => {
     setModalOpen(false);
     setBusy(true);
@@ -77,6 +91,7 @@ export function WelcomeWindow(): React.ReactElement {
           onPickBuiltInSwitch={() => setSwitchConfirmOpen(true)}
           onPickRemote={(id) => void handlePickRemote(id)}
           onAddRemote={() => setModalOpen(true)}
+          onPickTryItOut={() => void handlePickTryItOut()}
         />
         {acquireError && (
           <div className="welcome-error">

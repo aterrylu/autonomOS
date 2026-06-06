@@ -10,11 +10,11 @@
 // running — we then kill our child and connect to the existing server.
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { arch, homedir, platform } from "node:os";
-import { dirname, resolve } from "node:path";
+import { arch, homedir, platform, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "electron";
 
@@ -98,6 +98,10 @@ export interface BuiltInServer {
   token: string;
   child: ChildProcess;
   version: string;
+  /** If set, the server is running with an isolated temp config dir at this
+   *  path ("Try it out" mode). The dir is created at spawn and rm-rf'd on
+   *  shutdown; nothing persists across Desktop restarts. */
+  ephemeralDir?: string;
 }
 
 export interface AlwaysOnServer {
@@ -233,6 +237,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
 
   return await new Promise<LocalServer>((resolveFn, rejectFn) => {
     let resolved = false;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
 
     child.stdout.on("data", (data: Buffer) => {
       const text = data.toString();
@@ -242,6 +247,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
       const ready = text.match(/AUTONOMOS_READY port=(\d+)/);
       if (ready) {
         resolved = true;
+        if (readyTimer) clearTimeout(readyTimer);
         const server: BuiltInServer = {
           mode: "built-in",
           port: Number(ready[1]),
@@ -259,6 +265,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
       );
       if (already) {
         resolved = true;
+        if (readyTimer) clearTimeout(readyTimer);
         // Our child will exit on its own (server.close() in run.ts). Kill
         // anyway as belt-and-suspenders so we don't leak the helper.
         child.kill("SIGTERM");
@@ -281,6 +288,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
 
     child.on("exit", (code, signal) => {
       if (!resolved) {
+        if (readyTimer) clearTimeout(readyTimer);
         rejectFn(
           new Error(
             `Server exited before signaling ready (code=${code} signal=${signal})`,
@@ -290,10 +298,13 @@ export async function acquireOrConnect(): Promise<LocalServer> {
     });
 
     child.on("error", (err) => {
-      if (!resolved) rejectFn(err);
+      if (!resolved) {
+        if (readyTimer) clearTimeout(readyTimer);
+        rejectFn(err);
+      }
     });
 
-    setTimeout(() => {
+    readyTimer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
         child.kill("SIGKILL");
@@ -303,12 +314,131 @@ export async function acquireOrConnect(): Promise<LocalServer> {
   });
 }
 
+/** Spawn an ephemeral ("Try it out") server: brand-new config dir under
+ *  os.tmpdir(), brand-new auth token, brand-new everything. Nothing reads
+ *  from or writes to the user's ~/.autonomos/. On shutdown the temp dir
+ *  is rm-rf'd in `shutdownBuiltInServer()`.
+ *
+ *  Unlike `acquireOrConnect()` we deliberately do NOT consult the pid file
+ *  or fall back to an Always-on daemon — the whole point is isolation. */
+export async function acquireEphemeral(): Promise<BuiltInServer> {
+  if (activeServer) {
+    throw new Error(
+      `Cannot start Try-It-Out mode: a ${activeServer.mode} server is already active. Quit the Desktop first.`,
+    );
+  }
+
+  const entry = findServerEntry();
+  if (!entry) {
+    throw new Error(
+      `Server bundle not found. ${
+        app.isPackaged
+          ? "This DMG may be corrupted."
+          : "Run `bun run build:binary` from repo root."
+      }`,
+    );
+  }
+
+  const nodeBin = findNodeBinary();
+  const ephemeralDir = join(tmpdir(), `autonomos-ephemeral-${randomUUID()}`);
+  mkdirSync(ephemeralDir, { recursive: true, mode: 0o700 });
+  const token = randomBytes(32).toString("hex");
+
+  const child = spawn(nodeBin, [entry, "--embedded", "--port=0"], {
+    env: {
+      ...process.env,
+      AUTONOMOS_CONFIG_DIR: ephemeralDir,
+      AUTONOMOS_TOKEN: token,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  return await new Promise<BuiltInServer>((resolveFn, rejectFn) => {
+    let resolved = false;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const fail = (err: Error): void => {
+      if (resolved) return;
+      resolved = true;
+      if (readyTimer) clearTimeout(readyTimer);
+      try {
+        rmSync(ephemeralDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup — temp dir will be GC'd by macOS eventually.
+      }
+      rejectFn(err);
+    };
+
+    child.stdout.on("data", (data: Buffer) => {
+      const text = data.toString();
+      process.stderr.write(`[server:ephemeral] ${text}`);
+      if (resolved) return;
+      const ready = text.match(/AUTONOMOS_READY port=(\d+)/);
+      if (ready) {
+        resolved = true;
+        if (readyTimer) clearTimeout(readyTimer);
+        const server: BuiltInServer = {
+          mode: "built-in",
+          port: Number(ready[1]),
+          token,
+          child,
+          version: "unknown",
+          ephemeralDir,
+        };
+        activeServer = server;
+        resolveFn(server);
+      }
+    });
+
+    child.stderr.on("data", (data: Buffer) => {
+      process.stderr.write(`[server:ephemeral:err] ${data.toString()}`);
+    });
+
+    child.on("exit", (code, signal) => {
+      if (resolved) return;
+      fail(
+        new Error(
+          `Try-It-Out server exited before signaling ready (code=${code} signal=${signal})`,
+        ),
+      );
+    });
+
+    child.on("error", (err) => fail(err));
+
+    // Both the SIGKILL and the fail() must be gated behind `!resolved` —
+    // otherwise a successful start would be SIGKILL'd 30s later because
+    // fail() no-ops but kill() would still run.
+    readyTimer = setTimeout(() => {
+      if (resolved) return;
+      child.kill("SIGKILL");
+      fail(new Error("Try-It-Out server failed to signal ready within 30s"));
+    }, 30_000);
+  });
+}
+
 /** Gracefully shut down the Built-in server (if any). Safe to call in
- *  any mode — Always-on servers are not touched. */
+ *  any mode — Always-on servers are not touched. If the active server is
+ *  in ephemeral / "Try it out" mode, the temp config dir is rm-rf'd after
+ *  the child exits. */
 export async function shutdownBuiltInServer(graceMs = 5000): Promise<void> {
   if (!activeServer || activeServer.mode !== "built-in") return;
   const child = activeServer.child;
+  const ephemeralDir = activeServer.ephemeralDir;
+
+  const cleanupEphemeral = (): void => {
+    if (!ephemeralDir) return;
+    try {
+      rmSync(ephemeralDir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(
+        `[server-supervisor] failed to clean ephemeral dir ${ephemeralDir}:`,
+        err,
+      );
+    }
+  };
+
   if (child.exitCode !== null) {
+    cleanupEphemeral();
     activeServer = null;
     return;
   }
@@ -326,8 +456,23 @@ export async function shutdownBuiltInServer(graceMs = 5000): Promise<void> {
       resolveFn();
     }, graceMs);
   });
+  cleanupEphemeral();
   activeServer = null;
 }
+
+/** Returns the path of the active ephemeral ("Try it out") config dir if
+ *  one is in use, otherwise null. Used by `before-quit` to rm-rf the dir
+ *  synchronously rather than racing the 1s force-exit window. */
+export function getActiveEphemeralDir(): string | null {
+  if (!activeServer) return null;
+  if (activeServer.mode !== "built-in") return null;
+  return activeServer.ephemeralDir ?? null;
+}
+
+// cleanupLeakedEphemeralDirs lives in ./ephemeral-cleanup so it can be
+// unit-tested without loading `electron`. Re-export here so existing
+// callers (main.ts) don't need to change their import path.
+export { cleanupLeakedEphemeralDirs } from "./ephemeral-cleanup.js";
 
 /** Forget the active server reference without killing anything. Used after
  *  migration to Always-on mode (LaunchAgent now owns the daemon; we just

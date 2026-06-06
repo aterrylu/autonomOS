@@ -445,6 +445,11 @@ interface AppState {
   status: string;
   sessions: SessionInfo[];
   exitedSessions: SessionInfo[];
+  /** True once /api/agents has resolved at least once. Used by the
+   *  first-run UX in App.tsx to distinguish "no agents yet" from
+   *  "still loading." Once true for a tab session, stays true — the
+   *  first-run flow re-fires only on a fresh tab or page reload. */
+  sessionsInitialFetchDone: boolean;
   showExitedAgents: boolean;
   projects: ProjectInfo[];
   /** Loaded templates keyed by name */
@@ -648,6 +653,7 @@ export const useStore = create<AppState>()(
         status: "disconnected",
         sessions: [],
         exitedSessions: [],
+        sessionsInitialFetchDone: false,
         showExitedAgents: false,
         projects: [],
         templates: {},
@@ -849,7 +855,7 @@ export const useStore = create<AppState>()(
             prevExited.length === exitedSessions.length &&
             prevExited.every((s, i) => s.id === exitedSessions[i].id);
           if (!unchanged || !exitedUnchanged) {
-            set({ sessions, exitedSessions });
+            set({ sessions, exitedSessions, sessionsInitialFetchDone: true });
 
             const { activePane } = get();
             if (
@@ -858,6 +864,11 @@ export const useStore = create<AppState>()(
             ) {
               set({ activePane: null, status: "disconnected" });
             }
+          } else if (!get().sessionsInitialFetchDone) {
+            // No change in session arrays (both empty) but this was the
+            // first successful fetch — flip the flag so App.tsx can act
+            // (e.g. auto-open the Create Agent panel for first-run UX).
+            set({ sessionsInitialFetchDone: true });
           }
 
           // Prune layout tabs referencing sessions that no longer exist.
