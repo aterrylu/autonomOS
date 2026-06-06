@@ -1,0 +1,39 @@
+name: Changeset Check
+
+# Nudges PRs to include a changeset so the changelog stays complete. This is
+# informational (never blocks): trivial/internal PRs legitimately have no
+# version impact and can run `bun run changeset --empty`. The bot's own
+# "Version Packages" PR is skipped.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changeset:
+    runs-on: ubuntu-latest
+    if: github.head_ref != 'changeset-release/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Check for a changeset
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if bun changeset status --since="origin/${BASE_REF}" >/dev/null 2>&1; then
+            echo "✓ A changeset is present on this PR."
+          else
+            echo "::warning title=No changeset::This PR has no changeset. If it's user-facing, run 'bun run changeset'. For trivial/internal changes, run 'bun run changeset --empty'."
+          fi

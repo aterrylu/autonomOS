@@ -1,0 +1,62 @@
+name: Version
+
+# Maintains the "Version Packages" PR. Every push to main re-evaluates pending
+# changesets: if any exist, the changesets action opens/updates a PR that bumps
+# all packages (lockstep via the `fixed` group) and regenerates CHANGELOG.md.
+# When that PR is merged (no changesets remain), we tag vX.Y.Z and push — which
+# triggers the release build (see release.yml).
+#
+# Releasing = merge the "Version Packages" PR. No manual version edits, ever.
+
+on:
+  push:
+    branches: [main]
+
+concurrency: version-${{ github.ref }}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Maintain Version Packages PR
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: bun run version
+          # No `publish` — releases are produced by release.yml on the v-tag,
+          # not by `changeset publish` (these packages are not on npm).
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # When the Version PR has just been merged, no changesets remain. Tag the
+      # new version (if not already tagged) to kick off the release build.
+      - name: Tag release
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          VERSION=$(node -p "require('./packages/app/package.json').version")
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "v${VERSION} already tagged — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+          echo "Tagged and pushed v${VERSION}"
