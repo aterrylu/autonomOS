@@ -98,6 +98,7 @@ echo "[smoke-test] booting in ${SMOKE_DIR}..."
 env -i HOME="${HOME}" PATH="${STUB_BIN}:${PATH}" \
   AUTONOMOS_CONFIG_DIR="${SMOKE_DIR}" \
   AUTONOMOS_TOKEN="${SMOKE_TOKEN}" \
+  IMPIT_VERBOSE=1 \
   "${NODE_BIN}" "${SERVER_JS}" --embedded --port=0 \
   >/tmp/smoke-stdout.log 2>/tmp/smoke-stderr.log &
 SMOKE_PID=$!
