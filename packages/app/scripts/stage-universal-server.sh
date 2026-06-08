@@ -52,6 +52,43 @@ for arm_node in "${OUT_DIR}"/*.node; do
   lipo -create "${arm_node}" "${x64_node}" -output "${arm_node}.fat"
   mv "${arm_node}.fat" "${arm_node}"
   echo "[stage-universal] ✓ ${base}: $(lipo -info "${arm_node}" | sed 's/.*: //')"
+
+  # napi-rs modules (impit) can't be loaded by their per-arch filename on the
+  # "other" arch inside the bundle: `bun build` resolves napi-rs's static-literal
+  # `require('./<pkg>.darwin-<arch>.node')` calls against the BUILD host's
+  # filesystem, so only the build-arch branch keeps a live require — every other
+  # arch branch is compiled to a throw-stub. On Intel the loader reaches only
+  # stubs and fails. The server works around this via napi-rs's
+  # NAPI_RS_NATIVE_LIBRARY_PATH escape hatch (see cli/src/napi-universal-binding.ts),
+  # which loads a fixed `<pkg>.darwin-universal.node` first, before any arch
+  # detection. Stage that fixed-name alias here so the shim has a target.
+  # node-pty (node-gyp/nan, direct require — no arch token) is unaffected.
+  if printf '%s' "${base}" | grep -q "darwin-arm64\|darwin-x64"; then
+    prefix="${base%%darwin-*}"     # e.g. "impit-node."
+    alias_path="${OUT_DIR}/${prefix}darwin-universal.node"
+    # cp -f (not `[ -e ] || cp`): always overwrite so a dirty/incremental OUT_DIR
+    # can't leave a stale universal alias from a previous build.
+    cp -f "${arm_node}" "${alias_path}"
+    echo "[stage-universal]   + ${prefix}darwin-universal.node alias (NAPI_RS_NATIVE_LIBRARY_PATH target)"
+  fi
 done
+
+# node-pty's spawn-helper executable is staged next to index.js by build-binary.ts
+# (it's posix_spawn()'d to set up the PTY before exec'ing the agent command).
+# Like the .node modules it's an arch-specific Mach-O, so lipo the two slices into
+# a universal binary — otherwise the "other" arch hits "posix_spawnp failed." and
+# agent spawning is dead. The arm64 copy was carried over by the cp -R above.
+arm_helper="${OUT_DIR}/spawn-helper"
+x64_helper="${X64_DIR}/spawn-helper"
+if [ -f "${arm_helper}" ] && [ -f "${x64_helper}" ]; then
+  lipo -create "${arm_helper}" "${x64_helper}" -output "${arm_helper}.fat"
+  mv "${arm_helper}.fat" "${arm_helper}"
+  chmod +x "${arm_helper}"
+  echo "[stage-universal] ✓ spawn-helper: $(lipo -info "${arm_helper}" | sed 's/.*: //')"
+else
+  echo "[stage-universal] FAIL: spawn-helper missing (arm:${arm_helper} x64:${x64_helper})" >&2
+  echo "[stage-universal] build-binary.ts must stage node-pty's spawn-helper into each bundle." >&2
+  exit 1
+fi
 
 echo "[stage-universal] universal server bundle staged at ${OUT_DIR}"

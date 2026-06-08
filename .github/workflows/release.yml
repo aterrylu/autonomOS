@@ -16,6 +16,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + validate everything but do NOT publish a release (use to test the universal DMG build before cutting a real release)."
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -41,6 +46,13 @@ jobs:
             runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      # Pin Node 22 LTS so node-pty's nan-based native binding compiles cleanly
+      # (it does NOT build against Node 25's V8 headers). The bundled Node
+      # (build-dmg job) is pinned to the SAME version so the ABIs match — the
+      # smoke gate enforces this.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -72,8 +84,19 @@ jobs:
     name: Universal DMG
     needs: build-server
     runs-on: macos-14
+    env:
+      # The bundled universal Node version — MUST equal the build-server Node
+      # (22) so its ABI matches the node-pty binding in the staged server
+      # bundle. The smoke gate enforces it.
+      BUNDLE_NODE_VERSION: v22.13.0
     steps:
       - uses: actions/checkout@v4
+      # Pin Node 22 so this job's `bun install` also compiles node-pty cleanly
+      # (nan doesn't build against Node 25). node-pty is unused here, but a
+      # failed install would still break the job.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -94,16 +117,16 @@ jobs:
 
       - name: Stage universal Node
         run: BUNDLE_NODE_UNIVERSAL=1 bash packages/app/scripts/bundle-node.sh
-        working-directory: packages/app
 
       - name: Smoke test (HARD GATE — universal slices + server boot + auth)
         run: SMOKE_EXPECT_UNIVERSAL=1 bash scripts/smoke-test-bundle.sh
         working-directory: packages/app
 
       - name: Build app + universal DMG/ZIP
+        working-directory: packages/app
         run: |
-          bun --cwd packages/app run build
-          bun --cwd packages/app exec electron-builder --mac dmg zip --publish never
+          bun run build
+          bunx electron-builder --mac dmg zip --universal --publish never
 
       # The full UI validation (launches Electron + drives via CDP). Whether
       # this runs on a headless GitHub macOS runner is the one CI unknown, so
@@ -148,12 +171,20 @@ jobs:
           hdiutil detach "${VOL}" -force || true
 
   # ── 4. Publish ───────────────────────────────────────────────────────────
+  # Skipped entirely on a dry-run dispatch — the build + both validation gates
+  # above still run, so a dry-run proves the whole pipeline without creating a
+  # release. Publishes only on a real `v*` tag (or an explicit dry_run=false
+  # dispatch).
   release:
     name: Publish release
     needs: [build-server, build-dmg, validate-intel]
+    if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Provenance attestation needs an OIDC token + the attestations scope.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -176,6 +207,16 @@ jobs:
           find artifacts -name 'latest-mac.yml' -exec cp {} release/ \;
           (cd release && shasum -a 256 autonomos-*.tar.gz *.dmg > SHA256SUMS)
           ls -la release/
+
+      # SLSA build provenance — Sigstore-signed attestations linking each
+      # shipped artifact back to this workflow run + source commit (SLSA L2).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/autonomos-*.tar.gz
+            release/*.dmg
+            release/*.zip
 
       - name: Extract release notes from CHANGELOG
         run: bun scripts/release-notes.ts > RELEASE_NOTES.md

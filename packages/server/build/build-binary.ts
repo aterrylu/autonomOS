@@ -23,6 +23,8 @@
 
 import { $ } from "bun";
 import {
+  chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -30,6 +32,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { arch as nodeArch, platform as nodePlatform } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -81,6 +84,82 @@ function currentTarget(): string {
 const wantAll = process.argv.includes("--all");
 const targets = wantAll ? [...ALL_TARGETS] : [currentTarget()];
 
+// node-pty ships a separate `spawn-helper` executable that its native addon
+// posix_spawn()s to set up the PTY before exec'ing the target command. bun does
+// NOT bundle it (it's referenced by a runtime path string, not an import), and
+// worse, bun bakes node-pty's `__dirname` as the BUILD machine's absolute
+// node_modules path — so the bundled `helperPath` (`<__dirname>/../build/Release/
+// spawn-helper`) points at a location that does not exist inside the shipped app
+// or on any other machine. Result: agent spawn fails with "posix_spawnp failed."
+// (Intel) or silently produces a zombie child (Apple Silicon, where posix_spawn
+// defers the ENOENT). This staged neither caught it because the smoke test only
+// asserted the spawn HTTP response, not that the child actually lives.
+//
+// Fix: copy spawn-helper next to index.js and repoint node-pty's resolution to
+// the runtime bundle dir via import.meta.url (import.meta.dirname is NOT
+// populated in a bun --target=node bundle; fileURLToPath also decodes the %20 in
+// the ".app" volume path, which `.pathname` would not). Asserts on the anchor so
+// a node-pty upgrade that changes the shape fails the build loudly instead of
+// silently shipping a broken spawner.
+function stageNodePtySpawnHelper(outdir: string, target: string): void {
+  // spawn-helper is macOS-ONLY: node-pty's native pty.cc uses posix_spawn() of
+  // the helper under `#if defined(__APPLE__)`, and plain forkpty() everywhere
+  // else (Linux ignores the helperPath arg entirely). So there's nothing to
+  // stage or repoint for non-darwin targets — and node-pty doesn't even ship a
+  // spawn-helper there, which is why requiring it would (and did) break the
+  // Linux server build. Key off the TARGET (not the build host) so `--all` on a
+  // Mac doesn't try to stage a darwin helper into the Linux bundles.
+  if (!target.includes("darwin")) return;
+
+  // Validate EVERYTHING before mutating the filesystem, so a node-pty shape
+  // change (or missing helper) aborts with `outdir` left pristine rather than
+  // half-staged (helper copied next to an un-repointed index.js). Matters if
+  // this is ever wrapped in a continue-on-error loop.
+  const ptyRequire = createRequire(import.meta.url);
+  const ptyPkg = ptyRequire.resolve("node-pty/package.json");
+  const helperSrc = resolve(dirname(ptyPkg), "build/Release/spawn-helper");
+  if (!existsSync(helperSrc)) {
+    throw new Error(
+      `[build-binary] node-pty spawn-helper not found at ${helperSrc}. ` +
+        `node-pty must be built before bundling (its prebuilt or node-gyp output).`,
+    );
+  }
+
+  const indexPath = resolve(outdir, "index.js");
+  const src = readFileSync(indexPath, "utf-8");
+  const anchor = "helperPath = path.resolve(__dirname, helperPath);";
+  const occurrences = src.split(anchor).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `[build-binary] expected exactly 1 node-pty helperPath anchor, found ${occurrences}. ` +
+        `node-pty's loader shape changed — update stageNodePtySpawnHelper().`,
+    );
+  }
+
+  // Validation passed — now mutate. Repoint node-pty to resolve spawn-helper from
+  // the runtime bundle dir (computed from import.meta.url) instead of bun's baked
+  // build-machine __dirname. The occurrences===1 check above guarantees the
+  // single-arg replace() below hits the one and only anchor.
+  const prelude =
+    'import { fileURLToPath as __aoFileURLToPath } from "node:url";\n' +
+    'import { dirname as __aoDirname } from "node:path";\n' +
+    "const __AUTONOMOS_BUNDLE_DIR = __aoDirname(__aoFileURLToPath(import.meta.url));\n";
+  const repointed = src.replace(
+    anchor,
+    'helperPath = path.resolve(__AUTONOMOS_BUNDLE_DIR, "spawn-helper");',
+  );
+  // Insert the constant AFTER the shebang (line 1) so `#!/usr/bin/env node`
+  // stays first.
+  const patched = repointed.startsWith("#!")
+    ? repointed.replace(/^(#![^\n]*\n)/, `$1${prelude}`)
+    : prelude + repointed;
+
+  writeFileSync(indexPath, patched);
+  copyFileSync(helperSrc, resolve(outdir, "spawn-helper"));
+  chmodSync(resolve(outdir, "spawn-helper"), 0o755);
+  console.log("[build-binary] ✓ staged node-pty spawn-helper + repointed path");
+}
+
 for (const target of targets) {
   const suffix = target.replace("bun-", "");
   const outdir = resolve(distDir, suffix);
@@ -100,6 +179,7 @@ for (const target of targets) {
     resolve(outdir, "package.json"),
     `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
   );
+  stageNodePtySpawnHelper(outdir, target);
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
 
   if (wantTarball) {

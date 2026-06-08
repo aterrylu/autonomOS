@@ -62,6 +62,12 @@ mac:
   # runs. The .zip target is REQUIRED by electron-updater (Squirrel.Mac updates
   # from the zip, not the dmg); .blockmap files (auto-generated) enable delta
   # downloads.
+  #
+  # Because we pre-lipo the bundled Node + native modules, they're byte-identical
+  # in electron-builder's per-arch sub-builds. @electron/universal otherwise
+  # errors on "identical Mach-O not covered by x64ArchFiles"; this allowlist
+  # tells it to keep them as-is (they're already universal).
+  x64ArchFiles: "Contents/Resources/{node,server}/**"
   target:
     - target: dmg
       arch:

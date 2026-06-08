@@ -11,6 +11,9 @@
 // treat it as an implicit `start` — preserves the Phase 1A.1 invocation
 // pattern `node bundle.js --port=N --embedded`.
 
+// MUST be the FIRST import — sets NAPI_RS_NATIVE_LIBRARY_PATH for the universal2
+// bundle before any module transitively loads impit's native binding. See file.
+import "./napi-universal-binding.js";
 import { runInstallServiceCommand } from "./commands/install-service.js";
 import { runMigrateFromPm2Command } from "./commands/migrate-from-pm2.js";
 import { runStartCommand } from "./commands/start.js";

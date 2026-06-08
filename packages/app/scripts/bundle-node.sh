@@ -23,11 +23,20 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."  # → packages/app/
 
-# MUST match the NODE_MODULE_VERSION (ABI) the bundled native modules (pty.node,
-# impit.node) were compiled against. The Bun build pulls node-pty's prebuilt
-# binary matching the build machine's Node major. Today that's Node 25 → ABI
-# 141. Bumping this requires a coordinated rebuild of the server bundle.
-NODE_VERSION="v25.9.0"
+# The bundled Node MUST share an ABI (NODE_MODULE_VERSION) with the node-pty
+# native binding in the server bundle — and node-pty is COMPILED FROM SOURCE
+# (it ships no prebuilds) against whatever Node ran `bun install`. So the rule
+# is: bundle the SAME Node version that built the server.
+#
+#   - Locally: default to the developer's own `node --version` (their server
+#     build used it, so the ABIs line up).
+#   - In the release CI: BUNDLE_NODE_VERSION is set explicitly to match the
+#     Node pinned on the build-server job (Node 22 LTS — node-pty's nan-based
+#     build does NOT compile against Node 25's V8 headers on the CI toolchain).
+#
+# Mismatch → the bundled pty.node fails to dlopen (caught by smoke-test-bundle).
+DEFAULT_NODE_VERSION="$(node --version 2>/dev/null || true)"
+NODE_VERSION="${BUNDLE_NODE_VERSION:-${DEFAULT_NODE_VERSION:-v22.13.0}}"
 CACHE_DIR="${HOME}/.cache/autonomos-bundle-node"
 mkdir -p "${CACHE_DIR}"
 

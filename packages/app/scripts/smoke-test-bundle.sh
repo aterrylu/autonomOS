@@ -76,6 +76,15 @@ if [ "${SMOKE_EXPECT_UNIVERSAL:-0}" = "1" ]; then
   for native in "${SERVER_DIR_ABS}"/*.node; do
     [ -f "${native}" ] && check_universal "${native}"
   done
+  # node-pty's spawn-helper is a Mach-O executable (not a .node) that the server
+  # posix_spawn()s to start agents — it MUST be universal too, or agent spawn
+  # dies on the other arch with "posix_spawnp failed."
+  if [ -f "${SERVER_DIR_ABS}/spawn-helper" ]; then
+    check_universal "${SERVER_DIR_ABS}/spawn-helper"
+  else
+    echo "[smoke-test] FAIL: spawn-helper missing from bundle — agent spawn will fail"
+    exit 1
+  fi
 fi
 
 # Boot the server in an isolated config dir on an ephemeral port. Token
@@ -84,10 +93,21 @@ SMOKE_DIR=$(mktemp -d "/tmp/autonomos-smoke-XXXXXX")
 SMOKE_TOKEN="smoke-test-$(date +%s)-${RANDOM}"
 trap 'rm -rf "${SMOKE_DIR}" /tmp/smoke-*.log /tmp/smoke-*.err 2>/dev/null; [ -n "${SMOKE_PID:-}" ] && kill "${SMOKE_PID}" 2>/dev/null; true' EXIT
 
+# The server's startup self-check requires a `claude` binary (the default
+# provider) on PATH or it exits. CI runners don't ship Claude Code, so we
+# drop a stub `claude` that simply blocks — enough to satisfy the binary
+# check AND to be spawned under a PTY for the agent-spawn assertion below
+# (which validates the server's spawn wiring, not Claude itself).
+STUB_BIN="${SMOKE_DIR}/stub-bin"
+mkdir -p "${STUB_BIN}"
+printf '#!/bin/sh\nexec sleep 3600\n' > "${STUB_BIN}/claude"
+chmod +x "${STUB_BIN}/claude"
+
 echo "[smoke-test] booting in ${SMOKE_DIR}..."
-env -i HOME="${HOME}" PATH="${PATH}" \
+env -i HOME="${HOME}" PATH="${STUB_BIN}:${PATH}" \
   AUTONOMOS_CONFIG_DIR="${SMOKE_DIR}" \
   AUTONOMOS_TOKEN="${SMOKE_TOKEN}" \
+  IMPIT_VERBOSE=1 \
   "${NODE_BIN}" "${SERVER_JS}" --embedded --port=0 \
   >/tmp/smoke-stdout.log 2>/tmp/smoke-stderr.log &
 SMOKE_PID=$!
@@ -193,8 +213,39 @@ if ! echo "${SPAWN_RESPONSE}" | grep -q '"status":"running"'; then
 fi
 echo "[smoke-test] ✓ POST /api/agents spawned an agent (status=running)"
 
+# Liveness gate — the spawn RESPONSE returning status=running is NOT proof the
+# agent is actually alive. node-pty's posix_spawn() of its spawn-helper returns
+# success before the helper child fails, so a broken/missing spawn-helper yields
+# a zombie that still reports "running" in the initial response. (This exact
+# false pass hid the bundled spawn-helper being staged at a build-machine path
+# that doesn't exist in the shipped .app — agent spawn was silently dead.) Assert
+# the agent is STILL running a moment later: if the PTY died, deriveStatus() moves
+# it off "running" (exited) or the record disappears.
+# Suppress python's traceback (2>/dev/null) and route a parse failure through the
+# script's own FAIL message instead of dying mid-pipe with a raw stack trace.
+AGENT_ID=$(echo "${SPAWN_RESPONSE}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" 2>/dev/null) || {
+  echo "[smoke-test] FAIL: could not parse agent id from spawn response"
+  echo "${SPAWN_RESPONSE}"
+  exit 1
+}
+sleep 2
+LIVE_STATUS=$(curl -s -H "Authorization: Bearer ${SMOKE_TOKEN}" \
+  "http://127.0.0.1:${PORT}/api/agents" \
+  | python3 -c "import sys,json;a=[x for x in json.load(sys.stdin) if x['id']=='${AGENT_ID}'];print(a[0]['status'] if a else 'GONE')" 2>/dev/null) || {
+  echo "[smoke-test] FAIL: could not parse /api/agents response for liveness check"
+  echo "[smoke-test] server stderr:"; tail -20 /tmp/smoke-stderr.log
+  exit 1
+}
+if [ "${LIVE_STATUS}" != "running" ]; then
+  echo "[smoke-test] FAIL: agent did not stay alive (status=${LIVE_STATUS} after 2s)"
+  echo "[smoke-test] This means node-pty's spawn-helper could not be exec'd —"
+  echo "[smoke-test] check spawn-helper staging + path repoint in build-binary.ts."
+  echo "[smoke-test] server stderr:"; tail -20 /tmp/smoke-stderr.log
+  exit 1
+fi
+echo "[smoke-test] ✓ agent is still alive 2s after spawn (spawn-helper works)"
+
 # Stop the spawned agent so it doesn't outlive the smoke test.
-AGENT_ID=$(echo "${SPAWN_RESPONSE}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 curl -s -X DELETE -H "Authorization: Bearer ${SMOKE_TOKEN}" \
   "http://127.0.0.1:${PORT}/api/agents/${AGENT_ID}" >/dev/null
 
