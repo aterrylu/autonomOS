@@ -99,7 +99,6 @@ jobs:
 
       - name: Stage universal Node
         run: BUNDLE_NODE_UNIVERSAL=1 bash packages/app/scripts/bundle-node.sh
-        working-directory: packages/app
 
       - name: Smoke test (HARD GATE — universal slices + server boot + auth)
         run: SMOKE_EXPECT_UNIVERSAL=1 bash scripts/smoke-test-bundle.sh
