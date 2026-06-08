@@ -52,6 +52,23 @@ for arm_node in "${OUT_DIR}"/*.node; do
   lipo -create "${arm_node}" "${x64_node}" -output "${arm_node}.fat"
   mv "${arm_node}.fat" "${arm_node}"
   echo "[stage-universal] ✓ ${base}: $(lipo -info "${arm_node}" | sed 's/.*: //')"
+
+  # Some native loaders (e.g. impit / napi-rs) `existsSync`-check an
+  # ARCH-SPECIFIC filename at runtime — `<pkg>.darwin-x64.node` on Intel,
+  # `<pkg>.darwin-arm64.node` on Apple Silicon. Our universal binary is named
+  # after only one arch (whichever arch built the bundle), so on the other arch
+  # the loader doesn't find it and throws even though the fat binary would load.
+  # Emit the universal binary under both arch names so the loader finds it on
+  # either arch. node-pty (no arch token in its name, direct require) is
+  # unaffected and skips this.
+  if printf '%s' "${base}" | grep -q "darwin-arm64\|darwin-x64"; then
+    prefix="${base%%darwin-*}"     # e.g. "impit-node."
+    for variant in darwin-x64 darwin-arm64 darwin-universal; do
+      alias_path="${OUT_DIR}/${prefix}${variant}.node"
+      [ -e "${alias_path}" ] || cp "${arm_node}" "${alias_path}"
+    done
+    echo "[stage-universal]   + arch-name aliases for ${prefix%.}"
+  fi
 done
 
 echo "[stage-universal] universal server bundle staged at ${OUT_DIR}"
