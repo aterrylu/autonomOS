@@ -101,9 +101,15 @@ const targets = wantAll ? [...ALL_TARGETS] : [currentTarget()];
 // the ".app" volume path, which `.pathname` would not). Asserts on the anchor so
 // a node-pty upgrade that changes the shape fails the build loudly instead of
 // silently shipping a broken spawner.
-function stageNodePtySpawnHelper(outdir: string): void {
-  // Windows uses conpty.node, not spawn-helper — nothing to stage.
-  if (nodePlatform() === "win32") return;
+function stageNodePtySpawnHelper(outdir: string, target: string): void {
+  // spawn-helper is macOS-ONLY: node-pty's native pty.cc uses posix_spawn() of
+  // the helper under `#if defined(__APPLE__)`, and plain forkpty() everywhere
+  // else (Linux ignores the helperPath arg entirely). So there's nothing to
+  // stage or repoint for non-darwin targets — and node-pty doesn't even ship a
+  // spawn-helper there, which is why requiring it would (and did) break the
+  // Linux server build. Key off the TARGET (not the build host) so `--all` on a
+  // Mac doesn't try to stage a darwin helper into the Linux bundles.
+  if (!target.includes("darwin")) return;
 
   const ptyRequire = createRequire(import.meta.url);
   const ptyPkg = ptyRequire.resolve("node-pty/package.json");
@@ -167,7 +173,7 @@ for (const target of targets) {
     resolve(outdir, "package.json"),
     `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
   );
-  stageNodePtySpawnHelper(outdir);
+  stageNodePtySpawnHelper(outdir, target);
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
 
   if (wantTarball) {
