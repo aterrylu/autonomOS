@@ -123,9 +123,10 @@ jobs:
         working-directory: packages/app
 
       - name: Build app + universal DMG/ZIP
+        working-directory: packages/app
         run: |
-          bun --cwd packages/app run build
-          bun --cwd packages/app exec electron-builder --mac dmg zip --publish never
+          bun run build
+          bunx electron-builder --mac dmg zip --universal --publish never
 
       # The full UI validation (launches Electron + drives via CDP). Whether
       # this runs on a headless GitHub macOS runner is the one CI unknown, so
