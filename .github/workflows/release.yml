@@ -16,6 +16,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + validate everything but do NOT publish a release (use to test the universal DMG build before cutting a real release)."
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -148,12 +153,20 @@ jobs:
           hdiutil detach "${VOL}" -force || true
 
   # ── 4. Publish ───────────────────────────────────────────────────────────
+  # Skipped entirely on a dry-run dispatch — the build + both validation gates
+  # above still run, so a dry-run proves the whole pipeline without creating a
+  # release. Publishes only on a real `v*` tag (or an explicit dry_run=false
+  # dispatch).
   release:
     name: Publish release
     needs: [build-server, build-dmg, validate-intel]
+    if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Provenance attestation needs an OIDC token + the attestations scope.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -176,6 +189,16 @@ jobs:
           find artifacts -name 'latest-mac.yml' -exec cp {} release/ \;
           (cd release && shasum -a 256 autonomos-*.tar.gz *.dmg > SHA256SUMS)
           ls -la release/
+
+      # SLSA build provenance — Sigstore-signed attestations linking each
+      # shipped artifact back to this workflow run + source commit (SLSA L2).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/autonomos-*.tar.gz
+            release/*.dmg
+            release/*.zip
 
       - name: Extract release notes from CHANGELOG
         run: bun scripts/release-notes.ts > RELEASE_NOTES.md
