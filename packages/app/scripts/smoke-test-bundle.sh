@@ -76,6 +76,15 @@ if [ "${SMOKE_EXPECT_UNIVERSAL:-0}" = "1" ]; then
   for native in "${SERVER_DIR_ABS}"/*.node; do
     [ -f "${native}" ] && check_universal "${native}"
   done
+  # node-pty's spawn-helper is a Mach-O executable (not a .node) that the server
+  # posix_spawn()s to start agents — it MUST be universal too, or agent spawn
+  # dies on the other arch with "posix_spawnp failed."
+  if [ -f "${SERVER_DIR_ABS}/spawn-helper" ]; then
+    check_universal "${SERVER_DIR_ABS}/spawn-helper"
+  else
+    echo "[smoke-test] FAIL: spawn-helper missing from bundle — agent spawn will fail"
+    exit 1
+  fi
 fi
 
 # Boot the server in an isolated config dir on an ephemeral port. Token
@@ -204,8 +213,29 @@ if ! echo "${SPAWN_RESPONSE}" | grep -q '"status":"running"'; then
 fi
 echo "[smoke-test] ✓ POST /api/agents spawned an agent (status=running)"
 
-# Stop the spawned agent so it doesn't outlive the smoke test.
+# Liveness gate — the spawn RESPONSE returning status=running is NOT proof the
+# agent is actually alive. node-pty's posix_spawn() of its spawn-helper returns
+# success before the helper child fails, so a broken/missing spawn-helper yields
+# a zombie that still reports "running" in the initial response. (This exact
+# false pass hid the bundled spawn-helper being staged at a build-machine path
+# that doesn't exist in the shipped .app — agent spawn was silently dead.) Assert
+# the agent is STILL running a moment later: if the PTY died, deriveStatus() moves
+# it off "running" (exited) or the record disappears.
 AGENT_ID=$(echo "${SPAWN_RESPONSE}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+sleep 2
+LIVE_STATUS=$(curl -s -H "Authorization: Bearer ${SMOKE_TOKEN}" \
+  "http://127.0.0.1:${PORT}/api/agents" \
+  | python3 -c "import sys,json;a=[x for x in json.load(sys.stdin) if x['id']=='${AGENT_ID}'];print(a[0]['status'] if a else 'GONE')")
+if [ "${LIVE_STATUS}" != "running" ]; then
+  echo "[smoke-test] FAIL: agent did not stay alive (status=${LIVE_STATUS} after 2s)"
+  echo "[smoke-test] This means node-pty's spawn-helper could not be exec'd —"
+  echo "[smoke-test] check spawn-helper staging + path repoint in build-binary.ts."
+  echo "[smoke-test] server stderr:"; tail -20 /tmp/smoke-stderr.log
+  exit 1
+fi
+echo "[smoke-test] ✓ agent is still alive 2s after spawn (spawn-helper works)"
+
+# Stop the spawned agent so it doesn't outlive the smoke test.
 curl -s -X DELETE -H "Authorization: Bearer ${SMOKE_TOKEN}" \
   "http://127.0.0.1:${PORT}/api/agents/${AGENT_ID}" >/dev/null
 

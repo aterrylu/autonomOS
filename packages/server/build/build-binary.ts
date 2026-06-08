@@ -23,6 +23,8 @@
 
 import { $ } from "bun";
 import {
+  chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -30,6 +32,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { arch as nodeArch, platform as nodePlatform } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -81,6 +84,70 @@ function currentTarget(): string {
 const wantAll = process.argv.includes("--all");
 const targets = wantAll ? [...ALL_TARGETS] : [currentTarget()];
 
+// node-pty ships a separate `spawn-helper` executable that its native addon
+// posix_spawn()s to set up the PTY before exec'ing the target command. bun does
+// NOT bundle it (it's referenced by a runtime path string, not an import), and
+// worse, bun bakes node-pty's `__dirname` as the BUILD machine's absolute
+// node_modules path — so the bundled `helperPath` (`<__dirname>/../build/Release/
+// spawn-helper`) points at a location that does not exist inside the shipped app
+// or on any other machine. Result: agent spawn fails with "posix_spawnp failed."
+// (Intel) or silently produces a zombie child (Apple Silicon, where posix_spawn
+// defers the ENOENT). This staged neither caught it because the smoke test only
+// asserted the spawn HTTP response, not that the child actually lives.
+//
+// Fix: copy spawn-helper next to index.js and repoint node-pty's resolution to
+// the runtime bundle dir via import.meta.url (import.meta.dirname is NOT
+// populated in a bun --target=node bundle; fileURLToPath also decodes the %20 in
+// the ".app" volume path, which `.pathname` would not). Asserts on the anchor so
+// a node-pty upgrade that changes the shape fails the build loudly instead of
+// silently shipping a broken spawner.
+function stageNodePtySpawnHelper(outdir: string): void {
+  // Windows uses conpty.node, not spawn-helper — nothing to stage.
+  if (nodePlatform() === "win32") return;
+
+  const ptyRequire = createRequire(import.meta.url);
+  const ptyPkg = ptyRequire.resolve("node-pty/package.json");
+  const helperSrc = resolve(dirname(ptyPkg), "build/Release/spawn-helper");
+  if (!existsSync(helperSrc)) {
+    throw new Error(
+      `[build-binary] node-pty spawn-helper not found at ${helperSrc}. ` +
+        `node-pty must be built before bundling (its prebuilt or node-gyp output).`,
+    );
+  }
+  const helperDest = resolve(outdir, "spawn-helper");
+  copyFileSync(helperSrc, helperDest);
+  chmodSync(helperDest, 0o755);
+
+  const indexPath = resolve(outdir, "index.js");
+  let src = readFileSync(indexPath, "utf-8");
+
+  const anchor = "helperPath = path.resolve(__dirname, helperPath);";
+  const occurrences = src.split(anchor).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `[build-binary] expected exactly 1 node-pty helperPath anchor, found ${occurrences}. ` +
+        `node-pty's loader shape changed — update stageNodePtySpawnHelper().`,
+    );
+  }
+  // Compute the bundle dir from import.meta.url at runtime, then point
+  // spawn-helper next to index.js. Insert the constant AFTER the shebang
+  // (line 1) so `#!/usr/bin/env node` stays first.
+  src = src.replace(
+    anchor,
+    'helperPath = path.resolve(__AUTONOMOS_BUNDLE_DIR, "spawn-helper");',
+  );
+  const prelude =
+    'import { fileURLToPath as __aoFileURLToPath } from "node:url";\n' +
+    'import { dirname as __aoDirname } from "node:path";\n' +
+    "const __AUTONOMOS_BUNDLE_DIR = __aoDirname(__aoFileURLToPath(import.meta.url));\n";
+  src = src.startsWith("#!")
+    ? src.replace(/^(#![^\n]*\n)/, `$1${prelude}`)
+    : prelude + src;
+
+  writeFileSync(indexPath, src);
+  console.log("[build-binary] ✓ staged node-pty spawn-helper + repointed path");
+}
+
 for (const target of targets) {
   const suffix = target.replace("bun-", "");
   const outdir = resolve(distDir, suffix);
@@ -100,6 +167,7 @@ for (const target of targets) {
     resolve(outdir, "package.json"),
     `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
   );
+  stageNodePtySpawnHelper(outdir);
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
 
   if (wantTarball) {

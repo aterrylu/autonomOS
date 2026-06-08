@@ -71,4 +71,22 @@ for arm_node in "${OUT_DIR}"/*.node; do
   fi
 done
 
+# node-pty's spawn-helper executable is staged next to index.js by build-binary.ts
+# (it's posix_spawn()'d to set up the PTY before exec'ing the agent command).
+# Like the .node modules it's an arch-specific Mach-O, so lipo the two slices into
+# a universal binary — otherwise the "other" arch hits "posix_spawnp failed." and
+# agent spawning is dead. The arm64 copy was carried over by the cp -R above.
+arm_helper="${OUT_DIR}/spawn-helper"
+x64_helper="${X64_DIR}/spawn-helper"
+if [ -f "${arm_helper}" ] && [ -f "${x64_helper}" ]; then
+  lipo -create "${arm_helper}" "${x64_helper}" -output "${arm_helper}.fat"
+  mv "${arm_helper}.fat" "${arm_helper}"
+  chmod +x "${arm_helper}"
+  echo "[stage-universal] ✓ spawn-helper: $(lipo -info "${arm_helper}" | sed 's/.*: //')"
+else
+  echo "[stage-universal] FAIL: spawn-helper missing (arm:${arm_helper} x64:${x64_helper})" >&2
+  echo "[stage-universal] build-binary.ts must stage node-pty's spawn-helper into each bundle." >&2
+  exit 1
+fi
+
 echo "[stage-universal] universal server bundle staged at ${OUT_DIR}"
