@@ -46,14 +46,13 @@ jobs:
             runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      # Pin Node 25 (ABI 141) so node-pty's native binding is compiled to match
-      # the Node runtime we bundle into the DMG (bundle-node.sh, v25.9.0). The
-      # runner's default Node is 24 (ABI 127); without this pin the bundled
-      # pty.node fails to dlopen under the bundled Node 25 (caught by the smoke
-      # gate). Keep in sync with bundle-node.sh's NODE_VERSION.
+      # Pin Node 22 LTS so node-pty's nan-based native binding compiles cleanly
+      # (it does NOT build against Node 25's V8 headers). The bundled Node
+      # (build-dmg job) is pinned to the SAME version so the ABIs match — the
+      # smoke gate enforces this.
       - uses: actions/setup-node@v4
         with:
-          node-version: "25"
+          node-version: "22"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -85,8 +84,19 @@ jobs:
     name: Universal DMG
     needs: build-server
     runs-on: macos-14
+    env:
+      # The bundled universal Node version — MUST equal the build-server Node
+      # (22) so its ABI matches the node-pty binding in the staged server
+      # bundle. The smoke gate enforces it.
+      BUNDLE_NODE_VERSION: v22.13.0
     steps:
       - uses: actions/checkout@v4
+      # Pin Node 22 so this job's `bun install` also compiles node-pty cleanly
+      # (nan doesn't build against Node 25). node-pty is unused here, but a
+      # failed install would still break the job.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
