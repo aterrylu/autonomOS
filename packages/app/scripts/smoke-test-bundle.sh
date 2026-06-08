@@ -84,8 +84,18 @@ SMOKE_DIR=$(mktemp -d "/tmp/autonomos-smoke-XXXXXX")
 SMOKE_TOKEN="smoke-test-$(date +%s)-${RANDOM}"
 trap 'rm -rf "${SMOKE_DIR}" /tmp/smoke-*.log /tmp/smoke-*.err 2>/dev/null; [ -n "${SMOKE_PID:-}" ] && kill "${SMOKE_PID}" 2>/dev/null; true' EXIT
 
+# The server's startup self-check requires a `claude` binary (the default
+# provider) on PATH or it exits. CI runners don't ship Claude Code, so we
+# drop a stub `claude` that simply blocks — enough to satisfy the binary
+# check AND to be spawned under a PTY for the agent-spawn assertion below
+# (which validates the server's spawn wiring, not Claude itself).
+STUB_BIN="${SMOKE_DIR}/stub-bin"
+mkdir -p "${STUB_BIN}"
+printf '#!/bin/sh\nexec sleep 3600\n' > "${STUB_BIN}/claude"
+chmod +x "${STUB_BIN}/claude"
+
 echo "[smoke-test] booting in ${SMOKE_DIR}..."
-env -i HOME="${HOME}" PATH="${PATH}" \
+env -i HOME="${HOME}" PATH="${STUB_BIN}:${PATH}" \
   AUTONOMOS_CONFIG_DIR="${SMOKE_DIR}" \
   AUTONOMOS_TOKEN="${SMOKE_TOKEN}" \
   "${NODE_BIN}" "${SERVER_JS}" --embedded --port=0 \
