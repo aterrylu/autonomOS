@@ -11,6 +11,19 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.1.0] — 2026-06-08
+
+### Minor Changes
+
+- [#183](https://github.com/aterrylu/autonomOS/pull/183) [`f301061`](https://github.com/aterrylu/autonomOS/commit/f3010614a016bbb4c5ef2b33a433401f0471cbe9) Thanks [@aterrylu](https://github.com/aterrylu)! - Professional release pipeline: universal2 macOS DMG built and validated in CI (lipo'd Node + native modules across arm64/x64), changesets-driven versioning with a single root CHANGELOG, lefthook + commitlint git hooks, and CHANGELOG-derived GitHub Release notes.
+
+### Patch Changes
+
+- [#186](https://github.com/aterrylu/autonomOS/pull/186) [`9c81ca4`](https://github.com/aterrylu/autonomOS/commit/9c81ca4067c76846bf664df5faefaaa8452048c5) Thanks [@aterrylu](https://github.com/aterrylu)! - Release pipeline: add a dry-run dispatch mode to test the universal DMG build without publishing, and SLSA build-provenance attestations on shipped artifacts.
+
+- [#187](https://github.com/aterrylu/autonomOS/pull/187) [`ec1f536`](https://github.com/aterrylu/autonomOS/commit/ec1f5363849dfa04d7f12c30043dd572678cd0de) Thanks [@aterrylu](https://github.com/aterrylu)! - Fixed: the universal2 macOS app now runs on Intel Macs (a native HTTP dependency failed to load) and Built-in mode reliably spawns agents on both Apple Silicon and Intel (the bundled PTY spawn helper wasn't shipped correctly). Earlier 0.0.x desktop builds were affected.
+
+
 ## [0.0.2] — unreleased baseline
 
 The desktop-app era. Built but never cut as a formal signed release — the work
