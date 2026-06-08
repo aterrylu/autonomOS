@@ -53,21 +53,21 @@ for arm_node in "${OUT_DIR}"/*.node; do
   mv "${arm_node}.fat" "${arm_node}"
   echo "[stage-universal] ✓ ${base}: $(lipo -info "${arm_node}" | sed 's/.*: //')"
 
-  # Some native loaders (e.g. impit / napi-rs) `existsSync`-check an
-  # ARCH-SPECIFIC filename at runtime — `<pkg>.darwin-x64.node` on Intel,
-  # `<pkg>.darwin-arm64.node` on Apple Silicon. Our universal binary is named
-  # after only one arch (whichever arch built the bundle), so on the other arch
-  # the loader doesn't find it and throws even though the fat binary would load.
-  # Emit the universal binary under both arch names so the loader finds it on
-  # either arch. node-pty (no arch token in its name, direct require) is
-  # unaffected and skips this.
+  # napi-rs modules (impit) can't be loaded by their per-arch filename on the
+  # "other" arch inside the bundle: `bun build` resolves napi-rs's static-literal
+  # `require('./<pkg>.darwin-<arch>.node')` calls against the BUILD host's
+  # filesystem, so only the build-arch branch keeps a live require — every other
+  # arch branch is compiled to a throw-stub. On Intel the loader reaches only
+  # stubs and fails. The server works around this via napi-rs's
+  # NAPI_RS_NATIVE_LIBRARY_PATH escape hatch (see cli/src/napi-universal-binding.ts),
+  # which loads a fixed `<pkg>.darwin-universal.node` first, before any arch
+  # detection. Stage that fixed-name alias here so the shim has a target.
+  # node-pty (node-gyp/nan, direct require — no arch token) is unaffected.
   if printf '%s' "${base}" | grep -q "darwin-arm64\|darwin-x64"; then
     prefix="${base%%darwin-*}"     # e.g. "impit-node."
-    for variant in darwin-x64 darwin-arm64 darwin-universal; do
-      alias_path="${OUT_DIR}/${prefix}${variant}.node"
-      [ -e "${alias_path}" ] || cp "${arm_node}" "${alias_path}"
-    done
-    echo "[stage-universal]   + arch-name aliases for ${prefix%.}"
+    alias_path="${OUT_DIR}/${prefix}darwin-universal.node"
+    [ -e "${alias_path}" ] || cp "${arm_node}" "${alias_path}"
+    echo "[stage-universal]   + ${prefix}darwin-universal.node alias (NAPI_RS_NATIVE_LIBRARY_PATH target)"
   fi
 done
 
