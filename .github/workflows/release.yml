@@ -46,6 +46,14 @@ jobs:
             runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      # Pin Node 25 (ABI 141) so node-pty's native binding is compiled to match
+      # the Node runtime we bundle into the DMG (bundle-node.sh, v25.9.0). The
+      # runner's default Node is 24 (ABI 127); without this pin the bundled
+      # pty.node fails to dlopen under the bundled Node 25 (caught by the smoke
+      # gate). Keep in sync with bundle-node.sh's NODE_VERSION.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "25"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
