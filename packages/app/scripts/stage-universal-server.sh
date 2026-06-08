@@ -66,7 +66,9 @@ for arm_node in "${OUT_DIR}"/*.node; do
   if printf '%s' "${base}" | grep -q "darwin-arm64\|darwin-x64"; then
     prefix="${base%%darwin-*}"     # e.g. "impit-node."
     alias_path="${OUT_DIR}/${prefix}darwin-universal.node"
-    [ -e "${alias_path}" ] || cp "${arm_node}" "${alias_path}"
+    # cp -f (not `[ -e ] || cp`): always overwrite so a dirty/incremental OUT_DIR
+    # can't leave a stale universal alias from a previous build.
+    cp -f "${arm_node}" "${alias_path}"
     echo "[stage-universal]   + ${prefix}darwin-universal.node alias (NAPI_RS_NATIVE_LIBRARY_PATH target)"
   fi
 done

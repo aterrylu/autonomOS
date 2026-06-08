@@ -111,6 +111,10 @@ function stageNodePtySpawnHelper(outdir: string, target: string): void {
   // Mac doesn't try to stage a darwin helper into the Linux bundles.
   if (!target.includes("darwin")) return;
 
+  // Validate EVERYTHING before mutating the filesystem, so a node-pty shape
+  // change (or missing helper) aborts with `outdir` left pristine rather than
+  // half-staged (helper copied next to an un-repointed index.js). Matters if
+  // this is ever wrapped in a continue-on-error loop.
   const ptyRequire = createRequire(import.meta.url);
   const ptyPkg = ptyRequire.resolve("node-pty/package.json");
   const helperSrc = resolve(dirname(ptyPkg), "build/Release/spawn-helper");
@@ -120,13 +124,9 @@ function stageNodePtySpawnHelper(outdir: string, target: string): void {
         `node-pty must be built before bundling (its prebuilt or node-gyp output).`,
     );
   }
-  const helperDest = resolve(outdir, "spawn-helper");
-  copyFileSync(helperSrc, helperDest);
-  chmodSync(helperDest, 0o755);
 
   const indexPath = resolve(outdir, "index.js");
-  let src = readFileSync(indexPath, "utf-8");
-
+  const src = readFileSync(indexPath, "utf-8");
   const anchor = "helperPath = path.resolve(__dirname, helperPath);";
   const occurrences = src.split(anchor).length - 1;
   if (occurrences !== 1) {
@@ -135,22 +135,28 @@ function stageNodePtySpawnHelper(outdir: string, target: string): void {
         `node-pty's loader shape changed — update stageNodePtySpawnHelper().`,
     );
   }
-  // Compute the bundle dir from import.meta.url at runtime, then point
-  // spawn-helper next to index.js. Insert the constant AFTER the shebang
-  // (line 1) so `#!/usr/bin/env node` stays first.
-  src = src.replace(
-    anchor,
-    'helperPath = path.resolve(__AUTONOMOS_BUNDLE_DIR, "spawn-helper");',
-  );
+
+  // Validation passed — now mutate. Repoint node-pty to resolve spawn-helper from
+  // the runtime bundle dir (computed from import.meta.url) instead of bun's baked
+  // build-machine __dirname. The occurrences===1 check above guarantees the
+  // single-arg replace() below hits the one and only anchor.
   const prelude =
     'import { fileURLToPath as __aoFileURLToPath } from "node:url";\n' +
     'import { dirname as __aoDirname } from "node:path";\n' +
     "const __AUTONOMOS_BUNDLE_DIR = __aoDirname(__aoFileURLToPath(import.meta.url));\n";
-  src = src.startsWith("#!")
-    ? src.replace(/^(#![^\n]*\n)/, `$1${prelude}`)
-    : prelude + src;
+  const repointed = src.replace(
+    anchor,
+    'helperPath = path.resolve(__AUTONOMOS_BUNDLE_DIR, "spawn-helper");',
+  );
+  // Insert the constant AFTER the shebang (line 1) so `#!/usr/bin/env node`
+  // stays first.
+  const patched = repointed.startsWith("#!")
+    ? repointed.replace(/^(#![^\n]*\n)/, `$1${prelude}`)
+    : prelude + repointed;
 
-  writeFileSync(indexPath, src);
+  writeFileSync(indexPath, patched);
+  copyFileSync(helperSrc, resolve(outdir, "spawn-helper"));
+  chmodSync(resolve(outdir, "spawn-helper"), 0o755);
   console.log("[build-binary] ✓ staged node-pty spawn-helper + repointed path");
 }
 

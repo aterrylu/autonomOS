@@ -221,11 +221,21 @@ echo "[smoke-test] ✓ POST /api/agents spawned an agent (status=running)"
 # that doesn't exist in the shipped .app — agent spawn was silently dead.) Assert
 # the agent is STILL running a moment later: if the PTY died, deriveStatus() moves
 # it off "running" (exited) or the record disappears.
-AGENT_ID=$(echo "${SPAWN_RESPONSE}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+# Suppress python's traceback (2>/dev/null) and route a parse failure through the
+# script's own FAIL message instead of dying mid-pipe with a raw stack trace.
+AGENT_ID=$(echo "${SPAWN_RESPONSE}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" 2>/dev/null) || {
+  echo "[smoke-test] FAIL: could not parse agent id from spawn response"
+  echo "${SPAWN_RESPONSE}"
+  exit 1
+}
 sleep 2
 LIVE_STATUS=$(curl -s -H "Authorization: Bearer ${SMOKE_TOKEN}" \
   "http://127.0.0.1:${PORT}/api/agents" \
-  | python3 -c "import sys,json;a=[x for x in json.load(sys.stdin) if x['id']=='${AGENT_ID}'];print(a[0]['status'] if a else 'GONE')")
+  | python3 -c "import sys,json;a=[x for x in json.load(sys.stdin) if x['id']=='${AGENT_ID}'];print(a[0]['status'] if a else 'GONE')" 2>/dev/null) || {
+  echo "[smoke-test] FAIL: could not parse /api/agents response for liveness check"
+  echo "[smoke-test] server stderr:"; tail -20 /tmp/smoke-stderr.log
+  exit 1
+}
 if [ "${LIVE_STATUS}" != "running" ]; then
   echo "[smoke-test] FAIL: agent did not stay alive (status=${LIVE_STATUS} after 2s)"
   echo "[smoke-test] This means node-pty's spawn-helper could not be exec'd —"
