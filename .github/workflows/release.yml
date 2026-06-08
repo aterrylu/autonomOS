@@ -203,7 +203,9 @@ jobs:
           find artifacts -name 'autonomos-*.tar.gz' -exec cp {} release/ \;
           find artifacts -name '*.dmg'         -exec cp {} release/ \;
           find artifacts -name '*.zip'         -exec cp {} release/ \;
-          find artifacts -name '*.blockmap'    -exec cp {} release/ \;
+          # Only the ZIP's blockmap — electron-updater (Squirrel.Mac) updates
+          # from the .zip, never the .dmg, so the .dmg.blockmap is dead weight.
+          find artifacts -name '*.zip.blockmap' -exec cp {} release/ \;
           find artifacts -name 'latest-mac.yml' -exec cp {} release/ \;
           (cd release && shasum -a 256 autonomos-*.tar.gz *.dmg > SHA256SUMS)
           ls -la release/
