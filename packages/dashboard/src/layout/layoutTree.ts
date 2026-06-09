@@ -252,13 +252,17 @@ export function setActiveTab(
   if (root.kind === "leaf") {
     if (root.id !== leafId) return root;
     const clamped = Math.max(0, Math.min(tabIndex, root.tabs.length - 1));
+    // Referential stability: return the same node if the active tab is
+    // unchanged. Callers (e.g. switchPane) rely on this to avoid rebuilding
+    // the layout tree when focusing a pane that's already active.
+    if (clamped === root.activeTabIndex) return root;
     return { ...root, activeTabIndex: clamped };
   }
-  return {
-    ...root,
-    first: setActiveTab(root.first, leafId, tabIndex),
-    second: setActiveTab(root.second, leafId, tabIndex),
-  };
+  const first = setActiveTab(root.first, leafId, tabIndex);
+  const second = setActiveTab(root.second, leafId, tabIndex);
+  // No child changed — preserve referential equality of the branch node.
+  if (first === root.first && second === root.second) return root;
+  return { ...root, first, second };
 }
 
 /** Update the sizes of a branch. */
