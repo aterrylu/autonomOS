@@ -83,9 +83,15 @@ fi
 # universal2 DMG (staging universal resources first); the `--arm64`/`--x64`
 # arch flag here overrides the electron-builder.yml `universal` target for
 # this local path.
+#
+# Force-skip code signing locally (CSC_IDENTITY_AUTO_DISCOVERY=false). Now that a
+# Developer ID cert may live in the keychain, electron-builder would otherwise
+# auto-sign every local build — slower, and it triggers keychain-access prompts.
+# Signing + notarization are a CI-only concern (release.yml); local builds are
+# for testing, not distribution.
 HOST_EB_ARCH="$(uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')"
 bun run build
-bunx electron-builder --mac dmg "--${HOST_EB_ARCH}" --publish never
+CSC_IDENTITY_AUTO_DISCOVERY=false bunx electron-builder --mac dmg "--${HOST_EB_ARCH}" --publish never
 
 # electron-builder produces autonomOS-<version>-<arch>.dmg —
 # rename to include the SHA + timestamp for easy comparison.

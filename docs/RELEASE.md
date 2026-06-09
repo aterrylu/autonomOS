@@ -124,14 +124,21 @@ signed artifact comes from CI.
 |---|---|---|
 | `GITHUB_TOKEN` | version.yml, release.yml | auto-provided by Actions |
 | `RELEASE_PAT` | version.yml | **Makes releases one-merge.** Fine-grained PAT, **this repo only**, scopes: **Contents: Read and write** + **Pull requests: Read and write**. Without it the Version PR and the version tag are bot-created, which GitHub won't let trigger CI / `release.yml` — so each release needs two manual nudges (see [Cutting a release](#cutting-a-release)). version.yml falls back to `GITHUB_TOKEN` when it's absent. *(A GitHub App token via `actions/create-github-app-token` is the short-lived-credential alternative.)* |
-| `CSC_LINK` | release.yml (signing) | base64 Developer ID Application cert (.p12) — *added in the signing PR* |
-| `CSC_KEY_PASSWORD` | release.yml | the .p12 password |
-| `APPLE_API_KEY` | release.yml (notarization) | base64 App Store Connect **Team** API key (.p8) |
+| `CSC_LINK` | release.yml (signing) | base64 of the Developer ID Application cert (`.p12`) |
+| `CSC_KEY_PASSWORD` | release.yml | the `.p12` password |
+| `APPLE_API_KEY` | release.yml (notarization) | base64 of the App Store Connect API key (`.p8`) |
 | `APPLE_API_KEY_ID` | release.yml | the key's ID |
 | `APPLE_API_ISSUER` | release.yml | the issuer ID |
 
-Until signing lands, the DMG is unsigned (users see a Gatekeeper warning on first
-open: right-click → Open, or System Settings → Privacy & Security → Open Anyway).
+**Signing + notarization are conditional.** When `CSC_LINK` is present the `.app`
+is signed; when the `APPLE_API_KEY` secret is also present it's notarized + stapled
+(`build-dmg` enables `--config.mac.notarize.teamId` only then). The `validate-intel`
+job asserts the result on real Intel hardware via `spctl --assess` — a signed build
+that isn't notarized **fails the gate** (it would still warn on download), so a
+release is always either fully unsigned or fully signed+notarized. With **all five**
+secrets set, the DMG opens with no Gatekeeper warning. Team ID `39VWFRL3PM` is
+hardcoded in `release.yml` (not secret). Without the secrets the build is unsigned
+(right-click → Open, or System Settings → Privacy & Security → Open Anyway).
 
 ## Troubleshooting
 
