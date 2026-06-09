@@ -124,6 +124,12 @@ jobs:
 
       - name: Build app + universal DMG/ZIP
         working-directory: packages/app
+        # Cap the step so a stalled/degraded Apple notary fails the release FAST
+        # (retryable in minutes) instead of hanging for hours on `notarytool
+        # --wait`. Normal notarization is well under 10 min; packaging adds a few.
+        # 30 min leaves generous headroom for a slow-but-healthy notary while
+        # killing a genuine Apple-side incident (we've seen 85+ min stalls).
+        timeout-minutes: 30
         env:
           # Code signing (Developer ID Application). electron-builder auto-decodes
           # the base64 CSC_LINK and signs every Mach-O in the .app when present;
