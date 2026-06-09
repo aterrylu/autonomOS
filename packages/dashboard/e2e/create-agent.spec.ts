@@ -66,9 +66,12 @@ test("create-agent: name is required — empty name blocks submit and shows an e
     page.getByRole("heading", { name: "Create New Agent" }),
   ).toBeVisible();
 
-  // Clear the auto-filled name.
+  // Clear the auto-filled name, and WAIT for the clear to settle before
+  // submitting — fill() + an immediate click races a re-render that can
+  // re-touch the input (the source of an earlier flake).
   const nameInput = page.getByPlaceholder("e.g. Dispatcher, Researcher");
   await nameInput.fill("");
+  await expect(nameInput).toHaveValue("");
 
   await page.getByRole("button", { name: "Create Agent" }).click();
 

@@ -274,7 +274,12 @@ export async function mockApi(
 
     // Anything unmocked: respond benignly (empty 200) so the app never hangs
     // on an unintercepted request. Fast + harmless — never falls through to
-    // the vite proxy (which points at a backend that isn't running).
+    // the vite proxy (which points at a backend that isn't running). Warn so
+    // mock drift (a new app endpoint with no mock) surfaces during local dev
+    // instead of silently returning {}; suppressed in CI to keep logs clean.
+    if (!process.env.CI) {
+      console.warn(`[e2e mocks] unmocked ${method} ${path} → empty 200`);
+    }
     return json(route, {});
   });
 

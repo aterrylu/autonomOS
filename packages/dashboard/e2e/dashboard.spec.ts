@@ -59,13 +59,10 @@ test.describe("settings panel", () => {
     await expect(page.getByText("Settings", { exact: true })).toBeVisible();
     await expect(page.getByText("Auto-Trust")).toBeVisible();
 
-    // Auto-Trust starts ON (mock settings.autoTrust = true). Its ToggleSwitch is
-    // the first pill-shaped (.rounded-full) control following the label — click
-    // it to fire PUT /api/settings with { autoTrust: false }.
-    await page
-      .getByText("Auto-Trust")
-      .locator("xpath=following::div[contains(@class,'rounded-full')][1]")
-      .click();
+    // Auto-Trust starts ON (mock settings.autoTrust = true). Click its toggle
+    // (durable data-testid, not a brittle CSS-class xpath) to fire
+    // PUT /api/settings with { autoTrust: false }.
+    await page.getByTestId("auto-trust-toggle").click();
 
     await expect
       .poll(() => state.settingsUpdates.length, { timeout: 5_000 })

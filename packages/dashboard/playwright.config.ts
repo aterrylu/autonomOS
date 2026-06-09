@@ -45,9 +45,9 @@ export default defineConfig({
   webServer: {
     // Boot the REAL dashboard via vite — the same dev server `make dev` runs,
     // but standalone (no backend behind the proxy; the specs mock every route).
-    // Use the local binary directly: webServer runs under /bin/sh, which does
-    // not have node_modules/.bin on PATH.
-    command: `node_modules/.bin/vite --port ${PORT} --strictPort`,
+    // `bunx` resolves vite PATH-agnostically (webServer runs under /bin/sh, which
+    // has neither node_modules/.bin nor the package manager's hoisting on PATH).
+    command: `bunx vite --port ${PORT} --strictPort`,
     url: BASE_URL,
     // In CI always start a fresh server; locally reuse a running one if present.
     reuseExistingServer: !process.env.CI,

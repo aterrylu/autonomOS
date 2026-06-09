@@ -23,10 +23,13 @@ function ToggleSwitch({
   enabled,
   inactiveBackground,
   onClick,
+  testId,
 }: {
   enabled: boolean;
   inactiveBackground: string;
   onClick: () => void;
+  /** Optional stable handle for e2e tests (durable vs a CSS-class xpath). */
+  testId?: string;
 }) {
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch
@@ -35,6 +38,7 @@ function ToggleSwitch({
       className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
       style={{ background: enabled ? "#16825d" : inactiveBackground }}
       onClick={onClick}
+      data-testid={testId}
     >
       <div
         className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
@@ -777,6 +781,7 @@ export function SettingsPanel({
               enabled={!!settings?.autoTrust}
               inactiveBackground={page.border}
               onClick={() => toggleSetting("autoTrust", !settings?.autoTrust)}
+              testId="auto-trust-toggle"
             />
           </div>
           <div className="text-[10px]" style={labelStyle}>
