@@ -31,6 +31,7 @@ function shallowEqualRecord<V>(
 import {
   activeTabPane,
   addTab,
+  allLeafIds,
   allTabPanes,
   derivedActivePane,
   findLeaf,
@@ -217,8 +218,16 @@ function addPaneToGroup(
 }
 
 /**
- * After removing a leaf, prune the active group's member list.
- * Dissolves the group if only 0-1 members remain.
+ * After a layout mutation, prune the active group's member list and dissolve
+ * the group when the split collapses to a single region.
+ *
+ * A group represents a *split view* (multiple leaves/regions), not merely a
+ * set of panes. So dissolution is keyed off the number of leaves in the new
+ * layout, not the pane count — collapsing two split regions into one leaf with
+ * two tabs (e.g. a move-to-center drop) is no longer a split and must dissolve
+ * the group, even though both panes survive as tabs. This mirrors the rest of
+ * the codebase, which treats `allLeafIds(layout).length > 1` as "a split is
+ * showing" (see App.tsx Ctrl+W handling).
  */
 function syncGroupAfterRemoval(
   groups: Record<string, PaneGroup>,
@@ -236,7 +245,7 @@ function syncGroupAfterRemoval(
       remainingIds.has(id),
     );
 
-    if (updatedMembers.length <= 1) {
+    if (allLeafIds(newLayout).length <= 1 || updatedMembers.length <= 1) {
       delete updated[activeGroupId];
       newActiveGroupId = null;
     } else {
