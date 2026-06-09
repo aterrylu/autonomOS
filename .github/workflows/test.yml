@@ -29,6 +29,22 @@ jobs:
       - name: Install Claude Code CLI (for real-agent integration tests)
         run: npm i -g @anthropic-ai/claude-code@2.1.168
 
+      # A freshly-installed claude shows a first-run onboarding/theme prompt that
+      # blocks the interactive PTY session (so SessionStart never fires). Seed the
+      # user config to mark onboarding complete — same fields a configured claude
+      # carries. Without this the L3 integration suite times out waiting for the
+      # first hook.
+      - name: Pre-seed Claude Code config (skip first-run onboarding)
+        run: |
+          cat > "$HOME/.claude.json" <<'JSON'
+          {
+            "hasCompletedOnboarding": true,
+            "numStartups": 5,
+            "theme": "dark",
+            "lastOnboardingVersion": "2.1.168"
+          }
+          JSON
+
       - name: Lint, typecheck, test
         # AUTONOMOS_INTEGRATION=1 enables the real-`claude` L3 integration suite
         # (embedded-mode-integration.test.ts). This flag is set ONLY here in CI —
