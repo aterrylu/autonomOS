@@ -1,0 +1,48 @@
+name: E2E (Dashboard UI)
+
+# Testing layer L4 — Playwright drives the REAL dashboard (vite dev server) with
+# the HTTP API + WebSocket fully MOCKED in-browser. There is NO autonomos backend
+# and NO `claude`/agent/PTY in this job, so AUTONOMOS_INTEGRATION is deliberately
+# NOT set (that flag gates the L3 real-agent suite in test.yml, not this one).
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install
+
+      # Chromium only — fast, and all the mocked-API UI flows need.
+      - name: Install Playwright browser (chromium)
+        working-directory: packages/dashboard
+        run: bunx playwright install --with-deps chromium
+
+      # Playwright's webServer config boots `vite` itself (the dashboard dev
+      # server) and tears it down when the run ends — no manual server start,
+      # no backend. In CI, reuseExistingServer is off so the server is fresh.
+      - name: Run Playwright e2e
+        working-directory: packages/dashboard
+        env:
+          CI: "true"
+        run: bunx playwright test
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: packages/dashboard/playwright-report/
+          retention-days: 7

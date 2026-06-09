@@ -37,7 +37,7 @@ dead-agent-spawn bug in v0.0.1 **and** v0.0.2.
 | **L1 Unit** | pure logic per package | `node:test` (server/app), `vitest` (dashboard) | every PR |
 | **L2 Component** | React render/behavior | `vitest` + `jsdom` + testing-library | every PR ✅ |
 | **L3 Integration — API/PTY** | real server + real agent spawn; #178 wiring; hook telemetry; **liveness** | **real `claude` + mock `/v1/messages`** + isolated server | every PR |
-| **L4 Integration — UI** | dashboard works end-to-end in a browser | `Playwright` vs `make dev` | every PR |
+| **L4 Integration — UI** | dashboard works end-to-end in a browser | `Playwright` vs `vite` (API mocked) | every PR ✅ |
 | **L5 Artifact smoke** | the **bundled** server boots, native modules load, auth + spawn + liveness | `smoke-test-bundle.sh` under bundled Node | every PR* |
 | **L6 Artifact — DMG/CDP** | the packaged `.app` launches; Welcome/auth/first-run UX; CSS-perf invariants | build **unsigned** DMG + `validate-dmg` CDP (**gate**) | every PR* |
 | **L6b Native Intel** | the x64 slice actually executes | mount DMG on real `macos-intel`, run L5 | release + nightly |
@@ -146,6 +146,30 @@ without cutting a release.
     the real store using `useStore.setState(...)`; on-mount `fetch`es are stubbed with
     `vi.stubGlobal`. Remaining for Phase 3b: Playwright e2e (L4) and the heavier store/WebSocket
     components (`SessionPane`, `Sidebar`, `SchedulesPanel`) too entangled for clean isolation.
+  - **Phase 3b — Playwright UI e2e (L4) ✅ landed.** Stood up `@playwright/test` (chromium-only) in
+    `packages/dashboard`, driving the **real dashboard via the `vite` dev server** with the **entire
+    backend mocked in-browser** — `page.route("**/api/**", ...)` returns canned JSON for every
+    endpoint the app calls on load (`/api/agents`, `/api/agents/tree`, `/api/settings`,
+    `/api/providers`, `/api/templates`, `/api/host`, `/api/hooks`, `/api/projects`, `/api/schedules`,
+    `/api/scheduler/status`, `/api/channels/status`) plus the mutations (`POST /api/agents`,
+    `PUT /api/settings`) which **capture request bodies** for assertion. The terminal/gateway
+    WebSocket is stubbed via an `addInitScript` `FakeWebSocket` that reports CLOSED — so non-terminal
+    flows proceed with **zero backend, zero `claude`, zero PTY, zero agents spawned**. Playwright's
+    `webServer` boots/tears down `vite` itself (`node_modules/.bin/vite --port 5180 --strictPort`);
+    the proxy targets in `vite.config.ts` are never reached because every route is intercepted.
+    Layout/active-pane assertions read a **dev-only store bridge** (`window.__autonomosStore`, guarded
+    by `import.meta.env.DEV` in `main.tsx` so it's stripped from prod builds) rather than brittle pane
+    DOM. **8 specs across 5 flows** in `packages/dashboard/e2e/*.spec.ts` (kept out of `src/` so vitest
+    + `tsc --build` ignore them): sidebar lists mocked agents + empty-state first-run auto-open of
+    Create Agent; create-agent flow (Dispatcher is the "Recommended" auto-default, submit asserts the
+    `POST /api/agents` body, name-required validation blocks submit); `Ctrl+D` split-pane grows the
+    layout tree + tab switching (Org Chart → Templates → Org Chart) flips the active pane; settings
+    panel opens and the Auto-Trust toggle persists via `PUT /api/settings`; org-chart renders the
+    mocked hierarchy tree. CI runs them on every PR via a dedicated `e2e.yml`
+    (`bunx playwright install --with-deps chromium` → `bunx playwright test`, `CI=true`,
+    `AUTONOMOS_INTEGRATION` deliberately **unset** — no backend needed). **Deferred:** live terminal
+    streaming over the real WebSocket (xterm I/O, reconnect-on-disconnect) — needs a WS server mock,
+    not just a stub; tracked as future L4 work.
 - **Phase 4 — Artifact gates on PR (L5/L6):** bundle smoke + unsigned DMG + CDP gate on every PR,
   path-filtered. Intel (L6b) stays release + nightly; signing (L7) stays release-only.
 
@@ -157,6 +181,8 @@ without cutting a release.
 - **Dashboard** (`packages/dashboard`, 203 `vitest` cases): excellent `layoutTree` (77) + `store`
   (28) coverage. **Now wired into CI** (was orphaned). **Component/DOM layer (L2) landed in
   Phase 3a** — 32 jsdom + testing-library cases across 6 components (`*.dom.test.tsx`).
+  **UI e2e layer (L4) landed in Phase 3b** — 8 Playwright specs (`e2e/*.spec.ts`) driving the real
+  vite dashboard with the API + WebSocket mocked; run on every PR via `e2e.yml` (chromium only).
 - **App** (`packages/app`): only `ephemeral-cleanup` tested; `server-supervisor`, `ipc`, `tokens`
   untested (high-risk — Phase 2/3).
 - **CLI / Core**: no unit tests yet (Phase 2). The `core/dist` test is a gitignored build artifact,
