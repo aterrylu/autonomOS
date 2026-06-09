@@ -35,7 +35,7 @@ dead-agent-spawn bug in v0.0.1 **and** v0.0.2.
 |-------|----------------|---------|------|
 | **L0 Static** | types + lint | `biome`, `tsc --build` | every PR |
 | **L1 Unit** | pure logic per package | `node:test` (server/app), `vitest` (dashboard) | every PR |
-| **L2 Component** | React render/behavior | `vitest` + `jsdom` + testing-library | every PR |
+| **L2 Component** | React render/behavior | `vitest` + `jsdom` + testing-library | every PR ✅ |
 | **L3 Integration — API/PTY** | real server + real agent spawn; #178 wiring; hook telemetry; **liveness** | **real `claude` + mock `/v1/messages`** + isolated server | every PR |
 | **L4 Integration — UI** | dashboard works end-to-end in a browser | `Playwright` vs `make dev` | every PR |
 | **L5 Artifact smoke** | the **bundled** server boots, native modules load, auth + spawn + liveness | `smoke-test-bundle.sh` under bundled Node | every PR* |
@@ -132,6 +132,20 @@ without cutting a release.
   the cookie/bootstrap path is unit-testable; fix the `channel-schedules` fake-import.
 - **Phase 3 — UI (L2 + L4):** `jsdom` + testing-library component tests; `Playwright` e2e flows
   (create→stream→kill, split-pane, tab switch, settings, reconnect).
+  - **Phase 3a — Component tests (L2) ✅ landed.** Stood up the `jsdom` + testing-library layer
+    in `packages/dashboard`, wired into the existing `make check` vitest run. jsdom is **opt-in
+    per file** via a `// @vitest-environment jsdom` docblock (global default stays `node`, so the
+    other ~171 unit tests are untouched); each `*.dom.test.tsx` imports `src/test/setup-dom.ts`,
+    which registers `@testing-library/jest-dom` matchers, auto-`cleanup`s between tests, installs
+    an in-memory `localStorage` shim (the zustand `persist` store throws on jsdom's Storage
+    otherwise), and stubs `canvas.getContext` (xterm's webgl addon probes it at import). Seeded 32
+    tests across 6 components: `Codicon`, `agent-status-icon` (+ `agentStatusLabel`),
+    `NotificationBell`, `Header`, `CreateAgentPanel` (first-run UX: name-required validation,
+    Dispatcher auto-default + "Recommended" badge, `createSession` arg wiring), and
+    `HierarchyPanel` (loading/error/empty/populated states). Store-backed components are driven via
+    the real store using `useStore.setState(...)`; on-mount `fetch`es are stubbed with
+    `vi.stubGlobal`. Remaining for Phase 3b: Playwright e2e (L4) and the heavier store/WebSocket
+    components (`SessionPane`, `Sidebar`, `SchedulesPanel`) too entangled for clean isolation.
 - **Phase 4 — Artifact gates on PR (L5/L6):** bundle smoke + unsigned DMG + CDP gate on every PR,
   path-filtered. Intel (L6b) stays release + nightly; signing (L7) stays release-only.
 
@@ -140,8 +154,9 @@ without cutting a release.
 - **Server** (`packages/server`, ~334 `node:test` cases): strong on scheduler, `deriveStatus`, the
   #178 `serverState`/token wiring, pid-file, statusline. **Gaps:** boot self-checks, the auth
   cookie/middleware bootstrap, PTY spawn (`agents/runtime.ts`), provider binary detection.
-- **Dashboard** (`packages/dashboard`, 171 `vitest` cases): excellent `layoutTree` (77) + `store`
-  (28) coverage. **Now wired into CI** (was orphaned). No component/DOM layer yet (Phase 3).
+- **Dashboard** (`packages/dashboard`, 203 `vitest` cases): excellent `layoutTree` (77) + `store`
+  (28) coverage. **Now wired into CI** (was orphaned). **Component/DOM layer (L2) landed in
+  Phase 3a** — 32 jsdom + testing-library cases across 6 components (`*.dom.test.tsx`).
 - **App** (`packages/app`): only `ephemeral-cleanup` tested; `server-supervisor`, `ipc`, `tokens`
   untested (high-risk — Phase 2/3).
 - **CLI / Core**: no unit tests yet (Phase 2). The `core/dist` test is a gitignored build artifact,
