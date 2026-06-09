@@ -124,9 +124,45 @@ jobs:
 
       - name: Build app + universal DMG/ZIP
         working-directory: packages/app
+        # Cap the step so a stalled/degraded Apple notary fails the release FAST
+        # (retryable in minutes) instead of hanging for hours on `notarytool
+        # --wait`. Normal notarization is well under 10 min; packaging adds a few.
+        # 30 min leaves generous headroom for a slow-but-healthy notary while
+        # killing a genuine Apple-side incident (we've seen 85+ min stalls).
+        timeout-minutes: 30
+        env:
+          # Code signing (Developer ID Application). electron-builder auto-decodes
+          # the base64 CSC_LINK and signs every Mach-O in the .app when present;
+          # absent → unsigned build (no error). hardenedRuntime is on, which
+          # notarization requires.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Notarization (App Store Connect API key). The .p8 is stored base64 in
+          # the APPLE_API_KEY secret; we decode it to a file and point
+          # electron-builder/@electron/notarize at the path via APPLE_API_KEY.
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # Apple Developer Team ID (from the Developer ID cert — not secret).
+          APPLE_TEAM_ID: "39VWFRL3PM"
         run: |
           bun run build
-          bunx electron-builder --mac dmg zip --universal --publish never
+          # Notarize ONLY when the API key secret is present. Otherwise (forks, or
+          # before the secrets are configured) produce a plain build — signed if a
+          # cert is available, unsigned if not. Keeps the pipeline green either way.
+          notarize_flags=""
+          if [ -n "${APPLE_API_KEY_B64}" ]; then
+            printf '%s' "${APPLE_API_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/AuthKey.p8"
+            export APPLE_API_KEY="${RUNNER_TEMP}/AuthKey.p8"
+            notarize_flags="--config.mac.notarize.teamId=${APPLE_TEAM_ID}"
+            echo "::notice::Apple credentials present — signing + notarizing."
+          elif [ -n "${CSC_LINK}" ]; then
+            echo "::warning::Signing cert present but no notarization key — DMG will be signed but NOT notarized (Gatekeeper still warns on download)."
+          else
+            echo "::warning::No Apple credentials — producing an UNSIGNED build."
+          fi
+          # shellcheck disable=SC2086 # notarize_flags is intentionally word-split
+          bunx electron-builder --mac dmg zip --universal --publish never ${notarize_flags}
 
       # The full UI validation (launches Electron + drives via CDP). Whether
       # this runs on a headless GitHub macOS runner is the one CI unknown, so
@@ -168,6 +204,27 @@ jobs:
           APP="${VOL}/autonomOS.app/Contents/Resources"
           bash packages/app/scripts/smoke-test-bundle.sh \
             "${APP}/node/bin/node" "${APP}/server/index.js"
+
+          # Signing / notarization gate. The whole point of #4 is "opens without a
+          # Gatekeeper warning" — assert it for real on Intel hardware. Invariant:
+          # a build is EITHER fully unsigned (dev / no creds) OR signed AND
+          # notarized AND stapled. A signed-but-not-notarized build still warns on
+          # download, so we treat it as a failure rather than ship it.
+          APP_BUNDLE="${VOL}/autonomOS.app"
+          if codesign -dvv "${APP_BUNDLE}" 2>&1 | grep -q "Authority=Developer ID Application"; then
+            echo "Developer ID signature found — verifying signature + notarization..."
+            codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
+            if ! spctl --assess --type exec -vv "${APP_BUNDLE}" 2>&1 | tee /tmp/spctl.log | grep -q "accepted"; then
+              echo "::error::Gatekeeper REJECTED the app (spctl --assess). Signed but not notarized/stapled? Set the APPLE_API_KEY/_ID/_ISSUER secrets."
+              cat /tmp/spctl.log
+              hdiutil detach "${VOL}" -force || true
+              exit 1
+            fi
+            xcrun stapler validate "${APP_BUNDLE}"
+            echo "✓ signed + notarized + stapled — Gatekeeper accepts it (no warning on download)"
+          else
+            echo "::warning::App is UNSIGNED (no Apple credentials at build time) — skipping Gatekeeper checks."
+          fi
           hdiutil detach "${VOL}" -force || true
 
   # ── 4. Publish ───────────────────────────────────────────────────────────

@@ -75,14 +75,21 @@ mac:
     - target: zip
       arch:
         - universal
-  # identity/notarize stay off here — PR #4 flips both on with the Apple cert +
-  # App Store Connect API key. Until then the DMG is unsigned (Gatekeeper warns).
-  identity: null
-  hardenedRuntime: true
+  # Signing + notarization are driven by CI env (see release.yml `build-dmg`):
+  #   - electron-builder auto-signs with the Developer ID Application cert when
+  #     CSC_LINK / CSC_KEY_PASSWORD are present in the env; with them absent it
+  #     produces an UNSIGNED build (local dev, or before the secrets exist) — no
+  #     error, just a Gatekeeper warning on the artifact.
+  #   - notarization is enabled CONDITIONALLY by release.yml via
+  #     `--config.mac.notarize.teamId=…`, only when the App Store Connect API key
+  #     secret is present — so credential-less builds don't try (and fail) to
+  #     notarize. That's why neither `identity` nor `notarize` is pinned here:
+  #     `identity: null` would force-DISABLE signing even with a cert, and pinning
+  #     `notarize` would conflict with the conditional CLI flag.
+  hardenedRuntime: true # required for notarization
   gatekeeperAssess: false
   entitlements: build-resources/entitlements.mac.plist
   entitlementsInherit: build-resources/entitlements.mac.plist
-  notarize: false
 
 dmg:
   # Volume title shown when the DMG is mounted. Stayed simple — earlier
