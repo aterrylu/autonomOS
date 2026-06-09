@@ -21,5 +21,20 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # Install the real Claude Code CLI so the L3 real-agent integration
+      # suite (embedded-mode-integration.test.ts) can spawn a real `claude`
+      # PTY against a mock Anthropic backend. Installing needs NO auth — the
+      # test never calls the real API (ANTHROPIC_BASE_URL points at the mock).
+      # Pinned for reproducibility; bump deliberately.
+      - name: Install Claude Code CLI (for real-agent integration tests)
+        run: npm i -g @anthropic-ai/claude-code@2.1.168
+
       - name: Lint, typecheck, test
+        # AUTONOMOS_INTEGRATION=1 enables the real-`claude` L3 integration suite
+        # (embedded-mode-integration.test.ts). This flag is set ONLY here in CI —
+        # never on a developer machine — so the suite, which spawns a real claude
+        # PTY, can never run on a box that's also hosting a live autonomos
+        # deployment. Local `make check` skips that suite entirely.
+        env:
+          AUTONOMOS_INTEGRATION: "1"
         run: make check

@@ -36,7 +36,7 @@ dead-agent-spawn bug in v0.0.1 **and** v0.0.2.
 | **L0 Static** | types + lint | `biome`, `tsc --build` | every PR |
 | **L1 Unit** | pure logic per package | `node:test` (server/app), `vitest` (dashboard) | every PR |
 | **L2 Component** | React render/behavior | `vitest` + `jsdom` + testing-library | every PR |
-| **L3 Integration — API/PTY** | real server + real agent spawn; #178 wiring; hook telemetry; **liveness** | `testagent` fake-`claude` + isolated server | every PR |
+| **L3 Integration — API/PTY** | real server + real agent spawn; #178 wiring; hook telemetry; **liveness** | **real `claude` + mock `/v1/messages`** + isolated server | every PR |
 | **L4 Integration — UI** | dashboard works end-to-end in a browser | `Playwright` vs `make dev` | every PR |
 | **L5 Artifact smoke** | the **bundled** server boots, native modules load, auth + spawn + liveness | `smoke-test-bundle.sh` under bundled Node | every PR* |
 | **L6 Artifact — DMG/CDP** | the packaged `.app` launches; Welcome/auth/first-run UX; CSS-perf invariants | build **unsigned** DMG + `validate-dmg` CDP (**gate**) | every PR* |
@@ -59,21 +59,38 @@ and the notary can stall for an hour). So notary latency never touches the dev/P
 ## Real-agent testing without API cost
 
 autonomOS's assertions — agent spawns under PTY, streams output, hook events POST to the server,
-exits cleanly — **don't care what the LLM says**, only the lifecycle + telemetry. So the right
-altitude is a fake **CLI**, not a mocked API.
+exits cleanly — **don't care what the LLM says**, only the lifecycle + telemetry. The chosen
+approach: run the **real `claude` binary** and fake only its `/v1/messages` responses.
 
-- **Primary — [`paultyng/testagent`](https://github.com/paultyng/testagent):** a deterministic
-  fake of the `claude` CLI built to test hook relays + orchestrators under a real PTY. Honors our
-  exact spawn flags (`--session-id`, `--settings`, `--mcp-config`, `--resume`…), fires real hook
-  payloads (11 of our 13 events), and acts as a **real MCP client**. Vendored as a pinned release
-  binary; tests point the provider's `claude` resolution at it via `PATH`.
-  - **Spike first:** confirm it tolerates our `--brief` / `--dangerously-load-development-channels`
-    flags (wrap or upstream a fix if it hard-errors on unknowns).
-  - Gaps: doesn't model `SubagentStart`/`SubagentStop`/`PostToolUseFailure` — cover those at unit level.
-- **Secondary — mock `/v1/messages`:** a tiny Hono SSE server behind `ANTHROPIC_BASE_URL` (which our
-  provider already injects) drives the **real `claude` binary** for one high-fidelity smoke test —
-  catches flag/`--settings` parsing regressions testagent can't model. We own the multi-turn loop +
-  stop condition, so keep it to one or two tests.
+- **Chosen — real `claude` + mock `/v1/messages`:** a tiny `node:http` SSE server
+  (`packages/server/src/__tests__/helpers/mock-anthropic.ts`) behind `ANTHROPIC_BASE_URL` — which
+  the claude-code provider **already injects** from dashboard settings (`buildEnv()` reads
+  `getSettings()` → `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`). The integration test
+  (`embedded-mode-integration.test.ts`) boots the real server, writes a `settings.json` into the
+  isolated `CONFIG_DIR` pointing the spawned agent at the mock, then `POST /api/agents` spawns a
+  **real `claude` PTY through the real provider/hook-relay path**. We own the turn loop + stop
+  condition in the mock, so the run is deterministic and **zero API cost**.
+  - The mock returns SSE: `message_start → content_block_start → content_block_delta → content_block_stop
+    → message_delta(end_turn) → message_stop`; `count_tokens → {input_tokens:N}`; everything else → `{}`.
+    Matched on `url.includes("/v1/messages") && !includes("count_tokens")` (claude calls
+    `POST /v1/messages?beta=true`). A `tool_use` mode emits a `tool_use` block (name + `input_json_delta`)
+    on the first turn so `PreToolUse`/`PostToolUse` can be exercised, then end_turn on later turns.
+  - autonomOS spawns **interactive** under a PTY (not `-p`), so the `--` prompt is **queued** until a
+    submit keystroke. The test drives the prompt through the **real terminal WebSocket**
+    (`/ws/terminal/:id` — the same path the dashboard uses) to complete a turn; auto-trust dismisses
+    the trust prompt. Asserts the real lifecycle: `SessionStart → UserPromptSubmit → Stop`, then kill
+    → record leaves `running` → `SessionEnd → stopped`. Hooks asserted **before** the kill.
+  - **Negative control:** pointing the mock URL at a dead port leaves the agent stuck at
+    `UserPromptSubmit`/`working` — the Stop assertion fails. Proven the gate can fail (not a
+    class-6 false-pass).
+  - CI installs the CLI with `npm i -g @anthropic-ai/claude-code@<pinned>` before `make check`
+    (installing needs **no auth** — the test never calls the real API). When `claude` is genuinely
+    absent locally the suite skips with a clear message.
+- **Rejected — [`paultyng/testagent`](https://github.com/paultyng/testagent):** a fake `claude` CLI.
+  Rejected on **argv divergence** — it rejects our `--brief`/`--channels` flags as unknown and wants a
+  **file-path** `--settings` (we pass inline JSON). Adopting it would force argv mutation in the
+  provider purely for tests, diverging the tested path from production. The real-binary approach
+  exercises the exact argv we ship.
 - **Avoid:** real-model-in-CI (cost, rate-limit flakes, nondeterminism — at most a nightly canary)
   and VCR record/replay of agentic runs (tool loops are nondeterministic; cassettes go brittle).
 
@@ -90,6 +107,12 @@ altitude is a fake **CLI**, not a mocked API.
    of its logic (the `channel-schedules` anti-pattern).
 5. **Build-time anchor assertions** for fragile upstream coupling (e.g. node-pty's loader shape) —
    fail the build loudly when a dependency changes, instead of shipping a silent regression.
+6. **Real-process integration tests are CI-only.** Any suite that spawns a real `claude` PTY or boots
+   a real server (L3) is gated behind `AUTONOMOS_INTEGRATION=1`, which **only CI sets** — never a dev
+   machine. The dev box is often *also* a live autonomos deployment; running real spawns there (and
+   especially any broad `pkill -f claude` cleanup) can kill the operator's live agents. **Never
+   broad-kill** — a test kills only its own scoped PIDs / agent ids. Local `make check` skips these
+   suites entirely; the unit layers still cover the logic.
 
 ## Definition of "safe to release"
 
@@ -102,9 +125,11 @@ without cutting a release.
 - **Phase 1 — Foundation (this doc):** wire the dashboard's 171 `vitest` tests into CI (they were
   orphaned — and had already silently rotted to 2 real failures), fix those regressions, establish
   this strategy. Branch: `terry/test-framework-phase1`.
-- **Phase 2 — Real-agent integration (L3):** vendor `testagent`; un-skip + expand
-  `embedded-mode-integration.test.ts`; extract the auth middleware so the cookie/bootstrap path is
-  testable; fix the `channel-schedules` fake-import; add the mock-`/v1/messages` smoke.
+- **Phase 2 — Real-agent integration (L3):** real `claude` + mock `/v1/messages`; expand
+  `embedded-mode-integration.test.ts` with a full real-agent spawn+lifecycle+negative-control test;
+  wire the pinned CLI into CI. (`testagent` evaluated and rejected — argv divergence; see above.)
+  Branch: `terry/test-framework-phase2`. Remaining for a follow-up: extract the auth middleware so
+  the cookie/bootstrap path is unit-testable; fix the `channel-schedules` fake-import.
 - **Phase 3 — UI (L2 + L4):** `jsdom` + testing-library component tests; `Playwright` e2e flows
   (create→stream→kill, split-pane, tab switch, settings, reconnect).
 - **Phase 4 — Artifact gates on PR (L5/L6):** bundle smoke + unsigned DMG + CDP gate on every PR,
