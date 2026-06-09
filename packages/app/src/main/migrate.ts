@@ -12,19 +12,41 @@
 //   2. LaunchAgent removed; daemon receives SIGTERM, pid file released.
 //   3. Caller re-runs acquireOrConnect() → spawns a fresh Built-in child.
 
-import { spawn } from "node:child_process";
+import { spawn as realSpawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app } from "electron";
 
+import { getApp } from "./electron-deps.js";
 import {
   detachActiveServer,
   shutdownBuiltInServer,
 } from "./server-supervisor.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Test seam (mirrors server-supervisor's _setDependenciesForTesting). ──
+type SpawnFn = typeof realSpawn;
+let _spawn: SpawnFn = realSpawn;
+let _settleDelayMs = 200;
+
+/** TEST SEAM. Inject a fake spawn and shrink the post-migration settle delay
+ *  so unit tests neither create a process nor wait 200ms of real time. */
+export function _setMigrateDependenciesForTesting(deps: {
+  spawn?: SpawnFn;
+  settleDelayMs?: number;
+}): void {
+  if (deps.spawn) _spawn = deps.spawn;
+  if (typeof deps.settleDelayMs === "number")
+    _settleDelayMs = deps.settleDelayMs;
+}
+
+/** TEST SEAM. Restore real spawn + default delay. */
+export function _resetMigrateForTesting(): void {
+  _spawn = realSpawn;
+  _settleDelayMs = 200;
+}
 
 export interface MigrateResult {
   ok: boolean;
@@ -38,7 +60,7 @@ function findCliBinary(): string | null {
   const target = `${p === "darwin" ? "darwin" : "linux"}-${a === "arm64" ? "arm64" : "x64"}`;
   // The CLI's entry is the same bundle as the server; the `start` /
   // `install-service` subcommands dispatch from there.
-  const candidates = app.isPackaged
+  const candidates = getApp().isPackaged
     ? [resolve(process.resourcesPath, "server/index.js")]
     : [
         resolve(__dirname, `../../../server/dist/${target}/index.js`),
@@ -64,7 +86,7 @@ function runCli(args: readonly string[]): Promise<MigrateResult> {
       resolveFn({ ok: false, stdout: "", stderr: "CLI bundle not found" });
       return;
     }
-    const proc = spawn(findNodeBin(), [cli, ...args], {
+    const proc = _spawn(findNodeBin(), [cli, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
@@ -95,7 +117,7 @@ export async function migrateToAlwaysOn(): Promise<MigrateResult> {
   // Brief delay to give the OS time to fully tear down the listening
   // socket. 200ms is conservative; the kill is synchronous after the
   // promise resolves.
-  await new Promise((r) => setTimeout(r, 200));
+  await new Promise((r) => setTimeout(r, _settleDelayMs));
 
   // Step 2: install-service spawns the LaunchAgent which boots a new
   // server. We let the LaunchAgent handle pid-file ownership.
@@ -112,7 +134,7 @@ export async function migrateToBuiltIn(): Promise<MigrateResult> {
     detachActiveServer();
     // Brief delay so launchctl's bootout / process teardown completes
     // before the next acquireOrConnect() runs.
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, _settleDelayMs));
   }
   return result;
 }

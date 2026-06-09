@@ -9,16 +9,71 @@
 // AUTONOMOS_ALREADY_RUNNING on stdout if an Always-on daemon is already
 // running — we then kill our child and connect to the existing server.
 
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import {
+  type ChildProcess,
+  spawn as realSpawn,
+  spawnSync as realSpawnSync,
+} from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { arch, homedir, platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app } from "electron";
+
+import { getApp } from "./electron-deps.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Dependency-injection seams (mirrors the server's _setDependencies). ──
+// Default to the real implementations; tests override via
+// `_setDependenciesForTesting(...)`. This keeps acquireOrConnect's DECISION
+// logic unit-testable without spawning any real process or HTTP server.
+type SpawnFn = typeof realSpawn;
+type SpawnSyncFn = typeof realSpawnSync;
+type IsPortResponsiveFn = (
+  port: number,
+  timeoutMs?: number,
+) => Promise<boolean>;
+type IsPidAliveFn = (pid: number) => boolean;
+
+let _spawn: SpawnFn = realSpawn;
+let _spawnSync: SpawnSyncFn = realSpawnSync;
+let _isPortResponsiveImpl: IsPortResponsiveFn | null = null;
+let _isPidAliveImpl: IsPidAliveFn | null = null;
+let _autonomosHomeOverride: string | null = null;
+
+/** Directory holding the pid file + token. Real path is ~/.autonomos; tests
+ *  point this at an isolated temp dir so the operator's LIVE deployment state
+ *  is never read or written. */
+function autonomosHome(): string {
+  return _autonomosHomeOverride ?? resolve(homedir(), ".autonomos");
+}
+
+/** TEST SEAM. Inject fakes for the process / probe primitives. */
+export function _setDependenciesForTesting(deps: {
+  spawn?: SpawnFn;
+  spawnSync?: SpawnSyncFn;
+  isPortResponsive?: IsPortResponsiveFn;
+  isPidAlive?: IsPidAliveFn;
+  autonomosHome?: string;
+}): void {
+  if (deps.spawn) _spawn = deps.spawn;
+  if (deps.spawnSync) _spawnSync = deps.spawnSync;
+  if (deps.isPortResponsive) _isPortResponsiveImpl = deps.isPortResponsive;
+  if (deps.isPidAlive) _isPidAliveImpl = deps.isPidAlive;
+  if (deps.autonomosHome) _autonomosHomeOverride = deps.autonomosHome;
+}
+
+/** TEST SEAM. Restore real primitives and clear the cached active server. */
+export function _resetForTesting(): void {
+  _spawn = realSpawn;
+  _spawnSync = realSpawnSync;
+  _isPortResponsiveImpl = null;
+  _isPidAliveImpl = null;
+  _autonomosHomeOverride = null;
+  activeServer = null;
+}
 
 interface PidFileContents {
   pid: number;
@@ -29,7 +84,7 @@ interface PidFileContents {
 
 /** Read ~/.autonomos/autonomos.pid. Returns null on missing/corrupt. */
 function readPidFile(): PidFileContents | null {
-  const path = resolve(homedir(), ".autonomos", "autonomos.pid");
+  const path = resolve(autonomosHome(), "autonomos.pid");
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, "utf-8")) as PidFileContents;
@@ -47,6 +102,7 @@ function readPidFile(): PidFileContents | null {
 }
 
 function isPidAlive(pid: number): boolean {
+  if (_isPidAliveImpl) return _isPidAliveImpl(pid);
   try {
     process.kill(pid, 0);
     return true;
@@ -62,6 +118,7 @@ async function isPortResponsive(
   port: number,
   timeoutMs = 800,
 ): Promise<boolean> {
+  if (_isPortResponsiveImpl) return _isPortResponsiveImpl(port, timeoutMs);
   return new Promise((resolveFn) => {
     let settled = false;
     const settle = (v: boolean): void => {
@@ -128,13 +185,13 @@ export function getActiveServer(): LocalServer | null {
  *  (ABI quirks), so we MUST spawn the server with a real Node binary. */
 function findNodeBinary(): string {
   // First: the bundled Node shipped inside the .app.
-  const bundled = app.isPackaged
+  const bundled = getApp().isPackaged
     ? resolve(process.resourcesPath, "node/bin/node")
     : resolve(__dirname, "../../resources/node/bin/node");
   if (existsSync(bundled)) return bundled;
 
   // Fallback: system node (dev mode, or pre-bundled-node DMGs).
-  const which = spawnSync("which", ["node"], { encoding: "utf-8" });
+  const which = _spawnSync("which", ["node"], { encoding: "utf-8" });
   if (which.status === 0 && which.stdout.trim()) return which.stdout.trim();
   const candidates = [
     "/usr/local/bin/node",
@@ -155,7 +212,7 @@ function findServerEntry(): string | null {
   const p = platform();
   const a = arch();
   const target = `${p === "darwin" ? "darwin" : "linux"}-${a === "arm64" ? "arm64" : "x64"}`;
-  const candidates = app.isPackaged
+  const candidates = getApp().isPackaged
     ? [resolve(process.resourcesPath, "server/index.js")]
     : [
         resolve(__dirname, `../../../server/dist/${target}/index.js`),
@@ -165,7 +222,7 @@ function findServerEntry(): string | null {
 }
 
 function readExistingToken(): string | null {
-  const path = resolve(homedir(), ".autonomos", "token");
+  const path = resolve(autonomosHome(), "token");
   if (!existsSync(path)) return null;
   try {
     return readFileSync(path, "utf-8").trim() || null;
@@ -217,7 +274,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
   if (!entry) {
     throw new Error(
       `Server bundle not found. ${
-        app.isPackaged
+        getApp().isPackaged
           ? "This DMG may be corrupted."
           : "Run `bun run build:binary` from repo root."
       }`,
@@ -230,7 +287,7 @@ export async function acquireOrConnect(): Promise<LocalServer> {
   // and Always-on share auth). Otherwise generate a fresh one.
   const token = readExistingToken() ?? randomBytes(32).toString("hex");
 
-  const child = spawn(nodeBin, [entry, "--embedded", "--port=0"], {
+  const child = _spawn(nodeBin, [entry, "--embedded", "--port=0"], {
     env: { ...process.env, AUTONOMOS_TOKEN: token },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -332,7 +389,7 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
   if (!entry) {
     throw new Error(
       `Server bundle not found. ${
-        app.isPackaged
+        getApp().isPackaged
           ? "This DMG may be corrupted."
           : "Run `bun run build:binary` from repo root."
       }`,
@@ -344,7 +401,7 @@ export async function acquireEphemeral(): Promise<BuiltInServer> {
   mkdirSync(ephemeralDir, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
 
-  const child = spawn(nodeBin, [entry, "--embedded", "--port=0"], {
+  const child = _spawn(nodeBin, [entry, "--embedded", "--port=0"], {
     env: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: ephemeralDir,

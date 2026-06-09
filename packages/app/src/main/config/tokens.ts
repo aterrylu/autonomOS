@@ -13,9 +13,8 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { app, safeStorage } from "electron";
-
 import { TOKENS_FILENAME } from "../../shared/constants.js";
+import { getApp, getSafeStorage } from "../electron-deps.js";
 
 interface StoredToken {
   encrypted: boolean;
@@ -49,7 +48,7 @@ function isTokensFile(x: unknown): x is TokensFile {
 
 function emptyFile(): TokensFile {
   return {
-    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    encryptionAvailable: getSafeStorage().isEncryptionAvailable(),
     tokens: {},
   };
 }
@@ -58,7 +57,7 @@ let cached: TokensFile | null = null;
 let writeLock: Promise<void> = Promise.resolve();
 
 function tokensPath(): string {
-  return join(app.getPath("userData"), TOKENS_FILENAME);
+  return join(getApp().getPath("userData"), TOKENS_FILENAME);
 }
 
 async function load(): Promise<TokensFile> {
@@ -120,6 +119,7 @@ export async function setToken(
   token: string,
 ): Promise<void> {
   const file = await load();
+  const safeStorage = getSafeStorage();
   const canEncrypt = safeStorage.isEncryptionAvailable();
   const stored: StoredToken = canEncrypt
     ? {
@@ -141,7 +141,7 @@ export async function getToken(connectionId: string): Promise<string | null> {
   if (!entry) return null;
   if (!entry.encrypted) return entry.value;
   try {
-    return safeStorage.decryptString(Buffer.from(entry.value, "base64"));
+    return getSafeStorage().decryptString(Buffer.from(entry.value, "base64"));
   } catch (err) {
     console.warn(
       `[tokens] Failed to decrypt token for connection ${connectionId}:`,
@@ -165,7 +165,14 @@ export async function removeToken(connectionId: string): Promise<void> {
  *  surfaces a warning banner when false. Re-queries safeStorage on each
  *  call because keychain availability can flip mid-session (sleep+lock). */
 export async function isEncryptionAvailable(): Promise<boolean> {
-  const live = safeStorage.isEncryptionAvailable();
+  const live = getSafeStorage().isEncryptionAvailable();
   const file = await load();
   return live && file.encryptionAvailable;
+}
+
+/** TEST SEAM. Drop the in-process tokens cache so a test can point at a
+ *  fresh temp `userData` dir between cases. No effect in production. */
+export function _resetTokensCacheForTesting(): void {
+  cached = null;
+  writeLock = Promise.resolve();
 }

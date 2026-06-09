@@ -172,6 +172,16 @@ without cutting a release.
     not just a stub; tracked as future L4 work.
 - **Phase 4 — Artifact gates on PR (L5/L6):** bundle smoke + unsigned DMG + CDP gate on every PR,
   path-filtered. Intel (L6b) stays release + nightly; signing (L7) stays release-only.
+- **Phase 5a — Electron main-process unit tests (L1) ✅ landed.** The desktop main process had 1 test
+  file vs the server's 19 — directly the operator's "the hosted server works great but the desktop app
+  is always problematic" pain. Added 43 `node:test` cases across 5 new files (see App inventory below)
+  covering `server-supervisor` (Built-in/Always-on decision), `tokens` (safeStorage + 0o600),
+  `migrate`, `migration`, and an extracted `drag-controller`. Introduced an `electron-deps.ts` DI seam
+  (`_setElectronForTesting`) plus per-module `_setDependenciesForTesting` overrides so `electron`,
+  `child_process`, and the HTTP/pid probes are all stubbed — **zero real processes, isolated temp dirs
+  for all pid-file/token reads** (the dev box is also a live deployment). Runs in `make check` via the
+  existing `tsx --test packages/app/src/main/__tests__/*.test.ts` glob. **Deferred to 5b:** `ipc.ts`,
+  `window-manager` BrowserWindow lifecycle, `menu.ts`, `config/store.ts`.
 
 ## Current test inventory (as of Phase 1)
 
@@ -183,8 +193,44 @@ without cutting a release.
   Phase 3a** — 32 jsdom + testing-library cases across 6 components (`*.dom.test.tsx`).
   **UI e2e layer (L4) landed in Phase 3b** — 8 Playwright specs (`e2e/*.spec.ts`) driving the real
   vite dashboard with the API + WebSocket mocked; run on every PR via `e2e.yml` (chromium only).
-- **App** (`packages/app`): only `ephemeral-cleanup` tested; `server-supervisor`, `ipc`, `tokens`
-  untested (high-risk — Phase 2/3).
+- **App** (`packages/app`, 48 `node:test` cases — **Phase 5a landed**): the Electron **main process**
+  — the operator's "the desktop app is always problematic" pain — now has real unit coverage for its
+  highest-risk decision logic. Files in `packages/app/src/main/__tests__/` (run by the same
+  `tsx --test` glob as the server, so they're in `make check` automatically):
+  - **`server-supervisor.test.ts`** (9) — `acquireOrConnect`'s Built-in-vs-Always-on decision: a live
+    pid-file owner ⇒ connect Always-on and **never spawn** (the dangerous duplicate-server case); a
+    dead pid or dead port ⇒ fall through to a Built-in spawn; `AUTONOMOS_READY port=N` parsing; the
+    `AUTONOMOS_ALREADY_RUNNING` startup-race ⇒ Always-on + child SIGTERM; server-exits-before-ready,
+    spawn `error`, and missing-bundle ⇒ clean rejection with **no spawn**; post-resolve stdout ignored.
+  - **`tokens.test.ts`** (11) — `safeStorage` encrypt/decrypt round-trip; plaintext fallback when
+    encryption is unavailable; the **keychain-flip edge** (per-token `encrypted` flag drives the read,
+    not the live probe); decrypt-failure ⇒ `null` (never throws); **`tokens.dat` always mode 0o600**;
+    corrupt-file recovery.
+  - **`migrate.test.ts`** (6) — Built-in↔Always-on migration shells out to `install-service` /
+    `uninstall-service` with the right argv; exit-code → `ok`; stdout/stderr capture; spawn-`error`
+    and missing-CLI-bundle handling.
+  - **`migration.test.ts`** (10) — `migrateConfig` load-time validation: garbage ⇒ defaults (never
+    throws), schema-version normalization, hand-edited bad connections dropped, localhost-`remote`
+    dedup. **Pins a found gap:** `isLocalhostRemote` compares against `"::1"` but `URL.hostname`
+    returns `"[::1]"` for IPv6, so an IPv6-loopback duplicate is **not** stripped.
+  - **`drag-controller.test.ts`** (7) — window-drag state machine (extracted to `drag-controller.ts`,
+    electron-free): offset-preserving reposition + **timer-leak guards** (restart, end, destroyed
+    window, cleanup-all) — failure-class #7.
+  - **`cleanup-leaked-ephemeral.test.ts`** (5) — pre-existing; prefix-exact ephemeral-dir GC.
+
+  **How electron is stubbed (no real Electron / no real process):** main-process modules do
+  `import { app } from "electron"`, which **fails to even instantiate** under plain Node/`tsx` (the
+  `electron` package's entry resolves to the binary path, not the `app`/`safeStorage` API). So this
+  phase added a small **dependency-injection seam** mirroring the server's `_setDependencies(...)`
+  pattern: `electron-deps.ts` lazily `require("electron")` in production and exposes
+  `_setElectronForTesting({ app, safeStorage })`; `server-supervisor`/`migrate` add
+  `_setDependenciesForTesting({ spawn, spawnSync, isPortResponsive, isPidAlive, autonomosHome })` so
+  `child_process` and the HTTP/pid probes are faked. **No test creates a real process** (every spawn
+  is a `FakeChild` EventEmitter) and the pid-file/token reads are pointed at an **isolated temp dir**,
+  never the operator's live `~/.autonomos`. Following the `ephemeral-cleanup.ts` precedent, the drag
+  state machine was extracted to its own electron-free module so it needs no stub at all.
+  **Still untested (Phase 5b):** `ipc.ts` (large IPC surface, electron-heavy), `window-manager.ts`
+  BrowserWindow lifecycle, `menu.ts` (low value / high mock cost), `config/store.ts`.
 - **CLI / Core**: no unit tests yet (Phase 2). The `core/dist` test is a gitignored build artifact,
   not real coverage.
 - **Deployment gates**: `smoke-test-bundle.sh` (boot+auth+spawn+liveness, release-only today →

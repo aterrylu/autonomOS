@@ -13,6 +13,7 @@ import {
 } from "electron";
 
 import { setConfig } from "./config/store.js";
+import { DragController } from "./drag-controller.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -21,43 +22,28 @@ const welcomeWindows = new Set<BrowserWindow>();
 let splashWindow: BrowserWindow | null = null;
 
 // ── Manual window drag state ────────────────────────────────────────
+//
+// The drag state machine lives in ./drag-controller (no electron import) so
+// it's unit-testable. Here we bind it to the real electron `screen` + global
+// timers. The public start/end/cleanup functions keep their original
+// signatures so callers (ipc.ts, main.ts) are unaffected.
 
-interface DragState {
-  offsetX: number;
-  offsetY: number;
-  interval: NodeJS.Timeout;
-}
-const drags = new Map<number, DragState>();
+const dragController = new DragController({
+  getCursor: () => screen.getCursorScreenPoint(),
+  setInterval: (fn, ms) => setInterval(fn, ms),
+  clearInterval: (h) => clearInterval(h as NodeJS.Timeout),
+});
 
 export function startDrag(win: BrowserWindow): void {
-  endDrag(win.id);
-  const cursor = screen.getCursorScreenPoint();
-  const pos = win.getPosition();
-  const winX = pos[0] ?? 0;
-  const winY = pos[1] ?? 0;
-  const offsetX = cursor.x - winX;
-  const offsetY = cursor.y - winY;
-  const interval = setInterval(() => {
-    if (win.isDestroyed()) {
-      endDrag(win.id);
-      return;
-    }
-    const c = screen.getCursorScreenPoint();
-    win.setPosition(c.x - offsetX, c.y - offsetY, false);
-  }, 8);
-  drags.set(win.id, { offsetX, offsetY, interval });
+  dragController.start(win);
 }
 
 export function endDrag(winId: number): void {
-  const state = drags.get(winId);
-  if (!state) return;
-  clearInterval(state.interval);
-  drags.delete(winId);
+  dragController.end(winId);
 }
 
 export function cleanupAllDrags(): void {
-  for (const state of drags.values()) clearInterval(state.interval);
-  drags.clear();
+  dragController.cleanupAll();
 }
 
 // ── BrowserWindow factory ───────────────────────────────────────────
