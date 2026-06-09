@@ -60,6 +60,14 @@ You only need to name **one** package in the changeset (conventionally
 
 That's it. No manual `npm version`, no manual tag, no manual upload.
 
+> **Requires the `RELEASE_PAT` secret** (see [Secrets](#secrets-github-repo-settings--secrets-and-variables--actions)).
+> Without it, GitHub's anti-recursion rule blocks the bot's actions from triggering
+> downstream workflows, so steps 3–5 need two manual nudges each release:
+> the Version PR's `check` never runs (close + reopen the PR to trigger it), and
+> the bot-pushed tag never starts `release.yml` (delete + re-push the tag under
+> your own auth: `git push origin :refs/tags/vX.Y.Z && git tag vX.Y.Z <sha> && git push origin vX.Y.Z`).
+> Adding `RELEASE_PAT` makes the whole flow truly one-merge.
+
 ## What gets built (`release.yml`)
 
 | Stage | Runner | Output |
@@ -115,6 +123,7 @@ signed artifact comes from CI.
 | Secret | Used by | Notes |
 |---|---|---|
 | `GITHUB_TOKEN` | version.yml, release.yml | auto-provided by Actions |
+| `RELEASE_PAT` | version.yml | **Makes releases one-merge.** Fine-grained PAT, **this repo only**, scopes: **Contents: Read and write** + **Pull requests: Read and write**. Without it the Version PR and the version tag are bot-created, which GitHub won't let trigger CI / `release.yml` — so each release needs two manual nudges (see [Cutting a release](#cutting-a-release)). version.yml falls back to `GITHUB_TOKEN` when it's absent. *(A GitHub App token via `actions/create-github-app-token` is the short-lived-credential alternative.)* |
 | `CSC_LINK` | release.yml (signing) | base64 Developer ID Application cert (.p12) — *added in the signing PR* |
 | `CSC_KEY_PASSWORD` | release.yml | the .p12 password |
 | `APPLE_API_KEY` | release.yml (notarization) | base64 App Store Connect **Team** API key (.p8) |
