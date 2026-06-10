@@ -234,5 +234,12 @@ without cutting a release.
 - **CLI / Core**: no unit tests yet (Phase 2). The `core/dist` test is a gitignored build artifact,
   not real coverage.
 - **Deployment gates**: `smoke-test-bundle.sh` (boot+auth+spawn+liveness, release-only today →
-  every-PR in Phase 4), `validate-intel` (real x64, hard gate), `validate-dmg` CDP (observe-only
-  today → gate in Phase 4), `test-install.sh` (install→start→HTTP→stop on every PR).
+  every-PR in Phase 4), `validate-intel` (real x64, hard gate), `validate-dmg` CDP (**now a hard
+  gate** on release/dispatch — proven to run headless on a GitHub macOS runner; stubs `claude` on
+  PATH so the Try-it-out ephemeral server clears provider preflight, matching a fresh user Mac),
+  `test-install.sh` (install→start→HTTP→stop on every PR).
+  - ⚠️ **Caveat (known product bug):** the `claude` stub means `validate-dmg` exercises the
+    *provider-present* path only. A user with **no** provider binary on PATH currently gets a broken
+    Try-it-out — the ephemeral server `exit(1)`s at preflight, so the connection window never opens
+    and the Welcome screen just hangs. The gate being green does **not** certify the no-provider
+    first-run. Tracked as a separate product fix (graceful preflight + actionable Welcome error).

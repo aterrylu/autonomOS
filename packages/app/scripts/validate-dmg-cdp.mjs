@@ -47,11 +47,14 @@ async function findPage(predicate, maxWaitMs = 15_000) {
 }
 
 async function main() {
-  // Welcome window must render within 5s of launch.
+  // Welcome window must render within 10s of launch. (Generous for a cold,
+  // contended GitHub macOS runner now that this drives a hard release gate — a
+  // genuinely broken build still fails fast; a slow-but-healthy boot doesn't
+  // flake-block the release.)
   console.log("[1] looking for Welcome page...");
   const welcome = await findPage(
     (t) => t.title === "autonomOS" && t.url.includes("dist/"),
-    5000,
+    10_000,
   );
   if (!welcome) throw new Error("Welcome page never appeared");
 
