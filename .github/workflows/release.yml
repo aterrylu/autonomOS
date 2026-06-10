@@ -8,8 +8,9 @@ name: Release
 #
 # The macOS DMG is universal2: one artifact runs on Apple Silicon AND Intel.
 # The bundled Node binary and native modules are lipo'd from both arches
-# (see bundle-node.sh + stage-universal-server.sh). Signing/notarization is
-# added in a follow-up — this build is unsigned (Gatekeeper warns on install).
+# (see bundle-node.sh + stage-universal-server.sh). When the Apple secrets are
+# present the DMG is signed (Developer ID) + notarized; otherwise it builds
+# unsigned (Gatekeeper warns on install) so forks stay green. See ADR for #190.
 
 on:
   push:
@@ -164,11 +165,15 @@ jobs:
           # shellcheck disable=SC2086 # notarize_flags is intentionally word-split
           bunx electron-builder --mac dmg zip --universal --publish never ${notarize_flags}
 
-      # The full UI validation (launches Electron + drives via CDP). Whether
-      # this runs on a headless GitHub macOS runner is the one CI unknown, so
-      # it's non-blocking for now — we observe it in CI, then harden to a gate.
-      - name: Validate DMG end-to-end (CDP, observe-only for now)
-        continue-on-error: true
+      # The full UI validation (launches Electron + drives via CDP). Confirmed to
+      # run on a headless GitHub macOS runner (the one CI unknown), so it's now a
+      # HARD GATE — a broken Try-it-out flow fails the release.
+      # CAVEAT: validate-dmg.sh stubs `claude` on PATH so the ephemeral server
+      # clears its provider preflight. That means this gate covers only the
+      # PROVIDER-PRESENT first-run. A fresh Mac with NO provider binary currently
+      # hits a separate, known product bug (server exit(1)s at preflight → Welcome
+      # hangs); the green gate does NOT certify that path. See docs/TESTING.md.
+      - name: Validate DMG end-to-end (HARD GATE — provider-present first-run flow)
         run: bash scripts/validate-dmg.sh "$(ls out/*.dmg | head -1)"
         working-directory: packages/app
 
