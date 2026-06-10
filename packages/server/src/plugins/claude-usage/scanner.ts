@@ -1,14 +1,16 @@
 /**
  * Claude usage fetcher — queries claude.ai's internal usage API.
  *
- * Uses a session cookie (from browser) to authenticate. The cookie
- * Reads CLAUDE_SESSION_KEY and CLAUDE_ORG_ID from settings or .env.
+ * Authenticates with a single credential: the session key
+ * (CLAUDE_SESSION_KEY from settings or .env). The organization UUID is
+ * resolved automatically from the session key via claude.ai's bootstrap
+ * API — no org ID is required from the user.
  *
  * Uses impit (Rust-based browser impersonation) to match Chrome's
  * TLS fingerprint so Cloudflare doesn't block the request.
  *
  * Flow:
- *   1. Extract orgId from cookie (lastActiveOrg) or bootstrap API
+ *   1. Resolve orgId from the bootstrap API (cached after first lookup)
  *   2. GET /api/organizations/{orgId}/usage → rate limit data
  */
 
@@ -52,6 +54,25 @@ const BOOTSTRAP_URL = "https://claude.ai/api/bootstrap";
 /** Shared impit client — reuses connections and TLS state */
 const impit = new Impit({ browser: "chrome" });
 
+/** Minimal response shape consumed by the usage fetchers. */
+interface FetchResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+}
+
+/**
+ * HTTP fetcher seam. Defaults to the real impit client; tests inject a
+ * fake to exercise the bootstrap/usage flow deterministically without
+ * network access (the repo's test runner can't mock the `impit` module).
+ */
+export type UsageFetcher = (
+  url: string,
+  init: { headers: Record<string, string> },
+) => Promise<FetchResponse>;
+
+const defaultFetcher: UsageFetcher = (url, init) => impit.fetch(url, init);
+
 /** In-memory cache */
 let cached: { data: RateLimitData; expiresAt: number } | null = null;
 let lastGoodData: RateLimitData | null = null;
@@ -61,19 +82,21 @@ const CACHE_TTL_429 = 5 * 60_000;
 /** Cached org ID — rarely changes */
 let cachedOrgId: string | null = null;
 
-function getSessionCookie(): string | null {
-  // Priority: settings file > env vars > legacy env var
+/**
+ * Build the auth cookie from the session key alone.
+ *
+ * The org ID is intentionally NOT appended — it's resolved from the
+ * session key via the bootstrap API (see {@link fetchOrgId}). Any
+ * lingering `claudeOrgId` in settings or `CLAUDE_ORG_ID` in the env is
+ * ignored for back/forward compatibility.
+ *
+ * Exported for tests.
+ */
+export function getSessionCookie(): string | null {
   const settings = getSettings();
   const key =
     settings.claudeSessionKey?.trim() || process.env.CLAUDE_SESSION_KEY?.trim();
-  if (key) {
-    const orgId =
-      settings.claudeOrgId?.trim() || process.env.CLAUDE_ORG_ID?.trim();
-    const parts = [`sessionKey=${key}`];
-    if (orgId) parts.push(`lastActiveOrg=${orgId}`);
-    return parts.join(";");
-  }
-  return process.env.CLAUDE_SESSION_KEY?.trim() || null;
+  return key ? `sessionKey=${key}` : null;
 }
 
 /** Clear cached data — call after settings change */
@@ -88,30 +111,59 @@ function buildCookieHeader(cookie: string): string {
   return `sessionKey=${cookie}`;
 }
 
-async function fetchOrgId(cookie: string): Promise<string | null> {
-  if (cachedOrgId) return cachedOrgId;
+/** Outcome of resolving the org UUID — lets callers give the user a
+ * message that matches the actual failure instead of one generic error. */
+type OrgIdStatus = "ok" | "unauthorized" | "no_org" | "error";
 
-  // Try extracting from cookie first
+interface OrgIdResult {
+  orgId: string | null;
+  status: OrgIdStatus;
+}
+
+/**
+ * Resolve the organization UUID for the given cookie.
+ *
+ * The session-key-only cookie carries no `lastActiveOrg`, so resolution
+ * falls through to the bootstrap API. A manually-supplied full cookie
+ * string that still contains `lastActiveOrg` is honored as a shortcut.
+ * Result is cached. Exported for tests.
+ *
+ * Distinguishes the failure modes (`unauthorized` for an expired/invalid
+ * key, `no_org` for a valid key with no organization, `error` for
+ * network/parse problems) so the caller can surface an actionable message.
+ */
+export async function fetchOrgId(
+  cookie: string,
+  fetcher: UsageFetcher = defaultFetcher,
+): Promise<OrgIdResult> {
+  if (cachedOrgId) return { orgId: cachedOrgId, status: "ok" };
+
+  // Honor an explicit lastActiveOrg if present (manual full-cookie paste).
   const orgMatch = cookie.match(/lastActiveOrg=([^;]+)/);
   if (orgMatch) {
     cachedOrgId = orgMatch[1];
-    return cachedOrgId;
+    return { orgId: cachedOrgId, status: "ok" };
   }
 
-  // Fall back to bootstrap API
+  // Resolve from the bootstrap API using the session key alone.
   try {
-    const res = await impit.fetch(BOOTSTRAP_URL, {
+    const res = await fetcher(BOOTSTRAP_URL, {
       headers: { Cookie: buildCookieHeader(cookie) },
     });
-    if (!res.ok) return null;
+    if (res.status === 401 || res.status === 403) {
+      return { orgId: null, status: "unauthorized" };
+    }
+    if (!res.ok) return { orgId: null, status: "error" };
     const data = (await res.json()) as {
       account?: { memberships?: Array<{ organization?: { uuid?: string } }> };
     };
     const orgId = data?.account?.memberships?.[0]?.organization?.uuid ?? null;
-    if (orgId) cachedOrgId = orgId;
-    return orgId;
-  } catch {
-    return null;
+    if (!orgId) return { orgId: null, status: "no_org" };
+    cachedOrgId = orgId;
+    return { orgId, status: "ok" };
+  } catch (err) {
+    console.error("[claude-usage] bootstrap org resolution failed:", err);
+    return { orgId: null, status: "error" };
   }
 }
 
@@ -132,9 +184,10 @@ interface UsageResult {
 async function fetchUsageData(
   cookie: string,
   orgId: string,
+  fetcher: UsageFetcher = defaultFetcher,
 ): Promise<UsageResult> {
   try {
-    const res = await impit.fetch(`${USAGE_URL}/${orgId}/usage`, {
+    const res = await fetcher(`${USAGE_URL}/${orgId}/usage`, {
       headers: { Cookie: buildCookieHeader(cookie) },
     });
     if (res.status === 429) return { data: null, status: "rate_limited" };
@@ -147,12 +200,15 @@ async function fetchUsageData(
       data: (await res.json()) as Record<string, unknown>,
       status: "ok",
     };
-  } catch {
+  } catch (err) {
+    console.error("[claude-usage] usage fetch failed:", err);
     return { data: null, status: "error" };
   }
 }
 
-export async function getRateLimits(): Promise<RateLimitData> {
+export async function getRateLimits(
+  fetcher: UsageFetcher = defaultFetcher,
+): Promise<RateLimitData> {
   const now = Date.now();
   if (cached && cached.expiresAt > now) return cached.data;
 
@@ -164,14 +220,31 @@ export async function getRateLimits(): Promise<RateLimitData> {
     };
   }
 
-  const orgId = await fetchOrgId(cookie);
-  if (!orgId) {
+  const org = await fetchOrgId(cookie, fetcher);
+  if (org.status === "unauthorized") {
+    return errorResult(
+      "Session cookie expired or invalid — please update CLAUDE_SESSION_KEY in .env",
+    );
+  }
+  if (org.status === "no_org") {
+    // The bootstrap API returns 200 with an empty membership list for an
+    // unrecognized/expired cookie (it treats it as logged-out), so this is
+    // the path a bad session key actually lands on — point the user there.
+    return errorResult(
+      "Could not resolve your Claude organization — your session key may be invalid or expired. Update CLAUDE_SESSION_KEY.",
+    );
+  }
+  if (!org.orgId) {
     return errorResult(
       "Could not resolve organization — check your session cookie",
     );
   }
 
-  const { data: body, status } = await fetchUsageData(cookie, orgId);
+  const { data: body, status } = await fetchUsageData(
+    cookie,
+    org.orgId,
+    fetcher,
+  );
 
   if (status === "unauthorized") {
     return errorResult(

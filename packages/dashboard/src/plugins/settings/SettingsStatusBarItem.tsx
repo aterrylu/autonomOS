@@ -5,7 +5,6 @@ import { useClickOutside } from "../claude-usage/useClickOutside";
 
 interface MaskedSettings {
   claudeSessionKey: string | null;
-  claudeOrgId: string | null;
   anthropicBaseUrl: string | null;
   anthropicAuthToken: string | null;
   anthropicOverrideEnabled: boolean;

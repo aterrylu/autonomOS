@@ -90,7 +90,6 @@ function SetupPanel({
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const [sessionKey, setSessionKey] = useState("");
-  const [orgId, setOrgId] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -105,7 +104,6 @@ function SetupPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           claudeSessionKey: sessionKey.trim(),
-          claudeOrgId: orgId.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -152,20 +150,14 @@ function SetupPanel({
           DevTools (<kbd>Cmd+Opt+I</kbd>) {">"} Application {">"} Cookies
         </li>
         <li>
-          Copy{" "}
+          Copy the{" "}
           <code
             className="rounded px-1 py-0.5"
             style={{ background: page.border }}
           >
             sessionKey
           </code>{" "}
-          and{" "}
-          <code
-            className="rounded px-1 py-0.5"
-            style={{ background: page.border }}
-          >
-            lastActiveOrg
-          </code>
+          value
         </li>
       </ol>
 
@@ -184,24 +176,6 @@ function SetupPanel({
             value={sessionKey}
             onChange={(e) => setSessionKey(e.target.value)}
             placeholder="sk-ant-sid01-..."
-            className="w-full rounded px-2 py-1.5 text-xs font-mono"
-            style={inputStyle}
-          />
-        </div>
-        <div>
-          <label
-            htmlFor="claude-org-id"
-            className="block text-[10px] mb-0.5"
-            style={{ color: page.statusFg }}
-          >
-            Org ID (optional)
-          </label>
-          <input
-            id="claude-org-id"
-            type="text"
-            value={orgId}
-            onChange={(e) => setOrgId(e.target.value)}
-            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
             className="w-full rounded px-2 py-1.5 text-xs font-mono"
             style={inputStyle}
           />

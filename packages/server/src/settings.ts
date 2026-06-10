@@ -13,7 +13,12 @@ import { ensureConfigDir, getConfigDir } from "./configDir.js";
 export interface AppSettings {
   /** Claude session key for usage plugin (sk-ant-sid01-...) */
   claudeSessionKey?: string;
-  /** Claude organization ID (UUID) */
+  /**
+   * @deprecated No longer required or used. The org UUID is resolved
+   * automatically from the session key via the bootstrap API. Kept only
+   * so older settings.json files still parse; new code never reads it and
+   * the settings route no longer persists it.
+   */
   claudeOrgId?: string;
   /** Anthropic API base URL (e.g. http://litellm for proxy) */
   anthropicBaseUrl?: string;
