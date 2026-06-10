@@ -25,7 +25,6 @@ function redact(value: string | undefined): string | null {
 function maskSettings(settings: AppSettings) {
   return {
     claudeSessionKey: redact(settings.claudeSessionKey),
-    claudeOrgId: settings.claudeOrgId || null,
     anthropicBaseUrl: settings.anthropicBaseUrl || null,
     anthropicAuthToken: redact(settings.anthropicAuthToken),
     anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
@@ -54,9 +53,9 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
-  if (typeof body.claudeOrgId === "string") {
-    partial.claudeOrgId = body.claudeOrgId.trim();
-  }
+  // `claudeOrgId` is deprecated — accept-but-discard for back-compat with
+  // older dashboards that still send it. The org UUID is resolved from the
+  // session key via the bootstrap API, so we never persist it.
   if (typeof body.anthropicBaseUrl === "string") {
     partial.anthropicBaseUrl = body.anthropicBaseUrl.trim();
   }
@@ -157,8 +156,8 @@ settingsRouter.put("/", async (c) => {
     return c.json({ error: "Failed to save settings" }, 500);
   }
 
-  // Invalidate usage cache so new credentials take effect immediately
-  if (partial.claudeSessionKey || partial.claudeOrgId) {
+  // Invalidate usage cache so a new session key takes effect immediately
+  if (partial.claudeSessionKey) {
     invalidateCache();
   }
 

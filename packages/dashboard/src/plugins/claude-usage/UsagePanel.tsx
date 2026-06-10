@@ -172,11 +172,8 @@ function CredentialsSection({
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
-  const [maskedOrg, setMaskedOrg] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState(false);
-  const [editingOrg, setEditingOrg] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
-  const [orgDraft, setOrgDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
@@ -191,7 +188,6 @@ function CredentialsSection({
       })
       .then((data) => {
         setMaskedKey(data.claudeSessionKey ?? null);
-        setMaskedOrg(data.claudeOrgId ?? null);
         setLoaded(true);
       })
       .catch((err) => {
@@ -204,18 +200,16 @@ function CredentialsSection({
     return () => controller.abort();
   }, [expanded, loaded]);
 
-  const hasPending =
-    (editingKey && keyDraft.trim()) || (editingOrg && orgDraft.trim());
+  const hasPending = editingKey && keyDraft.trim().length > 0;
 
   async function handleSave(): Promise<void> {
     if (!hasPending) return;
     setSaving(true);
     setError("");
     try {
-      const body: Record<string, string> = {};
-      if (editingKey && keyDraft.trim())
-        body.claudeSessionKey = keyDraft.trim();
-      if (editingOrg) body.claudeOrgId = orgDraft.trim();
+      const body: Record<string, string> = {
+        claudeSessionKey: keyDraft.trim(),
+      };
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -232,11 +226,8 @@ function CredentialsSection({
       }
       const updated = await res.json();
       setMaskedKey(updated.claudeSessionKey ?? null);
-      setMaskedOrg(updated.claudeOrgId ?? null);
       setEditingKey(false);
-      setEditingOrg(false);
       setKeyDraft("");
-      setOrgDraft("");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       onRefetch?.();
@@ -294,25 +285,6 @@ function CredentialsSection({
               setKeyDraft("");
             }}
             onDraftChange={setKeyDraft}
-            inputStyle={inputStyle}
-            statusFg={page.statusFg}
-          />
-          <CredentialField
-            label="Organization ID"
-            value={maskedOrg}
-            placeholder="UUID (auto-detected if blank)"
-            emptyLabel="Auto-detected"
-            editing={editingOrg}
-            draft={orgDraft}
-            onEdit={() => {
-              setEditingOrg(true);
-              setOrgDraft("");
-            }}
-            onCancel={() => {
-              setEditingOrg(false);
-              setOrgDraft("");
-            }}
-            onDraftChange={setOrgDraft}
             inputStyle={inputStyle}
             statusFg={page.statusFg}
           />
