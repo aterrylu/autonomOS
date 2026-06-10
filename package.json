@@ -1,6 +1,7 @@
 {
   "name": "autonomos",
   "private": true,
+  "license": "MIT",
   "workspaces": ["packages/*"],
   "scripts": {
     "build:dashboard": "bun --filter @autonomos/dashboard build",
