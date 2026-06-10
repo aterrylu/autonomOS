@@ -2,6 +2,7 @@
   "name": "@autonomos/app",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "autonomOS Desktop — thin Electron client over autonomos-server daemons",
   "main": "dist/main/main.js",
   "type": "module",
