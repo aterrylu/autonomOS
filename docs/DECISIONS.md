@@ -1062,3 +1062,15 @@ baseline and removes the "TBD" ambiguity.
   tooling and runs against the project's personal-tool-first philosophy.
 - **Dual-license / source-available** — premature for the current stage.
 
+## ADR-033: Idle-renderer CPU peg-detector gate (Phase 6)
+- **Date:** 2026-06-09 — **Decided by:** agent (DesktopApp@autonomOS), approved by Terry (peg-detector approach chosen over CSS-invariants-only and nightly-only)
+- **Context:** Issue #176 pegged a renderer at ~195% on an idle Welcome window — driven by the GPU compositor under vibrancy + backdrop-filter, zero JS involved. CDP's `Performance.getMetrics` measures JS timing only and was completely blind to this class of regression. Needed a gate that can't be fooled by the bug's own shape.
+- **Decision:** Three layers — (1) broaden the CDP CSS-invariant scan to cover every Welcome element (release-time CDP); (2) extract `macWindowOptions` to an electron-free `window-options.ts` module + unit test asserting it never returns `vibrancy` (every PR); (3) OS-level idle-CPU peg-detector in `validate-dmg.sh` — sample app-tree CPU over 10s via `ps -o time`, fail if any process exceeds 80% of one core (release + dispatch).
+- **Rationale:** Defense in depth — deterministic static checks (layers 1-2) catch the known shape on every PR; the OS-level peg-detector (layer 3) catches novel causes. The 80% threshold sits in the wide empty gap between healthy idle (~5-45%) and the bug (~195%), making it robust to shared-runner noise. Dry-run against a clean build measured 0.8% — ~100x margin under threshold.
+- **Alternatives considered:**
+  - **CSS-invariants-only** — blind to novel GPU/compositor pegs not on the static check list.
+  - **Nightly CPU sample** — catches regressions a day late; PR-time signal beats post-merge cleanup.
+  - **CDP `Performance.getMetrics`** — JS-timing only, structurally blind to the GPU-compositor class.
+- **Soundness note:** Cumulative per-process CPU-seconds require a stable process set across the sampling window. The detector kills any prior-instance Helpers and waits for clean teardown before relaunch, and fails closed on negative delta or `t1 <= 0` (filters race conditions in the sampling).
+- **Source:** CC session, Phase 6 of the test-framework redesign.
+
