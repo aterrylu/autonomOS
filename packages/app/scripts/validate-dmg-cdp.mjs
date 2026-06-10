@@ -66,11 +66,28 @@ async function main() {
         badge: c.querySelector('.welcome-card-badge')?.textContent?.trim(),
         hasTryClass: c.classList.contains('welcome-card-try'),
       })),
+      // Scan EVERY element in the Welcome-window document for the #176 GPU-peg
+      // patterns, not just the first card — a regression could land on any
+      // element. (This is the Welcome frame only; the dashboard webview's CSS is
+      // not reached here — the Phase-2 OS-level peg-detector is the general
+      // backstop for any cause.) Report up to 10 offenders so a failure names it.
       cssCheck: (() => {
-        const card = document.querySelector('.welcome-card');
-        if (!card) return null;
-        const cs = getComputedStyle(card);
-        return { backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter, transition: cs.transition };
+        const violations = [];
+        for (const el of document.querySelectorAll('*')) {
+          const cs = getComputedStyle(el);
+          const bf = cs.backdropFilter || cs.webkitBackdropFilter;
+          if (bf && bf !== 'none') {
+            violations.push({ el: el.className || el.tagName, prop: 'backdrop-filter', val: bf });
+          }
+          // A non-zero "transition: all" forces per-frame all-property style
+          // recalc. The CSS DEFAULT (transition-property:all, duration:0s) is
+          // inert and present on every element — only flag a NON-zero one, or
+          // we'd false-positive on the whole DOM.
+          if (cs.transitionProperty === 'all' && parseFloat(cs.transitionDuration) > 0) {
+            violations.push({ el: el.className || el.tagName, prop: 'transition', val: cs.transition });
+          }
+        }
+        return { count: violations.length, sample: violations.slice(0, 10) };
       })(),
     })`,
     returnByValue: true,
@@ -81,13 +98,13 @@ async function main() {
   if (!tryCard) throw new Error("'Try it out' card not present on Welcome");
   if (tryCard.badge !== "Try mode") throw new Error(`Try card badge: "${tryCard.badge}" (expected "Try mode")`);
   console.log(`[1] ✓ 'Try it out' card present with badge="${tryCard.badge}"`);
-  if (w.cssCheck.backdropFilter && w.cssCheck.backdropFilter !== "none") {
-    throw new Error(`backdrop-filter STILL applied: "${w.cssCheck.backdropFilter}" — CPU fix regressed`);
+  if (w.cssCheck.count > 0) {
+    throw new Error(
+      `CPU fix regressed — ${w.cssCheck.count} element(s) use backdrop-filter or ` +
+        `non-zero 'transition: all': ${JSON.stringify(w.cssCheck.sample)}`,
+    );
   }
-  if (w.cssCheck.transition.startsWith("all ")) {
-    throw new Error("'transition: all' STILL applied — CPU fix regressed");
-  }
-  console.log("[1] ✓ CSS CPU-fix invariants hold (no backdrop-filter, no `transition: all`)");
+  console.log("[1] ✓ CSS CPU-fix invariants hold across all Welcome-window elements (no backdrop-filter, no non-zero `transition: all`)");
 
   // Click Try-It-Out.
   await cdp(welcome.webSocketDebuggerUrl, "Runtime.evaluate", {
