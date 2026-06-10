@@ -6,14 +6,11 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  BrowserWindow,
-  type BrowserWindowConstructorOptions,
-  screen,
-} from "electron";
+import { BrowserWindow, screen } from "electron";
 
 import { setConfig } from "./config/store.js";
 import { DragController } from "./drag-controller.js";
+import { macWindowOptions } from "./window-options.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -47,15 +44,9 @@ export function cleanupAllDrags(): void {
 }
 
 // ── BrowserWindow factory ───────────────────────────────────────────
-
-function macWindowOptions(): Partial<BrowserWindowConstructorOptions> {
-  if (process.platform !== "darwin") return {};
-  // No `vibrancy` — stacking macOS vibrancy under CSS `backdrop-filter` pegged
-  // the GPU compositor at ~100% (one entire core) on idle Welcome windows
-  // because the OS-level backdrop kept invalidating every frame. The window
-  // has a solid dark `backgroundColor` anyway, so vibrancy was invisible.
-  return { titleBarStyle: "hiddenInset" };
-}
+//
+// macWindowOptions (the #176 no-vibrancy perf invariant) lives in
+// ./window-options so it's unit-testable without electron. See that module.
 
 function makeBrowserWindow(): BrowserWindow {
   return new BrowserWindow({

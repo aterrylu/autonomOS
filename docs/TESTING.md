@@ -182,6 +182,26 @@ without cutting a release.
   for all pid-file/token reads** (the dev box is also a live deployment). Runs in `make check` via the
   existing `tsx --test packages/app/src/main/__tests__/*.test.ts` glob. **Deferred to 5b:** `ipc.ts`,
   `window-manager` BrowserWindow lifecycle, `menu.ts`, `config/store.ts`.
+- **Phase 6 — Idle-renderer CPU gate ✅ landed.** Directly targets the #176 class: a renderer pegged
+  at ~195% CPU (≈2 cores) on an *idle* Welcome window — macOS window vibrancy stacked under CSS
+  `backdrop-filter` made the OS re-sample the backdrop every frame, with *zero* JS running. Because
+  the work was GPU-compositor, not JS, CDP's `Performance.getMetrics` (ScriptDuration/TaskDuration)
+  is blind to it — so the gate is **defense in depth across three layers**:
+  1. **Static CSS invariant (deterministic, L6):** `validate-dmg-cdp.mjs` scans **every** element's
+     computed style for `backdrop-filter` or a *non-zero* `transition: all` (the CSS default
+     `transition-property:all / duration:0s` is inert and skipped, or it would false-positive the
+     whole DOM). Broadened from the original first-`.welcome-card`-only check.
+  2. **Constructor-option invariant (deterministic, L1, every PR):** `window-options.test.ts` asserts
+     `macWindowOptions()` never returns a `vibrancy` key — the *other* half of the #176 root cause,
+     which a DOM scan can't see. `macWindowOptions` was extracted from `window-manager.ts` into an
+     electron-free `window-options.ts` (type-only electron import) to make it unit-testable, following
+     the `drag-controller` precedent.
+  3. **Idle-CPU peg-detector (release/dispatch, L6):** `validate-dmg.sh` Phase 2 relaunches on the
+     idle Welcome screen and samples the whole app process tree's cumulative CPU (`ps -o time`) over a
+     10s window, failing if it exceeds **80% of one core**. A *peg-detector*, not a tight budget:
+     healthy idle is ~5-45% of one core, the bug was ~195% — the threshold sits in the wide empty gap,
+     so it's robust to shared-runner noise while still catching a novel peg from any cause. Tunable via
+     `CPU_THRESHOLD_PCT` / `CPU_WINDOW_SECS`. (Server-side latency/memory baselines remain future work.)
 
 ## Current test inventory (as of Phase 1)
 
@@ -236,8 +256,9 @@ without cutting a release.
 - **Deployment gates**: `smoke-test-bundle.sh` (boot+auth+spawn+liveness, release-only today →
   every-PR in Phase 4), `validate-intel` (real x64, hard gate), `validate-dmg` CDP (**now a hard
   gate** on release/dispatch — proven to run headless on a GitHub macOS runner; stubs `claude` on
-  PATH so the Try-it-out ephemeral server clears provider preflight, matching a fresh user Mac),
-  `test-install.sh` (install→start→HTTP→stop on every PR).
+  PATH so the Try-it-out ephemeral server clears provider preflight, matching a fresh user Mac;
+  **also runs the Phase 6 idle-CPU peg-detector** as a second phase — relaunch idle, sample the app
+  process tree over 10s, fail >80% of one core), `test-install.sh` (install→start→HTTP→stop on every PR).
   - ⚠️ **Caveat (known product bug):** the `claude` stub means `validate-dmg` exercises the
     *provider-present* path only. A user with **no** provider binary on PATH currently gets a broken
     Try-it-out — the ephemeral server `exit(1)`s at preflight, so the connection window never opens

@@ -167,13 +167,17 @@ jobs:
 
       # The full UI validation (launches Electron + drives via CDP). Confirmed to
       # run on a headless GitHub macOS runner (the one CI unknown), so it's now a
-      # HARD GATE — a broken Try-it-out flow fails the release.
+      # HARD GATE — a broken Try-it-out flow fails the release. It ALSO runs an
+      # idle-renderer CPU peg-detector (Phase 2 inside the script): relaunches on
+      # the idle Welcome screen, samples the app process tree's CPU over 10s, and
+      # fails if it exceeds 80% of one core — guarding the #176 GPU-compositor peg
+      # class (~195% idle) that CDP's JS-timing metrics can't see.
       # CAVEAT: validate-dmg.sh stubs `claude` on PATH so the ephemeral server
       # clears its provider preflight. That means this gate covers only the
       # PROVIDER-PRESENT first-run. A fresh Mac with NO provider binary currently
       # hits a separate, known product bug (server exit(1)s at preflight → Welcome
       # hangs); the green gate does NOT certify that path. See docs/TESTING.md.
-      - name: Validate DMG end-to-end (HARD GATE — provider-present first-run flow)
+      - name: Validate DMG (HARD GATE — first-run flow + idle-CPU peg-detector)
         run: bash scripts/validate-dmg.sh "$(ls out/*.dmg | head -1)"
         working-directory: packages/app
 
