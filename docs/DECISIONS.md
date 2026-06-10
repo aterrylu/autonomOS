@@ -1074,3 +1074,12 @@ baseline and removes the "TBD" ambiguity.
 - **Soundness note:** Cumulative per-process CPU-seconds require a stable process set across the sampling window. The detector kills any prior-instance Helpers and waits for clean teardown before relaunch, and fails closed on negative delta or `t1 <= 0` (filters race conditions in the sampling).
 - **Source:** CC session, Phase 6 of the test-framework redesign.
 
+## ADR-034: Promote validate-dmg CDP check to a hard release gate
+- **Date:** 2026-06-09 — **Decided by:** agent (DesktopApp@autonomOS), confirmed by Terry
+- **Context:** The DMG end-to-end CDP validation (mount DMG → launch Electron → drive Welcome → Try-it-out → assert dashboard) was added `continue-on-error` pending confirmation it can run on a headless GitHub macOS runner. It had also been failing invisibly without anyone noticing — exactly the "false-pass zombie" class of CI step we try to avoid.
+- **Decision:** Make it a hard release gate. Root cause of the failures was the bundled server preflight `exit(1)`ing when no provider binary is on PATH (CI runners have none) → Try-it-out's ephemeral server dies → connection window never opens. Fixed in CI by stubbing `claude` on PATH (matches `smoke-test-bundle.sh`'s approach). Shipped in #196; subsequently extended in #201 (Phase 4) to run on every PR via a reusable workflow.
+- **Rationale:** Headless capability confirmed on dry-run 27251279763; a broken first-run flow should block a release, not slip through as observe-only telemetry.
+- **Alternatives considered:** Keep observe-only (rejected — a green-looking step that never blocks is the false-pass zombie class we're trying to kill). Add a "is the dashboard reachable" smoke without the full CDP drive-through (rejected as insufficient — the bug was specifically in the Welcome → Try-it-out flow that ad-hoc reachability checks would miss).
+- **Known limitation:** The PATH stub means the gate covers only the provider-present first-run path; the no-provider path is a separate known product bug (see follow-up product item: Try-it-out hangs silently when no provider is installed).
+- **Source:** CC session, headless-ci-electron investigation. Supersedes the observe-only `continue-on-error` note in ADR-031 (release pipeline).
+
