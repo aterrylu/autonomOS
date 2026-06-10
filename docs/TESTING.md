@@ -170,8 +170,20 @@ without cutting a release.
     `AUTONOMOS_INTEGRATION` deliberately **unset** — no backend needed). **Deferred:** live terminal
     streaming over the real WebSocket (xterm I/O, reconnect-on-disconnect) — needs a WS server mock,
     not just a stub; tracked as future L4 work.
-- **Phase 4 — Artifact gates on PR (L5/L6):** bundle smoke + unsigned DMG + CDP gate on every PR,
-  path-filtered. Intel (L6b) stays release + nightly; signing (L7) stays release-only.
+- **Phase 4 — Artifact gates on PR (L5/L6) ✅ landed.** The full **universal2** DMG build + smoke +
+  `validate-dmg` (first-run flow + idle-CPU peg-detector) now runs on every artifact-touching PR, not
+  just release — so cross-arch lipo / native-module / bundling / first-run regressions (the #178-class
+  bugs) are caught at PR time. PR builds are **unsigned** (no Apple secrets, no notary); the build is
+  the same universal2 as release (arm64+x64 lipo) so the lipo path itself is exercised. To stay DRY,
+  the whole build pipeline was extracted into a **reusable `workflow_call` workflow**
+  (`reusable-dmg-build.yml`) that both `release.yml` (`sign: true, validate_intel: true`) and a new
+  `pr-artifact.yml` (`sign: false, validate_intel: false`) invoke — single source of truth for a build
+  that's historically been the most fragile surface. Signing is driven by the `sign` input via
+  `SECRET_`-prefixed pass-through (promoted to `CSC_LINK`/`APPLE_API_KEY` only when `sign=true`) so an
+  unsigned build never sets an empty `CSC_LINK` (which electron-builder mis-reads as a cert path), and
+  PR callers pass **no secrets** at all. Path-filtered to `packages/{server,app,cli,core}/**` + the
+  build workflows — docs-only / dashboard-only PRs skip it. **Intel native-exec (L6b)** and
+  **signing/notarization (L7)** stay release-only (`validate_intel` gate + `sign` gate).
 - **Phase 5a — Electron main-process unit tests (L1) ✅ landed.** The desktop main process had 1 test
   file vs the server's 19 — directly the operator's "the hosted server works great but the desktop app
   is always problematic" pain. Added 43 `node:test` cases across 5 new files (see App inventory below)
