@@ -6,11 +6,9 @@ name: Release
 #   - universal2 macOS DMG + ZIP + blockmap + latest-mac.yml     → Desktop app
 # all attached to a GitHub Release whose body is the CHANGELOG section.
 #
-# The macOS DMG is universal2: one artifact runs on Apple Silicon AND Intel.
-# The bundled Node binary and native modules are lipo'd from both arches
-# (see bundle-node.sh + stage-universal-server.sh). When the Apple secrets are
-# present the DMG is signed (Developer ID) + notarized; otherwise it builds
-# unsigned (Gatekeeper warns on install) so forks stay green. See ADR for #190.
+# The build itself (server bundles + universal DMG + smoke + validate-dmg +
+# native-Intel gate) lives in the reusable reusable-dmg-build.yml, shared with
+# pr-artifact.yml. Here we invoke it with sign + validate_intel ON, then publish.
 
 on:
   push:
@@ -27,223 +25,29 @@ permissions:
   contents: read
 
 jobs:
-  # ── 1. Server bundles ────────────────────────────────────────────────────
-  # Four platform tarballs for install.sh. The two darwin bundles are ALSO
-  # uploaded raw so the DMG job can lipo their native modules into universal.
-  build-server:
-    name: Server (${{ matrix.target }})
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: darwin-arm64
-            runs-on: macos-14
-          - target: darwin-x64
-            runs-on: macos-15-intel
-          - target: linux-x64
-            runs-on: ubuntu-latest
-          - target: linux-arm64
-            runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-      # Pin Node 22 LTS so node-pty's nan-based native binding compiles cleanly
-      # (it does NOT build against Node 25's V8 headers). The bundled Node
-      # (build-dmg job) is pinned to the SAME version so the ABIs match — the
-      # smoke gate enforces this.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - name: Build dashboard
-        run: bun --filter @autonomos/dashboard build
-      - name: Embed dashboard
-        run: bun packages/server/build/embed-dashboard.ts
-      - name: Build bundle + tarball
-        run: TARBALL=1 bun packages/server/build/build-binary.ts
-      - name: Upload tarball
-        uses: actions/upload-artifact@v4
-        with:
-          name: tarball-${{ matrix.target }}
-          path: packages/server/dist/autonomos-${{ matrix.target }}.tar.gz
-      # darwin bundles feed the universal DMG's native-module lipo.
-      - name: Upload raw darwin bundle
-        if: startsWith(matrix.target, 'darwin')
-        uses: actions/upload-artifact@v4
-        with:
-          name: serverdist-${{ matrix.target }}
-          path: packages/server/dist/${{ matrix.target }}/
+  # Server bundles + universal2 DMG + smoke + validate-dmg + native-Intel gate.
+  # sign + validate_intel ON — this is the real, shippable build. Secrets are
+  # passed explicitly (the reusable workflow only consumes them when sign=true).
+  build:
+    uses: ./.github/workflows/reusable-dmg-build.yml
+    with:
+      sign: true
+      validate_intel: true
+    secrets:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
-  # ── 2. Universal2 macOS DMG ──────────────────────────────────────────────
-  # Built on Apple Silicon. Stages universal resources (lipo the two darwin
-  # server bundles + a universal Node), then electron-builder produces the
-  # universal2 .app/DMG/ZIP. Hard-gated by the headless smoke test.
-  build-dmg:
-    name: Universal DMG
-    needs: build-server
-    runs-on: macos-14
-    env:
-      # The bundled universal Node version — MUST equal the build-server Node
-      # (22) so its ABI matches the node-pty binding in the staged server
-      # bundle. The smoke gate enforces it.
-      BUNDLE_NODE_VERSION: v22.13.0
-    steps:
-      - uses: actions/checkout@v4
-      # Pin Node 22 so this job's `bun install` also compiles node-pty cleanly
-      # (nan doesn't build against Node 25). node-pty is unused here, but a
-      # failed install would still break the job.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-
-      - name: Download darwin server bundles
-        uses: actions/download-artifact@v4
-        with:
-          path: serverdist
-          pattern: serverdist-darwin-*
-
-      - name: Stage universal server bundle (lipo native modules)
-        run: |
-          bash packages/app/scripts/stage-universal-server.sh \
-            serverdist/serverdist-darwin-arm64 \
-            serverdist/serverdist-darwin-x64 \
-            packages/app/resources/server
-
-      - name: Stage universal Node
-        run: BUNDLE_NODE_UNIVERSAL=1 bash packages/app/scripts/bundle-node.sh
-
-      - name: Smoke test (HARD GATE — universal slices + server boot + auth)
-        run: SMOKE_EXPECT_UNIVERSAL=1 bash scripts/smoke-test-bundle.sh
-        working-directory: packages/app
-
-      - name: Build app + universal DMG/ZIP
-        working-directory: packages/app
-        # Cap the step so a stalled/degraded Apple notary fails the release FAST
-        # (retryable in minutes) instead of hanging for hours on `notarytool
-        # --wait`. Normal notarization is well under 10 min; packaging adds a few.
-        # 30 min leaves generous headroom for a slow-but-healthy notary while
-        # killing a genuine Apple-side incident (we've seen 85+ min stalls).
-        timeout-minutes: 30
-        env:
-          # Code signing (Developer ID Application). electron-builder auto-decodes
-          # the base64 CSC_LINK and signs every Mach-O in the .app when present;
-          # absent → unsigned build (no error). hardenedRuntime is on, which
-          # notarization requires.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          # Notarization (App Store Connect API key). The .p8 is stored base64 in
-          # the APPLE_API_KEY secret; we decode it to a file and point
-          # electron-builder/@electron/notarize at the path via APPLE_API_KEY.
-          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          # Apple Developer Team ID (from the Developer ID cert — not secret).
-          APPLE_TEAM_ID: "39VWFRL3PM"
-        run: |
-          bun run build
-          # Notarize ONLY when the API key secret is present. Otherwise (forks, or
-          # before the secrets are configured) produce a plain build — signed if a
-          # cert is available, unsigned if not. Keeps the pipeline green either way.
-          notarize_flags=""
-          if [ -n "${APPLE_API_KEY_B64}" ]; then
-            printf '%s' "${APPLE_API_KEY_B64}" | base64 -d > "${RUNNER_TEMP}/AuthKey.p8"
-            export APPLE_API_KEY="${RUNNER_TEMP}/AuthKey.p8"
-            notarize_flags="--config.mac.notarize.teamId=${APPLE_TEAM_ID}"
-            echo "::notice::Apple credentials present — signing + notarizing."
-          elif [ -n "${CSC_LINK}" ]; then
-            echo "::warning::Signing cert present but no notarization key — DMG will be signed but NOT notarized (Gatekeeper still warns on download)."
-          else
-            echo "::warning::No Apple credentials — producing an UNSIGNED build."
-          fi
-          # shellcheck disable=SC2086 # notarize_flags is intentionally word-split
-          bunx electron-builder --mac dmg zip --universal --publish never ${notarize_flags}
-
-      # The full UI validation (launches Electron + drives via CDP). Confirmed to
-      # run on a headless GitHub macOS runner (the one CI unknown), so it's now a
-      # HARD GATE — a broken Try-it-out flow fails the release. It ALSO runs an
-      # idle-renderer CPU peg-detector (Phase 2 inside the script): relaunches on
-      # the idle Welcome screen, samples the app process tree's CPU over 10s, and
-      # fails if it exceeds 80% of one core — guarding the #176 GPU-compositor peg
-      # class (~195% idle) that CDP's JS-timing metrics can't see.
-      # CAVEAT: validate-dmg.sh stubs `claude` on PATH so the ephemeral server
-      # clears its provider preflight. That means this gate covers only the
-      # PROVIDER-PRESENT first-run. A fresh Mac with NO provider binary currently
-      # hits a separate, known product bug (server exit(1)s at preflight → Welcome
-      # hangs); the green gate does NOT certify that path. See docs/TESTING.md.
-      - name: Validate DMG (HARD GATE — first-run flow + idle-CPU peg-detector)
-        run: bash scripts/validate-dmg.sh "$(ls out/*.dmg | head -1)"
-        working-directory: packages/app
-
-      - name: Upload DMG + update feed
-        uses: actions/upload-artifact@v4
-        with:
-          name: dmg
-          path: |
-            packages/app/out/*.dmg
-            packages/app/out/*.zip
-            packages/app/out/*.blockmap
-            packages/app/out/latest-mac.yml
-
-  # ── 3. Native Intel validation (HARD GATE) ───────────────────────────────
-  # Mount the universal DMG on REAL x64 hardware and run the bundle smoke test
-  # natively — proves the x64 slice actually executes (no Rosetta dependency).
-  validate-intel:
-    name: Validate on Intel
-    needs: build-dmg
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: dmg
-          path: dmg
-      - name: Mount + native x64 smoke test
-        run: |
-          DMG="$(ls dmg/*.dmg | head -1)"
-          echo "Mounting ${DMG} on $(uname -m)..."
-          hdiutil attach -nobrowse "${DMG}"
-          VOL="$(ls -d /Volumes/autonomOS* | head -1)"
-          APP="${VOL}/autonomOS.app/Contents/Resources"
-          bash packages/app/scripts/smoke-test-bundle.sh \
-            "${APP}/node/bin/node" "${APP}/server/index.js"
-
-          # Signing / notarization gate. The whole point of #4 is "opens without a
-          # Gatekeeper warning" — assert it for real on Intel hardware. Invariant:
-          # a build is EITHER fully unsigned (dev / no creds) OR signed AND
-          # notarized AND stapled. A signed-but-not-notarized build still warns on
-          # download, so we treat it as a failure rather than ship it.
-          APP_BUNDLE="${VOL}/autonomOS.app"
-          if codesign -dvv "${APP_BUNDLE}" 2>&1 | grep -q "Authority=Developer ID Application"; then
-            echo "Developer ID signature found — verifying signature + notarization..."
-            codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
-            if ! spctl --assess --type exec -vv "${APP_BUNDLE}" 2>&1 | tee /tmp/spctl.log | grep -q "accepted"; then
-              echo "::error::Gatekeeper REJECTED the app (spctl --assess). Signed but not notarized/stapled? Set the APPLE_API_KEY/_ID/_ISSUER secrets."
-              cat /tmp/spctl.log
-              hdiutil detach "${VOL}" -force || true
-              exit 1
-            fi
-            xcrun stapler validate "${APP_BUNDLE}"
-            echo "✓ signed + notarized + stapled — Gatekeeper accepts it (no warning on download)"
-          else
-            echo "::warning::App is UNSIGNED (no Apple credentials at build time) — skipping Gatekeeper checks."
-          fi
-          hdiutil detach "${VOL}" -force || true
-
-  # ── 4. Publish ───────────────────────────────────────────────────────────
+  # ── Publish ──────────────────────────────────────────────────────────────
   # Skipped entirely on a dry-run dispatch — the build + both validation gates
   # above still run, so a dry-run proves the whole pipeline without creating a
   # release. Publishes only on a real `v*` tag (or an explicit dry_run=false
   # dispatch).
   release:
     name: Publish release
-    needs: [build-server, build-dmg, validate-intel]
+    needs: build
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
