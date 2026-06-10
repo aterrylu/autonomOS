@@ -11,6 +11,11 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.2.0] — 2026-06-10
+
+
+
+
 ## [0.1.0] — 2026-06-08
 
 ### Minor Changes
