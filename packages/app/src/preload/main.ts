@@ -53,6 +53,9 @@ const api: AutonomosAPI = {
     dragEnd: (): void => {
       ipcRenderer.send("windows:drag-end");
     },
+    zoom: (): void => {
+      ipcRenderer.send("windows:zoom");
+    },
   },
 };
 

@@ -19,6 +19,8 @@
 
 import { ipcRenderer } from "electron";
 
+// Mirrored inline in renderer/TitleBar.tsx (separate build target, can't
+// share an import) — keep the two in sync.
 const INTERACTIVE_SELECTOR = "button, a, input, select, textarea";
 const HEADER_SELECTOR = "header.flex.items-center.gap-4";
 
@@ -60,6 +62,21 @@ function init(): void {
       if (!dragging) return;
       dragging = false;
       ipcRenderer.sendToHost("drag-end");
+    },
+    true,
+  );
+
+  // Double-click in the draggable header → zoom, matching native macOS
+  // title bars. Same guards as drag-start: header-only, never on
+  // interactive elements. The dblclick's own mousedown/mouseup pair has
+  // already sent drag-start/drag-end by the time this fires; the host's
+  // zoom handler also ends any drag defensively.
+  document.addEventListener(
+    "dblclick",
+    (e) => {
+      if (!inDraggableHeader(e.target)) return;
+      if (isInteractive(e.target)) return;
+      ipcRenderer.sendToHost("zoom");
     },
     true,
   );

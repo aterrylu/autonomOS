@@ -4,7 +4,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BrowserWindow, ipcMain, net, session } from "electron";
+import {
+  BrowserWindow,
+  ipcMain,
+  net,
+  session,
+  systemPreferences,
+} from "electron";
 
 import type {
   AddConnectionInput,
@@ -34,6 +40,7 @@ import {
   startDrag,
   waitForConnectionWindowReady,
 } from "./window-manager.js";
+import { performTitleBarDoubleClick } from "./window-zoom.js";
 
 /** Read ~/.autonomos/autonomos.pid (source of truth for the local daemon's
  *  port/pid/version). Returns null on missing/corrupt/dead-process. */
@@ -566,5 +573,24 @@ export function registerIpc(): void {
   ipcMain.on("windows:drag-end", (event): void => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) endDrag(win.id);
+  });
+
+  // Title-bar double-click → zoom, matching native macOS title bars. The
+  // Welcome TitleBar calls this directly; the dashboard header signals it
+  // through the webview preload (same bridge reason as drag, above).
+  ipcMain.on("windows:zoom", (event): void => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    // isDestroyed: fromWebContents can return a window mid-teardown, and
+    // an exception in ipcMain.on is uncaught in the main process.
+    if (!win || win.isDestroyed()) return;
+    // A dblclick is preceded by mousedown→drag-start. The matching
+    // mouseup→drag-end normally arrives first, but end defensively so a
+    // zoom can never leave the cursor poller running mid-resize.
+    endDrag(win.id);
+    const pref =
+      process.platform === "darwin"
+        ? systemPreferences.getUserDefault("AppleActionOnDoubleClick", "string")
+        : undefined;
+    performTitleBarDoubleClick(win, pref);
   });
 }

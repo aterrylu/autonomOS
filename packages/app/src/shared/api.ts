@@ -87,6 +87,10 @@ export interface AutonomosAPI {
      *  property doesn't propagate to the host BrowserWindow. */
     dragStart(): void;
     dragEnd(): void;
+    /** Title-bar double-click → zoom (maximize/unmaximize toggle), honoring
+     *  the macOS "double-click a window's title bar to" preference
+     *  (AppleActionOnDoubleClick: Maximize/Minimize/None). */
+    zoom(): void;
   };
   /** Bumped when the contract changes in a breaking way. */
   version: number;

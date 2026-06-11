@@ -18,7 +18,24 @@ export function TitleBar({
   children,
 }: TitleBarProps): React.ReactElement {
   return (
-    <div className="titlebar">
+    // biome-ignore lint/a11y/noStaticElementInteractions: window-chrome zoom; mouse-only by platform convention
+    <div
+      className="titlebar"
+      onDoubleClick={(e) => {
+        // Native macOS title bars zoom on double-click — but not when the
+        // double-click landed on an interactive child (mirrors how those
+        // children opt out of dragging with no-drag). Selector mirrors
+        // INTERACTIVE_SELECTOR in preload/webview.ts (separate CJS build,
+        // can't share an import) — keep the two in sync.
+        if (
+          e.target instanceof Element &&
+          e.target.closest("button, a, input, select, textarea")
+        ) {
+          return;
+        }
+        window.autonomos.windows.zoom();
+      }}
+    >
       <div className="titlebar-reserve" />
       <div className="titlebar-label">{label ?? ""}</div>
       <div className="titlebar-actions">{children}</div>

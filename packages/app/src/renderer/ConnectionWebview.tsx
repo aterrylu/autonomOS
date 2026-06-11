@@ -148,6 +148,17 @@ export function ConnectionWebview({
         case "drag-end":
           window.autonomos.windows.dragEnd();
           break;
+        case "zoom":
+          window.autonomos.windows.zoom();
+          break;
+        default:
+          // The preload (webview.cjs) is a separately-built artifact, so
+          // host↔preload version skew is possible. Surface it instead of
+          // silently dropping the message.
+          console.warn(
+            "[ConnectionWebview] unhandled webview ipc-message:",
+            msg.channel,
+          );
       }
     };
 
