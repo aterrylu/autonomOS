@@ -51,6 +51,7 @@ import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
+import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
 import { setAuthToken, setServerPort } from "./serverState.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { getServerVersion } from "./version.js";
@@ -99,14 +100,24 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     }
   }
 
+  // Runtime-loaded scripts are staged into the bundle by build-binary.ts.
+  // If one is missing (bad staging, hand-rolled install), the downstream
+  // failures are SILENT — CC swallows statusline command errors, and the
+  // per-agent MCP channel-server subprocess just never starts. Surface it
+  // once at boot so the outage is visible in server logs.
+  for (const script of [STATUSLINE_SCRIPT, CHANNEL_SERVER_SCRIPT]) {
+    if (!existsSync(script)) {
+      console.warn(
+        `[startup] runtime script missing: ${script} — ` +
+          `spawned agents will silently lack the statusline / MCP channel server`,
+      );
+    }
+  }
+
   // Write Gemini CLI settings file (hooks + MCP config) if Gemini is installed
   if (isProviderInstalled("gemini-cli")) {
     try {
-      const channelScript = resolve(
-        import.meta.dirname,
-        "channel-server/dist.mjs",
-      );
-      writeGeminiSettings(channelScript);
+      writeGeminiSettings(CHANNEL_SERVER_SCRIPT);
     } catch (err) {
       console.warn(
         "[gemini-cli] Failed to write settings — Gemini agents will launch without hooks/MCP:",

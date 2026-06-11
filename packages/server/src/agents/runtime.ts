@@ -10,13 +10,14 @@
  */
 
 import { statSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 import type { Agent, Provider, SpawnOptions, UUID } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
+import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
 import { getServerPort } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
@@ -171,10 +172,6 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
 
   // Build provider args + env
   const { channels } = getSettings();
-  const channelScript = resolve(
-    import.meta.dirname,
-    "../channel-server/dist.mjs",
-  );
 
   const resolved = {
     ...params,
@@ -191,7 +188,7 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     // claude-code provider does --resume on it.
     resumeSessionId: params.resumeAgentId ? providerSessionId : undefined,
     injectChannelServer: !!channels?.includes("server:autonomos"),
-    channelServerScript: channelScript,
+    channelServerScript: CHANNEL_SERVER_SCRIPT,
     serverPort: String(getServerPort()),
     capabilities:
       (params.template ? getTemplate(params.template)?.capabilities : null) ??

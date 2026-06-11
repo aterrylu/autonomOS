@@ -36,6 +36,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { arch as nodeArch, platform as nodePlatform } from "node:os";
 import { fileURLToPath } from "node:url";
+import { RUNTIME_SCRIPTS } from "../src/scriptPaths.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverRoot = resolve(here, "..");
@@ -160,6 +161,39 @@ function stageNodePtySpawnHelper(outdir: string, target: string): void {
   console.log("[build-binary] ✓ staged node-pty spawn-helper + repointed path");
 }
 
+// Runtime-loaded .mjs scripts (statusline renderer, MCP channel-server) are
+// referenced by PATH, not import — bun never sees them, so like the embedded
+// dashboard they must be copied in by hand. The bundle concatenates every
+// module into index.js, so each script's `resolve(import.meta.dirname, rel)`
+// in src/scriptPaths.ts resolves against the BUNDLE dir at runtime; staging
+// each script at the same relative path keeps source + bundle consistent by
+// construction. Missing source file aborts the build — shipping without one
+// reproduces the silent desktop statusline outage this guards against.
+function stageRuntimeScripts(outdir: string): void {
+  for (const rel of RUNTIME_SCRIPTS) {
+    const src = resolve(serverRoot, "src", rel);
+    if (!existsSync(src)) {
+      throw new Error(
+        `[build-binary] runtime script missing at ${src}. ` +
+          `RUNTIME_SCRIPTS in src/scriptPaths.ts is out of sync with the tree.`,
+      );
+    }
+    const dest = resolve(outdir, rel);
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+  }
+  // Manifest of what this build staged, one path per line. smoke-test-bundle.sh
+  // loops over it instead of hardcoding a second copy of the list — so adding
+  // an entry to RUNTIME_SCRIPTS automatically extends the bundle-side check.
+  writeFileSync(
+    resolve(outdir, "runtime-scripts.manifest"),
+    `${RUNTIME_SCRIPTS.join("\n")}\n`,
+  );
+  console.log(
+    `[build-binary] ✓ staged runtime scripts: ${RUNTIME_SCRIPTS.join(", ")}`,
+  );
+}
+
 for (const target of targets) {
   const suffix = target.replace("bun-", "");
   const outdir = resolve(distDir, suffix);
@@ -180,6 +214,7 @@ for (const target of targets) {
     `${JSON.stringify({ name: serverPkg.name, version: serverPkg.version, type: "module" }, null, 2)}\n`,
   );
   stageNodePtySpawnHelper(outdir, target);
+  stageRuntimeScripts(outdir);
   console.log(`[build-binary] ✓ ${outdir}/index.js (+ embedded dashboard)`);
 
   if (wantTarball) {
