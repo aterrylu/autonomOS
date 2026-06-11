@@ -1093,3 +1093,15 @@ baseline and removes the "TBD" ambiguity.
   - Migrate existing `claudeOrgId` values to the cache on read — rejected; not worth the complexity for a field that resolves cheaply on first call.
 - **Source:** CC session, DesktopApp issues sweep. Shipped in #202.
 
+## ADR-036: Prompt delivery receipt + one-shot fallback re-delivery
+- **Date:** 2026-06-11 — **Decided by:** Human (Terry, reported the bug + directed the fix), design by DesktopApp@autonomOS lead, implemented by PromptDelivery@autonomOS
+- **Context:** `create_agent`'s starting prompt is delivered solely as a CLI arg (`claude … -- "prompt"`). If the auto-trust watcher's blind Enter-burst raced Claude Code's TUI init, the trust dialog never dismissed cleanly and the argv prompt died behind it — the new agent sat idle at an empty input. Intermittent, silently broke multi-agent orchestration.
+- **Decision:** Two layers. **(1)** The auto-trust watcher now uses needle-verified retry — re-send Enter only if the same prompt needle is still present after ~500ms, capped — instead of blind staggered bursts. **(2)** A delivery-receipt tracker uses the existing hook relay as ground truth: when a spawn includes a prompt, `SessionStart` without a following `UserPromptSubmit` within a timeout triggers ONE re-delivery via PTY bracketed paste, with dedup guards (re-checks receipt at fire time; skips if the session shows activity). All failure paths surface as `SystemWarning` notifications.
+- **Rationale:** The hook stream is the only reliable readiness/receipt signal — CC's TUI rendering is unobservable from outside the PTY. One-shot + dedup because double-submission is worse than a manual nudge.
+- **Guard against masking:** The CI integration test asserts the fallback did NOT fire on the happy path — the rescue mechanism cannot hide watcher regressions.
+- **Alternatives considered:**
+  - Gate "ready" status on `SessionStart` only — rejected; that's observability, not delivery.
+  - TUI-prompt-needle detection for delivery confirmation — rejected; the prompt character varies by theme/mode.
+  - PTY-only delivery instead of argv — rejected; argv is canonical and works in the common case.
+- **Source:** CC session, DesktopApp issues sweep. Shipped in #209. CLAUDE.md "Key Systems" entry added in the same PR.
+
