@@ -57,7 +57,10 @@ Every spawned session gets `--settings` with inline hook entries for all 13 Clau
 Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), and optionally `--dangerously-skip-permissions` (autonomous mode), `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
 
 ### Auto-Trust
-`attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Configurable via settings panel toggle (default: ON).
+`attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Each Enter is needle-verified (retry if the dialog re-renders or the PTY stays silent, capped attempts) because CC's TUI attaches its stdin handler 100-500ms after first paint — blind early writes get swallowed. Configurable via settings panel toggle (default: ON).
+
+### Prompt Delivery Receipt (`agents/promptDelivery.ts`)
+A starting prompt travels only as a CLI arg (`claude ... -- <prompt>`), so a startup-dialog race can silently drop it. Sessions spawned WITH a prompt are tracked through the hook stream: spawn → SessionStart → UserPromptSubmit confirms delivery. If SessionStart arrives but UserPromptSubmit doesn't within 20s, the prompt is re-delivered ONCE via PTY bracketed paste + Enter (any turn activity cancels — double-submission is worse than a manual nudge). No SessionStart within 15s → warning only. Failures surface as `SystemWarning` notifications in the dashboard notification panel.
 
 ### Agent Communication (URI-based)
 Agents communicate via URI-based addressing through the gateway:

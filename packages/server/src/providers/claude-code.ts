@@ -246,89 +246,191 @@ export const claudeCodeProvider: AgentProvider = {
     const { channels } = getSettings();
     const expectChannels =
       channels?.some((c) => c.startsWith("server:")) ?? false;
-
-    let buf = "";
-    const MAX_BUF = 8192;
-    const answered = new Set<string>();
-    let disposed = false;
-
-    let ptyDead = false;
-
-    function sendEnterBurst(promptId: string) {
-      if (answered.has(promptId)) return;
-      answered.add(promptId);
-      const label = `${options.agentName} (${options.sessionId.slice(0, 8)})`;
-      console.log(`[auto-trust] ${label} answered "${promptId}" prompt`);
-
-      const delays = [50, 200, 500, 1000, 2000];
-      for (const delay of delays) {
-        setTimeout(() => {
-          if (ptyDead) return;
-          try {
-            pty.write("\r");
-          } catch (err) {
-            ptyDead = true;
-            console.warn(
-              `[auto-trust] ${label} PTY write failed — process may have exited:`,
-              err instanceof Error ? err.message : err,
-            );
-          }
-        }, delay);
-      }
-    }
-
-    const disposable = pty.onData((data: string) => {
-      if (disposed) return;
-      const clean = data.replace(ANSI_RE, "");
-      buf += clean;
-      if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
-
-      if (!answered.has("trust")) {
-        for (const needle of TRUST_NEEDLES) {
-          if (buf.includes(needle)) {
-            sendEnterBurst("trust");
-            break;
-          }
-        }
-      }
-
-      if (expectChannels && !answered.has("channels")) {
-        for (const needle of CHANNELS_NEEDLES) {
-          if (buf.includes(needle)) {
-            if (!answered.has("trust")) answered.add("trust");
-            sendEnterBurst("channels");
-            break;
-          }
-        }
-      }
-
-      const needed = expectChannels ? 2 : 1;
-      if (answered.size >= needed) cleanup();
-    });
-
-    const timer = setTimeout(() => {
-      if (!disposed) {
-        const unanswered: string[] = [];
-        if (!answered.has("trust")) unanswered.push("trust");
-        if (expectChannels && !answered.has("channels"))
-          unanswered.push("channels");
-        if (unanswered.length > 0) {
-          console.warn(
-            `[auto-trust] ${options.agentName} (${options.sessionId.slice(0, 8)}) timed out — never dismissed: ${unanswered.join(", ")}`,
-          );
-        }
-        cleanup();
-      }
-    }, 30_000);
-
-    function cleanup() {
-      if (disposed) return;
-      disposed = true;
-      clearTimeout(timer);
-      disposable.dispose();
-    }
+    attachStartupWatcherCore(pty, options, { expectChannels });
   },
 };
+
+export interface StartupWatcherConfig {
+  expectChannels: boolean;
+  /** How long to wait after an Enter before checking whether it landed. */
+  retryDelayMs?: number;
+  /** Max Enters per dialog before giving up. */
+  maxAttempts?: number;
+  /** Hard deadline for the whole watcher. */
+  timeoutMs?: number;
+}
+
+/**
+ * Auto-trust core — dismisses CC's startup dialogs (trust folder / dev
+ * channels) with needle-driven retry.
+ *
+ * CC's TUI takes 100-500ms after first paint to attach its stdin handler, so
+ * an Enter written too early is silently dropped — and a dialog that is never
+ * dismissed blocks the argv-queued starting prompt forever. Instead of blind
+ * staggered writes, each Enter is verified: if the SAME needle re-renders in
+ * output produced after the write — or the PTY stays completely silent, which
+ * means the write was swallowed pre-attach — send again, up to maxAttempts.
+ * Fresh output without the needle is the dialog actually closing.
+ *
+ * Exported separately from the provider so tests can drive it with a fake PTY
+ * and fast timings.
+ */
+export function attachStartupWatcherCore(
+  pty: PtyHandle,
+  options: ResolvedSpawnOptions,
+  config: StartupWatcherConfig,
+): void {
+  const retryDelayMs = config.retryDelayMs ?? 500;
+  const maxAttempts = config.maxAttempts ?? 5;
+  const timeoutMs = config.timeoutMs ?? 30_000;
+  const label = `${options.agentName} (${options.sessionId.slice(0, 8)})`;
+
+  const needles: Record<string, string[]> = {
+    trust: TRUST_NEEDLES,
+    channels: CHANNELS_NEEDLES,
+  };
+  const expected = config.expectChannels ? ["trust", "channels"] : ["trust"];
+
+  interface DialogState {
+    /** Needle seen — Enter sent, awaiting confirmation it landed. */
+    engaged: boolean;
+    /** No further action will be taken — confirmed gone, or gave up after
+     *  maxAttempts. NOT a claim the dialog was actually dismissed. */
+    settled: boolean;
+    attempts: number;
+    /** ANSI-stripped output received since the last Enter. */
+    freshBuf: string;
+    checkTimer: NodeJS.Timeout | null;
+  }
+  const dialogs = new Map<string, DialogState>(
+    expected.map((id) => [
+      id,
+      {
+        engaged: false,
+        settled: false,
+        attempts: 0,
+        freshBuf: "",
+        checkTimer: null,
+      },
+    ]),
+  );
+
+  let buf = "";
+  const MAX_BUF = 8192;
+  let disposed = false;
+  let ptyDead = false;
+
+  function writeEnter(): boolean {
+    if (ptyDead) return false;
+    try {
+      pty.write("\r");
+      return true;
+    } catch (err) {
+      ptyDead = true;
+      console.warn(
+        `[auto-trust] ${label} PTY write failed — process may have exited:`,
+        err instanceof Error ? err.message : err,
+      );
+      return false;
+    }
+  }
+
+  function sendAndScheduleCheck(id: string, d: DialogState): void {
+    d.attempts++;
+    d.freshBuf = "";
+    if (!writeEnter()) {
+      cleanup();
+      return;
+    }
+    d.checkTimer = setTimeout(() => {
+      d.checkTimer = null;
+      if (disposed) return;
+      const stillVisible = needles[id].some((n) => d.freshBuf.includes(n));
+      // Zero fresh output means the TUI never reacted — the Enter was most
+      // likely swallowed before the stdin handler attached. Retry that too.
+      const silent = d.freshBuf.length === 0;
+      const notDismissed = stillVisible || silent;
+      if (notDismissed && d.attempts < maxAttempts) {
+        sendAndScheduleCheck(id, d);
+        return;
+      }
+      if (notDismissed) {
+        console.warn(
+          `[auto-trust] ${label} "${id}" dialog not confirmed dismissed after ${d.attempts} attempts — giving up`,
+        );
+      } else if (d.attempts > 1) {
+        console.log(
+          `[auto-trust] ${label} "${id}" dismissed after ${d.attempts} attempts`,
+        );
+      }
+      d.settled = true;
+      maybeFinish();
+    }, retryDelayMs);
+  }
+
+  function engage(id: string): void {
+    const d = dialogs.get(id);
+    if (!d || d.engaged || d.settled) return;
+    d.engaged = true;
+    console.log(`[auto-trust] ${label} answered "${id}" prompt`);
+    sendAndScheduleCheck(id, d);
+  }
+
+  function maybeFinish(): void {
+    for (const d of dialogs.values()) {
+      if (!d.settled) return;
+    }
+    cleanup();
+  }
+
+  const disposable = pty.onData((data: string) => {
+    if (disposed) return;
+    const clean = data.replace(ANSI_RE, "");
+    buf += clean;
+    if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
+    for (const d of dialogs.values()) {
+      if (d.engaged && !d.settled) d.freshBuf += clean;
+    }
+
+    const trust = dialogs.get("trust");
+    if (trust && !trust.engaged && TRUST_NEEDLES.some((n) => buf.includes(n))) {
+      engage("trust");
+    }
+
+    const ch = dialogs.get("channels");
+    if (ch && !ch.engaged && CHANNELS_NEEDLES.some((n) => buf.includes(n))) {
+      // The channels dialog rendering implies the trust dialog is behind us.
+      if (trust && !trust.engaged) {
+        trust.settled = true;
+        if (trust.checkTimer) clearTimeout(trust.checkTimer);
+      }
+      engage("channels");
+    }
+  });
+
+  const timer = setTimeout(() => {
+    if (disposed) return;
+    const unanswered = expected.filter((id) => !dialogs.get(id)?.settled);
+    const engaged = unanswered.filter((id) => dialogs.get(id)?.engaged);
+    if (unanswered.length > 0) {
+      console.warn(
+        `[auto-trust] ${label} timed out — never dismissed: ${unanswered.join(", ")}` +
+          (engaged.length > 0 ? ` (mid-retry: ${engaged.join(", ")})` : ""),
+      );
+    }
+    cleanup();
+  }, timeoutMs);
+
+  function cleanup(): void {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(timer);
+    for (const d of dialogs.values()) {
+      if (d.checkTimer) clearTimeout(d.checkTimer);
+    }
+    disposable.dispose();
+  }
+}
 
 /** For testing — reset the cached binary path */
 export function _resetBinaryCacheForTesting(): void {
