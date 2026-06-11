@@ -3,12 +3,12 @@
  * CC-specific CLI flags, env vars, and startup handling.
  */
 
-import { resolve } from "node:path";
 import type {
   AgentProvider,
   PtyHandle,
   ResolvedSpawnOptions,
 } from "@autonomos/core";
+import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getInboxAgent, getSettings } from "../settings.js";
 import {
@@ -19,8 +19,7 @@ import {
   resolveBinaryFromCandidates,
 } from "./shared.js";
 
-// ── Statusline renderer (sibling .mjs file, no build step) ─────
-const STATUSLINE_SCRIPT = resolve(import.meta.dirname, "statusline.mjs");
+// ── Statusline renderer (runtime .mjs script, no build step) ──
 const STATUSLINE_REFRESH_SECONDS = 5;
 
 // ── Hook relay ─────────────────────────────────────────────────

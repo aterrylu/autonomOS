@@ -54,6 +54,30 @@ for native in "${SERVER_DIR_ABS}"/*.node; do
   echo "[smoke-test] ✓ $(basename "${native}") loads under bundled Node"
 done
 
+# Bundle-completeness check for runtime-loaded .mjs scripts. These are
+# referenced by PATH (not import), so the bundler omits them and the server
+# boots fine WITHOUT them — the failures are silent and downstream: spawned
+# sessions get a statusLine command pointing at a missing file (CC swallows
+# the error → no statusline), and the per-agent MCP channel-server subprocess
+# never starts (agent send/create_agent tools dead). The list comes from the
+# runtime-scripts.manifest that stageRuntimeScripts() (build-binary.ts) writes
+# from RUNTIME_SCRIPTS — so the check tracks the staging list automatically.
+MANIFEST="${SERVER_DIR_ABS}/runtime-scripts.manifest"
+if [ ! -s "${MANIFEST}" ]; then
+  echo "[smoke-test] FAIL: runtime-scripts.manifest missing or empty in bundle"
+  echo "[smoke-test] check stageRuntimeScripts() in build-binary.ts"
+  exit 1
+fi
+while IFS= read -r script; do
+  [ -n "${script}" ] || continue
+  if [ ! -f "${SERVER_DIR_ABS}/${script}" ]; then
+    echo "[smoke-test] FAIL: runtime script missing from bundle: ${script}"
+    echo "[smoke-test] check stageRuntimeScripts() in build-binary.ts"
+    exit 1
+  fi
+  echo "[smoke-test] ✓ runtime script present: ${script}"
+done < "${MANIFEST}"
+
 # Universal-binary slice check. When SMOKE_EXPECT_UNIVERSAL=1 (the release CI
 # building the universal2 DMG), every bundled native module AND the bundled
 # Node binary MUST contain BOTH x86_64 and arm64 slices — otherwise the DMG
