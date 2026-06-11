@@ -17,11 +17,17 @@ import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
+import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
 import { getServerPort } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import {
+  cancelAllPromptTracking,
+  cancelPromptTracking,
+  trackPromptDelivery,
+} from "./promptDelivery.js";
 import {
   buildAgent,
   deleteAgentRaw,
@@ -237,6 +243,38 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
   };
   live.set(persisted.id, managed);
 
+  // Delivery receipt: a starting prompt travels only as a CLI arg, and a
+  // startup-dialog race can silently drop it (agent sits at an empty input
+  // forever). Track spawn → SessionStart → UserPromptSubmit via the hook
+  // stream and re-deliver via PTY paste if the receipt never arrives.
+  if (params.prompt) {
+    trackPromptDelivery(
+      persisted.id,
+      `${persisted.name} (${persisted.id.slice(0, 8)})`,
+      params.prompt,
+      {
+        write: (data) => {
+          // Refuse writes once this PTY is no longer the canonical attachment
+          // (exited or replaced) — never paste into the wrong process.
+          if (live.get(persisted.id)?.pty !== pty) return false;
+          try {
+            pty.write(data);
+            return true;
+          } catch (err) {
+            // A throw on a still-canonical PTY is anomalous (vs the expected
+            // stale-attachment case above) — keep the two distinguishable.
+            console.warn(
+              `[runtime] ${persisted.id.slice(0, 8)} prompt re-delivery write threw:`,
+              err instanceof Error ? err.message : err,
+            );
+            return false;
+          }
+        },
+        notify: (message) => pushSystemNotification(persisted.id, message),
+      },
+    );
+  }
+
   // Emit the appropriate event
   if (isResume) {
     emitAgentDelta({
@@ -295,6 +333,8 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
       return;
     }
 
+    cancelPromptTracking(persisted.id);
+
     if (lifetime < 5_000 && exitCode !== 0) {
       console.error(
         `[runtime] ${persisted.id.slice(0, 8)} died immediately (${lifetime}ms), code=${exitCode}` +
@@ -344,6 +384,7 @@ export function killAttachment(agentId: UUID): boolean {
   }
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
+  cancelPromptTracking(agentId);
   const updated = markExited(agentId, "user_killed");
   live.delete(agentId);
   if (updated) {
@@ -370,6 +411,7 @@ export function deleteAgent(agentId: UUID): boolean {
     }
     live.delete(agentId);
   }
+  cancelPromptTracking(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
     emitAgentDelta({ type: "agent.deleted", id: agentId });
@@ -385,6 +427,7 @@ export function deleteAgent(agentId: UUID): boolean {
  */
 export function shutdownAllAttachments(): void {
   shuttingDown = true;
+  cancelAllPromptTracking();
   for (const [, managed] of live) {
     try {
       managed.pty.kill();
@@ -483,6 +526,7 @@ export function restartAllAttachments(): {
 
   // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
   shuttingDown = true;
+  cancelAllPromptTracking();
   for (const [id, managed] of live) {
     try {
       managed.pty.kill();
@@ -576,4 +620,5 @@ export async function resolveAgentId(
 export function _resetForTesting(): void {
   live.clear();
   shuttingDown = false;
+  cancelAllPromptTracking();
 }
