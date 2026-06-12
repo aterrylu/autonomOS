@@ -602,8 +602,9 @@ export function SettingsPanel({
       const data: { channels: ChannelStatusEntry[] } = await r.json();
       setChannelStatuses(data.channels);
     } catch {
-      // Leave channelStatuses null so toggles render with "unknown" state —
-      // never a hard UI failure just because detection flaked.
+      // Leave channelStatuses null — the panel shows its loading
+      // placeholder instead of a hard failure. A fetch error here means
+      // the server itself is unreachable, not a flaky status check.
       setChannelStatuses(null);
     }
   }, []);

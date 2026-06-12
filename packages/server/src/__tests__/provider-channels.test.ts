@@ -39,11 +39,8 @@ function baseOptions(
   };
 }
 
-function writeSettings(
-  channels: string[] | null,
-  extra: Record<string, unknown> = {},
-): void {
-  const body: Record<string, unknown> = { ...extra };
+function writeSettings(channels: string[] | null): void {
+  const body: Record<string, unknown> = {};
   if (channels !== null) body.channels = channels;
   writeFileSync(
     join(tmpDir, "settings.json"),

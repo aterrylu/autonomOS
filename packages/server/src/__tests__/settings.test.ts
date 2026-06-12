@@ -86,6 +86,33 @@ describe("getSettings", () => {
     assert.deepEqual(settings.gateway, { slack: { enabled: true } });
   });
 
+  it("removes gateway entirely when scrubbing empties it", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        gateway: { telegram: { enabled: true }, discord: { enabled: false } },
+      }),
+    );
+    const settings = getSettings();
+    assert.equal("gateway" in settings, false);
+  });
+
+  it("drops routes for removed platforms, keeps slack routes", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        routes: [
+          { id: "r1", platform: "discord", chatId: "g:c", sessionId: "s1" },
+          { id: "r2", platform: "telegram", chatId: "123", sessionId: "s2" },
+          { id: "r3", platform: "slack", chatId: "w:c", sessionId: "s3" },
+        ],
+      }),
+    );
+    const settings = getSettings();
+    assert.equal(settings.routes?.length, 1);
+    assert.equal(settings.routes?.[0].id, "r3");
+  });
+
   it("drops scrubbed keys from disk on the next persist", () => {
     writeFileSync(
       SETTINGS_FILE,

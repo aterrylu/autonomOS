@@ -84,6 +84,21 @@ function scrubRemovedKeys(data: AppSettings): void {
     for (const key of REMOVED_GATEWAY_KEYS) {
       delete gateway[key];
     }
+    // Don't re-persist an empty residue object forever.
+    if (Object.keys(gateway).length === 0) {
+      delete record.gateway;
+    }
+  }
+  // Routing rules for removed platforms can never match inbound traffic
+  // (and the narrowed Platform type says they can't exist) — drop them.
+  if (Array.isArray(data.routes)) {
+    const valid = data.routes.filter((r) => r?.platform === "slack");
+    if (valid.length !== data.routes.length) {
+      console.warn(
+        `[settings] Dropped ${data.routes.length - valid.length} routes for removed platforms from settings.json`,
+      );
+      data.routes = valid;
+    }
   }
 }
 
@@ -130,8 +145,14 @@ export function getSettings(): AppSettings {
       .map((c) => c.trim())
       .filter((c) => c.length > 0 && isValidChannelId(c));
     if (sanitized.length !== data.channels.length) {
+      // Name the dropped entries — this is the only signal a user gets
+      // when a stale plugin:* channel from a removed integration (or a
+      // typo) is discarded. Channel ids are not secrets.
+      const dropped = data.channels.filter(
+        (c) => typeof c !== "string" || !sanitized.includes(c.trim()),
+      );
       console.warn(
-        `[settings] Dropped ${data.channels.length - sanitized.length} invalid channels entries from settings.json`,
+        `[settings] Dropped ${dropped.length} invalid channels entries from settings.json: ${JSON.stringify(dropped)}`,
       );
     }
     data.channels = [...new Set(sanitized)];
