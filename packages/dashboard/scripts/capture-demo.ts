@@ -337,13 +337,14 @@ async function bootServer(mockUrl: string): Promise<DemoServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-demo-"));
   const token = `demo-${Math.random().toString(36).slice(2, 10)}`;
 
+  // The mock redirect travels as env vars on the server process (set below)
+  // — buildBaseEnv spreads {...process.env} into every spawned claude, so
+  // ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN flow through. Deliberately NOT
+  // the settings.json anthropic* fields: PR #214 removes that surface.
   writeFileSync(
     join(configDir, "settings.json"),
     `${JSON.stringify(
       {
-        anthropicBaseUrl: mockUrl,
-        anthropicAuthToken: "sk-demo",
-        anthropicOverrideEnabled: true,
         channels: [],
         autoTrust: true,
         statusLine: { enabled: false },
@@ -390,6 +391,8 @@ async function bootServer(mockUrl: string): Promise<DemoServer> {
     HOME: fakeHome,
     AUTONOMOS_CONFIG_DIR: configDir,
     AUTONOMOS_TOKEN: token,
+    ANTHROPIC_BASE_URL: mockUrl,
+    ANTHROPIC_AUTH_TOKEN: "sk-demo",
   };
   delete env.TMUX;
   delete env.TMUX_PANE;
