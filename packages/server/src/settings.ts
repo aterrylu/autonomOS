@@ -20,12 +20,6 @@ export interface AppSettings {
    * the settings route no longer persists it.
    */
   claudeOrgId?: string;
-  /** Anthropic API base URL (e.g. http://litellm for proxy) */
-  anthropicBaseUrl?: string;
-  /** Anthropic API auth token */
-  anthropicAuthToken?: string;
-  /** Whether to inject anthropicBaseUrl/anthropicAuthToken into sessions (default: true if values exist) */
-  anthropicOverrideEnabled?: boolean;
   /**
    * Channels enabled for every session. Only `server:*` channels are
    * supported, e.g. "server:autonomos".
@@ -69,9 +63,18 @@ const DEFAULT_CHANNELS = ["server:autonomos"];
  * them from disk (the ADR-035 accept-and-discard pattern). `inboxAgent`
  * and the telegram/discord gateway toggles died with the plugin-channel
  * removal; stale `plugin:*` channels entries are handled by the channels
- * sanitizer below (they no longer pass isValidChannelId).
+ * sanitizer below (they no longer pass isValidChannelId). The anthropic*
+ * keys died with the API-override removal — the auth token is a credential
+ * and must not linger on disk, so scrubbing (not just ignoring) matters.
+ * Sessions that need a custom endpoint can set ANTHROPIC_BASE_URL via
+ * customEnvVars instead.
  */
-const REMOVED_KEYS = ["inboxAgent"];
+const REMOVED_KEYS = [
+  "inboxAgent",
+  "anthropicBaseUrl",
+  "anthropicAuthToken",
+  "anthropicOverrideEnabled",
+];
 const REMOVED_GATEWAY_KEYS = ["discord", "telegram"];
 
 function scrubRemovedKeys(data: AppSettings): void {

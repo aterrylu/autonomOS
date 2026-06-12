@@ -139,9 +139,6 @@ export const MOCK_PROVIDERS = [
 
 export const MOCK_SETTINGS = {
   claudeSessionKey: null,
-  anthropicBaseUrl: null,
-  anthropicAuthToken: null,
-  anthropicOverrideEnabled: false,
   channels: [],
   autoTrust: true,
   customEnvVars: {},

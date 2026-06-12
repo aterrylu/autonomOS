@@ -5,9 +5,6 @@ import { useClickOutside } from "../claude-usage/useClickOutside";
 
 interface MaskedSettings {
   claudeSessionKey: string | null;
-  anthropicBaseUrl: string | null;
-  anthropicAuthToken: string | null;
-  anthropicOverrideEnabled: boolean;
   channels: string[];
   autoTrust: boolean;
   customEnvVars: Record<string, string>;
@@ -57,83 +54,6 @@ interface ChannelStatusEntry {
   icon: string;
   status: ChannelStatus;
   fix: string | null;
-}
-
-function SettingRow({
-  label,
-  value,
-  placeholder,
-  secret,
-  inputStyle,
-  labelStyle,
-  onChange,
-}: {
-  label: string;
-  value: string | null;
-  placeholder: string;
-  secret?: boolean;
-  inputStyle: React.CSSProperties;
-  labelStyle: React.CSSProperties;
-  onChange: (val: string) => void;
-}) {
-  const isNew = !value;
-  const [editing, setEditing] = useState(isNew);
-  const [draft, setDraft] = useState("");
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-0.5">
-        <span className="text-[10px]" style={labelStyle}>
-          {label}
-        </span>
-        {value && !editing && (
-          <button
-            type="button"
-            onClick={() => {
-              setEditing(true);
-              setDraft("");
-              onChange("");
-            }}
-            className="text-[10px] cursor-pointer hover:opacity-80"
-            style={{ color: "#16825d" }}
-          >
-            Change
-          </button>
-        )}
-        {editing && !isNew && (
-          <button
-            type="button"
-            onClick={() => setEditing(false)}
-            className="text-[10px] cursor-pointer hover:opacity-80"
-            style={labelStyle}
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-      {editing ? (
-        <input
-          type={secret ? "password" : "text"}
-          value={draft}
-          onChange={(e) => {
-            const v = e.target.value;
-            setDraft(v);
-            onChange(v);
-          }}
-          placeholder={placeholder}
-          className="w-full rounded px-2 py-1.5 text-xs font-mono"
-          style={inputStyle}
-        />
-      ) : (
-        <div
-          className="rounded px-2 py-1.5 text-xs font-mono truncate"
-          style={{ ...inputStyle, opacity: 0.8 }}
-        >
-          {value}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function channelStatusLabel(status: ChannelStatus): string | null {
@@ -720,56 +640,6 @@ export function SettingsPanel({
       ) : (
         <div className="space-y-2.5">
           <div className="flex items-center justify-between">
-            <div
-              className="text-[10px] font-medium uppercase tracking-wide"
-              style={labelStyle}
-            >
-              Anthropic API Override
-            </div>
-            <ToggleSwitch
-              enabled={!!settings?.anthropicOverrideEnabled}
-              inactiveBackground={page.border}
-              onClick={() =>
-                toggleSetting(
-                  "anthropicOverrideEnabled",
-                  !settings?.anthropicOverrideEnabled,
-                )
-              }
-            />
-          </div>
-          <div
-            style={{
-              opacity: settings?.anthropicOverrideEnabled ? 1 : 0.4,
-              pointerEvents: settings?.anthropicOverrideEnabled
-                ? "auto"
-                : "none",
-            }}
-            className="space-y-2.5"
-          >
-            <SettingRow
-              label="Base URL"
-              value={settings?.anthropicBaseUrl ?? null}
-              placeholder="https://api.anthropic.com (default)"
-              inputStyle={inputStyle}
-              labelStyle={labelStyle}
-              onChange={(v) =>
-                setPending((p) => ({ ...p, anthropicBaseUrl: v }))
-              }
-            />
-            <SettingRow
-              label="Auth Token"
-              value={settings?.anthropicAuthToken ?? null}
-              placeholder="sk-..."
-              secret
-              inputStyle={inputStyle}
-              labelStyle={labelStyle}
-              onChange={(v) =>
-                setPending((p) => ({ ...p, anthropicAuthToken: v }))
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between mt-3">
             <div
               className="text-[10px] font-medium uppercase tracking-wide"
               style={labelStyle}

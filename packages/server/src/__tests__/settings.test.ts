@@ -86,6 +86,33 @@ describe("getSettings", () => {
     assert.deepEqual(settings.gateway, { slack: { enabled: true } });
   });
 
+  it("scrubs removed anthropic override keys on read", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        anthropicBaseUrl: "http://litellm:4000",
+        anthropicAuthToken: "sk-secret",
+        anthropicOverrideEnabled: true,
+        autoTrust: false,
+      }),
+    );
+    const settings = getSettings() as Record<string, unknown>;
+    assert.equal("anthropicBaseUrl" in settings, false);
+    assert.equal("anthropicAuthToken" in settings, false);
+    assert.equal("anthropicOverrideEnabled" in settings, false);
+    assert.equal(settings.autoTrust, false);
+  });
+
+  it("drops the stale auth token credential from disk on the next persist", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ anthropicAuthToken: "sk-secret" }),
+    );
+    updateSettings({ terminalRenderer: "xterm" });
+    const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    assert.equal("anthropicAuthToken" in raw, false);
+  });
+
   it("removes gateway entirely when scrubbing empties it", () => {
     writeFileSync(
       SETTINGS_FILE,
