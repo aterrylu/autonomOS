@@ -63,7 +63,7 @@ Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enabl
 Agents communicate via URI-based addressing through the gateway:
 - `agent://name` — send to a named agent
 - `broadcast://all` — send to all agents
-- `discord://guild/channel`, `telegram://...`, `slack://...` — platform channels (when adapters ship)
+- `slack://...` — platform channels (when adapters ship)
 
 The gateway router parses the URI scheme and delivers to the right destination.
 

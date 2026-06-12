@@ -5,19 +5,19 @@
 
 // ── Platform Messages ─────────────────────────────────────────────
 
-export type Platform = "discord" | "telegram" | "slack";
+export type Platform = "slack";
 
 /** Normalized inbound message from any platform or agent */
 export interface GatewayMessage {
   id: string;
   platform: Platform;
   platformMessageId: string;
-  /** Platform-specific routing key (e.g. "guildId:channelId" for Discord) */
+  /** Platform-specific routing key (e.g. "workspaceId:channelId" for Slack) */
   chatId: string;
   userId: string;
   userName: string;
   text: string;
-  /** URI the receiver uses to respond (e.g. "agent://name", "discord://guild/channel") */
+  /** URI the receiver uses to respond (e.g. "agent://name", "slack://workspace/channel") */
   fromUri: string;
   replyTo?: string;
   threadId?: string;

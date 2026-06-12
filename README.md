@@ -117,7 +117,6 @@ docs/
 - **[DECISIONS.md](docs/DECISIONS.md)** — Architectural decision records
 - **[RESEARCH.md](docs/RESEARCH.md)** — Competitor analysis and research
 - **[VISION.md](docs/VISION.md)** — Project vision
-- **[setup/channels.md](docs/setup/channels.md)** — Telegram & Discord channel setup
 
 ## License
 

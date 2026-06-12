@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -46,13 +46,55 @@ describe("getSettings", () => {
   });
 
   it("preserves custom channels", () => {
-    const custom = [
-      "server:autonomos",
-      "plugin:discord@claude-plugins-official",
-    ];
+    const custom = ["server:autonomos", "server:custom"];
     writeFileSync(SETTINGS_FILE, JSON.stringify({ channels: custom }));
     const settings = getSettings();
     assert.deepEqual(settings.channels, custom);
+  });
+
+  it("drops stale plugin:* channels from removed integrations", () => {
+    // Old settings.json files may still list the removed Telegram/Discord
+    // plugin channels — the sanitizer discards them on read.
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        channels: [
+          "server:autonomos",
+          "plugin:telegram@claude-plugins-official",
+          "plugin:discord@claude-plugins-official",
+        ],
+      }),
+    );
+    const settings = getSettings();
+    assert.deepEqual(settings.channels, ["server:autonomos"]);
+  });
+
+  it("scrubs removed keys (inboxAgent, gateway.telegram/discord) on read", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        inboxAgent: "Dispatcher",
+        gateway: {
+          telegram: { enabled: true },
+          discord: { enabled: false },
+          slack: { enabled: true },
+        },
+      }),
+    );
+    const settings = getSettings();
+    assert.equal("inboxAgent" in settings, false);
+    assert.deepEqual(settings.gateway, { slack: { enabled: true } });
+  });
+
+  it("drops scrubbed keys from disk on the next persist", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ inboxAgent: "Dispatcher", autoTrust: false }),
+    );
+    updateSettings({ terminalRenderer: "xterm" });
+    const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    assert.equal("inboxAgent" in raw, false);
+    assert.equal(raw.autoTrust, false);
   });
 
   it("returns default channels when channels is a string (not array)", () => {
@@ -68,15 +110,12 @@ describe("getSettings", () => {
     const duped = [
       "server:autonomos",
       "server:autonomos",
-      "plugin:discord@claude-plugins-official",
+      "server:custom",
       "server:autonomos",
     ];
     writeFileSync(SETTINGS_FILE, JSON.stringify({ channels: duped }));
     const settings = getSettings();
-    assert.deepEqual(settings.channels, [
-      "server:autonomos",
-      "plugin:discord@claude-plugins-official",
-    ]);
+    assert.deepEqual(settings.channels, ["server:autonomos", "server:custom"]);
   });
 
   it("returns empty settings with defaults for invalid JSON", () => {

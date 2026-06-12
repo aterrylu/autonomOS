@@ -27,27 +27,12 @@ export interface AppSettings {
   /** Whether to inject anthropicBaseUrl/anthropicAuthToken into sessions (default: true if values exist) */
   anthropicOverrideEnabled?: boolean;
   /**
-   * Channel plugins enabled for every session.
-   * Values are --channels arguments, e.g.:
-   *   "plugin:telegram@claude-plugins-official"
-   *   "plugin:discord@claude-plugins-official"
-   *   "server:autonomos"
+   * Channels enabled for every session. Only `server:*` channels are
+   * supported, e.g. "server:autonomos".
    */
   channels?: string[];
-  /**
-   * Name of the agent that gets plugin:* channels (Telegram, Discord, etc).
-   * Only ONE session can hold a given plugin's lock — Telegram's getUpdates
-   * API enforces a single concurrent poller per bot token, and the plugin
-   * implements this with a PID file that evicts previous holders. Pinning
-   * plugin channels to one agent avoids the random-last-wins routing you'd
-   * otherwise get when many sessions resume in parallel.
-   * Default: "Dispatcher". Non-matching sessions still get server:* channels.
-   */
-  inboxAgent?: string;
   /** Gateway platform adapter config */
   gateway?: {
-    discord?: { enabled: boolean };
-    telegram?: { enabled: boolean };
     slack?: { enabled: boolean };
   };
   /** Channel-to-session routing rules */
@@ -78,11 +63,28 @@ function settingsFile(): string {
 }
 
 const DEFAULT_CHANNELS = ["server:autonomos"];
-const DEFAULT_INBOX_AGENT = "Dispatcher";
 
-export function getInboxAgent(settings: AppSettings): string {
-  const name = settings.inboxAgent?.trim();
-  return name && name.length > 0 ? name : DEFAULT_INBOX_AGENT;
+/**
+ * Keys from removed features, scrubbed on read so the next persist drops
+ * them from disk (the ADR-035 accept-and-discard pattern). `inboxAgent`
+ * and the telegram/discord gateway toggles died with the plugin-channel
+ * removal; stale `plugin:*` channels entries are handled by the channels
+ * sanitizer below (they no longer pass isValidChannelId).
+ */
+const REMOVED_KEYS = ["inboxAgent"];
+const REMOVED_GATEWAY_KEYS = ["discord", "telegram"];
+
+function scrubRemovedKeys(data: AppSettings): void {
+  const record = data as Record<string, unknown>;
+  for (const key of REMOVED_KEYS) {
+    delete record[key];
+  }
+  if (data.gateway) {
+    const gateway = data.gateway as Record<string, unknown>;
+    for (const key of REMOVED_GATEWAY_KEYS) {
+      delete gateway[key];
+    }
+  }
 }
 
 export function getSettings(): AppSettings {
@@ -111,6 +113,8 @@ export function getSettings(): AppSettings {
     }
     data = {};
   }
+
+  scrubRemovedKeys(data);
 
   // Default channels so MCP tools work out of the box.
   // An explicit empty array means "user disabled all channels" — don't override.

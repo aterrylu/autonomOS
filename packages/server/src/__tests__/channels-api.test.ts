@@ -9,18 +9,14 @@ import {
   _setConfigDirForTesting,
   ensureConfigDir,
 } from "../configDir.js";
-import {
-  _setInstalledPluginsForTesting,
-  channelsRouter,
-} from "../routes/channels.js";
+import { channelsRouter } from "../routes/channels.js";
 import { settingsRouter } from "../routes/settings.js";
 
 /**
  * API-level coverage for:
- *   GET /api/channels/status  — reports installed/enabled/disabled per-channel
- *   PUT /api/settings (channels) — rejects malformed and broken channel ids
- *
- * Uses the test-only plugin injector so we never spawn `claude plugin list`.
+ *   GET /api/channels/status  — reports the known server:* channels
+ *   PUT /api/settings (channels) — rejects malformed channel ids,
+ *     including stale plugin:* ids from before plugin channels were removed
  */
 
 let tmpDir: string;
@@ -49,65 +45,19 @@ describe("GET /api/channels/status", () => {
 
   after(() => {
     _resetConfigDirForTesting();
-    _setInstalledPluginsForTesting(undefined);
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  afterEach(() => {
-    _setInstalledPluginsForTesting(undefined);
-  });
-
-  it("reports ok for installed+enabled plugins and server: channels", async () => {
-    _setInstalledPluginsForTesting([
-      { id: "telegram@claude-plugins-official", enabled: true },
-      { id: "discord@claude-plugins-official", enabled: true },
-    ]);
+  it("reports server:autonomos as ok with no fix command", async () => {
     const res = await createApp().request("/api/channels/status");
     assert.equal(res.status, 200);
     const { channels } = (await res.json()) as {
       channels: Array<{ id: string; status: string; fix: string | null }>;
     };
-    const byId = Object.fromEntries(channels.map((c) => [c.id, c]));
-    assert.equal(byId["server:autonomos"].status, "ok");
-    assert.equal(byId["plugin:telegram@claude-plugins-official"].status, "ok");
-    assert.equal(byId["plugin:discord@claude-plugins-official"].status, "ok");
-    assert.equal(byId["plugin:telegram@claude-plugins-official"].fix, null);
-  });
-
-  it("reports not-installed with a fix command for missing plugins", async () => {
-    _setInstalledPluginsForTesting([
-      { id: "telegram@claude-plugins-official", enabled: true },
-    ]);
-    const res = await createApp().request("/api/channels/status");
-    const { channels } = (await res.json()) as {
-      channels: Array<{ id: string; status: string; fix: string | null }>;
-    };
-    const discord = channels.find(
-      (c) => c.id === "plugin:discord@claude-plugins-official",
-    );
-    assert.equal(discord?.status, "not-installed");
-    assert.equal(
-      discord?.fix,
-      "/plugin install discord@claude-plugins-official",
-    );
-  });
-
-  it("reports disabled with an install command for disabled plugins", async () => {
-    _setInstalledPluginsForTesting([
-      { id: "telegram@claude-plugins-official", enabled: false },
-      { id: "discord@claude-plugins-official", enabled: true },
-    ]);
-    const res = await createApp().request("/api/channels/status");
-    const { channels } = (await res.json()) as {
-      channels: Array<{ id: string; status: string; fix: string | null }>;
-    };
-    const tg = channels.find(
-      (c) => c.id === "plugin:telegram@claude-plugins-official",
-    );
-    assert.equal(tg?.status, "disabled");
-    // `/plugin install` is the universal fix — works for both not-installed
-    // and disabled states in one command.
-    assert.equal(tg?.fix, "/plugin install telegram@claude-plugins-official");
+    assert.equal(channels.length, 1);
+    assert.equal(channels[0].id, "server:autonomos");
+    assert.equal(channels[0].status, "ok");
+    assert.equal(channels[0].fix, null);
   });
 });
 
@@ -120,12 +70,10 @@ describe("PUT /api/settings — channel validation", () => {
 
   after(() => {
     _resetConfigDirForTesting();
-    _setInstalledPluginsForTesting(undefined);
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
   afterEach(() => {
-    _setInstalledPluginsForTesting(undefined);
     seedSettings({});
   });
 
@@ -140,80 +88,37 @@ describe("PUT /api/settings — channel validation", () => {
   }
 
   it("rejects malformed channel identifiers (400)", async () => {
-    _setInstalledPluginsForTesting([]);
     const { status, json } = await put({ channels: ["totally-malformed"] });
     assert.equal(status, 400);
     assert.match(String(json.error), /Invalid channel identifier/);
     assert.match(String(json.error), /totally-malformed/);
   });
 
-  it("rejects not-installed plugins with an actionable message (400)", async () => {
-    _setInstalledPluginsForTesting([]);
+  it("rejects plugin:* channels — removed feature (400)", async () => {
     const { status, json } = await put({
       channels: ["plugin:telegram@claude-plugins-official"],
     });
     assert.equal(status, 400);
-    assert.match(String(json.error), /silently no-op/);
-    assert.match(String(json.error), /not-installed/);
+    assert.match(String(json.error), /Invalid channel identifier/);
   });
 
-  it("rejects disabled plugins (400)", async () => {
-    _setInstalledPluginsForTesting([
-      { id: "telegram@claude-plugins-official", enabled: false },
-    ]);
-    const { status, json } = await put({
-      channels: ["plugin:telegram@claude-plugins-official"],
-    });
-    assert.equal(status, 400);
-    assert.match(String(json.error), /disabled/);
-  });
-
-  it("accepts server:autonomos regardless of plugin detection", async () => {
-    // server: channels never appear in `claude plugin list` output.
-    _setInstalledPluginsForTesting([]);
+  it("accepts server:autonomos", async () => {
     const { status, json } = await put({ channels: ["server:autonomos"] });
     assert.equal(status, 200);
     assert.deepEqual(json.channels, ["server:autonomos"]);
   });
 
-  it("accepts mixed installed plugins + server:autonomos", async () => {
-    _setInstalledPluginsForTesting([
-      { id: "telegram@claude-plugins-official", enabled: true },
-      { id: "discord@claude-plugins-official", enabled: true },
-    ]);
-    const { status, json } = await put({
-      channels: [
-        "server:autonomos",
-        "plugin:telegram@claude-plugins-official",
-        "plugin:discord@claude-plugins-official",
-      ],
-    });
-    assert.equal(status, 200);
-    assert.deepEqual(json.channels, [
-      "server:autonomos",
-      "plugin:telegram@claude-plugins-official",
-      "plugin:discord@claude-plugins-official",
-    ]);
-  });
-
   it("accepts empty array (explicit no-channels)", async () => {
-    _setInstalledPluginsForTesting([]);
     const { status, json } = await put({ channels: [] });
     assert.equal(status, 200);
     assert.deepEqual(json.channels, []);
   });
 
-  it("fail-opens on detection failure — plugin saves succeed when unknown", async () => {
-    // null simulates `claude plugin list --json` failing. The guard
-    // must not mistake "detection failed" for "plugin not installed".
-    _setInstalledPluginsForTesting(null);
-    const { status, json } = await put({
-      channels: ["server:autonomos", "plugin:telegram@claude-plugins-official"],
-    });
+  it("ignores inboxAgent in the request body — removed feature", async () => {
+    // Older dashboards may still send it; it must be accepted-and-discarded,
+    // never persisted or echoed back.
+    const { status, json } = await put({ inboxAgent: "Dispatcher" });
     assert.equal(status, 200);
-    assert.deepEqual(json.channels, [
-      "server:autonomos",
-      "plugin:telegram@claude-plugins-official",
-    ]);
+    assert.equal("inboxAgent" in json, false);
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Gateway Router — routes messages between platform adapters and CC sessions.
  *
- * Uses URI-based addressing: agent://name, discord://guild/channel, broadcast://all.
+ * Uses URI-based addressing: agent://name, slack://workspace/channel, broadcast://all.
  * The router is stateless (no message persistence). If a session is down,
  * messages are dropped. CC owns its own conversation history.
  */
@@ -92,8 +92,6 @@ export async function routeMessage(
     case "agent":
       return routeToAgent(fromSessionId, path, message);
 
-    case "discord":
-    case "telegram":
     case "slack":
       return routeToPlatform(scheme, path, message);
 
@@ -102,7 +100,7 @@ export async function routeMessage(
       return null;
 
     default:
-      return `Unknown URI scheme: "${scheme}" — supported: agent, discord, telegram, slack, broadcast`;
+      return `Unknown URI scheme: "${scheme}" — supported: agent, slack, broadcast`;
   }
 }
 
@@ -208,7 +206,7 @@ function buildAgentMessage(
 ): GatewayMessage {
   return {
     id: crypto.randomUUID(),
-    platform: "discord", // unused for agent messages — fromUri is the source of truth
+    platform: "slack", // unused for agent messages — fromUri is the source of truth
     platformMessageId: "",
     chatId: "",
     userId: senderId,
