@@ -121,4 +121,21 @@ describe("PUT /api/settings — channel validation", () => {
     assert.equal(status, 200);
     assert.equal("inboxAgent" in json, false);
   });
+
+  it("ignores anthropic override keys in the request body — removed feature", async () => {
+    const { status, json } = await put({
+      anthropicBaseUrl: "http://litellm:4000",
+      anthropicAuthToken: "sk-stale",
+      anthropicOverrideEnabled: true,
+    });
+    assert.equal(status, 200);
+    assert.equal("anthropicBaseUrl" in json, false);
+    assert.equal("anthropicAuthToken" in json, false);
+    assert.equal("anthropicOverrideEnabled" in json, false);
+    // Nothing reached disk: GET must not surface them either.
+    const res = await createApp().request("/api/settings");
+    const fresh = (await res.json()) as Record<string, unknown>;
+    assert.equal("anthropicBaseUrl" in fresh, false);
+    assert.equal("anthropicAuthToken" in fresh, false);
+  });
 });
