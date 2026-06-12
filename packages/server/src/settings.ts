@@ -79,8 +79,18 @@ const REMOVED_GATEWAY_KEYS = ["discord", "telegram"];
 
 function scrubRemovedKeys(data: AppSettings): void {
   const record = data as Record<string, unknown>;
+  const dropped = REMOVED_KEYS.filter((key) => key in record);
   for (const key of REMOVED_KEYS) {
     delete record[key];
+  }
+  if (dropped.length > 0) {
+    // Name the keys — for someone who relied on the API override (e.g. a
+    // litellm proxy), this is the only signal explaining why their
+    // sessions now hit the default endpoint. Key NAMES only, never values
+    // (anthropicAuthToken is a credential).
+    console.warn(
+      `[settings] Ignoring settings.json keys from removed features: ${dropped.join(", ")} (dropped from disk on next save)`,
+    );
   }
   if (data.gateway) {
     const gateway = data.gateway as Record<string, unknown>;
