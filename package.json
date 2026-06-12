@@ -13,6 +13,7 @@
     "build:app": "bun --cwd packages/app run build:main",
     "typecheck:app": "bun --cwd packages/app run typecheck",
     "build:dmg": "bun --cwd packages/app run build:dmg",
+    "capture-demo": "bun --cwd packages/dashboard run capture-demo",
     "changeset": "changeset",
     "version": "changeset version && bun scripts/sync-changelog.ts",
     "release:notes": "bun scripts/release-notes.ts",

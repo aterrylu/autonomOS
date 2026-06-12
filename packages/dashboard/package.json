@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "capture-demo": "bun scripts/capture-demo.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.17",
@@ -49,6 +50,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "jsdom": "^25.0.1",
+    "playwright-core": "1.49.1",
     "tailwindcss": "^4.2.1",
     "typescript": "^5",
     "vite": "^6",
