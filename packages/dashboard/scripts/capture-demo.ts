@@ -40,7 +40,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -166,54 +166,51 @@ const CAST: CastMember[] = [
 // extended with per-agent reply routing: the request body carries the
 // conversation, so matching a prompt substring picks the right script.
 
-function sse(res: import("node:http").ServerResponse, ev: string, data: unknown): void {
+function sse(res: ServerResponse, ev: string, data: unknown): void {
   res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 function streamMessage(
-  res: import("node:http").ServerResponse,
+  res: ServerResponse,
   block:
     | { type: "text"; text: string }
     | { type: "tool_use"; name: string; input: Record<string, unknown> },
 ): void {
-  const msg = {
-    id: "msg_demo",
-    type: "message",
-    role: "assistant",
-    model: "claude-demo",
-    content: [],
-    stop_reason: null,
-    stop_sequence: null,
-    usage: { input_tokens: 1, output_tokens: 1 },
-  };
-  sse(res, "message_start", { type: "message_start", message: msg });
-  if (block.type === "text") {
-    sse(res, "content_block_start", {
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "text", text: "" },
-    });
-    sse(res, "content_block_delta", {
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: block.text },
-    });
-  } else {
-    sse(res, "content_block_start", {
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "tool_use", id: "toolu_demo", name: block.name, input: {} },
-    });
-    sse(res, "content_block_delta", {
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) },
-    });
-  }
+  const isText = block.type === "text";
+  const contentBlock = isText
+    ? { type: "text", text: "" }
+    : { type: "tool_use", id: "toolu_demo", name: block.name, input: {} };
+  const delta = isText
+    ? { type: "text_delta", text: block.text }
+    : { type: "input_json_delta", partial_json: JSON.stringify(block.input) };
+
+  sse(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: "msg_demo",
+      type: "message",
+      role: "assistant",
+      model: "claude-demo",
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  });
+  sse(res, "content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: contentBlock,
+  });
+  sse(res, "content_block_delta", {
+    type: "content_block_delta",
+    index: 0,
+    delta,
+  });
   sse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
   sse(res, "message_delta", {
     type: "message_delta",
-    delta: { stop_reason: block.type === "text" ? "end_turn" : "tool_use", stop_sequence: null },
+    delta: { stop_reason: isText ? "end_turn" : "tool_use", stop_sequence: null },
     usage: { output_tokens: 1 },
   });
   sse(res, "message_stop", { type: "message_stop" });
@@ -254,6 +251,9 @@ function startDemoMock(): Promise<DemoMock> {
         // the others' tasks, so TeamLead must stay first in CAST.
         const member = CAST.find((m) => raw.includes(m.matchKey));
         if (!member) {
+          // Without this warn, a matchKey miss surfaces only as the staging
+          // wait timing out 120s later with zero evidence why.
+          console.warn(`mock: no CAST match, serving fallback. Body head: ${raw.slice(0, 200)}`);
           streamMessage(res, { type: "text", text: "Standing by." });
           return;
         }
@@ -266,9 +266,15 @@ function startDemoMock(): Promise<DemoMock> {
         }
         return;
       }
+      // Catch-all keeps claude's probes (HEAD, model lookups) happy, but log
+      // each one — a 200 {} to an endpoint claude actually needs would
+      // otherwise degrade into undefined TUI behavior with no trace here.
+      console.warn(`mock: unmatched ${req.method} ${url} — serving {}`);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{}");
     });
+    req.on("error", (err) => console.warn(`mock: request error: ${err.message}`));
+    res.on("error", (err) => console.warn(`mock: response error: ${err.message}`));
   });
 
   return new Promise((resolveFn) => {
@@ -320,8 +326,12 @@ interface DemoServer {
   configDir: string;
   fakeHome: string;
   child: ChildProcess;
+  logs: () => string;
   kill: () => void;
 }
+
+/** Set once teardown starts so the server-exit watchdog stays quiet. */
+let shuttingDown = false;
 
 async function bootServer(mockUrl: string): Promise<DemoServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-demo-"));
@@ -373,7 +383,9 @@ async function bootServer(mockUrl: string): Promise<DemoServer> {
 
   // Strip tmux vars so spawned claude TUIs don't render a "tmux detected"
   // hint in the screenshots when the harness itself runs inside tmux.
-  const env = {
+  // (NodeJS.ProcessEnv annotation keeps the index signature — the spread
+  // would otherwise narrow the type and make the deletes a TS2339.)
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: fakeHome,
     AUTONOMOS_CONFIG_DIR: configDir,
@@ -392,21 +404,39 @@ async function bootServer(mockUrl: string): Promise<DemoServer> {
   child.stderr?.on("data", (d: Buffer) => out.push(d.toString()));
 
   const port = await new Promise<number>((resolveFn, rejectFn) => {
+    // Every reject path kills the child — a boot failure must not orphan
+    // a live tsx server (main()'s finally can't see it yet at this point).
+    const fail = (err: Error): void => {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      rejectFn(err);
+    };
+    const timer = setTimeout(
+      () => fail(new Error(`server not ready in 20s:\n${out.join("")}`)),
+      20_000,
+    );
     const onData = (): void => {
       const m = out.join("").match(/AUTONOMOS_READY port=(\d+)/);
       if (m) {
         child.stdout?.off("data", onData);
+        clearTimeout(timer);
         resolveFn(Number(m[1]));
       }
     };
     child.stdout?.on("data", onData);
+    child.once("error", (err) =>
+      fail(new Error(`server spawn failed (is tsx installed at ${TSX_BIN}?): ${err.message}`)),
+    );
     child.once("exit", (code) =>
-      rejectFn(new Error(`server exited (code=${code}) before ready:\n${out.join("")}`)),
+      fail(new Error(`server exited (code=${code}) before ready:\n${out.join("")}`)),
     );
-    setTimeout(
-      () => rejectFn(new Error(`server not ready in 20s:\n${out.join("")}`)),
-      20_000,
-    );
+  });
+
+  // Post-boot watchdog: a mid-run server crash otherwise surfaces only as a
+  // bare ECONNREFUSED from some later fetch, with the logs sitting unread.
+  child.once("exit", (code) => {
+    if (!shuttingDown) {
+      console.error(`server exited unexpectedly (code=${code})\n${out.join("")}`);
+    }
   });
 
   return {
@@ -415,6 +445,7 @@ async function bootServer(mockUrl: string): Promise<DemoServer> {
     configDir,
     fakeHome,
     child,
+    logs: () => out.join(""),
     kill: () => {
       if (child.exitCode === null) child.kill("SIGTERM");
     },
@@ -498,7 +529,11 @@ async function stageScene(
     }),
   );
 
-  const { body: agents } = await api<AgentInfo[]>(server, "/api/agents");
+  const agentsRes = await api<AgentInfo[]>(server, "/api/agents");
+  if (agentsRes.status !== 200) {
+    throw new Error(`GET /api/agents → ${agentsRes.status}: ${JSON.stringify(agentsRes.body)}`);
+  }
+  const agents = agentsRes.body;
   const byName = new Map(agents.map((a) => [a.name, a]));
 
   // Completion signal: the MOCK knows when each agent's final text reply was
@@ -536,7 +571,7 @@ async function stageScene(
   for (const m of CAST) {
     if (!m.pose) continue;
     const a = byName.get(m.name);
-    if (!a) continue;
+    if (!a) throw new Error(`pose: agent ${m.name} missing from /api/agents`);
     const { status } = await api(server, `/api/hooks/${a.id}`, {
       method: "POST",
       body: JSON.stringify({ ...m.pose, session_id: a.id }),
@@ -557,6 +592,20 @@ async function stageScene(
 async function captureWeb(server: DemoServer, agents: AgentInfo[]): Promise<void> {
   console.log("Capturing web dashboard…");
   const browser = await chromium.launch();
+  try {
+    await captureWebPages(browser, server, agents);
+  } finally {
+    // Without this, any capture failure leaks a headless Chromium — the
+    // outer teardown only knows about the server and temp dirs.
+    await browser.close();
+  }
+}
+
+async function captureWebPages(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  server: DemoServer,
+  agents: AgentInfo[],
+): Promise<void> {
   const context = await browser.newContext({
     // 1920×1080 at scale 1: a half-width pane fits ~80 terminal columns,
     // matching the hero agents' spawn cols so replayed output isn't clipped
@@ -626,29 +675,79 @@ async function captureWeb(server: DemoServer, agents: AgentInfo[]): Promise<void
   await page.screenshot({ path: join(OUT_DIR, "dashboard-hero.png") });
   console.log("  ✓ dashboard-hero.png");
 
-  // Org chart pane — the hierarchy view is its own capture.
+  // Org chart pane — the hierarchy view is its own capture. Verify the
+  // chart actually rendered before shooting: a missed click would otherwise
+  // ship a screenshot of the wrong view with a green exit code. Text
+  // selectors are useless here (agent names also live as hidden terminal
+  // buffer text), so wait for the 4th chart node card (HierarchyPanel's
+  // backdrop-blur-sm card chrome) — all four agents present in the tree.
   await page.getByText("ORG CHART", { exact: false }).first().click();
+  await page.locator("div.backdrop-blur-sm").nth(3).waitFor({ timeout: 10_000 });
   await sleep(1_500);
   await page.screenshot({ path: join(OUT_DIR, "org-chart.png") });
   console.log("  ✓ org-chart.png");
-
-  await browser.close();
 }
 
 // ── Teardown ─────────────────────────────────────────────────────────
+// Each step is isolated: teardown also runs in error paths where the server
+// may already be dead, and a throw here would mask the original failure and
+// leak everything downstream. All cleanup stays scoped — agents via their
+// own API, the child by PID, rm only on mkdtemp-created dirs.
 
 async function teardown(server: DemoServer, agents: AgentInfo[], workspace: string): Promise<void> {
+  shuttingDown = true;
   console.log("Tearing down (scoped — agents via API, server by PID)…");
-  // Children first (manager links would 409 a plain delete on TeamLead).
-  const order = [...agents].sort((a) => (a.name === "TeamLead" ? 1 : -1));
-  for (const a of order) {
-    await api(server, `/api/agents/${a.id}?force=true`, { method: "DELETE" });
+
+  // Agents first, via their own API. ?force=true orphans children to root,
+  // so delete order doesn't matter. If staging failed before the agent list
+  // was captured, ask the isolated server what exists — everything inside
+  // this config dir belongs to the harness.
+  try {
+    let list = agents;
+    if (list.length === 0) {
+      const res = await api<AgentInfo[]>(server, "/api/agents");
+      if (res.status === 200) list = res.body;
+    }
+    for (const a of list) {
+      const { status } = await api(server, `/api/agents/${a.id}?force=true`, {
+        method: "DELETE",
+      });
+      if (status !== 200) console.warn(`teardown: DELETE ${a.name} → ${status}`);
+    }
+  } catch (err) {
+    console.warn(
+      `teardown: agent cleanup failed (server already down?): ${err instanceof Error ? err.message : err}`,
+    );
   }
-  server.kill();
-  await sleep(1_000);
-  rmSync(server.configDir, { recursive: true, force: true });
-  rmSync(server.fakeHome, { recursive: true, force: true });
-  rmSync(workspace, { recursive: true, force: true });
+
+  // SIGTERM the child and wait for the real exit before removing its config
+  // dir — escalate to SIGKILL rather than deleting state out from under a
+  // live process.
+  try {
+    if (server.child.exitCode === null) {
+      const exited = new Promise<void>((r) => server.child.once("exit", () => r()));
+      server.kill();
+      const result = await Promise.race([
+        exited.then(() => "exited" as const),
+        sleep(5_000).then(() => "timeout" as const),
+      ]);
+      if (result === "timeout") {
+        console.warn("teardown: server ignored SIGTERM for 5s — escalating to SIGKILL");
+        server.child.kill("SIGKILL");
+        await Promise.race([exited, sleep(2_000)]);
+      }
+    }
+  } catch (err) {
+    console.warn(`teardown: server kill failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  for (const dir of [server.configDir, server.fakeHome, workspace]) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`teardown: rm ${dir} failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -675,6 +774,35 @@ async function main(): Promise<void> {
   console.log(`Demo server: http://127.0.0.1:${server.port} (config: ${server.configDir})`);
 
   let agents: AgentInfo[] = [];
+
+  let cleanedUp = false;
+  const cleanup = async (): Promise<void> => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    // Guarded so a teardown error can never mask the original failure.
+    try {
+      await teardown(server, agents, workspace);
+    } catch (err) {
+      console.error("teardown failed:", err);
+    }
+    try {
+      await mock.close();
+    } catch {
+      // In-process server; dies with us anyway.
+    }
+  };
+
+  // Ctrl-C must tear down explicitly: node-pty puts the claude agents in
+  // their own sessions, so they never receive the terminal's SIGINT and
+  // would outlive the harness. This is also the ONLY teardown path in
+  // --keep mode.
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      console.log(`\n${sig} — tearing down…`);
+      void cleanup().then(() => process.exit(130));
+    });
+  }
+
   try {
     agents = await stageScene(server, mock, workspace);
     await captureWeb(server, agents);
@@ -683,13 +811,15 @@ async function main(): Promise<void> {
       console.log(
         `\n--keep: demo server stays up at http://127.0.0.1:${server.port}/?token=${server.token}\nCtrl-C to stop.`,
       );
-      await new Promise(() => {}); // hold until interrupted
+      await new Promise(() => {}); // hold until a signal triggers cleanup
     }
+  } catch (err) {
+    // The server log is the single most useful diagnostic and would
+    // otherwise be discarded silently.
+    console.error(`Run failed — server logs:\n${server.logs()}`);
+    throw err;
   } finally {
-    if (!KEEP_ALIVE) {
-      await teardown(server, agents, workspace);
-      await mock.close();
-    }
+    if (!KEEP_ALIVE) await cleanup();
   }
   console.log(`\nDone. Assets in ${OUT_DIR}`);
 }

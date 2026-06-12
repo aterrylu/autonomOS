@@ -50,7 +50,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "jsdom": "^25.0.1",
-    "playwright-core": "1.49.1",
+    "playwright-core": "^1.60.0",
     "tailwindcss": "^4.2.1",
     "typescript": "^5",
     "vite": "^6",
