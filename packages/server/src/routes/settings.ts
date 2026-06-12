@@ -1,13 +1,7 @@
 import { Hono } from "hono";
-import { channelStatus, isValidChannelId } from "../channels.js";
+import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
-import {
-  type AppSettings,
-  getInboxAgent,
-  getSettings,
-  updateSettings,
-} from "../settings.js";
-import { readInstalledPlugins } from "./channels.js";
+import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
@@ -29,7 +23,6 @@ function maskSettings(settings: AppSettings) {
     anthropicAuthToken: redact(settings.anthropicAuthToken),
     anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
     channels: settings.channels ?? [],
-    inboxAgent: getInboxAgent(settings),
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
     terminalRenderer: settings.terminalRenderer ?? "xterm",
@@ -68,9 +61,6 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.autoTrust === "boolean") {
     partial.autoTrust = body.autoTrust;
   }
-  if (typeof body.inboxAgent === "string") {
-    partial.inboxAgent = body.inboxAgent.trim();
-  }
   if (Array.isArray(body.channels)) {
     const requested = body.channels
       .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
@@ -80,37 +70,7 @@ settingsRouter.put("/", async (c) => {
     if (invalid.length > 0) {
       return c.json(
         {
-          error: `Invalid channel identifier(s): ${invalid.join(", ")}. Expected plugin:<name>@<marketplace> or server:<name>.`,
-        },
-        400,
-      );
-    }
-
-    // When detection fails, readInstalledPlugins returns null, which
-    // channelStatus() translates to "unknown" — deliberately fail-open
-    // so a transient subprocess problem doesn't block legitimate saves.
-    let installed: Awaited<ReturnType<typeof readInstalledPlugins>>;
-    try {
-      installed = await readInstalledPlugins();
-    } catch (err) {
-      console.error("[settings] channel detection threw:", err);
-      return c.json(
-        { error: "Could not verify channel status — try again." },
-        500,
-      );
-    }
-
-    const broken: string[] = [];
-    for (const id of requested) {
-      const status = channelStatus(id, installed);
-      if (status === "not-installed" || status === "disabled") {
-        broken.push(`${id} (${status})`);
-      }
-    }
-    if (broken.length > 0) {
-      return c.json(
-        {
-          error: `Refusing to save channels that would silently no-op at spawn: ${broken.join(", ")}. Install or enable the plugin first.`,
+          error: `Invalid channel identifier(s): ${invalid.join(", ")}. Expected server:<name>.`,
         },
         400,
       );

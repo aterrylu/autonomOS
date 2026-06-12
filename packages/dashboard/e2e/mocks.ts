@@ -143,7 +143,6 @@ export const MOCK_SETTINGS = {
   anthropicAuthToken: null,
   anthropicOverrideEnabled: false,
   channels: [],
-  inboxAgent: "Dispatcher",
   autoTrust: true,
   customEnvVars: {},
   terminalRenderer: "xterm" as const,

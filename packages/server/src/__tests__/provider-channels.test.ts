@@ -11,10 +11,10 @@ import {
 import { claudeCodeProvider } from "../providers/claude-code.js";
 
 /**
- * Regression coverage for the central question: can a single CC session
- * spawn with multiple channels including `server:autonomos`? The provider
- * splits by prefix into --dangerously-load-development-channels (for
- * `server:*`) and --channels (for everything else).
+ * Regression coverage for channel flag construction: `server:*` channels
+ * are emitted via --dangerously-load-development-channels, and nothing
+ * else can ever reach argv (plugin channels were removed; stale entries
+ * in old settings.json files are dropped by the settings sanitizer).
  *
  * Empirical validation lives in manual QA; this test guards the
  * argument-construction layer from regressing silently.
@@ -39,11 +39,8 @@ function baseOptions(
   };
 }
 
-function writeSettings(
-  channels: string[] | null,
-  extra: Record<string, unknown> = {},
-): void {
-  const body: Record<string, unknown> = { ...extra };
+function writeSettings(channels: string[] | null): void {
+  const body: Record<string, unknown> = {};
   if (channels !== null) body.channels = channels;
   writeFileSync(
     join(tmpDir, "settings.json"),
@@ -89,74 +86,22 @@ describe("claudeCodeProvider.buildArgs — channel flags", () => {
     );
   });
 
-  it("emits --channels only for the inbox agent", () => {
-    writeSettings(["plugin:telegram@claude-plugins-official"]);
-    const args = claudeCodeProvider.buildArgs(
-      baseOptions({ agentName: "Dispatcher" }),
-    );
-    assert.ok(args.includes("--channels"));
-    assert.ok(args.includes("plugin:telegram@claude-plugins-official"));
-    assert.ok(!args.includes("--dangerously-load-development-channels"));
-  });
-
-  it("withholds plugin channels from non-inbox agents", () => {
-    // Non-inbox agents must NOT get plugin:* flags — only one session at
-    // a time can hold the Telegram/Discord poller lock, so fanning out
-    // plugin channels would cause random-last-wins routing.
+  it("never emits --channels or plugin entries, even from stale settings", () => {
+    // Simulates an old settings.json written before plugin channels were
+    // removed. The settings sanitizer drops the stale entry, and the
+    // provider's defensive filter guarantees it can't reach argv.
     writeSettings([
       "server:autonomos",
       "plugin:telegram@claude-plugins-official",
+      "plugin:discord@claude-plugins-official",
     ]);
-    const args = claudeCodeProvider.buildArgs(
-      baseOptions({ agentName: "Worker1" }),
-    );
+    const args = claudeCodeProvider.buildArgs(baseOptions());
     assert.ok(!args.includes("--channels"));
     assert.ok(!args.includes("plugin:telegram@claude-plugins-official"));
-    // server:* still goes through — non-inbox agents keep the gateway.
+    assert.ok(!args.includes("plugin:discord@claude-plugins-official"));
+    // server:* still goes through.
     assert.ok(args.includes("--dangerously-load-development-channels"));
     assert.ok(args.includes("server:autonomos"));
-  });
-
-  it("splits the mixed case: server:autonomos + telegram + discord (inbox only)", () => {
-    // This is the triple-channel case Terry explicitly asked about — and
-    // it's now gated on the agent being the configured inbox.
-    writeSettings([
-      "server:autonomos",
-      "plugin:telegram@claude-plugins-official",
-      "plugin:discord@claude-plugins-official",
-    ]);
-    const args = claudeCodeProvider.buildArgs(
-      baseOptions({ agentName: "Dispatcher" }),
-    );
-
-    const devIdx = args.indexOf("--dangerously-load-development-channels");
-    const offIdx = args.indexOf("--channels");
-    assert.ok(devIdx >= 0, "dev-channels flag must be present");
-    assert.ok(offIdx >= 0, "official-channels flag must be present");
-
-    assert.equal(args[devIdx + 1], "server:autonomos");
-    assert.deepEqual(args.slice(offIdx + 1, offIdx + 3), [
-      "plugin:telegram@claude-plugins-official",
-      "plugin:discord@claude-plugins-official",
-    ]);
-  });
-
-  it("honors a custom inboxAgent setting", () => {
-    writeSettings(
-      ["server:autonomos", "plugin:telegram@claude-plugins-official"],
-      { inboxAgent: "TeamLead" },
-    );
-    const teamLead = claudeCodeProvider.buildArgs(
-      baseOptions({ agentName: "TeamLead" }),
-    );
-    const dispatcher = claudeCodeProvider.buildArgs(
-      baseOptions({ agentName: "Dispatcher" }),
-    );
-    assert.ok(teamLead.includes("plugin:telegram@claude-plugins-official"));
-    assert.ok(
-      !dispatcher.includes("plugin:telegram@claude-plugins-official"),
-      "former default 'Dispatcher' no longer qualifies when inbox is custom",
-    );
   });
 
   it("emits neither flag when channels is an explicit empty array", () => {

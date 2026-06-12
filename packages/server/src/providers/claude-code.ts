@@ -10,7 +10,7 @@ import type {
 } from "@autonomos/core";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
-import { getInboxAgent, getSettings } from "../settings.js";
+import { getSettings } from "../settings.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -141,22 +141,13 @@ export const claudeCodeProvider: AgentProvider = {
     const settings = getSettings();
     const { channels } = settings;
     if (channels && channels.length > 0) {
-      // Plugin channels (plugin:*) go ONLY to the designated inbox agent —
-      // the Telegram/Discord plugins each enforce a single-poller lock
-      // (bot.pid with SIGTERM eviction), so fanning them out to every
-      // session causes random-last-wins inbound routing. server:* channels
-      // are safe to fan out and stay available to every agent.
-      const isInbox = options.agentName === getInboxAgent(settings);
+      // Only server:* channels are supported (plugin channels were
+      // removed). getSettings() already drops anything else, but filter
+      // defensively so a stale entry can never reach argv.
       const devChannels = channels.filter((c) => c.startsWith("server:"));
-      const officialChannels = isInbox
-        ? channels.filter((c) => !c.startsWith("server:"))
-        : [];
 
       if (devChannels.length > 0) {
         args.push("--dangerously-load-development-channels", ...devChannels);
-      }
-      if (officialChannels.length > 0) {
-        args.push("--channels", ...officialChannels);
       }
 
       // Inject MCP config for the autonomOS channel server
