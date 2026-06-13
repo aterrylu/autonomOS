@@ -4,13 +4,20 @@ import type {
   ToolCallItem,
   Turn,
 } from "@autonomos/core";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { THEMES, useStore } from "../../store";
 import { buildClipboardText, closestItemEl } from "./buildCopyText";
+import {
+  decorateTurns,
+  INITIAL_REVEAL,
+  REVEAL_BATCH,
+  revealWindow,
+  scheduleIdle,
+} from "./conversationLayout";
 import { DiffView } from "./DiffView";
 
 interface ConversationData {
@@ -53,13 +60,20 @@ const mdComponents = {
   },
 };
 
-function MarkdownText({ children }: { children: string }) {
+// ReactMarkdown + Prism is the single most expensive thing rendered per turn.
+// Memoize so it only re-runs when its text actually changes — not on every
+// parent re-render (e.g. a sidebar status poll).
+const MarkdownText = memo(function MarkdownText({
+  children,
+}: {
+  children: string;
+}) {
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
       {children}
     </ReactMarkdown>
   );
-}
+});
 
 // ── Tool call block ──────────────────────────────────────────────────────────
 
@@ -81,7 +95,7 @@ function toolSummary(toolName: string, input: Record<string, unknown>): string {
   }
 }
 
-function ToolBlock({ item }: { item: ToolCallItem }) {
+const ToolBlock = memo(function ToolBlock({ item }: { item: ToolCallItem }) {
   const [expanded, setExpanded] = useState(false);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -184,11 +198,17 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
       )}
     </div>
   );
-}
+});
 
 // ── Thinking block ───────────────────────────────────────────────────────────
 
-function ThinkingBlock({ id, content }: { id: string; content: string }) {
+const ThinkingBlock = memo(function ThinkingBlock({
+  id,
+  content,
+}: {
+  id: string;
+  content: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -225,11 +245,15 @@ function ThinkingBlock({ id, content }: { id: string; content: string }) {
       )}
     </div>
   );
-}
+});
 
 // ── Compaction divider ───────────────────────────────────────────────────────
 
-function CompactionDivider({ item }: { item: SystemItem }) {
+const CompactionDivider = memo(function CompactionDivider({
+  item,
+}: {
+  item: SystemItem;
+}) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const tokens = item.content ? Number(item.content).toLocaleString() : null;
@@ -247,11 +271,11 @@ function CompactionDivider({ item }: { item: SystemItem }) {
       <div className="flex-1 border-t" style={{ borderColor: page.border }} />
     </div>
   );
-}
+});
 
 // ── Turn renderers ───────────────────────────────────────────────────────────
 
-function AssistantTurn({ turn }: { turn: Turn }) {
+const AssistantTurn = memo(function AssistantTurn({ turn }: { turn: Turn }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const hasContent = turn.items.some(
@@ -286,9 +310,9 @@ function AssistantTurn({ turn }: { turn: Turn }) {
       })}
     </div>
   );
-}
+});
 
-function UserTurn({ turn }: { turn: Turn }) {
+const UserTurn = memo(function UserTurn({ turn }: { turn: Turn }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const green = THEMES[theme].terminal.green;
@@ -317,31 +341,45 @@ function UserTurn({ turn }: { turn: Turn }) {
       </span>
     </div>
   );
-}
+});
 
 // ── Main conversation view ───────────────────────────────────────────────────
-
-// Sub-agent color palette — cycles for each distinct sidechain agent
-const SIDECHAIN_COLORS = [
-  "#53bdfa",
-  "#fae38e",
-  "#90e1c6",
-  "#ea6c73",
-  "#c792ea",
-];
 
 function TUIThread({ turns }: { turns: Turn[] }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Assign a stable color per sidechain "block" (each contiguous sidechain run)
-  let sidechainIndex = -1;
-  let lastWasSidechain = false;
+  // Decorate once over the FULL array (stable sidechain colors), then reveal
+  // progressively. decorated[i] refs are stable across reveal increments, so
+  // memoized turn components below skip re-render — only newly-revealed turns
+  // pay the markdown/syntax-highlight cost, and that cost is spread over idle
+  // frames instead of one blocking commit of the whole transcript.
+  const decorated = useMemo(() => decorateTurns(turns), [turns]);
 
+  const [revealed, setRevealed] = useState(() =>
+    Math.min(decorated.length, INITIAL_REVEAL),
+  );
+
+  // Reset the reveal window when the conversation itself changes.
+  useEffect(() => {
+    setRevealed(Math.min(decorated.length, INITIAL_REVEAL));
+  }, [decorated]);
+
+  // Reveal older turns in idle-time batches until the whole thread is mounted.
+  useEffect(() => {
+    if (revealed >= decorated.length) return;
+    return scheduleIdle(() =>
+      setRevealed((n) => Math.min(decorated.length, n + REVEAL_BATCH)),
+    );
+  }, [revealed, decorated.length]);
+
+  // Scroll to the bottom on first paint (most-recent turns render first).
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, []);
+
+  const visible = revealWindow(decorated, revealed);
 
   function handleCopy(e: React.ClipboardEvent<HTMLDivElement>) {
     const selection = window.getSelection();
@@ -354,6 +392,8 @@ function TUIThread({ turns }: { turns: Turn[] }) {
     const startId = startEl.dataset.itemId;
     const endId = endEl.dataset.itemId;
     if (!startId || !endId) return;
+    // buildClipboardText works from the full turns array + ids, so copy is
+    // correct for any revealed selection regardless of the reveal window.
     const text = buildClipboardText(turns, startId, endId);
     if (text === null) return; // fall through to default copy
     e.preventDefault();
@@ -366,14 +406,7 @@ function TUIThread({ turns }: { turns: Turn[] }) {
       className="flex-1 overflow-y-auto px-4 py-3 space-y-2 font-mono text-sm"
       style={{ color: page.fg }}
     >
-      {turns.map((turn, i) => {
-        // Track sidechain color assignment
-        if (turn.isSidechain && !lastWasSidechain) sidechainIndex++;
-        lastWasSidechain = !!turn.isSidechain;
-
-        const sidechainColor =
-          SIDECHAIN_COLORS[sidechainIndex % SIDECHAIN_COLORS.length];
-
+      {visible.map(({ turn, index, sidechainColor, showSidechainHeader }) => {
         if (turn.role === "system") {
           return turn.items
             .filter(
@@ -391,19 +424,16 @@ function TUIThread({ turns }: { turns: Turn[] }) {
             <AssistantTurn turn={turn} />
           );
 
-        if (!turn.isSidechain)
-          // biome-ignore lint/suspicious/noArrayIndexKey: turns have no stable id
-          return <div key={i}>{content}</div>;
+        if (!turn.isSidechain) return <div key={index}>{content}</div>;
 
         // Sidechain: indent + colored left border
         return (
           <div
-            // biome-ignore lint/suspicious/noArrayIndexKey: turns have no stable id
-            key={i}
+            key={index}
             className="pl-3 ml-2"
             style={{ borderLeft: `2px solid ${sidechainColor}44` }}
           >
-            {i === 0 || !turns[i - 1]?.isSidechain ? (
+            {showSidechainHeader ? (
               <div
                 className="text-[10px] uppercase tracking-wider mb-1 select-none"
                 style={{ color: sidechainColor }}
@@ -427,14 +457,17 @@ export function ConversationView() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
 
-  const sessions = useStore((s) => s.sessions);
-  const activePane = useStore((s) => s.activePane);
-  const activeSessionId =
-    activePane?.type === "session" ? activePane.id : undefined;
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const claudeSessionId = activeSession?.claudeSessionId;
+  // Select PRIMITIVES, not the whole sessions array — otherwise this view
+  // re-rendered on every sidebar status poll (sessions reference churns ~3s),
+  // re-running the entire thread render. Zustand bails out of a re-render when
+  // the selected value is Object.is-equal to the previous one.
+  const claudeSessionId = useStore((s) => {
+    const ap = s.activePane;
+    if (ap?.type !== "session") return undefined;
+    return s.sessions.find((x) => x.id === ap.id)?.claudeSessionId;
+  });
   // sessions is transient — wait for it to be populated before erroring
-  const sessionsLoaded = sessions.length > 0;
+  const sessionsLoaded = useStore((s) => s.sessions.length > 0);
 
   useEffect(() => {
     if (!sessionsLoaded) return; // still loading
