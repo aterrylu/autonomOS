@@ -1105,3 +1105,25 @@ baseline and removes the "TBD" ambiguity.
   - PTY-only delivery instead of argv — rejected; argv is canonical and works in the common case.
 - **Source:** CC session, DesktopApp issues sweep. Shipped in #209. CLAUDE.md "Key Systems" entry added in the same PR.
 
+## ADR-037: Remove Telegram/Discord plugin channels and the inbox-agent routing policy
+- **Date:** 2026-06-12 — **Decided by:** Human (Terry), implemented by Cleanup@autonomOS
+- **Context:** Telegram and Discord channel integrations shipped under task #41 (ChannelMVP@autonomOS) as 18-line stub adapters plus the supporting plumbing: the `inboxAgent` settings field gating plugin-channel single-poller locks, `claude plugin list` detection, and `telegram://` / `discord://` gateway routing. The adapters were never implemented past stubs and the channels were never used in practice. The `inboxAgent` mechanism existed solely to serve the unshipped channels.
+- **Decision:** Remove entirely (PR #213, ~−775 lines). `KNOWN_CHANNELS` narrowed to `server:*` only; `isValidChannelId` rejects plugin IDs; `Platform` type narrowed to `"slack"` (the only remaining adapter, also a stub — see note below). Old `settings.json` keys (`inboxAgent`, `gateway.telegram`, `gateway.discord`, stale `plugin:*` entries in `channels`, stale `routes`) are accept-and-discarded: scrubbed on read with warnings naming dropped entries, dropped on next persist. `server:autonomos` (native MCP inter-agent messaging) verified untouched — it's a different mechanism even though it shares the word "channel."
+- **Rationale:** Less surface area, fewer concepts to explain ("keep this clean" — Terry's intent). Dead stubs accrue carrying cost (tests to maintain, settings UI noise, mental overhead for new contributors) with zero offsetting value while the features remain unimplemented.
+- **Alternatives considered:**
+  - Keep as dormant stubs for future implementation — rejected; no demand and the carrying cost is real.
+  - Implement Telegram/Discord properly — rejected; no current use case justifying the work.
+- **Note:** Reverses the implementation direction sketched in `docs/research/channel-integration.md`, which is retained as historical context. The Slack adapter stub + the entire gateway-adapter layer (~150 more lines) remain as the only "platform" surface after this change — flagged for a future decision on whether to remove that too.
+- **Source:** CC session, Cleanup@autonomOS worker.
+
+## ADR-038: Remove Anthropic API endpoint override; test harness uses env inheritance
+- **Date:** 2026-06-13 — **Decided by:** Human (Terry), implemented by Cleanup@autonomOS
+- **Context:** A per-session settings field (`anthropicBaseUrl` + `anthropicAuthToken` + `anthropicOverrideEnabled`) let users override the default Anthropic API endpoint with a custom URL paired with an auth token. The override was injected into spawned-session env via `buildBaseEnv`. The only real consumer was the real-claude integration test harness, which uses the override mechanism to redirect `claude` at a mock `/v1/messages` SSE backend (see test-redesign work).
+- **Decision:** Remove the user-visible feature (PR #214). The test harness migrates to plain process-environment inheritance: `bootEmbedded` sets `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` on the embedded server's process env, `buildBaseEnv` already spreads `{...process.env}` into spawned sessions, and `claude` reads the env vars natively. Zero production code retained to serve the test framework. `anthropicBaseUrl` / `anthropicAuthToken` / `anthropicOverrideEnabled` settings keys are *actively scrubbed* on read (the auth token is a credential and must not linger on disk after the feature is gone). `customEnvVars` remains as the documented escape hatch for users with proxy needs.
+- **Rationale:** (1) Cleaner architecture — zero production code retained for testing beats an env-var-only feature flag. (2) Credential hygiene — an auth token in `settings.json` after the feature is gone is mild leak surface; active scrubbing closes it.
+- **Alternatives considered:**
+  - Keep an env-var-only settings path (read but no UI) — rejected; still surface area carrying the same code paths internally.
+  - MITM proxy or iptables-based redirect for the test mock — rejected; significant complexity to replace something that comes for free with process-env inheritance.
+  - Accept test breakage and disable the integration suite — rejected; the harness is load-bearing for desktop-app correctness.
+- **Source:** CC session, Cleanup@autonomOS worker. Shipped in PR #214 stacked on PR #213.
+
