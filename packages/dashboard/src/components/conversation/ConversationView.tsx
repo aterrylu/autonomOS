@@ -10,6 +10,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { THEMES, useStore } from "../../store";
+import { buildClipboardText, closestItemEl } from "./buildCopyText";
 import { DiffView } from "./DiffView";
 
 interface ConversationData {
@@ -94,6 +95,7 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
 
   return (
     <div
+      data-item-id={item.id}
       className="rounded text-xs font-mono overflow-hidden"
       style={{ background: blockBg, border: `1px solid ${page.border}` }}
     >
@@ -186,7 +188,7 @@ function ToolBlock({ item }: { item: ToolCallItem }) {
 
 // ── Thinking block ───────────────────────────────────────────────────────────
 
-function ThinkingBlock({ content }: { content: string }) {
+function ThinkingBlock({ id, content }: { id: string; content: string }) {
   const [expanded, setExpanded] = useState(false);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -195,6 +197,7 @@ function ThinkingBlock({ content }: { content: string }) {
 
   return (
     <div
+      data-item-id={id}
       className="rounded text-xs font-mono overflow-hidden"
       style={{ background: blockBg, border: `1px solid ${page.border}` }}
     >
@@ -233,6 +236,7 @@ function CompactionDivider({ item }: { item: SystemItem }) {
 
   return (
     <div
+      data-item-id={item.id}
       className="flex items-center gap-3 py-1"
       style={{ color: page.statusFg }}
     >
@@ -259,7 +263,9 @@ function AssistantTurn({ turn }: { turn: Turn }) {
     <div className="space-y-1">
       {turn.items.map((item) => {
         if (item.type === "thinking") {
-          return <ThinkingBlock key={item.id} content={item.content} />;
+          return (
+            <ThinkingBlock key={item.id} id={item.id} content={item.content} />
+          );
         }
         if (item.type === "tool_call") {
           return <ToolBlock key={item.id} item={item} />;
@@ -268,6 +274,7 @@ function AssistantTurn({ turn }: { turn: Turn }) {
           return (
             <div
               key={item.id}
+              data-item-id={item.id}
               className="prose-tui text-sm leading-relaxed"
               style={{ color: page.fg }}
             >
@@ -286,18 +293,16 @@ function UserTurn({ turn }: { turn: Turn }) {
   const page = THEMES[theme].page;
   const green = THEMES[theme].terminal.green;
 
-  const text = turn.items
-    .filter(
-      (i): i is RenderItem & { type: "user_prompt"; content: string } =>
-        i.type === "user_prompt",
-    )
-    .map((i) => i.content)
-    .join("\n");
+  const userPrompts = turn.items.filter(
+    (i): i is RenderItem & { type: "user_prompt"; content: string } =>
+      i.type === "user_prompt",
+  );
+  const text = userPrompts.map((i) => i.content).join("\n");
 
   if (!text.trim()) return null;
 
   return (
-    <div className="flex gap-2">
+    <div data-item-id={userPrompts[0].id} className="flex gap-2">
       <span
         className="shrink-0 select-none font-semibold"
         style={{ color: green }}
@@ -338,8 +343,26 @@ function TUIThread({ turns }: { turns: Turn[] }) {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, []);
 
+  function handleCopy(e: React.ClipboardEvent<HTMLDivElement>) {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    if (selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    const startEl = closestItemEl(range.startContainer);
+    const endEl = closestItemEl(range.endContainer);
+    if (!startEl || !endEl) return;
+    const startId = startEl.dataset.itemId;
+    const endId = endEl.dataset.itemId;
+    if (!startId || !endId) return;
+    const text = buildClipboardText(turns, startId, endId);
+    if (text === null) return; // fall through to default copy
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", text);
+  }
+
   return (
     <div
+      onCopy={handleCopy}
       className="flex-1 overflow-y-auto px-4 py-3 space-y-2 font-mono text-sm"
       style={{ color: page.fg }}
     >
