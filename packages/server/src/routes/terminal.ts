@@ -21,6 +21,39 @@ const MIN_ROWS = 1;
 const MAX_ROWS = 200;
 
 /**
+ * Device-query / report-request control sequences that a terminal emulator
+ * auto-*answers* when it parses them. These show up in the PTY scrollback
+ * because the running app (Claude Code / Ink) emitted them to stdout at
+ * startup. On reconnect we replay that scrollback verbatim — and xterm.js,
+ * re-parsing the queries as if they were live, generates the responses and
+ * sends them back through onData → PTY stdin. The app, sitting at its prompt,
+ * inserts those report bytes as literal input → gibberish in the input line.
+ *
+ * Stripping them from the *replay* is display-safe: every sequence below
+ * renders nothing on screen, it only solicits a response. The live PTY stream
+ * after attach is left untouched — real-time queries (e.g. on resize) still
+ * deserve real answers.
+ *
+ *   ESC[c, ESC[>c, ESC[?…c          Device Attributes (DA1/2/3, + responses)
+ *   ESC[5n, ESC[6n, ESC[?…n         Device Status / cursor-position report
+ *   ESC[?…$p                        DECRQM (mode query, e.g. ?2026 sync output)
+ *   ESC[>…q                         XTVERSION request
+ *   ESC[?…u                         kitty keyboard-flags query / response
+ *   ESC]{10,11,12};?  ESC]4;n;?     OSC color / palette queries (BEL or ST)
+ */
+const DEVICE_QUERY_SEQ =
+  /\x1b\[[?>=]?[0-9;]*[cn]|\x1b\[\?[0-9;]*\$p|\x1b\[>[0-9]*q|\x1b\[\?[0-9]*u|\x1b\](?:1[012]|4;[0-9]+);\?(?:\x07|\x1b\\)/g;
+
+/**
+ * Strip device-query/report-request sequences from a replay buffer.
+ * Operates on the concatenated buffer (not per-chunk) so a query split
+ * across two PTY chunks is still matched as a whole.
+ */
+export function stripReplayDeviceQueries(replay: string): string {
+  return replay.replace(DEVICE_QUERY_SEQ, "");
+}
+
+/**
  * WebSocket endpoint for terminal streaming.
  *
  * Flow:
@@ -45,14 +78,16 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           return;
         }
 
-        // Replay buffered output so reconnecting clients see scrollback
-        for (const chunk of managed.outputBuffer) {
-          try {
-            ws.send(chunk);
-          } catch {
-            // Client disconnected during replay
-            return;
-          }
+        // Replay buffered output so reconnecting clients see scrollback.
+        // Concatenate first, then strip device-query sequences as a whole —
+        // otherwise a query split across two chunks would slip through and
+        // the client would auto-answer it into the PTY (gibberish at the
+        // prompt). See stripReplayDeviceQueries.
+        try {
+          ws.send(stripReplayDeviceQueries(managed.outputBuffer.join("")));
+        } catch {
+          // Client disconnected during replay
+          return;
         }
 
         const disposable = managed.pty.onData((data: string) => {
