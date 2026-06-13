@@ -19,9 +19,6 @@ function redact(value: string | undefined): string | null {
 function maskSettings(settings: AppSettings) {
   return {
     claudeSessionKey: redact(settings.claudeSessionKey),
-    anthropicBaseUrl: settings.anthropicBaseUrl || null,
-    anthropicAuthToken: redact(settings.anthropicAuthToken),
-    anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
     channels: settings.channels ?? [],
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
@@ -46,18 +43,9 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
-  // `claudeOrgId` is deprecated — accept-but-discard for back-compat with
-  // older dashboards that still send it. The org UUID is resolved from the
-  // session key via the bootstrap API, so we never persist it.
-  if (typeof body.anthropicBaseUrl === "string") {
-    partial.anthropicBaseUrl = body.anthropicBaseUrl.trim();
-  }
-  if (typeof body.anthropicAuthToken === "string") {
-    partial.anthropicAuthToken = body.anthropicAuthToken.trim();
-  }
-  if (typeof body.anthropicOverrideEnabled === "boolean") {
-    partial.anthropicOverrideEnabled = body.anthropicOverrideEnabled;
-  }
+  // `claudeOrgId` and the anthropic* override keys are removed features —
+  // accept-but-discard for back-compat with older dashboards that still
+  // send them; they are never persisted.
   if (typeof body.autoTrust === "boolean") {
     partial.autoTrust = body.autoTrust;
   }

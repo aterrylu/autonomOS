@@ -209,18 +209,8 @@ export const claudeCodeProvider: AgentProvider = {
     const env = buildBaseEnv(sessionId, agentName);
     delete env.CLAUDECODE;
 
-    // Inject dashboard-configured settings as env vars
-    const settings = getSettings();
-    if (settings.anthropicOverrideEnabled !== false) {
-      if (settings.anthropicBaseUrl) {
-        env.ANTHROPIC_BASE_URL = settings.anthropicBaseUrl;
-      }
-      if (settings.anthropicAuthToken) {
-        env.ANTHROPIC_AUTH_TOKEN = settings.anthropicAuthToken;
-      }
-    }
-
     // Inject user-defined custom env vars
+    const settings = getSettings();
     if (settings.customEnvVars) {
       for (const [key, value] of Object.entries(settings.customEnvVars)) {
         if (!RESERVED_ENV_KEYS.has(key)) {

@@ -56,16 +56,17 @@ export interface BootedServer {
 }
 
 /**
- * Boot the server child. When `anthropicBaseUrl` is provided, a settings.json
- * is written into the isolated CONFIG_DIR FIRST — the claude-code provider's
- * `buildEnv()` reads `getSettings()` (which reads CONFIG_DIR/settings.json)
- * and injects ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN into the spawned
- * agent. This is the same settings path the dashboard writes via
- * PUT /api/settings, so we exercise the real wiring rather than mutating argv.
+ * Boot the server child. When `anthropicBaseUrl` is provided, it is set as
+ * ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN in the SERVER's environment —
+ * the claude-code provider's `buildEnv()` spreads `process.env` into every
+ * spawned agent (providers/shared.ts buildBaseEnv), and the real `claude`
+ * binary reads these vars natively. This is plain env inheritance; the
+ * dashboard-settings override that used to carry these values was removed.
  *
- * `channels: []` disables the default `server:autonomos` channel so spawns
- * stay focused on the core provider/PTY/hook path (no channel-server MCP
- * subprocess, no channels-warning prompt) — the hook relay, --brief,
+ * A settings.json is still written FIRST: `channels: []` disables the
+ * default `server:autonomos` channel so spawns stay focused on the core
+ * provider/PTY/hook path (no channel-server MCP subprocess, no
+ * channels-warning prompt) — the hook relay, --brief,
  * --append-system-prompt and --settings argv are all still exercised.
  */
 export async function bootEmbedded(opts?: {
@@ -80,9 +81,6 @@ export async function bootEmbedded(opts?: {
       join(configDir, "settings.json"),
       `${JSON.stringify(
         {
-          anthropicBaseUrl: opts.anthropicBaseUrl,
-          anthropicAuthToken: opts.anthropicAuthToken ?? "sk-mock",
-          anthropicOverrideEnabled: true,
           channels: [],
           autoTrust: true,
           statusLine: { enabled: false },
@@ -104,6 +102,12 @@ export async function bootEmbedded(opts?: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: configDir,
       AUTONOMOS_TOKEN: token,
+      ...(opts?.anthropicBaseUrl
+        ? {
+            ANTHROPIC_BASE_URL: opts.anthropicBaseUrl,
+            ANTHROPIC_AUTH_TOKEN: opts.anthropicAuthToken ?? "sk-mock",
+          }
+        : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

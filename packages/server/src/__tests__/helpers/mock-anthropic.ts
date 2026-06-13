@@ -3,10 +3,11 @@
  * REAL `claude` binary can be driven through autonomOS's real provider / PTY /
  * hook-relay path at zero API cost.
  *
- * We do NOT fake the claude binary. autonomOS's claude-code provider already
- * injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` from dashboard settings
- * (see providers/claude-code.ts `buildEnv()`), so pointing those at this server
- * makes a real `claude` invocation stream against our SSE instead of Anthropic.
+ * We do NOT fake the claude binary. The provider's `buildEnv()` spreads the
+ * server's `process.env` into every spawned session (providers/shared.ts
+ * buildBaseEnv), so setting `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` on
+ * the test server's environment (see helpers/embedded-server.ts) makes a real
+ * `claude` invocation stream against our SSE instead of Anthropic.
  *
  * Endpoints:
  *   - POST /v1/messages           → SSE stream (text end_turn, or tool_use turn)
