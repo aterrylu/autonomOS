@@ -145,12 +145,12 @@ export function findItemById(
  * Build the clipboard text for a selection spanning render units identified
  * by start/end `data-item-id`s.
  *
- * - If the start and end units are the same and the underlying item is
- *   plain text (text/user_prompt/thinking), returns `null` so the caller
- *   knows to fall back to `selection.toString()` (preserves the user's
- *   precise selection inside a paragraph).
- * - Otherwise, returns the canonical render of every unit in
- *   [start, end] in document order, joined by blank lines.
+ * - If the selection stays within a single render unit, returns `null` so
+ *   the caller falls back to `selection.toString()` — this preserves the
+ *   user's precise highlight (e.g. a few lines of a Bash result) instead of
+ *   substituting the unit's full canonical render.
+ * - For a selection spanning multiple units, returns the canonical render of
+ *   every unit in [start, end] in document order, joined by blank lines.
  *
  * Returns `null` (caller should fall back to default copy) when either
  * endpoint can't be resolved.
@@ -170,11 +170,11 @@ export function buildClipboardText(
 
   const [lo, hi] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
 
-  if (lo === hi) {
-    const item = findItemById(turns, units[lo].id);
-    if (preferSelectionString(item)) return null;
-    return units[lo].text;
-  }
+  // Any single-unit selection falls through to native copy so the user's
+  // literal highlight is preserved — e.g. a few lines of a Bash result —
+  // instead of being replaced by the unit's full canonical render (which
+  // would inject synthetic "[Bash]\n$ …" chrome and the untruncated result).
+  if (lo === hi) return null;
 
   return units
     .slice(lo, hi + 1)

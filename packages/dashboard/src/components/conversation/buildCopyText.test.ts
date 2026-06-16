@@ -136,16 +136,12 @@ describe("buildClipboardText", () => {
     expect(buildClipboardText(turns, "think1", "think1")).toBeNull();
   });
 
-  it("returns canonical text for same-id selection on a tool_call item", () => {
-    expect(buildClipboardText(turns, "tool1", "tool1")).toBe(
-      "[Bash]\n$ echo hi\necho bye\nhi\nbye",
-    );
+  it("returns null for same-id selection on a tool_call item (fall back to native copy preserves the literal highlight)", () => {
+    expect(buildClipboardText(turns, "tool1", "tool1")).toBeNull();
   });
 
-  it("returns canonical text for same-id selection on a system item", () => {
-    expect(buildClipboardText(turns, "sys1", "sys1")).toBe(
-      "— context compacted (1,234 tokens) —",
-    );
+  it("returns null for same-id selection on a system item (fall back to native copy)", () => {
+    expect(buildClipboardText(turns, "sys1", "sys1")).toBeNull();
   });
 
   it("joins multiple units with blank lines for a multi-unit selection", () => {

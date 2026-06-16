@@ -115,7 +115,7 @@ const ToolBlock = memo(function ToolBlock({ item }: { item: ToolCallItem }) {
     >
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left bg-transparent border-none"
+        className="flex w-full items-center gap-2 px-3 py-1.5 cursor-pointer text-left bg-transparent border-none select-none"
         onClick={() => setExpanded(!expanded)}
       >
         <span style={{ color: dotColor }} className="shrink-0 w-3">
@@ -159,7 +159,7 @@ const ToolBlock = memo(function ToolBlock({ item }: { item: ToolCallItem }) {
           ) : (
             <div className="pt-2">
               <div
-                className="text-[10px] uppercase tracking-wider mb-1"
+                className="text-[10px] uppercase tracking-wider mb-1 select-none"
                 style={{ color: page.statusFg }}
               >
                 Input
@@ -176,7 +176,7 @@ const ToolBlock = memo(function ToolBlock({ item }: { item: ToolCallItem }) {
           {item.result && (
             <div>
               <div
-                className="text-[10px] uppercase tracking-wider mb-1"
+                className="text-[10px] uppercase tracking-wider mb-1 select-none"
                 style={{ color: isError ? "#ea6c73" : page.statusFg }}
               >
                 {isError ? "Error" : "Result"}
@@ -223,7 +223,7 @@ const ThinkingBlock = memo(function ThinkingBlock({
     >
       <button
         type="button"
-        className="flex items-center gap-2 px-3 py-1.5 cursor-pointer bg-transparent border-none"
+        className="flex items-center gap-2 px-3 py-1.5 cursor-pointer bg-transparent border-none select-none"
         onClick={() => setExpanded(!expanded)}
         style={{ color: page.statusFg }}
       >
