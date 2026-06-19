@@ -1,11 +1,25 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
-import type { RateLimitWindow } from "./types";
+import { type SaveValidateResult, saveAndValidate } from "./saveAndValidate";
+import {
+  type ErrorKind,
+  isCredentialError,
+  type RateLimitData,
+  type RateLimitWindow,
+} from "./types";
 import { UsagePanel } from "./UsagePanel";
 import { useClickOutside } from "./useClickOutside";
 import { useUsageData } from "./useUsageData";
 import { timeUntilReset, utilizationColor } from "./utils";
+
+/** One-line "Connected" summary shown after a key validates successfully. */
+function connectedSummary(data: RateLimitData): string {
+  const pct = data.fiveHour ? Math.round(data.fiveHour.utilization) : null;
+  return pct != null
+    ? `Connected — 5h usage at ${pct}%.`
+    : "Connected — usage is now tracking.";
+}
 
 function MiniBar({ pct }: { pct: number }) {
   const color = utilizationColor(pct);
@@ -80,6 +94,22 @@ function FloatingPanel({
   );
 }
 
+type SetupPhase = "input" | "working" | "success" | "failed";
+
+/** Guidance under a failed validation, tailored to the failure category. */
+function failureHint(kind: ErrorKind | undefined): string {
+  return isCredentialError(kind)
+    ? "Double-check you copied the entire sessionKey value (it's long) from claude.ai → Application → Cookies."
+    : "Your key looks fine — this is a temporary claude.ai issue. Retry now, or close and it'll recover on its own.";
+}
+
+function setupButtonLabel(phase: SetupPhase): string {
+  if (phase === "working") return "Checking your key…";
+  if (phase === "success") return "Connected ✓";
+  if (phase === "failed") return "Retry";
+  return "Save & verify";
+}
+
 function SetupPanel({
   onClose,
   onSaved,
@@ -90,36 +120,45 @@ function SetupPanel({
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const [sessionKey, setSessionKey] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState("");
+  const [phase, setPhase] = useState<SetupPhase>("input");
+  const [result, setResult] = useState<SaveValidateResult | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Don't fire the auto-close (or its setState) after the panel unmounts —
+  // the user can dismiss via click-outside during the 1.6s success window.
+  useEffect(() => {
+    return () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
+  }, []);
 
   async function handleSave() {
-    if (!sessionKey.trim()) return;
-    setSaving(true);
-    setSaveError("");
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          claudeSessionKey: sessionKey.trim(),
-        }),
-      });
-      if (!res.ok) {
-        setSaveError(`Failed to save (HTTP ${res.status})`);
-        return;
-      }
-      setSaved(true);
-      onSaved();
-      setTimeout(() => onClose(), 1500);
-    } catch {
-      setSaveError("Could not reach server");
-    } finally {
-      setSaving(false);
+    if (!sessionKey.trim() || phase === "working") return;
+    setPhase("working");
+    // Save the key AND verify it against claude.ai before reporting success —
+    // a persisted-but-invalid key is exactly the loop this fix removes.
+    const res = await saveAndValidate(sessionKey.trim());
+    setResult(res);
+    if (res.kind === "ok") {
+      setPhase("success");
+      onSaved(); // refresh the status bar behind the panel
+      closeTimer.current = setTimeout(() => onClose(), 1600);
+    } else {
+      setPhase("failed");
     }
   }
 
+  function handleKeyChange(value: string) {
+    setSessionKey(value);
+    // Editing after a failed attempt clears the stale error so the panel
+    // doesn't show last try's message next to a freshly-typed key.
+    if (phase === "failed") {
+      setPhase("input");
+      setResult(null);
+    }
+  }
+
+  const busy = phase === "working" || phase === "success";
   const inputStyle = {
     background: page.border,
     color: page.fg,
@@ -174,36 +213,54 @@ function SetupPanel({
             id="claude-session-key"
             type="password"
             value={sessionKey}
-            onChange={(e) => setSessionKey(e.target.value)}
+            disabled={busy}
+            onChange={(e) => handleKeyChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSave();
+            }}
             placeholder="sk-ant-sid01-..."
-            className="w-full rounded px-2 py-1.5 text-xs font-mono"
+            className="w-full rounded px-2 py-1.5 text-xs font-mono disabled:opacity-60"
             style={inputStyle}
           />
         </div>
       </div>
 
-      {saveError && (
+      {phase === "success" && result?.kind === "ok" && (
         <div
-          className="rounded px-2 py-1.5 text-xs"
-          style={{ background: "#ea6c7315", color: "#ea6c73" }}
+          className="rounded px-2 py-1.5 text-xs mb-3"
+          style={{ background: "#23863615", color: "#3fb950" }}
         >
-          {saveError}
+          {connectedSummary(result.data)}
+        </div>
+      )}
+
+      {phase === "failed" && result && result.kind !== "ok" && (
+        <div className="mb-3">
+          <div
+            className="rounded px-2 py-1.5 text-xs"
+            style={{ background: "#ea6c7315", color: "#ea6c73" }}
+          >
+            {result.message}
+          </div>
+          <div className="mt-1.5 text-[11px]" style={{ color: page.statusFg }}>
+            {result.kind === "unreachable"
+              ? "Couldn't reach the autonomOS server — check it's running, then retry."
+              : failureHint(result.errorKind)}
+          </div>
         </div>
       )}
 
       <button
         type="button"
         onClick={handleSave}
-        disabled={!sessionKey.trim() || saving}
+        disabled={!sessionKey.trim() || busy}
         className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         style={{
-          background: saved ? "#238636" : "#16825d",
+          background: phase === "success" ? "#238636" : "#16825d",
           color: "#fff",
         }}
       >
-        {saved && "Saved!"}
-        {!saved && saving && "Saving..."}
-        {!saved && !saving && "Save"}
+        {setupButtonLabel(phase)}
       </button>
     </FloatingPanel>
   );
@@ -211,36 +268,62 @@ function SetupPanel({
 
 function ErrorPanel({
   error,
+  errorKind,
   onClose,
   onReconfigure,
+  onRetry,
 }: {
   error: string;
+  errorKind?: ErrorKind;
   onClose: () => void;
   onReconfigure: () => void;
+  onRetry: () => void;
 }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  // Only a credential failure can be fixed by re-entering the key. For
+  // transient failures (rate limit, outage) we offer a retry instead of
+  // pushing the user into a reconfigure loop that cannot help.
+  const credential = isCredentialError(errorKind);
 
   return (
     <FloatingPanel onClose={onClose}>
-      <div className="font-medium text-sm mb-2">Usage Error</div>
+      <div className="font-medium text-sm mb-2">
+        {credential ? "Session key problem" : "Usage temporarily unavailable"}
+      </div>
       <div
         className="rounded px-2 py-1.5 mb-3"
         style={{ background: "#ea6c7315", color: "#ea6c73" }}
       >
         {error}
       </div>
-      <div className="mb-3" style={{ color: page.statusFg }}>
-        Session cookie may have expired or is invalid.
-      </div>
-      <button
-        type="button"
-        onClick={onReconfigure}
-        className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer"
-        style={{ background: "#16825d", color: "#fff" }}
-      >
-        Reconfigure
-      </button>
+      {credential ? (
+        <button
+          type="button"
+          onClick={onReconfigure}
+          className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer"
+          style={{ background: "#16825d", color: "#fff" }}
+        >
+          Reconfigure
+        </button>
+      ) : (
+        <>
+          <div className="mb-3 text-[11px]" style={{ color: page.statusFg }}>
+            This isn't a problem with your session key — no need to reconfigure.
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onRetry();
+              onClose();
+            }}
+            className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer"
+            style={{ background: "#16825d", color: "#fff" }}
+          >
+            Retry now
+          </button>
+        </>
+      )}
     </FloatingPanel>
   );
 }
@@ -297,22 +380,27 @@ export function UsageStatusBarItem() {
   }
 
   if (data.error) {
+    // A bad credential is the user's to fix (red, "err"); a transient outage
+    // is not (amber, "delayed") — the label shouldn't imply user error.
+    const credential = isCredentialError(data.errorKind);
     return (
       <div className="relative">
         <button
           type="button"
           className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
-          style={{ color: "#ea6c73" }}
+          style={{ color: credential ? "#ea6c73" : "#e6b450" }}
           onClick={() => setPanel(panel === "none" ? "error" : "none")}
           title={data.error}
         >
-          <Codicon name="claude" size={14} /> err
+          <Codicon name="claude" size={14} /> {credential ? "err" : "delayed"}
         </button>
         {panel === "error" && (
           <ErrorPanel
             error={data.error}
+            errorKind={data.errorKind}
             onClose={() => setPanel("none")}
             onReconfigure={() => setPanel("setup")}
+            onRetry={refetch}
           />
         )}
         {panel === "setup" && (

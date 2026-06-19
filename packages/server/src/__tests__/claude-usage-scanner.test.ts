@@ -177,4 +177,131 @@ describe("claude-usage scanner — session key is the only credential", () => {
     const data = await getRateLimits(fetcher);
     assert.equal(data.needsSetup, true);
   });
+
+  // The dashboard branches its remedy ("Reconfigure" vs "Retry") on errorKind,
+  // so these lock the failure categories the UI depends on. A bad credential
+  // and a transient outage must NOT both look like a credential problem.
+  it("tags an expired/invalid key (bootstrap 401) as errorKind 'unauthorized'", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "BAD" }));
+    const fetcher: UsageFetcher = async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    });
+    const data = await getRateLimits(fetcher);
+    assert.equal(data.errorKind, "unauthorized");
+  });
+
+  it("tags an empty-membership bootstrap as errorKind 'no_org'", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY8" }));
+    const fetcher: UsageFetcher = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ account: { memberships: [] } }),
+    });
+    const data = await getRateLimits(fetcher);
+    assert.equal(data.errorKind, "no_org");
+  });
+
+  it("tags a usage 429 as transient 'rate_limited' (key is fine)", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY9" }));
+    const fetcher: UsageFetcher = async (url) => {
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 429, json: async () => ({}) };
+    };
+    const data = await getRateLimits(fetcher);
+    assert.equal(data.errorKind, "rate_limited");
+    // The message must reassure rather than blame the credential.
+    assert.match(data.error ?? "", /key is fine/i);
+  });
+
+  it("tags a usage 500 as transient 'unavailable' (key is fine)", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY10" }));
+    const fetcher: UsageFetcher = async (url) => {
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 500, json: async () => ({}) };
+    };
+    const data = await getRateLimits(fetcher);
+    assert.equal(data.errorKind, "unavailable");
+  });
+
+  // The cache/last-good buffer is fingerprinted by session key. These guard the
+  // race the silent-failure review surfaced: a key change must never be served
+  // the previous key's data, even without an explicit invalidateCache() (which
+  // a concurrent poller's read could otherwise race against).
+  it("re-fetches for a new key instead of returning the prior key's cached data", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY_A" }));
+    const first = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(first.fiveHour?.utilization, 42);
+
+    // Switch keys WITHOUT calling invalidateCache (simulates the race window).
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY_B" }));
+    const fetcherB: UsageFetcher = async (url) => {
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ five_hour: { utilization: 99, resets_at: "" } }),
+      };
+    };
+    const second = await getRateLimits(fetcherB);
+    // B's number (99%), never A's stale 42%.
+    assert.equal(second.fiveHour?.utilization, 99);
+  });
+
+  it("does not serve the prior key's last-good data on a new key's 429", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY_A" }));
+    const first = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(first.fiveHour?.utilization, 42);
+
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY_B" }));
+    const fetcherB: UsageFetcher = async (url) => {
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 429, json: async () => ({}) };
+    };
+    const second = await getRateLimits(fetcherB);
+    // Must report the rate limit, NOT silently pass off A's data as B's.
+    assert.equal(second.errorKind, "rate_limited");
+    assert.equal(second.fiveHour, null);
+  });
 });

@@ -14,6 +14,7 @@
  *   2. GET /api/organizations/{orgId}/usage → rate limit data
  */
 
+import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings } from "../../settings.js";
 
@@ -35,6 +36,21 @@ export interface AccountInfo {
   subscriptionType?: string;
 }
 
+/**
+ * Categorizes a failure so the UI can offer the right remedy instead of
+ * always telling the user to re-enter their key.
+ *
+ * - `unauthorized` / `no_org` are *credential* problems — reconfiguring helps.
+ * - `rate_limited` / `unavailable` are *transient* problems — the key is fine,
+ *   retrying later helps. Telling the user to reconfigure here sends them in a
+ *   loop (re-entering a correct key cannot fix a rate limit or an outage).
+ */
+export type ErrorKind =
+  | "unauthorized"
+  | "no_org"
+  | "rate_limited"
+  | "unavailable";
+
 export interface RateLimitData {
   fiveHour: RateLimitWindow | null;
   sevenDay: RateLimitWindow | null;
@@ -44,6 +60,9 @@ export interface RateLimitData {
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
+  /** Failure category for the error, when `error` is set. Lets the dashboard
+   * distinguish a bad credential from a transient outage. */
+  errorKind?: ErrorKind;
   /** True when CLAUDE_SESSION_KEY is not set */
   needsSetup?: boolean;
 }
@@ -73,14 +92,29 @@ export type UsageFetcher = (
 
 const defaultFetcher: UsageFetcher = (url, init) => impit.fetch(url, init);
 
-/** In-memory cache */
-let cached: { data: RateLimitData; expiresAt: number } | null = null;
-let lastGoodData: RateLimitData | null = null;
+/**
+ * In-memory cache. Both `cached` and `lastGood` are tagged with a fingerprint
+ * of the session key that produced them (`fp`). Reads only accept an entry
+ * whose `fp` matches the current key, so a key change can never be served the
+ * previous key's data — even if a concurrent poll repopulated the cache in the
+ * window between a settings write and the follow-up validation read. This makes
+ * correctness local to the scanner rather than dependent on callers remembering
+ * to call `invalidateCache()`.
+ */
+let cached: { data: RateLimitData; expiresAt: number; fp: string } | null =
+  null;
+let lastGood: { data: RateLimitData; fp: string } | null = null;
 const CACHE_TTL = 60_000;
 const CACHE_TTL_429 = 5 * 60_000;
 
 /** Cached org ID — rarely changes */
 let cachedOrgId: string | null = null;
+
+/** Short, non-reversible fingerprint of a cookie, to key cache entries to a
+ * session key without retaining a second copy of the raw secret. */
+function fingerprint(cookie: string): string {
+  return createHash("sha256").update(cookie).digest("hex").slice(0, 16);
+}
 
 /**
  * Build the auth cookie from the session key alone.
@@ -103,7 +137,7 @@ export function getSessionCookie(): string | null {
 export function invalidateCache(): void {
   cached = null;
   cachedOrgId = null;
-  lastGoodData = null;
+  lastGood = null;
 }
 
 function buildCookieHeader(cookie: string): string {
@@ -158,7 +192,22 @@ export async function fetchOrgId(
       account?: { memberships?: Array<{ organization?: { uuid?: string } }> };
     };
     const orgId = data?.account?.memberships?.[0]?.organization?.uuid ?? null;
-    if (!orgId) return { orgId: null, status: "no_org" };
+    if (!orgId) {
+      // `no_org` is ambiguous: an expired cookie (bootstrap treats it as
+      // logged-out → empty memberships) vs. a valid key whose bootstrap shape
+      // drifted. Log the shape (never the cookie) so the two are tellable
+      // apart from server logs — an empty array points at the credential, an
+      // unexpected type points at a contract change.
+      const memberships = data?.account?.memberships;
+      console.warn(
+        `[claude-usage] bootstrap resolved no org uuid (account=${!!data?.account}, memberships=${
+          Array.isArray(memberships)
+            ? `[${memberships.length}]`
+            : typeof memberships
+        })`,
+      );
+      return { orgId: null, status: "no_org" };
+    }
     cachedOrgId = orgId;
     return { orgId, status: "ok" };
   } catch (err) {
@@ -210,7 +259,6 @@ export async function getRateLimits(
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<RateLimitData> {
   const now = Date.now();
-  if (cached && cached.expiresAt > now) return cached.data;
 
   const cookie = getSessionCookie();
   if (!cookie) {
@@ -220,10 +268,16 @@ export async function getRateLimits(
     };
   }
 
+  // Resolve the cookie first so the cache can be matched to the active key —
+  // a cache entry built under a different (e.g. just-replaced) key is ignored.
+  const fp = fingerprint(cookie);
+  if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
+
   const org = await fetchOrgId(cookie, fetcher);
   if (org.status === "unauthorized") {
     return errorResult(
-      "Session cookie expired or invalid — please update CLAUDE_SESSION_KEY in .env",
+      "Session key expired or invalid. Open claude.ai, copy a fresh sessionKey cookie, and re-enter it.",
+      "unauthorized",
     );
   }
   if (org.status === "no_org") {
@@ -231,12 +285,16 @@ export async function getRateLimits(
     // unrecognized/expired cookie (it treats it as logged-out), so this is
     // the path a bad session key actually lands on — point the user there.
     return errorResult(
-      "Could not resolve your Claude organization — your session key may be invalid or expired. Update CLAUDE_SESSION_KEY.",
+      "Could not find a Claude organization for this session key — it may be expired. Copy a fresh sessionKey from claude.ai and re-enter it.",
+      "no_org",
     );
   }
   if (!org.orgId) {
+    // org.status === "error": a network or parse failure resolving the org,
+    // not a credential problem — retrying is the right remedy.
     return errorResult(
-      "Could not resolve organization — check your session cookie",
+      "Couldn't reach claude.ai to verify your account. This is usually temporary — retry in a moment.",
+      "unavailable",
     );
   }
 
@@ -248,17 +306,29 @@ export async function getRateLimits(
 
   if (status === "unauthorized") {
     return errorResult(
-      "Session cookie expired or invalid — please update CLAUDE_SESSION_KEY in .env",
+      "Session key expired or invalid. Open claude.ai, copy a fresh sessionKey cookie, and re-enter it.",
+      "unauthorized",
     );
   }
 
   if (!body) {
     const ttl = status === "rate_limited" ? CACHE_TTL_429 : CACHE_TTL;
-    if (lastGoodData) {
-      cached = { data: lastGoodData, expiresAt: now + ttl };
-      return lastGoodData;
+    // Only serve stale data that belongs to the *current* key. Without the
+    // fingerprint check, a transient failure right after a key change would
+    // serve the previous key's numbers as if the new key worked.
+    if (lastGood && lastGood.fp === fp) {
+      cached = { data: lastGood.data, expiresAt: now + ttl, fp };
+      return lastGood.data;
     }
-    return errorResult("Usage API unavailable");
+    return status === "rate_limited"
+      ? errorResult(
+          "claude.ai is rate-limiting usage requests right now. Your key is fine — this clears on its own in a few minutes.",
+          "rate_limited",
+        )
+      : errorResult(
+          "claude.ai's usage API is temporarily unavailable. Your key is fine — retry in a moment.",
+          "unavailable",
+        );
   }
 
   const extra = body.extra_usage as {
@@ -293,12 +363,12 @@ export async function getRateLimits(
     fetchedAt: new Date().toISOString(),
   };
 
-  lastGoodData = data;
-  cached = { data, expiresAt: now + CACHE_TTL };
+  lastGood = { data, fp };
+  cached = { data, expiresAt: now + CACHE_TTL, fp };
   return data;
 }
 
-function errorResult(error: string): RateLimitData {
+function errorResult(error: string, errorKind?: ErrorKind): RateLimitData {
   return {
     fiveHour: null,
     sevenDay: null,
@@ -308,5 +378,6 @@ function errorResult(error: string): RateLimitData {
     account: {},
     fetchedAt: new Date().toISOString(),
     error,
+    errorKind,
   };
 }
