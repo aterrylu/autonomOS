@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
+import { saveAndValidate } from "./saveAndValidate";
 import type { DisplayMode, RateLimitData, RateLimitWindow } from "./types";
 import { useClickOutside } from "./useClickOutside";
 import { timeUntilReset, utilizationColor } from "./utils";
@@ -95,6 +96,7 @@ function CredentialField({
   onDraftChange,
   inputStyle,
   statusFg,
+  disabled,
 }: {
   label: string;
   value: string | null;
@@ -108,6 +110,7 @@ function CredentialField({
   onDraftChange: (val: string) => void;
   inputStyle: React.CSSProperties;
   statusFg: string;
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -139,9 +142,10 @@ function CredentialField({
         <input
           type={secret ? "password" : "text"}
           value={draft}
+          disabled={disabled}
           onChange={(e) => onDraftChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full rounded px-2 py-1.5 text-xs font-mono"
+          className="w-full rounded px-2 py-1.5 text-xs font-mono disabled:opacity-60"
           style={inputStyle}
         />
       ) : (
@@ -157,9 +161,15 @@ function CredentialField({
 }
 
 function saveButtonLabel(saving: boolean, saved: boolean): string {
-  if (saved) return "Saved!";
-  if (saving) return "Saving...";
-  return "Save";
+  if (saved) return "Connected ✓";
+  if (saving) return "Verifying…";
+  return "Save & verify";
+}
+
+/** Mirror the server's redaction so the field shows the new key immediately
+ * without a settings round-trip (see `redact` in routes/settings.ts). */
+function redactKey(key: string): string {
+  return key.length > 8 ? `••••${key.slice(-4)}` : "••••";
 }
 
 function CredentialsSection({
@@ -206,35 +216,20 @@ function CredentialsSection({
     if (!hasPending) return;
     setSaving(true);
     setError("");
-    try {
-      const body: Record<string, string> = {
-        claudeSessionKey: keyDraft.trim(),
-      };
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const errBody = await res.json();
-          if (errBody.error) detail = errBody.error;
-        } catch {}
-        setError(detail);
-        return;
-      }
-      const updated = await res.json();
-      setMaskedKey(updated.claudeSessionKey ?? null);
+    const key = keyDraft.trim();
+    // Save AND verify against claude.ai before showing success, so a bad key
+    // reports its real reason here instead of looking saved but failing later.
+    const res = await saveAndValidate(key);
+    setSaving(false);
+    if (res.kind === "ok") {
+      setMaskedKey(redactKey(key));
       setEditingKey(false);
       setKeyDraft("");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       onRefetch?.();
-    } catch {
-      setError("Could not reach server");
-    } finally {
-      setSaving(false);
+    } else {
+      setError(res.message);
     }
   }
 
@@ -287,6 +282,7 @@ function CredentialsSection({
             onDraftChange={setKeyDraft}
             inputStyle={inputStyle}
             statusFg={page.statusFg}
+            disabled={saving}
           />
           {error && (
             <div
