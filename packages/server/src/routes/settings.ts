@@ -22,7 +22,6 @@ function maskSettings(settings: AppSettings) {
     channels: settings.channels ?? [],
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
-    terminalRenderer: settings.terminalRenderer ?? "xterm",
     statusLine: { enabled: settings.statusLine?.enabled !== false },
   };
 }
@@ -43,9 +42,10 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
-  // `claudeOrgId` and the anthropic* override keys are removed features —
-  // accept-but-discard for back-compat with older dashboards that still
-  // send them; they are never persisted.
+  // `claudeOrgId`, the anthropic* override keys, and `terminalRenderer` are
+  // removed features — accept-but-discard for back-compat with older
+  // dashboards that still send them; they are never persisted. (A stale
+  // `terminalRenderer` already on disk is scrubbed on read in settings.ts.)
   if (typeof body.autoTrust === "boolean") {
     partial.autoTrust = body.autoTrust;
   }
@@ -65,12 +65,6 @@ settingsRouter.put("/", async (c) => {
     }
 
     partial.channels = requested;
-  }
-  if (
-    body.terminalRenderer === "xterm" ||
-    body.terminalRenderer === "ghostty-web"
-  ) {
-    partial.terminalRenderer = body.terminalRenderer;
   }
   if (
     isPlainObject(body.statusLine) &&

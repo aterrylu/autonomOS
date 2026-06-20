@@ -142,7 +142,6 @@ export const MOCK_SETTINGS = {
   channels: [],
   autoTrust: true,
   customEnvVars: {},
-  terminalRenderer: "xterm" as const,
   statusLine: { enabled: true },
 };
 

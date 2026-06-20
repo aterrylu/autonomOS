@@ -108,7 +108,8 @@ describe("getSettings", () => {
       SETTINGS_FILE,
       JSON.stringify({ anthropicAuthToken: "sk-secret" }),
     );
-    updateSettings({ terminalRenderer: "xterm" });
+    // Any persist drops the scrubbed key — autoTrust is a neutral trigger.
+    updateSettings({ autoTrust: false });
     const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
     assert.equal("anthropicAuthToken" in raw, false);
   });
@@ -145,7 +146,7 @@ describe("getSettings", () => {
       SETTINGS_FILE,
       JSON.stringify({ inboxAgent: "Dispatcher", autoTrust: false }),
     );
-    updateSettings({ terminalRenderer: "xterm" });
+    updateSettings({ autoTrust: false });
     const raw = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
     assert.equal("inboxAgent" in raw, false);
     assert.equal(raw.autoTrust, false);
@@ -191,14 +192,22 @@ describe("getSettings", () => {
   });
 
   it("reads other settings alongside default channels", () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ autoTrust: false }));
+    const settings = getSettings();
+    assert.equal(settings.autoTrust, false);
+    assert.deepEqual(settings.channels, ["server:autonomos"]);
+  });
+
+  it("scrubs the stale terminalRenderer key on read (renderer removed)", () => {
+    // xterm.js is the only renderer now; an old settings.json may still
+    // carry the selector — it is accept-and-discarded like other dead keys.
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({ autoTrust: false, terminalRenderer: "ghostty-web" }),
     );
-    const settings = getSettings();
+    const settings = getSettings() as Record<string, unknown>;
+    assert.equal("terminalRenderer" in settings, false);
     assert.equal(settings.autoTrust, false);
-    assert.equal(settings.terminalRenderer, "ghostty-web");
-    assert.deepEqual(settings.channels, ["server:autonomos"]);
   });
 });
 

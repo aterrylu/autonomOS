@@ -35,8 +35,6 @@ export interface AppSettings {
   autoTrust?: boolean;
   /** User-defined env vars injected into every spawned session */
   customEnvVars?: Record<string, string>;
-  /** Terminal renderer backend: xterm.js (default) or ghostty-web */
-  terminalRenderer?: "xterm" | "ghostty-web";
   /** Scheduler settings */
   scheduler?: {
     maxConcurrentRuns?: number;
@@ -67,13 +65,18 @@ const DEFAULT_CHANNELS = ["server:autonomos"];
  * keys died with the API-override removal — the auth token is a credential
  * and must not linger on disk, so scrubbing (not just ignoring) matters.
  * Sessions that need a custom endpoint can set ANTHROPIC_BASE_URL via
- * customEnvVars instead.
+ * customEnvVars instead. `terminalRenderer` died with the renderer cleanup
+ * — xterm.js is now the only backend, so the selector key is non-credential
+ * dead weight; scrubbing it on read prevents it surviving forever (the
+ * updateSettings merge spreads current settings, so an un-scrubbed unknown
+ * key would re-persist on every save).
  */
 const REMOVED_KEYS = [
   "inboxAgent",
   "anthropicBaseUrl",
   "anthropicAuthToken",
   "anthropicOverrideEnabled",
+  "terminalRenderer",
 ];
 const REMOVED_GATEWAY_KEYS = ["discord", "telegram"];
 
