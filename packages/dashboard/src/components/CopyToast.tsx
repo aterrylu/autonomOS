@@ -23,7 +23,7 @@ if (typeof document !== "undefined" && !document.getElementById(STYLE_ID)) {
   el.id = STYLE_ID;
   el.textContent = `
     @keyframes copy-toast-in {
-      from { opacity: 0; transform: translateY(-4px); }
+      from { opacity: 0; transform: translateY(4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
   `;
@@ -43,7 +43,7 @@ export function CopyToast({ toast }: CopyToastProps) {
     <output
       // key remounts the element each time so the entrance animation replays.
       key={id}
-      className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground shadow-lg"
+      className="pointer-events-none absolute right-3 bottom-3 z-10 flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-foreground shadow-lg"
       style={{ animation: "copy-toast-in 140ms ease-out" }}
     >
       <span aria-hidden="true" style={{ color: ok ? "#73c991" : "#ea6c73" }}>
