@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
-import { createTerminalBackend } from "../terminal/create";
 import type {
   IFitAddon,
   ILink,
@@ -9,6 +8,7 @@ import type {
   TerminalBackend,
   TerminalInstance,
 } from "../terminal/types";
+import { createXtermBackend } from "../terminal/xterm-backend";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
 
@@ -62,7 +62,6 @@ export function useTerminal(
   const wsRef = useRef<WebSocket | null>(null);
 
   const theme = useStore((s) => s.theme);
-  const renderer = useStore((s) => s.terminalRenderer);
   const setStatus = useStore((s) => s.setStatus);
   const themeRef = useRef(theme);
   themeRef.current = theme;
@@ -111,11 +110,11 @@ export function useTerminal(
     let onTouchMove: ((e: TouchEvent) => void) | null = null;
     let onTouchEnd: (() => void) | null = null;
 
-    // Async IIFE — ghostty-web requires await init() for WASM loading.
+    // Async IIFE — the WebSocket connect/retry logic below runs async.
     (async () => {
       let backend: TerminalBackend;
       try {
-        backend = await createTerminalBackend(renderer, {
+        backend = createXtermBackend({
           cursorBlink: true,
           fontSize: 14,
           fontFamily:
@@ -124,17 +123,18 @@ export function useTerminal(
           scrollback: 10000,
         });
       } catch (err) {
-        console.error("Failed to create", renderer, "terminal backend:", err);
+        console.error("Failed to create terminal backend:", err);
         if (isActiveRef.current) {
-          setStatus(`${renderer} failed to load`);
+          setStatus("terminal failed to load");
         }
-        container.textContent = `Terminal renderer "${renderer}" failed to initialize. Try switching back in Settings.`;
+        container.textContent =
+          "Terminal failed to initialize. Reload the dashboard to retry.";
         container.style.cssText =
           "color:#ea6c73;padding:16px;font-size:13px;font-family:monospace";
         return;
       }
 
-      // If the effect was cleaned up while we were awaiting, dispose immediately
+      // Defensive: if the effect was already torn down, dispose immediately.
       if (disposed) {
         backend.terminal.dispose();
         return;
@@ -165,25 +165,8 @@ export function useTerminal(
         new MarkdownLinkProvider(terminal, sessionId),
       );
       terminal.registerLinkProvider(new UrlLinkProvider(terminal));
-
-      // ghostty-web has its own OSC 8 link provider (Ctrl/Cmd+Click gated).
-      // xterm.js handles OSC 8 via the linkHandler constructor option instead.
-      if (renderer === "ghostty-web") {
-        import("ghostty-web")
-          .then(({ OSC8LinkProvider }) => {
-            if (!disposed) {
-              terminal!.registerLinkProvider(
-                new OSC8LinkProvider(
-                  // biome-ignore lint/suspicious/noExplicitAny: ghostty-web Terminal type differs from our TerminalInstance
-                  terminal! as any,
-                ) as unknown as ILinkProvider,
-              );
-            }
-          })
-          .catch((err) => {
-            console.warn("Failed to load OSC8LinkProvider:", err);
-          });
-      }
+      // xterm.js handles OSC 8 hyperlinks via the linkHandler constructor
+      // option in xterm-backend.ts (Ctrl/Cmd+Click gated).
 
       let userScrolledUp = false;
       let programmaticScroll = false;
@@ -327,7 +310,7 @@ export function useTerminal(
           return;
         }
 
-        // Load WebGL when becoming visible (xterm.js only — ghostty returns null)
+        // Load WebGL when becoming visible (GPU rendering for xterm.js)
         if (!webglAddon) {
           try {
             webglAddon = createWebglAddon();
@@ -483,7 +466,7 @@ export function useTerminal(
       container.replaceChildren();
       termRef.current = null;
     };
-  }, [sessionId, setStatus, containerRef, renderer]);
+  }, [sessionId, setStatus, containerRef]);
 
   // Update theme on live terminal
   useEffect(() => {
@@ -531,7 +514,6 @@ function getLineText(
 /**
  * Detects plain-text URLs (http:// and https://) in terminal output.
  * Ctrl+Click (Cmd+Click on Mac) opens them in the browser.
- * Renderer-agnostic — works with both xterm.js and ghostty-web.
  */
 class UrlLinkProvider implements ILinkProvider {
   private readonly pattern =

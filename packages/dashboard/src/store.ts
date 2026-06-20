@@ -434,13 +434,11 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
 interface AppState {
   // Persisted
   theme: ThemeName;
-  viewMode: "terminal" | "conversation";
   sidebarViewMode: "flat" | "hierarchy";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
   autonomousMode: boolean;
-  terminalRenderer: "xterm" | "ghostty-web";
   paneOrder: string[];
   /** Ordering of children within each hierarchy group. Key = parent name (lowercase) or "__root__". */
   hierarchyOrder: Record<string, string[]>;
@@ -484,8 +482,6 @@ interface AppState {
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
   toggleAutonomousMode: () => void;
-  toggleViewMode: () => void;
-  setViewMode: (mode: "terminal" | "conversation") => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -656,7 +652,6 @@ export const useStore = create<AppState>()(
       const _initialRoot = makeRootLeaf(null);
       return {
         theme: "void",
-        viewMode: "terminal",
         sidebarViewMode: "flat",
         activePane: null,
         status: "disconnected",
@@ -677,7 +672,6 @@ export const useStore = create<AppState>()(
         sidebarOpen: true,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         autonomousMode: true,
-        terminalRenderer: "xterm",
         paneOrder: [],
         hierarchyOrder: {},
         previewPanes: [],
@@ -707,12 +701,6 @@ export const useStore = create<AppState>()(
         resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH }),
         toggleAutonomousMode: () =>
           set({ autonomousMode: !get().autonomousMode }),
-        toggleViewMode: () =>
-          set({
-            viewMode:
-              get().viewMode === "terminal" ? "conversation" : "terminal",
-          }),
-        setViewMode: (mode) => set({ viewMode: mode }),
         setStatus: (status) => set({ status }),
         switchPane: (pane) => {
           if (!pane) {
@@ -1861,13 +1849,11 @@ export const useStore = create<AppState>()(
       name: "autonomos",
       partialize: (state) => ({
         theme: state.theme,
-        viewMode: state.viewMode,
         sidebarViewMode: state.sidebarViewMode,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
         autonomousMode: state.autonomousMode,
-        terminalRenderer: state.terminalRenderer,
         showExitedAgents: state.showExitedAgents,
         paneOrder: state.paneOrder,
         hierarchyOrder: state.hierarchyOrder,
@@ -1883,11 +1869,6 @@ export const useStore = create<AppState>()(
         const merged = { ...current };
 
         if (isThemeName(saved?.theme)) merged.theme = saved.theme;
-        if (
-          saved?.viewMode === "terminal" ||
-          saved?.viewMode === "conversation"
-        )
-          merged.viewMode = saved.viewMode;
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (
@@ -1901,11 +1882,6 @@ export const useStore = create<AppState>()(
           );
         if (typeof saved?.autonomousMode === "boolean")
           merged.autonomousMode = saved.autonomousMode;
-        if (
-          saved?.terminalRenderer === "xterm" ||
-          saved?.terminalRenderer === "ghostty-web"
-        )
-          merged.terminalRenderer = saved.terminalRenderer;
         if (typeof saved?.showExitedAgents === "boolean")
           merged.showExitedAgents = saved.showExitedAgents;
         if (

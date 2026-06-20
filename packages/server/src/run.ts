@@ -39,7 +39,6 @@ import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
-import { conversationRouter } from "./routes/conversation.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { hooksRouter } from "./routes/hooks.js";
@@ -239,7 +238,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/hooks", hooksRouter);
 
   // REST API (behind auth)
-  app.route("/api/conversation", conversationRouter);
   app.route("/api/files", fileRouter);
   app.route("/api/projects", projectRouter);
   app.route("/api/agents", agentsRouter);
