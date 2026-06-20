@@ -15,7 +15,10 @@ import type { Agent, Provider, SpawnOptions, UUID } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
-import { disposeCodexControl } from "../gateway/codexControl.js";
+import {
+  disposeCodexControl,
+  startCodexStatusWatch,
+} from "../gateway/codexControl.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
@@ -329,6 +332,22 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     sidecar,
   };
   live.set(persisted.id, managed);
+
+  // Codex agents have no hook relay — drive their dashboard status from the
+  // app-server daemon's event stream instead (busy/idle). Eager from spawn so
+  // status is live before any inbound traffic. Only providers with a sidecar
+  // daemon (Codex) have an endpoint; disposed alongside the daemon at kill.
+  // Status is cosmetic and must NEVER jeopardize the spawn — guard the call.
+  if (sidecar) {
+    try {
+      startCodexStatusWatch(persisted.id, sidecar.endpoint);
+    } catch (err) {
+      console.warn(
+        `[runtime] ${persisted.id.slice(0, 8)} failed to start status watch:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   // Delivery receipt: a starting prompt travels only as a CLI arg, and a
   // startup-dialog race can silently drop it (agent sits at an empty input

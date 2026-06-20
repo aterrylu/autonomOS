@@ -147,6 +147,25 @@ export function clearAgentState(sessionId: string): void {
   agentStates.delete(sessionId);
 }
 
+/**
+ * Directly set an agent's working status. For providers that report GROUND-TRUTH
+ * status out-of-band rather than through the hook relay + deriveStatus state
+ * machine — currently Codex, whose app-server daemon emits thread/status/changed
+ * (active/idle). No event synthesis needed: the daemon already tells us the
+ * status, so we set it. The dashboard polls /api/hooks for this, same as CC/Gemini.
+ */
+export function setAgentStatus(sessionId: string, status: AgentStatus): void {
+  const prev = agentStates.get(sessionId) ?? DEFAULT_AGENT_STATE;
+  if (prev.status === status) return; // no churn on repeats
+  agentStates.set(sessionId, {
+    ...prev,
+    ...CLEAR_TOOL,
+    status,
+    lastEvent: "provider/status",
+    updatedAt: Date.now(),
+  });
+}
+
 /** Derive agent status from a hook event.
  *
  * Tool failures (PostToolUseFailure) are routine — the agent handles them
