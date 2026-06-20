@@ -114,6 +114,27 @@ const CACHE_TTL_429 = 5 * 60_000;
 /** Cached org ID — rarely changes */
 let cachedOrgId: string | null = null;
 
+/**
+ * Dev/QA usage override. When set, {@link getRateLimits} returns this snapshot
+ * verbatim instead of querying claude.ai — letting the usage-queue feature be
+ * demoed (capped → cleared) without actually hitting a real limit. Set only via
+ * the `/api/usage-queue/_simulate` endpoint, which is itself gated behind the
+ * `AUTONOMOS_ENABLE_USAGE_SIMULATION` env flag (off in normal/prod runs). Pass
+ * null to clear and resume real usage reads.
+ */
+let usageOverride: RateLimitData | null = null;
+
+/** Force a scripted usage snapshot (or null to clear). Dev/QA only — see
+ * {@link usageOverride}. */
+export function setUsageOverride(data: RateLimitData | null): void {
+  usageOverride = data;
+}
+
+/** The active usage override, or null when reading real usage. */
+export function getUsageOverride(): RateLimitData | null {
+  return usageOverride;
+}
+
 /** Short, non-reversible fingerprint of a cookie, to key cache entries to a
  * session key without retaining a second copy of the raw secret. */
 function fingerprint(cookie: string): string {
@@ -357,6 +378,10 @@ async function fetchUsageData(
 export async function getRateLimits(
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<RateLimitData> {
+  // Dev/QA: a simulated snapshot short-circuits the real query (see
+  // {@link usageOverride}). This is what makes the usage-queue feature
+  // demoable without burning a real limit.
+  if (usageOverride) return usageOverride;
   // Resolve the credential exactly once, here, and thread it through — so the
   // `credentialSource` label is always stamped from the same resolution that
   // produced the numbers (no TOCTOU drift if the cookie changes mid-flight).
