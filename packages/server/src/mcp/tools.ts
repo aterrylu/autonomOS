@@ -37,7 +37,7 @@ export const DEFAULT_CAPABILITIES: string[] = [
 export const TOOL_CREATE_AGENT: ToolDef = {
   name: "create_agent",
   description:
-    "Create a new agent — a dedicated Claude Code session with a name, context, and optional task.",
+    "Create a new agent — a dedicated CLI session with a name, context, and optional task. Defaults to Claude Code; set `provider` to spawn a Codex or Gemini agent instead.",
   inputSchema: {
     type: "object",
     properties: {
@@ -89,6 +89,12 @@ export const TOOL_CREATE_AGENT: ToolDef = {
         type: "string",
         description:
           "Project scope (e.g. 'autonomOS', 'homelab'). Used in role@project naming.",
+      },
+      provider: {
+        type: "string",
+        enum: ["claude-code", "codex", "gemini-cli"],
+        description:
+          "Agent runtime/CLI to spawn (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. The chosen CLI must be installed on the host.",
       },
     },
     required: ["workingDirectory"],

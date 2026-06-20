@@ -50,6 +50,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
+import { usageQueueRouter } from "./routes/usageQueue.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
 import { setAuthToken, setServerPort } from "./serverState.js";
@@ -280,6 +281,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
+  app.route("/api/usage-queue", usageQueueRouter);
   app.route("/api/system", systemRouter);
 
   // MCP — Streamable HTTP transport for agent-to-agent communication
@@ -420,12 +422,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           // all failure modes (cwd missing, provider gone, etc) by marking
           // the failed ones exited/crashed so they don't zombie. Spawns
           // PTYs into ~/.autonomos/ — must NOT run if we lost the claim.
-          resumeActiveAgents();
-
-          // Start scheduler AFTER agents are up so agent:<name> targets
-          // resolve. Arms timers that write into ~/.autonomos/ — must NOT
-          // run if we lost the claim.
-          initScheduler();
+          //
+          // Now async (provider sidecar daemons start before each PTY). Start
+          // the scheduler AFTER agents are up so agent:<name> targets resolve —
+          // chain it off the resume promise rather than racing it.
+          void resumeActiveAgents()
+            .catch((err) =>
+              console.error("[startup] resumeActiveAgents failed:", err),
+            )
+            .finally(() => initScheduler());
         })
         .catch((err) => {
           console.warn(
@@ -447,8 +452,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
               console.error("[gateway] init failed:", gwErr),
             );
           });
-          resumeActiveAgents();
-          initScheduler();
+          void resumeActiveAgents()
+            .catch((err) =>
+              console.error("[startup] resumeActiveAgents failed:", err),
+            )
+            .finally(() => initScheduler());
         });
     },
   );

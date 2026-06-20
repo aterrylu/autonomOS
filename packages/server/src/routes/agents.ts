@@ -158,7 +158,7 @@ agentsRouter.post("/", async (c) => {
   const autonomousMode = (body.autonomousMode ?? tmpl?.autonomousMode) === true;
 
   try {
-    const result = spawnAgent({
+    const result = await spawnAgent({
       workingDirectory: body.workingDirectory,
       name: typeof body.name === "string" ? body.name : undefined,
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
@@ -304,13 +304,13 @@ agentsRouter.post("/:id/manager", async (c) => {
 
 // ── Attach (resume) ────────────────────────────────────────────────
 
-agentsRouter.post("/:id/attach", (c) => {
+agentsRouter.post("/:id/attach", async (c) => {
   const param = c.req.param("id");
   const agent = resolveAgent(param);
   if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
 
   try {
-    const result = spawnAgent({
+    const result = await spawnAgent({
       workingDirectory: agent.workingDirectory,
       resumeAgentId: agent.id,
       name: agent.name,
@@ -790,7 +790,7 @@ agentsRouter.post("/:id/kill", (c) => {
 // 200 — partial success is still success at the route level — and the
 // caller decides how to surface non-empty `failures`.
 
-agentsRouter.post("/restart-all", (c) => {
-  const { idMap, failures } = restartAllAttachments();
+agentsRouter.post("/restart-all", async (c) => {
+  const { idMap, failures } = await restartAllAttachments();
   return c.json({ idMap, failures });
 });
