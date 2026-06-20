@@ -420,12 +420,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           // all failure modes (cwd missing, provider gone, etc) by marking
           // the failed ones exited/crashed so they don't zombie. Spawns
           // PTYs into ~/.autonomos/ — must NOT run if we lost the claim.
-          resumeActiveAgents();
-
-          // Start scheduler AFTER agents are up so agent:<name> targets
-          // resolve. Arms timers that write into ~/.autonomos/ — must NOT
-          // run if we lost the claim.
-          initScheduler();
+          //
+          // Now async (provider sidecar daemons start before each PTY). Start
+          // the scheduler AFTER agents are up so agent:<name> targets resolve —
+          // chain it off the resume promise rather than racing it.
+          void resumeActiveAgents()
+            .catch((err) =>
+              console.error("[startup] resumeActiveAgents failed:", err),
+            )
+            .finally(() => initScheduler());
         })
         .catch((err) => {
           console.warn(
@@ -447,8 +450,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
               console.error("[gateway] init failed:", gwErr),
             );
           });
-          resumeActiveAgents();
-          initScheduler();
+          void resumeActiveAgents()
+            .catch((err) =>
+              console.error("[startup] resumeActiveAgents failed:", err),
+            )
+            .finally(() => initScheduler());
         });
     },
   );
