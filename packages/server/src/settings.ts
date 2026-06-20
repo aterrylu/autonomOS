@@ -14,6 +14,13 @@ export interface AppSettings {
   /** Claude session key for usage plugin (sk-ant-sid01-...) */
   claudeSessionKey?: string;
   /**
+   * Auto-detect the Claude session for the usage plugin (default: true).
+   * When on, the cookie is harvested in-memory from a spawned agent's hook (or
+   * the server's own `CLAUDE_SESSION_COOKIE`) so usage works with no manual
+   * paste. Set false to use only an explicitly-entered key.
+   */
+  autoDetectClaudeSession?: boolean;
+  /**
    * @deprecated No longer required or used. The org UUID is resolved
    * automatically from the session key via the bootstrap API. Kept only
    * so older settings.json files still parse; new code never reads it and

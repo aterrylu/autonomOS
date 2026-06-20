@@ -64,6 +64,16 @@ type NodeEnv = {
 };
 
 /**
+ * True when the server is bound to a loopback interface (so localhost-trust
+ * exemptions are safe). An undefined bind host defaults to `localhost`.
+ * Exported for tests.
+ */
+export function isLoopbackBind(bindHost: string | undefined): boolean {
+  const host = bindHost ?? "localhost";
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+/**
  * Run the autonomos-server until it shuts down. Returns a promise that
  * resolves only on clean shutdown (which currently calls process.exit() so
  * this rarely returns in practice — the caller sees process exit before
@@ -218,8 +228,21 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     return c.json({ ok: true });
   });
 
+  // The harvest endpoint controls which credential the usage plugin
+  // authenticates to claude.ai with, so its unauthenticated exemption is gated
+  // on a loopback bind. On a non-loopback bind (e.g. a remote `make deploy`),
+  // an open POST would be a credential-injection vector, so it falls through to
+  // requireAuth instead (harvest just won't work remotely; manual paste does).
+  const harvestExempt = isLoopbackBind(embeddedConfig.bindHost);
+
   const requireAuth: MiddlewareHandler = async (c, next) => {
     if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
+      return next();
+    if (
+      harvestExempt &&
+      c.req.method === "POST" &&
+      c.req.path === "/api/plugins/claude-usage/session"
+    )
       return next();
     if (c.req.method === "GET" && c.req.path === "/api/host") return next();
     const token = extractToken(c) ?? c.req.query("token") ?? undefined;

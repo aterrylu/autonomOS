@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings } from "../../settings.js";
+import { getHarvestedSessionKey } from "./sessionStore.js";
 
 export interface RateLimitWindow {
   utilization: number;
@@ -63,7 +64,10 @@ export interface RateLimitData {
   /** Failure category for the error, when `error` is set. Lets the dashboard
    * distinguish a bad credential from a transient outage. */
   errorKind?: ErrorKind;
-  /** True when CLAUDE_SESSION_KEY is not set */
+  /** Where the active session key came from (`auto` = inherited from Claude
+   * Code with no manual setup). Undefined when no credential is configured. */
+  credentialSource?: CredentialSource;
+  /** True when no session key is configured anywhere */
   needsSetup?: boolean;
 }
 
@@ -117,6 +121,58 @@ function fingerprint(cookie: string): string {
 }
 
 /**
+ * Where the active session key came from. The `harvested` and `auto` sources
+ * are both auto-detected from Claude Code (no manual paste); the UI surfaces
+ * them as such so the credential is never used silently.
+ *
+ * - `settings` — an explicit manual paste.
+ * - `env` — an explicit `CLAUDE_SESSION_KEY` override.
+ * - `harvested` — relayed from a spawned agent's SessionStart hook, held only
+ *   in memory (see {@link ./sessionStore}). The primary zero-touch path; works
+ *   on any install once an agent has run.
+ * - `auto` — the server's own `CLAUDE_SESSION_COOKIE` env, present only when the
+ *   server itself was launched from a Claude Code context.
+ */
+export type CredentialSource = "settings" | "env" | "harvested" | "auto";
+
+/**
+ * Resolve the session key and where it came from, in priority order:
+ *   1. `settings.claudeSessionKey` — an explicit manual paste (always wins).
+ *   2. `CLAUDE_SESSION_KEY` — an explicit env override.
+ *   — the remaining auto-detected sources are skipped when the user has turned
+ *     off `autoDetectClaudeSession` —
+ *   3. harvested cookie — relayed from a spawned agent's hook (fresh, in-memory).
+ *   4. `CLAUDE_SESSION_COOKIE` — the server's own env (CC-spawned server only).
+ *
+ * Exported for tests.
+ */
+export function resolveSessionKey(): {
+  key: string;
+  source: CredentialSource;
+} | null {
+  const settings = getSettings();
+  const fromSettings = settings.claudeSessionKey?.trim();
+  if (fromSettings) return { key: fromSettings, source: "settings" };
+  const fromEnv = process.env.CLAUDE_SESSION_KEY?.trim();
+  if (fromEnv) return { key: fromEnv, source: "env" };
+
+  // Auto-detection is opt-out: a privacy-conscious user can disable it and rely
+  // solely on a manual paste / explicit env.
+  if (settings.autoDetectClaudeSession === false) return null;
+
+  const fromHarvest = getHarvestedSessionKey();
+  if (fromHarvest) return { key: fromHarvest, source: "harvested" };
+  const fromClaudeCode = process.env.CLAUDE_SESSION_COOKIE?.trim();
+  if (fromClaudeCode) return { key: fromClaudeCode, source: "auto" };
+  return null;
+}
+
+/** The source of the active credential, or null if none is configured. */
+export function getCredentialSource(): CredentialSource | null {
+  return resolveSessionKey()?.source ?? null;
+}
+
+/**
  * Build the auth cookie from the session key alone.
  *
  * The org ID is intentionally NOT appended — it's resolved from the
@@ -127,10 +183,8 @@ function fingerprint(cookie: string): string {
  * Exported for tests.
  */
 export function getSessionCookie(): string | null {
-  const settings = getSettings();
-  const key =
-    settings.claudeSessionKey?.trim() || process.env.CLAUDE_SESSION_KEY?.trim();
-  return key ? `sessionKey=${key}` : null;
+  const resolved = resolveSessionKey();
+  return resolved ? `sessionKey=${resolved.key}` : null;
 }
 
 /** Clear cached data — call after settings change */
@@ -303,18 +357,28 @@ async function fetchUsageData(
 export async function getRateLimits(
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<RateLimitData> {
-  const now = Date.now();
-
-  const cookie = getSessionCookie();
-  if (!cookie) {
+  // Resolve the credential exactly once, here, and thread it through — so the
+  // `credentialSource` label is always stamped from the same resolution that
+  // produced the numbers (no TOCTOU drift if the cookie changes mid-flight).
+  const resolved = resolveSessionKey();
+  if (!resolved) {
     return {
       ...errorResult("CLAUDE_SESSION_KEY not set"),
       needsSetup: true,
     };
   }
+  const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
+  return { ...data, credentialSource: resolved.source };
+}
 
-  // Resolve the cookie first so the cache can be matched to the active key —
-  // a cache entry built under a different (e.g. just-replaced) key is ignored.
+async function computeRateLimits(
+  cookie: string,
+  fetcher: UsageFetcher = defaultFetcher,
+): Promise<RateLimitData> {
+  const now = Date.now();
+
+  // The cookie is matched to the cache by fingerprint — a cache entry built
+  // under a different (e.g. just-replaced) key is ignored.
   const fp = fingerprint(cookie);
   if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
 

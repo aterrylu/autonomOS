@@ -2,7 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { saveAndValidate } from "./saveAndValidate";
-import type { DisplayMode, RateLimitData, RateLimitWindow } from "./types";
+import {
+  type CredentialSource,
+  type DisplayMode,
+  isAutoDetected,
+  type RateLimitData,
+  type RateLimitWindow,
+} from "./types";
 import { useClickOutside } from "./useClickOutside";
 import { timeUntilReset, utilizationColor } from "./utils";
 
@@ -175,13 +181,20 @@ function redactKey(key: string): string {
 function CredentialsSection({
   page,
   onRefetch,
+  credentialSource,
 }: {
   page: PageTheme;
   onRefetch?: () => void;
+  credentialSource?: CredentialSource;
 }) {
+  // When the key is auto-detected from Claude Code and the user hasn't pasted
+  // their own, say so explicitly instead of "Not set" — the credential isn't
+  // missing, it's just inherited. A manual paste still overrides it.
+  const autoDetected = isAutoDetected(credentialSource);
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
+  const [autoDetect, setAutoDetect] = useState(true);
   const [editingKey, setEditingKey] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -198,6 +211,7 @@ function CredentialsSection({
       })
       .then((data) => {
         setMaskedKey(data.claudeSessionKey ?? null);
+        setAutoDetect(data.autoDetectClaudeSession !== false);
         setLoaded(true);
       })
       .catch((err) => {
@@ -230,6 +244,23 @@ function CredentialsSection({
       onRefetch?.();
     } else {
       setError(res.message);
+    }
+  }
+
+  async function toggleAutoDetect(): Promise<void> {
+    const next = !autoDetect;
+    setAutoDetect(next); // optimistic
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoDetectClaudeSession: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onRefetch?.();
+    } catch {
+      setAutoDetect(!next); // revert on failure
+      setError("Could not update auto-detect setting");
     }
   }
 
@@ -266,8 +297,10 @@ function CredentialsSection({
           <CredentialField
             label="Session Key"
             value={maskedKey}
-            placeholder="sk-ant-sid01-..."
-            emptyLabel="Not set"
+            placeholder="sk-ant-sid…"
+            emptyLabel={
+              autoDetected ? "Auto-detected from Claude Code" : "Not set"
+            }
             secret
             editing={editingKey}
             draft={keyDraft}
@@ -306,6 +339,25 @@ function CredentialsSection({
               {saveButtonLabel(saving, saved)}
             </button>
           )}
+          {/* Auto-detect toggle: harvest the session from Claude Code so no
+              manual paste is needed. A pasted key always overrides it. */}
+          <button
+            type="button"
+            onClick={toggleAutoDetect}
+            className="flex items-center justify-between w-full cursor-pointer hover:opacity-80"
+            style={{ color: page.statusFg }}
+          >
+            <span className="text-[10px]">Auto-detect from Claude Code</span>
+            <span
+              className="rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+              style={{
+                background: autoDetect ? "#23863622" : page.border,
+                color: autoDetect ? "#3fb950" : page.statusFg,
+              }}
+            >
+              {autoDetect ? "On" : "Off"}
+            </span>
+          </button>
         </div>
       )}
     </div>
@@ -469,7 +521,11 @@ export function UsagePanel({
       </div>
 
       {/* Credentials config */}
-      <CredentialsSection page={page} onRefetch={onRefetch} />
+      <CredentialsSection
+        page={page}
+        onRefetch={onRefetch}
+        credentialSource={data.credentialSource}
+      />
     </div>
   );
 }
