@@ -1,6 +1,7 @@
 import { memo, useRef } from "react";
 import { useTerminal } from "../hooks/useTerminal";
 import { CopyToast } from "./CopyToast";
+import { UsageQueueButton } from "./UsageQueueButton";
 
 interface SessionPaneProps {
   sessionId: string;
@@ -29,6 +30,7 @@ export const SessionPane = memo(function SessionPane({
         style={{ touchAction: "none" }}
       />
       <CopyToast toast={copyToast} />
+      <UsageQueueButton sessionId={sessionId} />
     </div>
   );
 });

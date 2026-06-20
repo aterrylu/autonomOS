@@ -50,6 +50,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
+import { usageQueueRouter } from "./routes/usageQueue.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
 import { setAuthToken, setServerPort } from "./serverState.js";
@@ -280,6 +281,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
+  app.route("/api/usage-queue", usageQueueRouter);
   app.route("/api/system", systemRouter);
 
   // MCP — Streamable HTTP transport for agent-to-agent communication
