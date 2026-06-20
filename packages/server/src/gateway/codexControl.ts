@@ -72,6 +72,19 @@ export function setCodexStatusSink(
   statusSink = fn;
 }
 
+/**
+ * Thread-id sink (wired to persist providerThreadId at startup). The daemon-
+ * backed TUI creates the conversation thread on first connect; we capture its
+ * id the moment we discover it and persist it on the agent record so a later
+ * resume can reattach the conversation via `codex resume <threadId> --remote`.
+ */
+let threadIdSink: ((agentId: string, threadId: string) => void) | null = null;
+export function setCodexThreadIdSink(
+  fn: (agentId: string, threadId: string) => void,
+): void {
+  threadIdSink = fn;
+}
+
 /** Map a Codex thread.status.type to the dashboard's working-status vocabulary.
  *  Returns null for the transitional "notLoaded" and for missing/unreadable
  *  status — neither should overwrite a real status. An UNRECOGNIZED type (a
@@ -361,6 +374,9 @@ class CodexController {
         const id = res?.data?.[0];
         if (id) {
           this.threadId = id;
+          // Persist the conversation thread id so a later resume can reattach
+          // it (`codex resume <id> --remote`). Fire once per discovered id.
+          threadIdSink?.(this.agentId, id);
           return id;
         }
       } catch (err) {

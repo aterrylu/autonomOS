@@ -41,6 +41,7 @@ import {
   listAgents,
   markExited,
   markRunning,
+  patchAgent,
   resolveAgent as resolveAgentFromStore,
 } from "./store.js";
 
@@ -218,6 +219,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // Set by the sidecar block below (when the provider declares buildSidecar)
     // so buildArgs can emit `--remote <endpoint>` against the daemon.
     sidecarEndpoint: undefined as string | undefined,
+    // Codex conversation resume: if this agent already captured a thread id
+    // (any respawn — server-restart resume or restart-all), pass it so the
+    // provider emits `codex resume <id> --remote` and reattaches the prior
+    // conversation. Undefined on a fresh first spawn → a new thread is created.
+    providerThreadId: agent.providerThreadId,
   };
 
   const env = provider.buildEnv(agent.id, agent.name);
@@ -416,6 +422,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   });
 
   const spawnedAt = Date.now();
+  // Whether this spawn attempted a Codex conversation resume. If it dies
+  // immediately, the persisted thread's rollout is likely gone — we must clear
+  // the dead thread id and fall back to a fresh thread, or the agent crash-loops
+  // (every restart re-runs `codex resume <deadId>`).
+  const attemptedResume = !!resolved.providerThreadId;
 
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
@@ -456,6 +467,48 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       console.warn(
         `[runtime] ${persisted.id.slice(0, 8)} exited: code=${exitCode} signal=${signal ?? "none"} lifetime=${lifetime}ms`,
       );
+    }
+
+    // Resume-failure fallback: a Codex agent that attempted `codex resume
+    // <threadId>` and died immediately almost certainly hit a missing/invalid
+    // rollout. Clear the dead thread id and respawn with a FRESH thread —
+    // otherwise the dead id stays persisted and every restart re-crashes (a
+    // silent crash-loop). The respawn can't loop: providerThreadId is now
+    // cleared, so it takes the plain `--remote` path.
+    if (
+      !shuttingDown &&
+      attemptedResume &&
+      lifetime < 5_000 &&
+      exitCode !== 0
+    ) {
+      live.delete(persisted.id);
+      disposeCodexControl(persisted.id);
+      patchAgent(persisted.id, { providerThreadId: undefined });
+      pushSystemNotification(
+        persisted.id,
+        `Couldn't resume ${persisted.name}'s prior conversation (its history may have been pruned) — starting a fresh thread.`,
+      );
+      console.warn(
+        `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — cleared thread id, respawning fresh`,
+      );
+      const record = getAgent(persisted.id);
+      if (record) {
+        void respawnAgent(record).catch((err) => {
+          const updated = markExited(persisted.id, "crashed");
+          if (updated)
+            emitAgentDelta({
+              type: "agent.exited",
+              id: persisted.id,
+              exitReason: "crashed",
+              version: updated.version,
+            });
+          console.error(
+            `[runtime] ${persisted.id.slice(0, 8)} fresh respawn after failed resume also failed:`,
+            err instanceof Error ? err.message : err,
+          );
+        });
+      }
+      return;
     }
 
     if (!shuttingDown) {

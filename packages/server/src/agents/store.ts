@@ -245,7 +245,10 @@ export function insertAgent(agent: Agent): Agent {
 export function patchAgent(
   id: UUID,
   patch: Partial<
-    Pick<Agent, "name" | "template" | "project" | "autonomousMode">
+    Pick<
+      Agent,
+      "name" | "template" | "project" | "autonomousMode" | "providerThreadId"
+    >
   >,
   expectedVersion?: number,
 ): Agent | undefined | "stale" {
