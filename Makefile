@@ -31,6 +31,8 @@ prod:
 	@$(BUN) install
 	@echo "Building channel server..."
 	@bunx esbuild packages/server/src/channel-server/index.ts --bundle --platform=node --format=esm --outfile=packages/server/src/channel-server/dist.mjs --packages=external --log-level=warning
+	@echo "Removing any stale embedded dashboard (hosted server serves packages/dashboard/dist; _embedded_dashboard is a binary-build artifact only)..."
+	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@echo "Restarting server..."
@@ -66,6 +68,7 @@ deploy:
 		--exclude .env \
 		--exclude dist \
 		--exclude .git \
+		--exclude _embedded_dashboard \
 		./ $(DEPLOY_HOST):$(DEPLOY_PATH)/
 	@echo "Installing bun + pm2 (if needed)..."
 	ssh $(DEPLOY_HOST) 'export PATH=$$HOME/.bun/bin:$$PATH && command -v bun >/dev/null || { curl -fsSL https://bun.sh/install | bash && export PATH=$$HOME/.bun/bin:$$PATH; } && command -v pm2 >/dev/null || bun add -g pm2'

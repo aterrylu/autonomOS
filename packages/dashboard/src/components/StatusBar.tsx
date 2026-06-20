@@ -3,6 +3,10 @@ import { plugins } from "../plugins/registry";
 import { SettingsPanel } from "../plugins/settings/SettingsStatusBarItem";
 import type { StatusBarItem } from "../plugins/types";
 import { THEMES, useStore } from "../store";
+import {
+  getLoadedDashboardBuildId,
+  isDashboardStale,
+} from "../utils/dashboardFreshness";
 import { Codicon } from "./Codicon";
 
 export function StatusBar() {
@@ -18,7 +22,17 @@ export function StatusBar() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((d) => setHost(d.hostname ?? "unknown"))
+      .then((d) => {
+        setHost(d.hostname ?? "unknown");
+        // Surface a stale dashboard (deploy-while-open, or a stale-serve) instead
+        // of silently running an old bundle. Server reports its served bundle id.
+        const loaded = getLoadedDashboardBuildId();
+        if (isDashboardStale(loaded, d.dashboard?.build)) {
+          console.warn(
+            `Dashboard is out of date: this tab loaded ${loaded}, but the server is serving ${d.dashboard.build}. Reload to update.`,
+          );
+        }
+      })
       .catch((err) => {
         console.warn("Failed to fetch hostname:", err);
         setHost("offline");
