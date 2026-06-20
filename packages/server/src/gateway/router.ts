@@ -15,8 +15,10 @@ import type {
   PlatformAdapter,
 } from "@autonomos/core";
 import type { WSContext } from "hono/ws";
+import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache.js";
+import { deliverToCodex, formatInbound } from "./codexControl.js";
 
 // ── Registry ──────────────────────────────────────────────────────
 
@@ -222,6 +224,30 @@ async function routeToAgent(
   targetName: string,
   content: string,
 ): Promise<string | null> {
+  // Codex agents receive inbound via their app-server daemon (turn/start), not
+  // the channel-server WS — that path only Claude Code's channels feature
+  // consumes. Resolve the record directly (a Codex agent need not have a
+  // channel-server connection to receive messages).
+  const codexTarget = resolveRunningCodexAgent(targetName);
+  if (codexTarget) {
+    if (codexTarget.id === fromSessionId) return "Cannot send to yourself.";
+    const endpoint = getAgentSidecarEndpoint(codexTarget.id);
+    if (!endpoint) {
+      return `Codex agent "${targetName}" is not reachable — its app-server daemon isn't running.`;
+    }
+    const senderName = await resolveAgentName(fromSessionId);
+    fanOutToDashboard({
+      type: "message",
+      payload: buildAgentMessage(fromSessionId, senderName, content),
+    });
+    deliverToCodex(
+      codexTarget.id,
+      endpoint,
+      formatInbound(senderName, `agent://${senderName}`, content),
+    );
+    return null;
+  }
+
   const resolved = await resolveConnectedAgent(targetName);
   if (!resolved) {
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
@@ -245,6 +271,16 @@ async function routeToAgent(
     return `Failed to deliver message to agent "${targetName}"`;
   }
   fanOutToDashboard(wsMsg);
+  return null;
+}
+
+/** Resolve a RUNNING Codex agent by id-or-name (for daemon-based inbound). */
+function resolveRunningCodexAgent(idOrName: string): { id: string } | null {
+  const byId = getAgent(idOrName);
+  if (byId?.provider === "codex" && byId.status === "running") return byId;
+  const byName = resolveAgentByName(idOrName);
+  if (byName?.provider === "codex" && byName.status === "running")
+    return byName;
   return null;
 }
 
@@ -280,6 +316,7 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
     };
     const json = JSON.stringify(wsMsg);
 
+    // Claude Code (and other channel-server) agents: deliver over their WS.
     for (const [sessionId, client] of sessionClients) {
       if (sessionId === fromSessionId) continue;
       try {
@@ -292,6 +329,21 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
         sessionClients.delete(sessionId);
       }
     }
+
+    // Codex agents receive via their app-server daemon, not the channel-server
+    // WS — fan out to every running Codex agent that has a live endpoint.
+    const attributed = formatInbound(
+      senderName,
+      `agent://${senderName}`,
+      content,
+    );
+    for (const agent of listAgents()) {
+      if (agent.provider !== "codex" || agent.status !== "running") continue;
+      if (agent.id === fromSessionId) continue;
+      const endpoint = getAgentSidecarEndpoint(agent.id);
+      if (endpoint) deliverToCodex(agent.id, endpoint, attributed);
+    }
+
     fanOutToDashboard(wsMsg);
   });
 }

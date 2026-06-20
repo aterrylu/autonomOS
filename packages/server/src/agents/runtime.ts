@@ -15,6 +15,7 @@ import type { Agent, Provider, SpawnOptions, UUID } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
+import { disposeCodexControl } from "../gateway/codexControl.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
@@ -443,6 +444,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         exitCode === 0 && !signal ? "self_exited" : "crashed";
       const updated = markExited(persisted.id, reason);
       live.delete(persisted.id);
+      // Tear down the Codex inbound control client (no-op for other providers).
+      disposeCodexControl(persisted.id);
       if (updated) {
         emitAgentDelta({
           type: "agent.exited",
@@ -476,6 +479,7 @@ export function killAttachment(agentId: UUID): boolean {
   }
   // Sidecar daemon is a separate process — kill it alongside the PTY.
   managed.sidecar?.dispose();
+  disposeCodexControl(agentId);
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
   cancelPromptTracking(agentId);
@@ -506,6 +510,7 @@ export function deleteAgent(agentId: UUID): boolean {
     managed.sidecar?.dispose();
     live.delete(agentId);
   }
+  disposeCodexControl(agentId);
   cancelPromptTracking(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {

@@ -5,13 +5,20 @@
  * the router, and connects to platforms if enabled in settings.
  */
 
+import { pushSystemNotification } from "../routes/hooks.js";
 import { getSettings } from "../settings.js";
 import { SlackAdapter } from "./adapters/slack.js";
+import { setCodexInboundNotifier } from "./codexControl.js";
 import { registerAdapter, setRoutes } from "./router.js";
 
 const adapters = [new SlackAdapter()];
 
 export async function initGateway(): Promise<void> {
+  // Surface persistent Codex inbound-delivery failures to the dashboard
+  // notification panel (the sender is ack'd on enqueue, so this is the only
+  // operator-visible signal that messages aren't landing).
+  setCodexInboundNotifier(pushSystemNotification);
+
   for (const adapter of adapters) {
     registerAdapter(adapter);
   }
