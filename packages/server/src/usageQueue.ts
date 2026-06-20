@@ -94,6 +94,11 @@ interface ArmedEntry {
   /** True once the watcher has observed the account blocked since this pane
    * armed. Gates firing so a never-blocked pane never auto-submits. */
   seenBlocked: boolean;
+  /** True once this pane has been warned about a permanent credential failure.
+   * Per-pane (not a single global flag) so a pane armed AFTER the first warning,
+   * while creds are still broken, still gets told its auto-send can't fire.
+   * Reset when a real usage signal returns. */
+  authWarned: boolean;
 }
 
 export interface UsageQueue {
@@ -127,9 +132,6 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
    * failure mode. The delete makes sequential ticks idempotent; this closes the
    * concurrent-overlap gap. */
   let ticking = false;
-  /** One-shot latch so a persistent credential failure warns once, not every
-   * tick. Cleared whenever a real usage signal returns. */
-  let authFailureNotified = false;
 
   function liveWindows(data: RateLimitData): RateLimitWindow[] {
     return [
@@ -167,14 +169,15 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
         // NEVER fire — warn each armed pane once so a multi-hour wait isn't
         // silent. A transient/no-data gap just holds quietly and retries.
         if (data.errorKind === "unauthorized" || data.errorKind === "no_org") {
-          if (!authFailureNotified) {
-            authFailureNotified = true;
-            for (const sessionId of armed.keys()) {
-              deps.notify?.(
-                sessionId,
-                `Usage queue can't read your Claude usage (${data.errorKind}). Queued auto-sends will NOT fire until you re-authenticate.`,
-              );
-            }
+          // Warn per-pane: any armed pane not yet warned, including one armed
+          // AFTER an earlier warning while creds stayed broken.
+          for (const [sessionId, entry] of armed) {
+            if (entry.authWarned) continue;
+            entry.authWarned = true;
+            deps.notify?.(
+              sessionId,
+              `Usage queue can't read your Claude usage (${data.errorKind}). Queued auto-sends will NOT fire until you re-authenticate.`,
+            );
           }
         } else {
           log(
@@ -183,8 +186,8 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
         }
         return;
       }
-      // Real signal again — re-arm the one-shot credential warning.
-      authFailureNotified = false;
+      // Real signal again — re-arm each pane's one-shot credential warning.
+      for (const entry of armed.values()) entry.authWarned = false;
 
       const maxUtil = Math.max(...windows.map((w) => w.utilization));
       // Hysteresis edge: only the transition matters, and the wide enter/exit
@@ -249,7 +252,11 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
 
   return {
     arm(sessionId: string): void {
-      armed.set(sessionId, { armedAt: Date.now(), seenBlocked: blocked });
+      armed.set(sessionId, {
+        armedAt: Date.now(),
+        seenBlocked: blocked,
+        authWarned: false,
+      });
       ensureTimer();
       // Evaluate immediately so the blocked/resetsAt hint is fresh right after
       // arming, and so arming while capped can't miss a clear that lands inside
