@@ -28,6 +28,7 @@ import {
   cancelPromptTracking,
   trackPromptDelivery,
 } from "./promptDelivery.js";
+import { pickFreePort, type Sidecar, startSidecarDaemon } from "./sidecar.js";
 import {
   buildAgent,
   deleteAgentRaw,
@@ -51,6 +52,17 @@ export interface ManagedAttachment {
   pty: IPty;
   outputBuffer: string[];
   outputSize: number;
+  /**
+   * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
+   * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
+   * the ws:// the gateway uses to inject inbound turns + read status.
+   */
+  sidecar?: Sidecar;
+}
+
+/** ws:// endpoint of an agent's provider daemon (Codex), or undefined. */
+export function getAgentSidecarEndpoint(agentId: UUID): string | undefined {
+  return live.get(agentId)?.sidecar?.endpoint;
 }
 
 const live = new Map<UUID, ManagedAttachment>();
@@ -98,7 +110,7 @@ export interface SpawnResult {
  *   - Fork: forkFromAgentId present → new Agent (new id) + new PTY that --resume's
  *     the forked agent's providerSessionId then --fork-session's
  */
-export function spawnAgent(params: SpawnParams): SpawnResult {
+export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   if (params.forkFromAgentId && params.resumeAgentId) {
     throw new Error(
       "Cannot use both forkFromAgentId and resumeAgentId — fork creates a new agent from a parent's context, resume reattaches an existing agent.",
@@ -199,27 +211,85 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     capabilities:
       (params.template ? getTemplate(params.template)?.capabilities : null) ??
       DEFAULT_CAPABILITIES,
+    // Set by the sidecar block below (when the provider declares buildSidecar)
+    // so buildArgs can emit `--remote <endpoint>` against the daemon.
+    sidecarEndpoint: undefined as string | undefined,
   };
 
-  const args = provider.buildArgs(resolved);
   const env = provider.buildEnv(agent.id, agent.name);
+
+  // Provider sidecar daemon (Codex's `codex app-server`): pick a free loopback
+  // port, start the daemon, and wait until it is listening BEFORE spawning the
+  // PTY — the `codex --remote` TUI errors out immediately on a cold port (no
+  // retry). The daemon is bound to this PTY's lifecycle and disposed on exit.
+  let sidecar: Sidecar | undefined;
+  if (provider.buildSidecar) {
+    const port = await pickFreePort();
+    resolved.sidecarEndpoint = `ws://127.0.0.1:${port}`;
+    const spec = provider.buildSidecar(resolved);
+    if (spec) {
+      try {
+        sidecar = await startSidecarDaemon(
+          binary,
+          spec.args,
+          resolved.sidecarEndpoint,
+          {
+            cwd,
+            env,
+            readyNeedle: spec.readyNeedle,
+            readyTimeoutMs: spec.readyTimeoutMs,
+          },
+        );
+      } catch (err) {
+        // The daemon never came up — abort the spawn rather than launch a TUI
+        // that will fail to connect. The agent record hasn't been inserted yet
+        // (fresh) or stays exited (resume), so there's nothing to roll back.
+        throw new Error(
+          `Failed to start ${providerName} sidecar daemon: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    } else {
+      resolved.sidecarEndpoint = undefined;
+    }
+  }
+
+  let args: string[];
+  try {
+    args = provider.buildArgs(resolved);
+  } catch (err) {
+    // buildArgs threw after the daemon was already started — don't leak it.
+    sidecar?.dispose();
+    throw err;
+  }
 
   const logArgs = args.map((a) => {
     if (a.startsWith('{"hooks"')) return '{"hooks":...}';
     if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
     return a;
   });
-  console.log(`[runtime] spawning: ${binary} ${logArgs.join(" ")}`);
+  console.log(
+    `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
+      (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
+  );
 
   const cols = params.cols ?? 120;
   const rows = params.rows ?? 40;
-  const pty = spawn(binary, args, {
-    name: "xterm-256color",
-    cols,
-    rows,
-    cwd,
-    env,
-  });
+  let pty: IPty;
+  try {
+    pty = spawn(binary, args, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd,
+      env,
+    });
+  } catch (err) {
+    // PTY spawn failed — don't leak the sidecar daemon we just started.
+    sidecar?.dispose();
+    throw err;
+  }
 
   if (getSettings().autoTrust !== false && provider.attachStartupWatcher) {
     provider.attachStartupWatcher(pty, resolved);
@@ -232,14 +302,30 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
         provider: providerName,
         providerSessionId,
         startedAt: Date.now(),
-      })!
+      })
     : insertAgent(agent);
+  if (!persisted) {
+    // The agent record was deleted concurrently (resume path) between
+    // getAgent() and here — tear down the PTY and daemon we just started so
+    // neither is orphaned, then surface the race rather than crashing on a
+    // non-null assertion.
+    sidecar?.dispose();
+    try {
+      pty.kill();
+    } catch {
+      // best-effort — the PTY may already be dead
+    }
+    throw new Error(
+      `Agent record ${agent.id} vanished before it could be marked running`,
+    );
+  }
 
   const managed: ManagedAttachment = {
     agentId: persisted.id,
     pty,
     outputBuffer: [],
     outputSize: 0,
+    sidecar,
   };
   live.set(persisted.id, managed);
 
@@ -314,6 +400,12 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
 
+    // The visible TUI (this PTY) and its sidecar daemon are SEPARATE processes —
+    // the daemon does not die when the PTY does. Dispose it here unconditionally
+    // (idempotent): whether this is the canonical attachment or a stale handler
+    // from a replaced PTY, this closure's daemon is now orphaned and must go.
+    sidecar?.dispose();
+
     // Guard against stale onExit handlers firing after the same agent.id has
     // been respawned. node-pty's onExit is async, so during restartAllAttachments
     // (kill → spawn) the killed PTY's onExit can fire AFTER the new attachment
@@ -382,6 +474,8 @@ export function killAttachment(agentId: UUID): boolean {
   } catch (err) {
     console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
   }
+  // Sidecar daemon is a separate process — kill it alongside the PTY.
+  managed.sidecar?.dispose();
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
   cancelPromptTracking(agentId);
@@ -409,6 +503,7 @@ export function deleteAgent(agentId: UUID): boolean {
     } catch (err) {
       console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
     }
+    managed.sidecar?.dispose();
     live.delete(agentId);
   }
   cancelPromptTracking(agentId);
@@ -434,6 +529,7 @@ export function shutdownAllAttachments(): void {
     } catch {
       // best-effort during shutdown
     }
+    managed.sidecar?.dispose();
   }
   live.clear();
 }
@@ -447,9 +543,9 @@ function resetShuttingDown(): void {
 /** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
  *  from the persisted Agent record so the resumed PTY matches the original
  *  configuration. */
-function respawnAgent(a: Agent): void {
+async function respawnAgent(a: Agent): Promise<void> {
   const tmpl = a.template ? getTemplate(a.template) : null;
-  spawnAgent({
+  await spawnAgent({
     workingDirectory: a.workingDirectory,
     resumeAgentId: a.id,
     name: a.name,
@@ -469,7 +565,7 @@ function respawnAgent(a: Agent): void {
  * Failures are caught per-agent and the failing agent is marked exited+crashed
  * so a zombie record (status=running with no live PTY) doesn't sit forever.
  */
-export function resumeActiveAgents(): void {
+export async function resumeActiveAgents(): Promise<void> {
   const agents = listAgents().filter((a) => a.status === "running");
   if (agents.length === 0) return;
 
@@ -482,13 +578,17 @@ export function resumeActiveAgents(): void {
       );
     }
     try {
-      respawnAgent(a);
+      await respawnAgent(a);
       console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...)`);
       resumed++;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
       console.error(`  ✗ Failed to resume ${a.name}: ${message}${stack}`);
+      // Surface the reason in the dashboard, not just server logs — otherwise a
+      // Codex agent whose sidecar daemon won't come up shows only as "crashed"
+      // every boot with no actionable hint (mirrors the prompt-delivery path).
+      pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
       const updated = markExited(a.id, "crashed");
       if (updated) {
         emitAgentDelta({
@@ -516,10 +616,10 @@ export function resumeActiveAgents(): void {
  * "done" when N of M agents failed to respawn — the previous shape returned
  * Record<UUID, UUID> only and lost that distinction in the response body.
  */
-export function restartAllAttachments(): {
+export async function restartAllAttachments(): Promise<{
   idMap: Record<UUID, UUID>;
   failures: Array<{ id: UUID; name: string; error: string }>;
-} {
+}> {
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
   const failures: Array<{ id: UUID; name: string; error: string }> = [];
@@ -539,6 +639,8 @@ export function restartAllAttachments(): {
         err instanceof Error ? err.message : err,
       );
     }
+    // Dispose the sidecar daemon too — it won't die with the PTY.
+    managed.sidecar?.dispose();
   }
   live.clear();
   resetShuttingDown();
@@ -557,7 +659,7 @@ export function restartAllAttachments(): {
       continue;
     }
     try {
-      respawnAgent(a);
+      await respawnAgent(a);
       idMap[a.id] = a.id;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -565,6 +667,19 @@ export function restartAllAttachments(): {
         `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
         msg,
       );
+      // The PTYs were killed under shuttingDown, so onExit did NOT mark this
+      // agent exited — and the respawn just failed. Without this, the record
+      // stays status:"running" with no live PTY (a zombie that tries to resume
+      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents.
+      const updated = markExited(a.id, "crashed");
+      if (updated) {
+        emitAgentDelta({
+          type: "agent.exited",
+          id: a.id,
+          exitReason: "crashed",
+          version: updated.version,
+        });
+      }
       failures.push({ id: a.id, name: a.name, error: msg });
     }
   }

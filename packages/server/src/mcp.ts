@@ -160,7 +160,7 @@ function createMcpServer(): McpServer {
         const autonomousMode =
           args.autonomousMode ?? tmpl?.autonomousMode ?? true;
 
-        const result = spawnAgent({
+        const result = await spawnAgent({
           workingDirectory: args.workingDirectory,
           prompt: args.prompt,
           name: args.name,
