@@ -157,19 +157,6 @@ function useOrgChartData(refreshKey: number) {
   return { chart, status };
 }
 
-function _DiffStat({
-  stat,
-}: {
-  stat: { insertions: number; deletions: number };
-}) {
-  return (
-    <span className="shrink-0 text-[10px]">
-      <span style={{ color: "#91b362" }}>+{stat.insertions}</span>{" "}
-      <span style={{ color: "#ea6c73" }}>-{stat.deletions}</span>
-    </span>
-  );
-}
-
 export function Sidebar() {
   const {
     theme,
@@ -322,7 +309,6 @@ export function Sidebar() {
         projectName?: string;
         gitBranch?: string;
         lastModified: number;
-        gitDiffStat?: { insertions: number; deletions: number };
       }
     >();
     for (const p of projects) {
@@ -332,7 +318,6 @@ export function Sidebar() {
           projectName: p.name,
           gitBranch: ps.gitBranch,
           lastModified: ps.lastModified,
-          gitDiffStat: ps.gitDiffStat,
         });
       }
     }
@@ -877,7 +862,6 @@ interface SessionRowProps {
     projectName?: string;
     gitBranch?: string;
     lastModified: number;
-    gitDiffStat?: { insertions: number; deletions: number };
   };
   agentState?: { status: string; currentTool?: string; toolDetail?: string };
   notifCount: number;
@@ -1266,7 +1250,6 @@ interface HierarchyNodeRowProps {
       projectName?: string;
       gitBranch?: string;
       lastModified: number;
-      gitDiffStat?: { insertions: number; deletions: number };
     }
   >;
   agentStatuses: Record<

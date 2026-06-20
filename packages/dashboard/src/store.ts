@@ -97,18 +97,12 @@ export interface ProjectSession {
   firstPrompt?: string;
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
-  gitDiffStat?: GitDiffStat;
   /** True if this session is managed by autonomOS */
   isAutonomosAgent?: boolean;
   /** Lifecycle status for autonomOS agents */
   autonomosStatus?: "running" | "exited";
   /** Template used to spawn this agent */
   template?: string;
-}
-
-export interface GitDiffStat {
-  insertions: number;
-  deletions: number;
 }
 
 /** A project directory with its Claude Code sessions */
