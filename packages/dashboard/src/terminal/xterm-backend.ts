@@ -28,29 +28,37 @@ import type { TerminalBackend, TerminalOptions } from "./types";
  * Copy affordance can cover that tail with real UX. We deliberately do not
  * surface the per-copy failure to the user here.
  *
+ * Returns a promise resolving to whether the copy ultimately succeeded, so
+ * callers can surface UI feedback (e.g. a "Copied" toast / "Copy failed").
  * Exported for unit testing the secure/insecure branches in isolation.
  */
-export function copyTextToClipboard(text: string): void {
+export function copyTextToClipboard(text: string): Promise<boolean> {
   const clipboard = navigator.clipboard;
   if (clipboard?.writeText) {
     // Secure context (HTTPS or localhost). If the write is rejected anyway
     // (e.g. transient activation expired), fall back to the legacy path.
-    clipboard.writeText(text).catch((err) => {
-      if (!execCommandCopy(text)) {
-        console.warn(
-          "OSC 52 copy failed: Clipboard API rejected and execCommand fallback also failed:",
-          err,
-        );
-      }
-    });
-    return;
+    return clipboard.writeText(text).then(
+      () => true,
+      (err) => {
+        const ok = execCommandCopy(text);
+        if (!ok) {
+          console.warn(
+            "OSC 52 copy failed: Clipboard API rejected and execCommand fallback also failed:",
+            err,
+          );
+        }
+        return ok;
+      },
+    );
   }
   // Insecure context (plain HTTP on a remote host): no Clipboard API at all.
-  if (!execCommandCopy(text)) {
+  const ok = execCommandCopy(text);
+  if (!ok) {
     console.warn(
       "OSC 52 copy failed: insecure context and execCommand fallback returned false",
     );
   }
+  return Promise.resolve(ok);
 }
 
 /**
@@ -92,7 +100,10 @@ function execCommandCopy(text: string): boolean {
   return copied;
 }
 
-export function createXtermBackend(options: TerminalOptions): TerminalBackend {
+export function createXtermBackend(
+  options: TerminalOptions,
+  onClipboardCopy?: (info: { text: string; ok: boolean }) => void,
+): TerminalBackend {
   const terminal = new Terminal({
     ...options,
     macOptionIsMeta: true,
@@ -145,7 +156,18 @@ export function createXtermBackend(options: TerminalOptions): TerminalBackend {
       console.warn("OSC 52 decode failed:", err);
       return true;
     }
-    copyTextToClipboard(text);
+    // Report the outcome so the UI can confirm the copy (auto-copy-on-select is
+    // otherwise invisible). The write may resolve async (Clipboard API path).
+    // copyTextToClipboard is designed never to reject; the .catch is a
+    // defensive net so a future regression surfaces "Copy failed" rather than
+    // an unhandled rejection swallowed inside this OSC parser callback.
+    void copyTextToClipboard(text)
+      .then((ok) => {
+        onClipboardCopy?.({ text, ok });
+      })
+      .catch(() => {
+        onClipboardCopy?.({ text, ok: false });
+      });
     return true;
   });
 
