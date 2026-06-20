@@ -68,6 +68,9 @@ export function startSidecarDaemon(
 
   return new Promise<Sidecar>((resolve, reject) => {
     let settled = false;
+    // Set once we intentionally tear the daemon down, so the post-readiness
+    // exit logger doesn't cry "crashed" on a normal dispose.
+    let disposing = false;
     const proc = cpSpawn(binary, args, {
       cwd: opts.cwd,
       env: opts.env,
@@ -75,13 +78,22 @@ export function startSidecarDaemon(
     });
 
     const dispose = () => {
+      disposing = true;
       // Already exited — nothing to do.
       if (proc.exitCode !== null || proc.signalCode !== null) return;
       try {
         proc.kill("SIGTERM");
-      } catch {
-        // best-effort — the process may already be gone
-        return;
+      } catch (err) {
+        // ESRCH means the process is already gone — truly nothing to do.
+        // Any other errno (e.g. EPERM) means it may still be ALIVE but we
+        // couldn't signal it; fall through to the SIGKILL escalation rather
+        // than silently abandoning a live daemon.
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") return;
+        console.warn(
+          `[sidecar] SIGTERM failed for daemon pid ${proc.pid} (${
+            (err as Error).message
+          }) — escalating to SIGKILL`,
+        );
       }
       // Escalate to SIGKILL if the daemon doesn't exit promptly, so a stuck
       // daemon never lingers and holds its port. The timer is unref'd so it
@@ -106,11 +118,40 @@ export function startSidecarDaemon(
       proc.stderr?.off("data", scan);
       proc.off("exit", onExit);
       proc.off("error", onError);
+      // Keep a benign handler on `error`/`exit` for the daemon's whole life.
+      // Without a listener, a post-readiness 'error' event would throw as an
+      // uncaught exception and crash the entire server. A post-readiness exit
+      // (daemon crashed mid-session) is logged so it's diagnosable instead of
+      // surfacing only as a mysteriously-dead TUI; the PTY's onExit handles the
+      // dispose (a no-op here since the daemon is already gone).
+      proc.on("error", (err) =>
+        console.warn(
+          `[sidecar] daemon ${endpoint} emitted error post-readiness:`,
+          err.message,
+        ),
+      );
+      proc.once("exit", (code, signal) => {
+        if (disposing) return; // normal teardown — not a crash
+        console.warn(
+          `[sidecar] daemon ${endpoint} exited post-readiness (code=${code} signal=${signal ?? "none"})`,
+        );
+      });
       resolve({ endpoint, proc, dispose });
     };
 
+    // Accumulate output: the "listening on" banner can straddle two `data`
+    // chunks (pipes aren't line-buffered), and testing each chunk in isolation
+    // would miss the needle → a false readiness timeout that kills a healthy
+    // daemon. Cap the buffer so a chatty daemon can't grow it unbounded.
+    let scanBuf = "";
     const scan = (chunk: Buffer) => {
-      if (chunk.toString().includes(opts.readyNeedle)) onReady();
+      scanBuf += chunk.toString();
+      if (scanBuf.includes(opts.readyNeedle)) {
+        onReady();
+        return;
+      }
+      const cap = opts.readyNeedle.length + 256;
+      if (scanBuf.length > cap) scanBuf = scanBuf.slice(-cap);
     };
 
     const fail = (err: Error) => {

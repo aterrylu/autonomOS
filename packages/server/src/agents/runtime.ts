@@ -255,7 +255,14 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
   }
 
-  const args = provider.buildArgs(resolved);
+  let args: string[];
+  try {
+    args = provider.buildArgs(resolved);
+  } catch (err) {
+    // buildArgs threw after the daemon was already started — don't leak it.
+    sidecar?.dispose();
+    throw err;
+  }
 
   const logArgs = args.map((a) => {
     if (a.startsWith('{"hooks"')) return '{"hooks":...}';
@@ -295,8 +302,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         provider: providerName,
         providerSessionId,
         startedAt: Date.now(),
-      })!
+      })
     : insertAgent(agent);
+  if (!persisted) {
+    // The agent record was deleted concurrently (resume path) between
+    // getAgent() and here — tear down the PTY and daemon we just started so
+    // neither is orphaned, then surface the race rather than crashing on a
+    // non-null assertion.
+    sidecar?.dispose();
+    try {
+      pty.kill();
+    } catch {
+      // best-effort — the PTY may already be dead
+    }
+    throw new Error(
+      `Agent record ${agent.id} vanished before it could be marked running`,
+    );
+  }
 
   const managed: ManagedAttachment = {
     agentId: persisted.id,
@@ -563,6 +585,10 @@ export async function resumeActiveAgents(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
       console.error(`  ✗ Failed to resume ${a.name}: ${message}${stack}`);
+      // Surface the reason in the dashboard, not just server logs — otherwise a
+      // Codex agent whose sidecar daemon won't come up shows only as "crashed"
+      // every boot with no actionable hint (mirrors the prompt-delivery path).
+      pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
       const updated = markExited(a.id, "crashed");
       if (updated) {
         emitAgentDelta({
@@ -641,6 +667,19 @@ export async function restartAllAttachments(): Promise<{
         `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
         msg,
       );
+      // The PTYs were killed under shuttingDown, so onExit did NOT mark this
+      // agent exited — and the respawn just failed. Without this, the record
+      // stays status:"running" with no live PTY (a zombie that tries to resume
+      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents.
+      const updated = markExited(a.id, "crashed");
+      if (updated) {
+        emitAgentDelta({
+          type: "agent.exited",
+          id: a.id,
+          exitReason: "crashed",
+          version: updated.version,
+        });
+      }
       failures.push({ id: a.id, name: a.name, error: msg });
     }
   }
