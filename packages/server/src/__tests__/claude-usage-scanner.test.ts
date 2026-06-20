@@ -14,8 +14,13 @@ process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 delete process.env.CLAUDE_SESSION_KEY;
 delete process.env.CLAUDE_ORG_ID;
 
-const { getSessionCookie, fetchOrgId, getRateLimits, invalidateCache } =
-  await import("../plugins/claude-usage/scanner.js");
+const {
+  getSessionCookie,
+  fetchOrgId,
+  getRateLimits,
+  invalidateCache,
+  selectUsageOrg,
+} = await import("../plugins/claude-usage/scanner.js");
 type UsageFetcher = Parameters<typeof getRateLimits>[0];
 
 const SETTINGS_FILE = join(TEST_DIR, "settings.json");
@@ -303,5 +308,139 @@ describe("claude-usage scanner — session key is the only credential", () => {
     // Must report the rate limit, NOT silently pass off A's data as B's.
     assert.equal(second.errorKind, "rate_limited");
     assert.equal(second.fiveHour, null);
+  });
+
+  // Org selection — the usage endpoint is only authorized for the claude.ai
+  // ("chat") org. A user with a separate Anthropic-API org (often listed first
+  // in bootstrap) must not have it picked, or every /usage call 403s.
+  const API_ORG = "api0-1111-2222-3333-444455556666";
+  const CHAT_ORG = "chat-1111-2222-3333-444455556666";
+
+  it("selectUsageOrg prefers the chat org over an api org listed first", () => {
+    const orgId = selectUsageOrg([
+      {
+        organization: {
+          uuid: API_ORG,
+          capabilities: ["api", "api_individual"],
+        },
+      },
+      {
+        organization: { uuid: CHAT_ORG, capabilities: ["chat", "claude_max"] },
+      },
+    ]);
+    assert.equal(orgId, CHAT_ORG);
+  });
+
+  it("selectUsageOrg falls back to claude_max when no explicit chat cap", () => {
+    const orgId = selectUsageOrg([
+      { organization: { uuid: API_ORG, capabilities: ["api"] } },
+      { organization: { uuid: CHAT_ORG, capabilities: ["claude_max"] } },
+    ]);
+    assert.equal(orgId, CHAT_ORG);
+  });
+
+  it("selectUsageOrg uses the sole org when capabilities are absent", () => {
+    const orgId = selectUsageOrg([{ organization: { uuid: BOOTSTRAP_ORG } }]);
+    assert.equal(orgId, BOOTSTRAP_ORG);
+  });
+
+  it("selectUsageOrg returns null for multiple orgs with no chat access", () => {
+    const orgId = selectUsageOrg([
+      { organization: { uuid: API_ORG, capabilities: ["api"] } },
+      { organization: { uuid: "other", capabilities: ["api"] } },
+    ]);
+    assert.equal(orgId, null);
+  });
+
+  it("selectUsageOrg returns null for a lone org that explicitly lacks chat", () => {
+    // An API-only account: the sole org advertises caps but none grant
+    // claude.ai access. Returning its uuid would 403 on /usage and look like
+    // an expired key — return null so the no-subscription message is shown.
+    const orgId = selectUsageOrg([
+      {
+        organization: {
+          uuid: API_ORG,
+          capabilities: ["api", "api_individual"],
+        },
+      },
+    ]);
+    assert.equal(orgId, null);
+  });
+
+  it("selectUsageOrg returns null for empty memberships", () => {
+    assert.equal(selectUsageOrg([]), null);
+  });
+
+  it("getRateLimits queries the chat org end-to-end (not the api org)", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "MULTI" }));
+    const urls: string[] = [];
+    const fetcher: UsageFetcher = async (url) => {
+      urls.push(url);
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [
+                {
+                  organization: {
+                    uuid: API_ORG,
+                    capabilities: ["api", "api_individual"],
+                  },
+                },
+                {
+                  organization: {
+                    uuid: CHAT_ORG,
+                    capabilities: ["chat", "claude_max"],
+                  },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      // The api org would 403 in reality; only the chat org returns usage.
+      if (url.includes(`/${API_ORG}/`)) {
+        return { ok: false, status: 403, json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 48, resets_at: "2026-06-20T04:00:00Z" },
+        }),
+      };
+    };
+    const data = await getRateLimits(fetcher);
+    assert.equal(data.error, undefined);
+    assert.equal(data.fiveHour?.utilization, 48);
+    // The usage call hit the chat org, never the api org.
+    assert.ok(urls.some((u) => u.includes(`/${CHAT_ORG}/usage`)));
+    assert.ok(!urls.some((u) => u.includes(`/${API_ORG}/usage`)));
+  });
+
+  it("no_org message names both causes (expired key AND no subscription)", async () => {
+    // An API-only account with a VALID key must not be told only that the key
+    // expired — the message must also surface the no-subscription cause.
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ claudeSessionKey: "APIONLY" }),
+    );
+    const fetcher: UsageFetcher = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        account: {
+          memberships: [
+            { organization: { uuid: API_ORG, capabilities: ["api"] } },
+          ],
+        },
+      }),
+    });
+    const data = await getRateLimits(fetcher);
+    assert.equal(data.errorKind, "no_org");
+    assert.match(data.error ?? "", /subscription/i);
+    assert.match(data.error ?? "", /expired/i);
   });
 });
