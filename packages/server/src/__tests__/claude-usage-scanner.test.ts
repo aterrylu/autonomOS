@@ -11,8 +11,12 @@ const TEST_DIR = join(tmpdir(), `autonomos-test-usage-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 
 // Ensure ambient credentials in the dev shell don't leak into assertions.
+// CLAUDE_SESSION_COOKIE in particular is injected by Claude Code into this very
+// process, so it MUST be cleared or it would satisfy the auto-detect fallback
+// and break the needsSetup assertions.
 delete process.env.CLAUDE_SESSION_KEY;
 delete process.env.CLAUDE_ORG_ID;
+delete process.env.CLAUDE_SESSION_COOKIE;
 
 const {
   getSessionCookie,
@@ -20,7 +24,12 @@ const {
   getRateLimits,
   invalidateCache,
   selectUsageOrg,
+  resolveSessionKey,
+  getCredentialSource,
 } = await import("../plugins/claude-usage/scanner.js");
+const { setHarvestedSessionKey } = await import(
+  "../plugins/claude-usage/sessionStore.js"
+);
 type UsageFetcher = Parameters<typeof getRateLimits>[0];
 
 const SETTINGS_FILE = join(TEST_DIR, "settings.json");
@@ -442,5 +451,103 @@ describe("claude-usage scanner — session key is the only credential", () => {
     assert.equal(data.errorKind, "no_org");
     assert.match(data.error ?? "", /subscription/i);
     assert.match(data.error ?? "", /expired/i);
+  });
+});
+
+describe("claude-usage credential resolution (auto-detect + harvest)", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    invalidateCache();
+    setHarvestedSessionKey(null);
+    delete process.env.CLAUDE_SESSION_KEY;
+    delete process.env.CLAUDE_SESSION_COOKIE;
+    writeFileSync(SETTINGS_FILE, JSON.stringify({}));
+  });
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    invalidateCache();
+    setHarvestedSessionKey(null);
+    delete process.env.CLAUDE_SESSION_KEY;
+    delete process.env.CLAUDE_SESSION_COOKIE;
+  });
+
+  it("uses a harvested cookie when no manual key is set", () => {
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    assert.deepEqual(resolveSessionKey(), {
+      key: "sk-ant-sid02-harvested",
+      source: "harvested",
+    });
+    assert.equal(getCredentialSource(), "harvested");
+    assert.equal(getSessionCookie(), "sessionKey=sk-ant-sid02-harvested");
+  });
+
+  it("prefers a manual settings key over a harvested cookie", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ claudeSessionKey: "MANUAL" }),
+    );
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    assert.deepEqual(resolveSessionKey(), {
+      key: "MANUAL",
+      source: "settings",
+    });
+  });
+
+  it("prefers CLAUDE_SESSION_KEY over a harvested cookie", () => {
+    process.env.CLAUDE_SESSION_KEY = "ENVKEY";
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    assert.equal(resolveSessionKey()?.source, "env");
+  });
+
+  it("prefers a harvested cookie over the server's own env cookie", () => {
+    process.env.CLAUDE_SESSION_COOKIE = "sk-ant-sid02-serverenv";
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    assert.equal(resolveSessionKey()?.source, "harvested");
+  });
+
+  it("falls back to the server's own CLAUDE_SESSION_COOKIE (source 'auto')", () => {
+    process.env.CLAUDE_SESSION_COOKIE = "sk-ant-sid02-serverenv";
+    assert.deepEqual(resolveSessionKey(), {
+      key: "sk-ant-sid02-serverenv",
+      source: "auto",
+    });
+  });
+
+  it("skips all auto-detected sources when autoDetectClaudeSession is false", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ autoDetectClaudeSession: false }),
+    );
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    process.env.CLAUDE_SESSION_COOKIE = "sk-ant-sid02-serverenv";
+    // No manual key + auto-detect off → nothing resolves.
+    assert.equal(resolveSessionKey(), null);
+    assert.equal(getCredentialSource(), null);
+  });
+
+  it("still honors a manual key when autoDetectClaudeSession is false", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeSession: false,
+      }),
+    );
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    assert.equal(resolveSessionKey()?.source, "settings");
+  });
+
+  it("setHarvestedSessionKey reports whether the value changed", () => {
+    assert.equal(setHarvestedSessionKey("sk-ant-sid02-a"), true);
+    assert.equal(setHarvestedSessionKey("sk-ant-sid02-a"), false); // same
+    assert.equal(setHarvestedSessionKey("sk-ant-sid02-b"), true); // changed
+    assert.equal(setHarvestedSessionKey(null), true); // cleared
+    assert.equal(setHarvestedSessionKey(null), false); // already null
+  });
+
+  it("stamps credentialSource on a successful getRateLimits", async () => {
+    setHarvestedSessionKey("sk-ant-sid02-harvested");
+    const data = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(data.credentialSource, "harvested");
   });
 });
