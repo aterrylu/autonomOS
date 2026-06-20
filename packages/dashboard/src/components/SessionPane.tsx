@@ -1,5 +1,6 @@
 import { memo, useRef } from "react";
 import { useTerminal } from "../hooks/useTerminal";
+import { CopyToast } from "./CopyToast";
 
 interface SessionPaneProps {
   sessionId: string;
@@ -15,7 +16,7 @@ export const SessionPane = memo(function SessionPane({
   visible,
 }: SessionPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  useTerminal(containerRef, sessionId);
+  const { copyToast } = useTerminal(containerRef, sessionId);
 
   return (
     <div
@@ -27,6 +28,7 @@ export const SessionPane = memo(function SessionPane({
         className="flex-1 p-1"
         style={{ touchAction: "none" }}
       />
+      <CopyToast toast={copyToast} />
     </div>
   );
 });

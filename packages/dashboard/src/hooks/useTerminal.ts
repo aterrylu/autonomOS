@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
 import type {
   IFitAddon,
@@ -9,6 +10,10 @@ import type {
   TerminalInstance,
 } from "../terminal/types";
 import { createXtermBackend } from "../terminal/xterm-backend";
+import {
+  COPY_TOAST_DISPLAY_MS,
+  shouldSuppressCopyToast,
+} from "../utils/copyToast";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
 
@@ -60,6 +65,49 @@ export function useTerminal(
 ) {
   const termRef = useRef<TerminalInstance | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Transient "Copied N chars" confirmation for OSC 52 auto-copy. State drives
+  // the CopyToast overlay; refs hold the coalescing/auto-dismiss bookkeeping so
+  // the handler stays stable (it never re-creates the terminal effect).
+  const [copyToast, setCopyToast] = useState<CopyToastState | null>(null);
+  const copyToastIdRef = useRef(0);
+  const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCopyTextRef = useRef<string | null>(null);
+  const lastCopyAtRef = useRef(0);
+
+  const handleClipboardCopy = useCallback(
+    ({ text, ok }: { text: string; ok: boolean }) => {
+      const now = Date.now();
+      // Coalesce streaming re-syncs of an unchanged selection into one toast.
+      if (
+        shouldSuppressCopyToast(
+          { text: lastCopyTextRef.current, at: lastCopyAtRef.current },
+          { text, ok, at: now },
+        )
+      ) {
+        lastCopyAtRef.current = now;
+        return;
+      }
+      lastCopyTextRef.current = text;
+      lastCopyAtRef.current = now;
+      copyToastIdRef.current += 1;
+      setCopyToast({ id: copyToastIdRef.current, chars: [...text].length, ok });
+      if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+      copyToastTimerRef.current = setTimeout(
+        () => setCopyToast(null),
+        COPY_TOAST_DISPLAY_MS,
+      );
+    },
+    [],
+  );
+
+  // Clear the pending dismiss timer on unmount.
+  useEffect(
+    () => () => {
+      if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+    },
+    [],
+  );
 
   const theme = useStore((s) => s.theme);
   const setStatus = useStore((s) => s.setStatus);
@@ -114,14 +162,17 @@ export function useTerminal(
     (async () => {
       let backend: TerminalBackend;
       try {
-        backend = createXtermBackend({
-          cursorBlink: true,
-          fontSize: 14,
-          fontFamily:
-            '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
-          theme: THEMES[themeRef.current].terminal,
-          scrollback: 10000,
-        });
+        backend = createXtermBackend(
+          {
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily:
+              '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+            theme: THEMES[themeRef.current].terminal,
+            scrollback: 10000,
+          },
+          handleClipboardCopy,
+        );
       } catch (err) {
         console.error("Failed to create terminal backend:", err);
         if (isActiveRef.current) {
@@ -466,7 +517,7 @@ export function useTerminal(
       container.replaceChildren();
       termRef.current = null;
     };
-  }, [sessionId, setStatus, containerRef]);
+  }, [sessionId, setStatus, containerRef, handleClipboardCopy]);
 
   // Update theme on live terminal
   useEffect(() => {
@@ -474,6 +525,8 @@ export function useTerminal(
       termRef.current.options.theme = THEMES[theme].terminal;
     }
   }, [theme]);
+
+  return { copyToast };
 }
 
 function nudgeResize(

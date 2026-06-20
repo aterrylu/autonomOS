@@ -88,6 +88,19 @@ describe("copyTextToClipboard — secure vs insecure context", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
+  it("resolves true when the Clipboard API write succeeds", async () => {
+    setClipboard({ writeText: vi.fn().mockResolvedValue(undefined) });
+    await expect(copyTextToClipboard("ok")).resolves.toBe(true);
+  });
+
+  it("resolves to the execCommand result in an insecure context", async () => {
+    setClipboard(undefined);
+    stubExecCommand(() => true);
+    await expect(copyTextToClipboard("a")).resolves.toBe(true);
+    stubExecCommand(() => false);
+    await expect(copyTextToClipboard("b")).resolves.toBe(false);
+  });
+
   it("falls back to execCommand('copy') when navigator.clipboard is undefined (insecure context)", () => {
     setClipboard(undefined); // plain HTTP on a remote host
 
@@ -187,6 +200,29 @@ describe("createXtermBackend — OSC 52 handler", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       "copied via osc52",
     );
+    terminal.dispose();
+  });
+
+  it("invokes onClipboardCopy with the decoded text and ok=true after a successful copy", async () => {
+    const onCopy = vi.fn();
+    const { terminal } = createXtermBackend(options, onCopy);
+    terminal.write(osc52(btoa("hi there")));
+    await waitForParse();
+    // The clipboard write resolves on a microtask; let it settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCopy).toHaveBeenCalledWith({ text: "hi there", ok: true });
+    terminal.dispose();
+  });
+
+  it("does not invoke onClipboardCopy for a read request ('?')", async () => {
+    const onCopy = vi.fn();
+    const { terminal } = createXtermBackend(options, onCopy);
+    terminal.write("\x1b]52;c;?\x07");
+    await waitForParse();
+
+    expect(onCopy).not.toHaveBeenCalled();
     terminal.dispose();
   });
 
