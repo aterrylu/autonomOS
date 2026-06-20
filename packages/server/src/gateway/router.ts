@@ -317,8 +317,14 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
     const json = JSON.stringify(wsMsg);
 
     // Claude Code (and other channel-server) agents: deliver over their WS.
+    // Codex agents ALSO register a channel-server WS (for outbound send()), but
+    // they ignore inbound notifications/claude/channel — they receive via the
+    // daemon fan-out below. Skip them here so a broadcast isn't delivered twice
+    // (a wasted WS write today, and a user-visible duplicate if a future
+    // provider ever surfaces that MCP notification).
     for (const [sessionId, client] of sessionClients) {
       if (sessionId === fromSessionId) continue;
+      if (getAgent(sessionId)?.provider === "codex") continue;
       try {
         client.send(json);
       } catch (err) {
