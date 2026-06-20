@@ -39,6 +39,9 @@ const THREAD_WAIT_MS = 60_000;
 const RETRY_BACKOFF_MS = 5_000;
 /** Consecutive drain failures before we surface a SystemWarning. */
 const FAILURES_BEFORE_WARN = 3;
+/** How often the eager status watcher reconciles ground-truth status — a safety
+ *  net so a missed thread/status/changed can't leave the dashboard stale. */
+const STATUS_POLL_MS = 10_000;
 
 /** Operator-facing notifier (wired to pushSystemNotification at startup). */
 let notifier: ((agentId: string, message: string) => void) | null = null;
@@ -46,6 +49,45 @@ export function setCodexInboundNotifier(
   fn: (agentId: string, message: string) => void,
 ): void {
   notifier = fn;
+}
+
+/**
+ * The subset of the dashboard's working-status vocabulary that Codex reports.
+ * A closed union (rather than `string`) so the compiler enforces the contract
+ * end-to-end and the gateway sink wiring needs no unchecked `as` cast. Every
+ * member is a valid dashboard AgentStatus.
+ */
+export type CodexStatus = "working" | "idle" | "compacting";
+
+/**
+ * Working-status sink (wired to setAgentStatus at startup). Codex is otherwise
+ * status-blind (no hook relay); its app-server daemon is the ground-truth source
+ * (thread/status/changed = active|idle, thread/read = thread.status.type). We map
+ * those to the dashboard's working-status vocabulary and push them here.
+ */
+let statusSink: ((agentId: string, status: CodexStatus) => void) | null = null;
+export function setCodexStatusSink(
+  fn: (agentId: string, status: CodexStatus) => void,
+): void {
+  statusSink = fn;
+}
+
+/** Map a Codex thread.status.type to the dashboard's working-status vocabulary.
+ *  Returns null for the transitional "notLoaded" and for missing/unreadable
+ *  status — neither should overwrite a real status. An UNRECOGNIZED type (a
+ *  status Codex emits that we don't yet map) is logged by the caller so a new
+ *  vocabulary surfaces instead of being silently dropped. */
+function mapStatus(type: string | undefined): CodexStatus | null {
+  switch (type) {
+    case "active":
+      return "working";
+    case "idle":
+      return "idle";
+    case "compacting":
+      return "compacting";
+    default:
+      return null;
+  }
 }
 
 /** Format inbound the way Claude Code channels does: attributed + sender URI. */
@@ -75,11 +117,58 @@ class CodexController {
   private disposed = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
+  private watching = false;
+  private statusFailures = 0;
+  /** Codex status types we've already logged as unmapped (dedupe the warning). */
+  private readonly unmappedSeen = new Set<string>();
 
   constructor(
     readonly agentId: string,
     private endpoint: string,
   ) {}
+
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
+
+  /** Start the eager status watcher: keep a connection open and reconcile the
+   *  agent's working-status from the daemon (thread/status/changed pushes +
+   *  a periodic thread/read safety net) so the dashboard shows live busy/idle
+   *  from spawn, independent of any inbound traffic. Idempotent. */
+  watch(): void {
+    if (this.watching || this.disposed) return;
+    this.watching = true;
+    void this.statusLoop();
+  }
+
+  private async statusLoop(): Promise<void> {
+    while (this.watching && !this.disposed) {
+      try {
+        await this.connect();
+        const threadId = await this.ensureThread();
+        if (threadId) {
+          await this.queryIdle(threadId); // reads + emits status
+          this.statusFailures = 0; // reconciled ground truth this cycle
+        }
+      } catch (err) {
+        // A transient hiccup self-corrects next cycle. But a PERSISTENTLY
+        // unreachable daemon would silently leave the dashboard stale forever —
+        // the exact failure this reconciler exists to prevent — so escalate
+        // once it's clearly not transient (mirrors the delivery-path warning).
+        if (++this.statusFailures === FAILURES_BEFORE_WARN) {
+          log(
+            `${this.agentId.slice(0, 8)} status feed unreadable:`,
+            err instanceof Error ? err.message : err,
+          );
+          notifier?.(
+            this.agentId,
+            "Live status for this Codex agent is unavailable (its app-server daemon is unreachable) — the dashboard status may be stale.",
+          );
+        }
+      }
+      await sleep(STATUS_POLL_MS);
+    }
+  }
 
   /** Endpoint can change if the agent is respawned with a new daemon port. */
   updateEndpoint(endpoint: string): void {
@@ -96,6 +185,7 @@ class CodexController {
 
   dispose(): void {
     this.disposed = true;
+    this.watching = false;
     this.queue.length = 0;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
@@ -138,9 +228,33 @@ class CodexController {
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(this.endpoint);
       this.ws = ws;
+      // Settle EXACTLY once. Critically, the promise must settle on close/error
+      // too — not only in onopen — or a socket that never opens (daemon died
+      // mid-life, wrong port) leaves every awaiter (statusLoop, drain) parked
+      // forever. A connect timeout backstops a socket that emits no event at all.
+      let settled = false;
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.teardownSocket();
+        reject(err);
+      };
+      const ok = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(
+        () => fail(new Error("codex control connect timed out")),
+        30_000,
+      );
+      timer.unref?.();
       ws.onmessage = (e) => this.onMessage(String(e.data));
       ws.onclose = () => {
         if (this.ws === ws) this.teardownSocket();
+        fail(new Error("codex control socket closed before ready"));
       };
       ws.onerror = (e: unknown) => {
         if (!this.disposed)
@@ -148,6 +262,7 @@ class CodexController {
             `${this.agentId.slice(0, 8)} control socket error:`,
             (e as { message?: string })?.message ?? "unknown",
           );
+        fail(new Error("codex control socket error before ready"));
       };
       ws.onopen = async () => {
         try {
@@ -157,14 +272,9 @@ class CodexController {
           });
           if (ws.readyState === WebSocket.OPEN)
             ws.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }));
-          resolve();
+          ok();
         } catch (err) {
-          // Don't latch a rejected connectPromise — initialize failing (RPC
-          // error/timeout) leaves the socket OPEN so onclose never fires, which
-          // would poison every future connect(). Tear down so the next drain
-          // reconnects cleanly.
-          this.teardownSocket();
-          reject(err instanceof Error ? err : new Error(String(err)));
+          fail(err instanceof Error ? err : new Error(String(err)));
         }
       };
     });
@@ -172,7 +282,13 @@ class CodexController {
   }
 
   private onMessage(raw: string): void {
-    let msg: { id?: number; result?: unknown; error?: { message?: string } };
+    let msg: {
+      id?: number;
+      result?: unknown;
+      error?: { message?: string };
+      method?: string;
+      params?: { status?: { type?: string } };
+    };
     try {
       msg = JSON.parse(raw);
     } catch {
@@ -185,9 +301,33 @@ class CodexController {
         if (msg.error) p.reject(new Error(msg.error.message ?? "rpc error"));
         else p.resolve(msg.result);
       }
+      return;
     }
-    // Notifications are ignored — idle is determined by polling thread/read,
-    // not by edge-triggered thread/status/changed (which we may miss).
+    // Notifications drive STATUS (cosmetic, eventually-consistent — a missed one
+    // self-corrects on the next change or the queryIdle refresh). They are NOT
+    // used for the idle-GATE, which polls thread/read for ground truth so a
+    // dropped event can never wedge inbound delivery.
+    if (msg.method === "thread/status/changed") {
+      this.emitStatus(msg.params?.status?.type);
+    } else if (msg.method === "thread/started") {
+      this.emitStatus("idle"); // a fresh thread is idle until its first turn
+    }
+  }
+
+  /** Push a mapped working-status to the dashboard (deduped by the sink). */
+  private emitStatus(type: string | undefined): void {
+    const mapped = mapStatus(type);
+    if (mapped) {
+      statusSink?.(this.agentId, mapped);
+      return;
+    }
+    // null can mean "notLoaded"/missing (safe to ignore) OR a status type we
+    // don't recognize yet (a genuinely-changed status we'd otherwise drop
+    // silently). Surface the latter once so a new Codex vocabulary is visible.
+    if (type && type !== "notLoaded" && !this.unmappedSeen.has(type)) {
+      this.unmappedSeen.add(type);
+      log(`${this.agentId.slice(0, 8)} unmapped Codex status type: ${type}`);
+    }
   }
 
   private rpc(method: string, params: unknown): Promise<unknown> {
@@ -237,13 +377,17 @@ class CodexController {
     return null;
   }
 
-  /** Query ground-truth thread status. "idle" | "active" | null (unreadable). */
+  /** Query ground-truth thread status. "idle" | "active" | null (unreadable).
+   *  Also refreshes the dashboard working-status for free (this is the same read
+   *  the status feed would do — piggyback it so a missed notification can't keep
+   *  the status stale forever). */
   private async queryIdle(threadId: string): Promise<boolean | null> {
     try {
       const r = (await this.rpc("thread/read", { threadId })) as {
         thread?: { status?: { type?: string } };
       };
       const type = r?.thread?.status?.type;
+      this.emitStatus(type);
       if (type === "idle") return true;
       if (type) return false; // active / compacting / etc — not safe to inject
       return null;
@@ -336,6 +480,30 @@ class CodexController {
 
 const controllers = new Map<string, CodexController>();
 
+function getOrCreate(agentId: string, endpoint: string): CodexController {
+  let ctrl = controllers.get(agentId);
+  // Treat a disposed predecessor as absent. On respawn (kill → spawn of the same
+  // id) the old controller can be disposed by a late onExit AFTER the new spawn
+  // grabbed it; reusing it would no-op watch()/enqueue() (both bail on disposed),
+  // silently leaving the live agent with no status feed or inbound. Make a fresh one.
+  if (!ctrl || ctrl.isDisposed) {
+    ctrl = new CodexController(agentId, endpoint);
+    controllers.set(agentId, ctrl);
+  } else {
+    ctrl.updateEndpoint(endpoint);
+  }
+  return ctrl;
+}
+
+/**
+ * Start watching a Codex agent's working-status (busy/idle) from its app-server
+ * daemon. Call at spawn so the dashboard shows live status immediately, with or
+ * without inbound traffic. Idempotent; disposed via disposeCodexControl().
+ */
+export function startCodexStatusWatch(agentId: string, endpoint: string): void {
+  getOrCreate(agentId, endpoint).watch();
+}
+
 /**
  * Deliver an inbound message to a Codex agent by injecting an attributed user
  * turn into its app-server daemon. Idempotent connection; queued + idle-gated.
@@ -346,13 +514,8 @@ export function deliverToCodex(
   endpoint: string,
   attributedText: string,
 ): void {
-  let ctrl = controllers.get(agentId);
-  if (!ctrl) {
-    ctrl = new CodexController(agentId, endpoint);
-    controllers.set(agentId, ctrl);
-  } else {
-    ctrl.updateEndpoint(endpoint);
-  }
+  const ctrl = getOrCreate(agentId, endpoint);
+  ctrl.watch(); // ensure status is tracked even if spawn didn't start it
   ctrl.enqueue(attributedText);
 }
 

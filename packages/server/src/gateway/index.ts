@@ -5,10 +5,10 @@
  * the router, and connects to platforms if enabled in settings.
  */
 
-import { pushSystemNotification } from "../routes/hooks.js";
+import { pushSystemNotification, setAgentStatus } from "../routes/hooks.js";
 import { getSettings } from "../settings.js";
 import { SlackAdapter } from "./adapters/slack.js";
-import { setCodexInboundNotifier } from "./codexControl.js";
+import { setCodexInboundNotifier, setCodexStatusSink } from "./codexControl.js";
 import { registerAdapter, setRoutes } from "./router.js";
 
 const adapters = [new SlackAdapter()];
@@ -18,6 +18,12 @@ export async function initGateway(): Promise<void> {
   // notification panel (the sender is ack'd on enqueue, so this is the only
   // operator-visible signal that messages aren't landing).
   setCodexInboundNotifier(pushSystemNotification);
+
+  // Feed Codex agents' live working-status (busy/idle from the app-server event
+  // stream) into the same in-memory status map CC/Gemini use — so the dashboard
+  // shows real status instead of a flat "running". CodexStatus is a subset of
+  // AgentStatus, so this is type-checked end-to-end (no cast).
+  setCodexStatusSink(setAgentStatus);
 
   for (const adapter of adapters) {
     registerAdapter(adapter);
