@@ -154,6 +154,45 @@ interface OrgIdResult {
   status: OrgIdStatus;
 }
 
+/** Membership shape we read from the bootstrap response. */
+type Membership = {
+  organization?: { uuid?: string; capabilities?: string[] };
+};
+
+/**
+ * Pick the organization whose usage we should query.
+ *
+ * The `/usage` endpoint is only authorized for the org with claude.ai access
+ * — the one carrying the `chat` capability (the Pro/Max subscription). A user
+ * who has *also* used the Anthropic API has a separate `api`-capability org
+ * that 403s on `/usage`, and bootstrap frequently lists THAT org first. So
+ * blindly taking `memberships[0]` (the prior behavior) queried the wrong org
+ * for every such account — a valid key that could never load usage. Prefer the
+ * chat/claude_max org; fall back to the sole membership only when no capability
+ * signal is present, preserving behavior for single-org accounts.
+ *
+ * Exported for tests.
+ */
+export function selectUsageOrg(memberships: Membership[]): string | null {
+  const orgs = memberships
+    .map((m) => m.organization)
+    .filter((o): o is NonNullable<typeof o> => !!o);
+  const withCap = (cap: string) =>
+    orgs.find((o) => o.capabilities?.includes(cap));
+  const chat = withCap("chat") ?? withCap("claude_max");
+  if (chat?.uuid) return chat.uuid;
+  // Sole-org fallback, but only when the org gives NO capability signal —
+  // bootstrap sometimes omits capabilities for single-org accounts, and the
+  // org is the only candidate. If the lone org *explicitly* advertises
+  // capabilities that exclude claude.ai access (e.g. an API-only account), do
+  // NOT return it: `/usage` would 403 and surface as a misleading "expired
+  // key" error. Returning null routes to the accurate no-subscription message.
+  if (orgs.length === 1 && !orgs[0].capabilities?.length) {
+    return orgs[0].uuid ?? null;
+  }
+  return null;
+}
+
 /**
  * Resolve the organization UUID for the given cookie.
  *
@@ -163,8 +202,9 @@ interface OrgIdResult {
  * Result is cached. Exported for tests.
  *
  * Distinguishes the failure modes (`unauthorized` for an expired/invalid
- * key, `no_org` for a valid key with no organization, `error` for
- * network/parse problems) so the caller can surface an actionable message.
+ * key, `no_org` for a valid key with no claude.ai-capable organization, see
+ * {@link selectUsageOrg}, `error` for network/parse problems) so the caller
+ * can surface an actionable message.
  */
 export async function fetchOrgId(
   cookie: string,
@@ -189,21 +229,26 @@ export async function fetchOrgId(
     }
     if (!res.ok) return { orgId: null, status: "error" };
     const data = (await res.json()) as {
-      account?: { memberships?: Array<{ organization?: { uuid?: string } }> };
+      account?: {
+        memberships?: Array<{
+          organization?: { uuid?: string; capabilities?: string[] };
+        }>;
+      };
     };
-    const orgId = data?.account?.memberships?.[0]?.organization?.uuid ?? null;
+    const memberships = data?.account?.memberships ?? [];
+    const orgId = selectUsageOrg(memberships);
     if (!orgId) {
-      // `no_org` is ambiguous: an expired cookie (bootstrap treats it as
-      // logged-out → empty memberships) vs. a valid key whose bootstrap shape
-      // drifted. Log the shape (never the cookie) so the two are tellable
-      // apart from server logs — an empty array points at the credential, an
-      // unexpected type points at a contract change.
-      const memberships = data?.account?.memberships;
+      // No usable org. Two shapes land here: an expired cookie (bootstrap
+      // treats it as logged-out → empty memberships) vs. a valid key whose
+      // only orgs lack claude.ai access (e.g. an API-only account). Log the
+      // shape (never the cookie) so they're tellable apart from server logs.
       console.warn(
-        `[claude-usage] bootstrap resolved no org uuid (account=${!!data?.account}, memberships=${
-          Array.isArray(memberships)
-            ? `[${memberships.length}]`
-            : typeof memberships
+        `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
+          Array.isArray(data?.account?.memberships)
+            ? `[${memberships.length}; caps=${memberships
+                .map((m) => (m.organization?.capabilities ?? []).join("|"))
+                .join(",")}]`
+            : typeof data?.account?.memberships
         })`,
       );
       return { orgId: null, status: "no_org" };
@@ -281,11 +326,13 @@ export async function getRateLimits(
     );
   }
   if (org.status === "no_org") {
-    // The bootstrap API returns 200 with an empty membership list for an
-    // unrecognized/expired cookie (it treats it as logged-out), so this is
-    // the path a bad session key actually lands on — point the user there.
+    // `no_org` now has two causes (see selectUsageOrg): an empty membership
+    // list — bootstrap treats an expired/unrecognized cookie as logged-out —
+    // OR a valid key whose orgs lack claude.ai access (an API-only account
+    // with no Pro/Max subscription). The message names both so a valid-key
+    // user isn't wrongly told their key expired.
     return errorResult(
-      "Could not find a Claude organization for this session key — it may be expired. Copy a fresh sessionKey from claude.ai and re-enter it.",
+      "No Claude usage found for this session key. Either the key is expired, or this account has no Claude Pro/Max subscription (usage tracking needs a claude.ai plan, not just API access). If you have a plan, copy a fresh sessionKey from claude.ai and re-enter it.",
       "no_org",
     );
   }
