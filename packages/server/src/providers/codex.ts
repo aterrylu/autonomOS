@@ -134,8 +134,21 @@ export const codexProvider: AgentProvider = {
   buildArgs(options: ResolvedSpawnOptions): string[] {
     // Daemon model: the visible TUI is a thin client of the sidecar daemon.
     if (options.sidecarEndpoint) {
-      const args = ["--remote", options.sidecarEndpoint];
-      // The TUI creates the thread, so ITS sandbox/approval flags govern the
+      // Conversation resume: a fresh `--remote` always forks a NEW empty thread,
+      // so to restore a prior conversation across a server/daemon restart we use
+      // `codex resume <threadId> --remote <ep>` — this reattaches the persisted
+      // rollout (full history + memory) through the remote daemon. providerThreadId
+      // is set only when this agent previously captured a thread (a respawn);
+      // first spawns have none and create a fresh thread.
+      const args = options.providerThreadId
+        ? [
+            "resume",
+            options.providerThreadId,
+            "--remote",
+            options.sidecarEndpoint,
+          ]
+        : ["--remote", options.sidecarEndpoint];
+      // The TUI creates/owns the thread, so ITS sandbox/approval flags govern the
       // thread (the daemon-side -c is necessary but not sufficient — both layers
       // must say danger-full-access or Codex falls back to workspace-write and
       // wants bubblewrap). Autonomous: skip approvals + sandbox (the CC

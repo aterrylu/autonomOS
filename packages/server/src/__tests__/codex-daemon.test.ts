@@ -155,6 +155,33 @@ describe("codex daemon topology", () => {
       assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
+    it("RESUMES the prior conversation when a threadId was captured", () => {
+      const args = codexProvider.buildArgs(
+        baseOptions({
+          sidecarEndpoint: ENDPOINT,
+          autonomousMode: true,
+          providerThreadId: "thread-abc-123",
+        }),
+      );
+      // `codex resume <id> --remote <ep>` reattaches the persisted conversation
+      // instead of `--remote` alone (which forks a fresh empty thread).
+      assert.deepEqual(args, [
+        "resume",
+        "thread-abc-123",
+        "--remote",
+        ENDPOINT,
+        "--dangerously-bypass-approvals-and-sandbox",
+      ]);
+    });
+
+    it("does NOT use the resume form on a first spawn (no threadId yet)", () => {
+      const args = codexProvider.buildArgs(
+        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: true }),
+      );
+      assert.ok(!args.includes("resume"));
+      assert.equal(args[0], "--remote");
+    });
+
     it("appends the starting prompt after the TUI flags", () => {
       const args = codexProvider.buildArgs(
         baseOptions({

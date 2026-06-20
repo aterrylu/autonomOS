@@ -191,4 +191,12 @@ export interface ResolvedSpawnOptions extends SpawnOptions {
    * listens here (`--listen`) and the PTY/gateway connect here (`--remote`).
    */
   sidecarEndpoint?: string;
+
+  /**
+   * Codex only: the persisted conversation thread id to resume. Set by the
+   * runtime when re-spawning an agent that previously captured a thread, so the
+   * provider can emit `codex resume <threadId> --remote` instead of a fresh
+   * `--remote` (which would fork a new, empty thread). Undefined on first spawn.
+   */
+  providerThreadId?: string;
 }
