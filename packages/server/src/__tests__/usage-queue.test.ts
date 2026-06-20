@@ -223,6 +223,33 @@ describe("usageQueue edge detector", () => {
     assert.deepEqual(h.sent.sort(), ["p1", "p2"]);
   });
 
+  it("warns a pane armed AFTER creds break, while they stay broken", async () => {
+    // Regression: the auth-warning latch is per-pane, not a single global flag.
+    // A pane armed after an earlier pane was already warned must still be told
+    // its queued send can never fire — otherwise it fails silently.
+    h = makeHarness();
+    h.setUsage(errorUsage("unauthorized"));
+    h.queue.arm("early");
+    await h.queue.tick(); // warns "early"
+    assert.deepEqual(
+      h.notes.map((n) => n.sessionId),
+      ["early"],
+    );
+
+    h.queue.arm("late"); // armed while creds are STILL broken
+    await h.queue.tick();
+    assert.equal(
+      h.notes.filter((n) => n.sessionId === "late").length,
+      1,
+      "a pane armed after the first warning must still be warned",
+    );
+    assert.equal(
+      h.notes.filter((n) => n.sessionId === "early").length,
+      1,
+      "the already-warned pane is not re-warned",
+    );
+  });
+
   it("does not warn on a transient usage failure", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
