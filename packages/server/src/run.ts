@@ -28,6 +28,7 @@ import {
 } from "./agents/runtime.js";
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
+import { readDashboardBuild } from "./dashboardBuild.js";
 import {
   announceEmbeddedReady,
   resolveEmbeddedConfig,
@@ -183,6 +184,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     dashboardCandidates.find((d) => existsSync(resolve(d, "index.html"))) ??
     null;
   const isProduction = dashboardDist !== null;
+  // Build identity of the dashboard we're about to serve — surfaced in the
+  // startup log and /api/host so a stale-serve (e.g. a leftover embedded bundle
+  // shadowing a freshly built dist) is immediately visible instead of silent.
+  const dashboardBuild = dashboardDist
+    ? readDashboardBuild(dashboardDist)
+    : null;
 
   const corsOrigin =
     process.env.CORS_ORIGIN ||
@@ -256,7 +263,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.use("/api/*", requireAuth);
   app.use("/ws/*", requireAuth);
 
-  app.get("/api/host", (c) => c.json({ hostname: hostname() }));
+  app.get("/api/host", (c) =>
+    c.json({ hostname: hostname(), dashboard: dashboardBuild }),
+  );
 
   app.route("/api/hooks", hooksRouter);
 
@@ -301,7 +310,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.get("/ws/agents", agentsWsRouter(upgradeWebSocket));
 
   if (isProduction && dashboardDist !== null) {
-    console.log(`Serving dashboard from ${dashboardDist}`);
+    console.log(
+      `Serving dashboard from ${dashboardDist} ` +
+        `(build ${dashboardBuild?.build ?? "?"}, built ${dashboardBuild?.builtAt ?? "?"})`,
+    );
 
     app.all("/api/*", (c) =>
       c.json({ error: `Not found: ${c.req.path}` }, 404),
