@@ -48,15 +48,20 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
   );
   args.push("-c", `instructions=${JSON.stringify(systemPrompt)}`);
 
-  // Autonomous mode: app-server has no --dangerously-bypass flag; configure the
-  // thread defaults via `-c` so the daemon-hosted thread auto-approves.
+  // Sandbox: autonomOS is the trust boundary — we never want Codex's OS sandbox
+  // (bubblewrap on Linux, Seatbelt on macOS). Disable it ALWAYS, both autonomous
+  // and supervised. This MUST be set on BOTH the daemon (which executes tools,
+  // here) AND the --remote TUI (which creates the thread — see buildArgs);
+  // setting it on only one layer loses to the other's default (workspace-write
+  // → "could not find bubblewrap on PATH"). Verified on Linux.
+  args.push("-c", `sandbox_mode="danger-full-access"`);
+
+  // Approval gating is separate from sandboxing: autonomous agents skip approval
+  // prompts (the --dangerously-skip-permissions equivalent); supervised agents
+  // keep them. The TUI flag in buildArgs is the primary control; this daemon-side
+  // policy backs it for gateway-injected turns that share the same thread.
   if (options.autonomousMode) {
-    args.push(
-      "-c",
-      `approval_policy="never"`,
-      "-c",
-      `sandbox_mode="danger-full-access"`,
-    );
+    args.push("-c", `approval_policy="never"`);
   }
 
   // MCP channel server — attached to the DAEMON (it hosts the thread + MCP),
@@ -130,6 +135,17 @@ export const codexProvider: AgentProvider = {
     // Daemon model: the visible TUI is a thin client of the sidecar daemon.
     if (options.sidecarEndpoint) {
       const args = ["--remote", options.sidecarEndpoint];
+      // The TUI creates the thread, so ITS sandbox/approval flags govern the
+      // thread (the daemon-side -c is necessary but not sufficient — both layers
+      // must say danger-full-access or Codex falls back to workspace-write and
+      // wants bubblewrap). Autonomous: skip approvals + sandbox (the CC
+      // --dangerously-skip-permissions equivalent). Supervised: drop the sandbox
+      // only, keep approval prompts.
+      if (options.autonomousMode) {
+        args.push("--dangerously-bypass-approvals-and-sandbox");
+      } else {
+        args.push("-s", "danger-full-access");
+      }
       if (options.prompt) args.push(options.prompt);
       return args;
     }

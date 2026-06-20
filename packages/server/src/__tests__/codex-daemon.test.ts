@@ -108,30 +108,64 @@ describe("codex daemon topology", () => {
       assert.doesNotMatch(spec.args.join(" "), /mcp_servers/);
     });
 
-    it("configures auto-approval on the daemon in autonomous mode", () => {
-      const spec = codexProvider.buildSidecar?.(
+    it("ALWAYS disables the OS sandbox on the daemon (no bubblewrap), both modes", () => {
+      for (const autonomousMode of [true, false]) {
+        const spec = codexProvider.buildSidecar?.(
+          baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode }),
+        );
+        assert.ok(spec);
+        assert.match(spec.args.join(" "), /sandbox_mode="danger-full-access"/);
+      }
+    });
+
+    it("sets approval_policy=never on the daemon only in autonomous mode", () => {
+      const auto = codexProvider.buildSidecar?.(
         baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: true }),
       );
-      assert.ok(spec);
-      const joined = spec.args.join(" ");
-      assert.match(joined, /approval_policy="never"/);
-      assert.match(joined, /sandbox_mode="danger-full-access"/);
+      const supervised = codexProvider.buildSidecar?.(
+        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: false }),
+      );
+      assert.match(auto?.args.join(" ") ?? "", /approval_policy="never"/);
+      assert.doesNotMatch(supervised?.args.join(" ") ?? "", /approval_policy/);
     });
   });
 
   describe("buildArgs", () => {
-    it("spawns the thin --remote TUI against the daemon endpoint", () => {
+    it("autonomous TUI bypasses approvals AND sandbox (the CC --dangerously-skip-permissions equivalent)", () => {
       const args = codexProvider.buildArgs(
-        baseOptions({ sidecarEndpoint: ENDPOINT }),
+        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: true }),
       );
-      assert.deepEqual(args, ["--remote", ENDPOINT]);
+      assert.deepEqual(args, [
+        "--remote",
+        ENDPOINT,
+        "--dangerously-bypass-approvals-and-sandbox",
+      ]);
     });
 
-    it("appends the starting prompt to the --remote TUI", () => {
+    it("supervised TUI drops the sandbox but keeps approval prompts", () => {
       const args = codexProvider.buildArgs(
-        baseOptions({ sidecarEndpoint: ENDPOINT, prompt: "do the thing" }),
+        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: false }),
       );
-      assert.deepEqual(args, ["--remote", ENDPOINT, "do the thing"]);
+      assert.deepEqual(args, [
+        "--remote",
+        ENDPOINT,
+        "-s",
+        "danger-full-access",
+      ]);
+      assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
+    });
+
+    it("appends the starting prompt after the TUI flags", () => {
+      const args = codexProvider.buildArgs(
+        baseOptions({
+          sidecarEndpoint: ENDPOINT,
+          autonomousMode: true,
+          prompt: "do the thing",
+        }),
+      );
+      assert.equal(args[0], "--remote");
+      assert.equal(args[1], ENDPOINT);
+      assert.equal(args[args.length - 1], "do the thing");
     });
 
     it("the TUI --remote endpoint matches the daemon --listen endpoint", () => {
