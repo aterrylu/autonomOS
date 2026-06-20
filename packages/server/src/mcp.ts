@@ -77,7 +77,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "create_agent",
-    "Create a new agent — a dedicated Claude Code session with a name, context, and optional task.",
+    "Create a new agent — a dedicated CLI session with a name, context, and optional task. Defaults to Claude Code; set `provider` to spawn a Codex or Gemini agent instead.",
     {
       workingDirectory: z
         .string()
@@ -122,6 +122,12 @@ function createMcpServer(): McpServer {
         .string()
         .optional()
         .describe("Project scope (e.g. 'autonomOS')"),
+      provider: z
+        .enum(["claude-code", "codex", "gemini-cli"])
+        .optional()
+        .describe(
+          "Agent runtime/CLI (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. Must be installed on the host.",
+        ),
     },
     async (args) => {
       try {
@@ -171,6 +177,7 @@ function createMcpServer(): McpServer {
           template: args.template,
           managerId,
           project: args.project,
+          provider: args.provider,
         });
         return {
           content: [
