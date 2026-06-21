@@ -58,6 +58,39 @@ const DEFAULT_INTERVAL_MS = 60_000;
  * the user pressing Enter (see also providers/claude-code auto-trust). */
 const SUBMIT_KEY = "\r";
 
+/** The non-null rate-limit windows in a snapshot. */
+function liveWindows(data: RateLimitData): RateLimitWindow[] {
+  return [
+    data.fiveHour,
+    data.sevenDay,
+    data.sevenDaySonnet,
+    data.sevenDayOpus,
+  ].filter((w): w is RateLimitWindow => w != null);
+}
+
+/**
+ * Stateless read of whether the account is currently at/over the usage cap, and
+ * the nearest blocking reset (for an ETA). Unlike the watcher's hysteresis
+ * `blocked` — which only advances while a pane is armed — this is computed fresh
+ * from any snapshot, so the dashboard can decide button visibility ("show only
+ * at the limit") before anything is armed.
+ */
+export function evaluateCap(data: RateLimitData): {
+  capped: boolean;
+  resetsAt: string | null;
+} {
+  const windows = liveWindows(data);
+  if (windows.length === 0) return { capped: false, resetsAt: null };
+  const capped = windows.some((w) => w.utilization >= CAP_ENTER);
+  const resetsAt =
+    windows
+      .filter((w) => w.utilization >= CAP_EXIT)
+      .map((w) => w.resetsAt)
+      .filter((r): r is string => !!r)
+      .sort()[0] ?? null;
+  return { capped, resetsAt };
+}
+
 export interface UsageQueueDeps {
   /** Fetch the current rate-limit snapshot. */
   getUsage: () => Promise<RateLimitData>;
@@ -132,15 +165,6 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
    * failure mode. The delete makes sequential ticks idempotent; this closes the
    * concurrent-overlap gap. */
   let ticking = false;
-
-  function liveWindows(data: RateLimitData): RateLimitWindow[] {
-    return [
-      data.fiveHour,
-      data.sevenDay,
-      data.sevenDaySonnet,
-      data.sevenDayOpus,
-    ].filter((w): w is RateLimitWindow => w != null);
-  }
 
   async function tick(): Promise<void> {
     if (ticking) return;

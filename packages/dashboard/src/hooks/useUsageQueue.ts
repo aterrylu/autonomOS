@@ -2,18 +2,23 @@
  * Client view of the server-side usage queue (see server `usageQueue.ts`).
  *
  * One shared poll of `GET /api/usage-queue` backs every pane's button via
- * `useSyncExternalStore` — the armed set + block status are account-wide, so a
+ * `useSyncExternalStore` — the armed set + cap status are account-wide, so a
  * single 15s poll is reused across all mounted panes (ref-counted: it starts
  * with the first subscriber and stops with the last). The server is the source
  * of truth — when it auto-fires and disarms a pane, the next poll clears that
  * pane's button with no client coordination needed.
+ *
+ * `capped` (is the account at the usage limit) is the load-bearing signal for
+ * the button: it only renders when capped, so the control appears exactly when
+ * it's useful — when you've run out and need to queue your next prompt.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
 
 interface QueueSnapshot {
   armed: Set<string>;
-  blocked: boolean;
+  /** Whether the account is currently at the usage cap. */
+  capped: boolean;
   resetsAt: string | null;
 }
 
@@ -21,7 +26,7 @@ const POLL_MS = 15_000;
 
 let snapshot: QueueSnapshot = {
   armed: new Set(),
-  blocked: false,
+  capped: false,
   resetsAt: null,
 };
 const listeners = new Set<() => void>();
@@ -43,7 +48,7 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
 function commit(next: QueueSnapshot): void {
   if (
     sameSet(next.armed, snapshot.armed) &&
-    next.blocked === snapshot.blocked &&
+    next.capped === snapshot.capped &&
     next.resetsAt === snapshot.resetsAt
   ) {
     return;
@@ -55,7 +60,7 @@ function commit(next: QueueSnapshot): void {
 async function refresh(): Promise<void> {
   const res = await fetch("/api/usage-queue").catch(() => null);
   if (!res?.ok) return;
-  let data: { armed?: string[]; blocked?: boolean; resetsAt?: string | null };
+  let data: { armed?: string[]; capped?: boolean; resetsAt?: string | null };
   try {
     data = await res.json();
   } catch {
@@ -63,7 +68,7 @@ async function refresh(): Promise<void> {
   }
   commit({
     armed: new Set(data.armed ?? []),
-    blocked: !!data.blocked,
+    capped: !!data.capped,
     resetsAt: data.resetsAt ?? null,
   });
 }
@@ -93,9 +98,9 @@ function getSnapshot(): QueueSnapshot {
 export interface UsageQueuePane {
   /** Whether this pane has an armed auto-send. */
   isArmed: boolean;
-  /** Whether the account is currently usage-blocked (for the ETA hint). */
-  blocked: boolean;
-  /** Nearest reset timestamp while blocked, for an ETA hint (not the trigger). */
+  /** Whether the account is at the usage cap — the button only shows when true. */
+  capped: boolean;
+  /** Nearest reset timestamp, for an ETA hint (not the trigger). */
   resetsAt: string | null;
   /** Toggle this pane's armed state (optimistic, then reconciled). */
   toggle: () => Promise<void>;
@@ -133,7 +138,7 @@ export function useUsageQueue(sessionId: string): UsageQueuePane {
 
   return {
     isArmed: s.armed.has(sessionId),
-    blocked: s.blocked,
+    capped: s.capped,
     resetsAt: s.resetsAt,
     toggle,
   };

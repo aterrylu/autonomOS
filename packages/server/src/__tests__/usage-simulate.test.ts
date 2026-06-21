@@ -6,7 +6,7 @@ import {
   getUsageOverride,
   setUsageOverride,
 } from "../plugins/claude-usage/scanner.js";
-import { usageQueueRouter } from "../routes/usageQueue.js";
+import { applySimulatedClear, usageQueueRouter } from "../routes/usageQueue.js";
 
 const SIM_FLAG = "AUTONOMOS_ENABLE_USAGE_SIMULATION";
 
@@ -98,5 +98,65 @@ describe("POST /_simulate", () => {
       method: "POST",
     });
     assert.equal(res.status, 400);
+  });
+});
+
+describe("timed simulation reset", () => {
+  beforeEach(() => {
+    process.env[SIM_FLAG] = "1";
+    setUsageOverride(null);
+  });
+  afterEach(async () => {
+    // state=off also cancels any pending auto-clear timer this test scheduled.
+    await usageQueueRouter.request("/_simulate?state=off", { method: "POST" });
+    delete process.env[SIM_FLAG];
+    setUsageOverride(null);
+  });
+
+  it("capped with resetInSec sets a near-future reset hint", async () => {
+    const before = Date.now();
+    const res = await usageQueueRouter.request(
+      "/_simulate?state=capped&resetInSec=120",
+      { method: "POST" },
+    );
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).resetInSec, 120);
+
+    const ov = getUsageOverride();
+    assert.equal(ov?.fiveHour?.utilization, 100);
+    const resetMs = new Date(ov?.fiveHour?.resetsAt ?? 0).getTime();
+    // ~120s out (allow generous slack for test timing).
+    assert.ok(resetMs > before + 100_000 && resetMs < before + 140_000);
+  });
+
+  it("ignores resetInSec for a non-capped state", async () => {
+    const res = await usageQueueRouter.request(
+      "/_simulate?state=cleared&resetInSec=60",
+      { method: "POST" },
+    );
+    assert.equal((await res.json()).resetInSec, null, "no timer for 'cleared'");
+  });
+
+  it("ignores a non-positive / non-numeric resetInSec", async () => {
+    const res = await usageQueueRouter.request(
+      "/_simulate?state=capped&resetInSec=nope",
+      { method: "POST" },
+    );
+    assert.equal((await res.json()).resetInSec, null);
+  });
+
+  it("applySimulatedClear flips the override to cleared (what the timer runs)", async () => {
+    setUsageOverride(null);
+    await usageQueueRouter.request("/_simulate?state=capped", {
+      method: "POST",
+    });
+    assert.equal(getUsageOverride()?.fiveHour?.utilization, 100);
+
+    await applySimulatedClear();
+    const util = getUsageOverride()?.fiveHour?.utilization;
+    assert.ok(
+      util != null && util < 80,
+      "cleared is below the queue's exit threshold so an armed pane fires",
+    );
   });
 });
