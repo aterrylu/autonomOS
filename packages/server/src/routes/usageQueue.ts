@@ -10,10 +10,11 @@
 import { Hono } from "hono";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
 import {
+  getRateLimits,
   invalidateCache,
   setUsageOverride,
 } from "../plugins/claude-usage/scanner.js";
-import { usageQueue } from "../usageQueue.js";
+import { evaluateCap, usageQueue } from "../usageQueue.js";
 
 export const usageQueueRouter = new Hono();
 
@@ -23,12 +24,19 @@ const simulationEnabled = (): boolean =>
 
 type SimState = "capped" | "cleared" | "off";
 
+/** Default reset hint when none is given — far enough out to look real. */
+const DEFAULT_RESET_SEC = (2 * 60 + 13) * 60;
+
 /** Build a scripted usage snapshot for a simulation state (null clears it).
  * `capped` = 100% on the 5-hour window; `cleared` = a small non-zero so the
- * drop is unambiguous. The reset hint is ~2h13m out so the button shows an ETA. */
-function simulatedUsage(state: SimState): RateLimitData | null {
+ * drop is unambiguous. `resetInSec` controls how far out the reset hint is (so
+ * the button shows a short ETA for a timed demo). */
+function simulatedUsage(
+  state: SimState,
+  resetInSec = DEFAULT_RESET_SEC,
+): RateLimitData | null {
   if (state === "off") return null;
-  const resetsAt = new Date(Date.now() + (2 * 60 + 13) * 60_000).toISOString();
+  const resetsAt = new Date(Date.now() + resetInSec * 1000).toISOString();
   return {
     fiveHour: { utilization: state === "capped" ? 100 : 2, resetsAt },
     sevenDay: null,
@@ -40,8 +48,40 @@ function simulatedUsage(state: SimState): RateLimitData | null {
   };
 }
 
-/** Current armed sessions + account block status (for the button + ETA). */
-usageQueueRouter.get("/", (c) => c.json(usageQueue().status()));
+/** Pending auto-clear timer for a `resetInSec` demo (only one at a time). */
+let simClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelSimClear(): void {
+  if (simClearTimer) {
+    clearTimeout(simClearTimer);
+    simClearTimer = null;
+  }
+}
+
+/**
+ * Flip the simulated state to cleared and fire any armed panes — the action a
+ * `resetInSec` countdown runs when it elapses. Exported so a test can trigger
+ * the transition deterministically without waiting out a real timer.
+ */
+export async function applySimulatedClear(): Promise<void> {
+  setUsageOverride(simulatedUsage("cleared"));
+  invalidateCache();
+  await usageQueue().tick();
+}
+
+/**
+ * Current armed sessions + whether the account is at the usage cap + the
+ * nearest reset (for the button's "show only at the limit" visibility + ETA).
+ *
+ * `capped`/`resetsAt` come from a fresh usage read (cached 60s) rather than the
+ * watcher's armed-only `blocked`, so the button can appear before anything is
+ * armed — otherwise visibility would depend on arming, which needs the button.
+ */
+usageQueueRouter.get("/", async (c) => {
+  const { armed } = usageQueue().status();
+  const { capped, resetsAt } = evaluateCap(await getRateLimits());
+  return c.json({ armed, capped, resetsAt });
+});
 
 /**
  * Dev/QA: simulate a usage-limit transition so the queue can be demoed without
@@ -60,10 +100,33 @@ usageQueueRouter.post("/_simulate", async (c) => {
   if (state !== "capped" && state !== "cleared" && state !== "off") {
     return c.json({ error: "state must be capped, cleared, or off" }, 400);
   }
-  setUsageOverride(simulatedUsage(state));
+
+  // `capped&resetInSec=N` caps now and auto-clears after N seconds — so you can
+  // arm a pane and watch the auto-Enter fire on its own, without a second call.
+  const resetRaw = Number(c.req.query("resetInSec"));
+  const resetInSec =
+    state === "capped" && Number.isFinite(resetRaw) && resetRaw > 0
+      ? resetRaw
+      : undefined;
+
+  cancelSimClear(); // supersede any prior countdown
+  setUsageOverride(simulatedUsage(state, resetInSec));
   invalidateCache(); // drop any cached real reading so the override takes effect
   await usageQueue().tick(); // react now, don't wait for the next poll
-  return c.json({ ok: true, state, status: usageQueue().status() });
+
+  if (resetInSec !== undefined) {
+    simClearTimer = setTimeout(() => {
+      void applySimulatedClear();
+    }, resetInSec * 1000);
+    simClearTimer.unref?.();
+  }
+
+  return c.json({
+    ok: true,
+    state,
+    resetInSec: resetInSec ?? null,
+    status: usageQueue().status(),
+  });
 });
 
 /** Arm auto-send for a pane: press Enter when the usage limit next clears. */

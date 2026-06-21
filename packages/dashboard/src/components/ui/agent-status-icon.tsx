@@ -15,7 +15,7 @@ export type AgentStatus =
   | "orchestrating"
   | "stopped";
 
-type StatusCategory =
+export type StatusCategory =
   | "completed"
   | "warning"
   | "syncing"
@@ -41,7 +41,7 @@ const SPINNER_DASHES = Array.from({ length: 8 }, (_, i) => {
 });
 
 /** Collapse statuses into visual categories for icon selection and AnimatePresence keying */
-function statusCategory(status: AgentStatus): StatusCategory {
+export function statusCategory(status: AgentStatus): StatusCategory {
   switch (status) {
     case "idle":
     case "ready":
@@ -94,8 +94,10 @@ export function AgentStatusIcon({ status, size = 16 }: AgentStatusIconProps) {
 
 /**
  * CSS keyframes for the spinner — injected once into the document head.
- * Cycles through 8 dashes by animating opacity in discrete steps.
- * Runs entirely on the compositor thread.
+ * Each of the 8 dashes fades smoothly from full to near-zero opacity over the
+ * cycle; combined with the staggered per-dash delays this renders a bright
+ * "head" travelling around a ring of dimmer dashes (a comet), rather than a
+ * single hard on/off dash. Runs entirely on the compositor thread.
  */
 const SPINNER_STYLE_ID = "agent-spinner-keyframes";
 if (
@@ -106,8 +108,8 @@ if (
   style.id = SPINNER_STYLE_ID;
   style.textContent = `
 @keyframes dash-spin {
-  0%, 100%  { opacity: 1 }
-  12.5%     { opacity: 0 }
+  0%   { opacity: 1 }
+  100% { opacity: 0.15 }
 }`;
   document.head.appendChild(style);
 }
@@ -186,9 +188,8 @@ function StatusSvg({
               strokeWidth="2"
               strokeLinecap="round"
               style={{
-                animation: "dash-spin 800ms steps(1, end) infinite",
+                animation: "dash-spin 800ms linear infinite",
                 animationDelay: `${-index * 100}ms`,
-                opacity: 0.3,
               }}
             />
           ))}

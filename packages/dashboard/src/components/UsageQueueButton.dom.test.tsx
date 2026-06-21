@@ -14,7 +14,7 @@ function setHook(partial: Partial<ReturnType<typeof useUsageQueue>>) {
   const toggle = vi.fn(async () => {});
   mockHook.mockReturnValue({
     isArmed: false,
-    blocked: false,
+    capped: true,
     resetsAt: null,
     toggle,
     ...partial,
@@ -25,52 +25,43 @@ function setHook(partial: Partial<ReturnType<typeof useUsageQueue>>) {
 beforeEach(() => mockHook.mockReset());
 
 describe("UsageQueueButton", () => {
-  it("renders a faint, unlabeled button when disarmed", () => {
-    setHook({ isArmed: false });
-    render(<UsageQueueButton sessionId="s1" />);
-    const btn = screen.getByRole("button");
-    expect(btn).toHaveAttribute("aria-pressed", "false");
-    // No status text when disarmed — just the hourglass glyph.
-    expect(btn).not.toHaveTextContent("queued");
-    expect(btn.querySelector("svg")).not.toBeNull();
+  it("renders nothing when the account is not capped", () => {
+    setHook({ capped: false });
+    const { container } = render(<UsageQueueButton sessionId="s1" />);
+    expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows 'queued' when armed but not yet blocked", () => {
-    setHook({ isArmed: true, blocked: false });
+  it("renders an off switch when capped and disarmed", () => {
+    setHook({ capped: true, isArmed: false });
     render(<UsageQueueButton sessionId="s1" />);
-    const btn = screen.getByRole("button");
-    expect(btn).toHaveAttribute("aria-pressed", "true");
-    expect(btn).toHaveTextContent("queued");
+    const sw = screen.getByRole("switch");
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(sw).toHaveTextContent("Auto-Enter when limit resets");
+    expect(sw).toHaveTextContent("Type in the terminal to queue");
   });
 
-  it("shows an ETA when armed AND blocked with a future reset", () => {
+  it("shows the reset ETA when armed with a future reset", () => {
     const resetsAt = new Date(
       Date.now() + 2 * 3_600_000 + 13 * 60_000,
     ).toISOString();
-    setHook({ isArmed: true, blocked: true, resetsAt });
+    setHook({ capped: true, isArmed: true, resetsAt });
     render(<UsageQueueButton sessionId="s1" />);
-    // timeUntilReset → "2h 13m"; the button prefixes "~".
-    expect(screen.getByRole("button").textContent).toMatch(/~2h/);
+    const sw = screen.getByRole("switch");
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    // timeUntilReset → "2h 13m"; the subtitle reads "Sends in ~2h 13m".
+    expect(sw.textContent).toMatch(/Sends in ~2h/);
   });
 
-  it("falls back to 'queued' when armed+blocked but the reset is unknown", () => {
-    setHook({ isArmed: true, blocked: true, resetsAt: null });
+  it("falls back to 'Sends at reset' when armed without a known reset", () => {
+    setHook({ capped: true, isArmed: true, resetsAt: null });
     render(<UsageQueueButton sessionId="s1" />);
-    expect(screen.getByRole("button")).toHaveTextContent("queued");
+    expect(screen.getByRole("switch")).toHaveTextContent("Sends at reset");
   });
 
-  it("calls toggle when clicked", () => {
-    const toggle = setHook({ isArmed: false });
+  it("toggles when clicked", () => {
+    const toggle = setHook({ capped: true, isArmed: false });
     render(<UsageQueueButton sessionId="s1" />);
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("switch"));
     expect(toggle).toHaveBeenCalledTimes(1);
-  });
-
-  it("describes the queued behavior in its accessible label", () => {
-    setHook({ isArmed: false });
-    render(<UsageQueueButton sessionId="s1" />);
-    expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(
-      /usage limit/i,
-    );
   });
 });

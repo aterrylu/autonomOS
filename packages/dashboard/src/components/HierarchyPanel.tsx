@@ -9,6 +9,7 @@ import {
   AgentStatusIcon,
   agentStatusLabel,
 } from "./ui/agent-status-icon";
+import { ProviderAgentIcon } from "./ui/provider-icon";
 
 /**
  * Org chart tree panel — top-down hierarchy visualization.
@@ -28,6 +29,8 @@ export interface OrgNode {
   project?: string;
   /** Lifecycle from the server — "running" or "exited". */
   status: "running" | "exited";
+  /** Provider backing the agent (claude-code / codex / gemini-cli). */
+  provider?: string;
   children: OrgNode[];
 }
 
@@ -151,6 +154,7 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
     ? (info?.agentStatus ?? "unknown")
     : "stopped";
   const isWorking = WORKING_STATUSES.has(agentStatus);
+  const agentIconStyle = useStore((s) => s.agentIconStyle);
   const {
     killSession,
     removeSession,
@@ -322,7 +326,15 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
 
         {/* Name row */}
         <div className="flex items-center gap-2.5 mt-1 mb-2">
-          <AgentStatusIcon status={agentStatus} size={14} />
+          {agentIconStyle === "provider" ? (
+            <ProviderAgentIcon
+              provider={node.provider}
+              status={agentStatus}
+              size={18}
+            />
+          ) : (
+            <AgentStatusIcon status={agentStatus} size={14} />
+          )}
           <span
             className="text-[13px] font-semibold tracking-tight truncate"
             style={{ color: isRunning ? "#e6e1cf" : page.statusFg }}

@@ -1,0 +1,24 @@
+autonomOS
+Copyright (c) Terry Lu
+
+This product is licensed under the MIT License (see LICENSE).
+
+────────────────────────────────────────────────────────────────────────
+Trademarks
+────────────────────────────────────────────────────────────────────────
+
+autonomOS orchestrates third-party AI coding agents. To indicate which
+runtime backs a given agent, the dashboard may display the following
+third-party logos. All product names, logos, and brands are the property
+of their respective owners, used here for identification (nominative)
+purposes only. Their use does not imply any affiliation with, sponsorship
+by, or endorsement by these companies.
+
+  • "Claude" and the Claude logo are trademarks of Anthropic, PBC.
+  • "OpenAI", "Codex", and the OpenAI logo are trademarks of OpenAI, Inc.
+  • "Google" and "Gemini" and the Gemini logo are trademarks of Google LLC.
+
+autonomOS is an independent project and is not affiliated with, endorsed
+by, or sponsored by Anthropic, OpenAI, or Google. The logos are displayed
+in their official, unaltered form. If you are a rights holder and have a
+concern about this usage, please open an issue.

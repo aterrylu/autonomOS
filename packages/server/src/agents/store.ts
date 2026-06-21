@@ -113,6 +113,13 @@ function loadFromDisk(): Map<UUID, Agent> {
         console.warn(`Skipping malformed agent file: ${entry}`);
         continue;
       }
+      // Backfill `provider` for agent files that predate the field so the
+      // non-optional `Agent.provider` contract stays honest. Without this a
+      // legacy claude-code agent loads with `provider: undefined` and renders
+      // as the generic "unknown provider" icon instead of its real mark.
+      if (typeof data.provider !== "string") {
+        data.provider = "claude-code";
+      }
       map.set(data.id, data);
     } catch (err) {
       console.warn(`Skipping unreadable agent file ${entry}: ${err}`);
