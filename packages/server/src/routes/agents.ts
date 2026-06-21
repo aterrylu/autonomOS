@@ -85,6 +85,7 @@ interface AgentTreeApiNode {
   template?: string;
   project?: string;
   status: string;
+  provider: string;
   children: AgentTreeApiNode[];
 }
 
@@ -101,6 +102,7 @@ agentsRouter.get("/tree", (c) => {
       template: a.template,
       project: a.project,
       status: a.status,
+      provider: a.provider,
     }),
   });
   return c.json(tree);

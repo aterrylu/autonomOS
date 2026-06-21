@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Codicon, type CodiconName } from "../../components/Codicon";
-import { THEMES, useStore } from "../../store";
+import { AgentStatusIcon } from "../../components/ui/agent-status-icon";
+import { ProviderAgentIcon } from "../../components/ui/provider-icon";
+import { type AgentIconStyle, THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
 
 interface MaskedSettings {
@@ -367,6 +369,70 @@ const THEME_LABELS: Record<string, string> = {
   void: "Void",
 };
 
+/** Visual two-card picker for the agent-icon style. Each card renders a live
+ *  preview of the actual icons so the choice is explicit, not just a label. */
+function AgentIconStylePicker({ page }: { page: PageTheme }) {
+  const style = useStore((s) => s.agentIconStyle);
+  const setStyle = useStore((s) => s.setAgentIconStyle);
+
+  const card = (
+    value: AgentIconStyle,
+    title: string,
+    preview: React.ReactNode,
+  ) => {
+    const selected = style === value;
+    return (
+      <button
+        type="button"
+        onClick={() => setStyle(value)}
+        data-testid={`agent-icon-style-${value}`}
+        className="flex-1 flex flex-col items-center gap-1.5 rounded-md px-2 py-2 cursor-pointer transition-colors"
+        style={{
+          border: `2px solid ${selected ? "#16825d" : page.border}`,
+          background: selected ? "#16825d22" : "transparent",
+        }}
+      >
+        <div className="flex items-center gap-2.5 h-5">{preview}</div>
+        <span className="text-[10px]" style={{ color: page.fg }}>
+          {title}
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <span className="text-xs" style={{ color: page.statusFg }}>
+        Agent Icons
+      </span>
+      <div className="flex gap-2">
+        {card(
+          "provider",
+          "Provider + status",
+          <>
+            <ProviderAgentIcon provider="claude-code" status="idle" size={16} />
+            <ProviderAgentIcon provider="codex" status="working" size={16} />
+            <ProviderAgentIcon
+              provider="gemini-cli"
+              status="needs_input"
+              size={16}
+            />
+          </>,
+        )}
+        {card(
+          "status",
+          "Status only",
+          <>
+            <AgentStatusIcon status="idle" size={14} />
+            <AgentStatusIcon status="working" size={14} />
+            <AgentStatusIcon status="needs_input" size={14} />
+          </>,
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DashboardPreferences({ page }: { page: PageTheme }) {
   const theme = useStore((s) => s.theme);
   const autonomousMode = useStore((s) => s.autonomousMode);
@@ -413,6 +479,9 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
       <div className="text-[10px]" style={labelStyle}>
         New sessions skip permission prompts when enabled.
       </div>
+
+      {/* Agent icon style */}
+      <AgentIconStylePicker page={page} />
     </div>
   );
 }
