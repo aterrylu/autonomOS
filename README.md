@@ -121,3 +121,10 @@ docs/
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Trademarks
+
+autonomOS displays third-party provider logos (Claude, OpenAI Codex, Google
+Gemini) solely to identify which runtime backs an agent. All product names,
+logos, and brands are the property of their respective owners; their use is
+nominative and does not imply affiliation or endorsement. See [NOTICE](NOTICE).

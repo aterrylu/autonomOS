@@ -31,6 +31,7 @@ import {
   AgentStatusIcon,
   agentStatusLabel,
 } from "./ui/agent-status-icon";
+import { ProviderAgentIcon } from "./ui/provider-icon";
 
 /** Select data fields that change over time — useShallow prevents re-renders when values are equal */
 function useSidebarData() {
@@ -904,6 +905,8 @@ function SessionRow({
 }: SessionRowProps) {
   const lastActive = meta?.lastModified ?? s.createdAt;
   const paddingLeft = paddingLeftOverride ?? 9 + indent * 10;
+  const agentIconStyle = useStore((st) => st.agentIconStyle);
+  const status = (agentState?.status as AgentStatus) ?? "unknown";
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -954,10 +957,11 @@ function SessionRow({
           }}
         />
       )}
-      <AgentStatusIcon
-        status={(agentState?.status as AgentStatus) ?? "unknown"}
-        size={14}
-      />
+      {agentIconStyle === "provider" ? (
+        <ProviderAgentIcon provider={s.provider} status={status} size={16} />
+      ) : (
+        <AgentStatusIcon status={status} size={14} />
+      )}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <span className="flex-1 truncate text-xs">{s.name}</span>

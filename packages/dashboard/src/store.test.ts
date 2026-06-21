@@ -552,3 +552,16 @@ describe("setFocusedLeaf", () => {
     expect(after.activePane).toEqual(sessionPane("s1"));
   });
 });
+
+describe("agentIconStyle", () => {
+  it("defaults to the provider style", () => {
+    expect(useStore.getState().agentIconStyle).toBe("provider");
+  });
+
+  it("setAgentIconStyle switches between provider and status", () => {
+    useStore.getState().setAgentIconStyle("status");
+    expect(useStore.getState().agentIconStyle).toBe("status");
+    useStore.getState().setAgentIconStyle("provider");
+    expect(useStore.getState().agentIconStyle).toBe("provider");
+  });
+});

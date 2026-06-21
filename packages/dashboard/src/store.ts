@@ -425,9 +425,14 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
 
 // ── Store ──────────────────────────────────────────────────────────────
 
+/** How agent rows render their leading icon. "provider" shows the provider's
+ *  mark with a status corner badge; "status" shows the status-only icon. */
+export type AgentIconStyle = "provider" | "status";
+
 interface AppState {
   // Persisted
   theme: ThemeName;
+  agentIconStyle: AgentIconStyle;
   sidebarViewMode: "flat" | "hierarchy";
   activePane: ActivePane | null;
   sidebarOpen: boolean;
@@ -472,6 +477,7 @@ interface AppState {
 
   // Actions
   cycleTheme: () => void;
+  setAgentIconStyle: (style: AgentIconStyle) => void;
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
@@ -646,6 +652,7 @@ export const useStore = create<AppState>()(
       const _initialRoot = makeRootLeaf(null);
       return {
         theme: "void",
+        agentIconStyle: "provider",
         sidebarViewMode: "flat",
         activePane: null,
         status: "disconnected",
@@ -682,6 +689,8 @@ export const useStore = create<AppState>()(
             ];
           set({ theme: next });
         },
+        setAgentIconStyle: (style: AgentIconStyle) =>
+          set({ agentIconStyle: style }),
         toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
         setSidebarWidth: (width: number) => {
           if (!Number.isFinite(width)) return;
@@ -1843,6 +1852,7 @@ export const useStore = create<AppState>()(
       name: "autonomos",
       partialize: (state) => ({
         theme: state.theme,
+        agentIconStyle: state.agentIconStyle,
         sidebarViewMode: state.sidebarViewMode,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
@@ -1863,6 +1873,11 @@ export const useStore = create<AppState>()(
         const merged = { ...current };
 
         if (isThemeName(saved?.theme)) merged.theme = saved.theme;
+        if (
+          saved?.agentIconStyle === "provider" ||
+          saved?.agentIconStyle === "status"
+        )
+          merged.agentIconStyle = saved.agentIconStyle;
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (
