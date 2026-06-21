@@ -148,6 +148,19 @@ export function buildBaseEnv(
   agentName: string,
 ): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
+
+  // Strip the host Claude Code session identity before it reaches the agent.
+  // When the autonomOS server is itself launched from inside a CC session
+  // (e.g. `make prod` run from a CC terminal), it inherits CLAUDE_CODE_* /
+  // CLAUDECODE and would re-broadcast them into every spawned agent.
+  // CLAUDE_CODE_EXECPATH pins the agent's `claude` to the parent CLI version;
+  // CLAUDE_CODE_SESSION_ID collides with the per-agent --session-id flag.
+  // NOTE: do NOT touch ANTHROPIC_* — #214 relies on those passing through.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("CLAUDE_CODE_")) delete env[key];
+  }
+  delete env.CLAUDECODE;
+
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
