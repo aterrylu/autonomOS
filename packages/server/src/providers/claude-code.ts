@@ -222,8 +222,8 @@ export const claudeCodeProvider: AgentProvider = {
   },
 
   buildEnv(sessionId: string, agentName: string): Record<string, string> {
+    // buildBaseEnv strips host CLAUDE_CODE_* / CLAUDECODE contamination.
     const env = buildBaseEnv(sessionId, agentName);
-    delete env.CLAUDECODE;
 
     // Inject user-defined custom env vars
     const settings = getSettings();
