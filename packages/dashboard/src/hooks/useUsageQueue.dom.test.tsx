@@ -26,7 +26,7 @@ const flush = () => act(async () => await new Promise((r) => setTimeout(r, 0)));
 beforeEach(() => {
   respond = () => ({
     ok: true,
-    body: { armed: [], blocked: false, resetsAt: null },
+    body: { armed: [], capped: false, resetsAt: null },
   });
   vi.stubGlobal("fetch", (url: string, init: FetchInit) => {
     const { ok, body } = respond(url, init);
@@ -43,7 +43,7 @@ describe("useUsageQueue", () => {
       if (init?.method === "POST" || init?.method === "DELETE") {
         return { ok: false, body: {} };
       }
-      return { ok: true, body: { armed: [], blocked: false, resetsAt: null } };
+      return { ok: true, body: { armed: [], capped: false, resetsAt: null } };
     };
     const { result, unmount } = renderHook(() => useUsageQueue("roll-1"));
     await flush();
@@ -64,7 +64,7 @@ describe("useUsageQueue", () => {
         armed = ["ok-1"];
         return { ok: true, body: { armed: true } };
       }
-      return { ok: true, body: { armed, blocked: true, resetsAt: null } };
+      return { ok: true, body: { armed, capped: true, resetsAt: null } };
     };
     const { result, unmount } = renderHook(() => useUsageQueue("ok-1"));
     await flush();
