@@ -47,6 +47,83 @@ import {
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
 
+/** How long after a Codex spawn to wait for its channel-server MCP subprocess to
+ *  register before warning that the agent has no outbound path. The daemon
+ *  launches it on thread creation (TUI connect), so this must cover daemon boot +
+ *  TUI attach + MCP startup + ws connect — generous to avoid false alarms on a
+ *  loaded host (a missed warning is cheaper than a spurious one). */
+const CHANNEL_SERVER_REGISTER_GRACE_MS = 30_000;
+
+/**
+ * Probe (wired to the gateway's session-client registry at startup): has THIS
+ * agent's channel-server MCP subprocess connected + registered? Lets the runtime
+ * detect a Codex agent whose daemon-launched channel server never came up.
+ * Injected (not imported) because router.ts already imports this module — a
+ * direct import would close a cycle. Null until initGateway() wires it.
+ */
+let channelServerProbe: ((agentId: string) => boolean) | null = null;
+export function setChannelServerProbe(fn: (agentId: string) => boolean): void {
+  channelServerProbe = fn;
+}
+
+/** Pending channel-server liveness checks, keyed by agent id, so the kill/exit
+ *  paths can dispose them (honoring the disposal contract onExit documents)
+ *  instead of leaving an unref'd timer to wake and no-op 30s later. */
+const channelCheckTimers = new Map<UUID, ReturnType<typeof setTimeout>>();
+
+/** One-shot post-spawn check that a Codex agent's outbound channel server came
+ *  up. Uses the gateway's registration signal (positive — the channel server
+ *  registers on a successful connect) rather than parsing daemon logs, so a
+ *  missed notification can't make it lie. Gated on the `pty` still being the live
+ *  attachment so a kill/respawn within the grace window doesn't warn on a corpse
+ *  (mirrors the prompt-delivery write guard). Best-effort: a null probe (gateway
+ *  not yet wired) or a registered agent is a silent no-op.
+ *
+ *  SCOPE: this catches a channel server that never LAUNCHES. It does NOT cover a
+ *  server that registers then later DROPS — but the channel-server subprocess is
+ *  a child of the app-server daemon, so the common cause (daemon death) already
+ *  surfaces via the A3 status watcher's "daemon unreachable" warning. A standalone
+ *  MCP-subprocess crash while the daemon survives is a known, narrow follow-up gap
+ *  (would need an edge-triggered warn on unexpected unregister). */
+function scheduleChannelServerCheck(
+  agentId: UUID,
+  name: string,
+  pty: IPty,
+): void {
+  cancelChannelServerCheck(agentId); // never double-schedule for one agent
+  const timer = setTimeout(() => {
+    channelCheckTimers.delete(agentId);
+    if (live.get(agentId)?.pty !== pty) return; // killed/replaced — not our spawn
+    if (channelServerProbe?.(agentId) !== false) return; // registered or unknown
+    // Server-log breadcrumb (with the id) for cold debugging — the user-facing
+    // SystemWarning deliberately omits the raw id.
+    console.warn(
+      `[runtime] ${agentId.slice(0, 8)} channel server never registered within ${CHANNEL_SERVER_REGISTER_GRACE_MS}ms — outbound (send + org tools) unavailable`,
+    );
+    pushSystemNotification(
+      agentId,
+      `${name} can't send messages — its autonomos channel server didn't start, so send() and the org tools are unavailable (it can still receive inbound). The channel-server script likely failed to launch.`,
+    );
+  }, CHANNEL_SERVER_REGISTER_GRACE_MS);
+  timer.unref?.();
+  channelCheckTimers.set(agentId, timer);
+}
+
+/** Dispose a single agent's pending channel-server check (kill/exit/delete). */
+function cancelChannelServerCheck(agentId: UUID): void {
+  const timer = channelCheckTimers.get(agentId);
+  if (timer) {
+    clearTimeout(timer);
+    channelCheckTimers.delete(agentId);
+  }
+}
+
+/** Dispose all pending channel-server checks (restart-all / shutdown). */
+function cancelAllChannelServerChecks(): void {
+  for (const timer of channelCheckTimers.values()) clearTimeout(timer);
+  channelCheckTimers.clear();
+}
+
 /** Resolve claude binary — delegates to the claude-code provider. */
 export function resolveClaudePath(): string {
   return getProvider("claude-code").resolveBinary();
@@ -353,6 +430,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         err instanceof Error ? err.message : err,
       );
     }
+    // Codex OUTBOUND (send + org tools) rides a channel-server MCP subprocess the
+    // daemon launches from `-c mcp_servers`. If that launch fails (bad node/script
+    // path, esp. in a bundled build) the model silently has no outbound while
+    // still receiving inbound. Verify it actually registered; warn if not.
+    if (resolved.injectChannelServer) {
+      scheduleChannelServerCheck(persisted.id, persisted.name, pty);
+    }
   }
 
   // Delivery receipt: a starting prompt travels only as a CLI arg, and a
@@ -457,6 +541,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
 
     cancelPromptTracking(persisted.id);
+    cancelChannelServerCheck(persisted.id);
 
     if (lifetime < 5_000 && exitCode !== 0) {
       console.error(
@@ -555,6 +640,7 @@ export function killAttachment(agentId: UUID): boolean {
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
   cancelPromptTracking(agentId);
+  cancelChannelServerCheck(agentId);
   const updated = markExited(agentId, "user_killed");
   live.delete(agentId);
   if (updated) {
@@ -584,6 +670,7 @@ export function deleteAgent(agentId: UUID): boolean {
   }
   disposeCodexControl(agentId);
   cancelPromptTracking(agentId);
+  cancelChannelServerCheck(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
     emitAgentDelta({ type: "agent.deleted", id: agentId });
@@ -600,6 +687,7 @@ export function deleteAgent(agentId: UUID): boolean {
 export function shutdownAllAttachments(): void {
   shuttingDown = true;
   cancelAllPromptTracking();
+  cancelAllChannelServerChecks();
   for (const [, managed] of live) {
     try {
       managed.pty.kill();
@@ -704,6 +792,7 @@ export async function restartAllAttachments(): Promise<{
   // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
   shuttingDown = true;
   cancelAllPromptTracking();
+  cancelAllChannelServerChecks();
   for (const [id, managed] of live) {
     try {
       managed.pty.kill();
@@ -813,4 +902,5 @@ export function _resetForTesting(): void {
   live.clear();
   shuttingDown = false;
   cancelAllPromptTracking();
+  cancelAllChannelServerChecks();
 }

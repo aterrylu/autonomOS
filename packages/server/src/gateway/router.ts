@@ -51,6 +51,14 @@ export function unregisterSessionClient(ws: WSContext): void {
   }
 }
 
+/** Has this agent's channel-server MCP subprocess connected + registered? A
+ *  positive signal that the agent's OUTBOUND path (send + org tools) is live.
+ *  The runtime probes this after spawn to detect a Codex agent whose daemon-
+ *  launched channel server never came up (a silent loss of send()). */
+export function isSessionClientRegistered(sessionId: string): boolean {
+  return sessionClients.has(sessionId);
+}
+
 export function registerDashboard(ws: WSContext): void {
   dashboardClients.add(ws);
 }

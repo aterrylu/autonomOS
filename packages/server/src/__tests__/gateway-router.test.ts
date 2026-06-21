@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { routeMessage } from "../gateway/router.js";
+import type { WSContext } from "hono/ws";
+import {
+  isSessionClientRegistered,
+  registerSessionClient,
+  routeMessage,
+  unregisterSessionClient,
+} from "../gateway/router.js";
 
 describe("routeMessage — URI routing", () => {
   // Note: routeMessage depends on sessionClients registry.
@@ -66,5 +72,24 @@ describe("routeMessage — URI routing", () => {
     assert.ok(err);
     assert.ok(err.includes("not found"));
     assert.ok(!err.includes("Invalid URI"));
+  });
+});
+
+describe("isSessionClientRegistered — channel-server liveness probe", () => {
+  // The registry compares WSContext by identity; a bare object stands in for a
+  // real socket. This is the signal the runtime probes to detect a Codex agent
+  // whose daemon-launched channel server never came up (silent loss of send()).
+  const fakeWs = {} as WSContext;
+  const agentId = "a4-probe-agent";
+
+  it("is false before the channel server registers", () => {
+    assert.equal(isSessionClientRegistered(agentId), false);
+  });
+
+  it("is true once the channel server registers, false after it disconnects", () => {
+    registerSessionClient(agentId, fakeWs);
+    assert.equal(isSessionClientRegistered(agentId), true);
+    unregisterSessionClient(fakeWs);
+    assert.equal(isSessionClientRegistered(agentId), false);
   });
 });
