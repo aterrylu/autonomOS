@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy
+.PHONY: dev prod stop restart logs down check fmt deploy doctor
 
 BUN := $(HOME)/.bun/bin/bun
 PM2 := $(HOME)/.bun/bin/pm2
@@ -29,6 +29,7 @@ dev:
 prod:
 	@command -v $(PM2) >/dev/null || { echo "Installing pm2..."; $(BUN) add -g pm2; }
 	@$(BUN) install
+	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
 	@bunx esbuild packages/server/src/channel-server/index.ts --bundle --platform=node --format=esm --outfile=packages/server/src/channel-server/dist.mjs --packages=external --log-level=warning
 	@echo "Removing any stale embedded dashboard (hosted server serves packages/dashboard/dist; _embedded_dashboard is a binary-build artifact only)..."
@@ -37,6 +38,11 @@ prod:
 	@cd packages/dashboard && $(BUN) vite build
 	@echo "Restarting server..."
 	@nohup sh -c '$(PM2) delete autonomos 2>/dev/null; $(PM2) start ecosystem.config.cjs; $(PM2) save' >/dev/null 2>&1 &
+
+# ── doctor: preflight checks (node-pty ABI vs runtime node) ──
+#   Run standalone to diagnose/repair a pm2 crash-loop after a node upgrade.
+doctor:
+	@bash scripts/ensure-node-pty.sh
 
 # ── stop / restart / logs ─────────────────────────
 stop:
