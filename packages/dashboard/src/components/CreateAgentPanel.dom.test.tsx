@@ -65,6 +65,7 @@ beforeEach(() => {
                 capabilities: {
                   messaging: { inbound: true, outbound: true },
                   hooks: { eventCount: 13, requiresSetup: false },
+                  liveStatus: { supported: true, method: "hooks" },
                   systemPrompt: { supported: true },
                 },
               },

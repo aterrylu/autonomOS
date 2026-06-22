@@ -111,6 +111,7 @@ export const MOCK_TEMPLATES = {
 const CLAUDE_CAPABILITIES = {
   messaging: { outbound: true, inbound: true },
   hooks: { eventCount: 13, requiresSetup: false },
+  liveStatus: { supported: true, method: "hooks" },
   systemPrompt: { supported: true },
 };
 
@@ -132,6 +133,7 @@ export const MOCK_PROVIDERS = [
     capabilities: {
       messaging: { outbound: false, inbound: false },
       hooks: { eventCount: 0, requiresSetup: true },
+      liveStatus: { supported: true, method: "event-stream" },
       systemPrompt: { supported: true },
     },
   },

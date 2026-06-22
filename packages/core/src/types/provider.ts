@@ -101,6 +101,14 @@ export interface ProviderCapabilities {
     /** True if a one-time install is required (e.g. Codex hooks.json) */
     requiresSetup: boolean;
   };
+  /** Live busy/idle status reporting. Decoupled from `hooks` because not every
+   *  provider sources status from a hook relay — Codex derives status from its
+   *  app-server event stream, so it reports live status with zero hook events. */
+  liveStatus: {
+    supported: boolean;
+    /** Where status comes from when supported. */
+    method: "hooks" | "event-stream" | "none";
+  };
   /** MCP channel server injection */
   mcp: {
     supported: boolean;
