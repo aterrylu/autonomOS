@@ -98,6 +98,7 @@ export const codexProvider: AgentProvider = {
   capabilities: {
     // Status derives from the app-server event stream, not a hook relay.
     hooks: { eventCount: 0, perSession: false, requiresSetup: false },
+    liveStatus: { supported: true, method: "event-stream" },
     mcp: { supported: true, perSession: true },
     systemPrompt: { supported: true, method: "flag" },
     // Native terminal-preserving inbound via app-server turn/start broadcast.

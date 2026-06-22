@@ -90,6 +90,7 @@ export const claudeCodeProvider: AgentProvider = {
 
   capabilities: {
     hooks: { eventCount: 13, perSession: true, requiresSetup: false },
+    liveStatus: { supported: true, method: "hooks" },
     mcp: { supported: true, perSession: true },
     systemPrompt: { supported: true, method: "flag" },
     messaging: { outbound: true, inbound: true, inboundMethod: "channels" },

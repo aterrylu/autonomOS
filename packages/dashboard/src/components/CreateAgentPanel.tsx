@@ -505,8 +505,8 @@ function RuntimeCard({
             page={page}
           />
           <CapRow
-            ok={caps.hooks.eventCount > 0}
-            label="Live status via hooks"
+            ok={caps.liveStatus.supported}
+            label="Live status"
             page={page}
           />
           <CapRow
