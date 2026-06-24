@@ -47,8 +47,6 @@ function useSidebarData() {
       notificationCounts: s.notificationCounts,
       agentStatuses: s.agentStatuses,
       layout: s.layout,
-      exitedSessions: s.exitedSessions,
-      showExitedAgents: s.showExitedAgents,
       sidebarViewMode: s.sidebarViewMode,
       hierarchyOrder: s.hierarchyOrder,
     })),
@@ -71,23 +69,13 @@ function useSidebarActions() {
       openTemplates: s.openTemplates,
       openSchedules: s.openSchedules,
       openCreateAgent: s.openCreateAgent,
-      toggleShowExitedAgents: s.toggleShowExitedAgents,
       toggleSidebarViewMode: s.toggleSidebarViewMode,
       reorderHierarchy: s.reorderHierarchy,
-      removeSession: s.removeSession,
     })),
   );
 }
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
-
-/**
- * Exited agents older than this window are hidden behind a "Show older"
- * toggle. The 24h default matches the "what happened since I was last here"
- * mental model — sessions stopped days/weeks ago rarely represent work the
- * user still wants to resume.
- */
-const EXITED_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // ── Display list types ──────────────────────────────────────────────────────
 
@@ -170,8 +158,6 @@ export function Sidebar() {
     notificationCounts,
     agentStatuses,
     layout,
-    exitedSessions,
-    showExitedAgents,
     sidebarViewMode,
     hierarchyOrder,
   } = useSidebarData();
@@ -189,10 +175,8 @@ export function Sidebar() {
     openTemplates,
     openSchedules,
     openCreateAgent,
-    toggleShowExitedAgents,
     toggleSidebarViewMode,
     reorderHierarchy,
-    removeSession,
   } = useSidebarActions();
   const page = THEMES[theme].page;
 
@@ -254,16 +238,11 @@ export function Sidebar() {
   // Fetch org chart for hierarchy view
   const { chart: orgChart, status: orgStatus } = useOrgChartData(orgRefreshKey);
 
-  // Merge org chart tree with live sessions (hide stopped when eye is off)
+  // Merge org chart tree with live sessions. Stopped agents are always pruned
+  // from the tree — the sidebar no longer surfaces exited agents.
   const hierarchyTree = useMemo(
-    () =>
-      mergeOrgWithSessions(
-        orgChart,
-        sessions,
-        !showExitedAgents,
-        hierarchyOrder,
-      ),
-    [orgChart, sessions, showExitedAgents, hierarchyOrder],
+    () => mergeOrgWithSessions(orgChart, sessions, true, hierarchyOrder),
+    [orgChart, sessions, hierarchyOrder],
   );
 
   /**
@@ -352,39 +331,7 @@ export function Sidebar() {
   // Drag state
   const dragIdx = useRef<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
-  // Confirm-remove state for exited agents
-  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
-  // Whether to reveal exited agents older than the recent window. Default off
-  // so the list stays focused on agents stopped in the last 24h — older entries
-  // accumulate over weeks and flood the view if unfiltered.
-  const [showOlderExited, setShowOlderExited] = useState(false);
 
-  // Split exited agents into recent (<24h) and older. Falls back to updatedAt
-  // for pre-schema records that lack exitedAt; records with no finite timestamp
-  // at all fall into "older" so they don't masquerade as fresh activity.
-  const { recentExited, olderExited } = useMemo(() => {
-    const cutoff = Date.now() - EXITED_RECENT_WINDOW_MS;
-    const recent: SessionInfo[] = [];
-    const older: SessionInfo[] = [];
-    for (const s of exitedSessions) {
-      const ts = s.exitedAt ?? s.updatedAt;
-      if (Number.isFinite(ts) && ts >= cutoff) recent.push(s);
-      else older.push(s);
-    }
-    return { recentExited: recent, olderExited: older };
-  }, [exitedSessions]);
-
-  // Title text for the eye toggle. Computed as a plain if/else chain rather
-  // than a nested ternary inside JSX for readability.
-  const exitedToggleTitle = (() => {
-    if (showExitedAgents) return "Hide stopped agents";
-    if (recentExited.length > 0) {
-      const olderSuffix =
-        olderExited.length > 0 ? ` (+ ${olderExited.length} older)` : "";
-      return `Show ${recentExited.length} recently stopped${olderSuffix}`;
-    }
-    return `Show ${olderExited.length} older stopped`;
-  })();
   function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
     dragIdx.current = idx;
     const data = { pane };
@@ -475,17 +422,6 @@ export function Sidebar() {
             size={12}
           />
         </button>
-        {exitedSessions.length > 0 && (
-          <button
-            type="button"
-            onClick={toggleShowExitedAgents}
-            className="text-[10px] cursor-pointer px-1 rounded transition-colors"
-            style={{ color: page.statusFg }}
-            title={exitedToggleTitle}
-          >
-            <Codicon name={showExitedAgents ? "eye" : "eye-closed"} size={12} />
-          </button>
-        )}
         <button
           type="button"
           onClick={() => openCreateAgent()}
@@ -500,116 +436,100 @@ export function Sidebar() {
 
       {sidebarViewMode === "flat" ? (
         /* ── Flat view (original) ─────────────────────────────── */
-        <>
-          <div className="py-1">
-            {displayItems.length === 0 && (
-              <p
-                className="px-3 py-3 text-center text-xs"
-                style={{ color: page.statusFg }}
-              >
-                No active agents
-              </p>
-            )}
-
-            {displayItems.map((item, idx) => {
-              if (item.type === "session") {
-                return (
-                  <SessionRow
-                    key={`s-${item.session.id}`}
-                    session={item.session}
-                    pane={item.pane}
-                    idx={idx}
-                    page={page}
-                    isActive={isPaneActive(item.pane)}
-                    isVisible={visiblePaneIds.has(item.pane.id)}
-                    isDropTarget={dropIdx === idx}
-                    meta={
-                      item.session.claudeSessionId
-                        ? sessionMetaMap.get(item.session.claudeSessionId)
-                        : undefined
-                    }
-                    agentState={agentStatuses[item.session.id]}
-                    notifCount={notificationCounts[item.session.id] ?? 0}
-                    indent={0}
-                    draggable
-                    onDragStart={handleDragStart}
-                    onDragOver={handleDragOver}
-                    onDrop={handleDrop}
-                    onDragEnd={handleDragEnd}
-                    onClick={() => {
-                      switchPane(item.pane);
-                      if (item.pane.type === "session")
-                        focusTerminal(item.pane.id);
-                      if (notificationCounts[item.session.id])
-                        markNotificationsRead(item.session.id);
-                    }}
-                  />
-                );
-              }
-
-              const p = item.preview;
-              const pane = item.pane;
-              const isActive = isPaneActive(pane);
-              const isDropTarget = dropIdx === idx;
-              return (
-                // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
-                <div
-                  key={`p-${p.id}`}
-                  role="button"
-                  tabIndex={-1}
-                  onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, idx, pane)}
-                  onDragOver={(e) => handleDragOver(e, idx)}
-                  onDrop={() => handleDrop(idx)}
-                  onDragEnd={handleDragEnd}
-                  className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
-                  style={{
-                    background: isActive
-                      ? page.border
-                      : visiblePaneIds.has(pane.id)
-                        ? `${page.border}80`
-                        : "transparent",
-                    ...(isDropTarget && {
-                      boxShadow: `inset 0 2px 0 ${page.fg}`,
-                    }),
-                  }}
-                  onClick={() => switchPane(pane)}
-                  onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
-                >
-                  <Codicon name="markdown" size={12} />
-                  <span className="flex-1 truncate text-xs">{p.title}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closePreview(p.id);
-                    }}
-                    className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                    style={{ color: page.statusFg }}
-                    title="Close preview"
-                  >
-                    <Codicon name="close" size={12} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Exited agents (toggleable) — recent first, older gated behind a second click */}
-          {showExitedAgents && (
-            <ExitedAgentsList
-              recent={recentExited}
-              older={olderExited}
-              showOlder={showOlderExited}
-              setShowOlder={setShowOlderExited}
-              page={page}
-              confirmRemoveId={confirmRemoveId}
-              onConfirmRemove={setConfirmRemoveId}
-              onRemove={removeSession}
-            />
+        <div className="py-1">
+          {displayItems.length === 0 && (
+            <p
+              className="px-3 py-3 text-center text-xs"
+              style={{ color: page.statusFg }}
+            >
+              No active agents
+            </p>
           )}
-        </>
+
+          {displayItems.map((item, idx) => {
+            if (item.type === "session") {
+              return (
+                <SessionRow
+                  key={`s-${item.session.id}`}
+                  session={item.session}
+                  pane={item.pane}
+                  idx={idx}
+                  page={page}
+                  isActive={isPaneActive(item.pane)}
+                  isVisible={visiblePaneIds.has(item.pane.id)}
+                  isDropTarget={dropIdx === idx}
+                  meta={
+                    item.session.claudeSessionId
+                      ? sessionMetaMap.get(item.session.claudeSessionId)
+                      : undefined
+                  }
+                  agentState={agentStatuses[item.session.id]}
+                  notifCount={notificationCounts[item.session.id] ?? 0}
+                  indent={0}
+                  draggable
+                  onDragStart={handleDragStart}
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                  onDragEnd={handleDragEnd}
+                  onClick={() => {
+                    switchPane(item.pane);
+                    if (item.pane.type === "session")
+                      focusTerminal(item.pane.id);
+                    if (notificationCounts[item.session.id])
+                      markNotificationsRead(item.session.id);
+                  }}
+                />
+              );
+            }
+
+            const p = item.preview;
+            const pane = item.pane;
+            const isActive = isPaneActive(pane);
+            const isDropTarget = dropIdx === idx;
+            return (
+              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+              <div
+                key={`p-${p.id}`}
+                role="button"
+                tabIndex={-1}
+                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+                draggable
+                onDragStart={(e) => handleDragStart(e, idx, pane)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDrop={() => handleDrop(idx)}
+                onDragEnd={handleDragEnd}
+                className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+                style={{
+                  background: isActive
+                    ? page.border
+                    : visiblePaneIds.has(pane.id)
+                      ? `${page.border}80`
+                      : "transparent",
+                  ...(isDropTarget && {
+                    boxShadow: `inset 0 2px 0 ${page.fg}`,
+                  }),
+                }}
+                onClick={() => switchPane(pane)}
+                onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
+              >
+                <Codicon name="markdown" size={12} />
+                <span className="flex-1 truncate text-xs">{p.title}</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closePreview(p.id);
+                  }}
+                  className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ color: page.statusFg }}
+                  title="Close preview"
+                >
+                  <Codicon name="close" size={12} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
       ) : (
         /* ── Hierarchy view ───────────────────────────────────── */
         <div className="py-1">
@@ -694,20 +614,6 @@ export function Sidebar() {
                 setHierDropTarget={setHierDropTarget}
               />
             ))}
-
-          {/* Exited agents under hierarchy — recent first, older gated behind a second click */}
-          {showExitedAgents && (
-            <ExitedAgentsList
-              recent={recentExited}
-              older={olderExited}
-              showOlder={showOlderExited}
-              setShowOlder={setShowOlderExited}
-              page={page}
-              confirmRemoveId={confirmRemoveId}
-              onConfirmRemove={setConfirmRemoveId}
-              onRemove={removeSession}
-            />
-          )}
         </div>
       )}
 
@@ -1040,188 +946,6 @@ function HierarchyFallbackNotice({
       >
         Show flat
       </button>
-    </div>
-  );
-}
-
-/**
- * Renders the exited-agents section for either sidebar view mode.
- *
- * Recent entries (<24h) render unconditionally once the user has clicked
- * the eye toggle. Older entries are gated behind an in-list "Show N older"
- * button so stale entries from weeks ago don't flood the view in normal use
- * but remain reachable when the user genuinely wants the full history.
- */
-function ExitedAgentsList({
-  recent,
-  older,
-  showOlder,
-  setShowOlder,
-  page,
-  confirmRemoveId,
-  onConfirmRemove,
-  onRemove,
-}: {
-  recent: SessionInfo[];
-  older: SessionInfo[];
-  showOlder: boolean;
-  setShowOlder: (v: boolean) => void;
-  page: PageTheme;
-  confirmRemoveId: string | null;
-  onConfirmRemove: (id: string | null) => void;
-  onRemove: (id: string) => Promise<void>;
-}) {
-  // Nothing to render — parent gates on showExitedAgents, so reaching here
-  // with zero entries means both lists are empty.
-  if (recent.length === 0 && older.length === 0) return null;
-
-  return (
-    <>
-      {recent.map((s) => (
-        <ExitedRow
-          key={`exited-${s.id}`}
-          session={s}
-          page={page}
-          confirmRemoveId={confirmRemoveId}
-          onConfirmRemove={onConfirmRemove}
-          onRemove={onRemove}
-        />
-      ))}
-
-      {older.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowOlder(!showOlder)}
-          className="flex w-full items-center gap-1.5 px-3 py-1 text-[10px] cursor-pointer"
-          style={{ color: page.statusFg, opacity: 0.7 }}
-          title={
-            showOlder
-              ? "Hide older stopped agents"
-              : "Show older stopped agents"
-          }
-        >
-          <Codicon
-            name={showOlder ? "chevron-down" : "chevron-right"}
-            size={10}
-          />
-          <span>
-            {showOlder ? "Hide" : "Show"} {older.length} older stopped
-          </span>
-        </button>
-      )}
-
-      {showOlder &&
-        older.map((s) => (
-          <ExitedRow
-            key={`exited-older-${s.id}`}
-            session={s}
-            page={page}
-            confirmRemoveId={confirmRemoveId}
-            onConfirmRemove={onConfirmRemove}
-            onRemove={onRemove}
-          />
-        ))}
-    </>
-  );
-}
-
-function ExitedRow({
-  session: s,
-  page,
-  confirmRemoveId,
-  onConfirmRemove,
-  onRemove,
-  indent = 0,
-}: {
-  session: SessionInfo;
-  page: PageTheme;
-  confirmRemoveId: string | null;
-  onConfirmRemove: (id: string | null) => void;
-  onRemove: (id: string) => Promise<void>;
-  indent?: number;
-}) {
-  const paddingLeft = 9 + indent * 16;
-  // Prefer exitedAt for the timestamp — that's the moment the user cares about
-  // ("when did this stop?"). Fall back to updatedAt for pre-schema records.
-  const ts = s.exitedAt ?? s.updatedAt;
-  const hasValidTs = Number.isFinite(ts);
-  // Tooltip surfaces triage context: why the agent stopped + an absolute
-  // timestamp when available. The list label stays a neutral "stopped Nh"
-  // so crashed/killed/self-exited agents don't visually shout past the
-  // current 24h window design; hover reveals the detail.
-  const absoluteTs = hasValidTs ? new Date(ts).toLocaleString() : null;
-  const tooltip = [exitReasonLabel(s.exitReason), absoluteTs]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <div
-      className="group flex w-full items-center gap-1.5 py-1 text-left"
-      style={{
-        borderLeft: "3px solid transparent",
-        paddingLeft: `${paddingLeft}px`,
-        paddingRight: "12px",
-        opacity: 0.5,
-      }}
-    >
-      <AgentStatusIcon status="stopped" size={14} />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1">
-          <span className="flex-1 truncate text-xs">{s.name}</span>
-          <span
-            className="shrink-0 text-[10px]"
-            style={{ color: page.statusFg }}
-            title={tooltip || undefined}
-          >
-            stopped {formatAge(ts)}
-          </span>
-        </div>
-      </div>
-      {confirmRemoveId === s.id ? (
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                await onRemove(s.id);
-                onConfirmRemove(null);
-              } catch (err) {
-                // Keep confirm visible so the user can retry — the store
-                // already logs the HTTP error, but also log here so the
-                // breadcrumb has the session ID attached for correlation.
-                console.error(
-                  "[ExitedRow] failed to remove session",
-                  s.id,
-                  err,
-                );
-              }
-            }}
-            className="text-[10px] px-1 rounded cursor-pointer"
-            style={{ color: "#ea6c73" }}
-            title="Confirm permanent removal"
-          >
-            remove
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirmRemove(null)}
-            className="text-[10px] px-1 rounded cursor-pointer"
-            style={{ color: page.statusFg }}
-            title="Cancel"
-          >
-            cancel
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => onConfirmRemove(s.id)}
-          className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-          style={{ color: page.statusFg }}
-          title="Remove permanently"
-        >
-          <Codicon name="trash" size={12} />
-        </button>
-      )}
     </div>
   );
 }
@@ -1718,22 +1442,4 @@ function formatAge(timestamp: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
-}
-
-/**
- * Human-readable label for why a session stopped — shown in the exited-row
- * tooltip so users can distinguish a crash from an intentional kill without
- * visual noise in the list itself.
- */
-function exitReasonLabel(reason: SessionInfo["exitReason"]): string {
-  switch (reason) {
-    case "crashed":
-      return "Crashed";
-    case "user_killed":
-      return "Killed by user";
-    case "self_exited":
-      return "Self-exited";
-    default:
-      return "Stopped";
-  }
 }
