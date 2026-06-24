@@ -29,6 +29,8 @@ beforeEach(() => {
   useStore.setState({
     sidebarViewMode: "hierarchy",
     sidebarViewModeExplicit: false,
+    pinnedOrder: [],
+    unpinnedOrder: [],
   });
 });
 
@@ -63,5 +65,35 @@ describe("sidebar view rehydration (persist merge integration)", () => {
     seed({ sidebarViewMode: "garbage", sidebarViewModeExplicit: true });
     await useStore.persist.rehydrate();
     expect(useStore.getState().sidebarViewMode).toBe("hierarchy");
+  });
+});
+
+describe("flat-view order rehydration (pin/unpin migration)", () => {
+  it("migrates a legacy paneOrder into the unpinned section (nothing pre-pinned)", async () => {
+    // A returning user from before pinning existed — only the old single list.
+    seed({ paneOrder: ["a", "b", "c"] });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().unpinnedOrder).toEqual(["a", "b", "c"]);
+    expect(useStore.getState().pinnedOrder).toEqual([]);
+  });
+
+  it("migrates the even-older sessionOrder when paneOrder is absent", async () => {
+    seed({ sessionOrder: ["x", "y"] });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().unpinnedOrder).toEqual(["x", "y"]);
+    expect(useStore.getState().pinnedOrder).toEqual([]);
+  });
+
+  it("restores pinnedOrder + unpinnedOrder when both are present", async () => {
+    seed({ pinnedOrder: ["b"], unpinnedOrder: ["a", "c"] });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().pinnedOrder).toEqual(["b"]);
+    expect(useStore.getState().unpinnedOrder).toEqual(["a", "c"]);
+  });
+
+  it("prefers new unpinnedOrder over a stale legacy paneOrder", async () => {
+    seed({ unpinnedOrder: ["new"], paneOrder: ["legacy"] });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().unpinnedOrder).toEqual(["new"]);
   });
 });

@@ -392,25 +392,37 @@ export function resolveSidebarViewMode(
 
 // ── Pane ordering helpers ──────────────────────────────────────────────
 
-/** Key used in paneOrder for a session */
+/** Key used in the flat-view order arrays for a session */
 function sessionOrderKey(s: SessionInfo): string {
   return s.claudeSessionId || s.id;
 }
 
-/** Key used in paneOrder for a preview */
+/** Key used in the flat-view order arrays for a preview */
 function previewOrderKey(id: string): string {
   return `preview:${id}`;
 }
 
 /**
- * Build a unified, ordered list of sidebar items from sessions + previews.
- * Items in paneOrder come first (in order), then remaining items at the end.
+ * Build the two ordered flat-view sections — pinned (top) and unpinned (below)
+ * — from live sessions + previews and the two persisted order arrays.
+ *
+ * - An item is pinned iff its key appears in `pinnedOrder`; membership in the
+ *   array IS the pinned set (no separate flag).
+ * - Items render in the order their key appears in the relevant array.
+ * - A live item in NEITHER array is a fresh arrival and goes to the TOP of the
+ *   unpinned section (spec: new agents land at the top of unpinned). Multiple
+ *   simultaneous arrivals keep their sessions/previews insertion order.
+ * - Previews are never pinned, so they only ever appear in the unpinned section.
+ *
+ * Stale keys (no matching live item) are skipped here; pruning of the persisted
+ * arrays happens on write (reorder/pin/unpin) and in fetchSessions.
  */
-export function buildSidebarItems(
+export function buildFlatSections(
   sessions: SessionInfo[],
   previews: PreviewPaneInfo[],
-  paneOrder: string[],
-): SidebarItem[] {
+  pinnedOrder: string[],
+  unpinnedOrder: string[],
+): { pinned: SidebarItem[]; unpinned: SidebarItem[] } {
   const itemsByKey = new Map<string, SidebarItem>();
   for (const s of sessions) {
     itemsByKey.set(sessionOrderKey(s), { type: "session", data: s });
@@ -419,30 +431,59 @@ export function buildSidebarItems(
     itemsByKey.set(previewOrderKey(p.id), { type: "preview", data: p });
   }
 
-  const result: SidebarItem[] = [];
   const placed = new Set<string>();
-
-  // Place ordered items first
-  for (const key of paneOrder) {
-    const item = itemsByKey.get(key);
-    if (item) {
-      result.push(item);
-      placed.add(key);
+  const take = (order: string[]): SidebarItem[] => {
+    const out: SidebarItem[] = [];
+    for (const key of order) {
+      if (placed.has(key)) continue;
+      const item = itemsByKey.get(key);
+      if (item) {
+        out.push(item);
+        placed.add(key);
+      }
     }
-  }
+    return out;
+  };
 
-  // Append unordered items
+  const pinned = take(pinnedOrder);
+  const unpinned = take(unpinnedOrder);
+
+  // Fresh arrivals (in neither array) prepend to the unpinned section.
+  const fresh: SidebarItem[] = [];
   for (const [key, item] of itemsByKey) {
-    if (!placed.has(key)) result.push(item);
+    if (!placed.has(key)) fresh.push(item);
   }
 
-  return result;
+  return { pinned, unpinned: [...fresh, ...unpinned] };
 }
 
-/** Get the paneOrder key for a SidebarItem */
+/** Get the order-array key for a SidebarItem */
 export function sidebarItemKey(item: SidebarItem): string {
   if (item.type === "session") return sessionOrderKey(item.data);
   return previewOrderKey(item.data.id);
+}
+
+/**
+ * Snapshot the current flat sections as key arrays — freezes fresh arrivals
+ * into their displayed position and drops stale keys. The mutating flat-view
+ * actions build on this so every write persists exactly what the user sees.
+ */
+function frozenFlatKeys(s: {
+  sessions: SessionInfo[];
+  previewPanes: PreviewPaneInfo[];
+  pinnedOrder: string[];
+  unpinnedOrder: string[];
+}): { pinnedKeys: string[]; unpinnedKeys: string[] } {
+  const { pinned, unpinned } = buildFlatSections(
+    s.sessions,
+    s.previewPanes,
+    s.pinnedOrder,
+    s.unpinnedOrder,
+  );
+  return {
+    pinnedKeys: pinned.map(sidebarItemKey),
+    unpinnedKeys: unpinned.map(sidebarItemKey),
+  };
 }
 
 /** Get the ActivePane for a SidebarItem */
@@ -472,7 +513,12 @@ interface AppState {
   sidebarOpen: boolean;
   sidebarWidth: number;
   autonomousMode: boolean;
-  paneOrder: string[];
+  /** Display order of PINNED agents (top flat-view section). An agent is
+   *  pinned iff its key is in this array. New pins append (bottom of pinned). */
+  pinnedOrder: string[];
+  /** Display order of the UNPINNED flat-view section (agents + previews). Fresh
+   *  arrivals and freshly-unpinned agents prepend (top); see buildFlatSections. */
+  unpinnedOrder: string[];
   /** Ordering of children within each hierarchy group. Key = parent name (lowercase) or "__root__". */
   hierarchyOrder: Record<string, string[]>;
   previewPanes: PreviewPaneInfo[];
@@ -563,7 +609,17 @@ interface AppState {
     toIndex: number,
   ) => void;
   removeSession: (id: string) => Promise<void>;
-  reorderPanes: (fromIndex: number, toIndex: number) => void;
+  /** Reorder within one flat-view section (drag-and-drop). Other section
+   *  unchanged. Persists the frozen snapshot (prunes dead, freezes arrivals). */
+  reorderFlat: (
+    section: "pinned" | "unpinned",
+    fromIndex: number,
+    toIndex: number,
+  ) => void;
+  /** Pin an agent → BOTTOM of the pinned section (appended). */
+  pinAgent: (key: string) => void;
+  /** Unpin an agent → TOP of the unpinned section (prepended). */
+  unpinAgent: (key: string) => void;
 
   // Layout / split-pane actions
   splitLeafWithPane: (
@@ -705,7 +761,8 @@ export const useStore = create<AppState>()(
         sidebarOpen: true,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         autonomousMode: true,
-        paneOrder: [],
+        pinnedOrder: [],
+        unpinnedOrder: [],
         hierarchyOrder: {},
         previewPanes: [],
         layout: _initialRoot,
@@ -887,7 +944,28 @@ export const useStore = create<AppState>()(
             prevExited.length === exitedSessions.length &&
             prevExited.every((s, i) => s.id === exitedSessions[i].id);
           if (!unchanged || !exitedUnchanged) {
-            set({ sessions, exitedSessions, sessionsInitialFetchDone: true });
+            // Prune flat-view order keys whose agent no longer exists so dead
+            // entries don't accumulate for users who never reorder/pin. Preview
+            // keys are kept (previews live in unpinnedOrder too). Reorder/pin/
+            // unpin also re-freeze, so this only matters between interactions.
+            const live = new Set<string>(sessions.map(sessionOrderKey));
+            const keepKey = (k: string) =>
+              k.startsWith("preview:") || live.has(k);
+            const { pinnedOrder, unpinnedOrder } = get();
+            const prunedPinned = pinnedOrder.filter(keepKey);
+            const prunedUnpinned = unpinnedOrder.filter(keepKey);
+            const orderChanged =
+              prunedPinned.length !== pinnedOrder.length ||
+              prunedUnpinned.length !== unpinnedOrder.length;
+            set({
+              sessions,
+              exitedSessions,
+              sessionsInitialFetchDone: true,
+              ...(orderChanged && {
+                pinnedOrder: prunedPinned,
+                unpinnedOrder: prunedUnpinned,
+              }),
+            });
 
             const { activePane } = get();
             if (
@@ -1131,12 +1209,13 @@ export const useStore = create<AppState>()(
           const id = `preview-${Date.now()}-${++previewCounter}`;
           const title = filePath.split("/").pop() || filePath;
           const pane: PreviewPaneInfo = { id, filePath, title };
-          const { paneOrder, layout, focusedLeafId } = get();
+          const { unpinnedOrder, layout, focusedLeafId } = get();
           const activeP: ActivePane = { type: "preview", id };
-          // Add preview as a new tab in the focused leaf
+          // Add preview as a new tab in the focused leaf. A new preview is a
+          // fresh arrival → top of the unpinned section.
           set({
             previewPanes: [...previewPanes, pane],
-            paneOrder: [...paneOrder, previewOrderKey(id)],
+            unpinnedOrder: [previewOrderKey(id), ...unpinnedOrder],
             activePane: activeP,
             layout: addTab(layout, focusedLeafId, activeP),
           });
@@ -1393,7 +1472,8 @@ export const useStore = create<AppState>()(
         closePreview: (id) => {
           const {
             previewPanes,
-            paneOrder,
+            pinnedOrder,
+            unpinnedOrder,
             activePane,
             sessions,
             layout,
@@ -1401,9 +1481,11 @@ export const useStore = create<AppState>()(
             groups,
             activeGroupId,
           } = get();
+          const previewKey = previewOrderKey(id);
           const updated: Partial<AppState> = {
             previewPanes: previewPanes.filter((p) => p.id !== id),
-            paneOrder: paneOrder.filter((k) => k !== previewOrderKey(id)),
+            pinnedOrder: pinnedOrder.filter((k) => k !== previewKey),
+            unpinnedOrder: unpinnedOrder.filter((k) => k !== previewKey),
           };
 
           // Find the leaf holding this preview in the layout
@@ -1465,13 +1547,41 @@ export const useStore = create<AppState>()(
           set(updated);
         },
 
-        reorderPanes: (fromIndex, toIndex) => {
-          const { sessions, previewPanes, paneOrder } = get();
-          const items = buildSidebarItems(sessions, previewPanes, paneOrder);
-          const ordered = items.map(sidebarItemKey);
-          const [moved] = ordered.splice(fromIndex, 1);
-          ordered.splice(toIndex, 0, moved);
-          set({ paneOrder: ordered });
+        reorderFlat: (section, fromIndex, toIndex) => {
+          const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
+          const target = section === "pinned" ? pinnedKeys : unpinnedKeys;
+          // Out-of-range or no-op: still persist the frozen snapshot so the drag
+          // prunes dead keys and freezes arrivals rather than doing nothing.
+          if (
+            fromIndex >= 0 &&
+            toIndex >= 0 &&
+            fromIndex < target.length &&
+            toIndex < target.length &&
+            fromIndex !== toIndex
+          ) {
+            const [moved] = target.splice(fromIndex, 1);
+            target.splice(toIndex, 0, moved);
+          }
+          set({ pinnedOrder: pinnedKeys, unpinnedOrder: unpinnedKeys });
+        },
+
+        pinAgent: (key) => {
+          const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
+          if (pinnedKeys.includes(key)) return; // already pinned
+          set({
+            pinnedOrder: [...pinnedKeys, key], // → BOTTOM of pinned
+            unpinnedOrder: unpinnedKeys.filter((k) => k !== key),
+          });
+        },
+
+        unpinAgent: (key) => {
+          const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
+          if (!pinnedKeys.includes(key)) return; // not pinned
+          set({
+            pinnedOrder: pinnedKeys.filter((k) => k !== key),
+            // → TOP of unpinned, treated as a fresh appearance.
+            unpinnedOrder: [key, ...unpinnedKeys.filter((k) => k !== key)],
+          });
         },
 
         // ── Layout / split-pane actions ──────────────────────────────────────
@@ -1773,8 +1883,14 @@ export const useStore = create<AppState>()(
         },
 
         remapSessionIds: (idMap) => {
-          const { layout, activePane, paneOrder, groups, activeGroupId } =
-            get();
+          const {
+            layout,
+            activePane,
+            pinnedOrder,
+            unpinnedOrder,
+            groups,
+            activeGroupId,
+          } = get();
 
           // Helper: remap a pane reference
           const remapPane = (p: ActivePane | null): ActivePane | null => {
@@ -1801,14 +1917,13 @@ export const useStore = create<AppState>()(
             };
           };
 
-          // Remap paneOrder — keys are raw claudeSessionId or internal id
-          // (no prefix). claudeSessionId doesn't change on restart, so only
-          // entries that used the internal id need remapping.
-          const newPaneOrder = paneOrder.map((key) => {
+          // Remap both flat-view order arrays — keys are raw claudeSessionId or
+          // internal id (no prefix). claudeSessionId doesn't change on restart,
+          // so only entries that used the internal id need remapping.
+          const remapKey = (key: string) => {
             if (key.startsWith("preview:")) return key;
-            const newId = idMap[key];
-            return newId ?? key;
-          });
+            return idMap[key] ?? key;
+          };
 
           // Remap groups
           const newGroups: Record<string, PaneGroup> = {};
@@ -1823,7 +1938,8 @@ export const useStore = create<AppState>()(
           set({
             layout: remapLayout(layout),
             activePane: remapPane(activePane),
-            paneOrder: newPaneOrder,
+            pinnedOrder: pinnedOrder.map(remapKey),
+            unpinnedOrder: unpinnedOrder.map(remapKey),
             groups: newGroups,
             activeGroupId,
           });
@@ -1890,7 +2006,8 @@ export const useStore = create<AppState>()(
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
         autonomousMode: state.autonomousMode,
-        paneOrder: state.paneOrder,
+        pinnedOrder: state.pinnedOrder,
+        unpinnedOrder: state.unpinnedOrder,
         hierarchyOrder: state.hierarchyOrder,
         previewPanes: state.previewPanes,
         layout: state.layout,
@@ -1946,11 +2063,19 @@ export const useStore = create<AppState>()(
           merged.activePane = { type: "session", id: saved.sessionId };
         }
 
-        // Migrate old sessionOrder → paneOrder
-        if (Array.isArray(saved?.paneOrder)) {
-          merged.paneOrder = saved.paneOrder as string[];
+        // Flat-view order. New keys (pinnedOrder/unpinnedOrder) win when
+        // present. Otherwise migrate the legacy single list (paneOrder, or the
+        // even-older sessionOrder) into the unpinned section — everyone starts
+        // unpinned with their manual order intact, nothing pre-pinned.
+        if (Array.isArray(saved?.pinnedOrder)) {
+          merged.pinnedOrder = saved.pinnedOrder as string[];
+        }
+        if (Array.isArray(saved?.unpinnedOrder)) {
+          merged.unpinnedOrder = saved.unpinnedOrder as string[];
+        } else if (Array.isArray(saved?.paneOrder)) {
+          merged.unpinnedOrder = saved.paneOrder as string[];
         } else if (Array.isArray(saved?.sessionOrder)) {
-          merged.paneOrder = saved.sessionOrder as string[];
+          merged.unpinnedOrder = saved.sessionOrder as string[];
         }
 
         // Migrate: if layout is missing, construct from existing activePane.
