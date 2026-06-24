@@ -19,7 +19,14 @@ import type {
   ProjectInfo,
   SessionInfo,
 } from "../store";
-import { buildSidebarItems, sidebarItemPane, THEMES, useStore } from "../store";
+import {
+  buildFlatSections,
+  type SidebarItem,
+  sidebarItemKey,
+  sidebarItemPane,
+  THEMES,
+  useStore,
+} from "../store";
 import { Codicon } from "./Codicon";
 import {
   mergeOrgWithSessions,
@@ -41,7 +48,8 @@ function useSidebarData() {
       sessions: s.sessions,
       projects: s.projects,
       activePane: s.activePane,
-      paneOrder: s.paneOrder,
+      pinnedOrder: s.pinnedOrder,
+      unpinnedOrder: s.unpinnedOrder,
       previewPanes: s.previewPanes,
       status: s.status,
       notificationCounts: s.notificationCounts,
@@ -62,7 +70,9 @@ function useSidebarActions() {
       createSession: s.createSession,
       switchPane: s.switchPane,
       closePreview: s.closePreview,
-      reorderPanes: s.reorderPanes,
+      reorderFlat: s.reorderFlat,
+      pinAgent: s.pinAgent,
+      unpinAgent: s.unpinAgent,
       fetchNotifications: s.fetchNotifications,
       markNotificationsRead: s.markNotificationsRead,
       openOrgChart: s.openOrgChart,
@@ -80,8 +90,16 @@ type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 // ── Display list types ──────────────────────────────────────────────────────
 
 type DisplayItem =
-  | { type: "session"; session: SessionInfo; pane: ActivePane }
-  | { type: "preview"; preview: PreviewPaneInfo; pane: ActivePane };
+  | { type: "session"; session: SessionInfo; pane: ActivePane; key: string }
+  | {
+      type: "preview";
+      preview: PreviewPaneInfo;
+      pane: ActivePane;
+      key: string;
+    };
+
+/** Which flat-view section a row belongs to. */
+type FlatSection = "pinned" | "unpinned";
 
 /**
  * Poll the org chart endpoint, expose a manual refresh trigger, and surface
@@ -152,7 +170,8 @@ export function Sidebar() {
     sessions,
     projects,
     activePane,
-    paneOrder,
+    pinnedOrder,
+    unpinnedOrder,
     previewPanes,
     status,
     notificationCounts,
@@ -168,7 +187,6 @@ export function Sidebar() {
     createSession,
     switchPane,
     closePreview,
-    reorderPanes,
     fetchNotifications,
     markNotificationsRead,
     openOrgChart,
@@ -177,6 +195,9 @@ export function Sidebar() {
     openCreateAgent,
     toggleSidebarViewMode,
     reorderHierarchy,
+    reorderFlat,
+    pinAgent,
+    unpinAgent,
   } = useSidebarActions();
   const page = THEMES[theme].page;
 
@@ -190,26 +211,24 @@ export function Sidebar() {
     return ids;
   }, [layout]);
 
-  const sidebarItems = useMemo(
-    () => buildSidebarItems(sessions, previewPanes, paneOrder),
-    [sessions, previewPanes, paneOrder],
-  );
-
-  // Flat display list — no group containers, just sessions and previews in order.
-  const displayItems = useMemo((): DisplayItem[] => {
-    const result: DisplayItem[] = [];
-
-    for (const item of sidebarItems) {
+  // Flat-view sections — pinned on top, unpinned below. Each is a plain list of
+  // sessions/previews (no group containers).
+  const flatSections = useMemo(() => {
+    const toDisplay = (item: SidebarItem): DisplayItem => {
       const pane = sidebarItemPane(item);
-      if (item.type === "preview") {
-        result.push({ type: "preview", preview: item.data, pane });
-      } else {
-        result.push({ type: "session", session: item.data, pane });
-      }
-    }
-
-    return result;
-  }, [sidebarItems]);
+      const key = sidebarItemKey(item);
+      return item.type === "preview"
+        ? { type: "preview", preview: item.data, pane, key }
+        : { type: "session", session: item.data, pane, key };
+    };
+    const { pinned, unpinned } = buildFlatSections(
+      sessions,
+      previewPanes,
+      pinnedOrder,
+      unpinnedOrder,
+    );
+    return { pinned: pinned.map(toDisplay), unpinned: unpinned.map(toDisplay) };
+  }, [sessions, previewPanes, pinnedOrder, unpinnedOrder]);
 
   // Compute a stable fingerprint of the session fields that affect the org
   // chart. When this changes (spawn, kill, rename, set_manager, status flip),
@@ -328,40 +347,154 @@ export function Sidebar() {
     };
   }, [fetchSessions, fetchProjects, fetchNotifications]);
 
-  // Drag state
-  const dragIdx = useRef<number | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  // Drag state — section-scoped. Reordering is confined to within one section;
+  // moving between pinned/unpinned is done via the pin/unpin button, not drag.
+  const dragRef = useRef<{ section: FlatSection; idx: number } | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    section: FlatSection;
+    idx: number;
+  } | null>(null);
 
-  function handleDragStart(e: React.DragEvent, idx: number, pane: ActivePane) {
-    dragIdx.current = idx;
+  function handleDragStart(
+    e: React.DragEvent,
+    section: FlatSection,
+    idx: number,
+    pane: ActivePane,
+  ) {
+    dragRef.current = { section, idx };
     const data = { pane };
     e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
     e.dataTransfer.effectAllowed = "move";
     startDrag(data);
   }
 
-  function handleDragOver(e: React.DragEvent, idx: number) {
+  function handleDragOver(
+    e: React.DragEvent,
+    section: FlatSection,
+    idx: number,
+  ) {
+    // Only a same-section drop is a reorder; ignore hovers from the other
+    // section so the cursor shows "no drop" there.
+    if (dragRef.current?.section !== section) return;
     e.preventDefault();
-    setDropIdx(idx);
+    setDropTarget({ section, idx });
   }
 
-  function handleDrop(idx: number) {
-    if (dragIdx.current !== null && dragIdx.current !== idx) {
-      reorderPanes(dragIdx.current, idx);
+  function handleDrop(section: FlatSection, idx: number) {
+    const d = dragRef.current;
+    if (d && d.section === section && d.idx !== idx) {
+      reorderFlat(section, d.idx, idx);
     }
-    dragIdx.current = null;
-    setDropIdx(null);
+    dragRef.current = null;
+    setDropTarget(null);
   }
 
   function handleDragEnd() {
-    dragIdx.current = null;
-    setDropIdx(null);
+    dragRef.current = null;
+    setDropTarget(null);
     endDrag();
   }
 
   function isPaneActive(pane: ActivePane): boolean {
     if (!activePane) return false;
     return activePane.type === pane.type && activePane.id === pane.id;
+  }
+
+  // Render one flat-view row (session or preview) within a given section. Drag
+  // handlers are bound to the section so reordering stays section-local; the
+  // pin/unpin button is the only way to cross sections.
+  function renderFlatItem(
+    item: DisplayItem,
+    section: FlatSection,
+    idx: number,
+  ) {
+    const isDropTarget =
+      dropTarget?.section === section && dropTarget.idx === idx;
+
+    if (item.type === "session") {
+      const isPinned = section === "pinned";
+      return (
+        <SessionRow
+          key={`s-${item.session.id}`}
+          session={item.session}
+          pane={item.pane}
+          idx={idx}
+          page={page}
+          isActive={isPaneActive(item.pane)}
+          isVisible={visiblePaneIds.has(item.pane.id)}
+          isDropTarget={isDropTarget}
+          meta={
+            item.session.claudeSessionId
+              ? sessionMetaMap.get(item.session.claudeSessionId)
+              : undefined
+          }
+          agentState={agentStatuses[item.session.id]}
+          notifCount={notificationCounts[item.session.id] ?? 0}
+          indent={0}
+          isPinned={isPinned}
+          onTogglePin={() =>
+            isPinned ? unpinAgent(item.key) : pinAgent(item.key)
+          }
+          draggable
+          onDragStart={(e, i, pane) => handleDragStart(e, section, i, pane)}
+          onDragOver={(e, i) => handleDragOver(e, section, i)}
+          onDrop={(i) => handleDrop(section, i)}
+          onDragEnd={handleDragEnd}
+          onClick={() => {
+            switchPane(item.pane);
+            if (item.pane.type === "session") focusTerminal(item.pane.id);
+            if (notificationCounts[item.session.id])
+              markNotificationsRead(item.session.id);
+          }}
+        />
+      );
+    }
+
+    const p = item.preview;
+    const pane = item.pane;
+    const isActive = isPaneActive(pane);
+    return (
+      // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+      <div
+        key={`p-${p.id}`}
+        role="button"
+        tabIndex={-1}
+        onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+        draggable
+        onDragStart={(e) => handleDragStart(e, section, idx, pane)}
+        onDragOver={(e) => handleDragOver(e, section, idx)}
+        onDrop={() => handleDrop(section, idx)}
+        onDragEnd={handleDragEnd}
+        className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
+        style={{
+          background: isActive
+            ? page.border
+            : visiblePaneIds.has(pane.id)
+              ? `${page.border}80`
+              : "transparent",
+          ...(isDropTarget && {
+            boxShadow: `inset 0 2px 0 ${page.fg}`,
+          }),
+        }}
+        onClick={() => switchPane(pane)}
+        onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
+      >
+        <Codicon name="markdown" size={12} />
+        <span className="flex-1 truncate text-xs">{p.title}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            closePreview(p.id);
+          }}
+          className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ color: page.statusFg }}
+          title="Close preview"
+        >
+          <Codicon name="close" size={12} />
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -435,100 +568,36 @@ export function Sidebar() {
       </div>
 
       {sidebarViewMode === "flat" ? (
-        /* ── Flat view (original) ─────────────────────────────── */
+        /* ── Flat view: pinned section, divider, unpinned section ── */
         <div className="py-1">
-          {displayItems.length === 0 && (
-            <p
-              className="px-3 py-3 text-center text-xs"
-              style={{ color: page.statusFg }}
-            >
-              No active agents
-            </p>
+          {flatSections.pinned.length === 0 &&
+            flatSections.unpinned.length === 0 && (
+              <p
+                className="px-3 py-3 text-center text-xs"
+                style={{ color: page.statusFg }}
+              >
+                No active agents
+              </p>
+            )}
+
+          {flatSections.pinned.map((item, idx) =>
+            renderFlatItem(item, "pinned", idx),
           )}
 
-          {displayItems.map((item, idx) => {
-            if (item.type === "session") {
-              return (
-                <SessionRow
-                  key={`s-${item.session.id}`}
-                  session={item.session}
-                  pane={item.pane}
-                  idx={idx}
-                  page={page}
-                  isActive={isPaneActive(item.pane)}
-                  isVisible={visiblePaneIds.has(item.pane.id)}
-                  isDropTarget={dropIdx === idx}
-                  meta={
-                    item.session.claudeSessionId
-                      ? sessionMetaMap.get(item.session.claudeSessionId)
-                      : undefined
-                  }
-                  agentState={agentStatuses[item.session.id]}
-                  notifCount={notificationCounts[item.session.id] ?? 0}
-                  indent={0}
-                  draggable
-                  onDragStart={handleDragStart}
-                  onDragOver={handleDragOver}
-                  onDrop={handleDrop}
-                  onDragEnd={handleDragEnd}
-                  onClick={() => {
-                    switchPane(item.pane);
-                    if (item.pane.type === "session")
-                      focusTerminal(item.pane.id);
-                    if (notificationCounts[item.session.id])
-                      markNotificationsRead(item.session.id);
-                  }}
-                />
-              );
-            }
-
-            const p = item.preview;
-            const pane = item.pane;
-            const isActive = isPaneActive(pane);
-            const isDropTarget = dropIdx === idx;
-            return (
-              // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
+          {/* Divider — only between two non-empty sections (no dangling line). */}
+          {flatSections.pinned.length > 0 &&
+            flatSections.unpinned.length > 0 && (
               <div
-                key={`p-${p.id}`}
-                role="button"
-                tabIndex={-1}
-                onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                draggable
-                onDragStart={(e) => handleDragStart(e, idx, pane)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDrop={() => handleDrop(idx)}
-                onDragEnd={handleDragEnd}
-                className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
-                style={{
-                  background: isActive
-                    ? page.border
-                    : visiblePaneIds.has(pane.id)
-                      ? `${page.border}80`
-                      : "transparent",
-                  ...(isDropTarget && {
-                    boxShadow: `inset 0 2px 0 ${page.fg}`,
-                  }),
-                }}
-                onClick={() => switchPane(pane)}
-                onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
-              >
-                <Codicon name="markdown" size={12} />
-                <span className="flex-1 truncate text-xs">{p.title}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closePreview(p.id);
-                  }}
-                  className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                  style={{ color: page.statusFg }}
-                  title="Close preview"
-                >
-                  <Codicon name="close" size={12} />
-                </button>
-              </div>
-            );
-          })}
+                data-testid="flat-section-divider"
+                className="mx-3 my-1.5"
+                style={{ height: 1, background: page.statusFg, opacity: 0.25 }}
+                aria-hidden="true"
+              />
+            )}
+
+          {flatSections.unpinned.map((item, idx) =>
+            renderFlatItem(item, "unpinned", idx),
+          )}
         </div>
       ) : (
         /* ── Hierarchy view ───────────────────────────────────── */
@@ -784,6 +853,10 @@ interface SessionRowProps {
   onDragOver?: (e: React.DragEvent, idx: number) => void;
   onDrop?: (idx: number) => void;
   onDragEnd?: () => void;
+  /** Whether this row is in the pinned section (flat view only). */
+  isPinned?: boolean;
+  /** Toggle pin state. Presence enables the hover-reveal pin button. */
+  onTogglePin?: () => void;
   onClick: () => void;
 }
 
@@ -807,6 +880,8 @@ function SessionRow({
   onDragOver,
   onDrop,
   onDragEnd,
+  isPinned,
+  onTogglePin,
   onClick,
 }: SessionRowProps) {
   const lastActive = meta?.lastModified ?? s.createdAt;
@@ -901,6 +976,23 @@ function SessionRow({
           )}
         </div>
       </div>
+      {onTogglePin && (
+        <button
+          type="button"
+          // Not draggable: keep a drag started on the pin glyph from
+          // initiating a row drag (the button lives inside the draggable row).
+          draggable={false}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin();
+          }}
+          className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ color: isPinned ? page.fg : page.statusFg }}
+          title={isPinned ? "Unpin agent" : "Pin agent"}
+        >
+          <Codicon name={isPinned ? "pinned" : "pin"} size={12} />
+        </button>
+      )}
     </div>
   );
 }
