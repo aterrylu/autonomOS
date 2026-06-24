@@ -361,6 +361,35 @@ function isThemeName(value: unknown): value is ThemeName {
   return typeof value === "string" && value in THEMES;
 }
 
+/**
+ * Decide which sidebar view to show on rehydration.
+ *
+ * Returns the persisted view ONLY when the user explicitly chose it (the
+ * `sidebarViewModeExplicit` flag is true). Otherwise — a user who never
+ * toggled, or an existing install whose default view was auto-persisted
+ * before this flag existed — we fall back to `defaultMode`. That fallback is
+ * what makes the hierarchical default reach everyone who has not made an
+ * explicit choice, not just brand-new installs.
+ *
+ * An explicit flag paired with a missing/invalid view is treated as
+ * not-explicit, so a corrupted blob can never strand a user on a stale value.
+ */
+export function resolveSidebarViewMode(
+  saved:
+    | { sidebarViewMode?: unknown; sidebarViewModeExplicit?: unknown }
+    | null
+    | undefined,
+  defaultMode: "flat" | "hierarchy",
+): { mode: "flat" | "hierarchy"; explicit: boolean } {
+  const validSaved =
+    saved?.sidebarViewMode === "flat" || saved?.sidebarViewMode === "hierarchy"
+      ? saved.sidebarViewMode
+      : null;
+  const explicit =
+    saved?.sidebarViewModeExplicit === true && validSaved !== null;
+  return { mode: explicit ? validSaved : defaultMode, explicit };
+}
+
 // ── Pane ordering helpers ──────────────────────────────────────────────
 
 /** Key used in paneOrder for a session */
@@ -434,6 +463,11 @@ interface AppState {
   theme: ThemeName;
   agentIconStyle: AgentIconStyle;
   sidebarViewMode: "flat" | "hierarchy";
+  /** True once the user has explicitly chosen a sidebar view via the toggle.
+   *  When false (never toggled, or a pre-flag persisted state), rehydration
+   *  uses the default view rather than any auto-persisted value — this is how
+   *  existing installs that never picked a view get the hierarchical default. */
+  sidebarViewModeExplicit: boolean;
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -456,7 +490,6 @@ interface AppState {
    *  "still loading." Once true for a tab session, stays true — the
    *  first-run flow re-fires only on a fresh tab or page reload. */
   sessionsInitialFetchDone: boolean;
-  showExitedAgents: boolean;
   projects: ProjectInfo[];
   /** Loaded templates keyed by name */
   templates: Record<string, AgentTemplate>;
@@ -523,7 +556,6 @@ interface AppState {
   ) => Promise<void>;
   fetchSchedulerStatus: () => Promise<void>;
   updateSchedulerSettings: (maxConcurrentRuns: number) => Promise<void>;
-  toggleShowExitedAgents: () => void;
   toggleSidebarViewMode: () => void;
   reorderHierarchy: (
     groupKey: string,
@@ -653,13 +685,13 @@ export const useStore = create<AppState>()(
       return {
         theme: "void",
         agentIconStyle: "provider",
-        sidebarViewMode: "flat",
+        sidebarViewMode: "hierarchy",
+        sidebarViewModeExplicit: false,
         activePane: null,
         status: "disconnected",
         sessions: [],
         exitedSessions: [],
         sessionsInitialFetchDone: false,
-        showExitedAgents: false,
         projects: [],
         templates: {},
         templatesLoading: false,
@@ -1323,14 +1355,13 @@ export const useStore = create<AppState>()(
           }));
         },
 
-        toggleShowExitedAgents: () => {
-          set({ showExitedAgents: !get().showExitedAgents });
-        },
-
         toggleSidebarViewMode: () => {
           set({
             sidebarViewMode:
               get().sidebarViewMode === "flat" ? "hierarchy" : "flat",
+            // Mark the view as explicitly chosen so it survives rehydration
+            // (otherwise the default view would win — see resolveSidebarViewMode).
+            sidebarViewModeExplicit: true,
           });
         },
 
@@ -1854,11 +1885,11 @@ export const useStore = create<AppState>()(
         theme: state.theme,
         agentIconStyle: state.agentIconStyle,
         sidebarViewMode: state.sidebarViewMode,
+        sidebarViewModeExplicit: state.sidebarViewModeExplicit,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
         autonomousMode: state.autonomousMode,
-        showExitedAgents: state.showExitedAgents,
         paneOrder: state.paneOrder,
         hierarchyOrder: state.hierarchyOrder,
         previewPanes: state.previewPanes,
@@ -1891,13 +1922,11 @@ export const useStore = create<AppState>()(
           );
         if (typeof saved?.autonomousMode === "boolean")
           merged.autonomousMode = saved.autonomousMode;
-        if (typeof saved?.showExitedAgents === "boolean")
-          merged.showExitedAgents = saved.showExitedAgents;
-        if (
-          saved?.sidebarViewMode === "flat" ||
-          saved?.sidebarViewMode === "hierarchy"
-        )
-          merged.sidebarViewMode = saved.sidebarViewMode;
+        // Restore the saved view only if explicitly chosen; otherwise keep the
+        // new default (current.sidebarViewMode). See resolveSidebarViewMode.
+        const view = resolveSidebarViewMode(saved, current.sidebarViewMode);
+        merged.sidebarViewMode = view.mode;
+        merged.sidebarViewModeExplicit = view.explicit;
         if (
           saved?.hierarchyOrder &&
           typeof saved.hierarchyOrder === "object" &&
