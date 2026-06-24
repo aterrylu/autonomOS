@@ -1,4 +1,3 @@
-import { mkdirSync } from "node:fs";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import { mockApi } from "./mocks";
 
@@ -8,12 +7,8 @@ import { mockApi } from "./mocks";
  * Asserts on computed `box-shadow` rather than pixel snapshots: the active row's
  * shadow must contain the current theme's accent RGB, a non-active row's must be
  * `none`. This pins the behavior (active → themed ring) without coupling to blur
- * radii or cross-machine anti-aliasing. Screenshots are captured for human review.
+ * radii or cross-machine anti-aliasing.
  */
-
-const SHOTS =
-  "/private/tmp/claude-501/-Users-aterrylu-workspace-autonomOS/61bca8f4-e124-4baf-a46d-1908f6c25d50/scratchpad/qa-screens";
-mkdirSync(SHOTS, { recursive: true });
 
 // THEMES[theme].terminal.yellow per store.ts, as the browser renders rgb():
 const ACCENT_RGB: Record<string, string> = {
@@ -52,6 +47,20 @@ async function activate(page: Page, name: string) {
   await page.locator("aside").getByText(name, { exact: true }).first().click();
 }
 
+/**
+ * Ensure the sidebar shows `target`. The view toggle's title reflects the
+ * destination ("Switch to flat view" when currently in hierarchy, and vice
+ * versa), so the button for `target` is present only when we're in the other
+ * view — click it iff present. Robust to the default-view setting (hierarchy
+ * since #249).
+ */
+async function setView(page: Page, target: "flat" | "hierarchy") {
+  const toggle = page.getByTitle(
+    target === "flat" ? "Switch to flat view" : "Switch to hierarchy view",
+  );
+  if (await toggle.count()) await toggle.click();
+}
+
 test.describe("active-agent sidebar highlight", () => {
   test("active row gets a themed ring; non-active rows get none (flat)", async ({
     page,
@@ -59,6 +68,7 @@ test.describe("active-agent sidebar highlight", () => {
     await mockApi(page);
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
+    await setView(page, "flat");
 
     // Default theme is Void (store initial state).
     await activate(page, "Researcher");
@@ -78,6 +88,7 @@ test.describe("active-agent sidebar highlight", () => {
     await mockApi(page);
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
+    await setView(page, "flat");
     await activate(page, "Researcher");
 
     await setTheme(page, "Midnight");
@@ -98,7 +109,7 @@ test.describe("active-agent sidebar highlight", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
 
-    await page.getByTitle("Switch to hierarchy view").click();
+    await setView(page, "hierarchy");
     // Dispatcher is the root manager (has child Researcher) → it carries the
     // 3px blue parent borderLeft. Make it the active agent.
     await activate(page, "Dispatcher");
@@ -110,48 +121,27 @@ test.describe("active-agent sidebar highlight", () => {
     expect(await borderLeft(parentRow)).toContain(PARENT_BLUE);
   });
 
-  test("capture: sidebar highlight across themes + views", async ({ page }) => {
+  test("active ring coexists with another agent's unread badge (Option A)", async ({
+    page,
+  }) => {
     await mockApi(page);
-    // Inject an unread count so the active row shows the red "N unread ·" text
-    // (Option A coexist). Registered after mockApi → takes precedence; the 3s
-    // poll re-adds it even after markNotificationsRead clears it on click.
+    // A sibling agent carries an unread count; the active agent shows its ring.
+    // The two signals use independent code paths and must render side-by-side.
     await page.route("**/api/hooks", (r) =>
       r.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          "agent-researcher-0002": { unread: 2 },
-          "agent-dispatcher-0001": { unread: 5 },
-        }),
+        body: JSON.stringify({ "agent-dispatcher-0001": { unread: 5 } }),
       }),
     );
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
+    await setView(page, "flat");
     await activate(page, "Researcher");
 
-    const aside = page.locator("aside");
-
-    for (const theme of ["Void", "Midnight", "Daylight"] as const) {
-      await setTheme(page, theme);
-      await aside.screenshot({ path: `${SHOTS}/flat-${theme}.png` });
-    }
-
-    // Hierarchy view (in Daylight, then Midnight) — show the active parent case.
-    await page.getByTitle("Switch to hierarchy view").click();
-    await activate(page, "Dispatcher");
-    await aside.screenshot({ path: `${SHOTS}/hierarchy-Daylight.png` });
-    await setTheme(page, "Midnight");
-    await aside.screenshot({ path: `${SHOTS}/hierarchy-Midnight.png` });
-
-    // Option A coexist: the active-agent ring and the red "N unread ·" badge use
-    // independent code paths, so they render side-by-side in one list. Capture the
-    // active (ringed) Researcher alongside a sibling (Dispatcher) carrying unread.
-    // (Same-ROW active+unread is the new-activity-while-viewing case; shown in the
-    // design mockup card 04 — it can't be forced deterministically here because a
-    // click marks the active agent read.)
-    await page.getByTitle("Switch to flat view").click();
-    await activate(page, "Researcher");
+    // Active agent (Researcher) has the themed ring...
+    expect(await boxShadow(row(page, "Researcher"))).toContain(ACCENT_RGB.Void);
+    // ...while a different agent (Dispatcher) still shows its red unread badge.
     await expect(row(page, "Dispatcher")).toContainText("unread");
-    await aside.screenshot({ path: `${SHOTS}/coexist-active-and-unread.png` });
   });
 });
