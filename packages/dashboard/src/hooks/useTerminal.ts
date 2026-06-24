@@ -5,7 +5,7 @@ import type {
   IFitAddon,
   ILink,
   ILinkProvider,
-  ITerminalAddon,
+  IWebglAddon,
   TerminalBackend,
   TerminalInstance,
 } from "../terminal/types";
@@ -146,7 +146,7 @@ export function useTerminal(
     // The synchronous cleanup function and the async body both access these.
     let terminal: TerminalInstance | null = null;
     let fitAddon: IFitAddon | null = null;
-    let webglAddon: ITerminalAddon | null = null;
+    let webglAddon: IWebglAddon | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let scrollTimer: ReturnType<typeof setTimeout> | null = null;
     let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -331,6 +331,36 @@ export function useTerminal(
       const isContainerVisible = (): boolean =>
         container.offsetWidth > 0 && container.offsetHeight > 0;
 
+      // Load the WebGL renderer and keep it alive across GPU context loss.
+      // xterm's WebglAddon silently stops painting if its GL context is lost
+      // — common when several panes each hold a context (browsers cap WebGL
+      // contexts, and this hook creates/disposes one per pane on visibility)
+      // or after a GPU reset. Without an onContextLoss handler the terminal
+      // appears to freeze: typed input only shows up once a resize/focus
+      // nudge forces a full repaint. Disposing and recreating the addon on
+      // context loss resumes live rendering.
+      const loadWebglAddon = (): void => {
+        if (disposed || webglAddon || !terminal) return;
+        try {
+          const addon = createWebglAddon();
+          if (!addon) return;
+          terminal.loadAddon(addon);
+          webglAddon = addon;
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webglAddon === addon) webglAddon = null;
+            // Rebuild on the next visible frame so rendering resumes.
+            if (!disposed && isContainerVisible()) loadWebglAddon();
+          });
+        } catch (err) {
+          console.warn(
+            "WebGL addon failed, falling back to canvas renderer:",
+            err,
+          );
+          webglAddon = null;
+        }
+      };
+
       handleFocus = () => {
         if (disposed) return;
         if (
@@ -362,20 +392,7 @@ export function useTerminal(
         }
 
         // Load WebGL when becoming visible (GPU rendering for xterm.js)
-        if (!webglAddon) {
-          try {
-            webglAddon = createWebglAddon();
-            if (webglAddon) {
-              terminal!.loadAddon(webglAddon);
-            }
-          } catch (err) {
-            console.warn(
-              "WebGL addon failed, falling back to canvas renderer:",
-              err,
-            );
-            webglAddon = null;
-          }
-        }
+        loadWebglAddon();
 
         try {
           // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
