@@ -200,6 +200,7 @@ export function Sidebar() {
     unpinAgent,
   } = useSidebarActions();
   const page = THEMES[theme].page;
+  const accent = THEMES[theme].terminal.yellow;
 
   const isSpawning = status === "spawning...";
   const { startDrag, endDrag } = useDragContext();
@@ -453,6 +454,7 @@ export function Sidebar() {
     const p = item.preview;
     const pane = item.pane;
     const isActive = isPaneActive(pane);
+    const highlight = isActive ? activeHighlight(accent) : null;
     return (
       // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
       <div
@@ -467,14 +469,13 @@ export function Sidebar() {
         onDragEnd={handleDragEnd}
         className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
         style={{
-          background: isActive
-            ? page.border
+          borderRadius: highlight ? "5px" : undefined,
+          background: highlight
+            ? highlight.background
             : visiblePaneIds.has(pane.id)
               ? `${page.border}80`
               : "transparent",
-          ...(isDropTarget && {
-            boxShadow: `inset 0 2px 0 ${page.fg}`,
-          }),
+          boxShadow: rowBoxShadow(highlight, isDropTarget, page.fg),
         }}
         onClick={() => switchPane(pane)}
         onKeyDown={(e) => e.key === "Enter" && switchPane(pane)}
@@ -860,6 +861,35 @@ interface SessionRowProps {
   onClick: () => void;
 }
 
+/**
+ * Active-agent highlight: a gold/amber outline ring + soft glow, drawn with an
+ * inset box-shadow so there is NO layout reflow on activation and it stays
+ * orthogonal to the 3px left border hierarchy view uses for parent rows (the
+ * ring sits inside that border, so both signals coexist). `accent` is the
+ * theme's gold/amber token (THEMES[theme].terminal.yellow). Alpha suffixes
+ * follow the existing 8-digit-hex convention (cf. `${page.border}80`).
+ * Medium intensity — bump the alphas for "strong", drop them for "subtle".
+ */
+function activeHighlight(accent: string) {
+  return {
+    background: `${accent}14`, // ~8% gold fill
+    boxShadow: `inset 0 0 0 1px ${accent}a8, 0 0 12px ${accent}33`, // ~66% ring + ~20% glow
+  };
+}
+
+/** Compose the active ring/glow with the drop-target indicator (a row can be both). */
+function rowBoxShadow(
+  highlight: { boxShadow: string } | null,
+  isDropTarget: boolean,
+  dropColor: string,
+): string | undefined {
+  return (
+    [highlight?.boxShadow, isDropTarget ? `inset 0 2px 0 ${dropColor}` : null]
+      .filter(Boolean)
+      .join(", ") || undefined
+  );
+}
+
 function SessionRow({
   session: s,
   pane,
@@ -888,6 +918,8 @@ function SessionRow({
   const paddingLeft = paddingLeftOverride ?? 9 + indent * 10;
   const agentIconStyle = useStore((st) => st.agentIconStyle);
   const status = (agentState?.status as AgentStatus) ?? "unknown";
+  const accent = THEMES[useStore((st) => st.theme)].terminal.yellow;
+  const highlight = isActive ? activeHighlight(accent) : null;
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -913,14 +945,13 @@ function SessionRow({
         borderLeft: `3px solid ${borderColor ?? "transparent"}`,
         paddingLeft: `${paddingLeft}px`,
         paddingRight: "12px",
-        background: isActive
-          ? page.border
+        borderRadius: highlight ? "5px" : undefined,
+        background: highlight
+          ? highlight.background
           : isVisible
             ? `${page.border}80`
             : "transparent",
-        ...(isDropTarget && {
-          boxShadow: `inset 0 2px 0 ${page.fg}`,
-        }),
+        boxShadow: rowBoxShadow(highlight, isDropTarget, page.fg),
       }}
       onClick={onClick}
       onKeyDown={(e) => e.key === "Enter" && onClick()}
