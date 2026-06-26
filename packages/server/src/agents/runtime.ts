@@ -54,6 +54,34 @@ import {
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
 
+/**
+ * Append a PTY chunk to an attachment's scrollback buffer, evicting the oldest
+ * chunks (FIFO) once total size exceeds OUTPUT_BUFFER_LIMIT. Always retains at
+ * least the most recent chunk. Shared by `spawnAgent` and the test-only
+ * `_registerSyntheticAttachment` so both exercise identical replay behavior.
+ */
+function appendToOutputBuffer(
+  managed: Pick<ManagedAttachment, "outputBuffer" | "outputSize">,
+  data: string,
+): void {
+  managed.outputBuffer.push(data);
+  managed.outputSize += data.length;
+  if (managed.outputSize <= OUTPUT_BUFFER_LIMIT) return;
+  let drop = 0;
+  let freed = 0;
+  while (
+    drop < managed.outputBuffer.length - 1 &&
+    managed.outputSize - freed > OUTPUT_BUFFER_LIMIT
+  ) {
+    freed += managed.outputBuffer[drop].length;
+    drop++;
+  }
+  if (drop > 0) {
+    managed.outputBuffer.splice(0, drop);
+    managed.outputSize -= freed;
+  }
+}
+
 /** How long after a Codex spawn to wait for its channel-server MCP subprocess to
  *  register before warning that the agent has no outbound path. The daemon
  *  launches it on thread creation (TUI connect), so this must cover daemon boot +
@@ -163,6 +191,30 @@ export function getAttachment(agentId: UUID): ManagedAttachment | undefined {
 
 export function getLiveAgentIds(): UUID[] {
   return Array.from(live.keys());
+}
+
+/**
+ * PERF/TEST ONLY — register a synthetic attachment backed by a caller-supplied
+ * PTY (typically a FakePty from `perf/fake-pty.ts`) so the real terminal WS
+ * transport can be benchmarked without spawning `claude`. Mirrors the
+ * output-buffer wiring that `spawnAgent` installs, so reconnect-replay
+ * scenarios are exercised faithfully too. Not reachable from any product code
+ * path (no caller in `src/` outside tests/perf).
+ */
+export function _registerSyntheticAttachment(
+  agentId: UUID,
+  pty: IPty,
+): ManagedAttachment {
+  const managed: ManagedAttachment = {
+    agentId,
+    pty,
+    outputBuffer: [],
+    outputSize: 0,
+  };
+  // Mirror spawnAgent's output-buffer onData so replay works.
+  pty.onData((data: string) => appendToOutputBuffer(managed, data));
+  live.set(agentId, managed);
+  return managed;
 }
 
 export function expandPath(path: string): string {
@@ -492,25 +544,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   }
 
   // PTY data → output buffer (used by terminal WS streaming)
-  pty.onData((data: string) => {
-    managed.outputBuffer.push(data);
-    managed.outputSize += data.length;
-    if (managed.outputSize > OUTPUT_BUFFER_LIMIT) {
-      let drop = 0;
-      let freed = 0;
-      while (
-        drop < managed.outputBuffer.length - 1 &&
-        managed.outputSize - freed > OUTPUT_BUFFER_LIMIT
-      ) {
-        freed += managed.outputBuffer[drop].length;
-        drop++;
-      }
-      if (drop > 0) {
-        managed.outputBuffer.splice(0, drop);
-        managed.outputSize -= freed;
-      }
-    }
-  });
+  pty.onData((data: string) => appendToOutputBuffer(managed, data));
 
   const spawnedAt = Date.now();
   // Whether this spawn attempted a Codex conversation resume. If it dies

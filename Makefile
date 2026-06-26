@@ -19,7 +19,7 @@ dev:
 	@lsof -ti:$(DEV_API_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@lsof -ti:$(DEV_VITE_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@echo "Dev server: API=:$(DEV_API_PORT) Vite=:$(DEV_VITE_PORT) Config=$(DEV_CONFIG_DIR)"
-	@cd packages/server && PORT=$(DEV_API_PORT) AUTONOMOS_CONFIG_DIR=$(DEV_CONFIG_DIR) CORS_ORIGIN=http://localhost:$(DEV_VITE_PORT) ../../$(TSX) --env-file=../../.env watch src/index.ts &
+	@cd packages/server && PORT=$(DEV_API_PORT) AUTONOMOS_CONFIG_DIR=$(DEV_CONFIG_DIR) CORS_ORIGIN=http://localhost:$(DEV_VITE_PORT) ../../$(TSX) watch --env-file=../../.env src/index.ts &
 	@sleep 2
 	@cd packages/dashboard && VITE_API_PORT=$(DEV_API_PORT) $(BUN) vite --host 0.0.0.0 --port $(DEV_VITE_PORT)
 
