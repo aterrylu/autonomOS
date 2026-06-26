@@ -8,6 +8,8 @@
  * Claude Code is the first implementation. Codex CLI and Gemini CLI follow.
  */
 
+import type { PermissionMode } from "./permissions";
+
 /** Minimal PTY interface for the startup watcher (avoids node-pty dependency in core) */
 export interface PtyHandle {
   write(data: string): void;
@@ -154,8 +156,9 @@ export interface SpawnOptions {
   resumeSessionId?: string;
   /** Provider session ID to fork from — child inherits parent's context */
   forkFrom?: string;
-  /** Skip permission prompts */
-  autonomousMode?: boolean;
+  /** How much autonomy the agent has over tool use (maps to provider-native
+   *  permission flags). Replaces the old `autonomousMode: boolean`. */
+  permissionMode?: PermissionMode;
   /** Replace the default system prompt entirely */
   systemPrompt?: string;
   /** Append to the default system prompt */

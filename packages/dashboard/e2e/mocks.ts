@@ -95,7 +95,7 @@ export const MOCK_TEMPLATES = {
     description: "Routes incoming requests and delegates to specialist agents.",
     systemPrompt: "You are the Dispatcher.",
     capabilities: [],
-    autonomousMode: true,
+    permissionMode: "bypass",
     model: "sonnet",
   },
   researcher: {
@@ -103,7 +103,7 @@ export const MOCK_TEMPLATES = {
     description: "Investigates topics and produces written findings.",
     systemPrompt: "You are a Researcher.",
     capabilities: [],
-    autonomousMode: true,
+    permissionMode: "bypass",
     model: "sonnet",
   },
 };

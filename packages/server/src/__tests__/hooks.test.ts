@@ -375,7 +375,7 @@ describe("hooks — Gemini event translation", () => {
         workingDirectory: "/tmp",
         provider: "gemini-cli",
         providerSessionId: sid,
-        autonomousMode: true,
+        permissionMode: "bypass",
       }),
     );
   });

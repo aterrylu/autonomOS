@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Codicon, type CodiconName } from "../../components/Codicon";
+import { PermissionModeSelect } from "../../components/PermissionModeSelect";
 import { AgentStatusIcon } from "../../components/ui/agent-status-icon";
 import { ProviderAgentIcon } from "../../components/ui/provider-icon";
 import { type AgentIconStyle, THEMES, useStore } from "../../store";
@@ -435,9 +436,9 @@ function AgentIconStylePicker({ page }: { page: PageTheme }) {
 
 function DashboardPreferences({ page }: { page: PageTheme }) {
   const theme = useStore((s) => s.theme);
-  const autonomousMode = useStore((s) => s.autonomousMode);
+  const permissionMode = useStore((s) => s.permissionMode);
   const cycleTheme = useStore((s) => s.cycleTheme);
-  const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
+  const setPermissionMode = useStore((s) => s.setPermissionMode);
 
   const labelStyle: React.CSSProperties = { color: page.statusFg };
 
@@ -465,19 +466,20 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
         </button>
       </div>
 
-      {/* Autonomous mode */}
+      {/* Permission mode (default for new sessions; per-spawn overridable) */}
       <div className="flex items-center justify-between">
         <span className="text-xs" style={labelStyle}>
-          Autonomous Mode
+          Permission Mode
         </span>
-        <ToggleSwitch
-          enabled={autonomousMode}
-          inactiveBackground={page.border}
-          onClick={toggleAutonomousMode}
+        <PermissionModeSelect
+          value={permissionMode}
+          onChange={setPermissionMode}
+          page={page}
         />
       </div>
       <div className="text-[10px]" style={labelStyle}>
-        New sessions skip permission prompts when enabled.
+        Default tool-use autonomy for new sessions. Override per spawn in Create
+        Agent.
       </div>
 
       {/* Agent icon style */}

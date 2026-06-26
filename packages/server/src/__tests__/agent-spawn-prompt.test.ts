@@ -93,6 +93,12 @@ describe("starting prompt delivery — no manual keystrokes", {
           workingDirectory: workdir,
           name: "integ-prompt-delivery",
           prompt: `Reply with exactly: ${PROMPT_MARKER}`,
+          // Supervised mode. The bypass default emits --dangerously-skip-permissions,
+          // which the real claude binary exits 1 on in CI (proven: removing the flag
+          // is the only thing that lets these spawns boot). These suites test spawn
+          // mechanics — prompt delivery, hook relay — not permission semantics, so
+          // they pin "default". See ADR-045 / PR #257.
+          permissionMode: "default",
         }),
       },
     );

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentCapability } from "@autonomos/core";
+import { type AgentCapability, DEFAULT_PERMISSION_MODE } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -105,11 +105,12 @@ function createMcpServer(): McpServer {
         .describe(
           "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
         ),
-      autonomousMode: z
-        .boolean()
+      permissionMode: z
+        .enum(["default", "auto", "plan", "bypass"])
         .optional()
-        .default(true)
-        .describe("Skip permission prompts (default: true)"),
+        .describe(
+          "Tool-use autonomy: 'default' (ask each time), 'auto' (auto-edit), 'plan' (read-only; Codex falls back to default), 'bypass' (skip prompts). Default: bypass.",
+        ),
       template: z
         .string()
         .optional()
@@ -163,8 +164,10 @@ function createMcpServer(): McpServer {
         }
 
         const systemPrompt = args.systemPrompt ?? tmpl?.systemPrompt;
-        const autonomousMode =
-          args.autonomousMode ?? tmpl?.autonomousMode ?? true;
+        const permissionMode =
+          args.permissionMode ??
+          tmpl?.permissionMode ??
+          DEFAULT_PERMISSION_MODE;
 
         const result = await spawnAgent({
           workingDirectory: args.workingDirectory,
@@ -172,7 +175,7 @@ function createMcpServer(): McpServer {
           name: args.name,
           resumeAgentId: args.resumeSessionId,
           forkFromAgentId: args.forkFrom,
-          autonomousMode,
+          permissionMode,
           appendSystemPrompt: systemPrompt,
           template: args.template,
           managerId,
@@ -446,10 +449,12 @@ function createMcpServer(): McpServer {
         .array(z.string())
         .optional()
         .describe(`Capabilities: ${DEFAULT_CAPABILITIES.join(", ")}`),
-      autonomousMode: z
-        .boolean()
+      permissionMode: z
+        .enum(["default", "auto", "plan", "bypass"])
         .optional()
-        .describe("Skip permission prompts (default: true)"),
+        .describe(
+          "Default tool-use autonomy for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: bypass.",
+        ),
       model: z
         .string()
         .optional()
@@ -464,7 +469,7 @@ function createMcpServer(): McpServer {
           capabilities:
             (args.capabilities as AgentCapability[]) ??
             (DEFAULT_CAPABILITIES as AgentCapability[]),
-          autonomousMode: args.autonomousMode ?? true,
+          permissionMode: args.permissionMode ?? DEFAULT_PERMISSION_MODE,
           model: args.model,
         });
         return {

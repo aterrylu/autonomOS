@@ -102,6 +102,8 @@ describe("usage-queue timed simulation — real spawn auto-fire", {
         body: JSON.stringify({
           workingDirectory: workdir,
           name: "integ-usage-sim",
+          // Supervised — bypass's --dangerously-skip-permissions exits 1 in CI.
+          permissionMode: "default",
         }),
       },
     );
