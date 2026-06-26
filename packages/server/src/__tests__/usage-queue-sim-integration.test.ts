@@ -38,8 +38,17 @@ interface HookStatus {
   lastEvent: string;
 }
 
+// QUARANTINED — auto-trust ↔ TUI-stdin-attachment race causes consistent flake
+// in CI. The test types the prompt over the terminal WS and relies on
+// usage-queue's auto-Enter; it does NOT route through the production
+// prompt-delivery receipt path (ADR-036 / PR #209), so it's exposed to the race
+// that the receipt mechanism is designed to absorb. Reproduces locally with
+// real `claude 2.1.193` + mock backend; signature is "[auto-trust] dismissed
+// after N attempts" → marker never reaches the model.
+// Tracked: fix the auto-trust race upstream OR route this test's prompt
+// submission through the prompt-delivery receipt path, then unquarantine.
 describe("usage-queue timed simulation — real spawn auto-fire", {
-  skip: !RUN_INTEGRATION,
+  skip: true,
   timeout: 120_000,
 }, () => {
   let mock: MockAnthropic;
