@@ -18,8 +18,19 @@ export type Provider = "claude-code" | "codex" | "gemini-cli";
  *  strictly additive — clients should treat unknown values as "exited". */
 export type AgentStatus = "running" | "exited";
 
-/** Why a session stopped, for UI triage. */
-export type ExitReason = "user_killed" | "self_exited" | "crashed";
+/** Why a session stopped, for UI triage. Single source of truth — the
+ *  `ExitReason` type and the `isExitReason` validator both derive from this
+ *  tuple, so adding a reason can't silently desync a hand-maintained allow-list
+ *  (e.g. an API route that validates an incoming `reason` against the union). */
+export const EXIT_REASONS = ["user_killed", "self_exited", "crashed"] as const;
+
+export type ExitReason = (typeof EXIT_REASONS)[number];
+
+/** Runtime guard for validating untrusted input (e.g. a request body) against
+ *  the ExitReason union. Narrows cleanly — no cast at the call site. */
+export function isExitReason(value: unknown): value is ExitReason {
+  return (EXIT_REASONS as readonly string[]).includes(value as string);
+}
 
 export interface Agent {
   /** Schema version for forward-compatible reads. Current: 1. */

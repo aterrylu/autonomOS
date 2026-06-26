@@ -6,7 +6,8 @@
  * cannot disagree about what exists.
  */
 
-import type { Provider, UUID } from "@autonomos/core";
+import type { ExitReason, Provider, UUID } from "@autonomos/core";
+import { isExitReason } from "@autonomos/core";
 import { Hono } from "hono";
 import {
   killAttachment,
@@ -764,11 +765,27 @@ agentsRouter.delete("/:id", (c) => {
 
 // ── Kill (PTY only, keep agent record) ─────────────────────────────
 
-agentsRouter.post("/:id/kill", (c) => {
+agentsRouter.post("/:id/kill", async (c) => {
   const param = c.req.param("id");
   const agent = resolveAgent(param);
   if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
-  const killed = killAttachment(agent.id);
+  // Optional { reason } body. Defaults to "user_killed" (operator kill);
+  // self_exit posts "self_exited". A missing/empty body is the common,
+  // legitimate case (dashboard + kill_agent send none) → silent default.
+  // A present-but-unrecognized reason is logged (not silently coerced) so a
+  // typo or a future ExitReason the caller forgot to whitelist surfaces in
+  // logs instead of masquerading as an operator kill.
+  const body = await c.req.json().catch(() => null);
+  const rawReason = (body as { reason?: unknown } | null)?.reason;
+  let reason: ExitReason = "user_killed";
+  if (isExitReason(rawReason)) {
+    reason = rawReason;
+  } else if (rawReason !== undefined && rawReason !== null) {
+    console.error(
+      `[agents] POST /:id/kill ${param} got unrecognized reason ${JSON.stringify(rawReason)} — defaulting to "user_killed"`,
+    );
+  }
+  const killed = killAttachment(agent.id, reason);
   if (!killed) {
     return c.json(
       { error: `Agent "${param}" has no live attachment to kill` },

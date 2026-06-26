@@ -18,7 +18,7 @@ var DEFAULT_CAPABILITIES = [
 ];
 var TOOL_CREATE_AGENT = {
   name: "create_agent",
-  description: "Create a new agent \u2014 a dedicated Claude Code session with a name, context, and optional task.",
+  description: "Create a new agent \u2014 a dedicated CLI session with a name, context, and optional task. Defaults to Claude Code; set `provider` to spawn a Codex or Gemini agent instead.",
   inputSchema: {
     type: "object",
     properties: {
@@ -62,6 +62,11 @@ var TOOL_CREATE_AGENT = {
       project: {
         type: "string",
         description: "Project scope (e.g. 'autonomOS', 'homelab'). Used in role@project naming."
+      },
+      provider: {
+        type: "string",
+        enum: ["claude-code", "codex", "gemini-cli"],
+        description: "Agent runtime/CLI to spawn (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. The chosen CLI must be installed on the host."
       }
     },
     required: ["workingDirectory"]
@@ -644,7 +649,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         autonomousMode,
         template,
         manager,
-        project
+        project,
+        provider
       } = args;
       const effectiveManager = manager ?? process.env.AUTONOMOS_AGENT_NAME;
       if (!manager && effectiveManager) {
@@ -666,7 +672,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             appendSystemPrompt: systemPrompt,
             template,
             manager: effectiveManager,
-            project
+            project,
+            provider
           })
         });
       } catch (err) {
@@ -757,8 +764,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return serverFetch("/api/templates");
     }
     case "self_exit": {
-      serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID)}`, {
-        method: "DELETE"
+      serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID)}/kill`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "self_exited" })
+      }).then((res) => {
+        if (res.isError) {
+          process.stderr.write(
+            `autonomos-channel: self_exit kill rejected: ${res.content?.[0]?.text ?? "unknown"}
+`
+          );
+        }
       }).catch((err) => {
         process.stderr.write(
           `autonomos-channel: self_exit failed: ${err instanceof Error ? err.message : err}
