@@ -1,6 +1,7 @@
 import type { AgentCapability, AgentTemplate } from "@autonomos/core";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useUndoableTextValue } from "../hooks/useUndoableTextValue";
 import { THEMES, useStore } from "../store";
 
 /**
@@ -320,6 +321,9 @@ function EditorView({
   const [systemPrompt, setSystemPrompt] = useState(
     template?.systemPrompt ?? "",
   );
+  // Restore Cmd/Ctrl+Z undo for the controlled System Prompt textarea —
+  // React's value replacement wipes the browser's native undo stack.
+  const systemPromptUndo = useUndoableTextValue(systemPrompt, setSystemPrompt);
   const [capabilities, setCapabilities] = useState<AgentCapability[]>(
     template?.capabilities ?? [...ALL_CAPABILITIES],
   );
@@ -484,7 +488,8 @@ function EditorView({
           <Field label="System Prompt">
             <textarea
               value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
+              onChange={systemPromptUndo.onChange}
+              onKeyDown={systemPromptUndo.onKeyDown}
               placeholder="You are a ..."
               rows={12}
               className="w-full rounded px-3 py-2 text-[12px] font-mono resize-y"
