@@ -34,6 +34,7 @@ import {
   resolveEmbeddedConfig,
 } from "./embedded-mode.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
+import { initMemory } from "./memory/events.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
@@ -43,6 +44,7 @@ import { channelsRouter } from "./routes/channels.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { hooksRouter } from "./routes/hooks.js";
+import { memoryRouter } from "./routes/memory.js";
 import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
@@ -92,6 +94,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // Seed default templates on fresh install
   seedDefaultTemplates();
+
+  // Initialise hierarchical memory: writes SCHEMA.md, ensures directory layout,
+  // warms project-stats cache, and emits an initial L0 index.md.
+  initMemory();
 
   // Validate provider binaries at startup.
   // Claude Code is required (default provider) — others are optional.
@@ -282,6 +288,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
   app.route("/api/usage-queue", usageQueueRouter);
+  app.route("/api/memory", memoryRouter);
   app.route("/api/system", systemRouter);
 
   // MCP — Streamable HTTP transport for agent-to-agent communication

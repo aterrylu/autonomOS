@@ -17,6 +17,7 @@ import type {
 import type { WSContext } from "hono/ws";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
+import { recordEvent } from "../memory/events.js";
 import { batchGetTitles } from "../titleCache.js";
 import { deliverToCodex, formatInbound } from "./codexControl.js";
 
@@ -279,6 +280,15 @@ async function routeToAgent(
     return `Failed to deliver message to agent "${targetName}"`;
   }
   fanOutToDashboard(wsMsg);
+
+  recordEvent({
+    type: "agent_message",
+    actorAgentId: fromSessionId,
+    summary: `→ agent://${targetName}: ${content}`,
+    refs: { agentIds: [targetSessionId] },
+    payload: { to: `agent://${targetName}`, content },
+  });
+
   return null;
 }
 
@@ -330,11 +340,13 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
     // daemon fan-out below. Skip them here so a broadcast isn't delivered twice
     // (a wasted WS write today, and a user-visible duplicate if a future
     // provider ever surfaces that MCP notification).
+    const delivered: string[] = [];
     for (const [sessionId, client] of sessionClients) {
       if (sessionId === fromSessionId) continue;
       if (getAgent(sessionId)?.provider === "codex") continue;
       try {
         client.send(json);
+        delivered.push(sessionId);
       } catch (err) {
         console.warn(
           `[gateway] broadcast to agent ${sessionId} failed, removing:`,
@@ -359,6 +371,14 @@ function broadcastToAllAgents(fromSessionId: string, content: string): void {
     }
 
     fanOutToDashboard(wsMsg);
+
+    recordEvent({
+      type: "agent_message",
+      actorAgentId: fromSessionId,
+      summary: `→ broadcast://all (${delivered.length} recipients): ${content}`,
+      refs: { agentIds: delivered },
+      payload: { to: "broadcast://all", content },
+    });
   });
 }
 

@@ -7,6 +7,7 @@
 
 import type { ScheduleConfig } from "@autonomos/core";
 import { Hono } from "hono";
+import { recordEvent } from "../memory/events.js";
 import {
   addScheduleJob,
   getActiveRunCount,
@@ -101,6 +102,18 @@ scheduleRouter.post("/", async (c) => {
 
     // Re-read from disk — addScheduleJob updates nextRunAt on disk
     const fresh = getSchedule(created.name) ?? created;
+
+    recordEvent({
+      type: "schedule_created",
+      summary: `schedule_created: ${created.name} (${created.schedule}, target=${created.target})`,
+      refs: { schedules: [created.name] },
+      payload: {
+        name: created.name,
+        schedule: created.schedule,
+        target: created.target,
+        enabled: created.enabled,
+      },
+    });
 
     return c.json({
       ok: true,

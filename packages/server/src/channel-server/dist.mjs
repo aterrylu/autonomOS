@@ -342,6 +342,53 @@ var TOOL_RUN_SCHEDULE = {
     required: ["name"]
   }
 };
+var TOOL_MEMORY_QUERY = {
+  name: "memory_query",
+  description: "Read the cross-agent memory log. Hierarchical: start at L0 (catalog), drill to L1 (project summary), L2 (timeline / daily), or L3 (raw events). Default level is L0. See ~/.autonomos/memory/SCHEMA.md for the full data model.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      level: {
+        type: "string",
+        enum: ["L0", "L1", "L2", "L3"],
+        description: "L0=index.md catalog (default); L1=projects/<slug>/summary.md; L2=projects/<slug>/timeline.md or daily/<date>.md; L3=raw events."
+      },
+      project: {
+        type: "string",
+        description: 'Project slug. Required for L1. For L2 with no `date`, returns the per-project timeline. For L3, filters events. Use "untagged" to match events with no project.'
+      },
+      date: {
+        type: "string",
+        description: 'L2 only \u2014 date as "YYYY-MM-DD". With no `project`, returns the cross-project daily rollup.'
+      },
+      id: {
+        type: "string",
+        description: "L3 only \u2014 fetch a specific event by id. Bypasses other L3 filters."
+      },
+      since: {
+        type: "number",
+        description: "L3 only \u2014 inclusive lower bound on ts (epoch milliseconds)."
+      },
+      until: {
+        type: "number",
+        description: "L3 only \u2014 exclusive upper bound on ts (epoch milliseconds)."
+      },
+      type: {
+        type: "array",
+        items: { type: "string" },
+        description: "L3 only \u2014 restrict to event types (e.g. ['agent_message', 'agent_created'])."
+      },
+      actor: {
+        type: "string",
+        description: "L3 only \u2014 restrict to events whose actor agentName matches (case-insensitive)."
+      },
+      limit: {
+        type: "number",
+        description: "L3 only \u2014 max events to return. Default 100, max 1000."
+      }
+    }
+  }
+};
 var ALL_TOOLS = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
@@ -357,7 +404,8 @@ var ALL_TOOLS = [
   TOOL_GET_SCHEDULE,
   TOOL_UPDATE_SCHEDULE,
   TOOL_DELETE_SCHEDULE,
-  TOOL_RUN_SCHEDULE
+  TOOL_RUN_SCHEDULE,
+  TOOL_MEMORY_QUERY
 ];
 var CAPABILITY_GATED_TOOLS = new Set(DEFAULT_CAPABILITIES);
 function filterToolsByCapabilities(capabilities) {
@@ -798,6 +846,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         `/api/schedules/${encodeURIComponent(schedName)}/run`,
         { method: "POST" }
       );
+    }
+    case "memory_query": {
+      const params = new URLSearchParams();
+      const memArgs = args;
+      if (memArgs.level) params.set("level", memArgs.level);
+      if (memArgs.project) params.set("project", memArgs.project);
+      if (memArgs.date) params.set("date", memArgs.date);
+      if (memArgs.id) params.set("id", memArgs.id);
+      if (memArgs.since !== void 0)
+        params.set("since", String(memArgs.since));
+      if (memArgs.until !== void 0)
+        params.set("until", String(memArgs.until));
+      if (memArgs.actor) params.set("actor", memArgs.actor);
+      if (memArgs.limit !== void 0)
+        params.set("limit", String(memArgs.limit));
+      if (memArgs.type && memArgs.type.length > 0)
+        params.set("type", memArgs.type.join(","));
+      const qs = params.toString();
+      return serverFetch(`/api/memory${qs ? `?${qs}` : ""}`);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
