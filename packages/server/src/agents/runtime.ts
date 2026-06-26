@@ -11,7 +11,13 @@
 
 import { statSync } from "node:fs";
 import { basename } from "node:path";
-import type { Agent, Provider, SpawnOptions, UUID } from "@autonomos/core";
+import type {
+  Agent,
+  ExitReason,
+  Provider,
+  SpawnOptions,
+  UUID,
+} from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
@@ -625,8 +631,14 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
 // ── Kill / remove ──────────────────────────────────────────────────
 
-/** Kill the PTY for an agent but keep the Agent record (status: exited). */
-export function killAttachment(agentId: UUID): boolean {
+/** Kill the PTY for an agent but keep the Agent record (status: exited).
+ *  `reason` defaults to "user_killed" (operator-initiated kill); `self_exit`
+ *  passes "self_exited" so the record is preserved AND labelled honestly —
+ *  keeping it (not hard-deleting) is what makes the agent resumable. */
+export function killAttachment(
+  agentId: UUID,
+  reason: ExitReason = "user_killed",
+): boolean {
   const managed = live.get(agentId);
   if (!managed) return false;
   try {
@@ -641,13 +653,13 @@ export function killAttachment(agentId: UUID): boolean {
   // the API a deterministic post-condition for the user-killed case.
   cancelPromptTracking(agentId);
   cancelChannelServerCheck(agentId);
-  const updated = markExited(agentId, "user_killed");
+  const updated = markExited(agentId, reason);
   live.delete(agentId);
   if (updated) {
     emitAgentDelta({
       type: "agent.exited",
       id: agentId,
-      exitReason: "user_killed",
+      exitReason: reason,
       version: updated.version,
     });
   }

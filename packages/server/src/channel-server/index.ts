@@ -500,15 +500,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "self_exit": {
-      // Fire-and-forget: the DELETE kills our PTY (and this subprocess).
-      // The response may or may not reach the agent before the process dies.
-      serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID!)}`, {
-        method: "DELETE",
-      }).catch((err) => {
-        process.stderr.write(
-          `autonomos-channel: self_exit failed: ${err instanceof Error ? err.message : err}\n`,
-        );
-      });
+      // Fire-and-forget: /kill stops our PTY (and this subprocess). The
+      // response may or may not reach the agent before the process dies.
+      //
+      // We POST /kill (soft-exit: keeps the agent record as status:"exited",
+      // exitReason:"self_exited") rather than DELETE (which rmSync's the
+      // record off disk). Preserving the record is what lets a later
+      // create_agent({ resumeSessionId }) find it via getAgent() and resume —
+      // a DELETE'd record returns undefined → "resumeAgentId not found".
+      serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID!)}/kill`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "self_exited" }),
+      })
+        .then((res) => {
+          // serverFetch resolves (does not reject) on a non-2xx response,
+          // packaging it as { isError: true }. Surface those HTTP-level
+          // failures (e.g. a 409 PTY-already-gone race) to stderr too —
+          // otherwise the only diagnostic fires for transport errors alone.
+          if (res.isError) {
+            process.stderr.write(
+              `autonomos-channel: self_exit kill rejected: ${res.content?.[0]?.text ?? "unknown"}\n`,
+            );
+          }
+        })
+        .catch((err) => {
+          process.stderr.write(
+            `autonomos-channel: self_exit failed: ${err instanceof Error ? err.message : err}\n`,
+          );
+        });
       return { content: [{ type: "text", text: "Exiting..." }] };
     }
 
