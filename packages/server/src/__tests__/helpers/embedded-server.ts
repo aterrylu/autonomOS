@@ -102,13 +102,6 @@ export async function bootEmbedded(opts?: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: configDir,
       AUTONOMOS_TOKEN: token,
-      // Claude Code refuses `--dangerously-skip-permissions` (the bypass
-      // permission mode, now the spawn default) when running as root — which
-      // the CI runner is. IS_SANDBOX=1 is its documented escape hatch for
-      // ephemeral CI sandboxes. The server spreads its env into every spawned
-      // agent (providers/shared.ts buildBaseEnv), so setting it here lets the
-      // real-spawn suites exercise the production-default (bypass) spawn.
-      IS_SANDBOX: "1",
       ...(opts?.anthropicBaseUrl
         ? {
             ANTHROPIC_BASE_URL: opts.anthropicBaseUrl,

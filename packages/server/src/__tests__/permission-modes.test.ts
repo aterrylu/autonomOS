@@ -70,14 +70,16 @@ describe("core permission helpers", () => {
 });
 
 describe("claude-code permission mapping", () => {
+  // `default` emits NO permission flag (Claude's built-in behavior); the others
+  // carry an explicit leading flag.
   const expected: Record<PermissionMode, string[]> = {
-    default: ["--permission-mode", "default"],
+    default: [],
     auto: ["--permission-mode", "acceptEdits"],
     plan: ["--permission-mode", "plan"],
     bypass: ["--dangerously-skip-permissions"],
   };
 
-  for (const mode of PERMISSION_MODES) {
+  for (const mode of ["auto", "plan", "bypass"] as const) {
     it(`maps '${mode}' to the leading Claude flags`, () => {
       const args = claudeCodeProvider.buildArgs(
         baseOptions({ permissionMode: mode }),
@@ -85,6 +87,14 @@ describe("claude-code permission mapping", () => {
       assert.deepEqual(args.slice(0, expected[mode].length), expected[mode]);
     });
   }
+
+  it("default mode emits NO permission flag (claude's built-in default)", () => {
+    const args = claudeCodeProvider.buildArgs(
+      baseOptions({ permissionMode: "default" }),
+    );
+    assert.ok(!args.includes("--permission-mode"));
+    assert.ok(!args.includes("--dangerously-skip-permissions"));
+  });
 
   it("bypass does NOT also pass --permission-mode", () => {
     const args = claudeCodeProvider.buildArgs(
