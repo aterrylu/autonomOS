@@ -90,9 +90,18 @@ export interface IFitAddon extends ITerminalAddon {
   fit(): void;
 }
 
+export interface IWebglAddon extends ITerminalAddon {
+  /**
+   * Fires when the GPU drops the addon's WebGL context. The renderer stops
+   * painting until the addon is disposed and recreated, so callers MUST
+   * listen and reload — otherwise typed input appears to hang.
+   */
+  onContextLoss(listener: () => void): { dispose(): void };
+}
+
 export interface TerminalBackend {
   terminal: TerminalInstance;
   fitAddon: IFitAddon;
   /** Create a WebGL addon for GPU rendering. Returns null if unavailable. */
-  createWebglAddon(): ITerminalAddon | null;
+  createWebglAddon(): IWebglAddon | null;
 }
