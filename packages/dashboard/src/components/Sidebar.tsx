@@ -1017,11 +1017,27 @@ function SessionRow({
             e.stopPropagation();
             onTogglePin();
           }}
-          className="shrink-0 rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+          // Top-left corner, out of layout flow. Hidden until row-hover when
+          // unpinned; stays visible once pinned (persistent pinned indicator).
+          // NOTE: this sits over the same top-left spot as the onBorderClick
+          // zone, so it's only safe because pinning is flat-view-only (rows with
+          // onTogglePin never get onBorderClick). Don't pass both to one row.
+          className={`absolute left-0 top-0 z-10 rounded cursor-pointer transition-opacity ${
+            isPinned ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          }`}
           style={{ color: isPinned ? page.fg : page.statusFg }}
           title={isPinned ? "Unpin agent" : "Pin agent"}
         >
-          <Codicon name={isPinned ? "pinned" : "pin"} size={12} />
+          <Codicon
+            name={isPinned ? "pinned" : "pin"}
+            size={11}
+            // Both states point straight down. The two glyphs have different
+            // default orientations: "pinned" tip is down-left (−45° → vertical),
+            // "pin" tip is horizontal-left (−90° → vertical).
+            style={{
+              transform: isPinned ? "rotate(-45deg)" : "rotate(-90deg)",
+            }}
+          />
         </button>
       )}
     </div>
