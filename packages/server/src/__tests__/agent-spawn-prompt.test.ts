@@ -93,12 +93,6 @@ describe("starting prompt delivery — no manual keystrokes", {
           workingDirectory: workdir,
           name: "integ-prompt-delivery",
           prompt: `Reply with exactly: ${PROMPT_MARKER}`,
-          // Prompt delivery is permission-mode-agnostic. Pin to "default"
-          // (supervised) so the spawn never emits --dangerously-skip-permissions,
-          // which Claude Code refuses when the CI runner is root. This restores
-          // the pre-ADR-045 behavior of this raw POST /api/agents path, whose
-          // old default resolved to supervised.
-          permissionMode: "default",
         }),
       },
     );
