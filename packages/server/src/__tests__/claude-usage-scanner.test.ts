@@ -30,6 +30,9 @@ const {
 const { setHarvestedSessionKey } = await import(
   "../plugins/claude-usage/sessionStore.js"
 );
+const { __setProcListerForTests, __resetScanThrottleForTests } = await import(
+  "../plugins/claude-usage/cookieScanner.js"
+);
 type UsageFetcher = Parameters<typeof getRateLimits>[0];
 
 const SETTINGS_FILE = join(TEST_DIR, "settings.json");
@@ -67,11 +70,18 @@ describe("claude-usage scanner — session key is the only credential", () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true });
     invalidateCache();
+    // The auto-detect scan would otherwise read this dev machine's live Claude
+    // sessions via `ps` and satisfy the credential, breaking needsSetup/source
+    // assertions. Stub it to find nothing so these tests stay deterministic.
+    __setProcListerForTests(async () => []);
+    __resetScanThrottleForTests();
   });
 
   afterEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
     invalidateCache();
+    __setProcListerForTests(null);
+    __resetScanThrottleForTests();
   });
 
   it("builds a cookie from the session key alone (no lastActiveOrg)", () => {

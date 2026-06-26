@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings } from "../../settings.js";
+import { refreshHarvestedFromSessions } from "./cookieScanner.js";
 import { getHarvestedSessionKey } from "./sessionStore.js";
 
 export interface RateLimitWindow {
@@ -382,6 +383,21 @@ export async function getRateLimits(
   // {@link usageOverride}). This is what makes the usage-queue feature
   // demoable without burning a real limit.
   if (usageOverride) return usageOverride;
+
+  // Auto-detect: pull the freshest session key from the user's running Claude
+  // sessions before resolving, so logging into a different account is picked up
+  // with no restart (the server's own env cookie is frozen at launch). Skipped
+  // when a manual key / env override is set — those win regardless, and there's
+  // no point shelling out to scan — or when auto-detect is off. A change busts
+  // the usage cache so the next read reflects the new account.
+  const settings = getSettings();
+  const hasManualOverride =
+    !!settings.claudeSessionKey?.trim() ||
+    !!process.env.CLAUDE_SESSION_KEY?.trim();
+  if (!hasManualOverride && settings.autoDetectClaudeSession !== false) {
+    if (await refreshHarvestedFromSessions()) invalidateCache();
+  }
+
   // Resolve the credential exactly once, here, and thread it through — so the
   // `credentialSource` label is always stamped from the same resolution that
   // produced the numbers (no TOCTOU drift if the cookie changes mid-flight).
