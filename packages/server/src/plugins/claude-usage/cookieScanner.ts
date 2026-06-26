@@ -163,19 +163,33 @@ async function listDarwin(serverPid: number): Promise<ClaudeProcInfo[]> {
   return out;
 }
 
-/** Read a process's parent PID from `/proc/<pid>/stat` (field 4), tolerating a
- * `comm` that contains spaces or parens by scanning past the last ')'. */
-function parsePpidFromStat(statText: string): number | undefined {
-  const after = statText.slice(statText.lastIndexOf(")") + 2);
-  const ppid = Number(after.split(" ")[1]);
-  return Number.isFinite(ppid) ? ppid : undefined;
+/**
+ * Parse `comm` (executable name) and parent PID from a `/proc/<pid>/stat` line.
+ * `comm` is wrapped in parens and may itself contain spaces/parens, so it's read
+ * between the first '(' and the LAST ')'; the remaining space-separated fields
+ * after that are `state ppid …`, so ppid is the 2nd. Exported for tests.
+ */
+export function parseStat(statText: string): {
+  comm: string;
+  ppid: number | undefined;
+} {
+  const open = statText.indexOf("(");
+  const close = statText.lastIndexOf(")");
+  const comm = open >= 0 && close > open ? statText.slice(open + 1, close) : "";
+  const ppid = Number(statText.slice(close + 2).split(" ")[1]);
+  return { comm, ppid: Number.isFinite(ppid) ? ppid : undefined };
 }
 
 /**
- * Linux: read `/proc/<pid>/environ` for the current user's processes. Files for
- * other users' processes aren't readable, so they're naturally skipped. The
- * proc directory's ctime approximates the process start time, and
- * `/proc/<pid>/stat` gives the parent PID for the ancestry check.
+ * Linux: read `/proc` for the current user's processes. Files for other users'
+ * processes aren't readable, so they're naturally skipped.
+ *
+ * One `stat` read per process gives BOTH the parent PID (for the ancestry map,
+ * needed for every process to walk chains) AND `comm` — so the much larger
+ * `environ` is read ONLY for actual `claude` processes (where a session cookie
+ * lives), not for every process on the box. That keeps a usage poll from
+ * bursting hundreds of `environ` reads, which on a busy server would add I/O
+ * pressure to agent spawns. The proc dir ctime approximates the start time.
  */
 async function listLinux(serverPid: number): Promise<ClaudeProcInfo[]> {
   let entries: string[];
@@ -185,33 +199,39 @@ async function listLinux(serverPid: number): Promise<ClaudeProcInfo[]> {
     return [];
   }
   const ppidOf = new Map<number, number>();
-  const candidates: ClaudeProcInfo[] = [];
+  const claudePids: number[] = [];
   await Promise.all(
     entries.map(async (pidStr) => {
-      const pid = Number(pidStr);
-      // Parent PID for every process — needed to walk ancestry chains.
       try {
-        const ppid = parsePpidFromStat(
+        const { comm, ppid } = parseStat(
           await readFile(`/proc/${pidStr}/stat`, "utf8"),
         );
+        const pid = Number(pidStr);
         if (ppid !== undefined) ppidOf.set(pid, ppid);
+        // `comm` is truncated to 15 chars; the claude binary reports "claude".
+        if (comm.includes("claude")) claudePids.push(pid);
       } catch {
         /* process gone or stat unreadable */
       }
+    }),
+  );
+  const candidates: ClaudeProcInfo[] = [];
+  await Promise.all(
+    claudePids.map(async (pid) => {
       try {
-        const environ = await readFile(`/proc/${pidStr}/environ`, "utf8");
-        if (!environ.includes(COOKIE_PREFIX)) return;
+        const environ = await readFile(`/proc/${pid}/environ`, "utf8");
         const env = environ.split("\0");
         const cookieVar = env.find((e) => e.startsWith(COOKIE_PREFIX));
         if (!cookieVar) return;
-        const hosted = env.some(
-          (e) =>
-            e.startsWith("AUTONOMOS_AGENT_NAME=") ||
-            e.startsWith("AUTONOMOS_SESSION_ID="),
-        );
+        const hosted =
+          env.some(
+            (e) =>
+              e.startsWith("AUTONOMOS_AGENT_NAME=") ||
+              e.startsWith("AUTONOMOS_SESSION_ID="),
+          ) || isServerTree(pid, ppidOf, serverPid);
         let startMs = 0;
         try {
-          startMs = (await stat(`/proc/${pidStr}`)).ctimeMs;
+          startMs = (await stat(`/proc/${pid}`)).ctimeMs;
         } catch {
           /* process may have exited; leave startMs at 0 */
         }
@@ -226,10 +246,6 @@ async function listLinux(serverPid: number): Promise<ClaudeProcInfo[]> {
       }
     }),
   );
-  // Apply the ancestry check now that the full ppid map is built.
-  for (const info of candidates) {
-    if (!info.hosted) info.hosted = isServerTree(info.pid, ppidOf, serverPid);
-  }
   return candidates;
 }
 

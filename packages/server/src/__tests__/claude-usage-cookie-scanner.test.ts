@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 
 const {
   parseProcEnv,
+  parseStat,
   selectFreshestExternalCookie,
   refreshHarvestedFromSessions,
   isServerTree,
@@ -106,6 +107,29 @@ describe("cookieScanner.selectFreshestExternalCookie", () => {
       proc({ pid: 2, cookie: KEY_B, hosted: false, startMs: 1 }),
     ]);
     assert.equal(cookie, KEY_B);
+  });
+});
+
+describe("cookieScanner.parseStat", () => {
+  it("reads comm and ppid from a normal stat line", () => {
+    assert.deepEqual(parseStat("4321 (claude) S 100 4321 100 0 -1"), {
+      comm: "claude",
+      ppid: 100,
+    });
+  });
+
+  it("handles a comm containing spaces and parens (scans to last ')')", () => {
+    assert.deepEqual(parseStat("7 (claude (worker)) R 200 7 200"), {
+      comm: "claude (worker)",
+      ppid: 200,
+    });
+  });
+
+  it("returns undefined ppid for a malformed line", () => {
+    assert.deepEqual(parseStat("garbage with no parens"), {
+      comm: "",
+      ppid: undefined,
+    });
   });
 });
 
