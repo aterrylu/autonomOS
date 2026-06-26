@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getSettings } from "../../settings.js";
 import { getRateLimits, invalidateCache } from "./scanner.js";
-import { setHarvestedSessionKey } from "./sessionStore.js";
+import { isValidHarvestedKey, setHarvestedSessionKey } from "./sessionStore.js";
 
 export const claudeUsageRouter = new Hono();
 
@@ -42,8 +42,8 @@ claudeUsageRouter.post("/session", async (c) => {
   // Accept only something shaped like a claude.ai session cookie (sk-ant-sid…,
   // any version) with no header-injection characters — the value later rides in
   // a Cookie request header. Rejects OAuth/API tokens and stray noise. The
-  // value is never logged.
-  if (/^sk-ant-sid[A-Za-z0-9._-]+$/.test(key) && key.length <= 512) {
+  // value is never logged. (Same guard the scanner applies — see sessionStore.)
+  if (isValidHarvestedKey(key)) {
     if (setHarvestedSessionKey(key)) invalidateCache();
   }
   return c.body(null, 204);

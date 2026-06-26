@@ -16,7 +16,6 @@ import { getSettings } from "../settings.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
-  COOKIE_RELAY_CMD,
   commonBinaryCandidates,
   HOOK_CMD,
   resolveBinaryFromCandidates,
@@ -29,15 +28,6 @@ const STATUSLINE_REFRESH_SECONDS = 5;
 const HOOK_ENTRY = {
   matcher: "",
   hooks: [{ type: "command", command: HOOK_CMD, timeout: 3, async: true }],
-} as const;
-
-// Relays the Claude session cookie to the usage plugin. Runs once per session
-// on SessionStart, alongside the normal event relay.
-const COOKIE_HOOK_ENTRY = {
-  matcher: "",
-  hooks: [
-    { type: "command", command: COOKIE_RELAY_CMD, timeout: 3, async: true },
-  ],
 } as const;
 
 const HOOK_EVENTS = [
@@ -212,18 +202,17 @@ export const claudeCodeProvider: AgentProvider = {
     }
 
     // Inline --settings payload:
-    //   - hooks: relay every CC event to /api/hooks; SessionStart additionally
-    //     relays the session cookie to the usage plugin (auto-detect).
+    //   - hooks: relay every CC event to /api/hooks for status tracking.
+    //     (Note: we deliberately do NOT relay CLAUDE_SESSION_COOKIE from spawned
+    //     agents — they only ever inherit the server's frozen launch cookie,
+    //     never the user's current account. The usage plugin instead reads the
+    //     freshest key from the user's own interactive sessions; see
+    //     plugins/claude-usage/cookieScanner.ts.)
     //   - statusLine (optional, default on): autonomOS-aware bar at the bottom
     //     of the CC terminal. Replaces the user's personal statusLine for
     //     spawned sessions only. CC merges these as parallel keys at the root.
     const settingsPayload: Record<string, unknown> = {
-      hooks: Object.fromEntries(
-        HOOK_EVENTS.map((e) => [
-          e,
-          e === "SessionStart" ? [HOOK_ENTRY, COOKIE_HOOK_ENTRY] : [HOOK_ENTRY],
-        ]),
-      ),
+      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
     };
     if (settings.statusLine?.enabled !== false) {
       // JSON.stringify produces a properly-escaped, double-quoted path —

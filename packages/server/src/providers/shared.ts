@@ -54,11 +54,18 @@ export const HOOK_CMD =
   ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
   " >/dev/null 2>&1";
 
-// ── Claude-session harvest command (claude-code SessionStart only) ──
-// Relays Claude Code's CLAUDE_SESSION_COOKIE to the usage plugin so it works
-// with no manual paste. The cookie is expanded by the shell and piped to
-// curl's stdin — it never appears in any process argv. Best-effort and silent;
-// the server holds it in memory only and ignores it when auto-detect is off.
+// ── Claude-session relay command (optional user-level hook) ──
+// Relays Claude Code's CLAUDE_SESSION_COOKIE to the usage plugin's harvest
+// endpoint. NOTE: this is intentionally NOT attached to autonomOS-spawned
+// agents — they only inherit the server's frozen launch cookie, never the
+// user's current account (the usage plugin reads that from the user's own
+// interactive sessions; see plugins/claude-usage/cookieScanner.ts). It remains
+// here as the canonical relay command for an *optional* user-level SessionStart
+// hook (in the user's own ~/.claude/settings.json) that pushes the cookie the
+// moment any of their sessions starts. The cookie is expanded by the shell and
+// piped to curl's stdin — it never appears in any process argv. Best-effort and
+// silent; the server holds it in memory only and ignores it when auto-detect is
+// off.
 export const COOKIE_RELAY_CMD =
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
   '[ -n "${CLAUDE_SESSION_COOKIE}" ] && ' +
