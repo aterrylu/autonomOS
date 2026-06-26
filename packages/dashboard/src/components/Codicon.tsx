@@ -17,6 +17,8 @@ import listFlatSvg from "@vscode/codicons/src/icons/list-flat.svg?raw";
 import listTreeSvg from "@vscode/codicons/src/icons/list-tree.svg?raw";
 import lockSvg from "@vscode/codicons/src/icons/lock.svg?raw";
 import markdownSvg from "@vscode/codicons/src/icons/markdown.svg?raw";
+import pinSvg from "@vscode/codicons/src/icons/pin.svg?raw";
+import pinnedSvg from "@vscode/codicons/src/icons/pinned.svg?raw";
 import radioTowerSvg from "@vscode/codicons/src/icons/radio-tower.svg?raw";
 import sendSvg from "@vscode/codicons/src/icons/send.svg?raw";
 import trashSvg from "@vscode/codicons/src/icons/trash.svg?raw";
@@ -46,6 +48,8 @@ const ICONS = {
   "list-tree": extractPaths(listTreeSvg),
   lock: extractPaths(lockSvg),
   markdown: extractPaths(markdownSvg),
+  pin: extractPaths(pinSvg),
+  pinned: extractPaths(pinnedSvg),
   "radio-tower": extractPaths(radioTowerSvg),
   send: extractPaths(sendSvg),
   trash: extractPaths(trashSvg),
