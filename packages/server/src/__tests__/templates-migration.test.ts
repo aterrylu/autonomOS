@@ -9,20 +9,12 @@ import { after, before, describe, it } from "node:test";
  * being guarded: a template the user deliberately set to supervised
  * (autonomousMode:false) must NOT silently load as full-autonomy ("bypass").
  *
- * templates.ts reads CONFIG_DIR from the environment AT IMPORT, so we set it
- * before a dynamic import. node:test isolates each test file in its own
- * process, so this env mutation does not leak to other suites.
+ * templates.ts reads CONFIG_DIR from the environment AT IMPORT, so we set the
+ * env and dynamically import it inside before() — NOT at module top-level, so
+ * no fs/env side effects run at import (which can crash the Linux e2e collector).
+ * node:test isolates each file in its own process, so neither the env mutation
+ * nor the fresh module import leaks to other suites.
  */
-const tmpDir = mkdtempSync(join(tmpdir(), "autonomos-tmpl-migrate-"));
-process.env.AUTONOMOS_CONFIG_DIR = tmpDir;
-const { getTemplate } = await import("../templates.js");
-
-const TEMPLATES_DIR = join(tmpDir, "templates");
-
-function writeRaw(name: string, obj: unknown): void {
-  writeFileSync(join(TEMPLATES_DIR, `${name}.json`), JSON.stringify(obj));
-}
-
 const base = {
   role: "R",
   description: "",
@@ -31,7 +23,21 @@ const base = {
 };
 
 describe("template legacy autonomousMode migration (ADR-045)", () => {
-  before(() => mkdirSync(TEMPLATES_DIR, { recursive: true }));
+  let tmpDir: string;
+  let templatesDir: string;
+  let getTemplate: typeof import("../templates.js").getTemplate;
+
+  function writeRaw(name: string, obj: unknown): void {
+    writeFileSync(join(templatesDir, `${name}.json`), JSON.stringify(obj));
+  }
+
+  before(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "autonomos-tmpl-migrate-"));
+    process.env.AUTONOMOS_CONFIG_DIR = tmpDir;
+    ({ getTemplate } = await import("../templates.js"));
+    templatesDir = join(tmpDir, "templates");
+    mkdirSync(templatesDir, { recursive: true });
+  });
   after(() => rmSync(tmpDir, { recursive: true, force: true }));
 
   it("maps legacy autonomousMode:false → 'default' (supervised intent preserved)", () => {
