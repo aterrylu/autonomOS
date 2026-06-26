@@ -42,7 +42,7 @@ function seedRunningAgent(id: string) {
       workingDirectory: "/tmp",
       provider: "claude-code",
       providerSessionId: "11111111-1111-1111-1111-111111111111",
-      autonomousMode: false,
+      permissionMode: "default",
     }),
   );
 }
