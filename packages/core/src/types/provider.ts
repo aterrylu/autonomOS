@@ -40,6 +40,20 @@ export interface AgentProvider {
   buildEnv(sessionId: string, agentName: string): Record<string, string>;
 
   /**
+   * Optional: describe a sidecar daemon to start BEFORE the visible PTY.
+   *
+   * Some providers run a backend daemon behind the terminal (Codex's
+   * `app-server`, attached via `codex --remote`). The runtime picks a free
+   * loopback port, sets `options.sidecarEndpoint`, calls this to get the
+   * daemon's argv, starts it, waits for `readyNeedle`, and only then spawns the
+   * PTY (whose buildArgs can reference `options.sidecarEndpoint`). The daemon is
+   * disposed when the PTY exits. The daemon binary is `resolveBinary()`.
+   *
+   * Return null to spawn no sidecar (legacy in-process behavior).
+   */
+  buildSidecar?(options: ResolvedSpawnOptions): SidecarSpec | null;
+
+  /**
    * Optional: attach a watcher to the PTY that handles provider-specific
    * startup prompts (e.g. CC's trust/channels prompts, Codex's sandbox warnings).
    * Called immediately after PTY spawn. The watcher should self-dispose.
@@ -63,6 +77,20 @@ export interface AgentProvider {
   readonly capabilities: ProviderCapabilities;
 }
 
+/**
+ * SidecarSpec — describes a backend daemon the runtime starts before the PTY.
+ * The daemon binary is the provider's `resolveBinary()`; only the argv and the
+ * readiness signal differ per provider.
+ */
+export interface SidecarSpec {
+  /** argv for the daemon (e.g. ["app-server", "--listen", "ws://127.0.0.1:PORT", ...]) */
+  args: string[];
+  /** Substring on the daemon's stdout/stderr that signals it is listening. */
+  readyNeedle: string;
+  /** Max ms to wait for readiness before failing the spawn. Default 12000. */
+  readyTimeoutMs?: number;
+}
+
 /** What a provider can and can't do */
 export interface ProviderCapabilities {
   /** Hook event count and whether hooks need one-time setup */
@@ -72,6 +100,14 @@ export interface ProviderCapabilities {
     perSession: boolean;
     /** True if a one-time install is required (e.g. Codex hooks.json) */
     requiresSetup: boolean;
+  };
+  /** Live busy/idle status reporting. Decoupled from `hooks` because not every
+   *  provider sources status from a hook relay — Codex derives status from its
+   *  app-server event stream, so it reports live status with zero hook events. */
+  liveStatus: {
+    supported: boolean;
+    /** Where status comes from when supported. */
+    method: "hooks" | "event-stream" | "none";
   };
   /** MCP channel server injection */
   mcp: {
@@ -157,4 +193,18 @@ export interface ResolvedSpawnOptions extends SpawnOptions {
   serverPort: string;
   /** Resolved capabilities from template (for MCP capability gating) */
   capabilities: string[];
+  /**
+   * ws:// endpoint of the provider's sidecar daemon, set by the runtime before
+   * buildSidecar/buildArgs when the provider declares buildSidecar. The daemon
+   * listens here (`--listen`) and the PTY/gateway connect here (`--remote`).
+   */
+  sidecarEndpoint?: string;
+
+  /**
+   * Codex only: the persisted conversation thread id to resume. Set by the
+   * runtime when re-spawning an agent that previously captured a thread, so the
+   * provider can emit `codex resume <threadId> --remote` instead of a fresh
+   * `--remote` (which would fork a new, empty thread). Undefined on first spawn.
+   */
+  providerThreadId?: string;
 }

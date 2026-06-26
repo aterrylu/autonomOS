@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
-import type { DisplayMode, RateLimitData, RateLimitWindow } from "./types";
+import { saveAndValidate } from "./saveAndValidate";
+import {
+  type CredentialSource,
+  type DisplayMode,
+  isAutoDetected,
+  type RateLimitData,
+  type RateLimitWindow,
+} from "./types";
 import { useClickOutside } from "./useClickOutside";
 import { timeUntilReset, utilizationColor } from "./utils";
 
@@ -95,6 +102,7 @@ function CredentialField({
   onDraftChange,
   inputStyle,
   statusFg,
+  disabled,
 }: {
   label: string;
   value: string | null;
@@ -108,6 +116,7 @@ function CredentialField({
   onDraftChange: (val: string) => void;
   inputStyle: React.CSSProperties;
   statusFg: string;
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -139,9 +148,10 @@ function CredentialField({
         <input
           type={secret ? "password" : "text"}
           value={draft}
+          disabled={disabled}
           onChange={(e) => onDraftChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full rounded px-2 py-1.5 text-xs font-mono"
+          className="w-full rounded px-2 py-1.5 text-xs font-mono disabled:opacity-60"
           style={inputStyle}
         />
       ) : (
@@ -157,26 +167,36 @@ function CredentialField({
 }
 
 function saveButtonLabel(saving: boolean, saved: boolean): string {
-  if (saved) return "Saved!";
-  if (saving) return "Saving...";
-  return "Save";
+  if (saved) return "Connected ✓";
+  if (saving) return "Verifying…";
+  return "Save & verify";
+}
+
+/** Mirror the server's redaction so the field shows the new key immediately
+ * without a settings round-trip (see `redact` in routes/settings.ts). */
+function redactKey(key: string): string {
+  return key.length > 8 ? `••••${key.slice(-4)}` : "••••";
 }
 
 function CredentialsSection({
   page,
   onRefetch,
+  credentialSource,
 }: {
   page: PageTheme;
   onRefetch?: () => void;
+  credentialSource?: CredentialSource;
 }) {
+  // When the key is auto-detected from Claude Code and the user hasn't pasted
+  // their own, say so explicitly instead of "Not set" — the credential isn't
+  // missing, it's just inherited. A manual paste still overrides it.
+  const autoDetected = isAutoDetected(credentialSource);
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
-  const [maskedOrg, setMaskedOrg] = useState<string | null>(null);
+  const [autoDetect, setAutoDetect] = useState(true);
   const [editingKey, setEditingKey] = useState(false);
-  const [editingOrg, setEditingOrg] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
-  const [orgDraft, setOrgDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
@@ -191,7 +211,7 @@ function CredentialsSection({
       })
       .then((data) => {
         setMaskedKey(data.claudeSessionKey ?? null);
-        setMaskedOrg(data.claudeOrgId ?? null);
+        setAutoDetect(data.autoDetectClaudeSession !== false);
         setLoaded(true);
       })
       .catch((err) => {
@@ -204,46 +224,43 @@ function CredentialsSection({
     return () => controller.abort();
   }, [expanded, loaded]);
 
-  const hasPending =
-    (editingKey && keyDraft.trim()) || (editingOrg && orgDraft.trim());
+  const hasPending = editingKey && keyDraft.trim().length > 0;
 
   async function handleSave(): Promise<void> {
     if (!hasPending) return;
     setSaving(true);
     setError("");
-    try {
-      const body: Record<string, string> = {};
-      if (editingKey && keyDraft.trim())
-        body.claudeSessionKey = keyDraft.trim();
-      if (editingOrg) body.claudeOrgId = orgDraft.trim();
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const errBody = await res.json();
-          if (errBody.error) detail = errBody.error;
-        } catch {}
-        setError(detail);
-        return;
-      }
-      const updated = await res.json();
-      setMaskedKey(updated.claudeSessionKey ?? null);
-      setMaskedOrg(updated.claudeOrgId ?? null);
+    const key = keyDraft.trim();
+    // Save AND verify against claude.ai before showing success, so a bad key
+    // reports its real reason here instead of looking saved but failing later.
+    const res = await saveAndValidate(key);
+    setSaving(false);
+    if (res.kind === "ok") {
+      setMaskedKey(redactKey(key));
       setEditingKey(false);
-      setEditingOrg(false);
       setKeyDraft("");
-      setOrgDraft("");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       onRefetch?.();
+    } else {
+      setError(res.message);
+    }
+  }
+
+  async function toggleAutoDetect(): Promise<void> {
+    const next = !autoDetect;
+    setAutoDetect(next); // optimistic
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoDetectClaudeSession: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onRefetch?.();
     } catch {
-      setError("Could not reach server");
-    } finally {
-      setSaving(false);
+      setAutoDetect(!next); // revert on failure
+      setError("Could not update auto-detect setting");
     }
   }
 
@@ -280,8 +297,10 @@ function CredentialsSection({
           <CredentialField
             label="Session Key"
             value={maskedKey}
-            placeholder="sk-ant-sid01-..."
-            emptyLabel="Not set"
+            placeholder="sk-ant-sid…"
+            emptyLabel={
+              autoDetected ? "Auto-detected from Claude Code" : "Not set"
+            }
             secret
             editing={editingKey}
             draft={keyDraft}
@@ -296,25 +315,7 @@ function CredentialsSection({
             onDraftChange={setKeyDraft}
             inputStyle={inputStyle}
             statusFg={page.statusFg}
-          />
-          <CredentialField
-            label="Organization ID"
-            value={maskedOrg}
-            placeholder="UUID (auto-detected if blank)"
-            emptyLabel="Auto-detected"
-            editing={editingOrg}
-            draft={orgDraft}
-            onEdit={() => {
-              setEditingOrg(true);
-              setOrgDraft("");
-            }}
-            onCancel={() => {
-              setEditingOrg(false);
-              setOrgDraft("");
-            }}
-            onDraftChange={setOrgDraft}
-            inputStyle={inputStyle}
-            statusFg={page.statusFg}
+            disabled={saving}
           />
           {error && (
             <div
@@ -338,6 +339,25 @@ function CredentialsSection({
               {saveButtonLabel(saving, saved)}
             </button>
           )}
+          {/* Auto-detect toggle: harvest the session from Claude Code so no
+              manual paste is needed. A pasted key always overrides it. */}
+          <button
+            type="button"
+            onClick={toggleAutoDetect}
+            className="flex items-center justify-between w-full cursor-pointer hover:opacity-80"
+            style={{ color: page.statusFg }}
+          >
+            <span className="text-[10px]">Auto-detect from Claude Code</span>
+            <span
+              className="rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+              style={{
+                background: autoDetect ? "#23863622" : page.border,
+                color: autoDetect ? "#3fb950" : page.statusFg,
+              }}
+            >
+              {autoDetect ? "On" : "Off"}
+            </span>
+          </button>
         </div>
       )}
     </div>
@@ -501,7 +521,11 @@ export function UsagePanel({
       </div>
 
       {/* Credentials config */}
-      <CredentialsSection page={page} onRefetch={onRefetch} />
+      <CredentialsSection
+        page={page}
+        onRefetch={onRefetch}
+        credentialSource={data.credentialSource}
+      />
     </div>
   );
 }

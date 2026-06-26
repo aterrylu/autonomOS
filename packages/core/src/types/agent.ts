@@ -63,6 +63,13 @@ export interface Agent {
    *  used by --resume. For migrated agents, equals `id`. */
   providerSessionId: string;
 
+  /** Codex only: the app-server thread id (== Codex session id) of this agent's
+   *  conversation, captured once the daemon-backed TUI creates its thread. Used
+   *  to resume the conversation across a server/daemon restart via
+   *  `codex resume <threadId> --remote`. Undefined until captured, or for
+   *  providers that don't use the daemon model. */
+  providerThreadId?: string;
+
   /** Most recent PTY-spawn timestamp (initial create or resume). */
   startedAt: number;
 

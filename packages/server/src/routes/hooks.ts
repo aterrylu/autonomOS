@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents } from "../agents/store.js";
 import { recordEvent } from "../memory/events.js";
 import { getProvider } from "../providers/index.js";
@@ -118,6 +119,34 @@ export function clearNotifications(sessionId: string): void {
   notifications.delete(sessionId);
 }
 
+/** Append a notification for a session, capped at the 50 most recent. */
+function appendNotification(
+  sessionId: string,
+  item: SessionNotification,
+): void {
+  const items = notifications.get(sessionId) ?? [];
+  items.push(item);
+  if (items.length > 50) items.splice(0, items.length - 50);
+  notifications.set(sessionId, items);
+}
+
+/**
+ * Record a server-originated warning against a session (e.g. prompt
+ * re-delivery). Surfaces in the bulk notification panel alongside
+ * SendUserMessage — these warnings exist precisely for the operator to see.
+ */
+export function pushSystemNotification(
+  sessionId: string,
+  message: string,
+): void {
+  appendNotification(sessionId, {
+    event: "SystemWarning",
+    message,
+    timestamp: Date.now(),
+    read: false,
+  });
+}
+
 // ── Agent status helpers ─────────────────────────────────────────────
 
 export function getAgentState(sessionId: string): AgentState {
@@ -126,6 +155,25 @@ export function getAgentState(sessionId: string): AgentState {
 
 export function clearAgentState(sessionId: string): void {
   agentStates.delete(sessionId);
+}
+
+/**
+ * Directly set an agent's working status. For providers that report GROUND-TRUTH
+ * status out-of-band rather than through the hook relay + deriveStatus state
+ * machine — currently Codex, whose app-server daemon emits thread/status/changed
+ * (active/idle). No event synthesis needed: the daemon already tells us the
+ * status, so we set it. The dashboard polls /api/hooks for this, same as CC/Gemini.
+ */
+export function setAgentStatus(sessionId: string, status: AgentStatus): void {
+  const prev = agentStates.get(sessionId) ?? DEFAULT_AGENT_STATE;
+  if (prev.status === status) return; // no churn on repeats
+  agentStates.set(sessionId, {
+    ...prev,
+    ...CLEAR_TOOL,
+    status,
+    lastEvent: "provider/status",
+    updatedAt: Date.now(),
+  });
 }
 
 /** Derive agent status from a hook event.
@@ -268,6 +316,14 @@ hooksRouter.post("/:sessionId", async (c) => {
   const event = body.hook_event_name ?? "unknown";
   const timestamp = Date.now();
 
+  // Prompt delivery receipt — sessions spawned with a starting prompt are
+  // tracked until UserPromptSubmit (or turn activity) confirms delivery.
+  notePromptHookEvent(
+    sessionId,
+    event,
+    typeof body.source === "string" ? body.source : undefined,
+  );
+
   // Update agent status
   const statusUpdate = deriveStatus(body);
   if (statusUpdate.status) {
@@ -334,15 +390,12 @@ hooksRouter.post("/:sessionId", async (c) => {
 
   // Store notification-worthy events
   if (NOTIFY_EVENTS.has(event)) {
-    const items = notifications.get(sessionId) ?? [];
-    items.push({
+    appendNotification(sessionId, {
       event,
       message: typeof body.message === "string" ? body.message : undefined,
       timestamp,
       read: false,
     });
-    if (items.length > 50) items.splice(0, items.length - 50);
-    notifications.set(sessionId, items);
   }
 
   // Intercept SendUserMessage from --brief mode (PreToolUse only to avoid
@@ -353,16 +406,13 @@ hooksRouter.post("/:sessionId", async (c) => {
   ) {
     const msg = body.tool_input?.message;
     if (typeof msg === "string" && msg.length > 0) {
-      const items = notifications.get(sessionId) ?? [];
-      items.push({
+      appendNotification(sessionId, {
         event: "SendUserMessage",
         message: msg,
         timestamp,
         read: false,
         proactive: body.tool_input?.status === "proactive" || undefined,
       });
-      if (items.length > 50) items.splice(0, items.length - 50);
-      notifications.set(sessionId, items);
 
       if (body.tool_input?.status === "proactive") {
         console.log(
@@ -438,9 +488,11 @@ hooksRouter.get("/notifications", (c) => {
   for (const [sessionId, items] of notifications) {
     const name = sessionNames.get(sessionId) ?? sessionId.slice(0, 8);
     for (const n of items) {
-      // Only show SendUserMessage events — these are actual agent messages from --brief.
+      // Show SendUserMessage (actual agent messages from --brief) and
+      // SystemWarning (server-originated alerts, e.g. prompt re-delivery).
       // Other events (Stop, Notification, PermissionRequest) are system noise.
-      if (n.event !== "SendUserMessage") continue;
+      if (n.event !== "SendUserMessage" && n.event !== "SystemWarning")
+        continue;
       all.push({ ...n, sessionId, sessionName: name });
       if (!n.read) totalUnread++;
     }

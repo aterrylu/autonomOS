@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy
+.PHONY: dev prod stop restart logs down check fmt deploy doctor
 
 BUN := $(HOME)/.bun/bin/bun
 PM2 := $(HOME)/.bun/bin/pm2
@@ -29,12 +29,20 @@ dev:
 prod:
 	@command -v $(PM2) >/dev/null || { echo "Installing pm2..."; $(BUN) add -g pm2; }
 	@$(BUN) install
+	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
 	@bunx esbuild packages/server/src/channel-server/index.ts --bundle --platform=node --format=esm --outfile=packages/server/src/channel-server/dist.mjs --packages=external --log-level=warning
+	@echo "Removing any stale embedded dashboard (hosted server serves packages/dashboard/dist; _embedded_dashboard is a binary-build artifact only)..."
+	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@echo "Restarting server..."
 	@nohup sh -c '$(PM2) delete autonomos 2>/dev/null; $(PM2) start ecosystem.config.cjs; $(PM2) save' >/dev/null 2>&1 &
+
+# ── doctor: preflight checks (node-pty ABI vs runtime node) ──
+#   Run standalone to diagnose/repair a pm2 crash-loop after a node upgrade.
+doctor:
+	@bash scripts/ensure-node-pty.sh
 
 # ── stop / restart / logs ─────────────────────────
 stop:
@@ -66,6 +74,7 @@ deploy:
 		--exclude .env \
 		--exclude dist \
 		--exclude .git \
+		--exclude _embedded_dashboard \
 		./ $(DEPLOY_HOST):$(DEPLOY_PATH)/
 	@echo "Installing bun + pm2 (if needed)..."
 	ssh $(DEPLOY_HOST) 'export PATH=$$HOME/.bun/bin:$$PATH && command -v bun >/dev/null || { curl -fsSL https://bun.sh/install | bash && export PATH=$$HOME/.bun/bin:$$PATH; } && command -v pm2 >/dev/null || bun add -g pm2'
@@ -82,4 +91,5 @@ fmt:
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	$(TSX) --test packages/server/src/__tests__/*.test.ts
+	$(TSX) --test packages/server/src/__tests__/*.test.ts packages/app/src/main/__tests__/*.test.ts scripts/*.test.ts
+	cd packages/dashboard && node_modules/.bin/vitest run

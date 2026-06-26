@@ -1,14 +1,19 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
-import { createTerminalBackend } from "../terminal/create";
 import type {
   IFitAddon,
   ILink,
   ILinkProvider,
-  ITerminalAddon,
+  IWebglAddon,
   TerminalBackend,
   TerminalInstance,
 } from "../terminal/types";
+import { createXtermBackend } from "../terminal/xterm-backend";
+import {
+  COPY_TOAST_DISPLAY_MS,
+  shouldSuppressCopyToast,
+} from "../utils/copyToast";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
 
@@ -61,8 +66,50 @@ export function useTerminal(
   const termRef = useRef<TerminalInstance | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Transient "Copied N chars" confirmation for OSC 52 auto-copy. State drives
+  // the CopyToast overlay; refs hold the coalescing/auto-dismiss bookkeeping so
+  // the handler stays stable (it never re-creates the terminal effect).
+  const [copyToast, setCopyToast] = useState<CopyToastState | null>(null);
+  const copyToastIdRef = useRef(0);
+  const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCopyTextRef = useRef<string | null>(null);
+  const lastCopyAtRef = useRef(0);
+
+  const handleClipboardCopy = useCallback(
+    ({ text, ok }: { text: string; ok: boolean }) => {
+      const now = Date.now();
+      // Coalesce streaming re-syncs of an unchanged selection into one toast.
+      if (
+        shouldSuppressCopyToast(
+          { text: lastCopyTextRef.current, at: lastCopyAtRef.current },
+          { text, ok, at: now },
+        )
+      ) {
+        lastCopyAtRef.current = now;
+        return;
+      }
+      lastCopyTextRef.current = text;
+      lastCopyAtRef.current = now;
+      copyToastIdRef.current += 1;
+      setCopyToast({ id: copyToastIdRef.current, chars: [...text].length, ok });
+      if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+      copyToastTimerRef.current = setTimeout(
+        () => setCopyToast(null),
+        COPY_TOAST_DISPLAY_MS,
+      );
+    },
+    [],
+  );
+
+  // Clear the pending dismiss timer on unmount.
+  useEffect(
+    () => () => {
+      if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
+    },
+    [],
+  );
+
   const theme = useStore((s) => s.theme);
-  const renderer = useStore((s) => s.terminalRenderer);
   const setStatus = useStore((s) => s.setStatus);
   const themeRef = useRef(theme);
   themeRef.current = theme;
@@ -99,7 +146,7 @@ export function useTerminal(
     // The synchronous cleanup function and the async body both access these.
     let terminal: TerminalInstance | null = null;
     let fitAddon: IFitAddon | null = null;
-    let webglAddon: ITerminalAddon | null = null;
+    let webglAddon: IWebglAddon | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let scrollTimer: ReturnType<typeof setTimeout> | null = null;
     let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -111,30 +158,34 @@ export function useTerminal(
     let onTouchMove: ((e: TouchEvent) => void) | null = null;
     let onTouchEnd: (() => void) | null = null;
 
-    // Async IIFE — ghostty-web requires await init() for WASM loading.
+    // Async IIFE — the WebSocket connect/retry logic below runs async.
     (async () => {
       let backend: TerminalBackend;
       try {
-        backend = await createTerminalBackend(renderer, {
-          cursorBlink: true,
-          fontSize: 14,
-          fontFamily:
-            '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
-          theme: THEMES[themeRef.current].terminal,
-          scrollback: 10000,
-        });
+        backend = createXtermBackend(
+          {
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily:
+              '"Berkeley Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+            theme: THEMES[themeRef.current].terminal,
+            scrollback: 10000,
+          },
+          handleClipboardCopy,
+        );
       } catch (err) {
-        console.error("Failed to create", renderer, "terminal backend:", err);
+        console.error("Failed to create terminal backend:", err);
         if (isActiveRef.current) {
-          setStatus(`${renderer} failed to load`);
+          setStatus("terminal failed to load");
         }
-        container.textContent = `Terminal renderer "${renderer}" failed to initialize. Try switching back in Settings.`;
+        container.textContent =
+          "Terminal failed to initialize. Reload the dashboard to retry.";
         container.style.cssText =
           "color:#ea6c73;padding:16px;font-size:13px;font-family:monospace";
         return;
       }
 
-      // If the effect was cleaned up while we were awaiting, dispose immediately
+      // Defensive: if the effect was already torn down, dispose immediately.
       if (disposed) {
         backend.terminal.dispose();
         return;
@@ -165,25 +216,8 @@ export function useTerminal(
         new MarkdownLinkProvider(terminal, sessionId),
       );
       terminal.registerLinkProvider(new UrlLinkProvider(terminal));
-
-      // ghostty-web has its own OSC 8 link provider (Ctrl/Cmd+Click gated).
-      // xterm.js handles OSC 8 via the linkHandler constructor option instead.
-      if (renderer === "ghostty-web") {
-        import("ghostty-web")
-          .then(({ OSC8LinkProvider }) => {
-            if (!disposed) {
-              terminal!.registerLinkProvider(
-                new OSC8LinkProvider(
-                  // biome-ignore lint/suspicious/noExplicitAny: ghostty-web Terminal type differs from our TerminalInstance
-                  terminal! as any,
-                ) as unknown as ILinkProvider,
-              );
-            }
-          })
-          .catch((err) => {
-            console.warn("Failed to load OSC8LinkProvider:", err);
-          });
-      }
+      // xterm.js handles OSC 8 hyperlinks via the linkHandler constructor
+      // option in xterm-backend.ts (Ctrl/Cmd+Click gated).
 
       let userScrolledUp = false;
       let programmaticScroll = false;
@@ -297,6 +331,36 @@ export function useTerminal(
       const isContainerVisible = (): boolean =>
         container.offsetWidth > 0 && container.offsetHeight > 0;
 
+      // Load the WebGL renderer and keep it alive across GPU context loss.
+      // xterm's WebglAddon silently stops painting if its GL context is lost
+      // — common when several panes each hold a context (browsers cap WebGL
+      // contexts, and this hook creates/disposes one per pane on visibility)
+      // or after a GPU reset. Without an onContextLoss handler the terminal
+      // appears to freeze: typed input only shows up once a resize/focus
+      // nudge forces a full repaint. Disposing and recreating the addon on
+      // context loss resumes live rendering.
+      const loadWebglAddon = (): void => {
+        if (disposed || webglAddon || !terminal) return;
+        try {
+          const addon = createWebglAddon();
+          if (!addon) return;
+          terminal.loadAddon(addon);
+          webglAddon = addon;
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webglAddon === addon) webglAddon = null;
+            // Rebuild on the next visible frame so rendering resumes.
+            if (!disposed && isContainerVisible()) loadWebglAddon();
+          });
+        } catch (err) {
+          console.warn(
+            "WebGL addon failed, falling back to canvas renderer:",
+            err,
+          );
+          webglAddon = null;
+        }
+      };
+
       handleFocus = () => {
         if (disposed) return;
         if (
@@ -327,21 +391,8 @@ export function useTerminal(
           return;
         }
 
-        // Load WebGL when becoming visible (xterm.js only — ghostty returns null)
-        if (!webglAddon) {
-          try {
-            webglAddon = createWebglAddon();
-            if (webglAddon) {
-              terminal!.loadAddon(webglAddon);
-            }
-          } catch (err) {
-            console.warn(
-              "WebGL addon failed, falling back to canvas renderer:",
-              err,
-            );
-            webglAddon = null;
-          }
-        }
+        // Load WebGL when becoming visible (GPU rendering for xterm.js)
+        loadWebglAddon();
 
         try {
           // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
@@ -483,7 +534,7 @@ export function useTerminal(
       container.replaceChildren();
       termRef.current = null;
     };
-  }, [sessionId, setStatus, containerRef, renderer]);
+  }, [sessionId, setStatus, containerRef, handleClipboardCopy]);
 
   // Update theme on live terminal
   useEffect(() => {
@@ -491,6 +542,8 @@ export function useTerminal(
       termRef.current.options.theme = THEMES[theme].terminal;
     }
   }, [theme]);
+
+  return { copyToast };
 }
 
 function nudgeResize(
@@ -531,7 +584,6 @@ function getLineText(
 /**
  * Detects plain-text URLs (http:// and https://) in terminal output.
  * Ctrl+Click (Cmd+Click on Mac) opens them in the browser.
- * Renderer-agnostic — works with both xterm.js and ghostty-web.
  */
 class UrlLinkProvider implements ILinkProvider {
   private readonly pattern =

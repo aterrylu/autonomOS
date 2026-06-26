@@ -1,6 +1,15 @@
 node_modules/
 dist/
 build/
+# Phase 1A.1: server build scripts (committed) — override generic build/ ignore
+!packages/server/build/
+# Phase 1A.1: staging dir for dashboard assets copied at binary build time
+packages/server/src/_embedded_dashboard/
+# Phase 1B.2: electron-builder output + bundled server staging
+packages/app/out/
+packages/app/resources/server/
+packages/app/resources/node/
+packages/app/dist/
 .env
 .env.local
 .DS_Store
@@ -9,4 +18,13 @@ build/
 .mcp.json
 deploy/serve.json.deploy
 .playwright-mcp/
+# Playwright e2e (L4) output — reports, traces, screenshots, cached browsers
+packages/dashboard/test-results/
+packages/dashboard/playwright-report/
+packages/dashboard/blob-report/
+packages/dashboard/.playwright/
 .autonomos-dev/
+# Per-package changelogs are transient — changesets writes them, but the
+# single root CHANGELOG.md (assembled by scripts/sync-changelog.ts) is the
+# canonical product history. See .changeset/README.md.
+packages/*/CHANGELOG.md

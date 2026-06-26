@@ -13,36 +13,27 @@ import { ensureConfigDir, getConfigDir } from "./configDir.js";
 export interface AppSettings {
   /** Claude session key for usage plugin (sk-ant-sid01-...) */
   claudeSessionKey?: string;
-  /** Claude organization ID (UUID) */
-  claudeOrgId?: string;
-  /** Anthropic API base URL (e.g. http://litellm for proxy) */
-  anthropicBaseUrl?: string;
-  /** Anthropic API auth token */
-  anthropicAuthToken?: string;
-  /** Whether to inject anthropicBaseUrl/anthropicAuthToken into sessions (default: true if values exist) */
-  anthropicOverrideEnabled?: boolean;
   /**
-   * Channel plugins enabled for every session.
-   * Values are --channels arguments, e.g.:
-   *   "plugin:telegram@claude-plugins-official"
-   *   "plugin:discord@claude-plugins-official"
-   *   "server:autonomos"
+   * Auto-detect the Claude session for the usage plugin (default: true).
+   * When on, the cookie is harvested in-memory from a spawned agent's hook (or
+   * the server's own `CLAUDE_SESSION_COOKIE`) so usage works with no manual
+   * paste. Set false to use only an explicitly-entered key.
+   */
+  autoDetectClaudeSession?: boolean;
+  /**
+   * @deprecated No longer required or used. The org UUID is resolved
+   * automatically from the session key via the bootstrap API. Kept only
+   * so older settings.json files still parse; new code never reads it and
+   * the settings route no longer persists it.
+   */
+  claudeOrgId?: string;
+  /**
+   * Channels enabled for every session. Only `server:*` channels are
+   * supported, e.g. "server:autonomos".
    */
   channels?: string[];
-  /**
-   * Name of the agent that gets plugin:* channels (Telegram, Discord, etc).
-   * Only ONE session can hold a given plugin's lock — Telegram's getUpdates
-   * API enforces a single concurrent poller per bot token, and the plugin
-   * implements this with a PID file that evicts previous holders. Pinning
-   * plugin channels to one agent avoids the random-last-wins routing you'd
-   * otherwise get when many sessions resume in parallel.
-   * Default: "Dispatcher". Non-matching sessions still get server:* channels.
-   */
-  inboxAgent?: string;
   /** Gateway platform adapter config */
   gateway?: {
-    discord?: { enabled: boolean };
-    telegram?: { enabled: boolean };
     slack?: { enabled: boolean };
   };
   /** Channel-to-session routing rules */
@@ -51,8 +42,6 @@ export interface AppSettings {
   autoTrust?: boolean;
   /** User-defined env vars injected into every spawned session */
   customEnvVars?: Record<string, string>;
-  /** Terminal renderer backend: xterm.js (default) or ghostty-web */
-  terminalRenderer?: "xterm" | "ghostty-web";
   /** Scheduler settings */
   scheduler?: {
     maxConcurrentRuns?: number;
@@ -73,11 +62,67 @@ function settingsFile(): string {
 }
 
 const DEFAULT_CHANNELS = ["server:autonomos"];
-const DEFAULT_INBOX_AGENT = "Dispatcher";
 
-export function getInboxAgent(settings: AppSettings): string {
-  const name = settings.inboxAgent?.trim();
-  return name && name.length > 0 ? name : DEFAULT_INBOX_AGENT;
+/**
+ * Keys from removed features, scrubbed on read so the next persist drops
+ * them from disk (the ADR-035 accept-and-discard pattern). `inboxAgent`
+ * and the telegram/discord gateway toggles died with the plugin-channel
+ * removal; stale `plugin:*` channels entries are handled by the channels
+ * sanitizer below (they no longer pass isValidChannelId). The anthropic*
+ * keys died with the API-override removal — the auth token is a credential
+ * and must not linger on disk, so scrubbing (not just ignoring) matters.
+ * Sessions that need a custom endpoint can set ANTHROPIC_BASE_URL via
+ * customEnvVars instead. `terminalRenderer` died with the renderer cleanup
+ * — xterm.js is now the only backend, so the selector key is non-credential
+ * dead weight; scrubbing it on read prevents it surviving forever (the
+ * updateSettings merge spreads current settings, so an un-scrubbed unknown
+ * key would re-persist on every save).
+ */
+const REMOVED_KEYS = [
+  "inboxAgent",
+  "anthropicBaseUrl",
+  "anthropicAuthToken",
+  "anthropicOverrideEnabled",
+  "terminalRenderer",
+];
+const REMOVED_GATEWAY_KEYS = ["discord", "telegram"];
+
+function scrubRemovedKeys(data: AppSettings): void {
+  const record = data as Record<string, unknown>;
+  const dropped = REMOVED_KEYS.filter((key) => key in record);
+  for (const key of REMOVED_KEYS) {
+    delete record[key];
+  }
+  if (dropped.length > 0) {
+    // Name the keys — for someone who relied on the API override (e.g. a
+    // litellm proxy), this is the only signal explaining why their
+    // sessions now hit the default endpoint. Key NAMES only, never values
+    // (anthropicAuthToken is a credential).
+    console.warn(
+      `[settings] Ignoring settings.json keys from removed features: ${dropped.join(", ")} (dropped from disk on next save)`,
+    );
+  }
+  if (data.gateway) {
+    const gateway = data.gateway as Record<string, unknown>;
+    for (const key of REMOVED_GATEWAY_KEYS) {
+      delete gateway[key];
+    }
+    // Don't re-persist an empty residue object forever.
+    if (Object.keys(gateway).length === 0) {
+      delete record.gateway;
+    }
+  }
+  // Routing rules for removed platforms can never match inbound traffic
+  // (and the narrowed Platform type says they can't exist) — drop them.
+  if (Array.isArray(data.routes)) {
+    const valid = data.routes.filter((r) => r?.platform === "slack");
+    if (valid.length !== data.routes.length) {
+      console.warn(
+        `[settings] Dropped ${data.routes.length - valid.length} routes for removed platforms from settings.json`,
+      );
+      data.routes = valid;
+    }
+  }
 }
 
 export function getSettings(): AppSettings {
@@ -107,6 +152,8 @@ export function getSettings(): AppSettings {
     data = {};
   }
 
+  scrubRemovedKeys(data);
+
   // Default channels so MCP tools work out of the box.
   // An explicit empty array means "user disabled all channels" — don't override.
   if (data.channels == null || !Array.isArray(data.channels)) {
@@ -121,8 +168,14 @@ export function getSettings(): AppSettings {
       .map((c) => c.trim())
       .filter((c) => c.length > 0 && isValidChannelId(c));
     if (sanitized.length !== data.channels.length) {
+      // Name the dropped entries — this is the only signal a user gets
+      // when a stale plugin:* channel from a removed integration (or a
+      // typo) is discarded. Channel ids are not secrets.
+      const dropped = data.channels.filter(
+        (c) => typeof c !== "string" || !sanitized.includes(c.trim()),
+      );
       console.warn(
-        `[settings] Dropped ${data.channels.length - sanitized.length} invalid channels entries from settings.json`,
+        `[settings] Dropped ${dropped.length} invalid channels entries from settings.json: ${JSON.stringify(dropped)}`,
       );
     }
     data.channels = [...new Set(sanitized)];

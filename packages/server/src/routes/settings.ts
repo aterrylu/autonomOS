@@ -1,13 +1,8 @@
 import { Hono } from "hono";
-import { channelStatus, isValidChannelId } from "../channels.js";
+import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
-import {
-  type AppSettings,
-  getInboxAgent,
-  getSettings,
-  updateSettings,
-} from "../settings.js";
-import { readInstalledPlugins } from "./channels.js";
+import { setHarvestedSessionKey } from "../plugins/claude-usage/sessionStore.js";
+import { type AppSettings, getSettings, updateSettings } from "../settings.js";
 
 export const settingsRouter = new Hono();
 
@@ -25,15 +20,10 @@ function redact(value: string | undefined): string | null {
 function maskSettings(settings: AppSettings) {
   return {
     claudeSessionKey: redact(settings.claudeSessionKey),
-    claudeOrgId: settings.claudeOrgId || null,
-    anthropicBaseUrl: settings.anthropicBaseUrl || null,
-    anthropicAuthToken: redact(settings.anthropicAuthToken),
-    anthropicOverrideEnabled: settings.anthropicOverrideEnabled !== false,
+    autoDetectClaudeSession: settings.autoDetectClaudeSession !== false,
     channels: settings.channels ?? [],
-    inboxAgent: getInboxAgent(settings),
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
-    terminalRenderer: settings.terminalRenderer ?? "xterm",
     statusLine: { enabled: settings.statusLine?.enabled !== false },
   };
 }
@@ -54,23 +44,15 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
-  if (typeof body.claudeOrgId === "string") {
-    partial.claudeOrgId = body.claudeOrgId.trim();
+  if (typeof body.autoDetectClaudeSession === "boolean") {
+    partial.autoDetectClaudeSession = body.autoDetectClaudeSession;
   }
-  if (typeof body.anthropicBaseUrl === "string") {
-    partial.anthropicBaseUrl = body.anthropicBaseUrl.trim();
-  }
-  if (typeof body.anthropicAuthToken === "string") {
-    partial.anthropicAuthToken = body.anthropicAuthToken.trim();
-  }
-  if (typeof body.anthropicOverrideEnabled === "boolean") {
-    partial.anthropicOverrideEnabled = body.anthropicOverrideEnabled;
-  }
+  // `claudeOrgId`, the anthropic* override keys, and `terminalRenderer` are
+  // removed features — accept-but-discard for back-compat with older
+  // dashboards that still send them; they are never persisted. (A stale
+  // `terminalRenderer` already on disk is scrubbed on read in settings.ts.)
   if (typeof body.autoTrust === "boolean") {
     partial.autoTrust = body.autoTrust;
-  }
-  if (typeof body.inboxAgent === "string") {
-    partial.inboxAgent = body.inboxAgent.trim();
   }
   if (Array.isArray(body.channels)) {
     const requested = body.channels
@@ -81,49 +63,13 @@ settingsRouter.put("/", async (c) => {
     if (invalid.length > 0) {
       return c.json(
         {
-          error: `Invalid channel identifier(s): ${invalid.join(", ")}. Expected plugin:<name>@<marketplace> or server:<name>.`,
-        },
-        400,
-      );
-    }
-
-    // When detection fails, readInstalledPlugins returns null, which
-    // channelStatus() translates to "unknown" — deliberately fail-open
-    // so a transient subprocess problem doesn't block legitimate saves.
-    let installed: Awaited<ReturnType<typeof readInstalledPlugins>>;
-    try {
-      installed = await readInstalledPlugins();
-    } catch (err) {
-      console.error("[settings] channel detection threw:", err);
-      return c.json(
-        { error: "Could not verify channel status — try again." },
-        500,
-      );
-    }
-
-    const broken: string[] = [];
-    for (const id of requested) {
-      const status = channelStatus(id, installed);
-      if (status === "not-installed" || status === "disabled") {
-        broken.push(`${id} (${status})`);
-      }
-    }
-    if (broken.length > 0) {
-      return c.json(
-        {
-          error: `Refusing to save channels that would silently no-op at spawn: ${broken.join(", ")}. Install or enable the plugin first.`,
+          error: `Invalid channel identifier(s): ${invalid.join(", ")}. Expected server:<name>.`,
         },
         400,
       );
     }
 
     partial.channels = requested;
-  }
-  if (
-    body.terminalRenderer === "xterm" ||
-    body.terminalRenderer === "ghostty-web"
-  ) {
-    partial.terminalRenderer = body.terminalRenderer;
   }
   if (
     isPlainObject(body.statusLine) &&
@@ -148,6 +94,14 @@ settingsRouter.put("/", async (c) => {
     partial.customEnvVars = vars;
   }
 
+  // Opting out of auto-detect must drop the in-memory harvested cookie
+  // immediately — this privacy action is done BEFORE persisting so it happens
+  // even if the disk write fails (the UI would otherwise revert the toggle
+  // while a live cookie lingered in memory).
+  if (partial.autoDetectClaudeSession === false) {
+    setHarvestedSessionKey(null);
+  }
+
   let updated: AppSettings;
   try {
     updated = updateSettings(partial);
@@ -157,8 +111,11 @@ settingsRouter.put("/", async (c) => {
     return c.json({ error: "Failed to save settings" }, 500);
   }
 
-  // Invalidate usage cache so new credentials take effect immediately
-  if (partial.claudeSessionKey || partial.claudeOrgId) {
+  // Invalidate usage cache so a credential change takes effect immediately.
+  if (
+    partial.claudeSessionKey ||
+    partial.autoDetectClaudeSession !== undefined
+  ) {
     invalidateCache();
   }
 

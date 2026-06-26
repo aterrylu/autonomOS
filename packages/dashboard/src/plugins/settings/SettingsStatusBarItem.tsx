@@ -1,19 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Codicon, type CodiconName } from "../../components/Codicon";
-import { THEMES, useStore } from "../../store";
+import { AgentStatusIcon } from "../../components/ui/agent-status-icon";
+import { ProviderAgentIcon } from "../../components/ui/provider-icon";
+import { type AgentIconStyle, THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
 
 interface MaskedSettings {
   claudeSessionKey: string | null;
-  claudeOrgId: string | null;
-  anthropicBaseUrl: string | null;
-  anthropicAuthToken: string | null;
-  anthropicOverrideEnabled: boolean;
   channels: string[];
-  inboxAgent: string;
   autoTrust: boolean;
   customEnvVars: Record<string, string>;
-  terminalRenderer: "xterm" | "ghostty-web";
   statusLine: { enabled: boolean };
 }
 
@@ -23,10 +19,13 @@ function ToggleSwitch({
   enabled,
   inactiveBackground,
   onClick,
+  testId,
 }: {
   enabled: boolean;
   inactiveBackground: string;
   onClick: () => void;
+  /** Optional stable handle for e2e tests (durable vs a CSS-class xpath). */
+  testId?: string;
 }) {
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: toggle switch
@@ -35,6 +34,7 @@ function ToggleSwitch({
       className="relative w-8 h-4 rounded-full cursor-pointer transition-colors"
       style={{ background: enabled ? "#16825d" : inactiveBackground }}
       onClick={onClick}
+      data-testid={testId}
     >
       <div
         className="absolute top-0.5 w-3 h-3 rounded-full transition-transform"
@@ -55,83 +55,6 @@ interface ChannelStatusEntry {
   icon: string;
   status: ChannelStatus;
   fix: string | null;
-}
-
-function SettingRow({
-  label,
-  value,
-  placeholder,
-  secret,
-  inputStyle,
-  labelStyle,
-  onChange,
-}: {
-  label: string;
-  value: string | null;
-  placeholder: string;
-  secret?: boolean;
-  inputStyle: React.CSSProperties;
-  labelStyle: React.CSSProperties;
-  onChange: (val: string) => void;
-}) {
-  const isNew = !value;
-  const [editing, setEditing] = useState(isNew);
-  const [draft, setDraft] = useState("");
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-0.5">
-        <span className="text-[10px]" style={labelStyle}>
-          {label}
-        </span>
-        {value && !editing && (
-          <button
-            type="button"
-            onClick={() => {
-              setEditing(true);
-              setDraft("");
-              onChange("");
-            }}
-            className="text-[10px] cursor-pointer hover:opacity-80"
-            style={{ color: "#16825d" }}
-          >
-            Change
-          </button>
-        )}
-        {editing && !isNew && (
-          <button
-            type="button"
-            onClick={() => setEditing(false)}
-            className="text-[10px] cursor-pointer hover:opacity-80"
-            style={labelStyle}
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-      {editing ? (
-        <input
-          type={secret ? "password" : "text"}
-          value={draft}
-          onChange={(e) => {
-            const v = e.target.value;
-            setDraft(v);
-            onChange(v);
-          }}
-          placeholder={placeholder}
-          className="w-full rounded px-2 py-1.5 text-xs font-mono"
-          style={inputStyle}
-        />
-      ) : (
-        <div
-          className="rounded px-2 py-1.5 text-xs font-mono truncate"
-          style={{ ...inputStyle, opacity: 0.8 }}
-        >
-          {value}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function channelStatusLabel(status: ChannelStatus): string | null {
@@ -352,11 +275,24 @@ function RestartAllButton({ page }: { page: PageTheme }) {
     setState("restarting");
     setError(null);
     try {
-      const res = await fetch("/api/sessions/restart-all", { method: "POST" });
+      const res = await fetch("/api/agents/restart-all", { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { idMap } = await res.json();
+      const { idMap, failures } = (await res.json()) as {
+        idMap?: Record<string, string>;
+        failures?: Array<{ id: string; name: string; error: string }>;
+      };
       if (idMap && Object.keys(idMap).length > 0) {
         useStore.getState().remapSessionIds(idMap);
+      }
+      // Partial-success path: route returned 200 but some agents failed
+      // to respawn. Surface them so the user can investigate (server logs
+      // carry the full per-agent stack); without this the green "done"
+      // state masks N agents that didn't come back.
+      if (Array.isArray(failures) && failures.length > 0) {
+        const names = failures.map((f) => f.name).join(", ");
+        setError(`${failures.length} agent(s) failed to restart: ${names}`);
+        setState("idle");
+        return;
       }
       setState("done");
       setTimeout(() => setState("idle"), 2000);
@@ -433,19 +369,75 @@ const THEME_LABELS: Record<string, string> = {
   void: "Void",
 };
 
-const RENDERER_LABELS: Record<string, string> = {
-  xterm: "xterm.js",
-  "ghostty-web": "ghostty",
-};
+/** Visual two-card picker for the agent-icon style. Each card renders a live
+ *  preview of the actual icons so the choice is explicit, not just a label. */
+function AgentIconStylePicker({ page }: { page: PageTheme }) {
+  const style = useStore((s) => s.agentIconStyle);
+  const setStyle = useStore((s) => s.setAgentIconStyle);
+
+  const card = (
+    value: AgentIconStyle,
+    title: string,
+    preview: React.ReactNode,
+  ) => {
+    const selected = style === value;
+    return (
+      <button
+        type="button"
+        onClick={() => setStyle(value)}
+        data-testid={`agent-icon-style-${value}`}
+        className="flex-1 flex flex-col items-center gap-1.5 rounded-md px-2 py-2 cursor-pointer transition-colors"
+        style={{
+          border: `2px solid ${selected ? "#16825d" : page.border}`,
+          background: selected ? "#16825d22" : "transparent",
+        }}
+      >
+        <div className="flex items-center gap-2.5 h-5">{preview}</div>
+        <span className="text-[10px]" style={{ color: page.fg }}>
+          {title}
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <span className="text-xs" style={{ color: page.statusFg }}>
+        Agent Icons
+      </span>
+      <div className="flex gap-2">
+        {card(
+          "provider",
+          "Provider + status",
+          <>
+            <ProviderAgentIcon provider="claude-code" status="idle" size={16} />
+            <ProviderAgentIcon provider="codex" status="working" size={16} />
+            <ProviderAgentIcon
+              provider="gemini-cli"
+              status="needs_input"
+              size={16}
+            />
+          </>,
+        )}
+        {card(
+          "status",
+          "Status only",
+          <>
+            <AgentStatusIcon status="idle" size={14} />
+            <AgentStatusIcon status="working" size={14} />
+            <AgentStatusIcon status="needs_input" size={14} />
+          </>,
+        )}
+      </div>
+    </div>
+  );
+}
 
 function DashboardPreferences({ page }: { page: PageTheme }) {
   const theme = useStore((s) => s.theme);
   const autonomousMode = useStore((s) => s.autonomousMode);
-  const viewMode = useStore((s) => s.viewMode);
-  const terminalRenderer = useStore((s) => s.terminalRenderer);
   const cycleTheme = useStore((s) => s.cycleTheme);
   const toggleAutonomousMode = useStore((s) => s.toggleAutonomousMode);
-  const toggleViewMode = useStore((s) => s.toggleViewMode);
 
   const labelStyle: React.CSSProperties = { color: page.statusFg };
 
@@ -473,44 +465,6 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
         </button>
       </div>
 
-      {/* View mode */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs" style={labelStyle}>
-          View Mode
-        </span>
-        <button
-          type="button"
-          onClick={toggleViewMode}
-          className="rounded px-2.5 py-1 text-xs cursor-pointer font-mono"
-          style={{ background: page.border, color: page.fg }}
-        >
-          {viewMode === "terminal" ? "> terminal" : "≡ chat"}
-        </button>
-      </div>
-
-      {/* Terminal renderer */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs" style={labelStyle}>
-          Terminal Renderer
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            const next = terminalRenderer === "xterm" ? "ghostty-web" : "xterm";
-            useStore.setState({ terminalRenderer: next });
-            fetch("/api/settings", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ terminalRenderer: next }),
-            }).catch(() => {});
-          }}
-          className="rounded px-2.5 py-1 text-xs cursor-pointer font-mono"
-          style={{ background: page.border, color: page.fg }}
-        >
-          {RENDERER_LABELS[terminalRenderer] ?? terminalRenderer}
-        </button>
-      </div>
-
       {/* Autonomous mode */}
       <div className="flex items-center justify-between">
         <span className="text-xs" style={labelStyle}>
@@ -525,6 +479,9 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
       <div className="text-[10px]" style={labelStyle}>
         New sessions skip permission prompts when enabled.
       </div>
+
+      {/* Agent icon style */}
+      <AgentIconStylePicker page={page} />
     </div>
   );
 }
@@ -587,8 +544,9 @@ export function SettingsPanel({
       const data: { channels: ChannelStatusEntry[] } = await r.json();
       setChannelStatuses(data.channels);
     } catch {
-      // Leave channelStatuses null so toggles render with "unknown" state —
-      // never a hard UI failure just because detection flaked.
+      // Leave channelStatuses null — the panel shows its loading
+      // placeholder instead of a hard failure. A fetch error here means
+      // the server itself is unreachable, not a flaky status check.
       setChannelStatuses(null);
     }
   }, []);
@@ -708,62 +666,13 @@ export function SettingsPanel({
               className="text-[10px] font-medium uppercase tracking-wide"
               style={labelStyle}
             >
-              Anthropic API Override
-            </div>
-            <ToggleSwitch
-              enabled={!!settings?.anthropicOverrideEnabled}
-              inactiveBackground={page.border}
-              onClick={() =>
-                toggleSetting(
-                  "anthropicOverrideEnabled",
-                  !settings?.anthropicOverrideEnabled,
-                )
-              }
-            />
-          </div>
-          <div
-            style={{
-              opacity: settings?.anthropicOverrideEnabled ? 1 : 0.4,
-              pointerEvents: settings?.anthropicOverrideEnabled
-                ? "auto"
-                : "none",
-            }}
-            className="space-y-2.5"
-          >
-            <SettingRow
-              label="Base URL"
-              value={settings?.anthropicBaseUrl ?? null}
-              placeholder="https://api.anthropic.com (default)"
-              inputStyle={inputStyle}
-              labelStyle={labelStyle}
-              onChange={(v) =>
-                setPending((p) => ({ ...p, anthropicBaseUrl: v }))
-              }
-            />
-            <SettingRow
-              label="Auth Token"
-              value={settings?.anthropicAuthToken ?? null}
-              placeholder="sk-..."
-              secret
-              inputStyle={inputStyle}
-              labelStyle={labelStyle}
-              onChange={(v) =>
-                setPending((p) => ({ ...p, anthropicAuthToken: v }))
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between mt-3">
-            <div
-              className="text-[10px] font-medium uppercase tracking-wide"
-              style={labelStyle}
-            >
               Auto-Trust
             </div>
             <ToggleSwitch
               enabled={!!settings?.autoTrust}
               inactiveBackground={page.border}
               onClick={() => toggleSetting("autoTrust", !settings?.autoTrust)}
+              testId="auto-trust-toggle"
             />
           </div>
           <div className="text-[10px]" style={labelStyle}>
@@ -832,29 +741,8 @@ export function SettingsPanel({
             )}
           </div>
           <div className="text-[10px]" style={labelStyle}>
-            Enabled channels are injected into every new session via --channels.
-            Requires Claude Code v2.1.80+.
-          </div>
-
-          <div
-            className="text-[10px] font-medium uppercase tracking-wide mt-3"
-            style={labelStyle}
-          >
-            Inbox Agent
-          </div>
-          <SettingRow
-            label="Agent name"
-            value={settings?.inboxAgent ?? null}
-            placeholder="Dispatcher"
-            inputStyle={inputStyle}
-            labelStyle={labelStyle}
-            onChange={(v) => setPending((p) => ({ ...p, inboxAgent: v }))}
-          />
-          <div className="text-[10px]" style={labelStyle}>
-            Only this agent receives plugin channels (Telegram, Discord). Other
-            agents still get the autonomOS gateway. Prevents the
-            random-last-wins routing you'd otherwise hit when many sessions
-            resume at once.
+            Enabled channels are injected into every new session. Requires
+            Claude Code v2.1.80+.
           </div>
 
           <div

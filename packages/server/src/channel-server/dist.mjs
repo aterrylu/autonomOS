@@ -100,7 +100,7 @@ var TOOL_SEND = {
     properties: {
       to: {
         type: "string",
-        description: 'Destination URI (e.g. "agent://name", "discord://guild/channel", "broadcast://all")'
+        description: 'Destination URI (e.g. "agent://name", "broadcast://all")'
       },
       message: {
         type: "string",

@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
 import { basename } from "node:path";
-import { promisify } from "node:util";
 import {
   listSessions,
   type SDKSessionInfo,
@@ -8,13 +6,6 @@ import {
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache";
-
-const execFileAsync = promisify(execFile);
-
-export interface GitDiffStat {
-  insertions: number;
-  deletions: number;
-}
 
 export interface ProjectInfo {
   path: string;
@@ -31,7 +22,6 @@ export interface ProjectSession {
   firstPrompt?: string;
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
-  gitDiffStat?: GitDiffStat;
   /** True if this session is managed by autonomOS (has an agent record) */
   isAutonomosAgent?: boolean;
   /** Lifecycle status for autonomOS agents: "running" or "exited" */
@@ -50,7 +40,7 @@ export const projectRouter = new Hono();
 projectRouter.get("/", async (c) => {
   let sessions: SDKSessionInfo[];
   try {
-    sessions = await listSessions();
+    sessions = await listSessionsFn();
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Failed to list projects:", message);
@@ -64,10 +54,20 @@ projectRouter.get("/", async (c) => {
     .filter((s) => !s.customTitle && s.cwd)
     .map((s) => ({ sessionId: s.sessionId, cwd: s.cwd! }));
 
-  const resolvedTitles =
-    needsTitleLookup.length > 0
-      ? await batchGetTitles(needsTitleLookup)
-      : new Map<string, string>();
+  let resolvedTitles = new Map<string, string>();
+  if (needsTitleLookup.length > 0) {
+    try {
+      resolvedTitles = await batchGetTitlesFn(needsTitleLookup);
+    } catch (err) {
+      // Title resolution is best-effort enrichment; a failure (e.g. HOME unset
+      // on a launchd-spawned server) must not take down the whole listing.
+      // Sessions fall back to their SDK summary below.
+      console.error(
+        "batchGetTitles failed; falling back to SDK summaries:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   // Group sessions by project directory
   const projectMap = new Map<string, ProjectSession[]>();
@@ -120,37 +120,24 @@ projectRouter.get("/", async (c) => {
     }
   }
 
-  const allSessions = projects.flatMap((p) =>
-    p.sessions.map((s) => ({ session: s, cwd: p.path })),
-  );
-  await Promise.all(
-    allSessions.map(async ({ session, cwd }) => {
-      if (cwd === "unknown" || !session.gitBranch) return;
-      session.gitDiffStat = await getGitDiffStat(cwd, session.gitBranch);
-    }),
-  );
-
   projects.sort((a, b) => b.lastActive - a.lastActive);
   return c.json(projects);
 });
 
-async function getGitDiffStat(
-  cwd: string,
-  _branch: string,
-): Promise<GitDiffStat | undefined> {
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["diff", "main...HEAD", "--shortstat"],
-      { cwd, timeout: 5000 },
-    );
-    const ins = stdout.match(/(\d+) insertion/);
-    const del = stdout.match(/(\d+) deletion/);
-    const insertions = ins ? Number.parseInt(ins[1], 10) : 0;
-    const deletions = del ? Number.parseInt(del[1], 10) : 0;
-    if (insertions === 0 && deletions === 0) return undefined;
-    return { insertions, deletions };
-  } catch {
-    return undefined;
-  }
+// Indirection so tests can stub session listing + title resolution without a
+// real SDK or a populated ~/.claude/projects on disk.
+let listSessionsFn: typeof listSessions = listSessions;
+let batchGetTitlesFn: typeof batchGetTitles = batchGetTitles;
+
+export function _setDepsForTesting(overrides: {
+  listSessions?: typeof listSessions;
+  batchGetTitles?: typeof batchGetTitles;
+}): void {
+  if (overrides.listSessions) listSessionsFn = overrides.listSessions;
+  if (overrides.batchGetTitles) batchGetTitlesFn = overrides.batchGetTitles;
+}
+
+export function _resetForTesting(): void {
+  listSessionsFn = listSessions;
+  batchGetTitlesFn = batchGetTitles;
 }

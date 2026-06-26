@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { routeMessage } from "../gateway/router.js";
+import type { WSContext } from "hono/ws";
+import {
+  isSessionClientRegistered,
+  registerSessionClient,
+  routeMessage,
+  unregisterSessionClient,
+} from "../gateway/router.js";
 
 describe("routeMessage — URI routing", () => {
   // Note: routeMessage depends on sessionClients registry.
@@ -30,21 +36,6 @@ describe("routeMessage — URI routing", () => {
     assert.ok(err.includes("not found"));
   });
 
-  it("returns error for discord:// when adapter not connected", async () => {
-    const err = await routeMessage(
-      "discord://guild/channel",
-      "hello",
-      "sender-123",
-    );
-    assert.ok(err);
-    assert.ok(err.includes("not available") || err.includes("not connected"));
-  });
-
-  it("returns error for telegram:// when adapter not connected", async () => {
-    const err = await routeMessage("telegram://chat-id", "hello", "sender-123");
-    assert.ok(err);
-  });
-
   it("returns error for slack:// when adapter not connected", async () => {
     const err = await routeMessage(
       "slack://workspace/channel",
@@ -52,6 +43,17 @@ describe("routeMessage — URI routing", () => {
       "sender-123",
     );
     assert.ok(err);
+    assert.ok(err.includes("not available") || err.includes("not connected"));
+  });
+
+  it("rejects removed platform schemes (discord, telegram)", async () => {
+    // These adapters were removed — their URIs must fail as unknown
+    // schemes rather than silently dropping messages.
+    for (const uri of ["discord://guild/channel", "telegram://chat-id"]) {
+      const err = await routeMessage(uri, "hello", "sender-123");
+      assert.ok(err);
+      assert.ok(err.includes("Unknown URI scheme"));
+    }
   });
 
   it("broadcast:// succeeds even with no agents (no-op)", async () => {
@@ -70,5 +72,24 @@ describe("routeMessage — URI routing", () => {
     assert.ok(err);
     assert.ok(err.includes("not found"));
     assert.ok(!err.includes("Invalid URI"));
+  });
+});
+
+describe("isSessionClientRegistered — channel-server liveness probe", () => {
+  // The registry compares WSContext by identity; a bare object stands in for a
+  // real socket. This is the signal the runtime probes to detect a Codex agent
+  // whose daemon-launched channel server never came up (silent loss of send()).
+  const fakeWs = {} as WSContext;
+  const agentId = "a4-probe-agent";
+
+  it("is false before the channel server registers", () => {
+    assert.equal(isSessionClientRegistered(agentId), false);
+  });
+
+  it("is true once the channel server registers, false after it disconnects", () => {
+    registerSessionClient(agentId, fakeWs);
+    assert.equal(isSessionClientRegistered(agentId), true);
+    unregisterSessionClient(fakeWs);
+    assert.equal(isSessionClientRegistered(agentId), false);
   });
 });

@@ -306,6 +306,18 @@ function NotificationRow({
               proactive
             </span>
           )}
+          {n.event === "SystemWarning" && (
+            <span
+              className="text-[9px] px-1 py-px rounded font-medium uppercase tracking-wider"
+              style={{
+                background: "#d1991930",
+                color: "#d19919",
+                border: "1px solid #d1991940",
+              }}
+            >
+              warning
+            </span>
+          )}
           <span
             className="text-[11px] font-medium truncate"
             style={{ color: n.read ? page.statusFg : page.fg }}

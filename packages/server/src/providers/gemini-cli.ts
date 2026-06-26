@@ -70,6 +70,7 @@ export const geminiCliProvider: AgentProvider = {
 
   capabilities: {
     hooks: { eventCount: 11, perSession: true, requiresSetup: false },
+    liveStatus: { supported: true, method: "hooks" },
     mcp: { supported: true, perSession: true },
     systemPrompt: { supported: true, method: "prepend-to-prompt" },
     messaging: { outbound: true, inbound: false, inboundMethod: "none" },

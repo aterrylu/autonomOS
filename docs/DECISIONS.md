@@ -748,3 +748,458 @@ query({
 **Lesson during QA — semantic mismatch on `PreCompress`:**
 Initial mapping included `PreCompress → PreCompact`, justified by upstream docs ("PreCompress fires before history summarization"). Live QA showed every Gemini turn flashing the dashboard into "compacting" status, even when no compression was happening. Reading `gemini-cli-core/services/chatCompressionService.ts` revealed that `PreCompress` fires *unconditionally* at the start of every turn as a "we're entering the compression decision tree" hook — the threshold check that decides whether to actually compress runs *after* the hook. That's structurally different from CC's `PreCompact`, which only fires when compaction is actively starting. There's also no `PostCompress` counterpart in Gemini, so we couldn't model the start/end pair anyway. Fix: drop `PreCompress` from `GEMINI_TO_CC_EVENT` and add to `INTENTIONAL_DROPS`. Generalization: for translator-based provider abstractions, **vendor docs give you event *names*; only vendor *source* gives you event *firing semantics*** — verify both before mapping.
 
+---
+
+## ADR-028: Desktop App is a Thin Client, Not a Server
+**Date:** 2026-05-18
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Claude Code session (Phase 1B.2 design — post-1B.1 PTY corruption bug)
+
+**Context:** PR #172 (Phase 1B.1) shipped a desktop app that spawned `autonomos-server` as an Electron child process. Real-world test exposed a destructive race: when both the desktop-spawned server AND the Phase 1C-installed LaunchAgent server ran simultaneously, both attached to the same `~/.autonomos/` state and the same PTY children, corrupting session state and breaking active Claude Code agents. The root cause was conflating *transport* (how UI talks to server) with *supervision* (what keeps the server alive). Investigation of the broader landscape revealed: (1) n8n Desktop was sunset in 2023 because the "bundled-server-with-GUI" model loses to either Cloud or self-hosted server in the long run — users who want background work converge on a real server; (2) Terry's actual usage is "deploy autonomos-server to forge + access via web," structurally identical to n8n self-hosted; (3) the AI/agent desktop category today is dominated by bundled-stack designs (AnythingLLM, LobeChat, Cmux) that share n8n's structural problem; (4) the database-tooling lineage (MongoDB Compass, Lens, Beekeeper Studio, Open WebUI Desktop) has a well-validated alternative — pure thin Electron client over an independently-supervised daemon — that survives users graduating from local to remote deployment.
+
+**Decision:** The autonomOS Desktop app is a **pure thin Electron client**. It does NOT embed or supervise a server in production builds. It connects to one or more `autonomos-server` daemons — each supervised independently by launchd (macOS) or systemd-user (Linux) per Phase 1C. The desktop manages a list of `Connection` records (id, name, type: local|remote, url, encrypted-token), with the local connection synthesized at runtime from `~/.autonomos/server-state.json` rather than stored in the list. Multi-connection is first-class with VS-Code-Recent-Folders-style sidebar switching. First-launch UX offers "Set up local server on this Mac" (which invokes the existing Phase 1C `autonomos install-service` from the bundled server in `extraResources/server/`) AND "Connect to existing server" (paste URL + token). A custom `autonomos://connect?url=...&token=...` URL scheme provides the magical-feel "click after install.sh prints it" bridge between server install and desktop pairing. Quitting the desktop NEVER touches any server — daemons stay running across desktop quits, reboots, and uninstalls. Auth uses bearer tokens stored via Electron `safeStorage` (Keychain on macOS, libsecret on Linux, DPAPI on Windows). PR #172 is closed unmerged because its architecture is incompatible with this design.
+
+**Rationale:**
+- **Fixes today's bug structurally.** Two servers competing for the same state cannot happen when the desktop never runs a server.
+- **Aligns with Phase 1C investment.** The LaunchAgent / systemd-user supervision shipped in #170 is the *correct* daemon supervisor; the desktop should be a client of it, not a competitor.
+- **Matches the dominant pattern in the analogous category.** MongoDB Compass, Lens, Beekeeper Studio, and Open WebUI Desktop all use this pattern. Open WebUI Desktop (LLM-tool space) is a near-perfect precedent.
+- **Decouples lifecycles correctly for an agent platform.** Agents must run while the user is asleep. This means server-supervision belongs to the OS init system, not to a GUI session. VS Code Remote-SSH does the opposite (vscode-server dies with the editor session) because editors have no work to do without the user — agents do.
+- **Multi-connection is the right primitive.** Terry uses both forge (remote) and may use a local Mac server. The desktop being able to hold both, like VS Code holding multiple workspaces, is the survival pattern.
+- **`autonomos://` deep links bridge the "two products" feel without coupling.** install.sh prints the URL, user clicks it, the OS launches the desktop with the URL as argv. ~30 LOC of code, zero coupling between server and desktop releases.
+
+**Alternatives considered:**
+- **Sandbox the desktop app to a separate state dir** (Option A from the design discussion). Fast (~30 min fix), but splits Terry's world — agents on forge wouldn't appear in the local desktop view. Rejected because the value proposition of autonomOS is a *unified* command center across deployments.
+- **Shared state + lockfile mediation** (Option B). Conceptually clean but unprecedented in the macOS app landscape — no production GUI+daemon app on macOS uses this pattern. Specifically dies on PTY ownership (node-pty FDs can't be handed off across processes), making the lockfile only advisory and the bug always-possible if one process misbehaves.
+- **Bundled daemon with adoption logic** (Option D, an earlier draft). Cleaner than B but still has the desktop responsible for daemon lifecycle in some scenarios. Open WebUI Desktop researched this approach and found it more brittle than pure client mode. Discarded in favor of full Option E.
+- **Pure-SaaS thin client (no local mode)** (Option C-strict). Cleanest for forge users, but excludes anyone trying autonomOS without a server first. The n8n autopsy shows those users churn, BUT the addition of bundled `install-service` makes the friction trivial — a single click in the Welcome flow. So we keep the local-server option without inheriting the n8n trap.
+- **SSH-based remote install from the desktop.** Considered: have the desktop SSH to a remote box and run install.sh there. Rejected: massive scope creep (SSH credentials in the app, sudo prompt handling, distro detection), no reference app does this, and `curl install.sh | sh` + paste-URL+token is already 30 seconds.
+
+**Implications:**
+- **PR #172 closed unmerged.** Branch `terry/phase-1b1-electron-shell` can be deleted. Salvageable bits (electron-builder.yml, entitlements, smoke-test harness) carried forward into Phase 1B.2 branch via fresh writes.
+- **Phase 1B.4 (electron-updater) becomes simpler.** Desktop and server upgrade independently — `autonomos upgrade` updates the daemon, electron-updater updates the desktop, neither blocks the other.
+- **No tray/menubar mode in 1B.2.** Out of scope; reconsidered if user demand surfaces.
+- **Zero server-side changes required.** Original draft of this ADR claimed a "~10 LOC server-side addition" to write a `server-state.json` file. Audit (a7e63bbfa230a898f) caught that `packages/server/src/pid-file.ts` already writes the identical schema (`{pid, port, version, startedAt}`) to `~/.autonomos/autonomos.pid` at every daemon boot. The desktop reads from there. The 1B.2 PR ships purely client-side.
+
+**Post-design audit corrections (2026-05-18):**
+- **Deep links MUST gate on explicit user gesture, not pre-fill-then-Enter.** A malicious webpage can fire `window.location = "autonomos://connect?url=evil.com&token=stolen"`; macOS routes the URL to autonomOS.app with no browser confirmation dialog. The Add Connection modal opened from a deep link MUST require an explicit "Connect" click; default focus must not be on the submit button. HTTP non-loopback URLs show a red warning banner. Deep-linked connections never auto-become `defaultConnectionId`. Helper text in the Welcome screen explicitly tells users where deep links come from (terminal output, NOT webpages).
+- **Token validation uses an authenticated endpoint.** Earlier draft used `GET /api/host`, which is auth-bypassed (liveness probe). Replaced with `GET /api/system/version` which requires `Authorization: Bearer ${token}` and returns `{version, platform, arch}` — a 200 confirms reachability AND token validity in one call.
+- **Per-connection isolation uses `BrowserWindow` (or `WebContentsView`), not the deprecated `<webview>` tag.** Cookies set via `session.fromPartition(\`persist:connection-${id}\`).cookies.set(...)`, NOT `session.defaultSession` (which would leak across connections). Open WebUI Desktop's actual code uses `BrowserWindow`, despite an earlier misread of their pattern.
+- **Single-instance lock is a top-level requirement**, not just a deep-link feature. Acquired in `bootstrap()` before any window creation or config touch. Without it, two desktop processes pointing at the same `tokens.dat` / `config.json` torn-write — the Promise-chain lock in `store.ts` is process-local.
+- **`tokens.dat` is written with mode `0o600` and its parent dir with `0o700`.** Consistent with the rest of autonomOS, which enforces this on every token-bearing file (`auth.ts`, `settings.ts`, `schedules.ts`, `templates.ts`, `scheduler.ts`).
+
+**Design doc:** `docs/research/desktop-as-thin-client.md`
+
+---
+
+## ADR-029: Desktop Embeds Built-in Server (Reverses Part of ADR-028)
+**Date:** 2026-05-25
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Claude Code session (Phase 1B.2 testing — discovered after the thin-client architecture was working end-to-end)
+
+**Context:** Phase 1B.2 shipped the pure thin-client architecture per ADR-028: Desktop never runs a server, always connects to a daemon supervised by launchd/systemd-user (or a remote server). Worked correctly — drag, multi-window, clean quit-cleanup, all functioning. Then Terry pushed back on the UX: requiring a separate `curl install.sh | sh` step before the Desktop is usable is a substantial friction barrier for new users. Comparable apps that ship Built-in functionality (Docker Desktop, OrbStack, Postgres.app — Built-in everything; the GUI is the runtime) achieve a "open the app, it just works" experience that pure thin-client architectures cannot. The pure-thin-client design from ADR-028 is *correct* for forge-style deployments but *wrong* for a new-user-first-launch UX. We need both: zero-friction Built-in mode for new/casual users, AND the existing thin-client mode for users who already have a daemon or want to connect to a remote server.
+
+The original PR #172 / Phase 1B.1 attempt at an embedded server failed because of a destructive PTY corruption race: two servers (the embedded child AND a separately-installed LaunchAgent daemon) attached to the same `~/.autonomos/` state simultaneously. ADR-028 over-corrected by banning embedded mode entirely. ADR-029 reintroduces embedded mode WITH a mutual-exclusion contract that prevents the original race.
+
+**Decision:** The autonomOS Desktop app supports **two modes**, mutually exclusive on any single Mac for any single `AUTONOMOS_CONFIG_DIR`:
+
+1. **Built-in:** The Desktop spawns `autonomos-server` as an Electron child process at app launch. The server lives + dies with the Desktop process. Agents pause when the Desktop quits (state persists on disk; resumed next launch via `claude --resume` per the L1 persistence model from Phase 1A.1 design notes). This is the **default** mode at first launch for a user with no existing daemon.
+
+2. **Server:** The Desktop is a pure thin client over an `autonomos-server` reachable at a URL+token. The server may be a launchd/systemd-user daemon on this Mac (set up via `autonomos install-service`) OR a remote server (forge, VPS). From the Desktop's perspective these are **the same mode** — both are "connect to a URL." The distinction "local persistent vs remote" exists only in the install flow (where the user runs `curl install.sh`) and the UI label (e.g. "This Mac (Always-on)" vs "forge"). Internally a `Connection` is `{ id, name, url, token }` regardless of where the URL points.
+
+**Mutual exclusion contract** (the fix for the PR #172 PTY race):
+
+- The pid file at `~/.autonomos/autonomos.pid` (already shipping from `packages/server/src/pid-file.ts`) is the single source of truth for "is there an owner of this config dir?" Format: `{ pid, port, version, startedAt }`.
+- Any process that wants to start a server (Desktop Built-in, `autonomos start` CLI, LaunchAgent) must atomically claim the pid file. If a live owner exists (pid alive via `process.kill(pid, 0)` AND port responsive on `/api/system/version`), the new process MUST NOT start its own server. Instead:
+  - Desktop in Built-in mode → switches to thin-client mode, connects to the existing server at `localhost:<that-port>`.
+  - `autonomos install-service` → refuses with a clear error message instructing the user to quit the Desktop first.
+- Stale pid file (pid dead OR port unresponsive) → cleaned up and overwritten.
+- On clean shutdown, the owning process removes its pid file.
+
+**Migration paths between modes** (in-app, no Terminal required):
+
+- **Built-in → Server (persistent local):** Settings panel toggle *"Keep autonomOS running in the background"* → ON. Triggers in-process `autonomos install-service` invocation, which sets up the LaunchAgent / systemd-user service. The Built-in server child is gracefully shut down; the LaunchAgent picks up the same `~/.autonomos/` state. Desktop reconnects as a thin client to the new daemon. Progress is shown via an in-app dialog (no Terminal output).
+- **Server (persistent local) → Built-in:** Same toggle → OFF. Uninstalls the LaunchAgent via in-process `autonomos uninstall-service`. Desktop spawns a Built-in server on its next agent-needing action.
+- **Quit-time prompt:** when in Built-in mode and quitting with running agents, a non-modal banner offers: *"Make autonomOS Server always-on"* (one-click migration to persistent mode) or *"Quit anyway"*. Power-user graceful path without requiring Settings panel discovery.
+
+**UI vocabulary** (no engineering jargon exposed to users):
+- "Built-in" = embedded mode (Desktop owns the server's lifecycle).
+- "Always-on" or "Persistent" = LaunchAgent/systemd-user mode.
+- "Remote" = HTTP connection to another machine.
+- Never expose "daemon", "launchd", "embedded", or "thin client" in UI copy.
+
+**First-launch UX:** zero-friction. No Welcome screen for a brand-new user. The Desktop boots into a brief splash ("Starting autonomOS…", ~1-2s while the Built-in server comes up), then the dashboard appears. The Welcome screen is now reserved for "Add another Server" flows from the Connection sidebar.
+
+**Connection sidebar:** retained from ADR-028's design. Even with Built-in being the dominant path, power users with multiple servers (this Mac + forge) appreciate the multi-window switching. Collapsed by default when only one connection exists. "This Mac" is always pinned at the top with a subtitle indicating its mode ("Built-in" or "Always-on").
+
+**Rationale:**
+- **Fixes the ADR-028 UX friction without re-introducing the PR #172 bug.** The mutual-exclusion contract (atomic pid-file claim + liveness check) structurally prevents two servers from ever competing for the same `~/.autonomos/` state. The bug was caused by ADR-028's predecessor lacking this contract, not by embedded mode itself.
+- **Matches Docker Desktop, OrbStack, Postgres.app.** Those apps own everything in-process for casual users AND offer an "always-on" upgrade path for power users. Their users describe this as "magic." Our Phase 1B.2 thin-client requirement is comparatively friction-heavy.
+- **Preserves the thin-client model for everyone who already wants it.** Forge users, anyone with an existing LaunchAgent, anyone connecting to a remote server — these flows are unchanged. ADR-029 is **additive**, not a replacement.
+- **Persistent-local and remote collapsing into one "Server" mode is architecturally clean.** Both are `{ url, token }`. The Desktop's connection-handling code path is one path, not two.
+- **The quit-time "Make always-on" prompt is a Trojan horse for the right behavior.** Users who run agents long enough to hit the "agents will pause" warning are exactly the users who benefit from persistent mode. The UI catches them at the right moment.
+
+**Alternatives considered:**
+- **Three modes (Built-in, persistent-local, remote).** Initially proposed; collapsed into two when Terry observed that persistent-local and remote are architecturally identical from the Desktop's perspective.
+- **Stick with pure thin-client (ADR-028).** Rejected because the first-launch friction is a genuine product-experience problem. n8n Desktop was sunset partly because casual users couldn't get started fast enough — ADR-028's predecessor was making the same mistake.
+- **Two modes with totally separate UI surfaces.** Considered: "Local mode" tab vs "Connections" tab. Rejected because users don't think in modes; they think in "where is my work running." Unifying persistent-local and remote into one "Server" concept is the user-facing simplification.
+- **Built-in default + "install-service" as the only persistence path (no in-app toggle).** Rejected: discoverability is poor. The Settings toggle + quit-time prompt are the affordances that surface the persistence option to users who'd benefit.
+
+**Implications:**
+- **Phase 1B.2's thin-client code stays.** It IS the implementation of the "Server" mode. Built-in mode adds a new code path; remote mode is unchanged.
+- **The webview drag, multi-window, quit-cleanup work from Phase 1B.2 all carries forward.** No rework of those pieces.
+- **PR #172's salvageable code re-enters circulation.** The `server-supervisor.ts` from that PR (which spawned the embedded server) is the seed of the new Built-in implementation, but rewritten with the mutual-exclusion contract.
+- **Server-side change required.** `packages/server/src/pid-file.ts` already writes the schema; we need to add an atomic-claim helper using `open(O_CREAT | O_EXCL)` (or equivalent) so two processes racing to claim the pid file can't both win. ~30 LOC.
+- **CLI changes required.** `autonomos install-service` and `autonomos start` must check the pid file and refuse with a helpful error if the Desktop already owns the config dir.
+- **Pure-thin-client ADR-028 is partially superseded.** ADR-028 said "Desktop never embeds." ADR-029 says "Desktop CAN embed, under a mutual-exclusion contract." The other ADR-028 elements (multi-window, cookie auth, deep links, audit fixes, etc.) all remain in force.
+
+**Design doc:** `docs/research/desktop-embedded-server.md`
+
+---
+
+## ADR-029-follow-up: Drop `autonomos://` deep-link handler
+**Date:** 2026-05-27
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Post-merge cleanup discussion after PR #173
+
+**Context:** ADR-028 (and its post-design audit) called for an `autonomos://connect?url=...&token=...` URL scheme so `install.sh` could print a clickable link to pair the Desktop with a freshly-installed server. The handler shipped in PR #173 (Phase 1B.2) along with `setAsDefaultProtocolClient`, an `open-url` listener, a `pendingDeepLinks` argv buffer, and a "Pre-filled from a deep link" warning banner on `AddConnectionModal`. After ADR-029 collapsed the first-launch flow into Built-in mode (no `install.sh` needed for the default user), the deep-link path became a vestigial bridge: it only helps users who already chose to install a remote/Always-on server, who already have a terminal open with the URL+token printed in it.
+
+**Decision:** Remove all `autonomos://` deep-link code and registration. The "Add a server" modal continues to accept paste-in URL + token; the `autonomos serve --print-url` CLI continues to print copyable pairing strings. Deep links are **deferred indefinitely** — not deprecated for one release, just removed. If user demand materializes (someone explicitly asks for "I want install.sh to launch the Desktop with a click"), revisit.
+
+**Rationale:**
+- **Phishing surface > utility.** A malicious webpage can fire `window.location = "autonomos://connect?url=evil.com&token=stolen"` and macOS routes the URL to autonomOS.app with no browser confirmation dialog. ADR-028's mitigation (explicit user click, no auto-submit, warning banner for non-loopback HTTP) reduces but does not eliminate the social-engineering risk that a user clicks "Connect" because the modal looks legitimate.
+- **The intended-user flow is already <30 seconds without it.** Paste URL + token from `autonomos serve --print-url` into the Add Server modal is one copy + one paste. The "click the magical link" win is shaved off a flow that's already friction-free for the few users who hit it.
+- **ADR-029 made the deep-link bridge less load-bearing.** The default user now boots straight into Built-in mode with no install step. The deep-link path was a bridge between "install.sh prints URL" and "Desktop pre-fills the modal" — neither end of that bridge is the dominant flow anymore.
+- **Code removed > code kept.** ~80 LOC across `main.ts` (URL_SCHEME import, `pendingDeepLinks` buffer, `open-url` listener, `setAsDefaultProtocolClient`), `shared/constants.ts` (URL_SCHEME, `DEEP_LINK_RECEIVED` IPC), `AddConnectionModal.tsx` (`prefill` prop + warning JSX), and `electron-builder.yml` (`protocols:` registration). One less feature to maintain, one less attack surface in the Info.plist.
+
+**Alternatives considered:**
+- **Keep deep links, harden further.** Add a one-time confirmation toast "autonomOS Desktop received a pairing request from `<url>` — is this from your terminal?" before opening the modal. Rejected: adds a step to the flow it was meant to remove, and savvy attackers still social-engineer through it.
+- **Remove the handler, keep the constant.** Leaves a half-deleted feature in the tree. Rejected — the constant existed only to be referenced by the handler.
+- **Deprecate via flag for one release.** Standard rollout safety, but the feature has no users yet (deep links never made it into `install.sh` output before this drop). Pure code removal is safe.
+
+**Implications:**
+- ADR-028's "post-design audit corrections" bullet about deep links is no longer load-bearing. Not deleted — kept for historical context.
+- `install.sh` (when it ships) will print URL + token as plain text for copy-paste, not as an `autonomos://` link.
+- `Info.plist` no longer claims the `autonomos://` scheme — no chance of accidental routing if a stale Desktop install lingers on disk after this version.
+- Phase 1B.2.4 (deep-link phase from the original Phase 1B.2 plan) is dropped from the roadmap. Phase numbering is not renumbered; the gap is intentional historical record.
+- Also dropped the unused `SERVER_STATE_FILENAME = "server-state.json"` constant from `packages/app/src/shared/constants.ts`. ADR-028's post-design audit established that the daemon pid file at `~/.autonomos/autonomos.pid` (already shipping from `packages/server/src/pid-file.ts`) is the canonical discovery target; the `server-state.json` constant was vestigial from an earlier draft and had no importers.
+
+**Single-instance lock is preserved.** ADR-028's audit emphasized that `app.requestSingleInstanceLock()` is a top-level requirement, not a deep-link feature — without it, two Desktop processes would torn-write `tokens.dat` / `config.json`. The lock + the `second-instance` handler (now reduced to "bring window forward / open Welcome") stay in `main.ts`.
+
+---
+
+## ADR-030: Desktop "Try it out" (ephemeral) mode
+**Date:** 2026-06-05
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Claude Code session — discussion after #178 (Built-in server reachability fix). Terry: "Maybe for the DMG app, do you think it makes sense for you to allow users to essentially create configurations at a different path or use a temporary one?" → narrowed to ephemeral-only after pushback on full profile scope.
+
+**Context:** Built-in mode (ADR-029) requires a brand-new user to commit to having `~/.autonomos/` populated on their first click. That's fine for users who plan to stick with the app, but it creates friction in three scenarios: (a) a user who just wants to "kick the tires" before committing, (b) demos / sharing the .app with a teammate, (c) our own QA — testing a new build without polluting prod state. We already have `AUTONOMOS_CONFIG_DIR` for dev-side isolation (`make dev`); what's missing is a UI surface that exposes it as a first-class capability.
+
+A separate motivator: tonight (#178) we shipped a Built-in mode reachability fix that should have been caught during initial Phase 1B.2 testing. It wasn't, partly because there was no easy "spin up a fresh isolated autonomos and see if it works" path in the app. A sandbox UI makes that kind of QA the default, not an afterthought.
+
+**Decision:** Add a fourth card to the Welcome screen — **"Try it out"** — that spawns a Built-in server with `AUTONOMOS_CONFIG_DIR=$TMPDIR/autonomos-ephemeral-<uuid>/` and a freshly generated random token. Nothing reads from or writes to `~/.autonomos/`. On Desktop quit the temp dir is `rm -rf`'d. On Desktop boot any leaked `autonomos-ephemeral-*` dirs older than 1 hour are cleaned up (best-effort recovery from crashes; macOS auto-cleans `$TMPDIR` every ~3 days anyway).
+
+**Scope (explicitly minimal):**
+- One Welcome card, three IPC lines, one server-side auth.ts change.
+- **No named profiles.** Multi-profile UI was considered and rejected for v1 — "too much" per Terry. Ephemeral covers the dominant use case (try-then-commit or try-then-discard) without the cognitive load of profile management.
+- **No persistent state.** The temp dir is the entire state surface. Quit = gone.
+- **No title-bar badge yet.** The Welcome card name ("Try it out") is the user's mental model; we'll add a badge if it turns out users routinely confuse try-mode with real-mode.
+
+**Token isolation contract:**
+Pre-this-ADR, `auth.ts` hardcoded the token file to `~/.autonomos/token` regardless of `CONFIG_DIR`, per a comment that read "the auth token should be shared — one token for the user's machine." That made sense for worktree-based dev isolation (one user, multiple worktrees, shared token) but breaks the moment a profile is supposed to be isolated. The new behavior: `auth.ts` looks for `<CONFIG_DIR>/token` first, falls through to `~/.autonomos/token` only when CONFIG_DIR is non-default AND no per-config token exists (so existing worktree-dev setups don't surprise the user with auth failures). Default CONFIG_DIR resolves to the same path as before — fully backwards-compatible.
+
+**Rationale:**
+- **Composes with everything that already exists.** `AUTONOMOS_CONFIG_DIR` was already honored by the server; the mutual-exclusion contract (ADR-029) uses CONFIG_DIR-relative pid files so different config dirs can coexist; the #178 port/token fix makes spawned CC sessions correctly phone home to whichever port the ephemeral server bound to. No new mechanisms, just a new UI surface.
+- **Solves the QA gap.** Every future Built-in / dashboard / spawn-path change should be testable by "open the DMG, click Try it out, exercise the feature, quit." That's the workflow that should have caught #178 earlier.
+- **Onboarding win.** Distribute the .app to a colleague, they click Try it out, poke around for 10 minutes, quit, no residue on their machine. Removes the "do I really want to commit?" mental tax from first-contact.
+- **Surfaces an isolation contract we already needed.** The token-in-CONFIG_DIR change is the right architecture for future profile support too — when we eventually want named profiles, the building block is in place.
+
+**Alternatives considered:**
+- **Full multi-profile UI (named + ephemeral, switcher, settings tab).** Considered first. Rejected explicitly: "Let's just get an ephemeral version of this. No need for profile complications. It's a bit too much." Ephemeral is the high-leverage subset; named profiles can be added later with no architectural rework.
+- **Sandbox window served from a separate process (not the Built-in server).** Would require a second server binary or sandboxed runtime. Massive overkill — the same server binary running against a different CONFIG_DIR achieves identical isolation.
+- **In-memory state (no temp dir, no disk persistence at all).** Would require a server mode that skips all disk writes (settings, schedules, sessions, templates). Big surface area; defeats the goal of "the server behaves identically to production." Disk-on-tmpdir is structurally the same as disk-on-`~/.autonomos`, just at a different path.
+- **Token shared with prod (only CONFIG_DIR isolated).** Considered as a backwards-compat shortcut. Rejected: token-sharing across isolated profiles is exactly the cross-profile auth bleed we want to prevent. The auth.ts fallback handles backwards-compat for non-ephemeral cases.
+
+**Implications:**
+- `auth.ts` changes are fully backwards-compatible. Default CONFIG_DIR (`~/.autonomos/`) resolves to the same `~/.autonomos/token` path as before. Existing prod servers, worktree dev setups, and CI all see zero behavior change.
+- The same CONFIG_DIR-aware token lookup works for future named profiles (ADR-031, if we ever ship it). The plumbing is sized for the bigger feature; the UI surface is sized for the immediate need.
+- `cleanupLeakedEphemeralDirs()` is best-effort and runs at every Desktop boot. If it fails (`$TMPDIR` unreadable), it logs a warning and continues — never a boot-blocker.
+- The "Try it out" server is regular Built-in mode pointed at a temp dir, so ALL the regular code paths (gateway, MCP, hooks, scheduler, templates, agent spawning) work identically. Easier to reason about than a separate "sandbox runtime."
+
+**Testing:**
+- Unit: `auth-config-dir.test.ts` (4 tests) covers env precedence, per-CONFIG_DIR token read, fresh-token generation, file permissions.
+- Integration: booted the server with `env -i HOME=... PATH=... AUTONOMOS_CONFIG_DIR=/tmp/autonomos-try-test --embedded --port=0`. Confirmed (a) server bound to ephemeral port 58099 with no collision against prod 3100, (b) fresh token generated and written ONLY to `/tmp/autonomos-try-test/token` with mode `0o600`, (c) `~/.autonomos/` untouched throughout.
+
+**Design follow-ups:**
+- Add a title-bar "TRY MODE" badge if users start losing work to surprise-on-quit.
+- Add a one-click "Save my Try Mode as a real connection" pathway (export tokens, prompt for confirmation) — turns the ephemeral session into the seed of a regular connection.
+- Named profiles (ADR-031), if/when we have a real use case. The CONFIG_DIR + auth-token plumbing is already ready for it.
+
+---
+
+## ADR-031: Professional release pipeline (changesets + universal CI DMG)
+**Date:** 2026-06-06
+**Decided by:** Terry + Feature Worker (CC session)
+**Source:** Claude Code session — "revamp releases to industry standard, boil the ocean"
+**Status:** Drafted by feature worker, pending team-lead review. (Numbering note:
+ADR-030's follow-ups informally forward-referenced "ADR-031" for *named profiles*;
+that feature is unbuilt and speculative, so this ADR claims ADR-031 for the
+release pipeline — the decision actually being made. Named profiles, if ever
+built, take a later number.)
+
+**Context:** Releases were manual and fragile. Versions were bumped by hand-editing
+five `package.json` files with `sed`, which produced a real drift (code at `0.0.2`,
+last tag `v0.0.1` — the 0.0.2 bump shipped in #177 was never tagged or released).
+The macOS Desktop DMG — the primary user-facing artifact — was built **locally on a
+developer's Mac, never in CI, never validated, and dragged into the release by
+hand**. There was no changelog (release notes were GitHub's raw commit dump), no
+code signing (Gatekeeper warning on every install), no auto-update, and no written
+runbook. The server tarballs were the only professionally-built artifact (CI matrix
++ SHA256SUMS). This repeatedly caused "ship → user finds it broken" cycles.
+
+**Decision:** Adopt the canonical 2026 stack, sequenced as six PRs:
+
+1. **changesets** with a `fixed` group (all packages lockstep to one version),
+   `@changesets/changelog-github`, a single root `CHANGELOG.md` (per-package
+   changelogs gitignored; `scripts/sync-changelog.ts` promotes each version into
+   the root). A `version.yml` workflow maintains the "Version Packages" PR and
+   auto-tags `vX.Y.Z` on its merge. **Releasing = merge that PR.**
+2. **lefthook + commitlint** — the pre-push hook runs the exact CI gate
+   (`biome check packages/ && make check`), encoding "run CI before push" as
+   enforcement rather than discipline.
+3. **Universal2 DMG built in CI** — the macOS app is one artifact for both Apple
+   Silicon and Intel. Bundled Node + native modules (`pty.node`, `impit.node`)
+   are `lipo`'d from both arches (built on separate runners). Hard-gated by the
+   bundle smoke test and a **real Intel runner** that runs the smoke test
+   natively on x64. `release.yml` publishes server tarballs + DMG + ZIP + blockmap
+   + `latest-mac.yml` + SHA256SUMS, with the GitHub Release body taken from the
+   CHANGELOG.
+4. **Code signing + notarization** — Developer ID cert + App Store Connect Team
+   API key (`.p8`), `notarize: true` (notarytool, auto-staple). Eliminates the
+   Gatekeeper warning.
+5. **electron-updater** — in-app auto-update from GitHub Releases, delta downloads
+   via blockmap, stable/beta channels.
+6. **SLSA provenance** (`actions/attest-build-provenance`, SLSA L2) + this runbook
+   (`docs/RELEASE.md`) + this ADR.
+
+**Scope decisions (Terry):**
+- **macOS-only Desktop app.** No Linux/Windows desktop. The persistent *server*
+  still ships cross-platform (the 4 tarballs + `install.sh` cover Linux + macOS).
+- **universal2 from day one** (not per-arch), despite the bundled-Node + native-
+  module `lipo` complexity. The mechanism was proven locally before building CI:
+  a `lipo`'d fat `.node`/binary loads under both arm64 and x64.
+- **changesets over release-please** — explicit per-PR changeset files give
+  intentional release control and the `fixed` group matches our lockstep model.
+
+**Rationale:**
+- **Fixes version drift structurally** — versions are derived from changesets,
+  never hand-edited.
+- **The DMG can no longer ship broken** — it's CI-built, smoke-tested, and
+  validated on real Intel hardware before any release. This is the structural fix
+  for the repeated "ship → broken" cycles.
+- **universal2 is the better user experience** — one download, no "which chip do
+  you have?" — and electron-updater's feed is simplest with a single artifact.
+- **Signing + auto-update are table-stakes** for a product users install and keep.
+
+**Alternatives considered:**
+- **release-please** (commit-driven) — rejected: changesets' explicit files +
+  `fixed` group fit a lockstep monorepo better, and decouple releases from commit
+  message discipline.
+- **Per-arch DMGs** — rejected by Terry in favor of universal2, accepting the
+  `lipo` work (de-risked locally first).
+- **Keep building the DMG locally** — rejected: it's the exact source of the
+  unvalidated-artifact problem.
+- **semantic-release** — rejected: not monorepo-native; the community monorepo
+  plugin is stale.
+
+**Implications:**
+- Every user-facing PR now carries a changeset (a small per-PR tax that makes
+  releasing fully automatic).
+- The Apple Developer Program enrollment ($99/yr) is a hard prerequisite for PRs
+  4–5 (signing is required for macOS auto-update to work at all).
+- electron-builder stays at 25.1.8 for now (handles universal); bump to 26.x only
+  if CI surfaces a universal issue.
+- The `validate-dmg.sh` CDP UI test runs `continue-on-error` in CI initially —
+  whether Electron+CDP runs on a headless GitHub runner is the one unproven piece;
+  it hardens to a gate once confirmed.
+
+**Validation:** universal Node `lipo` (256M fat binary), universal native-module
+`lipo` + cross-arch load (real impit arm64+x64), local single-arch DMG build +
+full `validate-dmg.sh` end-to-end, `actionlint` clean on all workflows, `make
+check` 353/353. CI-only pieces (universal build, Intel native job) babysat through
+CI.
+
+**Runbook:** `docs/RELEASE.md`.
+
+## ADR-032: Adopt MIT license
+**Date:** 2026-06-09
+**Decided by:** Human (Terry) — implemented by License@autonomOS (CC session)
+**Source:** Terry's request via CC session, coordinated through TeamLead@autonomOS
+
+**Context:** The repo had no license declaration of any kind — no `LICENSE` file,
+the `license` field missing in all six `package.json` manifests, and the README
+listing the license as "TBD." Undefined licensing creates friction as the project
+moves toward broader distribution (the desktop app in progress, possible public
+contributions) and ambiguity for downstream consumers — SBOM scanners, compliance
+tooling, and the SLSA provenance pipeline already in flight (ADR-031) all key off a
+declared license.
+
+**Decision:** Adopt MIT. A `LICENSE` file at the repo root in canonical OSI/SPDX
+form (the canonical "to permit persons" wording — verified byte-for-byte against
+the OSI text, not a variant), `Copyright (c) 2026 Terry Lu`, and `"license": "MIT"`
+declared in all six `package.json` manifests — including the private root — for
+tooling/scanner consistency. README's License section points at the file.
+
+**Rationale:** MIT is the lowest-friction permissive license — minimal
+restrictions, broad compatibility, and the form license tooling recognizes out of
+the box. Declaring it early, before the contributor base grows, sets a clear
+baseline and removes the "TBD" ambiguity.
+
+**Alternatives considered:**
+- **Apache-2.0** — its explicit patent grant is defensively valuable, but adds
+  NOTICE-file overhead and modest tooling friction; rejected because autonomOS has
+  no current patent exposure warranting the complexity.
+- **GPL/AGPL** — copyleft would constrain downstream embedding in proprietary
+  tooling and runs against the project's personal-tool-first philosophy.
+- **Dual-license / source-available** — premature for the current stage.
+
+## ADR-033: Idle-renderer CPU peg-detector gate (Phase 6)
+- **Date:** 2026-06-09 — **Decided by:** agent (DesktopApp@autonomOS), approved by Terry (peg-detector approach chosen over CSS-invariants-only and nightly-only)
+- **Context:** Issue #176 pegged a renderer at ~195% on an idle Welcome window — driven by the GPU compositor under vibrancy + backdrop-filter, zero JS involved. CDP's `Performance.getMetrics` measures JS timing only and was completely blind to this class of regression. Needed a gate that can't be fooled by the bug's own shape.
+- **Decision:** Three layers — (1) broaden the CDP CSS-invariant scan to cover every Welcome element (release-time CDP); (2) extract `macWindowOptions` to an electron-free `window-options.ts` module + unit test asserting it never returns `vibrancy` (every PR); (3) OS-level idle-CPU peg-detector in `validate-dmg.sh` — sample app-tree CPU over 10s via `ps -o time`, fail if any process exceeds 80% of one core (release + dispatch).
+- **Rationale:** Defense in depth — deterministic static checks (layers 1-2) catch the known shape on every PR; the OS-level peg-detector (layer 3) catches novel causes. The 80% threshold sits in the wide empty gap between healthy idle (~5-45%) and the bug (~195%), making it robust to shared-runner noise. Dry-run against a clean build measured 0.8% — ~100x margin under threshold.
+- **Alternatives considered:**
+  - **CSS-invariants-only** — blind to novel GPU/compositor pegs not on the static check list.
+  - **Nightly CPU sample** — catches regressions a day late; PR-time signal beats post-merge cleanup.
+  - **CDP `Performance.getMetrics`** — JS-timing only, structurally blind to the GPU-compositor class.
+- **Soundness note:** Cumulative per-process CPU-seconds require a stable process set across the sampling window. The detector kills any prior-instance Helpers and waits for clean teardown before relaunch, and fails closed on negative delta or `t1 <= 0` (filters race conditions in the sampling).
+- **Source:** CC session, Phase 6 of the test-framework redesign.
+
+## ADR-034: Promote validate-dmg CDP check to a hard release gate
+- **Date:** 2026-06-09 — **Decided by:** agent (DesktopApp@autonomOS), confirmed by Terry
+- **Context:** The DMG end-to-end CDP validation (mount DMG → launch Electron → drive Welcome → Try-it-out → assert dashboard) was added `continue-on-error` pending confirmation it can run on a headless GitHub macOS runner. It had also been failing invisibly without anyone noticing — exactly the "false-pass zombie" class of CI step we try to avoid.
+- **Decision:** Make it a hard release gate. Root cause of the failures was the bundled server preflight `exit(1)`ing when no provider binary is on PATH (CI runners have none) → Try-it-out's ephemeral server dies → connection window never opens. Fixed in CI by stubbing `claude` on PATH (matches `smoke-test-bundle.sh`'s approach). Shipped in #196; subsequently extended in #201 (Phase 4) to run on every PR via a reusable workflow.
+- **Rationale:** Headless capability confirmed on dry-run 27251279763; a broken first-run flow should block a release, not slip through as observe-only telemetry.
+- **Alternatives considered:** Keep observe-only (rejected — a green-looking step that never blocks is the false-pass zombie class we're trying to kill). Add a "is the dashboard reachable" smoke without the full CDP drive-through (rejected as insufficient — the bug was specifically in the Welcome → Try-it-out flow that ad-hoc reachability checks would miss).
+- **Known limitation:** The PATH stub means the gate covers only the provider-present first-run path; the no-provider path is a separate known product bug (see follow-up product item: Try-it-out hangs silently when no provider is installed).
+- **Source:** CC session, headless-ci-electron investigation. Supersedes the observe-only `continue-on-error` note in ADR-031 (release pipeline).
+
+## ADR-035: Claude Usage requires only a session key (drop org ID)
+- **Date:** 2026-06-10 — **Decided by:** Human (Terry), implemented by CloudUsageOrg@autonomOS under DesktopApp@autonomOS lead
+- **Context:** The Claude Usage plugin required two credentials in settings: a Claude session key AND a "last active org" UUID. The org field was an unnecessary friction point — particularly noticeable in the desktop-app onboarding flow — and was never strictly needed because `scanner.ts:fetchOrgId` already had a fallback path that resolves the org via claude.ai's bootstrap API using the session cookie.
+- **Decision:** Session key is the only required credential. The org UUID is auto-resolved on first use via the existing bootstrap-API fallback, then cached. `claudeOrgId` remains as a deprecated field for back-compat (old `settings.json` parses cleanly; the settings PUT route accept-and-discards it; a stale config value is silently ignored rather than added to the cookie). No migration step.
+- **Rationale:** Removes a confusing setup field whose value the system can derive itself. Smaller credential surface for desktop-app onboarding.
+- **Alternatives considered:**
+  - Keep org as an optional override — rejected; Terry's intent was to remove the field entirely, and the bootstrap fallback covers every case the manual field did.
+  - Migrate existing `claudeOrgId` values to the cache on read — rejected; not worth the complexity for a field that resolves cheaply on first call.
+- **Source:** CC session, DesktopApp issues sweep. Shipped in #202.
+
+## ADR-036: Prompt delivery receipt + one-shot fallback re-delivery
+- **Date:** 2026-06-11 — **Decided by:** Human (Terry, reported the bug + directed the fix), design by DesktopApp@autonomOS lead, implemented by PromptDelivery@autonomOS
+- **Context:** `create_agent`'s starting prompt is delivered solely as a CLI arg (`claude … -- "prompt"`). If the auto-trust watcher's blind Enter-burst raced Claude Code's TUI init, the trust dialog never dismissed cleanly and the argv prompt died behind it — the new agent sat idle at an empty input. Intermittent, silently broke multi-agent orchestration.
+- **Decision:** Two layers. **(1)** The auto-trust watcher now uses needle-verified retry — re-send Enter only if the same prompt needle is still present after ~500ms, capped — instead of blind staggered bursts. **(2)** A delivery-receipt tracker uses the existing hook relay as ground truth: when a spawn includes a prompt, `SessionStart` without a following `UserPromptSubmit` within a timeout triggers ONE re-delivery via PTY bracketed paste, with dedup guards (re-checks receipt at fire time; skips if the session shows activity). All failure paths surface as `SystemWarning` notifications.
+- **Rationale:** The hook stream is the only reliable readiness/receipt signal — CC's TUI rendering is unobservable from outside the PTY. One-shot + dedup because double-submission is worse than a manual nudge.
+- **Guard against masking:** The CI integration test asserts the fallback did NOT fire on the happy path — the rescue mechanism cannot hide watcher regressions.
+- **Alternatives considered:**
+  - Gate "ready" status on `SessionStart` only — rejected; that's observability, not delivery.
+  - TUI-prompt-needle detection for delivery confirmation — rejected; the prompt character varies by theme/mode.
+  - PTY-only delivery instead of argv — rejected; argv is canonical and works in the common case.
+- **Source:** CC session, DesktopApp issues sweep. Shipped in #209. CLAUDE.md "Key Systems" entry added in the same PR.
+
+## ADR-037: Remove Telegram/Discord plugin channels and the inbox-agent routing policy
+- **Date:** 2026-06-12 — **Decided by:** Human (Terry), implemented by Cleanup@autonomOS
+- **Context:** Telegram and Discord channel integrations shipped under task #41 (ChannelMVP@autonomOS) as 18-line stub adapters plus the supporting plumbing: the `inboxAgent` settings field gating plugin-channel single-poller locks, `claude plugin list` detection, and `telegram://` / `discord://` gateway routing. The adapters were never implemented past stubs and the channels were never used in practice. The `inboxAgent` mechanism existed solely to serve the unshipped channels.
+- **Decision:** Remove entirely (PR #213, ~−775 lines). `KNOWN_CHANNELS` narrowed to `server:*` only; `isValidChannelId` rejects plugin IDs; `Platform` type narrowed to `"slack"` (the only remaining adapter, also a stub — see note below). Old `settings.json` keys (`inboxAgent`, `gateway.telegram`, `gateway.discord`, stale `plugin:*` entries in `channels`, stale `routes`) are accept-and-discarded: scrubbed on read with warnings naming dropped entries, dropped on next persist. `server:autonomos` (native MCP inter-agent messaging) verified untouched — it's a different mechanism even though it shares the word "channel."
+- **Rationale:** Less surface area, fewer concepts to explain ("keep this clean" — Terry's intent). Dead stubs accrue carrying cost (tests to maintain, settings UI noise, mental overhead for new contributors) with zero offsetting value while the features remain unimplemented.
+- **Alternatives considered:**
+  - Keep as dormant stubs for future implementation — rejected; no demand and the carrying cost is real.
+  - Implement Telegram/Discord properly — rejected; no current use case justifying the work.
+- **Note:** Reverses the implementation direction sketched in `docs/research/channel-integration.md`, which is retained as historical context. The Slack adapter stub + the entire gateway-adapter layer (~150 more lines) remain as the only "platform" surface after this change — flagged for a future decision on whether to remove that too.
+- **Source:** CC session, Cleanup@autonomOS worker.
+
+## ADR-038: Remove Anthropic API endpoint override; test harness uses env inheritance
+- **Date:** 2026-06-13 — **Decided by:** Human (Terry), implemented by Cleanup@autonomOS
+- **Context:** A per-session settings field (`anthropicBaseUrl` + `anthropicAuthToken` + `anthropicOverrideEnabled`) let users override the default Anthropic API endpoint with a custom URL paired with an auth token. The override was injected into spawned-session env via `buildBaseEnv`. The only real consumer was the real-claude integration test harness, which uses the override mechanism to redirect `claude` at a mock `/v1/messages` SSE backend (see test-redesign work).
+- **Decision:** Remove the user-visible feature (PR #214). The test harness migrates to plain process-environment inheritance: `bootEmbedded` sets `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` on the embedded server's process env, `buildBaseEnv` already spreads `{...process.env}` into spawned sessions, and `claude` reads the env vars natively. Zero production code retained to serve the test framework. `anthropicBaseUrl` / `anthropicAuthToken` / `anthropicOverrideEnabled` settings keys are *actively scrubbed* on read (the auth token is a credential and must not linger on disk after the feature is gone). `customEnvVars` remains as the documented escape hatch for users with proxy needs.
+- **Rationale:** (1) Cleaner architecture — zero production code retained for testing beats an env-var-only feature flag. (2) Credential hygiene — an auth token in `settings.json` after the feature is gone is mild leak surface; active scrubbing closes it.
+- **Alternatives considered:**
+  - Keep an env-var-only settings path (read but no UI) — rejected; still surface area carrying the same code paths internally.
+  - MITM proxy or iptables-based redirect for the test mock — rejected; significant complexity to replace something that comes for free with process-env inheritance.
+  - Accept test breakage and disable the integration suite — rejected; the harness is load-bearing for desktop-app correctness.
+- **Source:** CC session, Cleanup@autonomOS worker. Shipped in PR #214 stacked on PR #213.
+
+## ADR-039: Terminal is the only view; xterm.js is the only renderer
+- **Date:** 2026-06-19 — **Decided by:** Human (Terry), implemented by Cleanup@autonomOS
+- **Context:** Two alternative-surface features had accrued cost with no real use: (1) "view mode" — a `/api/conversation` route parsing CC session JSONL into a structured web conversation view (`ClaudeCodeParser` + render/parser types in core, `ConversationView`/`DiffView` in dashboard), toggled against the live terminal; the parser had a single consumer. (2) A pluggable terminal-renderer layer letting users switch xterm.js vs a Ghostty (`ghostty-web`) backend via a `terminalRenderer` setting — a second renderer no one selected, dragging in a WASM blob.
+- **Decision:** Remove both. Terminal via xterm.js is the only view and only renderer. Delete the conversation route + core parser/render types + dashboard conversation components; collapse the renderer factory so `useTerminal` calls `createXtermBackend` directly. `viewMode` was dashboard-only `localStorage` state (no server migration). `terminalRenderer` IS a `settings.json` key → added to `REMOVED_KEYS` for accept-and-discard (scrubbed on read with a warning, dropped on next persist; non-credential so no active-credential scrub), matching ADR-037/038. Drop 5 now-dead deps (`ghostty-web`, `react-syntax-highlighter` + types, unused `@assistant-ui/react` + `@assistant-ui/react-streamdown` — the latter two were already dead in both root + dashboard manifests).
+- **Rationale:** Less surface, lighter bundle ("terminal only" — Terry's intent). OSC8 Ctrl/Cmd+click links preserved via xterm's `linkHandler` (same `hasPrimaryModifier` gate as Ghostty's provider).
+- **Note:** The "Inbox Agent" Terry still saw in settings was a STALE embedded dashboard bundle (`packages/server/dist/<plat>/_embedded_dashboard/`, built pre-#213), not live code; a rebuild clears it — verified in this PR's fresh build.
+- **Alternatives considered:** Keep view-mode/Ghostty dormant — rejected, carrying cost, no use. Active-scrub `terminalRenderer` — unnecessary, not a credential.
+- **Source:** CC session, Cleanup@autonomOS worker. Shipped in PR #220.
+
+## ADR-040: `selectUsageOrg()` heuristic — pick `chat`/`claude_max` capability, not `memberships[0]`
+- **Date:** 2026-06-20 — **Decided by:** Human (Terry, pushed back on "why doesn't it actually work?"), implemented by ClaudeUsage@autonomOS
+- **Context:** ADR-035 dropped the explicit org field from settings and delegated org resolution to claude.ai's bootstrap API, but did NOT specify the auto-resolve heuristic. The unstated implementation default — `fetchOrgId` taking `memberships[0]` — silently fails for multi-org accounts. Specifically, accounts that have both an Anthropic API/console org AND a Claude.ai chat-tier org typically have the API org at `memberships[0]` and the chat org at `memberships[1]+`. Calling `/usage` with the API org returns 403 "Invalid authorization for organization" — which the scanner then maps to `unauthorized`, the UI surfaces as "session cookie may be expired," and re-entering the (valid) session key never escapes the loop. Terry's account is the exemplar; this affects every autonomOS user who's also an Anthropic API customer (a large fraction of the actual user base by definition).
+- **Decision:** Introduce `selectUsageOrg()` that picks the org with capability `chat` or `claude_max`. Single-org accounts fall through to sole-org. The selection is applied at the same point in the bootstrap-resolution flow that `memberships[0]` previously was. Cookie-fingerprinted cache (added in the same PR) prevents the selection from being stale across credential changes.
+- **Rationale:** Matches the actual claude.ai web client's selection behavior (chat-tier orgs are what serves usage data; API/console orgs aren't). Addresses the largest mis-classification path discovered post-ADR-035 with one targeted code change.
+- **Alternatives considered:**
+  - Require the user to pick an org in settings — rejected; reverses ADR-035's UX win for a problem that can be auto-resolved with a stable heuristic.
+  - Try each membership in order and pick the first that returns 200 — rejected; multiple 403 attempts is observable latency, log noise, and risks rate-limit interactions.
+  - Hardcode known org-name patterns — rejected; brittle, and the API/Claude.ai-Chat distinction is a stable capability, not a name.
+- **Note:** Refines (does not reverse) the auto-resolve direction of ADR-035. The `memberships[0]` assumption ADR-035 inherited implicitly was an under-specification in that ADR's text; this ADR records the actual selection rule that should have been part of ADR-035.
+- **Source:** CC session, ClaudeUsage@autonomOS worker. Shipped in PR #219.
+
+## ADR-041: Zero-touch Claude Usage via in-memory cookie harvest from spawned agents
+- **Date:** 2026-06-20 — **Decided by:** Human (Terry, set the constraints and rejected the weaker options), designed + implemented by ClaudeUsage@autonomOS under TeamLead@autonomOS lead
+- **Context:** The Claude Usage plugin required the user to open claude.ai DevTools, copy the `sessionKey` cookie, and paste it into settings. ADR-035 reduced the credential surface (dropped the org field) but didn't eliminate the manual paste. Two "free" alternatives were investigated and rejected: (1) reading `CLAUDE_SESSION_COOKIE` from the server's own environment — Claude Code injects it into processes it spawns, but a normal `make prod` install (PM2/launchd from a plain shell) is NOT a Claude Code child, so its env lacks the cookie; (2) reading Claude Code's on-disk OAuth token (`~/.claude/.credentials.json` `claudeAiOauth`) — empirically stale, because CC refreshes the token in-memory and does not write it back to disk (observed token ~23 days expired). Neither works for the install method real users run.
+- **Decision:** Harvest the session cookie from the agents the server spawns. Claude Code injects `CLAUDE_SESSION_COOKIE` into every process it spawns, including the hooks autonomOS attaches to each session. A SessionStart hook relays the cookie (shell-expanded straight into curl's stdin — never in process argv) to a dedicated server endpoint `POST /api/plugins/claude-usage/session`, which holds it IN MEMORY ONLY (never written to disk) for the usage plugin. This works on any install — including a server with no Claude Code ancestry — once an agent has run. Credential precedence: manual settings key > `CLAUDE_SESSION_KEY` env > harvested cookie > the server's own `CLAUDE_SESSION_COOKIE`. An `autoDetectClaudeSession` setting (default on) opts out and drops the in-memory cookie immediately. The dashboard shows "Auto-detected from Claude Code" when the credential is inherited.
+- **Security:** The harvest endpoint is unauthenticated only on a loopback bind (`isLoopbackBind()`), mirroring the existing `/api/hooks` localhost-trust model. On a non-loopback bind (remote `make deploy`) it falls through to the standard auth middleware, because an open POST that sets the credential the server authenticates to claude.ai with would otherwise be a credential-injection vector. Payloads are validated against a strict session-key shape (`^sk-ant-sid[A-Za-z0-9._-]+$`), rejecting OAuth/API tokens and header-injection characters. The cookie is never logged (only a non-reversible SHA-256 fingerprint is).
+- **Privacy posture:** In-memory only — strictly more private than the manual-paste path, which persisted the key to `settings.json` in plaintext. Never logged. Re-harvested on each agent spawn (always fresh; no stale-token problem) and evicted on restart, which matches credential-revocation semantics. Opt-out clears it immediately, before the settings disk write so it isn't gated on persistence success.
+- **Rationale:** Exploits existing Claude Code behavior (env injection into children) rather than depending on a new CC feature — robust to CC's roadmap. In-memory eviction is a feature, not a limitation: it bounds credential lifetime to the server process and self-refreshes. Loopback-gated exemption preserves zero-touch for the common local install without weakening remote deployments.
+- **Alternatives considered:**
+  - Read the server's own `CLAUDE_SESSION_COOKIE` env — rejected; absent on `make prod` servers not spawned by Claude Code (works only for dev/CC-spawned servers; retained as the lowest-priority fallback tier, harmless).
+  - Read Claude Code's on-disk OAuth token / refresh it server-side — rejected; the on-disk token is stale (CC doesn't write refreshes back) and a server-side refresh would rotate CC's own login token (`invalid_grant`, breaks the user's CC).
+  - The official-ish OAuth usage API (`api.anthropic.com/api/oauth/usage`) — rejected as primary; needs the keychain OAuth token (token-freshness-fragile, macOS keychain) for marginal ToS benefit.
+  - Persistent disk-stored harvested cookie — rejected; on-disk credential leak surface + provenance confusion, with no benefit over re-harvesting.
+  - Statusline-based relay — rejected; the statusline is user-toggleable, so it's not a reliable carrier (hooks are injected unconditionally).
+- **Guard against a security regression:** the auth-exempt-on-loopback design surfaced a HIGH-severity finding in /polish — the endpoint was originally unconditionally auth-exempt and would have been a credential-injection vector on non-loopback binds. Fixed pre-ship; locked by a unit test asserting `isLoopbackBind` rejects `0.0.0.0`/non-loopback hosts.
+- **Note:** Refines the auto-resolve direction of ADR-035 (less manual input) and composes with ADR-040 (`selectUsageOrg` chat-org selection); does not reverse either.
+- **Source:** CC session, ClaudeUsage@autonomOS worker, keyless-usage ultracode research workflow + Terry's direct constraints on launch-context and privacy. Shipped in PR #221.
+
+## ADR-042: Insecure-context clipboard fallback for OSC 52 auto-copy
+- **Date:** 2026-06-19 — **Decided by:** Human (Terry), implemented by RemoteCopy@autonomOS
+- **Context:** Claude Code's auto-copy-on-select via OSC 52 worked on localhost-served autonomOS but silently failed on remote-served deployments. Root cause: `navigator.clipboard` is `undefined` in an insecure context (plain HTTP, non-localhost origin), and the OSC 52 handler at `packages/dashboard/src/terminal/xterm-backend.ts` did an unconditional `.writeText`, which threw synchronously. The throw was caught by an outer handler designed for OSC 52 decode errors and mis-logged as "OSC 52 decode failed" — silent. The byte pipeline (CC → PTY → WS → xterm → handler) was intact in both modes; local "worked" purely because browsers treat localhost/127.0.0.1 as secure-context exceptions. autonomOS's remote deployment shape (`make deploy` → `make prod` → PM2 on `:3100` plain HTTP, no TLS) is exactly the insecure-context case.
+- **Decision:** Capability-detect the clipboard at write time. Secure context (localhost or HTTPS) → use `navigator.clipboard.writeText` (the existing happy path, unchanged). Insecure context (plain HTTP non-localhost) → fall back to transient-textarea + `document.execCommand('copy')`. The same dashboard build self-selects per origin → local + remote both work from one artifact. A `console.warn` breadcrumb fires only when both paths fail.
+- **Rationale:** `execCommand('copy')` is the only clipboard write available in non-secure contexts; it requires transient user activation, but OSC 52 fires within milliseconds of the user's mouse-up select, which is well inside the ~5-second activation window. HTTPS deployment remains the recommended/cleaner posture (also fixes a parallel insecure-context bug in `PreviewPane.tsx:128`'s copy-link), but the feature should not be gated on the operator running TLS.
+- **Alternatives considered:**
+  - Require HTTPS deployment — rejected as the only path; should be recommended but not blocking, since the per-user friction of getting TLS in front of a `make prod` install is real.
+  - Server-side `pbcopy`/`xclip` — rejected; writes to the wrong machine's clipboard for true remote (server's clipboard, not the viewing user's).
+  - `@xterm/addon-clipboard` — rejected; same `navigator.clipboard`-only implementation, fails identically.
+  - Chrome's `--unsafely-treat-insecure-origin-as-secure` flag — rejected; per-user, brittle, requires browser configuration.
+- **Known caveat:** Server-pushed OSC 52 has no click in its call stack; if the user-activation window has expired (e.g., the user hasn't interacted recently), both clipboard paths fail and the breadcrumb logs without a copy occurring. A future one-click Copy affordance is the planned cover for that tail case.
+- **Note:** Same root cause (insecure-context, `navigator.clipboard` undefined) also broke `PreviewPane.tsx`'s copy-link; the fix pattern from this ADR is the template for resolving that. Recommends HTTPS as the proper app-wide fix.
+- **Source:** CC session, RemoteCopy@autonomOS worker, 7-agent ultracode research workflow. Shipped in PR #222.
+
+## ADR-043: Dashboard distribution contract — embedded bundle is binary-only; hosted server serves `dashboard/dist`
+- **Date:** 2026-06-20 — **Decided by:** Human (Terry), implemented by RemoteCopy@autonomOS
+- **Context:** The server prefers `packages/server/src/_embedded_dashboard/` over `packages/dashboard/dist` (resolution order in `run.ts:179-180`). `_embedded_dashboard` is produced only by the binary build chain (`build:embed-dashboard`, for `bun --compile`). But `make deploy` rsynced a stale local `_embedded_dashboard` to the remote (the rsync excludes were `node_modules/.env/dist/.git` — `src/_embedded_dashboard` is under `src/`, so it shipped). And `make prod` rebuilt `dashboard/dist` but NOT the embedded copy — so the hosted (tsx) server served a stale embedded bundle shadowing the fresh dist. Caused a real regression on forge (served a months-old UI), hand-patched three times before this PR.
+- **Decision:** Treat `_embedded_dashboard` as a **binary-distribution artifact only**. The hosted server serves `packages/dashboard/dist`. Enforced by: (a) `make prod` `rm -rf _embedded_dashboard` before the vite build; (b) `make deploy` rsync `--exclude _embedded_dashboard`. Plus an observability guardrail: the server logs the served bundle id + `index.html` mtime at startup and exposes them on `/api/host` as `{dashboard: {build, builtAt}}`; the dashboard `console.warn`s when its loaded bundle id != the server's served bundle id.
+- **Rationale:** Matches the resolution-order comment's original intent (embedded = binary build time; dist = tsx fallback) and Terry's mental model. The guardrail converts a silent, recurring, hard-to-diagnose failure into a visible one — the next stale-bundle event surfaces immediately in server logs or the dashboard console rather than after a regression bites a user.
+- **Alternatives considered:**
+  - Have `make prod` *regenerate* `_embedded_dashboard` from `dist` each deploy — rejected; keeps an unnecessary duplicate copy on the hosted box, redundant with `dist`, and the resolution-order preference makes the duplicate dangerous if it drifts.
+  - Rsync `--exclude` only, no `rm` — rejected; `--exclude` is prospective (doesn't add new staleness) but does NOT clean up an existing stale remote `_embedded_dashboard` left from a prior deploy. The `rm` in `make prod` is load-bearing because it self-heals the remote on the next deploy.
+- **Long-term direction (earmarked, not in this PR):** Converge the hosted deploy onto the install.sh / built-bundle distribution path established by #170 (CLI + service-manager work) and retire the rsync-source-and-build-on-target pattern. One versioned artifact for both desktop-embedded and hosted distribution, matching the release train. Discussed with Terry and explicitly deferred per the "personal tool first" project tenet — the right strategic direction, not the right immediate work.
+- **Note:** Two operational issues surfaced during deployment of this fix to forge: (1) a 27-day-old install-CLI server orphan was holding `:3100`, causing pm2 EADDRINUSE crash-loops — cleaned up in the same deploy. (2) The `wt-sync`-deletes-worktree-after-merge → `cd <gone> && make deploy` silently-falls-through-to-main-repo hazard worked by luck this time but remains a fragile interaction. Worth tracking; not addressed here.
+- **Source:** CC session, RemoteCopy@autonomOS worker, surfaced during forge deployment of PRs #222 and #224. Shipped in PR #227.
+
+## ADR-044: Consolidated release notes merge all per-package CHANGELOGs (one line per PR)
+- **Date:** 2026-06-22 — **Decided by:** Human (Terry) via TeamLead@autonomOS, implemented by SyncChangelogFix@autonomOS
+- **Context:** `changeset version` writes one CHANGELOG.md per package, and `@changesets/changelog-github` files each changeset's entry ONLY into the CHANGELOG of the package(s) its frontmatter names. The `fixed` group (`.changeset/config.json`) locks version NUMBERS in lockstep but does NOT replicate entries across packages. `scripts/sync-changelog.ts` promoted a single representative package (`packages/app/CHANGELOG.md`) into the root CHANGELOG / GitHub Release body, so every server-/dashboard-/core-/cli-only changeset was silently dropped. v0.3.0's release body initially showed 1 of ~21 changes; root `## [0.2.0]` was entirely empty for the same reason.
+- **Decision:** The consolidator merges EVERY `packages/*/CHANGELOG.md`, deduplicates by PR number (highest severity wins on collision), and renders ONE concise line per PR — the title taken from the squash-merge commit subject (`git log -1 --format=%s`, trailing ` (#NNN)` stripped). Per-package CHANGELOGs stay verbose for posterity; only the root CHANGELOG (and thus the Release body) is condensed. `scripts/release-notes.ts` is unchanged — it faithfully extracts whatever section this writes.
+- **Rationale:** Correctness (no package's changes can be invisible) + brevity (Terry's one-line-per-PR preference, established when v0.3.0's verbose body was rejected). This mechanical output is the **floor of correctness**; a friendly/themed release body is a separate **ceiling layer** (future work) that rewrites on top — it does not change this contract.
+- **Invariant for future readers:** If you add a 6th package to the `fixed` group, the consolidator already globs `packages/*/CHANGELOG.md`, so it's picked up automatically — but any change to per-package CHANGELOG structure (heading format, swapping `@changesets/changelog-github` for another renderer) must keep `parseEntries`' signature-anchored detection valid, or entries silently vanish. The script self-guards: it hard-fails on an empty section when real changesets were consumed, and warns when parsed-entry count < non-empty-consumed-changeset count (partial-drop detection).
+- **Alternatives considered:**
+  - Read a single representative package — the bug being fixed; only correct if every changeset always lists that package.
+  - Generate from `git log` between tags — loses changeset-curated severity (minor vs patch).
+  - Read raw `.changeset/*.md` pre-consumption — loses `@changesets/changelog-github`'s PR/author resolution and needs the pre-`changeset version` timing.
+- **Source:** autonomOS CC session, SyncChangelogFix@autonomOS worker; flagged by nox-0x on PRs #205/#211. Shipped in PR #244 (commit `49e35f8`).
+

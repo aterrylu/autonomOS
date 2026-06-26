@@ -10,16 +10,29 @@
  */
 
 import { statSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 import type { Agent, Provider, SpawnOptions, UUID } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { emitAgentDelta } from "../events/agents.js";
+import {
+  disposeCodexControl,
+  startCodexStatusWatch,
+} from "../gateway/codexControl.js";
 import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
+import { pushSystemNotification } from "../routes/hooks.js";
+import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
+import { getServerPort } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import {
+  cancelAllPromptTracking,
+  cancelPromptTracking,
+  trackPromptDelivery,
+} from "./promptDelivery.js";
+import { pickFreePort, type Sidecar, startSidecarDaemon } from "./sidecar.js";
 import {
   buildAgent,
   deleteAgentRaw,
@@ -28,10 +41,88 @@ import {
   listAgents,
   markExited,
   markRunning,
+  patchAgent,
   resolveAgent as resolveAgentFromStore,
 } from "./store.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
+
+/** How long after a Codex spawn to wait for its channel-server MCP subprocess to
+ *  register before warning that the agent has no outbound path. The daemon
+ *  launches it on thread creation (TUI connect), so this must cover daemon boot +
+ *  TUI attach + MCP startup + ws connect — generous to avoid false alarms on a
+ *  loaded host (a missed warning is cheaper than a spurious one). */
+const CHANNEL_SERVER_REGISTER_GRACE_MS = 30_000;
+
+/**
+ * Probe (wired to the gateway's session-client registry at startup): has THIS
+ * agent's channel-server MCP subprocess connected + registered? Lets the runtime
+ * detect a Codex agent whose daemon-launched channel server never came up.
+ * Injected (not imported) because router.ts already imports this module — a
+ * direct import would close a cycle. Null until initGateway() wires it.
+ */
+let channelServerProbe: ((agentId: string) => boolean) | null = null;
+export function setChannelServerProbe(fn: (agentId: string) => boolean): void {
+  channelServerProbe = fn;
+}
+
+/** Pending channel-server liveness checks, keyed by agent id, so the kill/exit
+ *  paths can dispose them (honoring the disposal contract onExit documents)
+ *  instead of leaving an unref'd timer to wake and no-op 30s later. */
+const channelCheckTimers = new Map<UUID, ReturnType<typeof setTimeout>>();
+
+/** One-shot post-spawn check that a Codex agent's outbound channel server came
+ *  up. Uses the gateway's registration signal (positive — the channel server
+ *  registers on a successful connect) rather than parsing daemon logs, so a
+ *  missed notification can't make it lie. Gated on the `pty` still being the live
+ *  attachment so a kill/respawn within the grace window doesn't warn on a corpse
+ *  (mirrors the prompt-delivery write guard). Best-effort: a null probe (gateway
+ *  not yet wired) or a registered agent is a silent no-op.
+ *
+ *  SCOPE: this catches a channel server that never LAUNCHES. It does NOT cover a
+ *  server that registers then later DROPS — but the channel-server subprocess is
+ *  a child of the app-server daemon, so the common cause (daemon death) already
+ *  surfaces via the A3 status watcher's "daemon unreachable" warning. A standalone
+ *  MCP-subprocess crash while the daemon survives is a known, narrow follow-up gap
+ *  (would need an edge-triggered warn on unexpected unregister). */
+function scheduleChannelServerCheck(
+  agentId: UUID,
+  name: string,
+  pty: IPty,
+): void {
+  cancelChannelServerCheck(agentId); // never double-schedule for one agent
+  const timer = setTimeout(() => {
+    channelCheckTimers.delete(agentId);
+    if (live.get(agentId)?.pty !== pty) return; // killed/replaced — not our spawn
+    if (channelServerProbe?.(agentId) !== false) return; // registered or unknown
+    // Server-log breadcrumb (with the id) for cold debugging — the user-facing
+    // SystemWarning deliberately omits the raw id.
+    console.warn(
+      `[runtime] ${agentId.slice(0, 8)} channel server never registered within ${CHANNEL_SERVER_REGISTER_GRACE_MS}ms — outbound (send + org tools) unavailable`,
+    );
+    pushSystemNotification(
+      agentId,
+      `${name} can't send messages — its autonomos channel server didn't start, so send() and the org tools are unavailable (it can still receive inbound). The channel-server script likely failed to launch.`,
+    );
+  }, CHANNEL_SERVER_REGISTER_GRACE_MS);
+  timer.unref?.();
+  channelCheckTimers.set(agentId, timer);
+}
+
+/** Dispose a single agent's pending channel-server check (kill/exit/delete). */
+function cancelChannelServerCheck(agentId: UUID): void {
+  const timer = channelCheckTimers.get(agentId);
+  if (timer) {
+    clearTimeout(timer);
+    channelCheckTimers.delete(agentId);
+  }
+}
+
+/** Dispose all pending channel-server checks (restart-all / shutdown). */
+function cancelAllChannelServerChecks(): void {
+  for (const timer of channelCheckTimers.values()) clearTimeout(timer);
+  channelCheckTimers.clear();
+}
 
 /** Resolve claude binary — delegates to the claude-code provider. */
 export function resolveClaudePath(): string {
@@ -43,6 +134,17 @@ export interface ManagedAttachment {
   pty: IPty;
   outputBuffer: string[];
   outputSize: number;
+  /**
+   * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
+   * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
+   * the ws:// the gateway uses to inject inbound turns + read status.
+   */
+  sidecar?: Sidecar;
+}
+
+/** ws:// endpoint of an agent's provider daemon (Codex), or undefined. */
+export function getAgentSidecarEndpoint(agentId: UUID): string | undefined {
+  return live.get(agentId)?.sidecar?.endpoint;
 }
 
 const live = new Map<UUID, ManagedAttachment>();
@@ -90,7 +192,7 @@ export interface SpawnResult {
  *   - Fork: forkFromAgentId present → new Agent (new id) + new PTY that --resume's
  *     the forked agent's providerSessionId then --fork-session's
  */
-export function spawnAgent(params: SpawnParams): SpawnResult {
+export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   if (params.forkFromAgentId && params.resumeAgentId) {
     throw new Error(
       "Cannot use both forkFromAgentId and resumeAgentId — fork creates a new agent from a parent's context, resume reattaches an existing agent.",
@@ -143,36 +245,18 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     }
     providerSessionId = existing.providerSessionId;
     agent = existing;
-  } else if (params.forkFromAgentId) {
-    const parent = getAgent(params.forkFromAgentId);
-    if (!parent) {
+  } else {
+    // Fresh spawn or fork — both create a new Agent record with a new id
+    // and a new providerSessionId. For fork, CC creates the new session by
+    // --resume'ing the parent then --fork-session'ing it (handled below
+    // via params.forkFromAgentId in the resolved args).
+    if (params.forkFromAgentId && !getAgent(params.forkFromAgentId)) {
       throw new Error(`forkFromAgentId "${params.forkFromAgentId}" not found`);
     }
-    // New agent, new provider-session for the fork; CC will create the new session
-    // by --resume'ing the parent then --fork-session'ing it.
     providerSessionId = crypto.randomUUID();
-    const dirName = basename(cwd) || cwd;
     const id = crypto.randomUUID();
-    const shortId = id.slice(0, 4);
-    const defaultName = params.name || `${dirName} · ${shortId}`;
-    agent = buildAgent({
-      id,
-      name: defaultName,
-      workingDirectory: cwd,
-      provider: providerName,
-      providerSessionId,
-      autonomousMode: !!params.autonomousMode,
-      template: params.template,
-      managerId: params.managerId ?? null,
-      project: params.project,
-    });
-  } else {
-    // Fresh spawn
-    providerSessionId = crypto.randomUUID();
     const dirName = basename(cwd) || cwd;
-    const id = crypto.randomUUID();
-    const shortId = id.slice(0, 4);
-    const defaultName = params.name || `${dirName} · ${shortId}`;
+    const defaultName = params.name || `${dirName} · ${id.slice(0, 4)}`;
     agent = buildAgent({
       id,
       name: defaultName,
@@ -188,10 +272,6 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
 
   // Build provider args + env
   const { channels } = getSettings();
-  const channelScript = resolve(
-    import.meta.dirname,
-    "../channel-server/dist.mjs",
-  );
 
   const resolved = {
     ...params,
@@ -208,32 +288,95 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
     // claude-code provider does --resume on it.
     resumeSessionId: params.resumeAgentId ? providerSessionId : undefined,
     injectChannelServer: !!channels?.includes("server:autonomos"),
-    channelServerScript: channelScript,
-    serverPort: process.env.PORT || "3000",
+    channelServerScript: CHANNEL_SERVER_SCRIPT,
+    serverPort: String(getServerPort()),
     capabilities:
       (params.template ? getTemplate(params.template)?.capabilities : null) ??
       DEFAULT_CAPABILITIES,
+    // Set by the sidecar block below (when the provider declares buildSidecar)
+    // so buildArgs can emit `--remote <endpoint>` against the daemon.
+    sidecarEndpoint: undefined as string | undefined,
+    // Codex conversation resume: if this agent already captured a thread id
+    // (any respawn — server-restart resume or restart-all), pass it so the
+    // provider emits `codex resume <id> --remote` and reattaches the prior
+    // conversation. Undefined on a fresh first spawn → a new thread is created.
+    providerThreadId: agent.providerThreadId,
   };
 
-  const args = provider.buildArgs(resolved);
   const env = provider.buildEnv(agent.id, agent.name);
+
+  // Provider sidecar daemon (Codex's `codex app-server`): pick a free loopback
+  // port, start the daemon, and wait until it is listening BEFORE spawning the
+  // PTY — the `codex --remote` TUI errors out immediately on a cold port (no
+  // retry). The daemon is bound to this PTY's lifecycle and disposed on exit.
+  let sidecar: Sidecar | undefined;
+  if (provider.buildSidecar) {
+    const port = await pickFreePort();
+    resolved.sidecarEndpoint = `ws://127.0.0.1:${port}`;
+    const spec = provider.buildSidecar(resolved);
+    if (spec) {
+      try {
+        sidecar = await startSidecarDaemon(
+          binary,
+          spec.args,
+          resolved.sidecarEndpoint,
+          {
+            cwd,
+            env,
+            readyNeedle: spec.readyNeedle,
+            readyTimeoutMs: spec.readyTimeoutMs,
+          },
+        );
+      } catch (err) {
+        // The daemon never came up — abort the spawn rather than launch a TUI
+        // that will fail to connect. The agent record hasn't been inserted yet
+        // (fresh) or stays exited (resume), so there's nothing to roll back.
+        throw new Error(
+          `Failed to start ${providerName} sidecar daemon: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    } else {
+      resolved.sidecarEndpoint = undefined;
+    }
+  }
+
+  let args: string[];
+  try {
+    args = provider.buildArgs(resolved);
+  } catch (err) {
+    // buildArgs threw after the daemon was already started — don't leak it.
+    sidecar?.dispose();
+    throw err;
+  }
 
   const logArgs = args.map((a) => {
     if (a.startsWith('{"hooks"')) return '{"hooks":...}';
     if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
     return a;
   });
-  console.log(`[runtime] spawning: ${binary} ${logArgs.join(" ")}`);
+  console.log(
+    `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
+      (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
+  );
 
   const cols = params.cols ?? 120;
   const rows = params.rows ?? 40;
-  const pty = spawn(binary, args, {
-    name: "xterm-256color",
-    cols,
-    rows,
-    cwd,
-    env,
-  });
+  let pty: IPty;
+  try {
+    pty = spawn(binary, args, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd,
+      env,
+    });
+  } catch (err) {
+    // PTY spawn failed — don't leak the sidecar daemon we just started.
+    sidecar?.dispose();
+    throw err;
+  }
 
   if (getSettings().autoTrust !== false && provider.attachStartupWatcher) {
     provider.attachStartupWatcher(pty, resolved);
@@ -246,16 +389,87 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
         provider: providerName,
         providerSessionId,
         startedAt: Date.now(),
-      })!
+      })
     : insertAgent(agent);
+  if (!persisted) {
+    // The agent record was deleted concurrently (resume path) between
+    // getAgent() and here — tear down the PTY and daemon we just started so
+    // neither is orphaned, then surface the race rather than crashing on a
+    // non-null assertion.
+    sidecar?.dispose();
+    try {
+      pty.kill();
+    } catch {
+      // best-effort — the PTY may already be dead
+    }
+    throw new Error(
+      `Agent record ${agent.id} vanished before it could be marked running`,
+    );
+  }
 
   const managed: ManagedAttachment = {
     agentId: persisted.id,
     pty,
     outputBuffer: [],
     outputSize: 0,
+    sidecar,
   };
   live.set(persisted.id, managed);
+
+  // Codex agents have no hook relay — drive their dashboard status from the
+  // app-server daemon's event stream instead (busy/idle). Eager from spawn so
+  // status is live before any inbound traffic. Only providers with a sidecar
+  // daemon (Codex) have an endpoint; disposed alongside the daemon at kill.
+  // Status is cosmetic and must NEVER jeopardize the spawn — guard the call.
+  if (sidecar) {
+    try {
+      startCodexStatusWatch(persisted.id, sidecar.endpoint);
+    } catch (err) {
+      console.warn(
+        `[runtime] ${persisted.id.slice(0, 8)} failed to start status watch:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    // Codex OUTBOUND (send + org tools) rides a channel-server MCP subprocess the
+    // daemon launches from `-c mcp_servers`. If that launch fails (bad node/script
+    // path, esp. in a bundled build) the model silently has no outbound while
+    // still receiving inbound. Verify it actually registered; warn if not.
+    if (resolved.injectChannelServer) {
+      scheduleChannelServerCheck(persisted.id, persisted.name, pty);
+    }
+  }
+
+  // Delivery receipt: a starting prompt travels only as a CLI arg, and a
+  // startup-dialog race can silently drop it (agent sits at an empty input
+  // forever). Track spawn → SessionStart → UserPromptSubmit via the hook
+  // stream and re-deliver via PTY paste if the receipt never arrives.
+  if (params.prompt) {
+    trackPromptDelivery(
+      persisted.id,
+      `${persisted.name} (${persisted.id.slice(0, 8)})`,
+      params.prompt,
+      {
+        write: (data) => {
+          // Refuse writes once this PTY is no longer the canonical attachment
+          // (exited or replaced) — never paste into the wrong process.
+          if (live.get(persisted.id)?.pty !== pty) return false;
+          try {
+            pty.write(data);
+            return true;
+          } catch (err) {
+            // A throw on a still-canonical PTY is anomalous (vs the expected
+            // stale-attachment case above) — keep the two distinguishable.
+            console.warn(
+              `[runtime] ${persisted.id.slice(0, 8)} prompt re-delivery write threw:`,
+              err instanceof Error ? err.message : err,
+            );
+            return false;
+          }
+        },
+        notify: (message) => pushSystemNotification(persisted.id, message),
+      },
+    );
+  }
 
   // Emit the appropriate event
   if (isResume) {
@@ -292,9 +506,42 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
   });
 
   const spawnedAt = Date.now();
+  // Whether this spawn attempted a Codex conversation resume. If it dies
+  // immediately, the persisted thread's rollout is likely gone — we must clear
+  // the dead thread id and fall back to a fresh thread, or the agent crash-loops
+  // (every restart re-runs `codex resume <deadId>`).
+  const attemptedResume = !!resolved.providerThreadId;
 
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
+
+    // The visible TUI (this PTY) and its sidecar daemon are SEPARATE processes —
+    // the daemon does not die when the PTY does. Dispose it here unconditionally
+    // (idempotent): whether this is the canonical attachment or a stale handler
+    // from a replaced PTY, this closure's daemon is now orphaned and must go.
+    sidecar?.dispose();
+
+    // Guard against stale onExit handlers firing after the same agent.id has
+    // been respawned. node-pty's onExit is async, so during restartAllAttachments
+    // (kill → spawn) the killed PTY's onExit can fire AFTER the new attachment
+    // is registered. Without this check, the stale handler would mark the
+    // freshly-spawned agent as exited and drop its live entry. Comparing the
+    // captured `pty` reference to the currently-registered attachment lets us
+    // no-op cleanly when our PTY is no longer the canonical one.
+    //
+    // Resource-disposal note: nothing else in this closure needs explicit
+    // cleanup on the stale-handler branch. The captured outputBuffer lives on
+    // the dropped ManagedAttachment which is GC'd once it leaves the live map;
+    // node-pty owns the underlying file descriptors and releases them when the
+    // PTY actually exits (which is what triggered this handler). If a future
+    // change adds captured streams/timers/listeners to the spawn closure, they
+    // must be disposed here BEFORE the early return.
+    if (live.get(persisted.id)?.pty !== pty) {
+      return;
+    }
+
+    cancelPromptTracking(persisted.id);
+    cancelChannelServerCheck(persisted.id);
 
     if (lifetime < 5_000 && exitCode !== 0) {
       console.error(
@@ -307,11 +554,55 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
       );
     }
 
+    // Resume-failure fallback: a Codex agent that attempted `codex resume
+    // <threadId>` and died immediately almost certainly hit a missing/invalid
+    // rollout. Clear the dead thread id and respawn with a FRESH thread —
+    // otherwise the dead id stays persisted and every restart re-crashes (a
+    // silent crash-loop). The respawn can't loop: providerThreadId is now
+    // cleared, so it takes the plain `--remote` path.
+    if (
+      !shuttingDown &&
+      attemptedResume &&
+      lifetime < 5_000 &&
+      exitCode !== 0
+    ) {
+      live.delete(persisted.id);
+      disposeCodexControl(persisted.id);
+      patchAgent(persisted.id, { providerThreadId: undefined });
+      pushSystemNotification(
+        persisted.id,
+        `Couldn't resume ${persisted.name}'s prior conversation (its history may have been pruned) — starting a fresh thread.`,
+      );
+      console.warn(
+        `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — cleared thread id, respawning fresh`,
+      );
+      const record = getAgent(persisted.id);
+      if (record) {
+        void respawnAgent(record).catch((err) => {
+          const updated = markExited(persisted.id, "crashed");
+          if (updated)
+            emitAgentDelta({
+              type: "agent.exited",
+              id: persisted.id,
+              exitReason: "crashed",
+              version: updated.version,
+            });
+          console.error(
+            `[runtime] ${persisted.id.slice(0, 8)} fresh respawn after failed resume also failed:`,
+            err instanceof Error ? err.message : err,
+          );
+        });
+      }
+      return;
+    }
+
     if (!shuttingDown) {
       const reason: "self_exited" | "crashed" =
         exitCode === 0 && !signal ? "self_exited" : "crashed";
       const updated = markExited(persisted.id, reason);
       live.delete(persisted.id);
+      // Tear down the Codex inbound control client (no-op for other providers).
+      disposeCodexControl(persisted.id);
       if (updated) {
         emitAgentDelta({
           type: "agent.exited",
@@ -319,6 +610,10 @@ export function spawnAgent(params: SpawnParams): SpawnResult {
           exitReason: reason,
           version: updated.version,
         });
+      } else {
+        console.warn(
+          `[runtime] PTY for ${persisted.id} exited (${reason}) but agent missing from store — possibly deleted concurrently`,
+        );
       }
     }
     // When shuttingDown is true, keep agent in store as "running" so it
@@ -339,8 +634,13 @@ export function killAttachment(agentId: UUID): boolean {
   } catch (err) {
     console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
   }
+  // Sidecar daemon is a separate process — kill it alongside the PTY.
+  managed.sidecar?.dispose();
+  disposeCodexControl(agentId);
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
+  cancelPromptTracking(agentId);
+  cancelChannelServerCheck(agentId);
   const updated = markExited(agentId, "user_killed");
   live.delete(agentId);
   if (updated) {
@@ -365,8 +665,12 @@ export function deleteAgent(agentId: UUID): boolean {
     } catch (err) {
       console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
     }
+    managed.sidecar?.dispose();
     live.delete(agentId);
   }
+  disposeCodexControl(agentId);
+  cancelPromptTracking(agentId);
+  cancelChannelServerCheck(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
     emitAgentDelta({ type: "agent.deleted", id: agentId });
@@ -382,12 +686,15 @@ export function deleteAgent(agentId: UUID): boolean {
  */
 export function shutdownAllAttachments(): void {
   shuttingDown = true;
+  cancelAllPromptTracking();
+  cancelAllChannelServerChecks();
   for (const [, managed] of live) {
     try {
       managed.pty.kill();
     } catch {
       // best-effort during shutdown
     }
+    managed.sidecar?.dispose();
   }
   live.clear();
 }
@@ -398,6 +705,24 @@ function resetShuttingDown(): void {
   shuttingDown = false;
 }
 
+/** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
+ *  from the persisted Agent record so the resumed PTY matches the original
+ *  configuration. */
+async function respawnAgent(a: Agent): Promise<void> {
+  const tmpl = a.template ? getTemplate(a.template) : null;
+  await spawnAgent({
+    workingDirectory: a.workingDirectory,
+    resumeAgentId: a.id,
+    name: a.name,
+    autonomousMode: a.autonomousMode,
+    appendSystemPrompt: tmpl?.systemPrompt,
+    template: a.template,
+    managerId: a.managerId,
+    project: a.project,
+    provider: a.provider,
+  });
+}
+
 /**
  * Resume all agents whose persisted status is "running" (typical post-startup
  * recovery path). Called once from server startup.
@@ -405,37 +730,30 @@ function resetShuttingDown(): void {
  * Failures are caught per-agent and the failing agent is marked exited+crashed
  * so a zombie record (status=running with no live PTY) doesn't sit forever.
  */
-export function resumeActiveAgents(): void {
+export async function resumeActiveAgents(): Promise<void> {
   const agents = listAgents().filter((a) => a.status === "running");
   if (agents.length === 0) return;
 
   console.log(`Resuming ${agents.length} agent(s)...`);
   let resumed = 0;
   for (const a of agents) {
+    if (a.template && !getTemplate(a.template)) {
+      console.warn(
+        `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
+      );
+    }
     try {
-      const tmpl = a.template ? getTemplate(a.template) : null;
-      if (a.template && !tmpl) {
-        console.warn(
-          `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
-        );
-      }
-      spawnAgent({
-        workingDirectory: a.workingDirectory,
-        resumeAgentId: a.id,
-        name: a.name,
-        autonomousMode: a.autonomousMode,
-        appendSystemPrompt: tmpl?.systemPrompt,
-        template: a.template,
-        managerId: a.managerId,
-        project: a.project,
-        provider: a.provider,
-      });
+      await respawnAgent(a);
       console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...)`);
       resumed++;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
       console.error(`  ✗ Failed to resume ${a.name}: ${message}${stack}`);
+      // Surface the reason in the dashboard, not just server logs — otherwise a
+      // Codex agent whose sidecar daemon won't come up shows only as "crashed"
+      // every boot with no actionable hint (mirrors the prompt-delivery path).
+      pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
       const updated = markExited(a.id, "crashed");
       if (updated) {
         emitAgentDelta({
@@ -455,19 +773,40 @@ export function resumeActiveAgents(): void {
 /**
  * Restart all live attachments — kills each PTY and respawns with fresh env.
  * Preserves agent ids so the dashboard's layout/groups/panes remain valid.
+ *
+ * Returns both `idMap` (the agents that successfully respawned, identity-mapped
+ * since post-unification ids are stable across restart) AND `failures` (per-agent
+ * error reports for anything that didn't come back). The route handler surfaces
+ * `failures` to the dashboard so a partial-success doesn't show as silently
+ * "done" when N of M agents failed to respawn — the previous shape returned
+ * Record<UUID, UUID> only and lost that distinction in the response body.
  */
-export function restartAllAttachments(): Record<UUID, UUID> {
+export async function restartAllAttachments(): Promise<{
+  idMap: Record<UUID, UUID>;
+  failures: Array<{ id: UUID; name: string; error: string }>;
+}> {
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
+  const failures: Array<{ id: UUID; name: string; error: string }> = [];
 
   // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
   shuttingDown = true;
-  for (const [, managed] of live) {
+  cancelAllPromptTracking();
+  cancelAllChannelServerChecks();
+  for (const [id, managed] of live) {
     try {
       managed.pty.kill();
-    } catch {
-      // best-effort
+    } catch (err) {
+      // pty.kill is rare-throw on macOS but reachable on Windows / when the
+      // process is already exiting. Log so operators see the cause; we still
+      // proceed because live.clear() below makes the dead reference unreachable.
+      console.error(
+        `[runtime] restart-all: pty.kill threw for agent ${id}:`,
+        err instanceof Error ? err.message : err,
+      );
     }
+    // Dispose the sidecar daemon too — it won't die with the PTY.
+    managed.sidecar?.dispose();
   }
   live.clear();
   resetShuttingDown();
@@ -476,29 +815,41 @@ export function restartAllAttachments(): Record<UUID, UUID> {
   const idMap: Record<UUID, UUID> = {};
   for (const agentId of toRestart) {
     const a = getAgent(agentId);
-    if (!a) continue;
+    if (!a) {
+      // Persisted record vanished between snapshot and respawn — shouldn't
+      // happen in practice (no other writer mutates the store mid-restart),
+      // but if it does, surface it instead of silently dropping the agent.
+      const msg = "agent record missing from store";
+      console.error(`[runtime] restart-all: ${msg} (id=${agentId})`);
+      failures.push({ id: agentId, name: "<unknown>", error: msg });
+      continue;
+    }
     try {
-      const tmpl = a.template ? getTemplate(a.template) : null;
-      spawnAgent({
-        workingDirectory: a.workingDirectory,
-        resumeAgentId: a.id,
-        name: a.name,
-        autonomousMode: a.autonomousMode,
-        appendSystemPrompt: tmpl?.systemPrompt,
-        template: a.template,
-        managerId: a.managerId,
-        project: a.project,
-        provider: a.provider,
-      });
+      await respawnAgent(a);
       idMap[a.id] = a.id;
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error(
-        `Failed to restart agent ${a.id}:`,
-        err instanceof Error ? err.message : err,
+        `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
+        msg,
       );
+      // The PTYs were killed under shuttingDown, so onExit did NOT mark this
+      // agent exited — and the respawn just failed. Without this, the record
+      // stays status:"running" with no live PTY (a zombie that tries to resume
+      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents.
+      const updated = markExited(a.id, "crashed");
+      if (updated) {
+        emitAgentDelta({
+          type: "agent.exited",
+          id: a.id,
+          exitReason: "crashed",
+          version: updated.version,
+        });
+      }
+      failures.push({ id: a.id, name: a.name, error: msg });
     }
   }
-  return idMap;
+  return { idMap, failures };
 }
 
 // ── Resolve by name-or-id (for MCP tool boundary) ─────────────────────
@@ -550,4 +901,6 @@ export async function resolveAgentId(
 export function _resetForTesting(): void {
   live.clear();
   shuttingDown = false;
+  cancelAllPromptTracking();
+  cancelAllChannelServerChecks();
 }

@@ -31,6 +31,7 @@ function shallowEqualRecord<V>(
 import {
   activeTabPane,
   addTab,
+  allLeafIds,
   allTabPanes,
   derivedActivePane,
   findLeaf,
@@ -63,7 +64,18 @@ export interface SessionInfo {
   status: string;
   workingDirectory: string;
   provider: string;
+  /** Stable lookup key shared with /api/agents/tree's `claudeSessionId`
+   *  alias and the /api/agents/:id route params. Equals `id` (the agent UUID)
+   *  in the new model — NOT the Claude Code provider session id. The legacy
+   *  field name is kept for now to avoid touching every consumer; if you
+   *  need the actual CC session id (e.g. to invoke `claude --resume`),
+   *  read `providerSessionId` instead. */
   claudeSessionId?: string;
+  /** Provider-specific session id (CC's session id, Codex's, Gemini's).
+   *  Use this when invoking provider CLIs directly or reading the JSONL
+   *  transcript. Decoupled from `id` for fresh agents (only equal for
+   *  Option-A migrated records). */
+  providerSessionId?: string;
   template?: string;
   manager?: string;
   createdAt: number;
@@ -85,18 +97,12 @@ export interface ProjectSession {
   firstPrompt?: string;
   /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
   customTitle?: string;
-  gitDiffStat?: GitDiffStat;
   /** True if this session is managed by autonomOS */
   isAutonomosAgent?: boolean;
   /** Lifecycle status for autonomOS agents */
   autonomosStatus?: "running" | "exited";
   /** Template used to spawn this agent */
   template?: string;
-}
-
-export interface GitDiffStat {
-  insertions: number;
-  deletions: number;
 }
 
 /** A project directory with its Claude Code sessions */
@@ -206,8 +212,16 @@ function addPaneToGroup(
 }
 
 /**
- * After removing a leaf, prune the active group's member list.
- * Dissolves the group if only 0-1 members remain.
+ * After a layout mutation, prune the active group's member list and dissolve
+ * the group when the split collapses to a single region.
+ *
+ * A group represents a *split view* (multiple leaves/regions), not merely a
+ * set of panes. So dissolution is keyed off the number of leaves in the new
+ * layout, not the pane count — collapsing two split regions into one leaf with
+ * two tabs (e.g. a move-to-center drop) is no longer a split and must dissolve
+ * the group, even though both panes survive as tabs. This mirrors the rest of
+ * the codebase, which treats `allLeafIds(layout).length > 1` as "a split is
+ * showing" (see App.tsx Ctrl+W handling).
  */
 function syncGroupAfterRemoval(
   groups: Record<string, PaneGroup>,
@@ -225,7 +239,7 @@ function syncGroupAfterRemoval(
       remainingIds.has(id),
     );
 
-    if (updatedMembers.length <= 1) {
+    if (allLeafIds(newLayout).length <= 1 || updatedMembers.length <= 1) {
       delete updated[activeGroupId];
       newActiveGroupId = null;
     } else {
@@ -347,27 +361,68 @@ function isThemeName(value: unknown): value is ThemeName {
   return typeof value === "string" && value in THEMES;
 }
 
+/**
+ * Decide which sidebar view to show on rehydration.
+ *
+ * Returns the persisted view ONLY when the user explicitly chose it (the
+ * `sidebarViewModeExplicit` flag is true). Otherwise — a user who never
+ * toggled, or an existing install whose default view was auto-persisted
+ * before this flag existed — we fall back to `defaultMode`. That fallback is
+ * what makes the hierarchical default reach everyone who has not made an
+ * explicit choice, not just brand-new installs.
+ *
+ * An explicit flag paired with a missing/invalid view is treated as
+ * not-explicit, so a corrupted blob can never strand a user on a stale value.
+ */
+export function resolveSidebarViewMode(
+  saved:
+    | { sidebarViewMode?: unknown; sidebarViewModeExplicit?: unknown }
+    | null
+    | undefined,
+  defaultMode: "flat" | "hierarchy",
+): { mode: "flat" | "hierarchy"; explicit: boolean } {
+  const validSaved =
+    saved?.sidebarViewMode === "flat" || saved?.sidebarViewMode === "hierarchy"
+      ? saved.sidebarViewMode
+      : null;
+  const explicit =
+    saved?.sidebarViewModeExplicit === true && validSaved !== null;
+  return { mode: explicit ? validSaved : defaultMode, explicit };
+}
+
 // ── Pane ordering helpers ──────────────────────────────────────────────
 
-/** Key used in paneOrder for a session */
+/** Key used in the flat-view order arrays for a session */
 function sessionOrderKey(s: SessionInfo): string {
   return s.claudeSessionId || s.id;
 }
 
-/** Key used in paneOrder for a preview */
+/** Key used in the flat-view order arrays for a preview */
 function previewOrderKey(id: string): string {
   return `preview:${id}`;
 }
 
 /**
- * Build a unified, ordered list of sidebar items from sessions + previews.
- * Items in paneOrder come first (in order), then remaining items at the end.
+ * Build the two ordered flat-view sections — pinned (top) and unpinned (below)
+ * — from live sessions + previews and the two persisted order arrays.
+ *
+ * - An item is pinned iff its key appears in `pinnedOrder`; membership in the
+ *   array IS the pinned set (no separate flag).
+ * - Items render in the order their key appears in the relevant array.
+ * - A live item in NEITHER array is a fresh arrival and goes to the TOP of the
+ *   unpinned section (spec: new agents land at the top of unpinned). Multiple
+ *   simultaneous arrivals keep their sessions/previews insertion order.
+ * - Previews are never pinned, so they only ever appear in the unpinned section.
+ *
+ * Stale keys (no matching live item) are skipped here; pruning of the persisted
+ * arrays happens on write (reorder/pin/unpin) and in fetchSessions.
  */
-export function buildSidebarItems(
+export function buildFlatSections(
   sessions: SessionInfo[],
   previews: PreviewPaneInfo[],
-  paneOrder: string[],
-): SidebarItem[] {
+  pinnedOrder: string[],
+  unpinnedOrder: string[],
+): { pinned: SidebarItem[]; unpinned: SidebarItem[] } {
   const itemsByKey = new Map<string, SidebarItem>();
   for (const s of sessions) {
     itemsByKey.set(sessionOrderKey(s), { type: "session", data: s });
@@ -376,30 +431,59 @@ export function buildSidebarItems(
     itemsByKey.set(previewOrderKey(p.id), { type: "preview", data: p });
   }
 
-  const result: SidebarItem[] = [];
   const placed = new Set<string>();
-
-  // Place ordered items first
-  for (const key of paneOrder) {
-    const item = itemsByKey.get(key);
-    if (item) {
-      result.push(item);
-      placed.add(key);
+  const take = (order: string[]): SidebarItem[] => {
+    const out: SidebarItem[] = [];
+    for (const key of order) {
+      if (placed.has(key)) continue;
+      const item = itemsByKey.get(key);
+      if (item) {
+        out.push(item);
+        placed.add(key);
+      }
     }
-  }
+    return out;
+  };
 
-  // Append unordered items
+  const pinned = take(pinnedOrder);
+  const unpinned = take(unpinnedOrder);
+
+  // Fresh arrivals (in neither array) prepend to the unpinned section.
+  const fresh: SidebarItem[] = [];
   for (const [key, item] of itemsByKey) {
-    if (!placed.has(key)) result.push(item);
+    if (!placed.has(key)) fresh.push(item);
   }
 
-  return result;
+  return { pinned, unpinned: [...fresh, ...unpinned] };
 }
 
-/** Get the paneOrder key for a SidebarItem */
+/** Get the order-array key for a SidebarItem */
 export function sidebarItemKey(item: SidebarItem): string {
   if (item.type === "session") return sessionOrderKey(item.data);
   return previewOrderKey(item.data.id);
+}
+
+/**
+ * Snapshot the current flat sections as key arrays — freezes fresh arrivals
+ * into their displayed position and drops stale keys. The mutating flat-view
+ * actions build on this so every write persists exactly what the user sees.
+ */
+function frozenFlatKeys(s: {
+  sessions: SessionInfo[];
+  previewPanes: PreviewPaneInfo[];
+  pinnedOrder: string[];
+  unpinnedOrder: string[];
+}): { pinnedKeys: string[]; unpinnedKeys: string[] } {
+  const { pinned, unpinned } = buildFlatSections(
+    s.sessions,
+    s.previewPanes,
+    s.pinnedOrder,
+    s.unpinnedOrder,
+  );
+  return {
+    pinnedKeys: pinned.map(sidebarItemKey),
+    unpinnedKeys: unpinned.map(sidebarItemKey),
+  };
 }
 
 /** Get the ActivePane for a SidebarItem */
@@ -411,17 +495,30 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
 
 // ── Store ──────────────────────────────────────────────────────────────
 
+/** How agent rows render their leading icon. "provider" shows the provider's
+ *  mark with a status corner badge; "status" shows the status-only icon. */
+export type AgentIconStyle = "provider" | "status";
+
 interface AppState {
   // Persisted
   theme: ThemeName;
-  viewMode: "terminal" | "conversation";
+  agentIconStyle: AgentIconStyle;
   sidebarViewMode: "flat" | "hierarchy";
+  /** True once the user has explicitly chosen a sidebar view via the toggle.
+   *  When false (never toggled, or a pre-flag persisted state), rehydration
+   *  uses the default view rather than any auto-persisted value — this is how
+   *  existing installs that never picked a view get the hierarchical default. */
+  sidebarViewModeExplicit: boolean;
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
   autonomousMode: boolean;
-  terminalRenderer: "xterm" | "ghostty-web";
-  paneOrder: string[];
+  /** Display order of PINNED agents (top flat-view section). An agent is
+   *  pinned iff its key is in this array. New pins append (bottom of pinned). */
+  pinnedOrder: string[];
+  /** Display order of the UNPINNED flat-view section (agents + previews). Fresh
+   *  arrivals and freshly-unpinned agents prepend (top); see buildFlatSections. */
+  unpinnedOrder: string[];
   /** Ordering of children within each hierarchy group. Key = parent name (lowercase) or "__root__". */
   hierarchyOrder: Record<string, string[]>;
   previewPanes: PreviewPaneInfo[];
@@ -434,7 +531,11 @@ interface AppState {
   status: string;
   sessions: SessionInfo[];
   exitedSessions: SessionInfo[];
-  showExitedAgents: boolean;
+  /** True once /api/agents has resolved at least once. Used by the
+   *  first-run UX in App.tsx to distinguish "no agents yet" from
+   *  "still loading." Once true for a tab session, stays true — the
+   *  first-run flow re-fires only on a fresh tab or page reload. */
+  sessionsInitialFetchDone: boolean;
   projects: ProjectInfo[];
   /** Loaded templates keyed by name */
   templates: Record<string, AgentTemplate>;
@@ -455,12 +556,11 @@ interface AppState {
 
   // Actions
   cycleTheme: () => void;
+  setAgentIconStyle: (style: AgentIconStyle) => void;
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
   toggleAutonomousMode: () => void;
-  toggleViewMode: () => void;
-  setViewMode: (mode: "terminal" | "conversation") => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -502,7 +602,6 @@ interface AppState {
   ) => Promise<void>;
   fetchSchedulerStatus: () => Promise<void>;
   updateSchedulerSettings: (maxConcurrentRuns: number) => Promise<void>;
-  toggleShowExitedAgents: () => void;
   toggleSidebarViewMode: () => void;
   reorderHierarchy: (
     groupKey: string,
@@ -510,7 +609,17 @@ interface AppState {
     toIndex: number,
   ) => void;
   removeSession: (id: string) => Promise<void>;
-  reorderPanes: (fromIndex: number, toIndex: number) => void;
+  /** Reorder within one flat-view section (drag-and-drop). Other section
+   *  unchanged. Persists the frozen snapshot (prunes dead, freezes arrivals). */
+  reorderFlat: (
+    section: "pinned" | "unpinned",
+    fromIndex: number,
+    toIndex: number,
+  ) => void;
+  /** Pin an agent → BOTTOM of the pinned section (appended). */
+  pinAgent: (key: string) => void;
+  /** Unpin an agent → TOP of the unpinned section (prepended). */
+  unpinAgent: (key: string) => void;
 
   // Layout / split-pane actions
   splitLeafWithPane: (
@@ -597,9 +706,15 @@ async function spawnSession(
     status: agent.status,
     workingDirectory: agent.workingDirectory,
     provider: agent.provider,
-    claudeSessionId: agent.providerSessionId,
+    // SessionInfo.claudeSessionId is the dashboard's stable lookup key —
+    // must equal agent.id to align with /api/agents/tree, useAgentStatusById,
+    // and the /api/agents/:id/* route URLs. See fetchSessions for full rationale.
+    claudeSessionId: agent.id,
+    // Actual CC session id — kept distinct so callers that need to invoke
+    // `claude --resume` or read CC's JSONL have access.
+    providerSessionId: agent.providerSessionId,
     template: agent.template,
-    manager: undefined, // managerId is a UUID; resolve to name happens via store.agents
+    manager: undefined, // managerId is a UUID; resolve to name handled in fetchSessions
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
@@ -625,13 +740,14 @@ export const useStore = create<AppState>()(
       const _initialRoot = makeRootLeaf(null);
       return {
         theme: "void",
-        viewMode: "terminal",
-        sidebarViewMode: "flat",
+        agentIconStyle: "provider",
+        sidebarViewMode: "hierarchy",
+        sidebarViewModeExplicit: false,
         activePane: null,
         status: "disconnected",
         sessions: [],
         exitedSessions: [],
-        showExitedAgents: false,
+        sessionsInitialFetchDone: false,
         projects: [],
         templates: {},
         templatesLoading: false,
@@ -645,8 +761,8 @@ export const useStore = create<AppState>()(
         sidebarOpen: true,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         autonomousMode: true,
-        terminalRenderer: "xterm",
-        paneOrder: [],
+        pinnedOrder: [],
+        unpinnedOrder: [],
         hierarchyOrder: {},
         previewPanes: [],
         layout: _initialRoot,
@@ -662,6 +778,8 @@ export const useStore = create<AppState>()(
             ];
           set({ theme: next });
         },
+        setAgentIconStyle: (style: AgentIconStyle) =>
+          set({ agentIconStyle: style }),
         toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
         setSidebarWidth: (width: number) => {
           if (!Number.isFinite(width)) return;
@@ -675,12 +793,6 @@ export const useStore = create<AppState>()(
         resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH }),
         toggleAutonomousMode: () =>
           set({ autonomousMode: !get().autonomousMode }),
-        toggleViewMode: () =>
-          set({
-            viewMode:
-              get().viewMode === "terminal" ? "conversation" : "terminal",
-          }),
-        setViewMode: (mode) => set({ viewMode: mode }),
         setStatus: (status) => set({ status }),
         switchPane: (pane) => {
           if (!pane) {
@@ -787,13 +899,23 @@ export const useStore = create<AppState>()(
           // Resolve manager name client-side so the existing UI continues to
           // surface a human-readable label without an extra round-trip.
           const byId = new Map(agents.map((a) => [a.id, a]));
+          // SessionInfo.claudeSessionId is the dashboard's stable lookup key
+          // — it's consumed by useAgentStatusById (HierarchyPanel) and the
+          // /api/agents/:id/attach URL builder (resumeSession). For both to
+          // align with /api/agents/tree (which sets node.claudeSessionId =
+          // agent.id as a backward-compat alias), we set it to agent.id
+          // here too. Using providerSessionId would split the key space:
+          // migrated agents (id == providerSessionId) would still work, but
+          // freshly-spawned agents (different UUIDs) would silently drop
+          // status/activity in the org chart card view.
           const allSessions: SessionInfo[] = agents.map((a) => ({
             id: a.id,
             name: a.name,
             status: a.status,
             workingDirectory: a.workingDirectory,
             provider: a.provider,
-            claudeSessionId: a.providerSessionId,
+            claudeSessionId: a.id,
+            providerSessionId: a.providerSessionId,
             template: a.template,
             manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
             createdAt: a.createdAt,
@@ -822,7 +944,28 @@ export const useStore = create<AppState>()(
             prevExited.length === exitedSessions.length &&
             prevExited.every((s, i) => s.id === exitedSessions[i].id);
           if (!unchanged || !exitedUnchanged) {
-            set({ sessions, exitedSessions });
+            // Prune flat-view order keys whose agent no longer exists so dead
+            // entries don't accumulate for users who never reorder/pin. Preview
+            // keys are kept (previews live in unpinnedOrder too). Reorder/pin/
+            // unpin also re-freeze, so this only matters between interactions.
+            const live = new Set<string>(sessions.map(sessionOrderKey));
+            const keepKey = (k: string) =>
+              k.startsWith("preview:") || live.has(k);
+            const { pinnedOrder, unpinnedOrder } = get();
+            const prunedPinned = pinnedOrder.filter(keepKey);
+            const prunedUnpinned = unpinnedOrder.filter(keepKey);
+            const orderChanged =
+              prunedPinned.length !== pinnedOrder.length ||
+              prunedUnpinned.length !== unpinnedOrder.length;
+            set({
+              sessions,
+              exitedSessions,
+              sessionsInitialFetchDone: true,
+              ...(orderChanged && {
+                pinnedOrder: prunedPinned,
+                unpinnedOrder: prunedUnpinned,
+              }),
+            });
 
             const { activePane } = get();
             if (
@@ -831,6 +974,11 @@ export const useStore = create<AppState>()(
             ) {
               set({ activePane: null, status: "disconnected" });
             }
+          } else if (!get().sessionsInitialFetchDone) {
+            // No change in session arrays (both empty) but this was the
+            // first successful fetch — flip the flag so App.tsx can act
+            // (e.g. auto-open the Create Agent panel for first-run UX).
+            set({ sessionsInitialFetchDone: true });
           }
 
           // Prune layout tabs referencing sessions that no longer exist.
@@ -1061,12 +1209,13 @@ export const useStore = create<AppState>()(
           const id = `preview-${Date.now()}-${++previewCounter}`;
           const title = filePath.split("/").pop() || filePath;
           const pane: PreviewPaneInfo = { id, filePath, title };
-          const { paneOrder, layout, focusedLeafId } = get();
+          const { unpinnedOrder, layout, focusedLeafId } = get();
           const activeP: ActivePane = { type: "preview", id };
-          // Add preview as a new tab in the focused leaf
+          // Add preview as a new tab in the focused leaf. A new preview is a
+          // fresh arrival → top of the unpinned section.
           set({
             previewPanes: [...previewPanes, pane],
-            paneOrder: [...paneOrder, previewOrderKey(id)],
+            unpinnedOrder: [previewOrderKey(id), ...unpinnedOrder],
             activePane: activeP,
             layout: addTab(layout, focusedLeafId, activeP),
           });
@@ -1285,14 +1434,13 @@ export const useStore = create<AppState>()(
           }));
         },
 
-        toggleShowExitedAgents: () => {
-          set({ showExitedAgents: !get().showExitedAgents });
-        },
-
         toggleSidebarViewMode: () => {
           set({
             sidebarViewMode:
               get().sidebarViewMode === "flat" ? "hierarchy" : "flat",
+            // Mark the view as explicitly chosen so it survives rehydration
+            // (otherwise the default view would win — see resolveSidebarViewMode).
+            sidebarViewModeExplicit: true,
           });
         },
 
@@ -1324,7 +1472,8 @@ export const useStore = create<AppState>()(
         closePreview: (id) => {
           const {
             previewPanes,
-            paneOrder,
+            pinnedOrder,
+            unpinnedOrder,
             activePane,
             sessions,
             layout,
@@ -1332,9 +1481,11 @@ export const useStore = create<AppState>()(
             groups,
             activeGroupId,
           } = get();
+          const previewKey = previewOrderKey(id);
           const updated: Partial<AppState> = {
             previewPanes: previewPanes.filter((p) => p.id !== id),
-            paneOrder: paneOrder.filter((k) => k !== previewOrderKey(id)),
+            pinnedOrder: pinnedOrder.filter((k) => k !== previewKey),
+            unpinnedOrder: unpinnedOrder.filter((k) => k !== previewKey),
           };
 
           // Find the leaf holding this preview in the layout
@@ -1396,13 +1547,41 @@ export const useStore = create<AppState>()(
           set(updated);
         },
 
-        reorderPanes: (fromIndex, toIndex) => {
-          const { sessions, previewPanes, paneOrder } = get();
-          const items = buildSidebarItems(sessions, previewPanes, paneOrder);
-          const ordered = items.map(sidebarItemKey);
-          const [moved] = ordered.splice(fromIndex, 1);
-          ordered.splice(toIndex, 0, moved);
-          set({ paneOrder: ordered });
+        reorderFlat: (section, fromIndex, toIndex) => {
+          const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
+          const target = section === "pinned" ? pinnedKeys : unpinnedKeys;
+          // Out-of-range or no-op: still persist the frozen snapshot so the drag
+          // prunes dead keys and freezes arrivals rather than doing nothing.
+          if (
+            fromIndex >= 0 &&
+            toIndex >= 0 &&
+            fromIndex < target.length &&
+            toIndex < target.length &&
+            fromIndex !== toIndex
+          ) {
+            const [moved] = target.splice(fromIndex, 1);
+            target.splice(toIndex, 0, moved);
+          }
+          set({ pinnedOrder: pinnedKeys, unpinnedOrder: unpinnedKeys });
+        },
+
+        pinAgent: (key) => {
+          const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
+          if (pinnedKeys.includes(key)) return; // already pinned
+          set({
+            pinnedOrder: [...pinnedKeys, key], // → BOTTOM of pinned
+            unpinnedOrder: unpinnedKeys.filter((k) => k !== key),
+          });
+        },
+
+        unpinAgent: (key) => {
+          const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
+          if (!pinnedKeys.includes(key)) return; // not pinned
+          set({
+            pinnedOrder: pinnedKeys.filter((k) => k !== key),
+            // → TOP of unpinned, treated as a fresh appearance.
+            unpinnedOrder: [key, ...unpinnedKeys.filter((k) => k !== key)],
+          });
         },
 
         // ── Layout / split-pane actions ──────────────────────────────────────
@@ -1510,11 +1689,50 @@ export const useStore = create<AppState>()(
           const { layout, focusedLeafId, activeGroupId, groups } = get();
           const leaf = findLeaf(layout, leafId);
           if (!leaf) return;
-
-          // If this is the last tab, close the leaf entirely
-          if (leaf.tabs.length <= 1) {
-            get().closeLeaf(leafId);
+          // Defensive guard for stale tabIds (cached event handlers, races
+          // with WS-driven tab removals, missed remap entries from
+          // RestartAllButton). Without this, the empty-leaf fall-through
+          // below would call removeTab with a non-existent tabId — which
+          // returns the layout unchanged AND we'd still write a no-op
+          // set(), producing the same "X click does nothing" UX the
+          // fix above was meant to eliminate. Warn so the cause shows
+          // up in dev console.
+          if (!leaf.tabs.some((t) => t.id === tabId)) {
+            console.warn(
+              `[layout] closeTab: tabId "${tabId}" not found in leaf "${leafId}" — ignoring stale call`,
+            );
             return;
+          }
+
+          // Last tab in this leaf — try to collapse the leaf so a sibling
+          // takes its place. If this IS the only leaf, removeLeaf returns
+          // null (the layout invariant requires at least one leaf), and
+          // we deliberately fall through to removeTab below — that produces
+          // an empty leaf which renders as the "Create or select an agent"
+          // placeholder. Without the fall-through, the X click would
+          // silently no-op when only one tab is open.
+          if (leaf.tabs.length <= 1) {
+            const newRoot = removeLeaf(layout, leafId);
+            if (newRoot) {
+              const newFocused =
+                focusedLeafId === leafId
+                  ? nextLeafId(newRoot, leafId)
+                  : focusedLeafId;
+              const groupUpdates = syncGroupAfterRemoval(
+                groups,
+                activeGroupId,
+                newRoot,
+                newFocused,
+              );
+              set({
+                layout: newRoot,
+                focusedLeafId: newFocused,
+                activePane: derivedActivePane(newRoot, newFocused),
+                ...groupUpdates,
+              });
+              return;
+            }
+            // Fall through: only leaf in tree → empty its tabs.
           }
 
           const updated = removeTab(layout, leafId, tabId);
@@ -1665,8 +1883,14 @@ export const useStore = create<AppState>()(
         },
 
         remapSessionIds: (idMap) => {
-          const { layout, activePane, paneOrder, groups, activeGroupId } =
-            get();
+          const {
+            layout,
+            activePane,
+            pinnedOrder,
+            unpinnedOrder,
+            groups,
+            activeGroupId,
+          } = get();
 
           // Helper: remap a pane reference
           const remapPane = (p: ActivePane | null): ActivePane | null => {
@@ -1693,14 +1917,13 @@ export const useStore = create<AppState>()(
             };
           };
 
-          // Remap paneOrder — keys are raw claudeSessionId or internal id
-          // (no prefix). claudeSessionId doesn't change on restart, so only
-          // entries that used the internal id need remapping.
-          const newPaneOrder = paneOrder.map((key) => {
+          // Remap both flat-view order arrays — keys are raw claudeSessionId or
+          // internal id (no prefix). claudeSessionId doesn't change on restart,
+          // so only entries that used the internal id need remapping.
+          const remapKey = (key: string) => {
             if (key.startsWith("preview:")) return key;
-            const newId = idMap[key];
-            return newId ?? key;
-          });
+            return idMap[key] ?? key;
+          };
 
           // Remap groups
           const newGroups: Record<string, PaneGroup> = {};
@@ -1715,7 +1938,8 @@ export const useStore = create<AppState>()(
           set({
             layout: remapLayout(layout),
             activePane: remapPane(activePane),
-            paneOrder: newPaneOrder,
+            pinnedOrder: pinnedOrder.map(remapKey),
+            unpinnedOrder: unpinnedOrder.map(remapKey),
             groups: newGroups,
             activeGroupId,
           });
@@ -1775,15 +1999,15 @@ export const useStore = create<AppState>()(
       name: "autonomos",
       partialize: (state) => ({
         theme: state.theme,
-        viewMode: state.viewMode,
+        agentIconStyle: state.agentIconStyle,
         sidebarViewMode: state.sidebarViewMode,
+        sidebarViewModeExplicit: state.sidebarViewModeExplicit,
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
         autonomousMode: state.autonomousMode,
-        terminalRenderer: state.terminalRenderer,
-        showExitedAgents: state.showExitedAgents,
-        paneOrder: state.paneOrder,
+        pinnedOrder: state.pinnedOrder,
+        unpinnedOrder: state.unpinnedOrder,
         hierarchyOrder: state.hierarchyOrder,
         previewPanes: state.previewPanes,
         layout: state.layout,
@@ -1798,10 +2022,10 @@ export const useStore = create<AppState>()(
 
         if (isThemeName(saved?.theme)) merged.theme = saved.theme;
         if (
-          saved?.viewMode === "terminal" ||
-          saved?.viewMode === "conversation"
+          saved?.agentIconStyle === "provider" ||
+          saved?.agentIconStyle === "status"
         )
-          merged.viewMode = saved.viewMode;
+          merged.agentIconStyle = saved.agentIconStyle;
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (
@@ -1815,18 +2039,11 @@ export const useStore = create<AppState>()(
           );
         if (typeof saved?.autonomousMode === "boolean")
           merged.autonomousMode = saved.autonomousMode;
-        if (
-          saved?.terminalRenderer === "xterm" ||
-          saved?.terminalRenderer === "ghostty-web"
-        )
-          merged.terminalRenderer = saved.terminalRenderer;
-        if (typeof saved?.showExitedAgents === "boolean")
-          merged.showExitedAgents = saved.showExitedAgents;
-        if (
-          saved?.sidebarViewMode === "flat" ||
-          saved?.sidebarViewMode === "hierarchy"
-        )
-          merged.sidebarViewMode = saved.sidebarViewMode;
+        // Restore the saved view only if explicitly chosen; otherwise keep the
+        // new default (current.sidebarViewMode). See resolveSidebarViewMode.
+        const view = resolveSidebarViewMode(saved, current.sidebarViewMode);
+        merged.sidebarViewMode = view.mode;
+        merged.sidebarViewModeExplicit = view.explicit;
         if (
           saved?.hierarchyOrder &&
           typeof saved.hierarchyOrder === "object" &&
@@ -1846,11 +2063,19 @@ export const useStore = create<AppState>()(
           merged.activePane = { type: "session", id: saved.sessionId };
         }
 
-        // Migrate old sessionOrder → paneOrder
-        if (Array.isArray(saved?.paneOrder)) {
-          merged.paneOrder = saved.paneOrder as string[];
+        // Flat-view order. New keys (pinnedOrder/unpinnedOrder) win when
+        // present. Otherwise migrate the legacy single list (paneOrder, or the
+        // even-older sessionOrder) into the unpinned section — everyone starts
+        // unpinned with their manual order intact, nothing pre-pinned.
+        if (Array.isArray(saved?.pinnedOrder)) {
+          merged.pinnedOrder = saved.pinnedOrder as string[];
+        }
+        if (Array.isArray(saved?.unpinnedOrder)) {
+          merged.unpinnedOrder = saved.unpinnedOrder as string[];
+        } else if (Array.isArray(saved?.paneOrder)) {
+          merged.unpinnedOrder = saved.paneOrder as string[];
         } else if (Array.isArray(saved?.sessionOrder)) {
-          merged.paneOrder = saved.sessionOrder as string[];
+          merged.unpinnedOrder = saved.sessionOrder as string[];
         }
 
         // Migrate: if layout is missing, construct from existing activePane.

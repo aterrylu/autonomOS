@@ -360,6 +360,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         template,
         manager,
         project,
+        provider,
       } = args as {
         workingDirectory: string;
         name?: string;
@@ -371,6 +372,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         template?: string;
         manager?: string;
         project?: string;
+        provider?: string;
       };
 
       // Auto-default manager to calling agent's name (channel server only)
@@ -395,6 +397,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             template,
             manager: effectiveManager,
             project,
+            provider,
           }),
         });
       } catch (err) {

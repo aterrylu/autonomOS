@@ -1,5 +1,7 @@
 import { Hono } from "hono";
-import { getRateLimits } from "./scanner.js";
+import { getSettings } from "../../settings.js";
+import { getRateLimits, invalidateCache } from "./scanner.js";
+import { setHarvestedSessionKey } from "./sessionStore.js";
 
 export const claudeUsageRouter = new Hono();
 
@@ -15,4 +17,34 @@ claudeUsageRouter.get("/", async (c) => {
       500,
     );
   }
+});
+
+/**
+ * Harvest endpoint. A spawned agent's SessionStart hook relays its
+ * `CLAUDE_SESSION_COOKIE` here (localhost, no auth — like the hook relay), so
+ * usage works with no manual paste on any install once an agent has run.
+ *
+ * The cookie is held ONLY in memory (see {@link ./sessionStore}) and is
+ * deliberately NEVER logged. Best-effort: a malformed or unwanted relay is
+ * silently ignored rather than erroring the hook.
+ */
+claudeUsageRouter.post("/session", async (c) => {
+  // Opt-out: when auto-detect is off, don't even hold the cookie in memory.
+  if (getSettings().autoDetectClaudeSession === false) return c.body(null, 204);
+
+  let key = "";
+  try {
+    key = (await c.req.text()).trim();
+  } catch {
+    return c.body(null, 204);
+  }
+
+  // Accept only something shaped like a claude.ai session cookie (sk-ant-sid…,
+  // any version) with no header-injection characters — the value later rides in
+  // a Cookie request header. Rejects OAuth/API tokens and stray noise. The
+  // value is never logged.
+  if (/^sk-ant-sid[A-Za-z0-9._-]+$/.test(key) && key.length <= 512) {
+    if (setHarvestedSessionKey(key)) invalidateCache();
+  }
+  return c.body(null, 204);
 });

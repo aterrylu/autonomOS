@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
+import { getServerPort } from "../serverState.js";
 
 // ── Base context injected into every spawned agent session ────
 export const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
@@ -52,6 +53,20 @@ export const HOOK_CMD =
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
   ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
   " >/dev/null 2>&1";
+
+// ── Claude-session harvest command (claude-code SessionStart only) ──
+// Relays Claude Code's CLAUDE_SESSION_COOKIE to the usage plugin so it works
+// with no manual paste. The cookie is expanded by the shell and piped to
+// curl's stdin — it never appears in any process argv. Best-effort and silent;
+// the server holds it in memory only and ignores it when auto-detect is off.
+export const COOKIE_RELAY_CMD =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  '[ -n "${CLAUDE_SESSION_COOKIE}" ] && ' +
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  'printf %s "${CLAUDE_SESSION_COOKIE}" | ' +
+  "curl -sf --max-time 2 -X POST --data-binary @- " +
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  '"${AUTONOMOS_SERVER}/api/plugins/claude-usage/session" >/dev/null 2>&1 || true';
 
 // ── Binary discovery helpers ─────────────────────────────────
 
@@ -133,11 +148,23 @@ export function buildBaseEnv(
   agentName: string,
 ): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
+
+  // Strip the host Claude Code session identity before it reaches the agent.
+  // When the autonomOS server is itself launched from inside a CC session
+  // (e.g. `make prod` run from a CC terminal), it inherits CLAUDE_CODE_* /
+  // CLAUDECODE and would re-broadcast them into every spawned agent.
+  // CLAUDE_CODE_EXECPATH pins the agent's `claude` to the parent CLI version;
+  // CLAUDE_CODE_SESSION_ID collides with the per-agent --session-id flag.
+  // NOTE: do NOT touch ANTHROPIC_* — #214 relies on those passing through.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("CLAUDE_CODE_")) delete env[key];
+  }
+  delete env.CLAUDECODE;
+
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
-  const port = process.env.PORT || "3000";
-  env.AUTONOMOS_SERVER = `http://localhost:${port}`;
+  env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
 

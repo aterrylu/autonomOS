@@ -1,19 +1,23 @@
 /**
  * Claude usage fetcher — queries claude.ai's internal usage API.
  *
- * Uses a session cookie (from browser) to authenticate. The cookie
- * Reads CLAUDE_SESSION_KEY and CLAUDE_ORG_ID from settings or .env.
+ * Authenticates with a single credential: the session key
+ * (CLAUDE_SESSION_KEY from settings or .env). The organization UUID is
+ * resolved automatically from the session key via claude.ai's bootstrap
+ * API — no org ID is required from the user.
  *
  * Uses impit (Rust-based browser impersonation) to match Chrome's
  * TLS fingerprint so Cloudflare doesn't block the request.
  *
  * Flow:
- *   1. Extract orgId from cookie (lastActiveOrg) or bootstrap API
+ *   1. Resolve orgId from the bootstrap API (cached after first lookup)
  *   2. GET /api/organizations/{orgId}/usage → rate limit data
  */
 
+import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings } from "../../settings.js";
+import { getHarvestedSessionKey } from "./sessionStore.js";
 
 export interface RateLimitWindow {
   utilization: number;
@@ -33,6 +37,21 @@ export interface AccountInfo {
   subscriptionType?: string;
 }
 
+/**
+ * Categorizes a failure so the UI can offer the right remedy instead of
+ * always telling the user to re-enter their key.
+ *
+ * - `unauthorized` / `no_org` are *credential* problems — reconfiguring helps.
+ * - `rate_limited` / `unavailable` are *transient* problems — the key is fine,
+ *   retrying later helps. Telling the user to reconfigure here sends them in a
+ *   loop (re-entering a correct key cannot fix a rate limit or an outage).
+ */
+export type ErrorKind =
+  | "unauthorized"
+  | "no_org"
+  | "rate_limited"
+  | "unavailable";
+
 export interface RateLimitData {
   fiveHour: RateLimitWindow | null;
   sevenDay: RateLimitWindow | null;
@@ -42,7 +61,13 @@ export interface RateLimitData {
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
-  /** True when CLAUDE_SESSION_KEY is not set */
+  /** Failure category for the error, when `error` is set. Lets the dashboard
+   * distinguish a bad credential from a transient outage. */
+  errorKind?: ErrorKind;
+  /** Where the active session key came from (`auto` = inherited from Claude
+   * Code with no manual setup). Undefined when no credential is configured. */
+  credentialSource?: CredentialSource;
+  /** True when no session key is configured anywhere */
   needsSetup?: boolean;
 }
 
@@ -52,35 +77,142 @@ const BOOTSTRAP_URL = "https://claude.ai/api/bootstrap";
 /** Shared impit client — reuses connections and TLS state */
 const impit = new Impit({ browser: "chrome" });
 
-/** In-memory cache */
-let cached: { data: RateLimitData; expiresAt: number } | null = null;
-let lastGoodData: RateLimitData | null = null;
+/** Minimal response shape consumed by the usage fetchers. */
+interface FetchResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+}
+
+/**
+ * HTTP fetcher seam. Defaults to the real impit client; tests inject a
+ * fake to exercise the bootstrap/usage flow deterministically without
+ * network access (the repo's test runner can't mock the `impit` module).
+ */
+export type UsageFetcher = (
+  url: string,
+  init: { headers: Record<string, string> },
+) => Promise<FetchResponse>;
+
+const defaultFetcher: UsageFetcher = (url, init) => impit.fetch(url, init);
+
+/**
+ * In-memory cache. Both `cached` and `lastGood` are tagged with a fingerprint
+ * of the session key that produced them (`fp`). Reads only accept an entry
+ * whose `fp` matches the current key, so a key change can never be served the
+ * previous key's data — even if a concurrent poll repopulated the cache in the
+ * window between a settings write and the follow-up validation read. This makes
+ * correctness local to the scanner rather than dependent on callers remembering
+ * to call `invalidateCache()`.
+ */
+let cached: { data: RateLimitData; expiresAt: number; fp: string } | null =
+  null;
+let lastGood: { data: RateLimitData; fp: string } | null = null;
 const CACHE_TTL = 60_000;
 const CACHE_TTL_429 = 5 * 60_000;
 
 /** Cached org ID — rarely changes */
 let cachedOrgId: string | null = null;
 
-function getSessionCookie(): string | null {
-  // Priority: settings file > env vars > legacy env var
+/**
+ * Dev/QA usage override. When set, {@link getRateLimits} returns this snapshot
+ * verbatim instead of querying claude.ai — letting the usage-queue feature be
+ * demoed (capped → cleared) without actually hitting a real limit. Set only via
+ * the `/api/usage-queue/_simulate` endpoint, which is itself gated behind the
+ * `AUTONOMOS_ENABLE_USAGE_SIMULATION` env flag (off in normal/prod runs). Pass
+ * null to clear and resume real usage reads.
+ */
+let usageOverride: RateLimitData | null = null;
+
+/** Force a scripted usage snapshot (or null to clear). Dev/QA only — see
+ * {@link usageOverride}. */
+export function setUsageOverride(data: RateLimitData | null): void {
+  usageOverride = data;
+}
+
+/** The active usage override, or null when reading real usage. */
+export function getUsageOverride(): RateLimitData | null {
+  return usageOverride;
+}
+
+/** Short, non-reversible fingerprint of a cookie, to key cache entries to a
+ * session key without retaining a second copy of the raw secret. */
+function fingerprint(cookie: string): string {
+  return createHash("sha256").update(cookie).digest("hex").slice(0, 16);
+}
+
+/**
+ * Where the active session key came from. The `harvested` and `auto` sources
+ * are both auto-detected from Claude Code (no manual paste); the UI surfaces
+ * them as such so the credential is never used silently.
+ *
+ * - `settings` — an explicit manual paste.
+ * - `env` — an explicit `CLAUDE_SESSION_KEY` override.
+ * - `harvested` — relayed from a spawned agent's SessionStart hook, held only
+ *   in memory (see {@link ./sessionStore}). The primary zero-touch path; works
+ *   on any install once an agent has run.
+ * - `auto` — the server's own `CLAUDE_SESSION_COOKIE` env, present only when the
+ *   server itself was launched from a Claude Code context.
+ */
+export type CredentialSource = "settings" | "env" | "harvested" | "auto";
+
+/**
+ * Resolve the session key and where it came from, in priority order:
+ *   1. `settings.claudeSessionKey` — an explicit manual paste (always wins).
+ *   2. `CLAUDE_SESSION_KEY` — an explicit env override.
+ *   — the remaining auto-detected sources are skipped when the user has turned
+ *     off `autoDetectClaudeSession` —
+ *   3. harvested cookie — relayed from a spawned agent's hook (fresh, in-memory).
+ *   4. `CLAUDE_SESSION_COOKIE` — the server's own env (CC-spawned server only).
+ *
+ * Exported for tests.
+ */
+export function resolveSessionKey(): {
+  key: string;
+  source: CredentialSource;
+} | null {
   const settings = getSettings();
-  const key =
-    settings.claudeSessionKey?.trim() || process.env.CLAUDE_SESSION_KEY?.trim();
-  if (key) {
-    const orgId =
-      settings.claudeOrgId?.trim() || process.env.CLAUDE_ORG_ID?.trim();
-    const parts = [`sessionKey=${key}`];
-    if (orgId) parts.push(`lastActiveOrg=${orgId}`);
-    return parts.join(";");
-  }
-  return process.env.CLAUDE_SESSION_KEY?.trim() || null;
+  const fromSettings = settings.claudeSessionKey?.trim();
+  if (fromSettings) return { key: fromSettings, source: "settings" };
+  const fromEnv = process.env.CLAUDE_SESSION_KEY?.trim();
+  if (fromEnv) return { key: fromEnv, source: "env" };
+
+  // Auto-detection is opt-out: a privacy-conscious user can disable it and rely
+  // solely on a manual paste / explicit env.
+  if (settings.autoDetectClaudeSession === false) return null;
+
+  const fromHarvest = getHarvestedSessionKey();
+  if (fromHarvest) return { key: fromHarvest, source: "harvested" };
+  const fromClaudeCode = process.env.CLAUDE_SESSION_COOKIE?.trim();
+  if (fromClaudeCode) return { key: fromClaudeCode, source: "auto" };
+  return null;
+}
+
+/** The source of the active credential, or null if none is configured. */
+export function getCredentialSource(): CredentialSource | null {
+  return resolveSessionKey()?.source ?? null;
+}
+
+/**
+ * Build the auth cookie from the session key alone.
+ *
+ * The org ID is intentionally NOT appended — it's resolved from the
+ * session key via the bootstrap API (see {@link fetchOrgId}). Any
+ * lingering `claudeOrgId` in settings or `CLAUDE_ORG_ID` in the env is
+ * ignored for back/forward compatibility.
+ *
+ * Exported for tests.
+ */
+export function getSessionCookie(): string | null {
+  const resolved = resolveSessionKey();
+  return resolved ? `sessionKey=${resolved.key}` : null;
 }
 
 /** Clear cached data — call after settings change */
 export function invalidateCache(): void {
   cached = null;
   cachedOrgId = null;
-  lastGoodData = null;
+  lastGood = null;
 }
 
 function buildCookieHeader(cookie: string): string {
@@ -88,30 +220,119 @@ function buildCookieHeader(cookie: string): string {
   return `sessionKey=${cookie}`;
 }
 
-async function fetchOrgId(cookie: string): Promise<string | null> {
-  if (cachedOrgId) return cachedOrgId;
+/** Outcome of resolving the org UUID — lets callers give the user a
+ * message that matches the actual failure instead of one generic error. */
+type OrgIdStatus = "ok" | "unauthorized" | "no_org" | "error";
 
-  // Try extracting from cookie first
+interface OrgIdResult {
+  orgId: string | null;
+  status: OrgIdStatus;
+}
+
+/** Membership shape we read from the bootstrap response. */
+type Membership = {
+  organization?: { uuid?: string; capabilities?: string[] };
+};
+
+/**
+ * Pick the organization whose usage we should query.
+ *
+ * The `/usage` endpoint is only authorized for the org with claude.ai access
+ * — the one carrying the `chat` capability (the Pro/Max subscription). A user
+ * who has *also* used the Anthropic API has a separate `api`-capability org
+ * that 403s on `/usage`, and bootstrap frequently lists THAT org first. So
+ * blindly taking `memberships[0]` (the prior behavior) queried the wrong org
+ * for every such account — a valid key that could never load usage. Prefer the
+ * chat/claude_max org; fall back to the sole membership only when no capability
+ * signal is present, preserving behavior for single-org accounts.
+ *
+ * Exported for tests.
+ */
+export function selectUsageOrg(memberships: Membership[]): string | null {
+  const orgs = memberships
+    .map((m) => m.organization)
+    .filter((o): o is NonNullable<typeof o> => !!o);
+  const withCap = (cap: string) =>
+    orgs.find((o) => o.capabilities?.includes(cap));
+  const chat = withCap("chat") ?? withCap("claude_max");
+  if (chat?.uuid) return chat.uuid;
+  // Sole-org fallback, but only when the org gives NO capability signal —
+  // bootstrap sometimes omits capabilities for single-org accounts, and the
+  // org is the only candidate. If the lone org *explicitly* advertises
+  // capabilities that exclude claude.ai access (e.g. an API-only account), do
+  // NOT return it: `/usage` would 403 and surface as a misleading "expired
+  // key" error. Returning null routes to the accurate no-subscription message.
+  if (orgs.length === 1 && !orgs[0].capabilities?.length) {
+    return orgs[0].uuid ?? null;
+  }
+  return null;
+}
+
+/**
+ * Resolve the organization UUID for the given cookie.
+ *
+ * The session-key-only cookie carries no `lastActiveOrg`, so resolution
+ * falls through to the bootstrap API. A manually-supplied full cookie
+ * string that still contains `lastActiveOrg` is honored as a shortcut.
+ * Result is cached. Exported for tests.
+ *
+ * Distinguishes the failure modes (`unauthorized` for an expired/invalid
+ * key, `no_org` for a valid key with no claude.ai-capable organization, see
+ * {@link selectUsageOrg}, `error` for network/parse problems) so the caller
+ * can surface an actionable message.
+ */
+export async function fetchOrgId(
+  cookie: string,
+  fetcher: UsageFetcher = defaultFetcher,
+): Promise<OrgIdResult> {
+  if (cachedOrgId) return { orgId: cachedOrgId, status: "ok" };
+
+  // Honor an explicit lastActiveOrg if present (manual full-cookie paste).
   const orgMatch = cookie.match(/lastActiveOrg=([^;]+)/);
   if (orgMatch) {
     cachedOrgId = orgMatch[1];
-    return cachedOrgId;
+    return { orgId: cachedOrgId, status: "ok" };
   }
 
-  // Fall back to bootstrap API
+  // Resolve from the bootstrap API using the session key alone.
   try {
-    const res = await impit.fetch(BOOTSTRAP_URL, {
+    const res = await fetcher(BOOTSTRAP_URL, {
       headers: { Cookie: buildCookieHeader(cookie) },
     });
-    if (!res.ok) return null;
+    if (res.status === 401 || res.status === 403) {
+      return { orgId: null, status: "unauthorized" };
+    }
+    if (!res.ok) return { orgId: null, status: "error" };
     const data = (await res.json()) as {
-      account?: { memberships?: Array<{ organization?: { uuid?: string } }> };
+      account?: {
+        memberships?: Array<{
+          organization?: { uuid?: string; capabilities?: string[] };
+        }>;
+      };
     };
-    const orgId = data?.account?.memberships?.[0]?.organization?.uuid ?? null;
-    if (orgId) cachedOrgId = orgId;
-    return orgId;
-  } catch {
-    return null;
+    const memberships = data?.account?.memberships ?? [];
+    const orgId = selectUsageOrg(memberships);
+    if (!orgId) {
+      // No usable org. Two shapes land here: an expired cookie (bootstrap
+      // treats it as logged-out → empty memberships) vs. a valid key whose
+      // only orgs lack claude.ai access (e.g. an API-only account). Log the
+      // shape (never the cookie) so they're tellable apart from server logs.
+      console.warn(
+        `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
+          Array.isArray(data?.account?.memberships)
+            ? `[${memberships.length}; caps=${memberships
+                .map((m) => (m.organization?.capabilities ?? []).join("|"))
+                .join(",")}]`
+            : typeof data?.account?.memberships
+        })`,
+      );
+      return { orgId: null, status: "no_org" };
+    }
+    cachedOrgId = orgId;
+    return { orgId, status: "ok" };
+  } catch (err) {
+    console.error("[claude-usage] bootstrap org resolution failed:", err);
+    return { orgId: null, status: "error" };
   }
 }
 
@@ -132,9 +353,10 @@ interface UsageResult {
 async function fetchUsageData(
   cookie: string,
   orgId: string,
+  fetcher: UsageFetcher = defaultFetcher,
 ): Promise<UsageResult> {
   try {
-    const res = await impit.fetch(`${USAGE_URL}/${orgId}/usage`, {
+    const res = await fetcher(`${USAGE_URL}/${orgId}/usage`, {
       headers: { Cookie: buildCookieHeader(cookie) },
     });
     if (res.status === 429) return { data: null, status: "rate_limited" };
@@ -147,45 +369,102 @@ async function fetchUsageData(
       data: (await res.json()) as Record<string, unknown>,
       status: "ok",
     };
-  } catch {
+  } catch (err) {
+    console.error("[claude-usage] usage fetch failed:", err);
     return { data: null, status: "error" };
   }
 }
 
-export async function getRateLimits(): Promise<RateLimitData> {
-  const now = Date.now();
-  if (cached && cached.expiresAt > now) return cached.data;
-
-  const cookie = getSessionCookie();
-  if (!cookie) {
+export async function getRateLimits(
+  fetcher: UsageFetcher = defaultFetcher,
+): Promise<RateLimitData> {
+  // Dev/QA: a simulated snapshot short-circuits the real query (see
+  // {@link usageOverride}). This is what makes the usage-queue feature
+  // demoable without burning a real limit.
+  if (usageOverride) return usageOverride;
+  // Resolve the credential exactly once, here, and thread it through — so the
+  // `credentialSource` label is always stamped from the same resolution that
+  // produced the numbers (no TOCTOU drift if the cookie changes mid-flight).
+  const resolved = resolveSessionKey();
+  if (!resolved) {
     return {
       ...errorResult("CLAUDE_SESSION_KEY not set"),
       needsSetup: true,
     };
   }
+  const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
+  return { ...data, credentialSource: resolved.source };
+}
 
-  const orgId = await fetchOrgId(cookie);
-  if (!orgId) {
+async function computeRateLimits(
+  cookie: string,
+  fetcher: UsageFetcher = defaultFetcher,
+): Promise<RateLimitData> {
+  const now = Date.now();
+
+  // The cookie is matched to the cache by fingerprint — a cache entry built
+  // under a different (e.g. just-replaced) key is ignored.
+  const fp = fingerprint(cookie);
+  if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
+
+  const org = await fetchOrgId(cookie, fetcher);
+  if (org.status === "unauthorized") {
     return errorResult(
-      "Could not resolve organization — check your session cookie",
+      "Session key expired or invalid. Open claude.ai, copy a fresh sessionKey cookie, and re-enter it.",
+      "unauthorized",
+    );
+  }
+  if (org.status === "no_org") {
+    // `no_org` now has two causes (see selectUsageOrg): an empty membership
+    // list — bootstrap treats an expired/unrecognized cookie as logged-out —
+    // OR a valid key whose orgs lack claude.ai access (an API-only account
+    // with no Pro/Max subscription). The message names both so a valid-key
+    // user isn't wrongly told their key expired.
+    return errorResult(
+      "No Claude usage found for this session key. Either the key is expired, or this account has no Claude Pro/Max subscription (usage tracking needs a claude.ai plan, not just API access). If you have a plan, copy a fresh sessionKey from claude.ai and re-enter it.",
+      "no_org",
+    );
+  }
+  if (!org.orgId) {
+    // org.status === "error": a network or parse failure resolving the org,
+    // not a credential problem — retrying is the right remedy.
+    return errorResult(
+      "Couldn't reach claude.ai to verify your account. This is usually temporary — retry in a moment.",
+      "unavailable",
     );
   }
 
-  const { data: body, status } = await fetchUsageData(cookie, orgId);
+  const { data: body, status } = await fetchUsageData(
+    cookie,
+    org.orgId,
+    fetcher,
+  );
 
   if (status === "unauthorized") {
     return errorResult(
-      "Session cookie expired or invalid — please update CLAUDE_SESSION_KEY in .env",
+      "Session key expired or invalid. Open claude.ai, copy a fresh sessionKey cookie, and re-enter it.",
+      "unauthorized",
     );
   }
 
   if (!body) {
     const ttl = status === "rate_limited" ? CACHE_TTL_429 : CACHE_TTL;
-    if (lastGoodData) {
-      cached = { data: lastGoodData, expiresAt: now + ttl };
-      return lastGoodData;
+    // Only serve stale data that belongs to the *current* key. Without the
+    // fingerprint check, a transient failure right after a key change would
+    // serve the previous key's numbers as if the new key worked.
+    if (lastGood && lastGood.fp === fp) {
+      cached = { data: lastGood.data, expiresAt: now + ttl, fp };
+      return lastGood.data;
     }
-    return errorResult("Usage API unavailable");
+    return status === "rate_limited"
+      ? errorResult(
+          "claude.ai is rate-limiting usage requests right now. Your key is fine — this clears on its own in a few minutes.",
+          "rate_limited",
+        )
+      : errorResult(
+          "claude.ai's usage API is temporarily unavailable. Your key is fine — retry in a moment.",
+          "unavailable",
+        );
   }
 
   const extra = body.extra_usage as {
@@ -220,12 +499,12 @@ export async function getRateLimits(): Promise<RateLimitData> {
     fetchedAt: new Date().toISOString(),
   };
 
-  lastGoodData = data;
-  cached = { data, expiresAt: now + CACHE_TTL };
+  lastGood = { data, fp };
+  cached = { data, expiresAt: now + CACHE_TTL, fp };
   return data;
 }
 
-function errorResult(error: string): RateLimitData {
+function errorResult(error: string, errorKind?: ErrorKind): RateLimitData {
   return {
     fiveHour: null,
     sevenDay: null,
@@ -235,5 +514,6 @@ function errorResult(error: string): RateLimitData {
     account: {},
     fetchedAt: new Date().toISOString(),
     error,
+    errorKind,
   };
 }

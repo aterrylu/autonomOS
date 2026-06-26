@@ -1,11 +1,9 @@
 /**
  * Terminal Backend Types
  *
- * Defines the interface contract that both xterm.js and ghostty-web
- * must satisfy. Built from the exact set of members that useTerminal.ts uses.
+ * Defines the interface contract the xterm.js backend satisfies, built from
+ * the exact set of members that useTerminal.ts uses.
  */
-
-export type TerminalRenderer = "xterm" | "ghostty-web";
 
 export interface IDisposable {
   dispose(): void;
@@ -56,7 +54,7 @@ export interface TerminalOptions {
 
 /**
  * The terminal instance interface — the exact surface that useTerminal.ts uses.
- * Both xterm.js Terminal and ghostty-web Terminal satisfy this structurally.
+ * xterm.js Terminal satisfies this structurally.
  */
 export interface TerminalInstance {
   open(parent: HTMLElement): void;
@@ -92,9 +90,18 @@ export interface IFitAddon extends ITerminalAddon {
   fit(): void;
 }
 
+export interface IWebglAddon extends ITerminalAddon {
+  /**
+   * Fires when the GPU drops the addon's WebGL context. The renderer stops
+   * painting until the addon is disposed and recreated, so callers MUST
+   * listen and reload — otherwise typed input appears to hang.
+   */
+  onContextLoss(listener: () => void): { dispose(): void };
+}
+
 export interface TerminalBackend {
   terminal: TerminalInstance;
   fitAddon: IFitAddon;
-  /** Create a WebGL addon for GPU rendering. Returns null if not applicable (ghostty-web). */
-  createWebglAddon(): ITerminalAddon | null;
+  /** Create a WebGL addon for GPU rendering. Returns null if unavailable. */
+  createWebglAddon(): IWebglAddon | null;
 }

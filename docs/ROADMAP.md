@@ -79,7 +79,7 @@ Evolve from passive dashboard to orchestrator-first platform (ADR-012).
 
 ## Later
 
-- [ ] Platform adapters — Discord/Slack/Telegram gateway adapters (stubs exist, need SDK integration)
+- [ ] Platform adapters — Slack gateway adapter (stub exists, needs SDK integration)
 - [ ] `--permission-mode auto` — safer alternative to `--dangerously-skip-permissions`
 - [ ] Memory state viewer
 - [ ] Configure agents from the dashboard

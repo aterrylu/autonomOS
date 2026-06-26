@@ -1,12 +1,29 @@
 {
   "name": "autonomos",
   "private": true,
+  "license": "MIT",
   "workspaces": ["packages/*"],
-  "devDependencies": {
-    "@biomejs/biome": "^2.4.6"
+  "scripts": {
+    "build:dashboard": "bun --filter @autonomos/dashboard build",
+    "build:embed-dashboard": "bun packages/server/build/embed-dashboard.ts",
+    "build:binary": "bun run build:dashboard && bun run build:embed-dashboard && bun packages/server/build/build-binary.ts",
+    "build:binary:all": "bun run build:dashboard && bun run build:embed-dashboard && bun packages/server/build/build-binary.ts --all",
+    "test:1a1": "bash scripts/test-1a1-isolated.sh",
+    "dev:app": "bun --cwd packages/app run dev",
+    "build:app": "bun --cwd packages/app run build:main",
+    "typecheck:app": "bun --cwd packages/app run typecheck",
+    "build:dmg": "bun --cwd packages/app run build:dmg",
+    "changeset": "changeset",
+    "version": "changeset version && bun scripts/sync-changelog.ts",
+    "release:notes": "bun scripts/release-notes.ts",
+    "prepare": "lefthook install || true"
   },
-  "dependencies": {
-    "@assistant-ui/react": "^0.12.17",
-    "@assistant-ui/react-streamdown": "^0.1.5"
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.6",
+    "@changesets/changelog-github": "^0.5.1",
+    "@changesets/cli": "^2.29.7",
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "lefthook": "^1.10.10"
   }
 }
