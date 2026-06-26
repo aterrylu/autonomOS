@@ -1,8 +1,14 @@
-import type { AgentCapability, AgentTemplate } from "@autonomos/core";
+import {
+  type AgentCapability,
+  type AgentTemplate,
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
+} from "@autonomos/core";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useUndoableTextValue } from "../hooks/useUndoableTextValue";
 import { THEMES, useStore } from "../store";
+import { PermissionModeSelect } from "./PermissionModeSelect";
 
 /**
  * TemplatesPanel — manage agent templates (~/.autonomos/templates/*.json).
@@ -327,8 +333,8 @@ function EditorView({
   const [capabilities, setCapabilities] = useState<AgentCapability[]>(
     template?.capabilities ?? [...ALL_CAPABILITIES],
   );
-  const [autonomousMode, setAutonomousMode] = useState(
-    template?.autonomousMode ?? true,
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
+    template?.permissionMode ?? DEFAULT_PERMISSION_MODE,
   );
   const [model, setModel] = useState(template?.model ?? "");
 
@@ -368,7 +374,7 @@ function EditorView({
         description: description.trim(),
         systemPrompt,
         capabilities,
-        autonomousMode,
+        permissionMode,
         ...(model.trim() ? { model: model.trim() } : {}),
       };
       await saveTemplate(name.trim(), payload);
@@ -536,22 +542,16 @@ function EditorView({
             </div>
           </Field>
 
-          {/* Autonomous mode */}
-          <Field label="">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autonomousMode}
-                onChange={(e) => setAutonomousMode(e.target.checked)}
-                className="cursor-pointer"
-              />
-              <span className="text-[12px]" style={{ color: "#e6e1cf" }}>
-                Autonomous mode{" "}
-                <span style={{ color: page.statusFg }}>
-                  (skip permission prompts)
-                </span>
-              </span>
-            </label>
+          {/* Permission mode */}
+          <Field
+            label="Permissions"
+            hint="Default tool-use autonomy for agents spawned from this template"
+          >
+            <PermissionModeSelect
+              value={permissionMode}
+              onChange={setPermissionMode}
+              page={page}
+            />
           </Field>
 
           {/* Model */}

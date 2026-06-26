@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { ResolvedSpawnOptions } from "@autonomos/core";
+import type { PermissionMode, ResolvedSpawnOptions } from "@autonomos/core";
 import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
@@ -108,32 +108,85 @@ describe("codex daemon topology", () => {
       assert.doesNotMatch(spec.args.join(" "), /mcp_servers/);
     });
 
-    it("ALWAYS disables the OS sandbox on the daemon (no bubblewrap), both modes", () => {
-      for (const autonomousMode of [true, false]) {
+    it("ALWAYS disables the OS sandbox on the daemon (no bubblewrap), all modes", () => {
+      for (const permissionMode of [
+        "default",
+        "auto",
+        "plan",
+        "bypass",
+      ] as const) {
         const spec = codexProvider.buildSidecar?.(
-          baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode }),
+          baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode }),
         );
         assert.ok(spec);
         assert.match(spec.args.join(" "), /sandbox_mode="danger-full-access"/);
       }
     });
 
-    it("sets approval_policy=never on the daemon only in autonomous mode", () => {
-      const auto = codexProvider.buildSidecar?.(
-        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: true }),
-      );
-      const supervised = codexProvider.buildSidecar?.(
-        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: false }),
-      );
-      assert.match(auto?.args.join(" ") ?? "", /approval_policy="never"/);
-      assert.doesNotMatch(supervised?.args.join(" ") ?? "", /approval_policy/);
+    it("maps permissionMode → approval_policy on the daemon (always set)", () => {
+      // Codex has no plan mode — 'plan' clamps to the default (on-request).
+      const cases: Record<PermissionMode, string> = {
+        default: "on-request",
+        auto: "on-failure",
+        plan: "on-request",
+        bypass: "never",
+      };
+      for (const [permissionMode, policy] of Object.entries(cases)) {
+        const spec = codexProvider.buildSidecar?.(
+          baseOptions({
+            sidecarEndpoint: ENDPOINT,
+            permissionMode: permissionMode as PermissionMode,
+          }),
+        );
+        assert.match(
+          spec?.args.join(" ") ?? "",
+          new RegExp(`approval_policy="${policy}"`),
+          `expected ${permissionMode} → approval_policy="${policy}"`,
+        );
+      }
+    });
+
+    it("warns exactly once when clamping the unsupported 'plan' mode", () => {
+      const warnings: string[] = [];
+      const orig = console.warn;
+      console.warn = (msg?: unknown) => {
+        warnings.push(String(msg));
+      };
+      try {
+        codexProvider.buildSidecar?.(
+          baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "plan" }),
+        );
+      } finally {
+        console.warn = orig;
+      }
+      const planWarnings = warnings.filter((w) => w.includes("plan"));
+      assert.equal(planWarnings.length, 1, "expected exactly one plan warning");
+      assert.match(planWarnings[0], /no Codex equivalent/);
+    });
+
+    it("does NOT warn when clamping is not needed (supported modes)", () => {
+      const warnings: string[] = [];
+      const orig = console.warn;
+      console.warn = (msg?: unknown) => {
+        warnings.push(String(msg));
+      };
+      try {
+        for (const mode of ["default", "auto", "bypass"] as const) {
+          codexProvider.buildSidecar?.(
+            baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: mode }),
+          );
+        }
+      } finally {
+        console.warn = orig;
+      }
+      assert.equal(warnings.filter((w) => w.includes("plan")).length, 0);
     });
   });
 
   describe("buildArgs", () => {
     it("autonomous TUI bypasses approvals AND sandbox (the CC --dangerously-skip-permissions equivalent)", () => {
       const args = codexProvider.buildArgs(
-        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: true }),
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "bypass" }),
       );
       assert.deepEqual(args, [
         "--remote",
@@ -144,22 +197,38 @@ describe("codex daemon topology", () => {
 
     it("supervised TUI drops the sandbox but keeps approval prompts", () => {
       const args = codexProvider.buildArgs(
-        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: false }),
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "default" }),
       );
       assert.deepEqual(args, [
         "--remote",
         ENDPOINT,
         "-s",
         "danger-full-access",
+        "-c",
+        'approval_policy="on-request"',
       ]);
       assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
+    });
+
+    it("auto mode keeps the sandbox off and sets approval_policy=on-failure", () => {
+      const args = codexProvider.buildArgs(
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "auto" }),
+      );
+      assert.deepEqual(args, [
+        "--remote",
+        ENDPOINT,
+        "-s",
+        "danger-full-access",
+        "-c",
+        'approval_policy="on-failure"',
+      ]);
     });
 
     it("RESUMES the prior conversation when a threadId was captured", () => {
       const args = codexProvider.buildArgs(
         baseOptions({
           sidecarEndpoint: ENDPOINT,
-          autonomousMode: true,
+          permissionMode: "bypass",
           providerThreadId: "thread-abc-123",
         }),
       );
@@ -176,7 +245,7 @@ describe("codex daemon topology", () => {
 
     it("does NOT use the resume form on a first spawn (no threadId yet)", () => {
       const args = codexProvider.buildArgs(
-        baseOptions({ sidecarEndpoint: ENDPOINT, autonomousMode: true }),
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "bypass" }),
       );
       assert.ok(!args.includes("resume"));
       assert.equal(args[0], "--remote");
@@ -186,7 +255,7 @@ describe("codex daemon topology", () => {
       const args = codexProvider.buildArgs(
         baseOptions({
           sidecarEndpoint: ENDPOINT,
-          autonomousMode: true,
+          permissionMode: "bypass",
           prompt: "do the thing",
         }),
       );

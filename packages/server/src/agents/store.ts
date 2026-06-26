@@ -25,12 +25,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type {
-  Agent,
-  AgentStatus,
-  ExitReason,
-  Provider,
-  UUID,
+import {
+  type Agent,
+  type AgentStatus,
+  DEFAULT_PERMISSION_MODE,
+  type ExitReason,
+  isPermissionMode,
+  type PermissionMode,
+  type Provider,
+  permissionModeFromLegacy,
+  type UUID,
 } from "@autonomos/core";
 import { ensureConfigDir, getConfigDir } from "../configDir.js";
 
@@ -83,6 +87,7 @@ let lastReadFailed = false;
 function loadFromDisk(): Map<UUID, Agent> {
   const dir = getAgentsDir();
   const map = new Map<UUID, Agent>();
+  let migratedPermissionMode = 0;
 
   let entries: string[];
   try {
@@ -120,6 +125,20 @@ function loadFromDisk(): Map<UUID, Agent> {
       if (typeof data.provider !== "string") {
         data.provider = "claude-code";
       }
+      // Accept-and-discard: migrate legacy `autonomousMode: boolean` →
+      // `permissionMode`. true preserved skip-permissions (→ bypass), false
+      // kept prompts (→ default). The guard is isPermissionMode (not just
+      // "is a string") so a malformed/hand-edited value is also coerced rather
+      // than trusted blindly into the provider mappers. Scrub the old field;
+      // the cleaned record is written back on the next saveAgent. See ADR-045.
+      const legacy = data as Agent & { autonomousMode?: boolean };
+      if (!isPermissionMode(data.permissionMode)) {
+        data.permissionMode =
+          permissionModeFromLegacy(legacy.autonomousMode) ??
+          DEFAULT_PERMISSION_MODE;
+        migratedPermissionMode++;
+      }
+      if ("autonomousMode" in legacy) delete legacy.autonomousMode;
       map.set(data.id, data);
     } catch (err) {
       console.warn(`Skipping unreadable agent file ${entry}: ${err}`);
@@ -136,6 +155,13 @@ function loadFromDisk(): Map<UUID, Agent> {
       );
       agent.managerId = null;
     }
+  }
+
+  if (migratedPermissionMode > 0) {
+    console.warn(
+      `[agents/store] migrated legacy 'autonomousMode' → 'permissionMode' on ` +
+        `${migratedPermissionMode} agent record(s) (ADR-045). Old field scrubbed on next write.`,
+    );
   }
 
   lastReadFailed = false;
@@ -254,7 +280,7 @@ export function patchAgent(
   patch: Partial<
     Pick<
       Agent,
-      "name" | "template" | "project" | "autonomousMode" | "providerThreadId"
+      "name" | "template" | "project" | "permissionMode" | "providerThreadId"
     >
   >,
   expectedVersion?: number,
@@ -450,7 +476,7 @@ export function buildAgent(params: {
   workingDirectory: string;
   provider: Provider;
   providerSessionId: string;
-  autonomousMode: boolean;
+  permissionMode: PermissionMode;
   template?: string;
   managerId?: UUID | null;
   project?: string;
@@ -467,7 +493,7 @@ export function buildAgent(params: {
     template: params.template,
     project: params.project,
     workingDirectory: params.workingDirectory,
-    autonomousMode: params.autonomousMode,
+    permissionMode: params.permissionMode,
     status: params.status ?? "running",
     provider: params.provider,
     providerSessionId: params.providerSessionId,

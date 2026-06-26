@@ -10,6 +10,8 @@
  * field tracks whether the underlying PTY is currently running or has exited.
  */
 
+import type { PermissionMode } from "./permissions";
+
 export type UUID = string;
 
 export type Provider = "claude-code" | "codex" | "gemini-cli";
@@ -55,8 +57,9 @@ export interface Agent {
   /** Working directory the PTY runs in. */
   workingDirectory: string;
 
-  /** Whether to skip permission prompts on the underlying CC session. */
-  autonomousMode: boolean;
+  /** How much autonomy the agent has over tool use. Maps to provider-native
+   *  permission flags at spawn. Replaces the old `autonomousMode: boolean`. */
+  permissionMode: PermissionMode;
 
   /** Lifecycle status. */
   status: AgentStatus;

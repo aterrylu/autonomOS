@@ -20,7 +20,7 @@ function resetStore() {
     sessions: [],
     projects: [],
     sidebarOpen: true,
-    autonomousMode: true,
+    permissionMode: "bypass",
     pinnedOrder: [],
     unpinnedOrder: [],
     previewPanes: [],

@@ -15,7 +15,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { AgentTemplate } from "@autonomos/core";
+import {
+  type AgentTemplate,
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+  permissionModeFromLegacy,
+} from "@autonomos/core";
 import { CONFIG_DIR } from "./configDir.js";
 
 const TEMPLATES_DIR = join(CONFIG_DIR, "templates");
@@ -48,7 +53,31 @@ export function getTemplate(name: string): AgentTemplate | null {
   const filePath = join(TEMPLATES_DIR, `${name}.json`);
   try {
     const raw = readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as AgentTemplate;
+    const tmpl = JSON.parse(raw) as AgentTemplate & {
+      autonomousMode?: boolean;
+    };
+    // Accept-and-discard: migrate user-authored templates that predate
+    // permissionMode. Without this, a template the user deliberately set to
+    // supervised (autonomousMode:false) loads with permissionMode undefined and
+    // every consumer resolves it to DEFAULT_PERMISSION_MODE ("bypass") — silently
+    // granting full autonomy. true→bypass, false→default; an invalid stored mode
+    // is dropped so consumers fall back to the default. See ADR-045.
+    if (!isPermissionMode(tmpl.permissionMode)) {
+      const migrated = permissionModeFromLegacy(tmpl.autonomousMode);
+      if (migrated) {
+        tmpl.permissionMode = migrated;
+        console.warn(
+          `[templates] migrated legacy 'autonomousMode' → permissionMode=${migrated} on template "${name}" (ADR-045)`,
+        );
+      } else if (tmpl.permissionMode !== undefined) {
+        console.warn(
+          `[templates] ignoring invalid permissionMode ${JSON.stringify(tmpl.permissionMode)} on template "${name}"; using default`,
+        );
+        tmpl.permissionMode = undefined;
+      }
+    }
+    if ("autonomousMode" in tmpl) delete tmpl.autonomousMode;
+    return tmpl;
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -130,7 +159,7 @@ export function seedDefaultTemplates(): void {
         "kill_agent",
         "self_exit",
       ],
-      autonomousMode: true,
+      permissionMode: DEFAULT_PERMISSION_MODE,
     },
     "team-lead": {
       role: "Team Lead",
@@ -150,7 +179,7 @@ export function seedDefaultTemplates(): void {
         "kill_agent",
         "self_exit",
       ],
-      autonomousMode: true,
+      permissionMode: DEFAULT_PERMISSION_MODE,
     },
     "feature-worker": {
       role: "Feature Worker",
@@ -164,7 +193,7 @@ export function seedDefaultTemplates(): void {
         "4. Ask for clarification if requirements are unclear\n\n" +
         "Focus on one task at a time. Ship quality code.",
       capabilities: ["send", "list_agents", "self_exit"],
-      autonomousMode: true,
+      permissionMode: DEFAULT_PERMISSION_MODE,
     },
   };
 

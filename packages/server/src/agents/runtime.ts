@@ -11,12 +11,13 @@
 
 import { statSync } from "node:fs";
 import { basename } from "node:path";
-import type {
-  Agent,
-  ExitReason,
-  Provider,
-  SpawnOptions,
-  UUID,
+import {
+  type Agent,
+  DEFAULT_PERMISSION_MODE,
+  type ExitReason,
+  type Provider,
+  type SpawnOptions,
+  type UUID,
 } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
@@ -269,7 +270,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       workingDirectory: cwd,
       provider: providerName,
       providerSessionId,
-      autonomousMode: !!params.autonomousMode,
+      permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
@@ -726,7 +727,7 @@ async function respawnAgent(a: Agent): Promise<void> {
     workingDirectory: a.workingDirectory,
     resumeAgentId: a.id,
     name: a.name,
-    autonomousMode: a.autonomousMode,
+    permissionMode: a.permissionMode,
     appendSystemPrompt: tmpl?.systemPrompt,
     template: a.template,
     managerId: a.managerId,

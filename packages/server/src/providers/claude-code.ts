@@ -3,10 +3,12 @@
  * CC-specific CLI flags, env vars, and startup handling.
  */
 
-import type {
-  AgentProvider,
-  PtyHandle,
-  ResolvedSpawnOptions,
+import {
+  type AgentProvider,
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
+  type PtyHandle,
+  type ResolvedSpawnOptions,
 } from "@autonomos/core";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
@@ -70,6 +72,26 @@ const CHANNELS_NEEDLES = [
   "I am using this for local development",
 ];
 
+// ── Permission mode → Claude Code flags ───────────────────────
+// `bypass` keeps the legacy --dangerously-skip-permissions (which also
+// auto-accepts the trust-folder prompt); the other modes go through the
+// explicit --permission-mode flag. Claude's native enum lines up 1:1 with the
+// common modes (acceptEdits ≈ auto, plan ≈ plan, default ≈ default).
+function claudePermissionArgs(
+  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
+): string[] {
+  switch (mode) {
+    case "bypass":
+      return ["--dangerously-skip-permissions"];
+    case "auto":
+      return ["--permission-mode", "acceptEdits"];
+    case "plan":
+      return ["--permission-mode", "plan"];
+    default:
+      return ["--permission-mode", "default"];
+  }
+}
+
 // ── Binary resolution cache ───────────────────────────────────
 const binaryCache = { path: null as string | null };
 
@@ -111,9 +133,7 @@ export const claudeCodeProvider: AgentProvider = {
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
 
-    if (options.autonomousMode) {
-      args.push("--dangerously-skip-permissions");
-    }
+    args.push(...claudePermissionArgs(options.permissionMode));
 
     // Session identity: fork, resume, or new
     if (options.forkFrom) {
