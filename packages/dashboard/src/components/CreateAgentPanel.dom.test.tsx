@@ -22,7 +22,7 @@ const dispatcherTemplate: AgentTemplate = {
   description: "Routes work to the right agents",
   systemPrompt: "You are the dispatcher.",
   capabilities: ["send", "create_agent"],
-  autonomousMode: true,
+  permissionMode: "bypass",
 };
 
 const workerTemplate: AgentTemplate = {
@@ -144,7 +144,7 @@ describe("CreateAgentPanel", () => {
       provider: "claude-code",
       template: "dispatcher",
       appendSystemPrompt: dispatcherTemplate.systemPrompt,
-      autonomousMode: true,
+      permissionMode: "bypass",
     });
   });
 

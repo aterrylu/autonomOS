@@ -5,7 +5,11 @@
  * Extracted from the legacy routes/hierarchy.ts on the unified-Agent refactor.
  */
 
-import type { AgentCapability } from "@autonomos/core";
+import {
+  type AgentCapability,
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+} from "@autonomos/core";
 import { Hono } from "hono";
 import {
   deleteTemplate,
@@ -46,6 +50,13 @@ templateRouter.post("/", async (c) => {
   if (typeof systemPrompt !== "string") {
     return c.json({ error: "systemPrompt is required" }, 400);
   }
+  if (
+    body.permissionMode !== undefined &&
+    !isPermissionMode(body.permissionMode)
+  )
+    console.warn(
+      `[api/templates] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; using default`,
+    );
 
   try {
     saveTemplate(name, {
@@ -57,8 +68,9 @@ templateRouter.post("/", async (c) => {
             (c): c is string => typeof c === "string",
           ) as AgentCapability[])
         : ["send", "list_agents", "create_agent", "kill_agent"],
-      autonomousMode:
-        typeof body.autonomousMode === "boolean" ? body.autonomousMode : true,
+      permissionMode: isPermissionMode(body.permissionMode)
+        ? body.permissionMode
+        : DEFAULT_PERMISSION_MODE,
       model: typeof body.model === "string" ? body.model : undefined,
     });
     return c.json({

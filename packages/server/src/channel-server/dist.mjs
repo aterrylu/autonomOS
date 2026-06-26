@@ -46,10 +46,11 @@ var TOOL_CREATE_AGENT = {
         type: "string",
         description: "Claude session ID to fork from \u2014 child inherits parent's conversation context. Mutually exclusive with resumeSessionId."
       },
-      autonomousMode: {
-        type: "boolean",
-        description: "Skip permission prompts (default: true)",
-        default: true
+      permissionMode: {
+        type: "string",
+        enum: ["default", "auto", "plan", "bypass"],
+        description: "How much autonomy the agent has over tool use: 'default' (ask before each action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to default), 'bypass' (skip all prompts). Default: bypass.",
+        default: "bypass"
       },
       template: {
         type: "string",
@@ -184,9 +185,10 @@ var TOOL_CREATE_TEMPLATE = {
         items: { type: "string" },
         description: `Capabilities to grant: ${DEFAULT_CAPABILITIES.map((c) => `'${c}'`).join(", ")}. Defaults to all.`
       },
-      autonomousMode: {
-        type: "boolean",
-        description: "Skip permission prompts (default: true)"
+      permissionMode: {
+        type: "string",
+        enum: ["default", "auto", "plan", "bypass"],
+        description: "Default permission mode for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: bypass."
       },
       model: {
         type: "string",
@@ -646,7 +648,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         prompt,
         resumeSessionId,
         forkFrom,
-        autonomousMode,
+        permissionMode,
         template,
         manager,
         project,
@@ -668,7 +670,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             prompt,
             resumeAgentId: resumeSessionId,
             forkFromAgentId: forkFrom,
-            autonomousMode: autonomousMode ?? true,
+            // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
+            permissionMode,
             appendSystemPrompt: systemPrompt,
             template,
             manager: effectiveManager,

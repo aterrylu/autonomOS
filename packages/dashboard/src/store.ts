@@ -1,4 +1,10 @@
-import type { AgentTemplate } from "@autonomos/core";
+import {
+  type AgentTemplate,
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+  type PermissionMode,
+  permissionModeFromLegacy,
+} from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
@@ -512,7 +518,8 @@ interface AppState {
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
-  autonomousMode: boolean;
+  /** Default tool-use autonomy applied to new spawns (per-spawn overridable). */
+  permissionMode: PermissionMode;
   /** Display order of PINNED agents (top flat-view section). An agent is
    *  pinned iff its key is in this array. New pins append (bottom of pinned). */
   pinnedOrder: string[];
@@ -560,7 +567,7 @@ interface AppState {
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
-  toggleAutonomousMode: () => void;
+  setPermissionMode: (mode: PermissionMode) => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -574,7 +581,7 @@ interface AppState {
       provider?: string;
       template?: string;
       appendSystemPrompt?: string;
-      autonomousMode?: boolean;
+      permissionMode?: PermissionMode;
     },
   ) => Promise<void>;
   openCreateAgent: () => void;
@@ -760,7 +767,7 @@ export const useStore = create<AppState>()(
         agentStatuses: {},
         sidebarOpen: true,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
-        autonomousMode: true,
+        permissionMode: DEFAULT_PERMISSION_MODE,
         pinnedOrder: [],
         unpinnedOrder: [],
         hierarchyOrder: {},
@@ -791,8 +798,7 @@ export const useStore = create<AppState>()(
           });
         },
         resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH }),
-        toggleAutonomousMode: () =>
-          set({ autonomousMode: !get().autonomousMode }),
+        setPermissionMode: (mode) => set({ permissionMode: mode }),
         setStatus: (status) => set({ status }),
         switchPane: (pane) => {
           if (!pane) {
@@ -1095,7 +1101,7 @@ export const useStore = create<AppState>()(
             "failed to create session",
             {
               workingDirectory,
-              autonomousMode: opts?.autonomousMode ?? get().autonomousMode,
+              permissionMode: opts?.permissionMode ?? get().permissionMode,
               name: opts?.name,
               provider: opts?.provider,
               template: opts?.template,
@@ -1184,7 +1190,7 @@ export const useStore = create<AppState>()(
               workingDirectory: cwd,
               resumeSessionId: claudeSessionId,
               name,
-              autonomousMode: get().autonomousMode,
+              permissionMode: get().permissionMode,
             },
           );
         },
@@ -1639,7 +1645,7 @@ export const useStore = create<AppState>()(
             get,
             "spawning...",
             "failed to create session",
-            { workingDirectory: cwd, autonomousMode: get().autonomousMode },
+            { workingDirectory: cwd, permissionMode: get().permissionMode },
             (session) => {
               const pane: ActivePane = { type: "session", id: session.id };
               const updatedLayout = setLeafPane(get().layout, newId, pane);
@@ -2005,7 +2011,7 @@ export const useStore = create<AppState>()(
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
-        autonomousMode: state.autonomousMode,
+        permissionMode: state.permissionMode,
         pinnedOrder: state.pinnedOrder,
         unpinnedOrder: state.unpinnedOrder,
         hierarchyOrder: state.hierarchyOrder,
@@ -2037,8 +2043,18 @@ export const useStore = create<AppState>()(
             saved.sidebarWidth,
             window.innerWidth * 0.5,
           );
-        if (typeof saved?.autonomousMode === "boolean")
-          merged.autonomousMode = saved.autonomousMode;
+        // Accept new permissionMode; otherwise migrate legacy autonomousMode
+        // (true→bypass, false→default). See ADR-045.
+        if (isPermissionMode(saved?.permissionMode)) {
+          merged.permissionMode = saved.permissionMode;
+        } else {
+          const migrated = permissionModeFromLegacy(
+            typeof saved?.autonomousMode === "boolean"
+              ? saved.autonomousMode
+              : undefined,
+          );
+          if (migrated) merged.permissionMode = migrated;
+        }
         // Restore the saved view only if explicitly chosen; otherwise keep the
         // new default (current.sidebarViewMode). See resolveSidebarViewMode.
         const view = resolveSidebarViewMode(saved, current.sidebarViewMode);

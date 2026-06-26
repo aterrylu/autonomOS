@@ -6,6 +6,8 @@
  * They are the recipe; an Agent (see ./agent.ts) is the instance.
  */
 
+import type { PermissionMode } from "./permissions";
+
 /** Blueprint for creating agents — lives at ~/.autonomos/templates/{name}.json */
 export interface AgentTemplate {
   /** Human-readable role name (e.g. "Team Lead", "Worker") */
@@ -16,8 +18,9 @@ export interface AgentTemplate {
   systemPrompt: string;
   /** Which autonomOS capabilities the agent has access to */
   capabilities: AgentCapability[];
-  /** Whether to skip permission prompts (default: true) */
-  autonomousMode?: boolean;
+  /** How much autonomy agents spawned from this template have over tool use.
+   *  Replaces the old `autonomousMode?: boolean`. Default: DEFAULT_PERMISSION_MODE. */
+  permissionMode?: PermissionMode;
   /** Model override for litellm routing (e.g. "opus", "haiku"). Omit for CC default */
   model?: string;
 }

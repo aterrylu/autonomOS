@@ -22,10 +22,12 @@
  * - No --session-id, --name, or --brief flags
  */
 
-import type {
-  AgentProvider,
-  ResolvedSpawnOptions,
-  SidecarSpec,
+import {
+  type AgentProvider,
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
+  type ResolvedSpawnOptions,
+  type SidecarSpec,
 } from "@autonomos/core";
 import { getAuthToken } from "../serverState.js";
 import {
@@ -36,6 +38,34 @@ import {
 } from "./shared.js";
 
 const binaryCache = { path: null as string | null };
+
+/**
+ * Map the common permission mode → Codex `approval_policy` value.
+ *
+ * Codex's two-axis model (approval + sandbox) is effectively one axis here:
+ * the sandbox is always `danger-full-access` (autonomOS is the trust boundary).
+ * Codex has no plan mode — `plan` is clamped to the default policy. The clamp
+ * warning lives in daemonConfigArgs (called once per spawn) so it doesn't
+ * double-log across the daemon + TUI layers.
+ */
+function codexApprovalPolicy(
+  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
+): string {
+  switch (mode) {
+    case "bypass":
+      return "never";
+    case "auto":
+      return "on-failure";
+    default:
+      // "default" and the clamped "plan" both ask before acting.
+      return "on-request";
+  }
+}
+
+/** Bypass is the all-in-one skip flag (and the resolved default when unset). */
+function isBypassMode(mode: PermissionMode | undefined): boolean {
+  return (mode ?? DEFAULT_PERMISSION_MODE) === "bypass";
+}
 
 /** Daemon `-c` config flags shared by the app-server: system prompt + MCP. */
 function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
@@ -56,13 +86,22 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
   // → "could not find bubblewrap on PATH"). Verified on Linux.
   args.push("-c", `sandbox_mode="danger-full-access"`);
 
-  // Approval gating is separate from sandboxing: autonomous agents skip approval
-  // prompts (the --dangerously-skip-permissions equivalent); supervised agents
-  // keep them. The TUI flag in buildArgs is the primary control; this daemon-side
-  // policy backs it for gateway-injected turns that share the same thread.
-  if (options.autonomousMode) {
-    args.push("-c", `approval_policy="never"`);
+  // Approval gating is separate from sandboxing: the permission mode maps to a
+  // Codex approval_policy (bypass→never, auto→on-failure, default/plan→
+  // on-request). The TUI flag in buildArgs is the primary control; this
+  // daemon-side policy backs it for gateway-injected turns that share the
+  // same thread. Codex has no plan mode — warn once here when we clamp it.
+  if (options.permissionMode === "plan") {
+    console.warn(
+      "[codex] permission mode 'plan' has no Codex equivalent — clamping to " +
+        "'default' (approval_policy=on-request). Sandbox stays " +
+        "danger-full-access (autonomOS is the trust boundary).",
+    );
   }
+  args.push(
+    "-c",
+    `approval_policy=${JSON.stringify(codexApprovalPolicy(options.permissionMode))}`,
+  );
 
   // MCP channel server — attached to the DAEMON (it hosts the thread + MCP),
   // giving the Codex model outbound send() + org tools, same as Claude Code.
@@ -152,21 +191,27 @@ export const codexProvider: AgentProvider = {
       // The TUI creates/owns the thread, so ITS sandbox/approval flags govern the
       // thread (the daemon-side -c is necessary but not sufficient — both layers
       // must say danger-full-access or Codex falls back to workspace-write and
-      // wants bubblewrap). Autonomous: skip approvals + sandbox (the CC
-      // --dangerously-skip-permissions equivalent). Supervised: drop the sandbox
-      // only, keep approval prompts.
-      if (options.autonomousMode) {
+      // wants bubblewrap). bypass: skip approvals + sandbox in one flag (the CC
+      // --dangerously-skip-permissions equivalent). Otherwise: drop the sandbox
+      // only and set the approval_policy granularity (matches the daemon).
+      if (isBypassMode(options.permissionMode)) {
         args.push("--dangerously-bypass-approvals-and-sandbox");
       } else {
         args.push("-s", "danger-full-access");
+        args.push(
+          "-c",
+          `approval_policy=${JSON.stringify(codexApprovalPolicy(options.permissionMode))}`,
+        );
       }
       if (options.prompt) args.push(options.prompt);
       return args;
     }
 
     // Legacy fallback (no sidecar): in-process TUI carrying its own config.
+    // daemonConfigArgs already sets sandbox + approval_policy for every mode;
+    // bypass additionally gets the all-in-one skip flag.
     const args: string[] = [];
-    if (options.autonomousMode) {
+    if (isBypassMode(options.permissionMode)) {
       args.push("--dangerously-bypass-approvals-and-sandbox");
     }
     args.push("--cd", options.cwd, ...daemonConfigArgs(options));

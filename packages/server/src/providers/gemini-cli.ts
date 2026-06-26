@@ -12,7 +12,12 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentProvider, ResolvedSpawnOptions } from "@autonomos/core";
+import {
+  type AgentProvider,
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
+  type ResolvedSpawnOptions,
+} from "@autonomos/core";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -58,6 +63,24 @@ const INTENTIONAL_DROPS = new Set([
 
 const binaryCache = { path: null as string | null };
 
+// ── Permission mode → Gemini --approval-mode ──────────────────
+// Gemini 0.46's --approval-mode enum maps 1:1 with the common modes:
+// default | auto_edit (≈auto) | plan | yolo (≈bypass).
+function geminiApprovalMode(
+  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
+): string {
+  switch (mode) {
+    case "bypass":
+      return "yolo";
+    case "auto":
+      return "auto_edit";
+    case "plan":
+      return "plan";
+    default:
+      return "default";
+  }
+}
+
 const AUTONOMOS_CONFIG_DIR =
   process.env.AUTONOMOS_CONFIG_DIR ||
   join(process.env.HOME || "/tmp", ".autonomos");
@@ -91,10 +114,9 @@ export const geminiCliProvider: AgentProvider = {
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
 
-    // Auto mode
-    if (options.autonomousMode) {
-      args.push("--approval-mode", "yolo");
-    }
+    // Permission mode → --approval-mode (always set; "default" is Gemini's
+    // own default, so this is behavior-preserving for supervised spawns).
+    args.push("--approval-mode", geminiApprovalMode(options.permissionMode));
 
     // Filter MCP servers to only autonomOS (if injected)
     if (options.injectChannelServer) {

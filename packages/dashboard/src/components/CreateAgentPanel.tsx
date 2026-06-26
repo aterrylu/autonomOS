@@ -1,8 +1,14 @@
-import type { ProviderCapabilities } from "@autonomos/core";
+import {
+  PERMISSION_MODE_INFO,
+  type PermissionMode,
+  type Provider,
+  type ProviderCapabilities,
+} from "@autonomos/core";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { findLeafByPaneId } from "../layout/layoutTree";
 import { THEMES, useStore } from "../store";
+import { PermissionModeSelect } from "./PermissionModeSelect";
 
 interface ProviderInfo {
   name: string;
@@ -26,6 +32,7 @@ export function CreateAgentPanel() {
     fetchTemplates,
     layout,
     closeTab,
+    defaultPermissionMode,
   } = useStore(
     useShallow((s) => ({
       templates: s.templates,
@@ -36,6 +43,7 @@ export function CreateAgentPanel() {
       fetchTemplates: s.fetchTemplates,
       layout: s.layout,
       closeTab: s.closeTab,
+      defaultPermissionMode: s.permissionMode,
     })),
   );
 
@@ -49,6 +57,11 @@ export function CreateAgentPanel() {
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [autoDefaulted, setAutoDefaulted] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("claude-code");
+  // Per-spawn permission mode, seeded from the global default. A template with
+  // its own permissionMode overrides this when selected (see selectTemplate).
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
+    defaultPermissionMode,
+  );
   const [selectedDir, setSelectedDir] = useState("~");
   const [customDir, setCustomDir] = useState("");
   const [showCustomDir, setShowCustomDir] = useState(false);
@@ -81,6 +94,20 @@ export function CreateAgentPanel() {
     }
   }, [templates, selectedTemplate, autoDefaulted, nameManuallyEdited]);
 
+  // Codex can't represent every mode (e.g. plan, which has no Codex equivalent).
+  // If the selected provider doesn't support the current mode, fall back to
+  // default so the dropdown and the eventual spawn agree — the option is also
+  // disabled in the dropdown, but a provider switch can strand a prior pick.
+  useEffect(() => {
+    if (
+      PERMISSION_MODE_INFO[permissionMode].unsupportedBy?.includes(
+        selectedProvider as Provider,
+      )
+    ) {
+      setPermissionMode("default");
+    }
+  }, [selectedProvider, permissionMode]);
+
   const templateList = Object.entries(templates);
   // Move Dispatcher to the front of the picker so the recommendation is the
   // first option after "None".
@@ -104,6 +131,10 @@ export function CreateAgentPanel() {
     // Explicit user pick — even if it's None, lock out the Dispatcher
     // auto-default for the rest of this panel's lifetime.
     setAutoDefaulted(true);
+    // Adopt the template's default permission mode (if it declares one) so the
+    // dropdown reflects what this template will spawn with; still overridable.
+    const tmplMode = tname ? templates[tname]?.permissionMode : undefined;
+    if (tmplMode) setPermissionMode(tmplMode);
     if (!nameManuallyEdited) {
       if (tname && templates[tname]) {
         const role = templates[tname].role || tname;
@@ -134,7 +165,7 @@ export function CreateAgentPanel() {
         provider: selectedProvider,
         template: selectedTemplate || undefined,
         appendSystemPrompt: tmpl?.systemPrompt,
-        autonomousMode: tmpl?.autonomousMode,
+        permissionMode,
       });
 
       // Close the Create Agent tab on success
@@ -266,6 +297,20 @@ export function CreateAgentPanel() {
               </div>
             )}
           </div>
+        </Section>
+
+        {/* Permissions */}
+        <Section
+          title="Permissions"
+          subtitle="How much autonomy this agent has over tool use"
+          page={page}
+        >
+          <PermissionModeSelect
+            value={permissionMode}
+            onChange={setPermissionMode}
+            page={page}
+            provider={selectedProvider as Provider}
+          />
         </Section>
 
         {/* Working Directory */}

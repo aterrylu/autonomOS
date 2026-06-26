@@ -6,8 +6,14 @@
  * cannot disagree about what exists.
  */
 
-import type { ExitReason, Provider, UUID } from "@autonomos/core";
-import { isExitReason } from "@autonomos/core";
+import {
+  DEFAULT_PERMISSION_MODE,
+  type ExitReason,
+  isExitReason,
+  isPermissionMode,
+  type Provider,
+  type UUID,
+} from "@autonomos/core";
 import { Hono } from "hono";
 import {
   killAttachment,
@@ -158,7 +164,19 @@ agentsRouter.post("/", async (c) => {
     typeof body.appendSystemPrompt === "string"
       ? body.appendSystemPrompt
       : tmpl?.systemPrompt;
-  const autonomousMode = (body.autonomousMode ?? tmpl?.autonomousMode) === true;
+  // An invalid mode here would silently fall back to the default ("bypass" =
+  // full autonomy), so surface it rather than swallow it. The dashboard and MCP
+  // (z.enum) paths only send valid values; this guards hand-crafted requests.
+  if (
+    body.permissionMode !== undefined &&
+    !isPermissionMode(body.permissionMode)
+  )
+    console.warn(
+      `[api/agents] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; falling back to template/default`,
+    );
+  const permissionMode = isPermissionMode(body.permissionMode)
+    ? body.permissionMode
+    : (tmpl?.permissionMode ?? DEFAULT_PERMISSION_MODE);
 
   try {
     const result = await spawnAgent({
@@ -171,7 +189,7 @@ agentsRouter.post("/", async (c) => {
         typeof body.forkFromAgentId === "string"
           ? body.forkFromAgentId
           : undefined,
-      autonomousMode,
+      permissionMode,
       appendSystemPrompt: systemPrompt,
       template: templateName,
       managerId,
@@ -219,8 +237,12 @@ agentsRouter.patch("/:id", async (c) => {
   if (typeof body.name === "string") patch.name = body.name;
   if (typeof body.template === "string") patch.template = body.template;
   if (typeof body.project === "string") patch.project = body.project;
-  if (typeof body.autonomousMode === "boolean")
-    patch.autonomousMode = body.autonomousMode;
+  if (isPermissionMode(body.permissionMode))
+    patch.permissionMode = body.permissionMode;
+  else if (body.permissionMode !== undefined)
+    console.warn(
+      `[api/agents] PATCH ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}`,
+    );
 
   const result = patchAgent(agent.id, patch, versionNumber);
   if (result === undefined) {
@@ -317,7 +339,7 @@ agentsRouter.post("/:id/attach", async (c) => {
       workingDirectory: agent.workingDirectory,
       resumeAgentId: agent.id,
       name: agent.name,
-      autonomousMode: agent.autonomousMode,
+      permissionMode: agent.permissionMode,
       template: agent.template,
       managerId: agent.managerId,
       project: agent.project,

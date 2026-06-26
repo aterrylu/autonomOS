@@ -18,7 +18,13 @@
 
 import { existsSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import type { Agent, ExitReason, Provider } from "@autonomos/core";
+import {
+  type Agent,
+  DEFAULT_PERMISSION_MODE,
+  type ExitReason,
+  type Provider,
+  permissionModeFromLegacy,
+} from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
 import {
   buildAgent,
@@ -212,7 +218,8 @@ export function migrateIfNeeded(): {
       workingDirectory: s.workingDirectory,
       provider: "claude-code" as Provider,
       providerSessionId: s.claudeSessionId,
-      autonomousMode: s.autonomousMode ?? true,
+      permissionMode:
+        permissionModeFromLegacy(s.autonomousMode) ?? DEFAULT_PERMISSION_MODE,
       template: s.template,
       managerId: managerId ?? null,
       project: s.project,

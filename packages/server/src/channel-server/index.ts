@@ -22,6 +22,7 @@ import type {
   AgentInfo,
   GatewayMessage,
   GatewayWsMessage,
+  PermissionMode,
 } from "@autonomos/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -356,7 +357,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         prompt,
         resumeSessionId,
         forkFrom,
-        autonomousMode,
+        permissionMode,
         template,
         manager,
         project,
@@ -368,7 +369,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         prompt?: string;
         resumeSessionId?: string;
         forkFrom?: string;
-        autonomousMode?: boolean;
+        permissionMode?: PermissionMode;
         template?: string;
         manager?: string;
         project?: string;
@@ -392,7 +393,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             prompt,
             resumeAgentId: resumeSessionId,
             forkFromAgentId: forkFrom,
-            autonomousMode: autonomousMode ?? true,
+            // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
+            permissionMode,
             appendSystemPrompt: systemPrompt,
             template,
             manager: effectiveManager,
