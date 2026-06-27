@@ -116,8 +116,6 @@ describe("usage-queue auto-fire — real spawn", {
         body: JSON.stringify({
           workingDirectory: workdir,
           name: "integ-usage-queue",
-          // Supervised — bypass's --dangerously-skip-permissions exits 1 in CI.
-          permissionMode: "default",
         }),
       },
     );

@@ -181,8 +181,6 @@ describe("real-agent spawn against mock Anthropic backend", {
           workingDirectory: workdir,
           name: "integ-mock-agent",
           prompt: "say done",
-          // Supervised — bypass's --dangerously-skip-permissions exits 1 in CI.
-          permissionMode: "default",
         }),
       },
     );

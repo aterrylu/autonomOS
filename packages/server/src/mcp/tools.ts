@@ -74,8 +74,8 @@ export const TOOL_CREATE_AGENT: ToolDef = {
         type: "string",
         enum: ["default", "auto", "plan", "bypass"],
         description:
-          "How much autonomy the agent has over tool use: 'default' (ask before each action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to default), 'bypass' (skip all prompts). Default: bypass.",
-        default: "bypass",
+          "How much autonomy the agent has over tool use: 'default' (ask before each action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to default), 'bypass' (skip all prompts). Default: default — set 'bypass' for fully autonomous.",
+        default: "default",
       },
       template: {
         type: "string",
@@ -238,7 +238,7 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
         type: "string",
         enum: ["default", "auto", "plan", "bypass"],
         description:
-          "Default permission mode for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: bypass.",
+          "Default permission mode for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: default.",
       },
       model: {
         type: "string",

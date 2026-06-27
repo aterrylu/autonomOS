@@ -164,9 +164,9 @@ agentsRouter.post("/", async (c) => {
     typeof body.appendSystemPrompt === "string"
       ? body.appendSystemPrompt
       : tmpl?.systemPrompt;
-  // An invalid mode here would silently fall back to the default ("bypass" =
-  // full autonomy), so surface it rather than swallow it. The dashboard and MCP
-  // (z.enum) paths only send valid values; this guards hand-crafted requests.
+  // An invalid mode here would silently fall back to the template/default mode,
+  // so surface it rather than swallow it. The dashboard and MCP (z.enum) paths
+  // only send valid values; this guards hand-crafted requests.
   if (
     body.permissionMode !== undefined &&
     !isPermissionMode(body.permissionMode)

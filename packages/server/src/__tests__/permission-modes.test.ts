@@ -36,10 +36,10 @@ function baseOptions(
 }
 
 describe("core permission helpers", () => {
-  it("DEFAULT_PERMISSION_MODE preserves the historical autonomous default", () => {
-    // The old autonomousMode defaulted to true (skip-permissions) everywhere;
-    // an unspecified permissionMode must keep that behavior. See ADR-045.
-    assert.equal(DEFAULT_PERMISSION_MODE, "bypass");
+  it("DEFAULT_PERMISSION_MODE is the fail-closed 'default' (ask before acting)", () => {
+    // A spawn that forgets to set a mode must NOT silently get full autonomy.
+    // bypass is opt-in (the original ADR-045 default was flipped — see ADR-045).
+    assert.equal(DEFAULT_PERMISSION_MODE, "default");
   });
 
   it("permissionModeFromLegacy maps the old boolean (accept-and-discard)", () => {
