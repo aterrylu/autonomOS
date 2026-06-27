@@ -57,11 +57,12 @@ export function getTemplate(name: string): AgentTemplate | null {
       autonomousMode?: boolean;
     };
     // Accept-and-discard: migrate user-authored templates that predate
-    // permissionMode. Without this, a template the user deliberately set to
-    // supervised (autonomousMode:false) loads with permissionMode undefined and
-    // every consumer resolves it to DEFAULT_PERMISSION_MODE ("bypass") — silently
-    // granting full autonomy. true→bypass, false→default; an invalid stored mode
-    // is dropped so consumers fall back to the default. See ADR-045.
+    // permissionMode. A template the user deliberately set to AUTONOMOUS
+    // (autonomousMode:true) must still map to bypass — without this it would load
+    // with permissionMode undefined and silently fall back to the safe
+    // DEFAULT_PERMISSION_MODE, quietly demoting their autonomous template.
+    // true→bypass, false→default; an invalid stored mode is dropped so consumers
+    // fall back to the default. See ADR-045.
     if (!isPermissionMode(tmpl.permissionMode)) {
       const migrated = permissionModeFromLegacy(tmpl.autonomousMode);
       if (migrated) {

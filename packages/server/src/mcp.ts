@@ -109,7 +109,7 @@ function createMcpServer(): McpServer {
         .enum(["default", "auto", "plan", "bypass"])
         .optional()
         .describe(
-          "Tool-use autonomy: 'default' (ask each time), 'auto' (auto-edit), 'plan' (read-only; Codex falls back to default), 'bypass' (skip prompts). Default: bypass.",
+          "Tool-use autonomy: 'default' (ask each time), 'auto' (auto-edit), 'plan' (read-only; Codex falls back to default), 'bypass' (skip prompts). Default: default — set 'bypass' for fully autonomous.",
         ),
       template: z
         .string()
@@ -453,7 +453,7 @@ function createMcpServer(): McpServer {
         .enum(["default", "auto", "plan", "bypass"])
         .optional()
         .describe(
-          "Default tool-use autonomy for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: bypass.",
+          "Default tool-use autonomy for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: default.",
         ),
       model: z
         .string()

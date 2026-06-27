@@ -36,14 +36,18 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
 /**
  * Default mode when nothing is specified anywhere in the resolution chain.
  *
- * Intentionally `bypass` to preserve historical behavior: the old
- * `autonomousMode` defaulted to `true` (skip-permissions) at every resolution
- * site (`?? true`), in the default templates, and on fresh dashboard installs.
- * Resolving unspecified `permissionMode` to anything else would silently start
- * prompting on spawns that used to run autonomously. ADR-045 records this as a
- * reversible decision.
+ * `default` — ask before each privileged action (fail-closed). The original
+ * ADR-045 cut shipped `bypass` to mirror the old pervasive `?? true`, but that
+ * proved fragile: `bypass` emits `--dangerously-skip-permissions`, which the
+ * real claude binary refuses in CI / under root, and it silently grants FULL
+ * autonomy to any spawn that forgets to set a mode. A safe default matters more
+ * than mirroring the old autonomy — callers that WANT autonomy ask for it
+ * explicitly (`bypass`). Migration of EXISTING records is unchanged: an old
+ * `autonomousMode: true` still maps to `bypass` via permissionModeFromLegacy,
+ * so already-configured installs keep their prior behavior; only fresh/
+ * unspecified spawns get the safe default. See ADR-045.
  */
-export const DEFAULT_PERMISSION_MODE: PermissionMode = "bypass";
+export const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
 /**
  * Migration helper (accept-and-discard): legacy `autonomousMode` boolean →

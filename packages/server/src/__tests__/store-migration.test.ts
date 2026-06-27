@@ -80,16 +80,16 @@ describe("agent record upgrade compat: legacy autonomousMode → permissionMode"
     );
   });
 
-  it("missing both fields → DEFAULT (bypass), never undefined", () => {
+  it("missing both fields → DEFAULT ('default'), never undefined", () => {
     writeLegacyAgent("agent-none", {});
     const a = load("agent-none");
-    assert.equal(a?.permissionMode, "bypass");
+    assert.equal(a?.permissionMode, "default");
   });
 
   it("malformed permissionMode string is coerced, not trusted", () => {
     writeLegacyAgent("agent-bad", { permissionMode: "yolo" });
     const a = load("agent-bad");
-    assert.equal(a?.permissionMode, "bypass");
+    assert.equal(a?.permissionMode, "default");
   });
 
   it("scrubs the legacy field on the next write (accept-and-discard)", () => {

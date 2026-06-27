@@ -144,7 +144,10 @@ describe("CreateAgentPanel", () => {
       provider: "claude-code",
       template: "dispatcher",
       appendSystemPrompt: dispatcherTemplate.systemPrompt,
-      permissionMode: "bypass",
+      // Auto-defaulting the dispatcher adopts its systemPrompt but NOT its mode
+      // (only a manual template pick does), so the global default flows through —
+      // now "default" (fail-closed) after the ADR-045 default flip.
+      permissionMode: "default",
     });
   });
 
