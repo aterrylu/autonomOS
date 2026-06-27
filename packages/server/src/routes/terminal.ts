@@ -41,10 +41,13 @@ function intEnv(name: string, def: number): number {
   return n;
 }
 
-/** Defaults read from env so the ablation harness can flip behavior without a
- *  rebuild. `coalesce` defaults OFF → unchanged from `main`. */
+/** Defaults read from env. Coalescing is ON by default — it eliminates
+ *  burst-induced dropped frames (measured 12/31/65 → 0 at 1/4/12 MB on a real
+ *  GPU) and cuts frame count ~570× (remote/multi-pane). Leading-edge flushing
+ *  keeps interactive echo at zero added latency (see below). Set
+ *  `AUTONOMOS_WS_COALESCE=0` to fall back to the historical per-chunk send. */
 export const DEFAULT_COALESCE: CoalesceOptions = {
-  coalesce: process.env.AUTONOMOS_WS_COALESCE === "1",
+  coalesce: process.env.AUTONOMOS_WS_COALESCE !== "0",
   windowMs: intEnv("AUTONOMOS_WS_COALESCE_MS", 8),
   maxBytes: intEnv("AUTONOMOS_WS_COALESCE_BYTES", 16384),
 };
@@ -75,6 +78,9 @@ export function makeStreamForwarder(
   let pending: string[] = [];
   let pendingBytes = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Timestamp of the last send, so an idle stream flushes the next chunk
+  // immediately (leading edge). 0 = never sent → first chunk is immediate.
+  let lastFlushAt = 0;
 
   const flush = () => {
     if (timer) {
@@ -85,9 +91,17 @@ export function makeStreamForwarder(
     const data = pending.join("");
     pending = [];
     pendingBytes = 0;
+    lastFlushAt = Date.now();
     try {
       ws.send(data);
     } catch {
+      // Send failed on a dead/half-open socket. `pending` is already cleared,
+      // so this coalesced frame is dropped FOR THIS SOCKET — but the bytes are
+      // not lost: runtime.ts's per-session scrollback still has them and a
+      // reconnecting client replays them. Quantify the drop so it's not silent.
+      console.warn(
+        `[terminal] dropped ${data.length}B coalesced frame on send failure`,
+      );
       onSendError();
     }
   };
@@ -96,13 +110,23 @@ export function makeStreamForwarder(
     onData: (data: string) => {
       pending.push(data);
       pendingBytes += data.length;
-      // Flush immediately once a frame's worth has accumulated; otherwise
-      // arm a short timer so trailing/interactive output isn't held back.
+      // A full frame's worth accumulated → flush now.
       if (pendingBytes >= opts.maxBytes) {
         flush();
-      } else if (!timer) {
-        timer = setTimeout(flush, opts.windowMs);
+        return;
       }
+      // Already coalescing within the current window — let the timer fire.
+      if (timer) return;
+      // Leading edge: if the stream has been idle for ≥ windowMs (or never
+      // sent), flush this chunk immediately so interactive echo and slow
+      // output have ZERO added latency. Only a genuine burst — chunks arriving
+      // faster than the window — coalesces: the first goes out instantly, the
+      // rapid remainder batches under the trailing timer below.
+      if (Date.now() - lastFlushAt >= opts.windowMs) {
+        flush();
+        return;
+      }
+      timer = setTimeout(flush, opts.windowMs);
     },
     close: flush,
   };
@@ -158,6 +182,9 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           // Send failed (slow/half-open client) — detach from the PTY stream.
           // Logged so a one-viewer terminal freeze leaves a breadcrumb instead
           // of silently going dark. Full teardown happens on the ensuing close.
+          // INVARIANT: dispose() halts all future onData, so no further chunks
+          // can accumulate in the (now coalescing-by-default) forwarder buffer
+          // behind this dead socket. cleanupBinding's later flush is a no-op.
           console.warn(
             `[terminal] WS send failed for session ${sessionId}; detaching client`,
           );

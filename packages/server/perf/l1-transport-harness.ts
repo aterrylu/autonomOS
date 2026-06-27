@@ -9,9 +9,9 @@
 //     client (transport catch-up latency).
 //   • loopDelayMaxMs — worst event-loop stall during the burst (server health).
 //
-// Run:  AUTONOMOS_WS_COALESCE=0 tsx perf/l1-transport-harness.ts
-//       AUTONOMOS_WS_COALESCE=1 tsx perf/l1-transport-harness.ts   (after #1)
-//       PANES=4 tsx perf/l1-transport-harness.ts                   (multi-pane)
+// Run:  tsx perf/l1-transport-harness.ts                         (default: ON)
+//       AUTONOMOS_WS_COALESCE=0 tsx perf/l1-transport-harness.ts  (off == old main)
+//       PANES=4 tsx perf/l1-transport-harness.ts                  (multi-pane)
 
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
