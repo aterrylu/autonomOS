@@ -184,7 +184,6 @@ export function Sidebar() {
   const {
     fetchSessions,
     fetchProjects,
-    createSession,
     switchPane,
     closePreview,
     fetchNotifications,

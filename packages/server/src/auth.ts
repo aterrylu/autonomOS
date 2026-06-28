@@ -26,6 +26,13 @@ if (!HOME) throw new Error("HOME environment variable is not set");
 const DEFAULT_TOKEN_DIR = join(HOME, ".autonomos");
 const DEFAULT_TOKEN_FILE = join(DEFAULT_TOKEN_DIR, "token");
 
+let _testDefaultTokenFile: string | null = null;
+
+/** For testing — override the legacy ~/.autonomos/token fallback path. */
+export function _setDefaultTokenFileForTesting(path: string | null): void {
+  _testDefaultTokenFile = path;
+}
+
 export function resolveAuthToken(): string {
   // 1. Env var takes precedence
   const envToken = process.env.AUTONOMOS_TOKEN?.trim();
@@ -60,9 +67,13 @@ export function resolveAuthToken(): string {
   //    isolated CONFIG_DIR doesn't surprise the user with auth failures
   //    against existing tools. Skipped when CONFIG_DIR IS the default —
   //    no need to re-check the same path.
-  if (configDir !== DEFAULT_TOKEN_DIR && existsSync(DEFAULT_TOKEN_FILE)) {
+  const effectiveDefaultTokenFile = _testDefaultTokenFile ?? DEFAULT_TOKEN_FILE;
+  if (
+    configDir !== DEFAULT_TOKEN_DIR &&
+    existsSync(effectiveDefaultTokenFile)
+  ) {
     try {
-      const fileToken = readFileSync(DEFAULT_TOKEN_FILE, "utf-8").trim();
+      const fileToken = readFileSync(effectiveDefaultTokenFile, "utf-8").trim();
       if (fileToken) return fileToken;
     } catch {
       // Ignore — fall through to generate.

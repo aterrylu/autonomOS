@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { resolveAuthToken } from "../auth.js";
+import { _setDefaultTokenFileForTesting, resolveAuthToken } from "../auth.js";
 import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
@@ -31,12 +31,17 @@ describe("resolveAuthToken — CONFIG_DIR awareness", () => {
   beforeEach(() => {
     isolatedDir = mkdtempSync(join(tmpdir(), "autonomos-auth-"));
     _setConfigDirForTesting(isolatedDir);
+    // Redirect the legacy ~/.autonomos/token fallback to a path that doesn't
+    // exist so tests run hermetically even when the developer's machine has a
+    // real token in ~/.autonomos/.
+    _setDefaultTokenFileForTesting(join(isolatedDir, "nonexistent-fallback"));
     envBackup = { token: process.env.AUTONOMOS_TOKEN };
     delete process.env.AUTONOMOS_TOKEN;
   });
 
   afterEach(() => {
     _resetConfigDirForTesting();
+    _setDefaultTokenFileForTesting(null);
     if (envBackup.token !== undefined) {
       process.env.AUTONOMOS_TOKEN = envBackup.token;
     } else {

@@ -1,7 +1,9 @@
+import { createRequire } from "node:module";
 import { basename } from "node:path";
-import {
+import { Worker } from "node:worker_threads";
+import type {
   listSessions,
-  type SDKSessionInfo,
+  SDKSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
@@ -36,19 +38,66 @@ export interface ProjectSession {
 
 export const projectRouter = new Hono();
 
-/** GET /api/projects — all Claude Code sessions grouped by project */
-projectRouter.get("/", async (c) => {
-  let sessions: SDKSessionInfo[];
-  try {
-    sessions = await listSessionsFn();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("Failed to list projects:", message);
-    return c.json(
-      { error: "Failed to list Claude Code sessions", detail: message },
-      500,
+// Response cache for GET /api/projects. The underlying computation
+// (listSessions + per-session git diff) is O(seconds) when the user has
+// thousands of Claude Code session files, and it runs partly synchronously,
+// blocking the Node event loop — including the WebSocket pipeline that
+// streams terminal echoes. The sidebar polls this every 30s; recomputing on
+// every poll caused ~8s typing stalls on each cycle. Cache here so the
+// response path is O(1); refresh in the background past the TTL so stale-
+// but-not-blocking is the failure mode.
+const PROJECTS_CACHE_TTL_MS = 60_000;
+let projectsCache: ProjectInfo[] | null = null;
+let projectsCacheAt = 0;
+let projectsRefreshInFlight: Promise<ProjectInfo[]> | null = null;
+
+/** Run listSessions() in a worker_thread so its ~10s of sync JSON parsing
+ *  doesn't block the main event loop (and therefore the terminal WebSocket
+ *  pipeline). The worker exits after responding. */
+async function listSessionsInWorker(): Promise<SDKSessionInfo[]> {
+  const workerUrl = new URL("./projects-worker.ts", import.meta.url);
+  // Resolve tsx's loader to an ABSOLUTE path. Passing the bare specifier
+  // "tsx" makes the worker resolve it from its cwd — under pm2 that's the repo
+  // root, which has no node_modules/tsx (it lives in packages/server's tree),
+  // so the worker died with "Cannot find package 'tsx'" on every call and the
+  // project list silently never loaded. Resolving from import.meta.url anchors
+  // the lookup to this file's package regardless of cwd.
+  const tsxLoader = createRequire(import.meta.url).resolve("tsx");
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(workerUrl, {
+      // tsx must load TypeScript inside the worker too — without this the
+      // worker fails on the .ts extension.
+      execArgv: ["--import", tsxLoader],
+    });
+    const cleanup = () => {
+      worker.terminate().catch(() => {});
+    };
+    worker.once(
+      "message",
+      (
+        msg:
+          | { ok: true; sessions: SDKSessionInfo[] }
+          | { ok: false; error: string },
+      ) => {
+        cleanup();
+        if (msg.ok) resolve(msg.sessions);
+        else reject(new Error(msg.error));
+      },
     );
-  }
+    worker.once("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+    worker.once("exit", (code) => {
+      if (code !== 0)
+        reject(new Error(`projects-worker exited with code ${code}`));
+    });
+    worker.postMessage("run");
+  });
+}
+
+async function computeProjects(): Promise<ProjectInfo[]> {
+  const sessions = await listSessionsFn();
 
   const needsTitleLookup = sessions
     .filter((s) => !s.customTitle && s.cwd)
@@ -121,12 +170,62 @@ projectRouter.get("/", async (c) => {
   }
 
   projects.sort((a, b) => b.lastActive - a.lastActive);
-  return c.json(projects);
+  return projects;
+}
+
+function refreshProjectsCache(): Promise<ProjectInfo[]> {
+  if (projectsRefreshInFlight) return projectsRefreshInFlight;
+  projectsRefreshInFlight = computeProjects()
+    .then((result) => {
+      projectsCache = result;
+      projectsCacheAt = Date.now();
+      return result;
+    })
+    .finally(() => {
+      projectsRefreshInFlight = null;
+    });
+  return projectsRefreshInFlight;
+}
+
+/** GET /api/projects — all Claude Code sessions grouped by project */
+projectRouter.get("/", async (c) => {
+  const age = Date.now() - projectsCacheAt;
+
+  // Fresh cache hit — return immediately, no refresh.
+  if (projectsCache && age < PROJECTS_CACHE_TTL_MS) {
+    return c.json(projectsCache);
+  }
+
+  // Stale cache — return what we have AND kick off a background refresh.
+  // The errors are caught so a failed refresh doesn't reject this request;
+  // the next call will retry.
+  if (projectsCache) {
+    refreshProjectsCache().catch((err) => {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("Background projects refresh failed:", message);
+    });
+    return c.json(projectsCache);
+  }
+
+  // Cold start — no cache yet, must await the first computation.
+  try {
+    const result = await refreshProjectsCache();
+    return c.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Failed to list projects:", message);
+    return c.json(
+      { error: "Failed to list Claude Code sessions", detail: message },
+      500,
+    );
+  }
 });
 
 // Indirection so tests can stub session listing + title resolution without a
-// real SDK or a populated ~/.claude/projects on disk.
-let listSessionsFn: typeof listSessions = listSessions;
+// real SDK or a populated ~/.claude/projects on disk. Production defaults to the
+// worker-thread listing (keeps the ~4s sync scan off the main event loop);
+// tests override it with an in-memory fake via _setDepsForTesting.
+let listSessionsFn: typeof listSessions = listSessionsInWorker;
 let batchGetTitlesFn: typeof batchGetTitles = batchGetTitles;
 
 export function _setDepsForTesting(overrides: {
@@ -138,6 +237,11 @@ export function _setDepsForTesting(overrides: {
 }
 
 export function _resetForTesting(): void {
-  listSessionsFn = listSessions;
+  listSessionsFn = listSessionsInWorker;
   batchGetTitlesFn = batchGetTitles;
+  // Clear the module-scope response cache so each test starts from a cold
+  // state and sees its own stubbed sessions rather than a prior test's result.
+  projectsCache = null;
+  projectsCacheAt = 0;
+  projectsRefreshInFlight = null;
 }

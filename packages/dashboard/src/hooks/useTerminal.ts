@@ -197,7 +197,6 @@ export function useTerminal(
 
       try {
         terminal.open(container);
-        // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
         fitAddon.fit();
       } catch (err) {
         console.error(`Terminal open/fit failed for ${sessionId}:`, err);

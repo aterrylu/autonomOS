@@ -159,7 +159,7 @@ export function recordEvent(input: RecordEventInput): MemoryEvent | null {
     appendEventLine(event);
     bumpStats(project, ts);
     if (project !== null) ensureProjectSkeleton(project);
-    rewriteIndex();
+    scheduleIndexRewrite();
 
     return event;
   } catch (err) {
@@ -190,6 +190,30 @@ function bumpStats(project: string | null, ts: number): void {
 }
 
 // ── L0 index refresh ──────────────────────────────────────────────
+
+/** Coalesce L0 index rewrites. recordEvent fires on every agent hook event;
+ *  with many agents that's a steady stream of synchronous writeFileSync calls,
+ *  each rewriting the whole index. The index is a coarse summary that doesn't
+ *  need per-event freshness, so collapse bursts to at most one write per second.
+ *  A dropped trailing write is self-healing: initMemory() rewrites it at the
+ *  next startup, and the next event re-arms the timer. */
+let indexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleIndexRewrite(): void {
+  if (indexDebounceTimer) return;
+  indexDebounceTimer = setTimeout(() => {
+    indexDebounceTimer = null;
+    try {
+      rewriteIndex();
+    } catch (err) {
+      console.error(
+        "[memory] debounced rewriteIndex failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }, 1000);
+  indexDebounceTimer.unref?.();
+}
 
 function rewriteIndex(): void {
   const lines: string[] = [
@@ -258,7 +282,7 @@ function ensureProjectSkeleton(slug: string): void {
         "",
         "Will be auto-populated by v3 (daily summarization cron). Until then,",
         "raw events are at `events/YYYY-MM/DD.jsonl`. Filter with",
-        '`memory_query({level: "L3", project: "' + slug + '"})`.',
+        `\`memory_query({level: "L3", project: "${slug}"})\`.`,
         "",
       ].join("\n"),
       { mode: 0o600 },
@@ -339,6 +363,21 @@ export function _resetMemoryForTesting(): void {
   projectStats.clear();
   statsBootstrapped = false;
   initialized = false;
+  if (indexDebounceTimer) {
+    clearTimeout(indexDebounceTimer);
+    indexDebounceTimer = null;
+  }
+}
+
+/** Test hook: flush a pending debounced index rewrite synchronously, so a test
+ *  can assert on index.md right after recordEvent without waiting out the 1s
+ *  debounce window. No-op when nothing is pending. */
+export function _flushIndexForTesting(): void {
+  if (indexDebounceTimer) {
+    clearTimeout(indexDebounceTimer);
+    indexDebounceTimer = null;
+  }
+  rewriteIndex();
 }
 
 // ── Querying ──────────────────────────────────────────────────────

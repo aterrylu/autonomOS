@@ -19,8 +19,13 @@ import { MEMORY_SUMMARY_MAX } from "@autonomos/core";
 const TEST_DIR = join(tmpdir(), `autonomos-memory-test-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 
-const { _resetMemoryForTesting, initMemory, queryMemory, recordEvent } =
-  await import("../memory/events.js");
+const {
+  _resetMemoryForTesting,
+  _flushIndexForTesting,
+  initMemory,
+  queryMemory,
+  recordEvent,
+} = await import("../memory/events.js");
 
 const {
   getIndexPath,
@@ -234,12 +239,15 @@ describe("memory — summary truncation", () => {
 
 describe("memory — L0 index", () => {
   it("rewrites index.md on every event with project counts and latest ts", () => {
+    // Index rewrites are debounced; flush so the assertion doesn't race the timer.
     recordEvent({ type: "agent_message", summary: "first", project: "p" });
+    _flushIndexForTesting();
     let content = readFileSync(getIndexPath(), "utf-8");
     assert.match(content, /\| p \| 1 \|/);
 
     recordEvent({ type: "agent_message", summary: "second", project: "p" });
     recordEvent({ type: "agent_message", summary: "other", project: "q" });
+    _flushIndexForTesting();
     content = readFileSync(getIndexPath(), "utf-8");
     assert.match(content, /\| p \| 2 \|/);
     assert.match(content, /\| q \| 1 \|/);
@@ -247,6 +255,7 @@ describe("memory — L0 index", () => {
 
   it("queryMemory L0 returns the index content + sourcePath", () => {
     recordEvent({ type: "agent_message", summary: "x", project: "p" });
+    _flushIndexForTesting();
     const res = queryMemory({}); // default level L0
     assert.equal(res.level, "L0");
     if (res.level !== "L0") assert.fail();
