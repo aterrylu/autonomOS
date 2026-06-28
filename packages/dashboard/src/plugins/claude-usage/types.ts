@@ -25,21 +25,21 @@ export type ErrorKind =
   | "unauthorized"
   | "no_org"
   | "rate_limited"
-  | "unavailable";
+  | "unavailable"
+  | "stale_token";
 
 /** True for failures a new session key can actually fix. */
 export function isCredentialError(kind?: ErrorKind): boolean {
   return kind === "unauthorized" || kind === "no_org";
 }
 
-/** Where the active session key came from (mirrored from the server).
- * `harvested` (from a spawned agent's hook) and `auto` (the server's own env)
- * are both auto-detected from Claude Code with no manual setup. */
-export type CredentialSource = "settings" | "env" | "harvested" | "auto";
+/** Where the active credential came from (mirrored from the server).
+ * `oauth` is the zero-touch default — Claude Code's read-only login token. */
+export type CredentialSource = "settings" | "env" | "oauth";
 
 /** True when the credential was auto-detected from Claude Code (not pasted). */
 export function isAutoDetected(source?: CredentialSource): boolean {
-  return source === "harvested" || source === "auto";
+  return source === "oauth";
 }
 
 export interface RateLimitData {

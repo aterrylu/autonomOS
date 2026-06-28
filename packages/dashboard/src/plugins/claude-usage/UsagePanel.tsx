@@ -3,8 +3,10 @@ import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { saveAndValidate } from "./saveAndValidate";
 import {
+  type AccountInfo,
   type CredentialSource,
   type DisplayMode,
+  type ErrorKind,
   isAutoDetected,
   type RateLimitData,
   type RateLimitWindow,
@@ -178,18 +180,90 @@ function redactKey(key: string): string {
   return key.length > 8 ? `••••${key.slice(-4)}` : "••••";
 }
 
+const OAUTH_TOOLTIP =
+  "autonomOS reads your Claude Code login token locally (macOS Keychain / " +
+  "~/.claude), read-only — it never refreshes it, never writes it to disk, and " +
+  "uses it only to call Anthropic's usage API. Paste a session key to override.";
+
+/** Status line describing where the active usage credential comes from. */
+function CredentialSourceLine({
+  credentialSource,
+  errorKind,
+  needsSetup,
+  account,
+  statusFg,
+}: {
+  credentialSource?: CredentialSource;
+  errorKind?: ErrorKind;
+  needsSetup?: boolean;
+  account?: AccountInfo;
+  statusFg: string;
+}) {
+  let glyph = "○";
+  let color = statusFg;
+  let text: string;
+
+  if (errorKind === "stale_token") {
+    glyph = "⚠";
+    color = "#d29922";
+    text = "Claude Code token expired — run a session or paste a key";
+  } else if (credentialSource === "oauth" && !errorKind && !needsSetup) {
+    glyph = "●";
+    color = "#3fb950";
+    const parts = [account?.email, account?.subscriptionType]
+      .filter(Boolean)
+      .join(" · ");
+    text = `Claude Code login (OAuth)${parts ? ` — ${parts}` : ""}`;
+  } else if (credentialSource === "settings" && !errorKind) {
+    glyph = "●";
+    color = "#3fb950";
+    text = `Manual session key${account?.email ? ` — ${account.email}` : ""}`;
+  } else if (needsSetup) {
+    glyph = "○";
+    text = "No Claude Code login found — paste a session key";
+  } else {
+    // Other credential present (e.g. env) or a transient error — keep neutral.
+    text =
+      credentialSource === "env"
+        ? "Manual session key (env)"
+        : "Usage credential";
+  }
+
+  return (
+    <div className="flex items-start gap-1" style={{ color }}>
+      <span aria-hidden>{glyph}</span>
+      <span className="flex-1">{text}</span>
+      <span
+        title={OAUTH_TOOLTIP}
+        role="img"
+        aria-label="About usage credentials"
+        className="cursor-help select-none"
+        style={{ color: statusFg }}
+      >
+        ⓘ
+      </span>
+    </div>
+  );
+}
+
 function CredentialsSection({
   page,
   onRefetch,
   credentialSource,
+  errorKind,
+  needsSetup,
+  account,
 }: {
   page: PageTheme;
   onRefetch?: () => void;
   credentialSource?: CredentialSource;
+  errorKind?: ErrorKind;
+  needsSetup?: boolean;
+  account?: AccountInfo;
 }) {
-  // When the key is auto-detected from Claude Code and the user hasn't pasted
-  // their own, say so explicitly instead of "Not set" — the credential isn't
-  // missing, it's just inherited. A manual paste still overrides it.
+  // When usage comes from Claude Code's OAuth login and the user hasn't pasted
+  // their own key, say so explicitly instead of "Not set" — the credential
+  // isn't missing, it's the zero-touch default. A manual paste still overrides.
   const autoDetected = isAutoDetected(credentialSource);
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -211,7 +285,11 @@ function CredentialsSection({
       })
       .then((data) => {
         setMaskedKey(data.claudeSessionKey ?? null);
-        setAutoDetect(data.autoDetectClaudeSession !== false);
+        // Prefer the new key; fall back to the legacy one for older servers.
+        setAutoDetect(
+          (data.autoDetectClaudeAccount ?? data.autoDetectClaudeSession) !==
+            false,
+        );
         setLoaded(true);
       })
       .catch((err) => {
@@ -254,7 +332,7 @@ function CredentialsSection({
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoDetectClaudeSession: next }),
+        body: JSON.stringify({ autoDetectClaudeAccount: next }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       onRefetch?.();
@@ -294,12 +372,19 @@ function CredentialsSection({
       )}
       {expanded && loaded && (
         <div className="mt-2 space-y-2">
+          <CredentialSourceLine
+            credentialSource={credentialSource}
+            errorKind={errorKind}
+            needsSetup={needsSetup}
+            account={account}
+            statusFg={page.statusFg}
+          />
           <CredentialField
             label="Session Key"
             value={maskedKey}
             placeholder="sk-ant-sid…"
             emptyLabel={
-              autoDetected ? "Auto-detected from Claude Code" : "Not set"
+              autoDetected ? "Using Claude Code login (OAuth)" : "Not set"
             }
             secret
             editing={editingKey}
@@ -339,15 +424,15 @@ function CredentialsSection({
               {saveButtonLabel(saving, saved)}
             </button>
           )}
-          {/* Auto-detect toggle: harvest the session from Claude Code so no
-              manual paste is needed. A pasted key always overrides it. */}
+          {/* Auto-detect toggle: read Claude Code's OAuth login (read-only) so
+              no manual paste is needed. A pasted key always overrides it. */}
           <button
             type="button"
             onClick={toggleAutoDetect}
             className="flex items-center justify-between w-full cursor-pointer hover:opacity-80"
             style={{ color: page.statusFg }}
           >
-            <span className="text-[10px]">Auto-detect from Claude Code</span>
+            <span className="text-[10px]">Auto-detect Claude account</span>
             <span
               className="rounded-full px-1.5 py-0.5 text-[9px] font-medium"
               style={{
@@ -414,7 +499,7 @@ export function UsagePanel({
       {acct?.email && (
         <div className="mb-3" style={{ color: page.statusFg }}>
           {acct.email}
-          {acct.organization && ` · ${acct.organization}`}
+          {acct.subscriptionType && ` · ${acct.subscriptionType}`}
         </div>
       )}
 
@@ -525,6 +610,9 @@ export function UsagePanel({
         page={page}
         onRefetch={onRefetch}
         credentialSource={data.credentialSource}
+        errorKind={data.errorKind}
+        needsSetup={data.needsSetup}
+        account={data.account}
       />
     </div>
   );

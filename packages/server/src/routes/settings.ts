@@ -1,8 +1,12 @@
 import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
-import { setHarvestedSessionKey } from "../plugins/claude-usage/sessionStore.js";
-import { type AppSettings, getSettings, updateSettings } from "../settings.js";
+import {
+  type AppSettings,
+  getSettings,
+  isAutoDetectAccountEnabled,
+  updateSettings,
+} from "../settings.js";
 
 export const settingsRouter = new Hono();
 
@@ -20,7 +24,7 @@ function redact(value: string | undefined): string | null {
 function maskSettings(settings: AppSettings) {
   return {
     claudeSessionKey: redact(settings.claudeSessionKey),
-    autoDetectClaudeSession: settings.autoDetectClaudeSession !== false,
+    autoDetectClaudeAccount: isAutoDetectAccountEnabled(settings),
     channels: settings.channels ?? [],
     autoTrust: settings.autoTrust !== false,
     customEnvVars: settings.customEnvVars ?? {},
@@ -44,8 +48,12 @@ settingsRouter.put("/", async (c) => {
   if (typeof body.claudeSessionKey === "string") {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
-  if (typeof body.autoDetectClaudeSession === "boolean") {
-    partial.autoDetectClaudeSession = body.autoDetectClaudeSession;
+  // Accept the new key; also accept the legacy `autoDetectClaudeSession` from
+  // older dashboards and map it onto the new field.
+  if (typeof body.autoDetectClaudeAccount === "boolean") {
+    partial.autoDetectClaudeAccount = body.autoDetectClaudeAccount;
+  } else if (typeof body.autoDetectClaudeSession === "boolean") {
+    partial.autoDetectClaudeAccount = body.autoDetectClaudeSession;
   }
   // `claudeOrgId`, the anthropic* override keys, and `terminalRenderer` are
   // removed features — accept-but-discard for back-compat with older
@@ -94,14 +102,6 @@ settingsRouter.put("/", async (c) => {
     partial.customEnvVars = vars;
   }
 
-  // Opting out of auto-detect must drop the in-memory harvested cookie
-  // immediately — this privacy action is done BEFORE persisting so it happens
-  // even if the disk write fails (the UI would otherwise revert the toggle
-  // while a live cookie lingered in memory).
-  if (partial.autoDetectClaudeSession === false) {
-    setHarvestedSessionKey(null);
-  }
-
   let updated: AppSettings;
   try {
     updated = updateSettings(partial);
@@ -114,7 +114,7 @@ settingsRouter.put("/", async (c) => {
   // Invalidate usage cache so a credential change takes effect immediately.
   if (
     partial.claudeSessionKey ||
-    partial.autoDetectClaudeSession !== undefined
+    partial.autoDetectClaudeAccount !== undefined
   ) {
     invalidateCache();
   }

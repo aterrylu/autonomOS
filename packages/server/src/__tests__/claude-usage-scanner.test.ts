@@ -6,17 +6,18 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 // Point settings at an isolated temp dir BEFORE importing the scanner
-// (settings.js resolves the config dir at module load time).
+// (settings.js resolves the config dir at module load time). Also point
+// CLAUDE_CONFIG_DIR at the temp dir so the OAuth account-identity read never
+// touches the dev machine's real ~/.claude.
 const TEST_DIR = join(tmpdir(), `autonomos-test-usage-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
+process.env.CLAUDE_CONFIG_DIR = TEST_DIR;
 
 // Ensure ambient credentials in the dev shell don't leak into assertions.
-// CLAUDE_SESSION_COOKIE in particular is injected by Claude Code into this very
-// process, so it MUST be cleared or it would satisfy the auto-detect fallback
-// and break the needsSetup assertions.
 delete process.env.CLAUDE_SESSION_KEY;
 delete process.env.CLAUDE_ORG_ID;
 delete process.env.CLAUDE_SESSION_COOKIE;
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
 const {
   getSessionCookie,
@@ -27,12 +28,8 @@ const {
   resolveSessionKey,
   getCredentialSource,
 } = await import("../plugins/claude-usage/scanner.js");
-const { setHarvestedSessionKey } = await import(
-  "../plugins/claude-usage/sessionStore.js"
-);
-const { __setProcListerForTests, __resetScanThrottleForTests } = await import(
-  "../plugins/claude-usage/cookieScanner.js"
-);
+const { __setOAuthTokenReaderForTests, __setOAuthFetcherForTests } =
+  await import("../plugins/claude-usage/oauthUsage.js");
 type UsageFetcher = Parameters<typeof getRateLimits>[0];
 
 const SETTINGS_FILE = join(TEST_DIR, "settings.json");
@@ -66,22 +63,21 @@ function makeFetcher(): { fetcher: UsageFetcher; urls: string[] } {
   return { fetcher, urls };
 }
 
-describe("claude-usage scanner — session key is the only credential", () => {
+describe("claude-usage scanner — manual session key (claude.ai cookie flow)", () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true });
     invalidateCache();
-    // The auto-detect scan would otherwise read this dev machine's live Claude
-    // sessions via `ps` and satisfy the credential, breaking needsSetup/source
-    // assertions. Stub it to find nothing so these tests stay deterministic.
-    __setProcListerForTests(async () => []);
-    __resetScanThrottleForTests();
+    // Stub the OAuth token reader to find nothing so the auto-detect path is
+    // inert here — these tests cover the manual claude.ai flow, and a real
+    // keychain token on the dev box would otherwise satisfy the credential.
+    __setOAuthTokenReaderForTests(() => null);
   });
 
   afterEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
     invalidateCache();
-    __setProcListerForTests(null);
-    __resetScanThrottleForTests();
+    __setOAuthTokenReaderForTests(null);
+    __setOAuthFetcherForTests(null);
   });
 
   it("builds a cookie from the session key alone (no lastActiveOrg)", () => {
@@ -92,7 +88,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
   });
 
   it("ignores a stale claudeOrgId left in settings.json (no error, org dropped from cookie)", () => {
-    // Simulates an existing settings.json written by an older build.
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({ claudeSessionKey: "KEY2", claudeOrgId: STALE_ORG }),
@@ -123,7 +118,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
     const cookie = getSessionCookie();
     assert.ok(cookie);
     const org = await fetchOrgId(cookie, fetcher);
-    // The bootstrap value wins; the stale settings org is never consulted.
     assert.equal(org.orgId, BOOTSTRAP_ORG);
     assert.notEqual(org.orgId, STALE_ORG);
     assert.ok(urls.some((u) => u.includes("/bootstrap")));
@@ -152,7 +146,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
     });
     const data = await getRateLimits(fetcher);
     assert.match(data.error ?? "", /expired or invalid/i);
-    // Must NOT collapse into the generic "could not resolve" message.
     assert.doesNotMatch(data.error ?? "", /could not resolve/i);
   });
 
@@ -190,21 +183,19 @@ describe("claude-usage scanner — session key is the only credential", () => {
     assert.equal(data.needsSetup, undefined);
     assert.equal(data.fiveHour?.utilization, 42);
     assert.equal(data.sevenDay?.utilization, 7);
-    // Both the bootstrap and the org-scoped usage endpoint were hit.
+    assert.equal(data.credentialSource, "settings");
     assert.ok(urls.some((u) => u.includes("/bootstrap")));
     assert.ok(urls.some((u) => u.includes(`/${BOOTSTRAP_ORG}/usage`)));
   });
 
-  it("reports needsSetup when no session key is configured", async () => {
+  it("reports needsSetup when no key and no OAuth token is available", async () => {
     writeFileSync(SETTINGS_FILE, JSON.stringify({}));
     const { fetcher } = makeFetcher();
     const data = await getRateLimits(fetcher);
     assert.equal(data.needsSetup, true);
   });
 
-  // The dashboard branches its remedy ("Reconfigure" vs "Retry") on errorKind,
-  // so these lock the failure categories the UI depends on. A bad credential
-  // and a transient outage must NOT both look like a credential problem.
+  // The dashboard branches its remedy ("Reconfigure" vs "Retry") on errorKind.
   it("tags an expired/invalid key (bootstrap 401) as errorKind 'unauthorized'", async () => {
     writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "BAD" }));
     const fetcher: UsageFetcher = async () => ({
@@ -245,7 +236,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
     };
     const data = await getRateLimits(fetcher);
     assert.equal(data.errorKind, "rate_limited");
-    // The message must reassure rather than blame the credential.
     assert.match(data.error ?? "", /key is fine/i);
   });
 
@@ -269,16 +259,12 @@ describe("claude-usage scanner — session key is the only credential", () => {
     assert.equal(data.errorKind, "unavailable");
   });
 
-  // The cache/last-good buffer is fingerprinted by session key. These guard the
-  // race the silent-failure review surfaced: a key change must never be served
-  // the previous key's data, even without an explicit invalidateCache() (which
-  // a concurrent poller's read could otherwise race against).
+  // The cache/last-good buffer is fingerprinted by session key.
   it("re-fetches for a new key instead of returning the prior key's cached data", async () => {
     writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY_A" }));
     const first = await getRateLimits(makeFetcher().fetcher);
     assert.equal(first.fiveHour?.utilization, 42);
 
-    // Switch keys WITHOUT calling invalidateCache (simulates the race window).
     writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEY_B" }));
     const fetcherB: UsageFetcher = async (url) => {
       if (url.includes("/bootstrap")) {
@@ -299,7 +285,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
       };
     };
     const second = await getRateLimits(fetcherB);
-    // B's number (99%), never A's stale 42%.
     assert.equal(second.fiveHour?.utilization, 99);
   });
 
@@ -324,14 +309,12 @@ describe("claude-usage scanner — session key is the only credential", () => {
       return { ok: false, status: 429, json: async () => ({}) };
     };
     const second = await getRateLimits(fetcherB);
-    // Must report the rate limit, NOT silently pass off A's data as B's.
     assert.equal(second.errorKind, "rate_limited");
     assert.equal(second.fiveHour, null);
   });
 
   // Org selection — the usage endpoint is only authorized for the claude.ai
-  // ("chat") org. A user with a separate Anthropic-API org (often listed first
-  // in bootstrap) must not have it picked, or every /usage call 403s.
+  // ("chat") org.
   const API_ORG = "api0-1111-2222-3333-444455556666";
   const CHAT_ORG = "chat-1111-2222-3333-444455556666";
 
@@ -372,9 +355,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
   });
 
   it("selectUsageOrg returns null for a lone org that explicitly lacks chat", () => {
-    // An API-only account: the sole org advertises caps but none grant
-    // claude.ai access. Returning its uuid would 403 on /usage and look like
-    // an expired key — return null so the no-subscription message is shown.
     const orgId = selectUsageOrg([
       {
         organization: {
@@ -419,7 +399,6 @@ describe("claude-usage scanner — session key is the only credential", () => {
           }),
         };
       }
-      // The api org would 403 in reality; only the chat org returns usage.
       if (url.includes(`/${API_ORG}/`)) {
         return { ok: false, status: 403, json: async () => ({}) };
       }
@@ -434,14 +413,11 @@ describe("claude-usage scanner — session key is the only credential", () => {
     const data = await getRateLimits(fetcher);
     assert.equal(data.error, undefined);
     assert.equal(data.fiveHour?.utilization, 48);
-    // The usage call hit the chat org, never the api org.
     assert.ok(urls.some((u) => u.includes(`/${CHAT_ORG}/usage`)));
     assert.ok(!urls.some((u) => u.includes(`/${API_ORG}/usage`)));
   });
 
   it("no_org message names both causes (expired key AND no subscription)", async () => {
-    // An API-only account with a VALID key must not be told only that the key
-    // expired — the message must also surface the no-subscription cause.
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({ claudeSessionKey: "APIONLY" }),
@@ -464,100 +440,162 @@ describe("claude-usage scanner — session key is the only credential", () => {
   });
 });
 
-describe("claude-usage credential resolution (auto-detect + harvest)", () => {
+describe("claude-usage credential resolution (manual override vs OAuth)", () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true });
     invalidateCache();
-    setHarvestedSessionKey(null);
     delete process.env.CLAUDE_SESSION_KEY;
-    delete process.env.CLAUDE_SESSION_COOKIE;
     writeFileSync(SETTINGS_FILE, JSON.stringify({}));
+    __setOAuthTokenReaderForTests(() => null);
   });
   afterEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true });
     invalidateCache();
-    setHarvestedSessionKey(null);
     delete process.env.CLAUDE_SESSION_KEY;
-    delete process.env.CLAUDE_SESSION_COOKIE;
+    __setOAuthTokenReaderForTests(null);
+    __setOAuthFetcherForTests(null);
   });
 
-  it("uses a harvested cookie when no manual key is set", () => {
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
-    assert.deepEqual(resolveSessionKey(), {
-      key: "sk-ant-sid02-harvested",
-      source: "harvested",
-    });
-    assert.equal(getCredentialSource(), "harvested");
-    assert.equal(getSessionCookie(), "sessionKey=sk-ant-sid02-harvested");
-  });
-
-  it("prefers a manual settings key over a harvested cookie", () => {
+  it("resolveSessionKey returns a manual settings key as source 'settings'", () => {
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({ claudeSessionKey: "MANUAL" }),
     );
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
     assert.deepEqual(resolveSessionKey(), {
       key: "MANUAL",
       source: "settings",
     });
+    assert.equal(getCredentialSource(), "settings");
+    assert.equal(getSessionCookie(), "sessionKey=MANUAL");
   });
 
-  it("prefers CLAUDE_SESSION_KEY over a harvested cookie", () => {
+  it("resolveSessionKey returns CLAUDE_SESSION_KEY as source 'env'", () => {
     process.env.CLAUDE_SESSION_KEY = "ENVKEY";
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
     assert.equal(resolveSessionKey()?.source, "env");
   });
 
-  it("prefers a harvested cookie over the server's own env cookie", () => {
-    process.env.CLAUDE_SESSION_COOKIE = "sk-ant-sid02-serverenv";
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
-    assert.equal(resolveSessionKey()?.source, "harvested");
-  });
-
-  it("falls back to the server's own CLAUDE_SESSION_COOKIE (source 'auto')", () => {
-    process.env.CLAUDE_SESSION_COOKIE = "sk-ant-sid02-serverenv";
-    assert.deepEqual(resolveSessionKey(), {
-      key: "sk-ant-sid02-serverenv",
-      source: "auto",
-    });
-  });
-
-  it("skips all auto-detected sources when autoDetectClaudeSession is false", () => {
+  it("prefers a manual settings key over the env key", () => {
     writeFileSync(
       SETTINGS_FILE,
-      JSON.stringify({ autoDetectClaudeSession: false }),
+      JSON.stringify({ claudeSessionKey: "MANUAL" }),
     );
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
-    process.env.CLAUDE_SESSION_COOKIE = "sk-ant-sid02-serverenv";
-    // No manual key + auto-detect off → nothing resolves.
+    process.env.CLAUDE_SESSION_KEY = "ENVKEY";
+    assert.equal(resolveSessionKey()?.source, "settings");
+  });
+
+  it("resolveSessionKey is null when no manual key is set (OAuth handled separately)", () => {
     assert.equal(resolveSessionKey(), null);
     assert.equal(getCredentialSource(), null);
   });
 
-  it("still honors a manual key when autoDetectClaudeSession is false", () => {
+  it("uses the OAuth path (source 'oauth') when no manual key is set", async () => {
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "oauth-access-token",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+      subscriptionType: "max",
+    }));
+    __setOAuthFetcherForTests(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        five_hour: { utilization: 12, resets_at: "2026-06-28T10:00:00Z" },
+        seven_day: { utilization: 3, resets_at: "2026-07-05T00:00:00Z" },
+      }),
+    }));
+    const data = await getRateLimits();
+    assert.equal(data.error, undefined);
+    assert.equal(data.credentialSource, "oauth");
+    assert.equal(data.fiveHour?.utilization, 12);
+    assert.equal(data.account.subscriptionType, "max");
+  });
+
+  it("maps an expired OAuth token to errorKind 'stale_token'", async () => {
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "expired-token",
+      expiresAt: Date.now() - 1_000,
+      source: "keychain",
+    }));
+    const data = await getRateLimits();
+    assert.equal(data.credentialSource, "oauth");
+    assert.equal(data.errorKind, "stale_token");
+  });
+
+  it("maps an OAuth 401 to errorKind 'unauthorized'", async () => {
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "rejected-token",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+    }));
+    __setOAuthFetcherForTests(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    }));
+    const data = await getRateLimits();
+    assert.equal(data.errorKind, "unauthorized");
+  });
+
+  it("maps an OAuth 429 to errorKind 'rate_limited' and backs off (caches it)", async () => {
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "rate-limited-token",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+    }));
+    let calls = 0;
+    __setOAuthFetcherForTests(async () => {
+      calls += 1;
+      return { ok: false, status: 429, json: async () => ({}) };
+    });
+    const first = await getRateLimits();
+    assert.equal(first.errorKind, "rate_limited");
+    assert.equal(first.credentialSource, "oauth");
+    assert.match(first.error ?? "", /login is fine/i);
+    // A second read within the backoff window must be served from cache — the
+    // endpoint is NOT hit again (the whole point of caching the 429).
+    const second = await getRateLimits();
+    assert.equal(second.errorKind, "rate_limited");
+    assert.equal(calls, 1, "must not re-hit the endpoint during 429 backoff");
+  });
+
+  it("reports needsSetup when auto-detect is off and no manual key is set", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ autoDetectClaudeAccount: false }),
+    );
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "present-but-ignored",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+    }));
+    const data = await getRateLimits();
+    assert.equal(data.needsSetup, true);
+  });
+
+  it("honors the legacy autoDetectClaudeSession=false as a fallback", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ autoDetectClaudeSession: false }),
+    );
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "present-but-ignored",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+    }));
+    const data = await getRateLimits();
+    assert.equal(data.needsSetup, true);
+  });
+
+  it("still honors a manual key when auto-detect is off", async () => {
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({
         claudeSessionKey: "MANUAL",
-        autoDetectClaudeSession: false,
+        autoDetectClaudeAccount: false,
       }),
     );
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
-    assert.equal(resolveSessionKey()?.source, "settings");
-  });
-
-  it("setHarvestedSessionKey reports whether the value changed", () => {
-    assert.equal(setHarvestedSessionKey("sk-ant-sid02-a"), true);
-    assert.equal(setHarvestedSessionKey("sk-ant-sid02-a"), false); // same
-    assert.equal(setHarvestedSessionKey("sk-ant-sid02-b"), true); // changed
-    assert.equal(setHarvestedSessionKey(null), true); // cleared
-    assert.equal(setHarvestedSessionKey(null), false); // already null
-  });
-
-  it("stamps credentialSource on a successful getRateLimits", async () => {
-    setHarvestedSessionKey("sk-ant-sid02-harvested");
     const data = await getRateLimits(makeFetcher().fetcher);
-    assert.equal(data.credentialSource, "harvested");
+    assert.equal(data.credentialSource, "settings");
+    assert.equal(data.fiveHour?.utilization, 42);
   });
 });

@@ -16,9 +16,14 @@
 
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
-import { getSettings } from "../../settings.js";
-import { refreshHarvestedFromSessions } from "./cookieScanner.js";
-import { getHarvestedSessionKey } from "./sessionStore.js";
+import { getSettings, isAutoDetectAccountEnabled } from "../../settings.js";
+import {
+  getOAuthToken,
+  getOAuthUsage,
+  mapOAuthUsage,
+  type OAuthUsageRaw,
+  readAccountIdentity,
+} from "./oauthUsage.js";
 
 export interface RateLimitWindow {
   utilization: number;
@@ -51,7 +56,8 @@ export type ErrorKind =
   | "unauthorized"
   | "no_org"
   | "rate_limited"
-  | "unavailable";
+  | "unavailable"
+  | "stale_token";
 
 export interface RateLimitData {
   fiveHour: RateLimitWindow | null;
@@ -65,10 +71,10 @@ export interface RateLimitData {
   /** Failure category for the error, when `error` is set. Lets the dashboard
    * distinguish a bad credential from a transient outage. */
   errorKind?: ErrorKind;
-  /** Where the active session key came from (`auto` = inherited from Claude
-   * Code with no manual setup). Undefined when no credential is configured. */
+  /** Where the active credential came from (`oauth` = Claude Code's read-only
+   * login token, the zero-touch default). Undefined when none is configured. */
   credentialSource?: CredentialSource;
-  /** True when no session key is configured anywhere */
+  /** True when no usage credential is available anywhere */
   needsSetup?: boolean;
 }
 
@@ -109,7 +115,9 @@ const defaultFetcher: UsageFetcher = (url, init) => impit.fetch(url, init);
 let cached: { data: RateLimitData; expiresAt: number; fp: string } | null =
   null;
 let lastGood: { data: RateLimitData; fp: string } | null = null;
-const CACHE_TTL = 60_000;
+// 180s base TTL: the OAuth usage endpoint is shared with Claude Code itself, so
+// a generous cache keeps the dashboard's polling well clear of a 429.
+const CACHE_TTL = 180_000;
 const CACHE_TTL_429 = 5 * 60_000;
 
 /** Cached org ID — rarely changes */
@@ -143,28 +151,22 @@ function fingerprint(cookie: string): string {
 }
 
 /**
- * Where the active session key came from. The `harvested` and `auto` sources
- * are both auto-detected from Claude Code (no manual paste); the UI surfaces
- * them as such so the credential is never used silently.
+ * Where the active usage credential came from.
  *
- * - `settings` — an explicit manual paste.
+ * - `settings` — an explicit manual claude.ai session-key paste.
  * - `env` — an explicit `CLAUDE_SESSION_KEY` override.
- * - `harvested` — relayed from a spawned agent's SessionStart hook, held only
- *   in memory (see {@link ./sessionStore}). The primary zero-touch path; works
- *   on any install once an agent has run.
- * - `auto` — the server's own `CLAUDE_SESSION_COOKIE` env, present only when the
- *   server itself was launched from a Claude Code context.
+ * - `oauth` — the zero-touch default: Claude Code's read-only OAuth token (env
+ *   `CLAUDE_CODE_OAUTH_TOKEN`, macOS keychain, or `~/.claude/.credentials.json`).
+ *   See {@link ./oauthUsage}.
  */
-export type CredentialSource = "settings" | "env" | "harvested" | "auto";
+export type CredentialSource = "settings" | "env" | "oauth";
 
 /**
- * Resolve the session key and where it came from, in priority order:
- *   1. `settings.claudeSessionKey` — an explicit manual paste (always wins).
+ * Resolve the MANUAL claude.ai session key and where it came from, in priority
+ * order. This handles only the explicit override path — OAuth (the zero-touch
+ * default) is resolved separately in {@link getRateLimits}.
+ *   1. `settings.claudeSessionKey` — an explicit manual paste.
  *   2. `CLAUDE_SESSION_KEY` — an explicit env override.
- *   — the remaining auto-detected sources are skipped when the user has turned
- *     off `autoDetectClaudeSession` —
- *   3. harvested cookie — relayed from a spawned agent's hook (fresh, in-memory).
- *   4. `CLAUDE_SESSION_COOKIE` — the server's own env (CC-spawned server only).
  *
  * Exported for tests.
  */
@@ -177,19 +179,11 @@ export function resolveSessionKey(): {
   if (fromSettings) return { key: fromSettings, source: "settings" };
   const fromEnv = process.env.CLAUDE_SESSION_KEY?.trim();
   if (fromEnv) return { key: fromEnv, source: "env" };
-
-  // Auto-detection is opt-out: a privacy-conscious user can disable it and rely
-  // solely on a manual paste / explicit env.
-  if (settings.autoDetectClaudeSession === false) return null;
-
-  const fromHarvest = getHarvestedSessionKey();
-  if (fromHarvest) return { key: fromHarvest, source: "harvested" };
-  const fromClaudeCode = process.env.CLAUDE_SESSION_COOKIE?.trim();
-  if (fromClaudeCode) return { key: fromClaudeCode, source: "auto" };
   return null;
 }
 
-/** The source of the active credential, or null if none is configured. */
+/** The source of the active manual credential, or null if none is configured.
+ * Does not report `oauth` (resolved separately). */
 export function getCredentialSource(): CredentialSource | null {
   return resolveSessionKey()?.source ?? null;
 }
@@ -337,13 +331,6 @@ export async function fetchOrgId(
   }
 }
 
-function parseWindow(
-  raw: { utilization?: number; resets_at?: string } | null | undefined,
-): RateLimitWindow | null {
-  if (!raw || raw.utilization == null) return null;
-  return { utilization: raw.utilization, resetsAt: raw.resets_at ?? "" };
-}
-
 type UsageStatus = "ok" | "rate_limited" | "unauthorized" | "error";
 
 interface UsageResult {
@@ -384,32 +371,121 @@ export async function getRateLimits(
   // demoable without burning a real limit.
   if (usageOverride) return usageOverride;
 
-  // Auto-detect: pull the freshest session key from the user's running Claude
-  // sessions before resolving, so logging into a different account is picked up
-  // with no restart (the server's own env cookie is frozen at launch). Skipped
-  // when a manual key / env override is set — those win regardless, and there's
-  // no point shelling out to scan — or when auto-detect is off. A change busts
-  // the usage cache so the next read reflects the new account.
-  const settings = getSettings();
-  const hasManualOverride =
-    !!settings.claudeSessionKey?.trim() ||
-    !!process.env.CLAUDE_SESSION_KEY?.trim();
-  if (!hasManualOverride && settings.autoDetectClaudeSession !== false) {
-    if (await refreshHarvestedFromSessions()) invalidateCache();
+  // (b) A manual claude.ai session key (settings paste or `CLAUDE_SESSION_KEY`)
+  // is an explicit override and always wins. It uses the claude.ai cookie flow
+  // (bootstrap → /usage). The `credentialSource` label is stamped from the same
+  // resolution that produced the numbers.
+  const resolved = resolveSessionKey();
+  if (resolved) {
+    const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
+    return { ...data, credentialSource: resolved.source };
   }
 
-  // Resolve the credential exactly once, here, and thread it through — so the
-  // `credentialSource` label is always stamped from the same resolution that
-  // produced the numbers (no TOCTOU drift if the cookie changes mid-flight).
-  const resolved = resolveSessionKey();
-  if (!resolved) {
+  // (c) Zero-touch default: read Claude Code's OAuth token (read-only) and call
+  // Anthropic's OAuth usage endpoint. Opt-out via the auto-detect toggle.
+  if (!isAutoDetectAccountEnabled(getSettings())) {
     return {
-      ...errorResult("CLAUDE_SESSION_KEY not set"),
+      ...errorResult("No Claude usage credential configured"),
       needsSetup: true,
     };
   }
-  const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
-  return { ...data, credentialSource: resolved.source };
+  return computeOAuthRateLimits();
+}
+
+/**
+ * OAuth usage path. Reads Claude Code's local token (read-only, never
+ * refreshed), calls the OAuth usage endpoint, and maps the result. Caches by a
+ * fingerprint of the access token so an account switch (new token) misses cache.
+ */
+async function computeOAuthRateLimits(): Promise<RateLimitData> {
+  const token = getOAuthToken();
+  if (!token) {
+    return {
+      ...errorResult(
+        "No Claude Code login found. Log in with `claude` (or paste a session key) to track usage.",
+      ),
+      needsSetup: true,
+    };
+  }
+
+  const now = Date.now();
+  const fp = fingerprint(token.accessToken);
+  if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
+
+  // Reuse the token already read above — getOAuthUsage must not re-read the
+  // keychain/file (double blocking sync read) nor risk fetching with a token
+  // that differs from the one the cache fingerprint was computed from.
+  const result = await getOAuthUsage(token);
+
+  if (result.status === "stale") {
+    return {
+      ...errorResult(
+        "Your Claude Code login token has expired. Run a Claude Code session to refresh it, or paste a session key.",
+        "stale_token",
+      ),
+      credentialSource: "oauth",
+    };
+  }
+  if (result.status === "unauthorized") {
+    return {
+      ...errorResult(
+        "Claude rejected the Claude Code login token. Run a Claude Code session to refresh it, or paste a session key.",
+        "unauthorized",
+      ),
+      credentialSource: "oauth",
+    };
+  }
+  if (result.status === "rate_limited") {
+    // Back off: the OAuth usage endpoint is shared with Claude Code itself, so
+    // re-hitting it every poll worsens the limit. Cache the rate-limited state
+    // for CACHE_TTL_429 so subsequent reads short-circuit. Serve last-good for
+    // this token if we have it; otherwise cache the error result itself.
+    if (lastGood && lastGood.fp === fp) {
+      cached = { data: lastGood.data, expiresAt: now + CACHE_TTL_429, fp };
+      return lastGood.data;
+    }
+    const errored: RateLimitData = {
+      ...errorResult(
+        "Anthropic is rate-limiting usage requests right now. Your login is fine — this clears on its own in a few minutes.",
+        "rate_limited",
+      ),
+      credentialSource: "oauth",
+    };
+    cached = { data: errored, expiresAt: now + CACHE_TTL_429, fp };
+    return errored;
+  }
+  if (result.status === "unavailable") {
+    // Serve last-good for the SAME token if we have it, so a transient blip
+    // doesn't blank the panel; otherwise report the transient failure.
+    if (lastGood && lastGood.fp === fp) {
+      cached = { data: lastGood.data, expiresAt: now + CACHE_TTL, fp };
+      return lastGood.data;
+    }
+    return {
+      ...errorResult(
+        "Anthropic's usage API is temporarily unavailable. Your login is fine — retry in a moment.",
+        "unavailable",
+      ),
+      credentialSource: "oauth",
+    };
+  }
+
+  // Account display is email · plan. The plan rides on the OAuth token; the
+  // email comes from ~/.claude.json. The org UUID is intentionally NOT shown.
+  const identity = readAccountIdentity();
+  const data: RateLimitData = {
+    ...mapOAuthUsage(result.data),
+    account: {
+      email: identity?.email,
+      subscriptionType: token.subscriptionType,
+    },
+    fetchedAt: new Date().toISOString(),
+    credentialSource: "oauth",
+  };
+
+  lastGood = { data, fp };
+  cached = { data, expiresAt: now + CACHE_TTL, fp };
+  return data;
 }
 
 async function computeRateLimits(
@@ -483,34 +559,11 @@ async function computeRateLimits(
         );
   }
 
-  const extra = body.extra_usage as {
-    is_enabled?: boolean;
-    monthly_limit?: number;
-    used_credits?: number;
-    utilization?: number | null;
-  } | null;
-
+  // The claude.ai /usage body has the same shape as the OAuth usage response
+  // (five_hour / seven_day / seven_day_sonnet / seven_day_opus / extra_usage),
+  // so the mapping is shared with the OAuth path (see oauthUsage.mapOAuthUsage).
   const data: RateLimitData = {
-    fiveHour: parseWindow(
-      body.five_hour as { utilization?: number; resets_at?: string },
-    ),
-    sevenDay: parseWindow(
-      body.seven_day as { utilization?: number; resets_at?: string },
-    ),
-    sevenDaySonnet: parseWindow(
-      body.seven_day_sonnet as { utilization?: number; resets_at?: string },
-    ),
-    sevenDayOpus: parseWindow(
-      body.seven_day_opus as { utilization?: number; resets_at?: string },
-    ),
-    extraUsage: extra?.is_enabled
-      ? {
-          isEnabled: true,
-          monthlyLimit: extra.monthly_limit ?? 0,
-          usedCredits: extra.used_credits ?? 0,
-          utilization: extra.utilization ?? null,
-        }
-      : null,
+    ...mapOAuthUsage(body as unknown as OAuthUsageRaw),
     account: {},
     fetchedAt: new Date().toISOString(),
   };
