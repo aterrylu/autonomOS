@@ -3,7 +3,6 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
-import { DragProvider } from "../layout/DragContext";
 import { type SessionInfo, useStore } from "../store";
 import { Sidebar } from "./Sidebar";
 
@@ -71,11 +70,7 @@ function stubEmptyFetch() {
 }
 
 function renderSidebar() {
-  return render(
-    <DragProvider>
-      <Sidebar />
-    </DragProvider>,
-  );
+  return render(<Sidebar />);
 }
 
 beforeEach(() => {

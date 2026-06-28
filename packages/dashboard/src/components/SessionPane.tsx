@@ -10,7 +10,7 @@ interface SessionPaneProps {
 
 /**
  * A single session's view container. Renders a terminal.
- * The tab bar in PaneSlot handles the session title — no title bar here.
+ * The dockview tab (StatusTab) handles the session title — no title bar here.
  */
 export const SessionPane = memo(function SessionPane({
   sessionId,

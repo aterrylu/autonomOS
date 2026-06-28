@@ -2,7 +2,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
-import { DragProvider } from "../layout/DragContext";
 import { useStore } from "../store";
 import { Sidebar } from "./Sidebar";
 
@@ -11,8 +10,7 @@ import { Sidebar } from "./Sidebar";
  *
  * Sidebar fetches /api/agents/tree (org chart), /api/agents, and
  * /api/notifications on mount — we stub fetch to return empty payloads so the
- * component reaches a stable rendered state. It also requires a DragProvider
- * (useDragContext throws otherwise), matching how App.tsx wraps it.
+ * component reaches a stable rendered state.
  */
 
 function stubEmptyFetch() {
@@ -33,11 +31,7 @@ function stubEmptyFetch() {
 }
 
 function renderSidebar() {
-  return render(
-    <DragProvider>
-      <Sidebar />
-    </DragProvider>,
-  );
+  return render(<Sidebar />);
 }
 
 beforeEach(() => {

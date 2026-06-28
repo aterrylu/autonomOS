@@ -35,7 +35,7 @@ export function focusTerminal(sessionId: string) {
     pendingFocusRaf = null;
   }
   // Poll until the terminal's container is visible, then focus.
-  // SessionMountLayer may take 1-3 frames to assign a rect and flip display.
+  // dockview may take 1-3 frames to mount the panel and make it visible.
   let attempts = 0;
   function tryFocus() {
     pendingFocusRaf = null;

@@ -1,16 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeRootLeaf } from "./layout/layoutTree";
 import { useStore } from "./store";
 
 function resetStore() {
-  const root = makeRootLeaf(null);
   useStore.setState({
     schedules: {},
     schedulesLoading: false,
     schedulesError: null,
     schedulerStatus: null,
-    layout: root,
-    focusedLeafId: root.id,
     activePane: null,
   });
 }

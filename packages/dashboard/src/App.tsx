@@ -4,15 +4,6 @@ import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
-import { DragProvider } from "./layout/DragContext";
-import { LayoutProvider } from "./layout/LayoutContext";
-import {
-  activeTabPane,
-  allLeafIds,
-  findLeaf,
-  findLeafByPaneId,
-} from "./layout/layoutTree";
-import { SessionMountLayer } from "./layout/SessionMountLayer";
 import { requestNotificationPermission, THEMES, useStore } from "./store";
 import { isMac } from "./utils/platform";
 
@@ -100,7 +91,6 @@ function LoginPage() {
 export function App() {
   const theme = useStore((s) => s.theme);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
-  const layoutEngine = useStore((s) => s.layoutEngine);
   const page = THEMES[theme].page;
   const viewportHeight = useViewportHeight();
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -117,8 +107,8 @@ export function App() {
     if (!sessionsInitialFetchDone) return;
     if (sessionsCount > 0) return;
     if (sessionStorage.getItem("autonomos_first_run_handled") === "1") return;
-    const { layout, openCreateAgent } = useStore.getState();
-    if (findLeafByPaneId(layout, "create-agent")) return;
+    const { activePane, openCreateAgent } = useStore.getState();
+    if (activePane?.type === "create-agent") return;
     sessionStorage.setItem("autonomos_first_run_handled", "1");
     openCreateAgent();
   }, [authState, sessionsCount, sessionsInitialFetchDone]);
@@ -155,50 +145,6 @@ export function App() {
       if (mod && e.key === "b") {
         e.preventDefault();
         useStore.getState().toggleSidebar();
-        return;
-      }
-
-      // Ctrl+D — split focused pane vertically (side-by-side), new session
-      if (e.ctrlKey && !e.shiftKey && e.key === "d") {
-        e.preventDefault();
-        const { focusedLeafId, layout, sessions } = useStore.getState();
-        const leaf = findLeaf(layout, focusedLeafId);
-        const cwd = (() => {
-          const p = leaf ? activeTabPane(leaf) : null;
-          return p?.type === "session"
-            ? (sessions.find((s) => s.id === p.id)?.workingDirectory ?? "~")
-            : "~";
-        })();
-        useStore
-          .getState()
-          .createSessionIntoLeaf(focusedLeafId, "vertical", "second", cwd);
-        return;
-      }
-
-      // Ctrl+Shift+D — split focused pane horizontally (top/bottom), new session
-      if (e.ctrlKey && e.shiftKey && e.key === "D") {
-        e.preventDefault();
-        const { focusedLeafId, layout, sessions } = useStore.getState();
-        const leaf = findLeaf(layout, focusedLeafId);
-        const cwd = (() => {
-          const p = leaf ? activeTabPane(leaf) : null;
-          return p?.type === "session"
-            ? (sessions.find((s) => s.id === p.id)?.workingDirectory ?? "~")
-            : "~";
-        })();
-        useStore
-          .getState()
-          .createSessionIntoLeaf(focusedLeafId, "horizontal", "second", cwd);
-        return;
-      }
-
-      // Ctrl+W — close focused pane
-      if (e.ctrlKey && !e.shiftKey && e.key === "w") {
-        const { focusedLeafId, layout } = useStore.getState();
-        if (allLeafIds(layout).length > 1) {
-          e.preventDefault();
-          useStore.getState().closeLeaf(focusedLeafId);
-        }
         return;
       }
     };
@@ -268,44 +214,38 @@ export function App() {
   }
 
   return (
-    <DragProvider>
-      <LayoutProvider>
-        <ThemeVars />
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: notification permission on first interaction */}
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: notification permission on first interaction */}
-        <div
-          className="flex flex-col font-sans"
-          style={{
-            background: page.bg,
-            color: page.fg,
-            height: viewportHeight,
-          }}
-          onClick={requestNotificationPermission}
-        >
-          <Header />
-          <div className="relative flex flex-1 overflow-hidden">
-            {sidebarOpen && (
-              <>
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop dismiss */}
-                <div
-                  className="absolute inset-0 z-10 md:hidden"
-                  onClick={() => useStore.getState().toggleSidebar()}
-                />
-                <Sidebar />
-                <SidebarResizeHandle />
-              </>
-            )}
-            <SessionViewManager />
-            {/* Legacy engine only: absolutely positions all session/preview
-                instances into their slot rects. The dockview engine (ADR-047)
-                mounts content inside its own panels, so the overlay is omitted. */}
-            {layoutEngine !== "dockview" && <SessionMountLayer />}
-          </div>
-          <StatusBar />
+    <>
+      <ThemeVars />
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: notification permission on first interaction */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: notification permission on first interaction */}
+      <div
+        className="flex flex-col font-sans"
+        style={{
+          background: page.bg,
+          color: page.fg,
+          height: viewportHeight,
+        }}
+        onClick={requestNotificationPermission}
+      >
+        <Header />
+        <div className="relative flex flex-1 overflow-hidden">
+          {sidebarOpen && (
+            <>
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop dismiss */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop dismiss */}
+              <div
+                className="absolute inset-0 z-10 md:hidden"
+                onClick={() => useStore.getState().toggleSidebar()}
+              />
+              <Sidebar />
+              <SidebarResizeHandle />
+            </>
+          )}
+          <SessionViewManager />
         </div>
-      </LayoutProvider>
-    </DragProvider>
+        <StatusBar />
+      </div>
+    </>
   );
 }
 
