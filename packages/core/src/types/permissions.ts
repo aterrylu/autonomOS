@@ -84,7 +84,7 @@ export const PERMISSION_MODE_INFO: Record<
 > = {
   default: {
     mode: "default",
-    label: "Default",
+    label: "Ask",
     summary: "Agent asks for approval before each privileged action.",
     perProvider: {
       "claude-code": "Prompts on each tool use",
@@ -94,7 +94,7 @@ export const PERMISSION_MODE_INFO: Record<
   },
   auto: {
     mode: "auto",
-    label: "Auto-edit",
+    label: "Accept edits",
     summary:
       "Auto-approves file edits; still gates riskier actions where the provider can.",
     perProvider: {
