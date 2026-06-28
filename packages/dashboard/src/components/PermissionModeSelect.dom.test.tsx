@@ -19,7 +19,7 @@ describe("PermissionModeSelect", () => {
     render(
       <PermissionModeSelect value="bypass" onChange={() => {}} page={page} />,
     );
-    for (const label of ["Default", "Auto-edit", "Plan", "Bypass"]) {
+    for (const label of ["Ask", "Accept edits", "Plan", "Bypass"]) {
       expect(
         screen.getByRole("option", { name: new RegExp(label) }),
       ).toBeInTheDocument();
