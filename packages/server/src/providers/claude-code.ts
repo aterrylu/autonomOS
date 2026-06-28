@@ -203,11 +203,9 @@ export const claudeCodeProvider: AgentProvider = {
 
     // Inline --settings payload:
     //   - hooks: relay every CC event to /api/hooks for status tracking.
-    //     (Note: we deliberately do NOT relay CLAUDE_SESSION_COOKIE from spawned
-    //     agents — they only ever inherit the server's frozen launch cookie,
-    //     never the user's current account. The usage plugin instead reads the
-    //     freshest key from the user's own interactive sessions; see
-    //     plugins/claude-usage/cookieScanner.ts.)
+    //     (Note: nothing credential-related is relayed from spawned agents. The
+    //     usage plugin reads Claude Code's own local OAuth token, read-only; see
+    //     plugins/claude-usage/oauthUsage.ts.)
     //   - statusLine (optional, default on): autonomOS-aware bar at the bottom
     //     of the CC terminal. Replaces the user's personal statusLine for
     //     spawned sessions only. CC merges these as parallel keys at the root.

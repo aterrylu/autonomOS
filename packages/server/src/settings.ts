@@ -11,13 +11,18 @@ import { isValidChannelId } from "./channels.js";
 import { ensureConfigDir, getConfigDir } from "./configDir.js";
 
 export interface AppSettings {
-  /** Claude session key for usage plugin (sk-ant-sid01-...) */
+  /** Manual claude.ai session key for the usage plugin (sk-ant-sid01-...).
+   * An explicit override of the zero-touch OAuth default. */
   claudeSessionKey?: string;
   /**
-   * Auto-detect the Claude session for the usage plugin (default: true).
-   * When on, the cookie is harvested in-memory from a spawned agent's hook (or
-   * the server's own `CLAUDE_SESSION_COOKIE`) so usage works with no manual
-   * paste. Set false to use only an explicitly-entered key.
+   * Auto-detect the Claude account for the usage plugin (default: true).
+   * When on, usage is read via Claude Code's local OAuth token (read-only) with
+   * no manual paste. Set false to use only an explicitly-entered session key.
+   */
+  autoDetectClaudeAccount?: boolean;
+  /**
+   * @deprecated Renamed to {@link autoDetectClaudeAccount}. Read as a fallback
+   * for back-compat with older settings.json files; never written by new code.
    */
   autoDetectClaudeSession?: boolean;
   /**
@@ -182,6 +187,21 @@ export function getSettings(): AppSettings {
   }
 
   return data;
+}
+
+/**
+ * Whether the usage plugin may auto-detect the Claude account (OAuth path).
+ * Default ON. Reads the new `autoDetectClaudeAccount` key, falling back to the
+ * deprecated `autoDetectClaudeSession` for back-compat with older configs.
+ */
+export function isAutoDetectAccountEnabled(settings: AppSettings): boolean {
+  if (typeof settings.autoDetectClaudeAccount === "boolean") {
+    return settings.autoDetectClaudeAccount;
+  }
+  if (typeof settings.autoDetectClaudeSession === "boolean") {
+    return settings.autoDetectClaudeSession;
+  }
+  return true;
 }
 
 export function updateSettings(partial: Partial<AppSettings>): AppSettings {
