@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
+import { isDegenerate } from "../terminal/resize";
 import type {
   IFitAddon,
   ILink,
@@ -589,14 +590,6 @@ export function useTerminal(
   }, [theme]);
 
   return { copyToast };
-}
-
-// The FitAddon floors at 2 cols / 1 row; a fit against an unsettled renderer
-// (e.g. just after a WebGL context loss) can collapse to that floor. Such a
-// size is never a real layout, so we refuse to propagate it to the PTY — doing
-// so is what makes the terminal "shrink to a weird tiny state" on idle.
-function isDegenerate(cols: number, rows: number): boolean {
-  return cols <= 2 || rows <= 1;
 }
 
 function nudgeResize(

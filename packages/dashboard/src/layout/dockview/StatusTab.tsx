@@ -4,8 +4,8 @@ import {
   AgentStatusIcon,
 } from "../../components/ui/agent-status-icon";
 import { THEMES, useStore } from "../../store";
-import { paneFromId } from "./DockviewLayout";
 import type { PaneParams } from "./PaneContent";
+import { paneFromId } from "./paneId";
 
 /**
  * StatusTab — custom dockview tab renderer (registered as `"status"` and the

@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { type ActivePane, THEMES, type ThemeName, useStore } from "../../store";
 import { DRAG_TYPE, decodeDragData } from "../DragContext";
 import { PaneContent, type PaneParams } from "./PaneContent";
+import { paneFromId, SINGLETON_TYPES } from "./paneId";
 import { StatusTab } from "./StatusTab";
 
 /** dockview drop Position → addPanel Direction (inlined to avoid importing from
@@ -108,24 +109,15 @@ function dockviewThemeVars(theme: ThemeName): React.CSSProperties {
 const COMPONENTS = { pane: PaneContent };
 const TAB_COMPONENTS = { status: StatusTab };
 
-/** Pane types that exist as a single global instance (the id IS the type). */
-export const SINGLETON_TYPES = new Set<string>([
-  "orgchart",
-  "templates",
-  "schedules",
-  "create-agent",
-]);
-
-/**
- * Reconstruct an ActivePane descriptor from a dockview panel id. The id space is
- * unambiguous: singleton views use a fixed id == their type, preview panes are
- * tracked in the store, everything else is a session.
- */
-export function paneFromId(id: string, previewIds: Set<string>): ActivePane {
-  if (SINGLETON_TYPES.has(id))
-    return { type: id as ActivePane["type"], id } as ActivePane;
-  if (previewIds.has(id)) return { type: "preview", id };
-  return { type: "session", id };
+/** A fresh workspace id. `crypto.randomUUID` needs a secure context (HTTPS or
+ *  localhost); a plain-HTTP remote deploy would throw, so fall back to a
+ *  collision-resistant manual id there. */
+function newWorkspaceId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `ws-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
 
 export function DockviewLayout() {
@@ -160,27 +152,72 @@ export function DockviewLayout() {
     const st = useStore.getState();
     const wsId = st.dvPaneWorkspace[pane.id];
     const ws = wsId ? st.dvWorkspaces[wsId] : undefined;
-    const desired = ws ? ws.paneIds : [pane.id];
+    // merge() validates persisted paneIds, but stay defensive at the boundary.
+    const desired = ws && Array.isArray(ws.paneIds) ? ws.paneIds : [pane.id];
     const current = api.panels.map((p) => p.id);
     const sameSet =
       desired.length === current.length &&
       desired.every((id) => current.includes(id));
 
+    // Replace the whole dock with just `pane` (the solo / fallback arrangement).
+    const showSolo = () => {
+      for (const panel of [...api.panels]) api.removePanel(panel);
+      if (!api.getPanel(pane.id)) {
+        api.addPanel<PaneParams>({
+          id: pane.id,
+          component: "pane",
+          tabComponent: "status",
+          params: { pane },
+        });
+      }
+    };
+
     suppressWriteback.current = true;
     try {
       if (!sameSet) {
         if (ws) {
-          api.fromJSON(ws.serialized as Parameters<typeof api.fromJSON>[0]);
-        } else {
-          for (const panel of [...api.panels]) api.removePanel(panel);
-          if (!api.getPanel(pane.id)) {
-            api.addPanel<PaneParams>({
-              id: pane.id,
-              component: "pane",
-              tabComponent: "status",
-              params: { pane },
-            });
+          let restored = false;
+          try {
+            api.fromJSON(ws.serialized as Parameters<typeof api.fromJSON>[0]);
+            restored = true;
+          } catch (err) {
+            // A corrupt / version-incompatible persisted layout would otherwise
+            // throw on every render and blank the dashboard (no error boundary).
+            // Drop the poison workspace so a reload can't re-trigger it, and
+            // fall back to showing the pane solo.
+            console.error(
+              `[autonomOS] dockview workspace restore failed for pane ${pane.id}; dropping it and showing solo:`,
+              err,
+            );
+            const s = useStore.getState();
+            const wsMap = { ...s.dvWorkspaces };
+            const paneMap = { ...s.dvPaneWorkspace };
+            if (wsId) {
+              for (const m of wsMap[wsId]?.paneIds ?? []) delete paneMap[m];
+              delete wsMap[wsId];
+            }
+            s.setDvWorkspaces(wsMap, paneMap);
+            showSolo();
           }
+          // A stale workspace blob can re-add a since-exited agent's panel.
+          // Strip dead-session panels the restore brought back — but only once
+          // the real session list is known, so a cold load doesn't nuke valid
+          // panes before the first fetch lands.
+          if (restored && st.sessionsInitialFetchDone) {
+            const live = new Set(st.sessions.map((s) => s.id));
+            const previewIds = new Set(st.previewPanes.map((p) => p.id));
+            for (const panel of [...api.panels]) {
+              const id = panel.id;
+              if (
+                !SINGLETON_TYPES.has(id) &&
+                !previewIds.has(id) &&
+                !live.has(id)
+              )
+                api.removePanel(panel);
+            }
+          }
+        } else {
+          showSolo();
         }
       }
       api.getPanel(pane.id)?.api.setActive();
@@ -239,7 +276,7 @@ export function DockviewLayout() {
 
     const wsId =
       memberIds.map((id) => st.dvPaneWorkspace[id]).find(Boolean) ??
-      crypto.randomUUID();
+      newWorkspaceId();
     workspaces[wsId] = { paneIds: memberIds, serialized: api.toJSON() };
     for (const id of memberIds) paneWorkspace[id] = wsId;
     st.setDvWorkspaces(workspaces, paneWorkspace);

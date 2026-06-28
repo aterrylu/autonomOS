@@ -519,10 +519,10 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
  *  mark with a status corner badge; "status" shows the status-only icon. */
 export type AgentIconStyle = "provider" | "status";
 
-/** Which layout engine renders the pane area. "legacy" is the hand-rolled
- *  binary-tree split system (SplitLayout + SessionMountLayer); "dockview" is
- *  the dockview-react rewrite (ADR-047). Behind a flag during migration so the
- *  new engine ships opt-in with zero default behavior change. */
+/** Which layout engine renders the pane area. "dockview" (the default, ADR-047)
+ *  is the dockview-react rewrite; "legacy" is the original hand-rolled binary-tree
+ *  split system (SplitLayout + SessionMountLayer), kept behind this flag as a
+ *  fallback until it is removed in a later phase. */
 export type LayoutEngine = "legacy" | "dockview";
 
 /** A bound "workspace" (dockview engine only, ADR-047): a saved dockview
@@ -793,9 +793,8 @@ export const useStore = create<AppState>()(
       return {
         theme: "void",
         agentIconStyle: "provider",
-        // TEMP(preview-only): default flipped to "dockview" so Terry can see the
-        // new engine without a UI toggle. REVERT to "legacy" before committing
-        // PR-1 — the ADR-047 zero-default-change guarantee requires legacy default.
+        // dockview is the default layout engine (ADR-047). "legacy" remains
+        // available behind this flag as a fallback until it is removed.
         layoutEngine: "dockview",
         dvWorkspaces: {},
         dvPaneWorkspace: {},
@@ -1308,7 +1307,8 @@ export const useStore = create<AppState>()(
 
         openOrgChart: () => {
           const orgPane: ActivePane = { type: "orgchart", id: "orgchart" };
-          // dockview: open solo in its own group (drag to compose). See switchPane.
+          // dockview: navigate to it — restores its bound workspace if it has
+          // one, else opens solo (drag to compose). See switchPane.
           if (get().layoutEngine === "dockview") {
             get().switchPane(orgPane);
             return;
@@ -2132,16 +2132,50 @@ export const useStore = create<AppState>()(
           saved?.layoutEngine === "dockview"
         )
           merged.layoutEngine = saved.layoutEngine;
-        if (saved?.dvWorkspaces && typeof saved.dvWorkspaces === "object")
-          merged.dvWorkspaces = saved.dvWorkspaces as Record<
-            string,
-            DvWorkspace
-          >;
-        if (saved?.dvPaneWorkspace && typeof saved.dvPaneWorkspace === "object")
-          merged.dvPaneWorkspace = saved.dvPaneWorkspace as Record<
-            string,
-            string
-          >;
+        // Validate persisted dockview workspaces: drop any entry whose shape
+        // doesn't match { paneIds: string[]; serialized } so a corrupt/stale
+        // blob degrades to "no saved workspaces" instead of throwing later when
+        // DockviewLayout reads `paneIds` / hands `serialized` to api.fromJSON().
+        if (
+          saved?.dvWorkspaces &&
+          typeof saved.dvWorkspaces === "object" &&
+          !Array.isArray(saved.dvWorkspaces)
+        ) {
+          const clean: Record<string, DvWorkspace> = {};
+          for (const [k, v] of Object.entries(
+            saved.dvWorkspaces as Record<string, unknown>,
+          )) {
+            if (
+              v &&
+              typeof v === "object" &&
+              Array.isArray((v as DvWorkspace).paneIds) &&
+              (v as DvWorkspace).paneIds.every((id) => typeof id === "string")
+            ) {
+              clean[k] = v as DvWorkspace;
+            } else {
+              console.warn(
+                `[autonomOS] Dropping malformed persisted workspace "${k}"`,
+              );
+            }
+          }
+          merged.dvWorkspaces = clean;
+        }
+        if (
+          saved?.dvPaneWorkspace &&
+          typeof saved.dvPaneWorkspace === "object" &&
+          !Array.isArray(saved.dvPaneWorkspace)
+        ) {
+          const validWs = merged.dvWorkspaces;
+          const clean: Record<string, string> = {};
+          for (const [paneId, wsId] of Object.entries(
+            saved.dvPaneWorkspace as Record<string, unknown>,
+          )) {
+            // Only keep reverse-map entries that point at a workspace that
+            // survived validation — keeps the two maps consistent.
+            if (typeof wsId === "string" && validWs[wsId]) clean[paneId] = wsId;
+          }
+          merged.dvPaneWorkspace = clean;
+        }
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (
