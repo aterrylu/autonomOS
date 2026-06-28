@@ -7,12 +7,7 @@ import React, {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { focusTerminal } from "../hooks/useTerminal";
-import {
-  DRAG_TYPE,
-  encodeDragData,
-  useDragContext,
-} from "../layout/DragContext";
-import { allTabPanes } from "../layout/layoutTree";
+import { DRAG_TYPE, encodeDragData } from "../layout/DragContext";
 import type {
   ActivePane,
   PreviewPaneInfo,
@@ -54,7 +49,7 @@ function useSidebarData() {
       status: s.status,
       notificationCounts: s.notificationCounts,
       agentStatuses: s.agentStatuses,
-      layout: s.layout,
+      visiblePaneIds: s.visiblePaneIds,
       sidebarViewMode: s.sidebarViewMode,
       hierarchyOrder: s.hierarchyOrder,
     })),
@@ -176,7 +171,7 @@ export function Sidebar() {
     status,
     notificationCounts,
     agentStatuses,
-    layout,
+    visiblePaneIds: visiblePaneIdList,
     sidebarViewMode,
     hierarchyOrder,
   } = useSidebarData();
@@ -202,14 +197,13 @@ export function Sidebar() {
   const accent = THEMES[theme].terminal.yellow;
 
   const isSpawning = status === "spawning...";
-  const { startDrag, endDrag } = useDragContext();
 
-  // Set of pane IDs currently visible on screen (active tab in each leaf)
-  const visiblePaneIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const p of allTabPanes(layout)) ids.add(p.id);
-    return ids;
-  }, [layout]);
+  // Set of pane IDs dockview is currently showing (sourced from the store via
+  // DockviewLayout's onDidLayoutChange). Used to mark which rows are on-screen.
+  const visiblePaneIds = useMemo(
+    () => new Set(visiblePaneIdList),
+    [visiblePaneIdList],
+  );
 
   // Flat-view sections — pinned on top, unpinned below. Each is a plain list of
   // sessions/previews (no group containers).
@@ -365,7 +359,6 @@ export function Sidebar() {
     const data = { pane };
     e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
     e.dataTransfer.effectAllowed = "move";
-    startDrag(data);
   }
 
   function handleDragOver(
@@ -392,7 +385,6 @@ export function Sidebar() {
   function handleDragEnd() {
     dragRef.current = null;
     setDropTarget(null);
-    endDrag();
   }
 
   function isPaneActive(pane: ActivePane): boolean {

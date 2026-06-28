@@ -6,7 +6,6 @@ import {
 } from "@autonomos/core";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { findLeafByPaneId } from "../layout/layoutTree";
 import { THEMES, useStore } from "../store";
 import { PermissionModeSelect } from "./PermissionModeSelect";
 
@@ -30,8 +29,6 @@ export function CreateAgentPanel() {
     status,
     fetchProjects,
     fetchTemplates,
-    layout,
-    closeTab,
     defaultPermissionMode,
   } = useStore(
     useShallow((s) => ({
@@ -41,8 +38,6 @@ export function CreateAgentPanel() {
       status: s.status,
       fetchProjects: s.fetchProjects,
       fetchTemplates: s.fetchTemplates,
-      layout: s.layout,
-      closeTab: s.closeTab,
       defaultPermissionMode: s.permissionMode,
     })),
   );
@@ -167,10 +162,8 @@ export function CreateAgentPanel() {
         appendSystemPrompt: tmpl?.systemPrompt,
         permissionMode,
       });
-
-      // Close the Create Agent tab on success
-      const leaf = findLeafByPaneId(layout, "create-agent");
-      if (leaf) closeTab(leaf.id, "create-agent");
+      // spawnSession's onSuccess switchPanes to the new agent, which solo-
+      // replaces this create-agent panel — no explicit close needed.
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     }

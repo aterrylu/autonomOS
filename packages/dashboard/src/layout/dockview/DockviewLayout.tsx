@@ -95,7 +95,7 @@ function dockviewThemeVars(theme: ThemeName): React.CSSProperties {
 
 /**
  * DockviewLayout — the dockview-react rewrite of the pane area (ADR-047),
- * rendered only when `layoutEngine === "dockview"`.
+ * the only layout engine.
  *
  * dockview OWNS the pane topology here (the ownership inversion). Clicking a
  * sidebar item just sets `activePane`; this component reacts by restoring that
@@ -142,90 +142,101 @@ export function DockviewLayout() {
 
   const activePane = useStore((s) => s.activePane);
   const sessions = useStore((s) => s.sessions);
+  const previewPanes = useStore((s) => s.previewPanes);
   const theme = useStore((s) => s.theme);
+
+  // Mirror the panel ids dockview is currently showing into the store so the
+  // sidebar can mark on-screen rows (replaces the legacy layout-tree scan).
+  const pushVisible = useCallback((api: DockviewApi) => {
+    useStore.getState().setVisiblePaneIds(api.panels.map((p) => p.id));
+  }, []);
 
   // Apply the arrangement for `pane`: restore its bound workspace (drag-composed
   // group) via fromJSON, or show it solo. fromJSON / solo re-create panels — the
   // accepted keep-alive tradeoff for workspace switching (ADR-047): terminals
   // reconnect to their PTY on remount, so no scrollback-loss beyond a reattach.
-  const syncToActive = useCallback((api: DockviewApi, pane: ActivePane) => {
-    const st = useStore.getState();
-    const wsId = st.dvPaneWorkspace[pane.id];
-    const ws = wsId ? st.dvWorkspaces[wsId] : undefined;
-    // merge() validates persisted paneIds, but stay defensive at the boundary.
-    const desired = ws && Array.isArray(ws.paneIds) ? ws.paneIds : [pane.id];
-    const current = api.panels.map((p) => p.id);
-    const sameSet =
-      desired.length === current.length &&
-      desired.every((id) => current.includes(id));
+  const syncToActive = useCallback(
+    (api: DockviewApi, pane: ActivePane) => {
+      const st = useStore.getState();
+      const wsId = st.dvPaneWorkspace[pane.id];
+      const ws = wsId ? st.dvWorkspaces[wsId] : undefined;
+      // merge() validates persisted paneIds, but stay defensive at the boundary.
+      const desired = ws && Array.isArray(ws.paneIds) ? ws.paneIds : [pane.id];
+      const current = api.panels.map((p) => p.id);
+      const sameSet =
+        desired.length === current.length &&
+        desired.every((id) => current.includes(id));
 
-    // Replace the whole dock with just `pane` (the solo / fallback arrangement).
-    const showSolo = () => {
-      for (const panel of [...api.panels]) api.removePanel(panel);
-      if (!api.getPanel(pane.id)) {
-        api.addPanel<PaneParams>({
-          id: pane.id,
-          component: "pane",
-          tabComponent: "status",
-          params: { pane },
-        });
-      }
-    };
+      // Replace the whole dock with just `pane` (the solo / fallback arrangement).
+      const showSolo = () => {
+        for (const panel of [...api.panels]) api.removePanel(panel);
+        if (!api.getPanel(pane.id)) {
+          api.addPanel<PaneParams>({
+            id: pane.id,
+            component: "pane",
+            tabComponent: "status",
+            params: { pane },
+          });
+        }
+      };
 
-    suppressWriteback.current = true;
-    try {
-      if (!sameSet) {
-        if (ws) {
-          let restored = false;
-          try {
-            api.fromJSON(ws.serialized as Parameters<typeof api.fromJSON>[0]);
-            restored = true;
-          } catch (err) {
-            // A corrupt / version-incompatible persisted layout would otherwise
-            // throw on every render and blank the dashboard (no error boundary).
-            // Drop the poison workspace so a reload can't re-trigger it, and
-            // fall back to showing the pane solo.
-            console.error(
-              `[autonomOS] dockview workspace restore failed for pane ${pane.id}; dropping it and showing solo:`,
-              err,
-            );
-            const s = useStore.getState();
-            const wsMap = { ...s.dvWorkspaces };
-            const paneMap = { ...s.dvPaneWorkspace };
-            if (wsId) {
-              for (const m of wsMap[wsId]?.paneIds ?? []) delete paneMap[m];
-              delete wsMap[wsId];
+      suppressWriteback.current = true;
+      try {
+        if (!sameSet) {
+          if (ws) {
+            let restored = false;
+            try {
+              api.fromJSON(ws.serialized as Parameters<typeof api.fromJSON>[0]);
+              restored = true;
+            } catch (err) {
+              // A corrupt / version-incompatible persisted layout would otherwise
+              // throw on every render and blank the dashboard (no error boundary).
+              // Drop the poison workspace so a reload can't re-trigger it, and
+              // fall back to showing the pane solo.
+              console.error(
+                `[autonomOS] dockview workspace restore failed for pane ${pane.id}; dropping it and showing solo:`,
+                err,
+              );
+              const s = useStore.getState();
+              const wsMap = { ...s.dvWorkspaces };
+              const paneMap = { ...s.dvPaneWorkspace };
+              if (wsId) {
+                for (const m of wsMap[wsId]?.paneIds ?? []) delete paneMap[m];
+                delete wsMap[wsId];
+              }
+              s.setDvWorkspaces(wsMap, paneMap);
+              showSolo();
             }
-            s.setDvWorkspaces(wsMap, paneMap);
+            // A stale workspace blob can re-add a since-exited agent's panel.
+            // Strip dead-session panels the restore brought back — but only once
+            // the real session list is known, so a cold load doesn't nuke valid
+            // panes before the first fetch lands.
+            if (restored && st.sessionsInitialFetchDone) {
+              const live = new Set(st.sessions.map((s) => s.id));
+              const previewIds = new Set(st.previewPanes.map((p) => p.id));
+              for (const panel of [...api.panels]) {
+                const id = panel.id;
+                if (
+                  !SINGLETON_TYPES.has(id) &&
+                  !previewIds.has(id) &&
+                  !live.has(id)
+                )
+                  api.removePanel(panel);
+              }
+            }
+          } else {
             showSolo();
           }
-          // A stale workspace blob can re-add a since-exited agent's panel.
-          // Strip dead-session panels the restore brought back — but only once
-          // the real session list is known, so a cold load doesn't nuke valid
-          // panes before the first fetch lands.
-          if (restored && st.sessionsInitialFetchDone) {
-            const live = new Set(st.sessions.map((s) => s.id));
-            const previewIds = new Set(st.previewPanes.map((p) => p.id));
-            for (const panel of [...api.panels]) {
-              const id = panel.id;
-              if (
-                !SINGLETON_TYPES.has(id) &&
-                !previewIds.has(id) &&
-                !live.has(id)
-              )
-                api.removePanel(panel);
-            }
-          }
-        } else {
-          showSolo();
         }
+        api.getPanel(pane.id)?.api.setActive();
+        appliedActiveId.current = pane.id;
+      } finally {
+        suppressWriteback.current = false;
       }
-      api.getPanel(pane.id)?.api.setActive();
-      appliedActiveId.current = pane.id;
-    } finally {
-      suppressWriteback.current = false;
-    }
-  }, []);
+      pushVisible(api);
+    },
+    [pushVisible],
+  );
 
   // Drop panels for sessions that no longer exist (exited / killed agents),
   // preventing ghost tabs from lingering once dockview owns the topology.
@@ -320,15 +331,21 @@ export function DockviewLayout() {
       // doesn't re-sync the arrangement we just built by hand.
       appliedActiveId.current = pane.id;
       bindWorkspace(api);
+      pushVisible(api);
       useStore.getState().setActivePane(pane);
     },
-    [bindWorkspace],
+    [bindWorkspace, pushVisible],
   );
 
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
       const api = event.api;
       apiRef.current = api;
+
+      // Keep the store's visiblePaneIds in sync with whatever panels dockview is
+      // showing — fires on add/remove/move so the sidebar's on-screen marks track
+      // every arrangement change.
+      api.onDidLayoutChange(() => pushVisible(api));
 
       // dockview active panel -> store. Only genuine user tab clicks write back;
       // programmatic mutations (syncToActive / prune) suppress this, and an
@@ -385,7 +402,7 @@ export function DockviewLayout() {
       // zero panels. The mount effect below runs post-commit (where fromJSON
       // works) and performs the initial restore.
     },
-    [handleExternalDrop],
+    [handleExternalDrop, pushVisible],
   );
 
   // Initial restore (post-mount) + react to sidebar clicks (switchPane sets
@@ -399,13 +416,22 @@ export function DockviewLayout() {
     }
   }, [activePane, syncToActive]);
 
-  // Prune ghost panels whenever the live session list changes. `sessions` is the
-  // intentional trigger — pruneDead reads the list fresh via getState(), so biome
-  // can't see the usage; keep the dep or the prune never re-runs on exit.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sessions is the re-run trigger
+  // Prune ghost panels whenever the live session list OR the open previews
+  // change — a dead session (exit) and a closed preview both leave an orphan
+  // panel that pruneDead removes. `sessions`/`previewPanes` are the intentional
+  // triggers (pruneDead reads them fresh via getState(), so biome can't see the
+  // usage); keep the deps or the prune never re-runs.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessions/previewPanes are the re-run triggers
   useEffect(() => {
     if (apiRef.current) pruneDead(apiRef.current);
-  }, [sessions, pruneDead]);
+  }, [sessions, previewPanes, pruneDead]);
+
+  // Clear visiblePaneIds when this component unmounts — SessionViewManager
+  // unmounts DockviewLayout when activePane goes null (the empty state), and a
+  // stale set would keep the sidebar highlighting rows for a dock that's gone.
+  useEffect(() => {
+    return () => useStore.getState().setVisiblePaneIds([]);
+  }, []);
 
   // Track the in-flight sidebar drag's pane id (for the onWillShowOverlay
   // decision; getData is readable at dragstart, not during dragover), and settle

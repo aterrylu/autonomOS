@@ -2,7 +2,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
-import { DragProvider } from "../layout/DragContext";
 import { type SessionInfo, useStore } from "../store";
 import { Sidebar } from "./Sidebar";
 
@@ -76,11 +75,7 @@ function row(name: string): HTMLElement {
 }
 
 function renderSidebar() {
-  return render(
-    <DragProvider>
-      <Sidebar />
-    </DragProvider>,
-  );
+  return render(<Sidebar />);
 }
 
 afterEach(() => {
