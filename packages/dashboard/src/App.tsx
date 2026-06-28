@@ -100,6 +100,7 @@ function LoginPage() {
 export function App() {
   const theme = useStore((s) => s.theme);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const layoutEngine = useStore((s) => s.layoutEngine);
   const page = THEMES[theme].page;
   const viewportHeight = useViewportHeight();
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -296,8 +297,10 @@ export function App() {
               </>
             )}
             <SessionViewManager />
-            {/* Absolutely positions all session/preview instances into their slot rects */}
-            <SessionMountLayer />
+            {/* Legacy engine only: absolutely positions all session/preview
+                instances into their slot rects. The dockview engine (ADR-047)
+                mounts content inside its own panels, so the overlay is omitted. */}
+            {layoutEngine !== "dockview" && <SessionMountLayer />}
           </div>
           <StatusBar />
         </div>

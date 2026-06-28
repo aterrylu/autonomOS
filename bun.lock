@@ -15,7 +15,7 @@
     },
     "packages/app": {
       "name": "@autonomos/app",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "devDependencies": {
         "@types/node": "^22",
         "@types/react": "^19.2.14",
@@ -32,7 +32,7 @@
     },
     "packages/cli": {
       "name": "@autonomos/cli",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "bin": {
         "autonomos": "./src/index.ts",
       },
@@ -47,11 +47,11 @@
     },
     "packages/core": {
       "name": "@autonomos/core",
-      "version": "0.2.0",
+      "version": "0.3.0",
     },
     "packages/dashboard": {
       "name": "@autonomos/dashboard",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@autonomos/core": "workspace:*",
         "@types/dompurify": "^3.2.0",
@@ -60,6 +60,7 @@
         "@xterm/addon-unicode11": "^0.9.0",
         "@xterm/addon-webgl": "^0.19",
         "@xterm/xterm": "^6",
+        "dockview-react": "^7.0.2",
         "dompurify": "^3.3.3",
         "framer-motion": "^12.38.0",
         "lucide-react": "^1.0.1",
@@ -92,7 +93,7 @@
     },
     "packages/server": {
       "name": "@autonomos/server",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.71",
         "@autonomos/core": "workspace:*",
@@ -1092,6 +1093,12 @@
     "dmg-builder": ["dmg-builder@25.1.8", "", { "dependencies": { "app-builder-lib": "25.1.8", "builder-util": "25.1.7", "builder-util-runtime": "9.2.10", "fs-extra": "^10.1.0", "iconv-lite": "^0.6.2", "js-yaml": "^4.1.0" }, "optionalDependencies": { "dmg-license": "^1.0.11" } }, "sha512-NoXo6Liy2heSklTI5OIZbCgXC1RzrDQsZkeEwXhdOro3FT1VBOvbubvscdPnjVuQ4AMwwv61oaH96AbiYg9EnQ=="],
 
     "dmg-license": ["dmg-license@1.0.11", "", { "dependencies": { "@types/plist": "^3.0.1", "@types/verror": "^1.10.3", "ajv": "^6.10.0", "crc": "^3.8.0", "iconv-corefoundation": "^1.1.7", "plist": "^3.0.4", "smart-buffer": "^4.0.2", "verror": "^1.10.0" }, "os": "darwin", "bin": { "dmg-license": "bin/dmg-license.js" } }, "sha512-ZdzmqwKmECOWJpqefloC5OJy1+WZBBse5+MR88z9g9Zn4VY+WYUkAyojmhzJckH5YbbZGcYIuGAkY5/Ys5OM2Q=="],
+
+    "dockview": ["dockview@7.0.2", "", { "dependencies": { "dockview-core": "^7.0.2" } }, "sha512-QhgbJ7RTFsWvrs1lQZKPGCLTGjKU7kI5ZWX5lwU03arM9lIoQlbfv1b/uQ7V5zTkRw7JDndEqjKMgEFw2I8Kow=="],
+
+    "dockview-core": ["dockview-core@7.0.2", "", {}, "sha512-i666ndkUdT4U+Bo2Yu3d6KwCJNqe21VJ0oschdgcXucZ5TquzBFX94zcUBEfg4IewTv2BuiPJ7r/2JTGLLv6ig=="],
+
+    "dockview-react": ["dockview-react@7.0.2", "", { "dependencies": { "dockview": "^7.0.2" }, "peerDependencies": { "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0", "react-dom": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-tnbRM1C/Ok1n/HXGMF0OWmc6Qlx5pbsSJucxX+3XcuNYkZgKiaNJX3BpdBlSxexjytTI/Xywh0ZNGF3/4Fa9LA=="],
 
     "dom-accessibility-api": ["dom-accessibility-api@0.5.16", "", {}, "sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg=="],
 

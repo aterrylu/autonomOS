@@ -304,6 +304,12 @@ export const THEMES: Record<ThemeName, AppTheme> = {
       magenta: "#fae38e",
       cyan: "#90e1c6",
       white: "#c7c7c7",
+      // xterm 6 reserves a 14px scrollbar gutter and paints a translucent grey
+      // slider by default — visible as a band next to a split divider. Make it
+      // transparent at rest (gutter renders as terminal bg) and subtle on hover.
+      scrollbarSliderBackground: "rgba(0,0,0,0)",
+      scrollbarSliderHoverBackground: "rgba(255,255,255,0.18)",
+      scrollbarSliderActiveBackground: "rgba(255,255,255,0.30)",
     },
     page: {
       bg: "#0a0e14",
@@ -326,6 +332,10 @@ export const THEMES: Record<ThemeName, AppTheme> = {
       magenta: "#6f42c1",
       cyan: "#1b7c83",
       white: "#959da5",
+      // Transparent at rest; subtle DARK slider on hover (light theme).
+      scrollbarSliderBackground: "rgba(0,0,0,0)",
+      scrollbarSliderHoverBackground: "rgba(0,0,0,0.18)",
+      scrollbarSliderActiveBackground: "rgba(0,0,0,0.30)",
     },
     page: {
       bg: "#fafaf8",
@@ -348,6 +358,10 @@ export const THEMES: Record<ThemeName, AppTheme> = {
       magenta: "#dd99dd",
       cyan: "#6dd9d9",
       white: "#dddddd",
+      // Transparent at rest; subtle light slider on hover (dark theme).
+      scrollbarSliderBackground: "rgba(0,0,0,0)",
+      scrollbarSliderHoverBackground: "rgba(255,255,255,0.18)",
+      scrollbarSliderActiveBackground: "rgba(255,255,255,0.30)",
     },
     page: {
       bg: "#000000",
@@ -505,10 +519,30 @@ export function sidebarItemPane(item: SidebarItem): ActivePane {
  *  mark with a status corner badge; "status" shows the status-only icon. */
 export type AgentIconStyle = "provider" | "status";
 
+/** Which layout engine renders the pane area. "legacy" is the hand-rolled
+ *  binary-tree split system (SplitLayout + SessionMountLayer); "dockview" is
+ *  the dockview-react rewrite (ADR-047). Behind a flag during migration so the
+ *  new engine ships opt-in with zero default behavior change. */
+export type LayoutEngine = "legacy" | "dockview";
+
+/** A bound "workspace" (dockview engine only, ADR-047): a saved dockview
+ *  arrangement plus the panes it contains. Dragging panes together binds them
+ *  into a workspace; clicking any member restores the whole arrangement. The
+ *  serialized layout is dockview's `SerializedDockview`, kept opaque here. */
+export interface DvWorkspace {
+  paneIds: string[];
+  serialized: unknown;
+}
+
 interface AppState {
   // Persisted
   theme: ThemeName;
   agentIconStyle: AgentIconStyle;
+  layoutEngine: LayoutEngine;
+  /** dockview engine: bound workspaces (drag-composed groups) keyed by id. */
+  dvWorkspaces: Record<string, DvWorkspace>;
+  /** dockview engine: paneId → workspace id, for restore-on-click. */
+  dvPaneWorkspace: Record<string, string>;
   sidebarViewMode: "flat" | "hierarchy";
   /** True once the user has explicitly chosen a sidebar view via the toggle.
    *  When false (never toggled, or a pre-flag persisted state), rehydration
@@ -564,6 +598,17 @@ interface AppState {
   // Actions
   cycleTheme: () => void;
   setAgentIconStyle: (style: AgentIconStyle) => void;
+  setLayoutEngine: (engine: LayoutEngine) => void;
+  /** Replace the dockview workspace bindings (workspaces + paneId→ws map). */
+  setDvWorkspaces: (
+    workspaces: Record<string, DvWorkspace>,
+    paneWorkspace: Record<string, string>,
+  ) => void;
+  /** Set the active pane directly without mutating layout topology. Used by
+   *  the dockview bridge (ADR-047) to reflect dockview's active panel back into
+   *  the store; unlike switchPane it never restores groups or collapses the
+   *  legacy tree. */
+  setActivePane: (pane: ActivePane | null) => void;
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
@@ -748,6 +793,12 @@ export const useStore = create<AppState>()(
       return {
         theme: "void",
         agentIconStyle: "provider",
+        // TEMP(preview-only): default flipped to "dockview" so Terry can see the
+        // new engine without a UI toggle. REVERT to "legacy" before committing
+        // PR-1 — the ADR-047 zero-default-change guarantee requires legacy default.
+        layoutEngine: "dockview",
+        dvWorkspaces: {},
+        dvPaneWorkspace: {},
         sidebarViewMode: "hierarchy",
         sidebarViewModeExplicit: false,
         activePane: null,
@@ -787,6 +838,11 @@ export const useStore = create<AppState>()(
         },
         setAgentIconStyle: (style: AgentIconStyle) =>
           set({ agentIconStyle: style }),
+        setLayoutEngine: (engine: LayoutEngine) =>
+          set({ layoutEngine: engine }),
+        setDvWorkspaces: (workspaces, paneWorkspace) =>
+          set({ dvWorkspaces: workspaces, dvPaneWorkspace: paneWorkspace }),
+        setActivePane: (pane) => set({ activePane: pane }),
         toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
         setSidebarWidth: (width: number) => {
           if (!Number.isFinite(width)) return;
@@ -805,6 +861,16 @@ export const useStore = create<AppState>()(
             set({ activePane: null });
             return;
           }
+
+          // dockview engine (ADR-047): clicking a sidebar item is NAVIGATION.
+          // DockviewLayout owns the arrangement — it reacts to activePane and
+          // either restores the pane's bound workspace (drag-composed group) or
+          // shows it solo. So clicking only needs to set the active pane here.
+          if (get().layoutEngine === "dockview") {
+            set({ activePane: pane });
+            return;
+          }
+
           const { layout, focusedLeafId, groups, activeGroupId } = get();
 
           // Case 1: pane is in the currently active group — just focus it
@@ -990,36 +1056,45 @@ export const useStore = create<AppState>()(
           // Prune layout tabs referencing sessions that no longer exist.
           // Runs even when session list is unchanged — layout may have stale
           // tabs from localStorage persisted across page reloads.
-          const validIds = new Set(sessions.map((s) => s.id));
-          const { layout, focusedLeafId, groups, activeGroupId } = get();
-          const pruned = pruneStaleSessionTabs(layout, validIds);
-          if (pruned && pruned !== layout) {
-            const newFocused = findLeaf(pruned, focusedLeafId)
-              ? focusedLeafId
-              : nextLeafId(pruned, focusedLeafId);
-            const newActive = derivedActivePane(pruned, newFocused);
-            const groupUpdates = syncGroupAfterRemoval(
-              groups,
-              activeGroupId,
-              pruned,
-              newFocused,
-            );
-            set({
-              layout: pruned,
-              focusedLeafId: newFocused,
-              activePane: newActive,
-              ...groupUpdates,
-            });
-          } else if (!pruned) {
-            // All tabs were stale — reset to empty root
-            const root = makeRootLeaf(null);
-            set({
-              layout: root,
-              focusedLeafId: root.id,
-              activePane: null,
-              groups: {},
-              activeGroupId: null,
-            });
+          //
+          // dockview mode SKIPS this: the legacy `layout` tree is vestigial there
+          // (DockviewLayout owns the topology and prunes dead-session panels via
+          // its own pruneDead). Letting this run would clobber the dockview-owned
+          // `activePane` — e.g. a transiently-empty first fetch would null the
+          // persisted active pane and we'd cold-load to a blank pane area instead
+          // of restoring what the user was looking at.
+          if (get().layoutEngine !== "dockview") {
+            const validIds = new Set(sessions.map((s) => s.id));
+            const { layout, focusedLeafId, groups, activeGroupId } = get();
+            const pruned = pruneStaleSessionTabs(layout, validIds);
+            if (pruned && pruned !== layout) {
+              const newFocused = findLeaf(pruned, focusedLeafId)
+                ? focusedLeafId
+                : nextLeafId(pruned, focusedLeafId);
+              const newActive = derivedActivePane(pruned, newFocused);
+              const groupUpdates = syncGroupAfterRemoval(
+                groups,
+                activeGroupId,
+                pruned,
+                newFocused,
+              );
+              set({
+                layout: pruned,
+                focusedLeafId: newFocused,
+                activePane: newActive,
+                ...groupUpdates,
+              });
+            } else if (!pruned) {
+              // All tabs were stale — reset to empty root
+              const root = makeRootLeaf(null);
+              set({
+                layout: root,
+                focusedLeafId: root.id,
+                activePane: null,
+                groups: {},
+                activeGroupId: null,
+              });
+            }
           }
         },
         fetchProjects: async () => {
@@ -1111,11 +1186,15 @@ export const useStore = create<AppState>()(
         },
 
         openCreateAgent: () => {
-          const { layout, focusedLeafId } = get();
           const pane: ActivePane = {
             type: "create-agent",
             id: "create-agent",
           };
+          if (get().layoutEngine === "dockview") {
+            get().switchPane(pane);
+            return;
+          }
+          const { layout, focusedLeafId } = get();
           if (findLeafByPaneId(layout, "create-agent")) {
             get().switchPane(pane);
             return;
@@ -1228,8 +1307,13 @@ export const useStore = create<AppState>()(
         },
 
         openOrgChart: () => {
-          const { layout, focusedLeafId } = get();
           const orgPane: ActivePane = { type: "orgchart", id: "orgchart" };
+          // dockview: open solo in its own group (drag to compose). See switchPane.
+          if (get().layoutEngine === "dockview") {
+            get().switchPane(orgPane);
+            return;
+          }
+          const { layout, focusedLeafId } = get();
           // If orgchart tab already exists anywhere, just switch to it
           if (findLeafByPaneId(layout, "orgchart")) {
             get().switchPane(orgPane);
@@ -1242,8 +1326,12 @@ export const useStore = create<AppState>()(
         },
 
         openTemplates: () => {
-          const { layout, focusedLeafId } = get();
           const pane: ActivePane = { type: "templates", id: "templates" };
+          if (get().layoutEngine === "dockview") {
+            get().switchPane(pane);
+            return;
+          }
+          const { layout, focusedLeafId } = get();
           if (findLeafByPaneId(layout, "templates")) {
             get().switchPane(pane);
             return;
@@ -1317,8 +1405,12 @@ export const useStore = create<AppState>()(
         },
 
         openSchedules: () => {
-          const { layout, focusedLeafId } = get();
           const pane: ActivePane = { type: "schedules", id: "schedules" };
+          if (get().layoutEngine === "dockview") {
+            get().switchPane(pane);
+            return;
+          }
+          const { layout, focusedLeafId } = get();
           if (findLeafByPaneId(layout, "schedules")) {
             get().switchPane(pane);
             return;
@@ -2006,6 +2098,9 @@ export const useStore = create<AppState>()(
       partialize: (state) => ({
         theme: state.theme,
         agentIconStyle: state.agentIconStyle,
+        layoutEngine: state.layoutEngine,
+        dvWorkspaces: state.dvWorkspaces,
+        dvPaneWorkspace: state.dvPaneWorkspace,
         sidebarViewMode: state.sidebarViewMode,
         sidebarViewModeExplicit: state.sidebarViewModeExplicit,
         activePane: state.activePane,
@@ -2032,6 +2127,21 @@ export const useStore = create<AppState>()(
           saved?.agentIconStyle === "status"
         )
           merged.agentIconStyle = saved.agentIconStyle;
+        if (
+          saved?.layoutEngine === "legacy" ||
+          saved?.layoutEngine === "dockview"
+        )
+          merged.layoutEngine = saved.layoutEngine;
+        if (saved?.dvWorkspaces && typeof saved.dvWorkspaces === "object")
+          merged.dvWorkspaces = saved.dvWorkspaces as Record<
+            string,
+            DvWorkspace
+          >;
+        if (saved?.dvPaneWorkspace && typeof saved.dvPaneWorkspace === "object")
+          merged.dvPaneWorkspace = saved.dvPaneWorkspace as Record<
+            string,
+            string
+          >;
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (

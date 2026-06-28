@@ -26,6 +26,13 @@ function resetStore() {
     previewPanes: [],
     groups: {},
     activeGroupId: null,
+    // These suites exercise the legacy binary-tree layout (switchPane/split/
+    // closeTab build and mutate `layout`). The store default is now "dockview"
+    // (ADR-047), under which switchPane sets activePane only and leaves the tree
+    // empty — so pin legacy mode here to test the legacy engine on its own terms.
+    layoutEngine: "legacy",
+    dvWorkspaces: {},
+    dvPaneWorkspace: {},
     layout: root,
     focusedLeafId: root.id,
   });
@@ -132,7 +139,6 @@ describe("switchPane", () => {
     useStore.getState().switchPane(null);
     expect(useStore.getState().activePane).toBeNull();
   });
-
   it("cleans stale memberPaneIds when pane not in layout", () => {
     const { pane1, pane2 } = setupSplitView("s1", "s2");
     const { activeGroupId, groups } = useStore.getState();
@@ -160,6 +166,53 @@ describe("switchPane", () => {
     if (group) {
       expect(group.memberPaneIds).not.toContain("stale-pane");
     }
+  });
+});
+
+// ── switchPane: dockview engine (ADR-047 — the default) ──────────────
+// Under dockview, DockviewLayout owns the pane topology; the store just tracks
+// `activePane`. Clicking is pure navigation — it opens the pane SOLO and never
+// builds or mutates the legacy binary tree / `groups`. Composition is drag-only
+// (exercised end-to-end in Playwright, not here).
+describe("switchPane (dockview engine — default)", () => {
+  beforeEach(() => {
+    useStore.setState({ layoutEngine: "dockview" });
+  });
+
+  it("opens a pane solo: sets activePane, leaves the legacy tree untouched", () => {
+    const layoutBefore = useStore.getState().layout;
+    useStore.getState().switchPane(sessionPane("s1"));
+
+    const state = useStore.getState();
+    expect(state.activePane).toEqual(sessionPane("s1"));
+    // No tree rebuild, no group — dockview owns the arrangement.
+    expect(state.layout).toBe(layoutBefore);
+    expect(state.activeGroupId).toBeNull();
+    expect(state.groups).toEqual({});
+  });
+
+  it("clicking another agent navigates solo (never swaps a group in)", () => {
+    useStore.getState().switchPane(sessionPane("s1"));
+    useStore.getState().switchPane(sessionPane("s2"));
+
+    expect(useStore.getState().activePane).toEqual(sessionPane("s2"));
+    expect(useStore.getState().groups).toEqual({});
+  });
+
+  it("openOrgChart routes through switchPane and opens the view solo", () => {
+    useStore.getState().switchPane(sessionPane("s1"));
+    useStore.getState().openOrgChart();
+
+    expect(useStore.getState().activePane).toEqual({
+      type: "orgchart",
+      id: "orgchart",
+    });
+  });
+
+  it("switchPane(null) still clears activePane", () => {
+    useStore.getState().switchPane(sessionPane("s1"));
+    useStore.getState().switchPane(null);
+    expect(useStore.getState().activePane).toBeNull();
   });
 });
 

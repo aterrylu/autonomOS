@@ -1,0 +1,119 @@
+import type { IDockviewPanelHeaderProps } from "dockview-react";
+import {
+  type AgentStatus,
+  AgentStatusIcon,
+} from "../../components/ui/agent-status-icon";
+import { THEMES, useStore } from "../../store";
+import { paneFromId } from "./DockviewLayout";
+import type { PaneParams } from "./PaneContent";
+
+/**
+ * StatusTab — custom dockview tab renderer (registered as `"status"` and the
+ * default tab). Shows the agent status icon + title + a close button, matching
+ * the legacy TabBar (ADR-047). Reuses AgentStatusIcon.
+ *
+ * Close removes the panel via dockview's panel API (dockview owns the topology),
+ * then reconciles the bound workspace: drop the closed pane from its group's
+ * membership and re-serialize the remainder, or dissolve the group entirely once
+ * only one pane is left (a 1-pane group is just a solo pane). Finally it moves
+ * the active pane to whatever dockview now shows.
+ */
+export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
+  const { pane } = props.params;
+  const theme = useStore((s) => s.theme);
+  const sessions = useStore((s) => s.sessions);
+  const previewPanes = useStore((s) => s.previewPanes);
+  const agentStatuses = useStore((s) => s.agentStatuses);
+  const page = THEMES[theme].page;
+
+  const title = ((): string => {
+    switch (pane.type) {
+      case "session":
+        return (
+          sessions.find((s) => s.id === pane.id)?.name || pane.id.slice(0, 8)
+        );
+      case "preview":
+        return previewPanes.find((p) => p.id === pane.id)?.title || "Preview";
+      case "orgchart":
+        return "Org Chart";
+      case "templates":
+        return "Templates";
+      case "schedules":
+        return "Schedules";
+      case "create-agent":
+        return "New Agent";
+      default:
+        return "Tab";
+    }
+  })();
+
+  const status: AgentStatus | null =
+    pane.type === "session"
+      ? ((agentStatuses[pane.id]?.status as AgentStatus) ?? "unknown")
+      : null;
+
+  function handleClose(e: React.MouseEvent) {
+    e.stopPropagation();
+    const api = props.containerApi;
+    const st = useStore.getState();
+    const wsId = st.dvPaneWorkspace[pane.id];
+
+    // Remove the panel from dockview (it owns the topology).
+    props.api.close();
+
+    // Reconcile the bound workspace this pane belonged to.
+    if (wsId && st.dvWorkspaces[wsId]) {
+      const ws = st.dvWorkspaces[wsId];
+      const remaining = ws.paneIds.filter((id) => id !== pane.id);
+      const workspaces = { ...st.dvWorkspaces };
+      const paneWorkspace = { ...st.dvPaneWorkspace };
+      delete paneWorkspace[pane.id];
+      if (remaining.length <= 1) {
+        // A lone pane isn't a group — dissolve the workspace, unbind the rest.
+        delete workspaces[wsId];
+        for (const id of ws.paneIds) delete paneWorkspace[id];
+      } else {
+        // toJSON() now reflects the post-close arrangement.
+        workspaces[wsId] = { paneIds: remaining, serialized: api.toJSON() };
+      }
+      st.setDvWorkspaces(workspaces, paneWorkspace);
+    }
+
+    // Follow dockview's new active panel (or clear to the empty state).
+    const nextId = api.activePanel?.id;
+    if (nextId) {
+      const previewIds = new Set(st.previewPanes.map((p) => p.id));
+      st.setActivePane(paneFromId(nextId, previewIds));
+    } else {
+      st.setActivePane(null);
+    }
+  }
+
+  return (
+    <div
+      className="group/tab flex items-center gap-1.5 px-2 h-full text-xs"
+      style={{ color: page.fg }}
+    >
+      <span className="shrink-0" style={{ width: 12, height: 12 }}>
+        {status && <AgentStatusIcon status={status} size={12} />}
+      </span>
+      <span className="truncate">{title}</span>
+      <button
+        type="button"
+        className="shrink-0 rounded opacity-0 group-hover/tab:opacity-60 hover:!opacity-100 cursor-pointer ml-1"
+        style={{
+          fontSize: 10,
+          lineHeight: 1,
+          background: "none",
+          border: "none",
+          color: "inherit",
+        }}
+        onClick={handleClose}
+        tabIndex={-1}
+        aria-label={`Close ${title}`}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
