@@ -11,6 +11,31 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.4.0] — 2026-06-28
+
+### Minor Changes
+
+- [#249](https://github.com/aterrylu/autonomOS/pull/249) `8a0257a` — feat(dashboard): default hierarchical sidebar view + remove exited-agents list
+- [#250](https://github.com/aterrylu/autonomOS/pull/250) `4e1fde3` — feat(dashboard): flat-view agent pinning + drag-reorder
+- [#257](https://github.com/aterrylu/autonomOS/pull/257) `08de6c2` — feat(settings): per-provider permission modes (replaces autonomousMode)
+- [#261](https://github.com/aterrylu/autonomOS/pull/261) `4806642` — fix(settings): default permission mode is 'default', not 'bypass' (fail-closed)
+- [#263](https://github.com/aterrylu/autonomOS/pull/263) `0998a6d` — feat(dashboard): rebuild tabs + split-pane layout on dockview, default on
+
+### Patch Changes
+
+- [#244](https://github.com/aterrylu/autonomOS/pull/244) `49e35f8` — fix(release): consolidated CHANGELOG.md misses changesets without @autonomos/app
+- [#248](https://github.com/aterrylu/autonomOS/pull/248) `69b9a2e` — feat(dashboard): brighter active-agent highlight in sidebar
+- [#253](https://github.com/aterrylu/autonomOS/pull/253) `37b4372` — perf(server): flag-gated PTY→WebSocket frame coalescing + ablation harness
+- [#254](https://github.com/aterrylu/autonomOS/pull/254) `5b57cfe` — fix(server): resume after self_exit fails with 'resumeAgentId not found'
+- [#255](https://github.com/aterrylu/autonomOS/pull/255) `1c393c5` — feat(dashboard): vertical pin icon in flat-view sidebar rows
+- [#258](https://github.com/aterrylu/autonomOS/pull/258) `42b56a4` — fix(claude-usage): switch accounts when a new Claude session is detected
+- [#259](https://github.com/aterrylu/autonomOS/pull/259) `8117dfe` — test(server): quarantine usage-queue-sim-integration flake
+- [#260](https://github.com/aterrylu/autonomOS/pull/260) `c786abd` — perf(server): enable terminal frame coalescing by default (leading-edge)
+- [#264](https://github.com/aterrylu/autonomOS/pull/264) `c36e0ae` — feat(claude-usage): read-only OAuth usage + manual override; remove cookie scan
+- [#265](https://github.com/aterrylu/autonomOS/pull/265) `333534d` — fix(dashboard): clearer permission-mode labels (Ask, Accept edits)
+- [#266](https://github.com/aterrylu/autonomOS/pull/266) `a2815cb` — refactor(dashboard): remove the legacy layout engine (dockview-only)
+
+
 ## [0.3.0] — 2026-06-22
 
 ### Patch Changes
