@@ -58,6 +58,14 @@ body {
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* The left sidebar scrolls without a visible scrollbar — it inadvertently
+   matched the .overflow-y-auto rule above. More specific (element + class), so
+   it wins without affecting preview-pane scrollbars. */
+aside.overflow-y-auto::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 /* xterm.js terminal scrollbar — visible on hover */
 .xterm-viewport::-webkit-scrollbar {
   width: 10px;

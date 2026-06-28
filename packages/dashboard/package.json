@@ -20,6 +20,7 @@
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-webgl": "^0.19",
     "@xterm/xterm": "^6",
+    "dockview-react": "^7.0.2",
     "dompurify": "^3.3.3",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.0.1",

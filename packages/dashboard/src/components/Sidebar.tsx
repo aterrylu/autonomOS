@@ -184,7 +184,6 @@ export function Sidebar() {
   const {
     fetchSessions,
     fetchProjects,
-    createSession,
     switchPane,
     closePreview,
     fetchNotifications,
@@ -513,18 +512,21 @@ export function Sidebar() {
         active={activePane?.type === "orgchart"}
         page={page}
         onClick={openOrgChart}
+        dragPane={{ type: "orgchart", id: "orgchart" }}
       />
       <SidebarNavButton
         label="Templates"
         active={activePane?.type === "templates"}
         page={page}
         onClick={openTemplates}
+        dragPane={{ type: "templates", id: "templates" }}
       />
       <SidebarNavButton
         label="Schedules"
         active={activePane?.type === "schedules"}
         page={page}
         onClick={openSchedules}
+        dragPane={{ type: "schedules", id: "schedules" }}
       />
 
       {/* Agents section header + toggle + New button */}
@@ -775,25 +777,32 @@ export function SidebarResizeHandle() {
   );
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: resize drag handle
-    <div
-      onMouseDown={onMouseDown}
-      onDoubleClick={resetSidebarWidth}
-      className="relative z-20 shrink-0 transition-colors"
-      style={{
-        width: 4,
-        cursor: "col-resize",
-        background: dragging ? page.statusFg : "transparent",
-      }}
-      onMouseEnter={(e) => {
-        if (!dragging)
-          (e.currentTarget as HTMLElement).style.background = page.border;
-      }}
-      onMouseLeave={(e) => {
-        if (!dragging)
-          (e.currentTarget as HTMLElement).style.background = "transparent";
-      }}
-    />
+    // Zero-width wrapper so the handle takes no layout space — the content sits
+    // flush against the sidebar's 1px right border (no gap). The grab area is an
+    // absolutely-positioned overlay straddling the boundary: invisible at rest,
+    // highlighted on hover/drag.
+    <div className="relative z-20 shrink-0" style={{ width: 0 }}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: resize drag handle */}
+      <div
+        onMouseDown={onMouseDown}
+        onDoubleClick={resetSidebarWidth}
+        className="absolute inset-y-0 transition-colors"
+        style={{
+          left: -2,
+          width: 5,
+          cursor: "col-resize",
+          background: dragging ? page.statusFg : "transparent",
+        }}
+        onMouseEnter={(e) => {
+          if (!dragging)
+            (e.currentTarget as HTMLElement).style.background = page.border;
+        }}
+        onMouseLeave={(e) => {
+          if (!dragging)
+            (e.currentTarget as HTMLElement).style.background = "transparent";
+        }}
+      />
+    </div>
   );
 }
 
@@ -802,16 +811,33 @@ function SidebarNavButton({
   active,
   page,
   onClick,
+  dragPane,
 }: {
   label: string;
   active: boolean;
   page: PageTheme;
   onClick: () => void;
+  /** When set, the button is draggable into the layout (dockview drop wiring
+   *  reads DRAG_TYPE). Lets Org Chart / Templates / Schedules be dragged into
+   *  the terminal area as a tab/split, same as agent rows. */
+  dragPane?: ActivePane;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      draggable={dragPane ? true : undefined}
+      onDragStart={
+        dragPane
+          ? (e) => {
+              e.dataTransfer.setData(
+                DRAG_TYPE,
+                encodeDragData({ pane: dragPane }),
+              );
+              e.dataTransfer.effectAllowed = "move";
+            }
+          : undefined
+      }
       className="flex items-center px-3 py-2 w-full text-left cursor-pointer transition-colors"
       style={{
         borderBottom: `1px solid ${page.border}`,
@@ -1329,9 +1355,12 @@ function HierarchyNodeRow({
             }
             paddingLeftOverride={rowPaddingLeft}
             draggable
-            onDragStart={(e, _idx, _pane) => {
+            onDragStart={(e, _idx, pane) => {
               hierDrag.current = { group: groupKey, idx: indexInGroup };
-              e.dataTransfer.setData("text/plain", "");
+              // Carry the pane so it can be dropped into the dockview layout as a
+              // tab/split (same as flat view). In-sidebar reorder uses the
+              // hierDrag ref above, so it's unaffected by the data type.
+              e.dataTransfer.setData(DRAG_TYPE, encodeDragData({ pane }));
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {

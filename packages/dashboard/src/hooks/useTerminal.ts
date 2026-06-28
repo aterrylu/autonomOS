@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
+import { isDegenerate } from "../terminal/resize";
 import type {
   IFitAddon,
   ILink,
@@ -197,7 +198,6 @@ export function useTerminal(
 
       try {
         terminal.open(container);
-        // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
         fitAddon.fit();
       } catch (err) {
         console.error(`Terminal open/fit failed for ${sessionId}:`, err);
@@ -350,7 +350,28 @@ export function useTerminal(
             addon.dispose();
             if (webglAddon === addon) webglAddon = null;
             // Rebuild on the next visible frame so rendering resumes.
-            if (!disposed && isContainerVisible()) loadWebglAddon();
+            if (!disposed && isContainerVisible()) {
+              loadWebglAddon();
+              // The recreated renderer hasn't measured its character cell yet;
+              // fitting against that stale/unsettled cell size mis-computes
+              // cols/rows and shrinks the PTY. Re-fit on the next frame, once
+              // the new renderer has painted, and correct the PTY to the real
+              // size. (Backstops the idle WebGL context-loss self-shrink.)
+              requestAnimationFrame(() => {
+                if (disposed || !isContainerVisible()) return;
+                try {
+                  fitAddon?.fit();
+                } catch (err) {
+                  console.warn(
+                    "fitAddon.fit() failed after WebGL reload:",
+                    err,
+                  );
+                }
+                if (wsRef.current && document.hasFocus()) {
+                  sendResize(wsRef.current, terminal!);
+                }
+              });
+            }
           });
         } catch (err) {
           console.warn(
@@ -379,6 +400,23 @@ export function useTerminal(
       };
       window.addEventListener("focus", handleFocus);
 
+      // Last container box we actually fit to — lets us skip redundant fits
+      // (a ResizeObserver can fire without a real dimension change), which is
+      // what bakes sub-pixel cell-measurement drift into a stepwise shrink.
+      let lastFitW = 0;
+      let lastFitH = 0;
+      const applyFit = (): void => {
+        try {
+          // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
+          fitAddon!.fit();
+        } catch (err) {
+          console.warn("fitAddon.fit() failed in ResizeObserver:", err);
+        }
+        if (wsRef.current && document.hasFocus()) {
+          sendResize(wsRef.current, terminal!);
+        }
+      };
+
       resizeObserver = new ResizeObserver(() => {
         const isVisible = isContainerVisible();
 
@@ -392,16 +430,24 @@ export function useTerminal(
         }
 
         // Load WebGL when becoming visible (GPU rendering for xterm.js)
+        const hadAddon = !!webglAddon;
         loadWebglAddon();
 
-        try {
-          // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
-          fitAddon!.fit();
-        } catch (err) {
-          console.warn("fitAddon.fit() failed in ResizeObserver:", err);
-        }
-        if (wsRef.current && document.hasFocus()) {
-          sendResize(wsRef.current, terminal!);
+        const w = container.offsetWidth;
+        const h = container.offsetHeight;
+        if (!hadAddon && webglAddon) {
+          // Just (re)created the renderer this tick — it hasn't measured its
+          // cell yet, so fit on the next frame against a settled renderer
+          // rather than synchronously (avoids a mis-measured shrink).
+          lastFitW = w;
+          lastFitH = h;
+          requestAnimationFrame(() => {
+            if (!disposed && isContainerVisible()) applyFit();
+          });
+        } else if (w !== lastFitW || h !== lastFitH) {
+          lastFitW = w;
+          lastFitH = h;
+          applyFit();
         }
       });
       resizeObserver.observe(container);
@@ -552,20 +598,16 @@ function nudgeResize(
 ): ReturnType<typeof setTimeout> | null {
   if (ws.readyState !== WebSocket.OPEN) return null;
   const { cols, rows } = terminal;
+  if (isDegenerate(cols, rows)) return null;
   ws.send(JSON.stringify({ type: "resize", cols: cols - 1, rows }));
   return setTimeout(() => sendResize(ws, terminal), 50);
 }
 
 function sendResize(ws: WebSocket, terminal: TerminalInstance): void {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(
-      JSON.stringify({
-        type: "resize",
-        cols: terminal.cols,
-        rows: terminal.rows,
-      }),
-    );
-  }
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const { cols, rows } = terminal;
+  if (isDegenerate(cols, rows)) return;
+  ws.send(JSON.stringify({ type: "resize", cols, rows }));
 }
 
 /** Safely read a terminal buffer line as text. Returns null on error or missing line. */

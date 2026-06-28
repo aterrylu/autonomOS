@@ -21,12 +21,12 @@ export const SessionPane = memo(function SessionPane({
 
   return (
     <div
-      className="relative flex-1"
+      className="relative flex-1 min-w-0 min-h-0 overflow-hidden"
       style={{ display: visible ? "flex" : "none" }}
     >
       <div
         ref={containerRef}
-        className="flex-1 p-1"
+        className="flex-1 p-1 min-w-0 min-h-0"
         style={{ touchAction: "none" }}
       />
       <CopyToast toast={copyToast} />
