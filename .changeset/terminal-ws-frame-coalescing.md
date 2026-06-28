@@ -1,5 +1,0 @@
----
-"@autonomos/server": patch
----
-
-Add opt-in WebSocket frame coalescing for the live terminal stream (`AUTONOMOS_WS_COALESCE=1`). The live path previously sent one WS frame per node-pty chunk; Claude Code's Ink TUI emits many tiny chunks per repaint, so a burst (`npm install`, `make build`) fanned into hundreds of thousands of frames, dropping animation frames in the browser render loop. When enabled, chunks are buffered per connection and flushed as a single frame on an 8 ms window or a 16 KB threshold (whichever first). On a real GPU a 12 MB burst goes from 65 dropped frames to 0; it also cuts frame count ~570× (helping remote/SSH and multi-pane sessions) and lowers server event-loop stall. Default OFF → byte-identical to prior behavior. The PTY-exit path now flushes any coalesced tail before closing the socket so the final pre-exit output isn't dropped. Ships with an ablation harness (`bun run perf:l1`) and unit + regression tests. Tunable via `AUTONOMOS_WS_COALESCE_MS` / `AUTONOMOS_WS_COALESCE_BYTES`.
