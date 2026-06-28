@@ -86,6 +86,10 @@ function readKeychainCredentials(): string | null {
   const user = process.env.USER;
   if (!user) return null;
   try {
+    // `timeout` guards the event loop: a normal `-w` lookup returns instantly,
+    // but a locked keychain (or an unexpected GUI prompt) could otherwise hang
+    // this synchronous call indefinitely. On timeout it throws → null → we fall
+    // through to the file/env paths.
     const out = execFileSync(
       "security",
       [
@@ -96,7 +100,7 @@ function readKeychainCredentials(): string | null {
         user,
         "-w",
       ],
-      { encoding: "utf-8" },
+      { encoding: "utf-8", timeout: 1_000 },
     );
     return out.trim() || null;
   } catch {
