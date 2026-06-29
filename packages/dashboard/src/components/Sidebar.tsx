@@ -445,7 +445,11 @@ export function Sidebar() {
     const p = item.preview;
     const pane = item.pane;
     const isActive = isPaneActive(pane);
-    const highlight = isActive ? activeHighlight(accent) : null;
+    const highlight = isActive
+      ? activeHighlight(accent)
+      : visiblePaneIds.has(pane.id)
+        ? visibleHighlight(page.fg)
+        : null;
     return (
       // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
       <div
@@ -461,11 +465,7 @@ export function Sidebar() {
         className="group flex w-full items-center gap-1.5 px-3 py-1 cursor-pointer text-left"
         style={{
           borderRadius: highlight ? "5px" : undefined,
-          background: highlight
-            ? highlight.background
-            : visiblePaneIds.has(pane.id)
-              ? `${page.border}80`
-              : "transparent",
+          background: highlight ? highlight.background : "transparent",
           boxShadow: rowBoxShadow(highlight, isDropTarget, page.fg),
         }}
         onClick={() => switchPane(pane)}
@@ -895,6 +895,21 @@ function activeHighlight(accent: string) {
   };
 }
 
+/**
+ * Co-visible highlight: a row whose pane is on-screen in the active workspace
+ * group but is NOT the focused one. A neutral (page.fg) outline ring + faint
+ * fill — the same ring affordance as the active gold highlight but a quieter,
+ * different color, so grouped panes read as "also here, just not focused." No
+ * glow — the glow is reserved as the focus signal. `neutral` is the theme's
+ * foreground token, so it inverts correctly on light themes.
+ */
+function visibleHighlight(neutral: string) {
+  return {
+    background: `${neutral}0a`, // ~4% neutral fill
+    boxShadow: `inset 0 0 0 1px ${neutral}4d`, // ~30% neutral ring
+  };
+}
+
 /** Compose the active ring/glow with the drop-target indicator (a row can be both). */
 function rowBoxShadow(
   highlight: { boxShadow: string } | null,
@@ -937,7 +952,11 @@ function SessionRow({
   const agentIconStyle = useStore((st) => st.agentIconStyle);
   const status = (agentState?.status as AgentStatus) ?? "unknown";
   const accent = THEMES[useStore((st) => st.theme)].terminal.yellow;
-  const highlight = isActive ? activeHighlight(accent) : null;
+  const highlight = isActive
+    ? activeHighlight(accent)
+    : isVisible
+      ? visibleHighlight(page.fg)
+      : null;
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: nested interactive elements
@@ -964,11 +983,7 @@ function SessionRow({
         paddingLeft: `${paddingLeft}px`,
         paddingRight: "12px",
         borderRadius: highlight ? "5px" : undefined,
-        background: highlight
-          ? highlight.background
-          : isVisible
-            ? `${page.border}80`
-            : "transparent",
+        background: highlight ? highlight.background : "transparent",
         boxShadow: rowBoxShadow(highlight, isDropTarget, page.fg),
       }}
       onClick={onClick}
