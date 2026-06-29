@@ -243,7 +243,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const token = extractToken(c) ?? c.req.query("token") ?? undefined;
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
     return c.json(
-      { error: "Unauthorized — visit /auth?token=YOUR_TOKEN to authenticate" },
+      {
+        error:
+          "Unauthorized — open the dashboard and paste your token at the login screen",
+      },
       401,
     );
   };
