@@ -144,19 +144,41 @@ if [[ -n "$PM2_BIN" ]] \
   PM2_MANAGED=1
 fi
 
+# Open the dashboard after install on an interactive terminal. The post-install
+# step also no-ops the browser on headless boxes (no DISPLAY), so this is safe to
+# pass on a server too. Opt out with AUTONOMOS_NO_OPEN=1.
+OPEN_FLAG=""
+if [[ -t 1 && "${AUTONOMOS_NO_OPEN:-0}" != "1" ]]; then OPEN_FLAG="--open"; fi
+
+# Capture the install-service exit code (`|| RC=$?` keeps `set -e` from aborting
+# here). Exit 3 = activated but the daemon isn't responding yet — we report that
+# honestly rather than printing a "URL shown above" banner over a down daemon.
+RC=0
 if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
   if [[ "$PM2_MANAGED" == "1" ]]; then
     echo "[install] Detected existing pm2-managed autonomos. Migrating..."
-    "$WRAPPER" migrate-from-pm2
-    echo "[install] ✓ Migration complete."
+    "$WRAPPER" migrate-from-pm2 $OPEN_FLAG || RC=$?
+    [[ "$RC" == "0" ]] && echo "[install] ✓ Migration complete."
   else
     echo "[install] Running 'autonomos install-service'..."
-    "$WRAPPER" install-service
+    "$WRAPPER" install-service $OPEN_FLAG || RC=$?
   fi
 fi
 
 echo ""
-echo "✓ autonomOS installed."
-echo "  Binary:   $WRAPPER"
-echo "  Bundle:   $INSTALL_DIR"
-echo "  Run:      autonomos status"
+if [[ "${SKIP_INSTALL_SERVICE:-0}" == "1" ]]; then
+  echo "✓ autonomOS installed."
+  echo "  Binary:  $WRAPPER"
+  echo "  Bundle:  $INSTALL_DIR"
+  echo "  Start it: autonomos install-service   (then: autonomos status)"
+elif [[ "$RC" == "0" ]]; then
+  echo "✓ autonomOS installed and running."
+  echo "  Binary:  $WRAPPER"
+  echo "  The dashboard URL + token are shown above."
+  echo "  Manage:  autonomos status · autonomos logs -f · autonomos restart"
+else
+  echo "⚠️  autonomOS installed, but the daemon isn't responding yet."
+  echo "  Binary:  $WRAPPER"
+  echo "  Check:   autonomos status   and   autonomos logs"
+  exit "$RC"
+fi
