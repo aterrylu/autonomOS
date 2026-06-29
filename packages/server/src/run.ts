@@ -33,6 +33,7 @@ import {
   announceEmbeddedReady,
   resolveEmbeddedConfig,
 } from "./embedded-mode.js";
+import { initFileLogging } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
@@ -88,6 +89,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     printUsage();
     process.exit(0);
   }
+
+  // Tee stdout/stderr into a rotating $configDir/logs/autonomos.log as early as
+  // possible, so everything below is captured under OS-native supervision (the
+  // supervisor's own stdout goes to /dev/null — see service-templates.ts). Best
+  // effort: a logging failure never blocks startup.
+  initFileLogging();
+
   const embeddedConfig = resolveEmbeddedConfig(cliArgs.embedded);
 
   // Seed default templates on fresh install

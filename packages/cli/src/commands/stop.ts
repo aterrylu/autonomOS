@@ -1,22 +1,46 @@
-// `autonomos stop` — gracefully shut down the running daemon.
+// `autonomos stop` — shut down the running daemon.
 //
-// Reads PID file, sends SIGTERM, waits up to 10s for the process to exit.
-// If it doesn't exit by then, escalates to SIGKILL and warns.
+// If an OS-native service is installed, stop it through the supervisor —
+// launchd KeepAlive / systemd Restart would immediately revive a bare SIGTERM,
+// so we must tell the supervisor (see lib/service-control.ts). Otherwise (a
+// foreground / bundled daemon) fall back to SIGTERM-the-pid, escalating to
+// SIGKILL after a grace period.
 //
 // Exit codes:
 //   0 — daemon successfully stopped (or wasn't running to begin with)
-//   1 — failed to stop (process still alive after SIGKILL)
+//   1 — failed to stop
 
 import {
   isPidAlive,
   readPidFile,
   removePidFile,
 } from "@autonomos/server/pid-file.js";
+import { findInstalledService, stopService } from "../lib/service-control.js";
 
 const GRACEFUL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 200;
 
 export async function runStopCommand(): Promise<number> {
+  // Supervised daemon: stopping the process isn't enough — KeepAlive/Restart
+  // would revive it. Stop it at the supervisor instead.
+  const svc = findInstalledService();
+  if (svc) {
+    const res = stopService(svc);
+    if (!res.ok) {
+      console.error(
+        `Failed to stop the service: ${res.stderr.trim() || `exit ${res.exitCode}`}`,
+      );
+      return 1;
+    }
+    console.log(
+      svc.platform === "darwin"
+        ? "✓ Stopped the autonomos service (launchctl bootout)"
+        : "✓ Stopped the autonomos service (systemctl --user stop)",
+    );
+    console.log("  Start it again with `autonomos restart` or `make prod`.");
+    return 0;
+  }
+
   const pidInfo = readPidFile();
 
   if (pidInfo === null) {

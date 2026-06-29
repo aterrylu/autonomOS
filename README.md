@@ -44,22 +44,31 @@ cp -n .env.example .env  # Create .env if it doesn't exist (edit to configure)
 bun install              # Install dependencies
 
 make dev                 # Dev mode — API on :3101, Vite HMR on :5173
-make prod                # Prod mode — build dashboard + PM2 daemon on :3100
-make down                # Stop everything
+make prod                # Prod mode — build + OS-native daemon on :3100
+make down                # Stop everything (removes the service)
 ```
+
+`make prod` supervises the server with the **OS-native init system** — a launchd
+LaunchAgent on macOS, a systemd-user unit on Linux — not pm2. It auto-migrates an
+existing pm2-managed `autonomos` on first run (set `NO_MIGRATE=1` to skip).
 
 ### All Make Targets
 
 | Target | Description |
 |--------|-------------|
 | `make dev` | Start API server (watch mode, :3101) + Vite HMR (:5173) |
-| `make prod` | Build dashboard + start/restart PM2 daemon on :3100 |
+| `make prod` | Build dashboard + (re)install launchd/systemd-user daemon on :3100 |
 | `make deploy` | Rsync to remote + `make prod` (set `DEPLOY_HOST` in `.env`) |
-| `make check` | Lint (Biome) + typecheck (tsc) + server tests |
+| `make check` | Lint (Biome) + typecheck (tsc) + server + CLI tests |
 | `make fmt` | Auto-fix lint + formatting issues |
-| `make stop` | Stop PM2 daemon |
-| `make logs` | Tail PM2 logs (last 50 lines) |
-| `make down` | Stop everything and kill all server processes |
+| `make stop` | Stop the daemon (via the supervisor, so it stays down) |
+| `make restart` | Restart the daemon (launchctl / systemctl) |
+| `make logs` | Tail the server log (`~/.autonomos/logs/autonomos.log`, last 50) |
+| `make down` | Remove the service + kill dev ports |
+
+The `autonomos` CLI exposes the same controls directly: `autonomos status`,
+`autonomos logs -f`, `autonomos restart`, `autonomos stop`, `autonomos
+install-service` / `uninstall-service`.
 
 ### Authentication
 
@@ -78,7 +87,8 @@ DEPLOY_HOST=your-server-hostname
 # DEPLOY_PATH=~/autonomOS    # optional, defaults to ~/autonomOS
 ```
 
-Run `make deploy` — rsyncs code, installs deps, builds, and starts PM2.
+Run `make deploy` — rsyncs code, installs deps, builds, and supervises the
+server via systemd-user (launchd on a Mac remote), auto-migrating pm2 if present.
 
 ## Structure
 
@@ -108,7 +118,7 @@ docs/
 
 - **Frontend**: React 19, Zustand 5, Tailwind CSS 4, xterm.js 6, Mermaid, framer-motion, react-resizable-panels
 - **Backend**: Hono, node-pty, Claude Agent SDK, MCP SDK (@modelcontextprotocol/sdk)
-- **Tooling**: Bun, Biome, PM2, TypeScript project references
+- **Tooling**: Bun, Biome, launchd / systemd-user supervision, TypeScript project references
 
 ## Docs
 

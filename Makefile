@@ -1,10 +1,12 @@
 .PHONY: dev prod stop restart logs down check fmt deploy doctor
 
 BUN := $(HOME)/.bun/bin/bun
-PM2 := $(HOME)/.bun/bin/pm2
 TSX := packages/server/node_modules/.bin/tsx
+AUTONOMOS := $(TSX) packages/cli/src/index.ts
 DEPLOY_HOST ?= $(or $(HOST),$(shell grep -s '^DEPLOY_HOST=' .env | cut -d= -f2))
 DEPLOY_PATH ?= ~/autonomOS
+PROD_PORT ?= 3100
+NO_MIGRATE ?=
 
 # ── dev: isolated per worktree ───────────────────
 # Ports are derived from the directory path hash so each worktree gets unique ports.
@@ -23,11 +25,16 @@ dev:
 	@sleep 2
 	@cd packages/dashboard && VITE_API_PORT=$(DEV_API_PORT) $(BUN) vite --host 0.0.0.0 --port $(DEV_VITE_PORT)
 
-# ── prod: build + pm2 daemon on :3100 ─────────────
-#   nohup + setsid detaches the restart so it survives even when
-#   triggered from a dashboard PTY session (which gets killed on restart).
+# ── prod: build + OS-native daemon on :3100 ───────
+#   Supervised by launchd (macOS) / systemd-user (Linux) via
+#   scripts/install-prod-service.sh — NOT pm2. The script auto-migrates an
+#   existing pm2-managed autonomos (set NO_MIGRATE=1 to skip) and is idempotent,
+#   so re-running picks up new source.
+#
+#   Runs synchronously and verifies the daemon came up. (Don't run `make prod`
+#   from inside an agent session the daemon spawned — the supervisor restart
+#   would kill that PTY mid-run. Use a plain shell or `make deploy`.)
 prod:
-	@command -v $(PM2) >/dev/null || { echo "Installing pm2..."; $(BUN) add -g pm2; }
 	@$(BUN) install
 	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
@@ -36,29 +43,34 @@ prod:
 	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
-	@echo "Restarting server..."
-	@nohup sh -c '$(PM2) delete autonomos 2>/dev/null; $(PM2) start ecosystem.config.cjs; $(PM2) save' >/dev/null 2>&1 &
+	@echo "Handing off to OS-native supervisor (launchd/systemd-user)..."
+	@PORT=$(PROD_PORT) NO_MIGRATE=$(NO_MIGRATE) bash scripts/install-prod-service.sh
 
 # ── doctor: preflight checks (node-pty ABI vs runtime node) ──
-#   Run standalone to diagnose/repair a pm2 crash-loop after a node upgrade.
+#   Run standalone to diagnose/repair a crash-loop after a node upgrade.
 doctor:
 	@bash scripts/ensure-node-pty.sh
 
 # ── stop / restart / logs ─────────────────────────
+#   stop: service-aware — stops via the supervisor so launchd KeepAlive /
+#   systemd Restart don't immediately revive it (a bare SIGTERM would bounce).
 stop:
-	@$(PM2) stop autonomos 2>/dev/null || true
+	@$(AUTONOMOS) stop
 
-restart: prod
+restart:
+	@$(AUTONOMOS) restart
 
 logs:
-	@$(PM2) logs autonomos --lines 50
+	@$(AUTONOMOS) logs --lines 50
 
 # ── down: stop everything ────────────────────────
+#   Removes the OS-native service entirely (stop + delete unit), then frees any
+#   dev ports.
 down:
-	@$(PM2) delete autonomos 2>/dev/null || true
+	@$(AUTONOMOS) uninstall-service 2>/dev/null || true
 	@lsof -ti:$(DEV_API_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@lsof -ti:$(DEV_VITE_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
-	@echo "Stopped (API=:$(DEV_API_PORT) Vite=:$(DEV_VITE_PORT))."
+	@echo "Stopped (service removed; dev API=:$(DEV_API_PORT) Vite=:$(DEV_VITE_PORT))."
 
 # ── deploy: rsync + prod on remote ───────────────
 #
@@ -75,12 +87,13 @@ deploy:
 		--exclude dist \
 		--exclude .git \
 		--exclude _embedded_dashboard \
+		--exclude .autonomos-bin \
 		./ $(DEPLOY_HOST):$(DEPLOY_PATH)/
-	@echo "Installing bun + pm2 (if needed)..."
-	ssh $(DEPLOY_HOST) 'export PATH=$$HOME/.bun/bin:$$PATH && command -v bun >/dev/null || { curl -fsSL https://bun.sh/install | bash && export PATH=$$HOME/.bun/bin:$$PATH; } && command -v pm2 >/dev/null || bun add -g pm2'
+	@echo "Installing bun (if needed)..."
+	ssh $(DEPLOY_HOST) 'export PATH=$$HOME/.bun/bin:$$PATH && command -v bun >/dev/null || { curl -fsSL https://bun.sh/install | bash && export PATH=$$HOME/.bun/bin:$$PATH; }'
 	@echo "Installing dependencies..."
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.bun/bin:$$PATH && bun install'
-	@echo "Building and starting on $(DEPLOY_HOST)..."
+	@echo "Building and starting on $(DEPLOY_HOST) (launchd/systemd-user, auto-migrates pm2)..."
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.local/bin:$$HOME/.bun/bin:$$PATH && make prod'
 
 # ── fmt: auto-fix lint + formatting ─────────────
@@ -91,5 +104,5 @@ fmt:
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	$(TSX) --test packages/server/src/__tests__/*.test.ts packages/app/src/main/__tests__/*.test.ts scripts/*.test.ts
+	$(TSX) --test packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts packages/app/src/main/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && node_modules/.bin/vitest run

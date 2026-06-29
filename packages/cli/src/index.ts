@@ -4,7 +4,10 @@
 // Subcommand dispatcher. Recognized subcommands:
 //   start                  Run the server in the foreground
 //   stop                   Gracefully stop a running daemon
+//   restart                Restart the installed service
 //   status                 Print running daemon's state
+//   logs                   Tail the server log
+//   install-service / uninstall-service / upgrade / migrate-from-pm2
 //   --help, -h, help       Print usage
 //
 // If the first argv looks like a flag (--port=N) instead of a subcommand,
@@ -15,7 +18,9 @@
 // bundle before any module transitively loads impit's native binding. See file.
 import "./napi-universal-binding.js";
 import { runInstallServiceCommand } from "./commands/install-service.js";
+import { runLogsCommand } from "./commands/logs.js";
 import { runMigrateFromPm2Command } from "./commands/migrate-from-pm2.js";
+import { runRestartCommand } from "./commands/restart.js";
 import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
@@ -28,7 +33,10 @@ Commands:
   start [options]      Run the server in the foreground (default if no command)
                        Options: --port=N, --embedded
   stop                 Gracefully stop a running daemon (SIGTERM)
+  restart              Restart the installed service (launchctl / systemctl)
   status               Print running daemon's state
+  logs                 Tail the server log ($configDir/logs/autonomos.log)
+                       Options: -f/--follow, -n/--lines=N (default 50)
   install-service      Install OS-native supervisor (launchd / systemd-user)
                        Options: --prefix=DIR, --no-activate, --bin=PATH, --force
   uninstall-service    Stop daemon and remove the service file
@@ -43,6 +51,8 @@ Examples:
   autonomos start --port=3100       # start on a specific port
   autonomos --embedded --port=0     # embedded mode (Electron child)
   autonomos status                  # check if a daemon is running
+  autonomos logs -f                 # follow the server log
+  autonomos restart                 # restart the installed service
   autonomos stop                    # stop the running daemon
   autonomos install-service         # install as a persistent service
   autonomos uninstall-service       # remove the service installation
@@ -68,8 +78,12 @@ async function main(): Promise<number> {
       return 0;
     case "stop":
       return await runStopCommand();
+    case "restart":
+      return await runRestartCommand();
     case "status":
       return await runStatusCommand();
+    case "logs":
+      return await runLogsCommand(argv.slice(1));
     case "install-service":
       return await runInstallServiceCommand(argv.slice(1));
     case "uninstall-service":
