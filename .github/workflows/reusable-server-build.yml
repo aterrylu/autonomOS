@@ -1,0 +1,57 @@
+name: Reusable server build
+
+# Single source of truth for the server-bundle pipeline, invoked via
+# `workflow_call` by release.yml (on a `v*` tag / dispatch).
+#
+# Produces (uploaded as run artifacts the caller can download):
+#   - 4 server tarballs (darwin/linux × arm64/x64)  → install.sh
+#
+# Each tarball is a self-contained server bundle (dashboard embedded) for its
+# platform. install.sh downloads the matching tarball for the host arch.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Server bundles ───────────────────────────────────────────────────────
+  # Four platform tarballs for install.sh.
+  build-server:
+    name: Server (${{ matrix.target }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runs-on: macos-14
+          - target: darwin-x64
+            runs-on: macos-15-intel
+          - target: linux-x64
+            runs-on: ubuntu-latest
+          - target: linux-arm64
+            runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      # Pin Node 22 LTS so node-pty's nan-based native binding compiles cleanly
+      # (it does NOT build against Node 25's V8 headers).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Build dashboard
+        run: bun --filter @autonomos/dashboard build
+      - name: Embed dashboard
+        run: bun packages/server/build/embed-dashboard.ts
+      - name: Build bundle + tarball
+        run: TARBALL=1 bun packages/server/build/build-binary.ts
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.target }}
+          path: packages/server/dist/autonomos-${{ matrix.target }}.tar.gz

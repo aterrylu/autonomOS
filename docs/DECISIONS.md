@@ -81,6 +81,8 @@ Each entry includes context, rationale, alternatives considered, and source.
 
 **Research:** Full analysis in `docs/research/desktop-shells/` — 5 research documents covering VSCode/Electron architecture, LM Studio, Zo Computer, TUI frameworks, and a synthesis with side-by-side comparisons.
 
+**Update (2026-06-29, ADR-051):** The "package as Electron desktop app later" clause is cancelled — see ADR-051. The web-first core (the server IS the product; the UI layer is swappable; start light and add heavier shells only when needed) is *reaffirmed*: the heavier Electron shell didn't earn its keep, so the canonical client reverts to web-first + PWA. The `docs/research/desktop-shells/` analysis above is retained as the historical justification for the web-first decision.
+
 ---
 
 ## ADR-006: Agent-First Architecture, Claude Code as First Provider
@@ -789,6 +791,8 @@ Initial mapping included `PreCompress → PreCompact`, justified by upstream doc
 
 **Design doc:** `docs/research/desktop-as-thin-client.md`
 
+**Update (2026-06-29, ADR-051):** The Electron thin-client app this ADR designed is cancelled — see ADR-051; `packages/app/` and the design doc above (`desktop-as-thin-client.md`) are removed. What stays: server-supervision belongs to the OS init system (launchd/systemd-user, finished in ADR-050), and the pid-file discovery this ADR relied on. We removed the desktop entirely rather than make it a client of the daemon.
+
 ---
 
 ## ADR-029: Desktop Embeds Built-in Server (Reverses Part of ADR-028)
@@ -854,6 +858,8 @@ The original PR #172 / Phase 1B.1 attempt at an embedded server failed because o
 
 **Design doc:** `docs/research/desktop-embedded-server.md`
 
+**Update (2026-06-29, ADR-051):** The Electron Built-in/embedded server mode is cancelled — see ADR-051; `packages/app/`, the server's `--embedded` flag + `embedded-mode.ts`, and the design doc above (`desktop-embedded-server.md`) are removed. The **mutual-exclusion contract (atomic pid-file claim + liveness check) STAYS** — it still prevents two daemons from racing on the same `~/.autonomos/` state, independent of any desktop. (The shared real-spawn integration harness that used `--embedded` for ephemeral-port readiness was rewritten to parse the server's standard "listening on" startup log line, and renamed `helpers/test-server.ts` since it was never Electron-specific.)
+
 ---
 
 ## ADR-029-follow-up: Drop `autonomos://` deep-link handler
@@ -884,6 +890,8 @@ The original PR #172 / Phase 1B.1 attempt at an embedded server failed because o
 - Also dropped the unused `SERVER_STATE_FILENAME = "server-state.json"` constant from `packages/app/src/shared/constants.ts`. ADR-028's post-design audit established that the daemon pid file at `~/.autonomos/autonomos.pid` (already shipping from `packages/server/src/pid-file.ts`) is the canonical discovery target; the `server-state.json` constant was vestigial from an earlier draft and had no importers.
 
 **Single-instance lock is preserved.** ADR-028's audit emphasized that `app.requestSingleInstanceLock()` is a top-level requirement, not a deep-link feature — without it, two Desktop processes would torn-write `tokens.dat` / `config.json`. The lock + the `second-instance` handler (now reduced to "bring window forward / open Welcome") stay in `main.ts`.
+
+**Update (2026-06-29, ADR-051):** Moot — the entire desktop app (and its `autonomos://` deep-link surface) is removed by ADR-051. Kept for historical record.
 
 ---
 
@@ -928,6 +936,8 @@ Pre-this-ADR, `auth.ts` hardcoded the token file to `~/.autonomos/token` regardl
 **Testing:**
 - Unit: `auth-config-dir.test.ts` (4 tests) covers env precedence, per-CONFIG_DIR token read, fresh-token generation, file permissions.
 - Integration: booted the server with `env -i HOME=... PATH=... AUTONOMOS_CONFIG_DIR=/tmp/autonomos-try-test --embedded --port=0`. Confirmed (a) server bound to ephemeral port 58099 with no collision against prod 3100, (b) fresh token generated and written ONLY to `/tmp/autonomos-try-test/token` with mode `0o600`, (c) `~/.autonomos/` untouched throughout.
+
+**Update (2026-06-29, ADR-051):** The "Try it out" Welcome-card UI is removed with the desktop app — see ADR-051. The **server-side `auth.ts` CONFIG_DIR-aware token isolation it introduced STAYS** — it is general isolation plumbing (worktree-dev today, future named profiles tomorrow), fully backwards-compatible, and independent of the ephemeral-mode UI that originally motivated it.
 
 **Design follow-ups:**
 - Add a title-bar "TRY MODE" badge if users start losing work to surprise-on-quit.
@@ -1293,6 +1303,16 @@ baseline and removes the "TBD" ambiguity.
 - **Validation:** Two-stage QA on an isolated config dir + port 3199 (never :3100): (1) wrapper→server boot, server-owned log, `status`/`logs`/`stop`; (2) a full real-launchd cycle — install → KeepAlive-supervised → `stop` (bootout) **stayed down** (no revive) → `restart` (bootstrap) back up → `uninstall` clean. Unit tests cover the rotating writer and the `/dev/null` template redirect.
 - **Scope:** This ADR is the lifecycle swap (PR1). The first-run install-UX revamp (post-install smoke test surfaced to curl installs, URL/token print, browser/PWA auto-open) is a stacked follow-up (PR2) with its own ADR. Brew remains for the (now-cut) desktop app only; the server install story is `curl install.sh` + `make deploy`. Relates to the desktop-app cut (server-first product) and #170 (the install-service foundation, which **stays**).
 - **Source:** autonomOS CC session, ServerLifecycle@autonomOS worker; direction (Option B, auto-migrate, server-owned rotating log, delete ecosystem, 2 stacked PRs) decided by Terry across the session; market study via parallel research subagents.
+
+## ADR-051: Cut the Electron desktop app — remote always-on server is the canonical deployment
+- **Date:** 2026-06-29 — **Decided by:** Human (Terry) via TeamLead@autonomOS, implemented by ElectronCleanup@autonomOS
+- **Context:** autonomOS spent 6+ months building an Electron desktop app across four architectural pivots — ADR-005 (web-first, "package as Electron later"), ADR-028 (pure thin client), ADR-029 (Built-in embedded server, reversing part of 028), ADR-030 ("Try it out" ephemeral mode) — plus a deep release-infrastructure investment: universal2 DMG lipo, Developer ID signing, Apple notarization (85min+ stalls — see [[project_mac_signing_notary]]), electron-updater, a bundled-Node + napi-rs universal-binary chain, and CDP-driven DMG validation gates on every PR. That Electron layer became the single most expensive maintenance surface in the repo for little realized value: the desktop app was not how the product was actually used. The intended user (Terry) runs autonomos-server on a remote always-on host (forge) reached via browser/PWA — structurally the n8n-self-hosted pattern ADR-028 itself cited as the long-run winner. The real need behind "desktop app" was always "agents stay alive when my laptop is closed" = a **remote always-on server**, not a local GUI shell. The PWA shipped in #71 already covers the installable-app / desktop-notifications / thin-client value at zero Electron cost.
+- **Decision:** Cancel the Electron desktop-app initiative entirely. Delete `packages/app/` (the whole Electron source tree, ~9.5k LOC), the server-side embedded-mode coupling (`embedded-mode.ts` + the `--embedded` flag in `cli-args.ts`/`run.ts`/CLI help), and the desktop half of the release pipeline (electron-builder, DMG/ZIP/blockmap build, code-signing, notarization, the `build-dmg`/`validate-intel` CI jobs, electron-updater feed, `pr-artifact.yml`). The canonical deployment is **autonomos-server supervised as an always-on daemon (launchd/systemd-user, ADR-050), reached via browser or PWA**. Three pieces that ADR-028/029/030 established and that are independent of the desktop are explicitly **retained**: (1) the launchd/systemd-user server lifecycle (ADR-028 core; ADR-050 finished the pm2→launchd/systemd cutover), (2) the pid-file mutual-exclusion lock (ADR-029 core; still prevents two daemons racing on `~/.autonomos/`), and (3) the `auth.ts` CONFIG_DIR-aware token isolation (ADR-030 server-side; serves worktree-dev and future profiles). The dashboard-embedded-in-server-binary bundle (`_embedded_dashboard`, ADR-043) is unrelated to Electron's `--embedded` and is untouched — a naming collision worth calling out: **we deleted Electron embedded-mode; we kept dashboard-embedded-in-server-bundle.**
+- **Rationale:** Maintenance cost vastly exceeded value — signing/notary stalls, electron-updater, universal lipo, and the bun-compile/node-pty ABI wall consumed disproportionate engineering for an unused layer. The browser/PWA (#71) already delivers the desktop app's entire user-facing value without a native bundle to sign/notarize/auto-update. The always-on server is the actual product need (agents run while the user is away — a supervised daemon's job, not a GUI session's; ADR-028 articulated this and we are following it to its conclusion). Converges with always-on agent-platform peers (OpenClaw, Hermes) that bet on a persistent daemon + thin clients rather than a bundled desktop stack; the bundled-server-with-GUI lineage (n8n Desktop, sunset 2023) is the cautionary pattern.
+- **Alternatives considered:** (a) Keep Electron as an opt-in build — rejected: an unused build target still pays the full signing/notary/CI tax and rots. (b) Slim down Electron (unsigned, no auto-update) — rejected: an unsigned macOS app triggers Gatekeeper friction on every launch, worse than the browser, and still carries the bundled-Node chain. (c) Ship a native (Tauri/Swift) Mac app — rejected: re-investing in any local GUI shell repeats the category mistake; the need is remote always-on. (d) Status quo — rejected: most expensive surface for the least realized value.
+- **Implications:** Five GitHub Actions secrets (CSC_LINK, CSC_KEY_PASSWORD, APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER) become unused — flagged for manual deletion by Terry post-merge (not deleted by the PR; `gh secret set --body -` is a footgun, so safer to flag). Release version source moves `packages/app/package.json` → `packages/server/package.json`; `@autonomos/app` leaves the changeset `fixed` group (cli/core/dashboard/server stay locked). `reusable-dmg-build.yml` is gutted to its `build-server` job (source of the install.sh server tarballs) and renamed `reusable-server-build.yml`, not deleted. **Mid-execution refinement:** the shared CI-only real-spawn integration harness `helpers/embedded-server.ts` — used by 4 suites (only one of which was the embedded test), not Electron-specific — depended on the going-away `--embedded` flag + `AUTONOMOS_READY` stdout signal purely for ephemeral-port readiness; it was rewritten to parse the server's always-emitted "listening on …:<port>" startup log and renamed `helpers/test-server.ts` (`bootEmbedded`→`bootServer`), preserving the 3 non-Electron suites. ServerLifecycle@autonomOS's install-UX work (PR2) stacks cleanly: the only shared file (`cli/install-service.ts`) is touched here only to reword a now-obsolete "quit the Desktop app" error string — the pid-file mutual-exclusion check it lives in is preserved.
+- **Supersedes / amends:** Adds Update notes to ADR-005, ADR-028, ADR-029, ADR-029-follow-up, ADR-030 (the Electron-coexistence portions are now N/A; the launchd/systemd lifecycle and pid-file lock and token-isolation cores remain in force). Relates to ADR-050 (the always-on lifecycle this cut leans on) and ADR-043 (the dashboard-embedded bundle, explicitly NOT affected).
+- **Source:** TeamLead@autonomOS channel directive (2026-06-29) + ServerLifecycle@autonomOS always-on research relay; propose-pause punch-list approved by Terry via TeamLead.
 
 ## ADR-052: First-run install UX — post-install smoke test + surfaced connect panel
 - **Date:** 2026-06-29 — **Decided by:** Human (Terry), executed by ServerLifecycle@autonomOS. (ADR-051 is reserved for the concurrent ElectronCleanup PR per the later-merger convention; this is the install-UX follow-up to ADR-050.)

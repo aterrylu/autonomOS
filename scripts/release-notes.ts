@@ -4,7 +4,7 @@
 // dump.
 //
 // Usage: bun scripts/release-notes.ts [version]
-//   version defaults to packages/app/package.json's version.
+//   version defaults to packages/server/package.json's version.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -16,7 +16,7 @@ const version =
   process.argv[2] ??
   (
     JSON.parse(
-      readFileSync(resolve(repoRoot, "packages/app/package.json"), "utf-8"),
+      readFileSync(resolve(repoRoot, "packages/server/package.json"), "utf-8"),
     ) as { version: string }
   ).version;
 

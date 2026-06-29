@@ -16,7 +16,7 @@ import { _resetServerStateForTesting, setServerPort } from "../serverState.js";
  *
  * - ANTHROPIC_* vars reach spawned sessions ONLY via process.env
  *   inheritance (buildBaseEnv spreads process.env). The CI integration
- *   harness (helpers/embedded-server.ts) relies on this to point real
+ *   harness (helpers/test-server.ts) relies on this to point real
  *   `claude` binaries at the mock /v1/messages backend.
  * - Stale anthropic* keys in settings.json are NEVER injected — the
  *   settings-driven override was removed.

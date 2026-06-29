@@ -1,7 +1,7 @@
 /**
  * Shared harness for the CI-only real-spawn integration suites: boots the
- * REAL server as a child process (the way the Desktop's acquireOrConnect()
- * does) with an isolated CONFIG_DIR, plus small HTTP helpers.
+ * REAL server as a child process with an isolated CONFIG_DIR, plus small
+ * HTTP helpers.
  *
  * CI-ONLY GATE (load-bearing safety). These suites boot a real autonomos
  * server and spawn REAL `claude` processes under a PTY. On a developer machine
@@ -26,7 +26,9 @@ import { fileURLToPath } from "node:url";
  *  (a dev box without Claude Code), suites skip with a clear message. */
 export function isClaudeCodeAvailable(): boolean {
   const r = spawnSync("which", ["claude"], { encoding: "utf-8" });
-  return r.status === 0 && r.stdout.trim().length > 0;
+  // `which` failing to spawn (ENOENT) yields status=null + stdout=null — guard
+  // so the probe degrades to `false` instead of throwing at module load.
+  return r.status === 0 && (r.stdout ?? "").trim().length > 0;
 }
 
 const CLAUDE_AVAILABLE = isClaudeCodeAvailable();
@@ -69,7 +71,7 @@ export interface BootedServer {
  * channels-warning prompt) — the hook relay, --brief,
  * --append-system-prompt and --settings argv are all still exercised.
  */
-export async function bootEmbedded(opts?: {
+export async function bootServer(opts?: {
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
 }): Promise<BootedServer> {
@@ -97,7 +99,7 @@ export async function bootEmbedded(opts?: {
     new URL("../../../node_modules/.bin/tsx", import.meta.url),
   );
 
-  const child = spawn(tsxBin, [SERVER_ENTRY, "--embedded", "--port=0"], {
+  const child = spawn(tsxBin, [SERVER_ENTRY, "--port=0"], {
     env: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: configDir,
@@ -117,32 +119,52 @@ export async function bootEmbedded(opts?: {
   child.stdout.on("data", (d: Buffer) => stdoutChunks.push(d.toString()));
   child.stderr.on("data", (d: Buffer) => stderrChunks.push(d.toString()));
 
+  // Readiness + port discovery: parse the server's standard startup log line
+  // ("autonomOS server listening on http://localhost:<port>"), emitted the
+  // moment the HTTP listener is accepting connections. With --port=0 the OS
+  // assigns an ephemeral port, so this line is how we learn the actual port.
+  //
+  // NOTE: this resolves when HTTP is *listening*, which is BEFORE the gateway
+  // and scheduler finish their fire-and-forget init (run.ts arms those after
+  // the listen callback). HTTP routes (incl. /api/agents) work immediately; a
+  // test that needs the gateway/router or scheduler should `waitFor` a health
+  // probe rather than trust this resolution alone.
   const port = await new Promise<number>((resolveFn, rejectFn) => {
-    const onData = (): void => {
-      const text = stdoutChunks.join("");
-      const m = text.match(/AUTONOMOS_READY port=(\d+)/);
-      if (m) {
-        child.stdout.off("data", onData);
-        resolveFn(Number(m[1]));
-      }
-    };
-    child.stdout.on("data", onData);
-
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onExit = (code: number | null): void => {
+      clearTimeout(timer);
+      child.stdout.off("data", onData);
       rejectFn(
         new Error(
-          `Server exited (code=${code}) before signaling ready.\n` +
+          `Server exited (code=${code}) before it started listening.\n` +
             `stdout:\n${stdoutChunks.join("")}\n` +
             `stderr:\n${stderrChunks.join("")}`,
         ),
       );
     };
+    const onData = (): void => {
+      // Anchor on the full banner and require a trailing newline so a chunk
+      // boundary splitting the port mid-write can't resolve a truncated value,
+      // and no other "listening on http(s)://…" line can wrong-match.
+      const m = stdoutChunks
+        .join("")
+        .match(/autonomOS server listening on https?:\/\/[^\s:]+:(\d+)\n/);
+      if (m) {
+        clearTimeout(timer);
+        child.stdout.off("data", onData);
+        child.off("exit", onExit);
+        resolveFn(Number(m[1]));
+      }
+    };
+    child.stdout.on("data", onData);
     child.once("exit", onExit);
 
-    setTimeout(() => {
+    timer = setTimeout(() => {
+      child.stdout.off("data", onData);
+      child.off("exit", onExit);
       rejectFn(
         new Error(
-          `Server failed to signal ready within ${READY_TIMEOUT_MS}ms.\n` +
+          `Server failed to start listening within ${READY_TIMEOUT_MS}ms.\n` +
             `stdout:\n${stdoutChunks.join("")}\n` +
             `stderr:\n${stderrChunks.join("")}`,
         ),

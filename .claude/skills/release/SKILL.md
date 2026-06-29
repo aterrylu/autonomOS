@@ -43,7 +43,7 @@ that is an auth problem, NOT a missing release; don't tell the user to publish o
 ### 1. Determine the version and tag
 
 - If the user gave a version/tag, use it. Otherwise derive the version from
-  `packages/app/package.json` (`.version`) — that is the just-released version.
+  `packages/server/package.json` (`.version`) — that is the just-released version.
 - The **bare version** is e.g. `0.4.0`. The **tag** is `v0.4.0` (version with a
   leading `v`). Keep them distinct — `release-notes.ts` wants the bare version;
   `gh` wants the tag.

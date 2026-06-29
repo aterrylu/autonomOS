@@ -35,16 +35,16 @@ Priorities shift as we learn — this is a living document, not a contract.
 ## F-001: Desktop Application Shell
 
 **Priority:** P0
-**Status:** Decided (ADR-005: Web-first, Electron later)
+**Status:** Web-first shipped (ADR-005). Electron desktop path **cut** (ADR-051) — the canonical client is the browser + PWA (#71).
 **Depends on:** Nothing (everything depends on this)
 
 ### What
 
 The container that holds everything. The single most important architectural decision — determines tech stack, dev experience, distribution model, and what's possible for every other feature.
 
-### Decision: Web-First, Electron Later (ADR-005)
+### Decision: Web-First (ADR-005); Electron path cut (ADR-051)
 
-**Architecture:** A Bun server (Hono) that spawns and manages Claude Code subprocesses, serves a web dashboard, and exposes REST + WebSocket APIs. Package as Electron desktop app later when the web experience is solid.
+**Architecture:** A Bun server (Hono) that spawns and manages Claude Code subprocesses, serves a web dashboard, and exposes REST + WebSocket APIs. The client is the web dashboard — installable as a PWA (#71) — reached locally or against a remote always-on server. (An Electron desktop wrapper was built across ADR-005/028/029/030 and later **cut** in ADR-051; the web-first core below is what endured. The retained rationale documents why web-first won.)
 
 **Stack (ADR-007, ADR-009):**
 - **Runtime:** Bun (Anthropic-backed, Claude Code runs on it, uWebSockets C++ under the hood)
@@ -55,7 +55,7 @@ The container that holds everything. The single most important architectural dec
 
 **Why web-first:**
 - Fastest path to v0 — no Electron boilerplate, IPC wiring, or native packaging
-- The server IS the product — CLI, web dashboard, and future Electron wrapper are all clients
+- The server IS the product — CLI, web dashboard, and PWA are all clients
 - Mobile/remote access for free — approve tools from phone, check on agents remotely
 - YepAnywhere and amux both validate web-first works for this exact use case
 - LM Studio pattern: separate the backend daemon from the UI shell

@@ -1,12 +1,11 @@
 // `runServer(argv)` — the autonomos-server startup logic, exposed as a callable
 // function so the CLI (`autonomos start`) and the standalone entry point
-// (`packages/server/src/index.ts`, used by Phase 1B Electron) can both invoke
-// it without duplicating logic.
+// (`packages/server/src/index.ts`) can both invoke it without duplicating
+// logic.
 //
 // Behavior identical to the pre-Phase-1C top-level startup. The single
-// addition: when running in standalone (non-embedded) mode, writes a PID
-// file at $configDir/autonomos.pid for the CLI's stop/status/upgrade commands
-// to consume.
+// addition: it writes a PID file at $configDir/autonomos.pid for the CLI's
+// stop/status/upgrade commands to consume.
 
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -29,10 +28,6 @@ import {
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
-import {
-  announceEmbeddedReady,
-  resolveEmbeddedConfig,
-} from "./embedded-mode.js";
 import { initFileLogging } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
@@ -96,8 +91,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // effort: a logging failure never blocks startup.
   initFileLogging();
 
-  const embeddedConfig = resolveEmbeddedConfig(cliArgs.embedded);
-
   // Seed default templates on fresh install
   seedDefaultTemplates();
 
@@ -147,8 +140,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // Run sessions.json → per-file agents migration if needed.
   // MUST happen before resumeActiveAgents() reads from the new layout.
-  // Process-manager-agnostic: works under pm2, npx, bun, manual node, or
-  // desktop-bootstrapped SSH server.
+  // Process-manager-agnostic: works under pm2, npx, bun, or manual node.
   //
   // We exit non-zero on failure so pm2/systemd flag the unhealthy boot
   // rather than letting the server come up with a half-migrated state
@@ -328,14 +320,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   }
 
   // Port precedence: --port CLI flag > PORT env > 3000 default.
-  // --port=0 asks the OS to assign a free port (used in embedded mode).
+  // --port=0 asks the OS to assign a free port.
   const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
 
   const server = serve(
     {
       fetch: app.fetch,
       port: requestedPort,
-      hostname: embeddedConfig.bindHost,
     },
     () => {
       // When --port=0 the OS assigned us a real port; read it from the listener.
@@ -344,27 +335,23 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // Publish the OS-assigned port to serverState. Without this, spawned
       // Claude Code sessions (runtime.ts:spawnAgent → providers/*.buildArgs)
       // would still read `process.env.PORT || "3000"` and bake the wrong URL
-      // into their hook + MCP-gateway endpoints. In Built-in (embedded) mode
-      // we boot with --port=0, so actualPort is an ephemeral assignment.
+      // into their hook + MCP-gateway endpoints.
       setServerPort(actualPort);
-      const host = embeddedConfig.bindHost ?? "localhost";
-      const base = `http://${host}:${actualPort}`;
+      const base = `http://localhost:${actualPort}`;
       console.log(`autonomOS server listening on ${base}`);
       console.log(
         `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
       );
 
       // --print-url: emit the full URL + token in one human-readable line
-      // suitable for copy-paste into the Desktop's "Add server" dialog.
-      // The Welcome flow's Add-server modal references this command.
+      // suitable for copy-paste to connect a browser or client.
       if (cliArgs.printUrl) {
         console.log(`URL: ${base}  token: ${AUTH_TOKEN}`);
       }
 
-      // ADR-029 mutual exclusion: BOTH embedded and standalone modes
-      // must claim the pid file. This is the contract that prevents two
-      // servers from competing for the same ~/.autonomos/ state (the PR
-      // #172 bug).
+      // ADR-029 mutual exclusion: claim the pid file. This is the
+      // contract that prevents two servers from competing for the same
+      // ~/.autonomos/ state (the PR #172 bug).
       //
       // CRITICAL ordering: gateway init, resumeActiveAgents, and
       // initScheduler MUST run inside the "acquired" branch only. The
@@ -386,25 +373,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
                 `(pid ${result.owner.pid}, port ${result.owner.port}, ` +
                 `version ${result.owner.version}). Connect to it instead.`,
             );
-            if (cliArgs.embedded) {
-              // Embedded contract: tell the parent Electron process the
-              // existing port so it can switch to thin-client mode
-              // instead of treating this as a startup failure.
-              process.stdout.write(
-                `AUTONOMOS_ALREADY_RUNNING port=${result.owner.port} ` +
-                  `pid=${result.owner.pid}\n`,
-              );
-            }
             server.close(() => process.exit(0));
             return;
           }
 
-          // We are the owner. Emit the readiness signal (embedded mode)
-          // or just log (standalone mode), then arm the destructive
-          // inits.
-          if (cliArgs.embedded) {
-            announceEmbeddedReady(actualPort);
-          }
+          // We are the owner. Arm the destructive inits.
 
           // Initialize gateway (platform adapters, routing table).
           import("./gateway/index.js").then(({ initGateway }) => {
@@ -431,13 +404,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           console.warn(
             "[startup] Failed to acquire pid-file ownership — proceeding " +
               "without mutual exclusion (the `autonomos status/stop` CLI " +
-              "and Desktop mode-detection won't work):",
+              "won't work):",
             err instanceof Error ? err.message : err,
           );
-          // Still emit ready in embedded mode so the parent doesn't hang.
-          if (cliArgs.embedded) {
-            announceEmbeddedReady(actualPort);
-          }
           // Acquisition failed but we're proceeding — arm the inits as
           // we would in the "acquired" branch. This preserves the prior
           // behavior of "graceful degradation" when the lock can't be
@@ -469,8 +438,8 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       .then(({ shutdownGateway }) => shutdownGateway())
       .catch(() => {});
     shutdownAllAttachments();
-    // Release the pid file (claimed via acquireOwnership at startup).
-    // This is now done in BOTH embedded and standalone modes per ADR-029.
+    // Release the pid file (claimed via acquireOwnership at startup),
+    // per ADR-029.
     removePidFile();
     process.exit(0);
   };

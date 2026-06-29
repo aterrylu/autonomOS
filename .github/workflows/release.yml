@@ -3,12 +3,10 @@ name: Release
 # Triggered by pushing a `v*` tag (created by version.yml when the "Version
 # Packages" PR merges). Produces:
 #   - 4 server tarballs (darwin/linux × arm64/x64) + SHA256SUMS  → install.sh
-#   - universal2 macOS DMG + ZIP + blockmap + latest-mac.yml     → Desktop app
 # all attached to a GitHub Release whose body is the CHANGELOG section.
 #
-# The build itself (server bundles + universal DMG + smoke + validate-dmg +
-# native-Intel gate) lives in the reusable reusable-dmg-build.yml, shared with
-# pr-artifact.yml. Here we invoke it with sign + validate_intel ON, then publish.
+# The build itself (the 4 server bundles) lives in the reusable
+# reusable-server-build.yml. Here we invoke it, then publish.
 
 on:
   push:
@@ -17,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build + validate everything but do NOT publish a release (use to test the universal DMG build before cutting a real release)."
+        description: "Build everything but do NOT publish a release (use to test the server-tarball build before cutting a real release)."
         type: boolean
         default: true
 
@@ -25,24 +23,13 @@ permissions:
   contents: read
 
 jobs:
-  # Server bundles + universal2 DMG + smoke + validate-dmg + native-Intel gate.
-  # sign + validate_intel ON — this is the real, shippable build. Secrets are
-  # passed explicitly (the reusable workflow only consumes them when sign=true).
+  # The 4 server bundles (darwin/linux × arm64/x64) for install.sh.
   build:
-    uses: ./.github/workflows/reusable-dmg-build.yml
-    with:
-      sign: true
-      validate_intel: true
-    secrets:
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+    uses: ./.github/workflows/reusable-server-build.yml
 
   # ── Publish ──────────────────────────────────────────────────────────────
-  # Skipped entirely on a dry-run dispatch — the build + both validation gates
-  # above still run, so a dry-run proves the whole pipeline without creating a
+  # Skipped entirely on a dry-run dispatch — the server-tarball build above
+  # still runs, so a dry-run proves the build pipeline without creating a
   # release. Publishes only on a real `v*` tag (or an explicit dry_run=false
   # dispatch).
   release:
@@ -71,13 +58,7 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -name 'autonomos-*.tar.gz' -exec cp {} release/ \;
-          find artifacts -name '*.dmg'         -exec cp {} release/ \;
-          find artifacts -name '*.zip'         -exec cp {} release/ \;
-          # Only the ZIP's blockmap — electron-updater (Squirrel.Mac) updates
-          # from the .zip, never the .dmg, so the .dmg.blockmap is dead weight.
-          find artifacts -name '*.zip.blockmap' -exec cp {} release/ \;
-          find artifacts -name 'latest-mac.yml' -exec cp {} release/ \;
-          (cd release && shasum -a 256 autonomos-*.tar.gz *.dmg > SHA256SUMS)
+          (cd release && shasum -a 256 autonomos-*.tar.gz > SHA256SUMS)
           ls -la release/
 
       # SLSA build provenance — Sigstore-signed attestations linking each
@@ -87,8 +68,6 @@ jobs:
         with:
           subject-path: |
             release/autonomos-*.tar.gz
-            release/*.dmg
-            release/*.zip
 
       - name: Extract release notes from CHANGELOG
         run: bun scripts/release-notes.ts > RELEASE_NOTES.md

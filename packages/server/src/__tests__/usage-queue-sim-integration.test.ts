@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
-  authedJson,
-  type BootedServer,
-  bootEmbedded,
-  RUN_INTEGRATION,
-  sleep,
-  waitFor,
-} from "./helpers/embedded-server.js";
-import {
   type MockAnthropic,
   startMockAnthropic,
 } from "./helpers/mock-anthropic.js";
+import {
+  authedJson,
+  type BootedServer,
+  bootServer,
+  RUN_INTEGRATION,
+  sleep,
+  waitFor,
+} from "./helpers/test-server.js";
 
 /**
  * L3 integration (CI-only) — the dev simulation control driving a real fire.
@@ -59,7 +59,7 @@ describe("usage-queue timed simulation — real spawn auto-fire", {
     // The simulate endpoint is gated; the subprocess inherits this env.
     process.env.AUTONOMOS_ENABLE_USAGE_SIMULATION = "1";
     mock = await startMockAnthropic({ mode: "text", text: "Done." });
-    server = await bootEmbedded({
+    server = await bootServer({
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });

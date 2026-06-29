@@ -12,7 +12,7 @@
 //
 // If the first argv looks like a flag (--port=N) instead of a subcommand,
 // treat it as an implicit `start` — preserves the Phase 1A.1 invocation
-// pattern `node bundle.js --port=N --embedded`.
+// pattern `node bundle.js --port=N`.
 
 // MUST be the FIRST import — sets NAPI_RS_NATIVE_LIBRARY_PATH for the universal2
 // bundle before any module transitively loads impit's native binding. See file.
@@ -31,7 +31,7 @@ const USAGE = `Usage: autonomos <command> [options]
 
 Commands:
   start [options]      Run the server in the foreground (default if no command)
-                       Options: --port=N, --embedded
+                       Options: --port=N
   stop                 Gracefully stop a running daemon (SIGTERM)
   restart              Restart the installed service (launchctl / systemctl)
   status               Print running daemon's state
@@ -49,7 +49,6 @@ Commands:
 Examples:
   autonomos                         # start the server with defaults
   autonomos start --port=3100       # start on a specific port
-  autonomos --embedded --port=0     # embedded mode (Electron child)
   autonomos status                  # check if a daemon is running
   autonomos logs -f                 # follow the server log
   autonomos restart                 # restart the installed service

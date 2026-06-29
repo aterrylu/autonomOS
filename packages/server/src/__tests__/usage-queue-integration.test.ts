@@ -6,17 +6,17 @@ import { after, before, describe, it } from "node:test";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
 import { createUsageQueue } from "../usageQueue.js";
 import {
-  authedJson,
-  type BootedServer,
-  bootEmbedded,
-  RUN_INTEGRATION,
-  sleep,
-  waitFor,
-} from "./helpers/embedded-server.js";
-import {
   type MockAnthropic,
   startMockAnthropic,
 } from "./helpers/mock-anthropic.js";
+import {
+  authedJson,
+  type BootedServer,
+  bootServer,
+  RUN_INTEGRATION,
+  sleep,
+  waitFor,
+} from "./helpers/test-server.js";
 
 /**
  * L3 integration (CI-only, AUTONOMOS_INTEGRATION=1) — usage-queue auto-fire.
@@ -72,7 +72,7 @@ describe("usage-queue auto-fire — real spawn", {
 
   before(async () => {
     mock = await startMockAnthropic({ mode: "text", text: "Done." });
-    server = await bootEmbedded({
+    server = await bootServer({
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });

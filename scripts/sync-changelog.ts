@@ -304,7 +304,7 @@ function consumedChangesetCount(repoRoot: string): number {
 function main(): void {
   const repoRoot = resolve(import.meta.dirname, "..");
   const rootChangelog = resolve(repoRoot, "CHANGELOG.md");
-  const pkgJson = resolve(repoRoot, "packages/app/package.json");
+  const pkgJson = resolve(repoRoot, "packages/server/package.json");
 
   const version = (
     JSON.parse(readFileSync(pkgJson, "utf-8")) as { version: string }

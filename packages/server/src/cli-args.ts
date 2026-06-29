@@ -3,14 +3,12 @@
 //
 // Recognized flags:
 //   --port=N | --port N    Override the listen port (env PORT also works)
-//   --embedded             Enable embedded-mode behavior (see embedded-mode.ts)
 //   --print-url            On listen, print "URL: http://host:port  token: …"
-//                          for easy copy-paste into autonomOS Desktop
+//                          for easy copy-paste into a browser or client
 //   --help                 Print usage and exit 0
 
 export type CliArgs = {
   port: number | undefined;
-  embedded: boolean;
   printUrl: boolean;
   help: boolean;
 };
@@ -19,19 +17,15 @@ const USAGE = `Usage: autonomos-server [options]
 
 Options:
   --port=N        Listen on port N (default: 3000, env PORT)
-  --embedded      Run as a child of a parent process (Electron desktop app).
-                  Binds to 127.0.0.1 only and emits a structured readiness
-                  signal on stdout: AUTONOMOS_READY port=<N>
   --print-url     After startup, print a human-readable line:
                   "URL: http://host:port  token: …" for easy copy-paste
-                  into autonomOS Desktop's "Add server" dialog.
+                  to connect a browser or client.
   --help          Print this message and exit
 `;
 
 export function parseCliArgs(argv: readonly string[]): CliArgs {
   const args: CliArgs = {
     port: undefined,
-    embedded: false,
     printUrl: false,
     help: false,
   };
@@ -40,10 +34,6 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       args.help = true;
-      continue;
-    }
-    if (arg === "--embedded") {
-      args.embedded = true;
       continue;
     }
     if (arg === "--print-url") {
