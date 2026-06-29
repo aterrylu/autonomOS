@@ -6,9 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-// Isolate the config dir BEFORE importing modules that read it at load time.
+// Isolate BOTH the config dir AND $HOME before importing modules that read them
+// at load time. HOME isolation matters because readToken()'s legacy fallback
+// reads $HOME/.autonomos/token — without this the test would read (and leak) the
+// maintainer's real production token on a machine that has autonomOS installed.
 const TEST_DIR = join(tmpdir(), `autonomos-postinstall-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
+process.env.HOME = TEST_DIR;
 process.env.CI = "1"; // never actually open a browser during tests
 
 const { writePidFile } = await import("@autonomos/server/pid-file.js");
@@ -94,6 +98,31 @@ describe("verifyAndReportInstall", () => {
     const out = logs.join("\n");
     assert.match(out, /autonomOS is running/);
     assert.match(out, /AUTONOMOS_TOKEN/);
+  });
+
+  it("falls back to ~/.autonomos/token when the config dir has none", async () => {
+    const port = await startServer();
+    writePidFile({
+      pid: process.pid,
+      port,
+      version: "test",
+      startedAt: new Date().toISOString(),
+    });
+    // No $configDir/token, but the legacy $HOME/.autonomos/token exists (HOME is
+    // isolated to TEST_DIR, so this never touches a real home).
+    mkdirSync(join(TEST_DIR, ".autonomos"), { recursive: true });
+    writeFileSync(join(TEST_DIR, ".autonomos", "token"), "legacy-tok-456\n");
+
+    const ok = await verifyAndReportInstall(
+      { open: false },
+      { timeoutMs: 4000, pollMs: 50 },
+    );
+
+    assert.equal(ok, true);
+    assert.ok(
+      logs.join("\n").includes("legacy-tok-456"),
+      "surfaces the legacy ~/.autonomos/token",
+    );
   });
 
   it("returns false + warns (does not throw) when the daemon never comes up", async () => {
