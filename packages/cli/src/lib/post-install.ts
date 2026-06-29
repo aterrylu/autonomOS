@@ -2,8 +2,17 @@
 //
 // After install-service activates the daemon, this polls until it is actually
 // responsive (the smoke test that replaces the old "should be running shortly"
-// guess), then prints where to reach it — the dashboard URL, the auth token,
-// and a click-to-auth link — and optionally opens a browser.
+// guess), then prints where to reach it — the dashboard URL and the auth token
+// to paste at its login — and optionally opens a browser at the dashboard root.
+//
+// SECURITY: we deliberately do NOT put the token in the opened/printed URL. The
+// dashboard authenticates by POSTing the token in the request body (the login
+// page) — it never reads `?token=` from the URL — so a `…/auth?token=<token>`
+// link was both leaky (URL → shell scrollback, `ps` process args, browser
+// history) AND non-functional (the frontend ignored it; the user pasted anyway).
+// So we open the dashboard ROOT and surface the token only on stdout (the
+// operator's own terminal — the lowest-severity surface, and the value they
+// paste). See ADR-052's security Update note.
 //
 // Sources of truth, read AFTER the daemon boots (so they're populated):
 //   - port  → the pid file ($configDir/autonomos.pid), since a default install
@@ -114,14 +123,12 @@ export async function verifyAndReportInstall(
 
   const url = `http://localhost:${owner.port}`;
   const token = readToken();
-  const authUrl = token ? `${url}/auth?token=${token}` : url;
 
   console.log("");
   console.log("  ✓ autonomOS is running.");
   console.log(`    Dashboard:  ${url}`);
   if (token) {
-    console.log(`    Token:      ${token}`);
-    console.log(`    Open:       ${authUrl}`);
+    console.log(`    Token:      ${token}   ← paste this at the login screen`);
   } else {
     console.log("    Token:      (configured via AUTONOMOS_TOKEN)");
   }
@@ -130,6 +137,8 @@ export async function verifyAndReportInstall(
   );
   console.log("");
 
-  if (opts.open) openBrowser(authUrl);
+  // Open the dashboard ROOT only — never the token-bearing URL (see SECURITY
+  // note above). The user pastes the token printed above at the login screen.
+  if (opts.open) openBrowser(url);
   return true;
 }
