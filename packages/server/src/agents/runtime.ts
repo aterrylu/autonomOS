@@ -48,7 +48,6 @@ import {
   listAgents,
   markExited,
   markRunning,
-  patchAgent,
   resolveAgent as resolveAgentFromStore,
 } from "./store.js";
 
@@ -224,6 +223,33 @@ export function expandPath(path: string): string {
   return path.replace(/^~/, process.env.HOME || "");
 }
 
+/**
+ * Whether a spawn attempted to resume a prior session — which ARMS the onExit
+ * safety net (respawn fresh on an immediate crash). This is tied to the field
+ * each provider actually resumes from AND to that provider's loop-breaker:
+ *
+ *  - Codex resumes via `providerThreadId`; the safety net clears it on the
+ *    fresh respawn, so the respawn is no longer "attempting resume" → no loop.
+ *  - Claude Code resumes via `resumeSessionId`, but ONLY when it has the
+ *    `hasResumableSession` pre-flight (`hasResumeHook`) — which clears
+ *    `resumeSessionId` on the regenerated-id respawn, so that loop also breaks.
+ *
+ * The hook guard is load-bearing: `resumeSessionId` is set on EVERY respawn
+ * (provider-agnostic) and only ever cleared by the pre-flight. A provider with
+ * a bare `resumeSessionId` and no pre-flight (e.g. a future provider) must NOT
+ * arm the net, or a persistent non-resume crash would re-fire it forever
+ * (regenerating the id each time, never reaching a terminal `crashed` state).
+ */
+export function resumeSafetyNetArmed(opts: {
+  resumeSessionId?: string;
+  providerThreadId?: string;
+  hasResumeHook: boolean;
+}): boolean {
+  return (
+    !!opts.providerThreadId || (!!opts.resumeSessionId && opts.hasResumeHook)
+  );
+}
+
 // ── Spawn ──────────────────────────────────────────────────────────
 
 export interface SpawnParams extends SpawnOptions {
@@ -361,6 +387,42 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // conversation. Undefined on a fresh first spawn → a new thread is created.
     providerThreadId: agent.providerThreadId,
   };
+
+  // Pre-flight resume check (provider-parity, ADR-049): a resume only succeeds
+  // if the provider actually has a resumable session on disk. Claude Code writes
+  // its session JSONL lazily (on the first turn, not at session creation), so a
+  // never-conversed agent has no `--resume` target and `claude --resume <id>`
+  // exits code 1 on boot — which marks the agent crashed and drops it out of the
+  // dashboard (the bug). When the provider reports no resumable session, fall
+  // back to a FRESH session reusing the SAME providerSessionId: nothing is lost
+  // (there was no prior conversation) and the record's id stays stable. Codex
+  // omits this hook — a missing thread id already takes its fresh `--remote`
+  // path — so only Claude Code exercises this branch today.
+  if (resolved.resumeSessionId && provider.hasResumableSession) {
+    // The probe is best-effort: if it THROWS we must never abort the spawn
+    // (that would mark the agent crashed — the very outcome this fixes). Fail
+    // OPEN to the prior unconditional-resume behavior; the onExit safety net
+    // below is the backstop if the resume then genuinely crashes.
+    let resumable = true;
+    try {
+      resumable = provider.hasResumableSession(resolved);
+    } catch (err) {
+      console.warn(
+        `[runtime] ${agent.id.slice(0, 8)} ${provider.displayName} hasResumableSession probe threw — assuming resumable:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    if (!resumable) {
+      resolved.resumeSessionId = undefined;
+      console.warn(
+        `[runtime] ${agent.id.slice(0, 8)} resume requested but ${provider.displayName} has no resumable session on disk — starting fresh (same id)`,
+      );
+      pushSystemNotification(
+        agent.id,
+        `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
+      );
+    }
+  }
 
   const env = provider.buildEnv(agent.id, agent.name);
 
@@ -547,11 +609,17 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   pty.onData((data: string) => appendToOutputBuffer(managed, data));
 
   const spawnedAt = Date.now();
-  // Whether this spawn attempted a Codex conversation resume. If it dies
-  // immediately, the persisted thread's rollout is likely gone — we must clear
-  // the dead thread id and fall back to a fresh thread, or the agent crash-loops
-  // (every restart re-runs `codex resume <deadId>`).
-  const attemptedResume = !!resolved.providerThreadId;
+  // Whether this spawn attempted to resume a prior session — Claude Code's
+  // `--resume <sessionId>` OR Codex's `codex resume <threadId>` — which arms the
+  // onExit safety net below. Reads the POST-pre-flight value: if the resume
+  // check above already cleared resumeSessionId, no resume was attempted and the
+  // net won't fire. See resumeSafetyNetArmed for why the resumeSessionId arm is
+  // gated on the provider owning a pre-flight hook (loop-breaker correctness).
+  const attemptedResume = resumeSafetyNetArmed({
+    resumeSessionId: resolved.resumeSessionId,
+    providerThreadId: resolved.providerThreadId,
+    hasResumeHook: !!provider.hasResumableSession,
+  });
 
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
@@ -595,12 +663,20 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       );
     }
 
-    // Resume-failure fallback: a Codex agent that attempted `codex resume
-    // <threadId>` and died immediately almost certainly hit a missing/invalid
-    // rollout. Clear the dead thread id and respawn with a FRESH thread —
-    // otherwise the dead id stays persisted and every restart re-crashes (a
-    // silent crash-loop). The respawn can't loop: providerThreadId is now
-    // cleared, so it takes the plain `--remote` path.
+    // Resume-failure safety net (provider-agnostic, ADR-049): a spawn that
+    // attempted a resume — Claude `--resume <id>` or Codex `codex resume
+    // <threadId>` — and died immediately almost certainly hit a missing/invalid
+    // session on disk. Respawn FRESH so the agent recovers instead of being
+    // marked crashed (and vanishing from the dashboard).
+    //
+    // Force-fresh for ANY provider by (a) regenerating providerSessionId so
+    // Claude's pre-flight check finds no JSONL for the new id and emits a fresh
+    // `--session-id`, and (b) clearing providerThreadId so Codex takes the plain
+    // `--remote` path. Without (a), a Claude resume that crashed for a reason
+    // OTHER than a missing file (e.g. a corrupt session) would re-resume the
+    // same broken id every boot — a crash loop. With B's pre-flight in place,
+    // the common "never conversed" case never reaches here; this catches the
+    // residual "session existed but resume still failed" case.
     if (
       !shuttingDown &&
       attemptedResume &&
@@ -609,13 +685,19 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     ) {
       live.delete(persisted.id);
       disposeCodexControl(persisted.id);
-      patchAgent(persisted.id, { providerThreadId: undefined });
+      // One write resets both identity fields: a new providerSessionId (Claude's
+      // pre-flight finds no JSONL for it → fresh `--session-id`) and a cleared
+      // providerThreadId (Codex → fresh `--remote`).
+      markRunning(persisted.id, {
+        providerSessionId: crypto.randomUUID(),
+        providerThreadId: undefined,
+      });
       pushSystemNotification(
         persisted.id,
-        `Couldn't resume ${persisted.name}'s prior conversation (its history may have been pruned) — starting a fresh thread.`,
+        `Couldn't resume ${persisted.name}'s prior ${provider.displayName} session (its history may have been pruned) — starting fresh.`,
       );
       console.warn(
-        `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — cleared thread id, respawning fresh`,
+        `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — reset session id + cleared thread id, respawning fresh`,
       );
       const record = getAgent(persisted.id);
       if (record) {

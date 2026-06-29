@@ -373,10 +373,18 @@ export function markExited(id: UUID, reason: ExitReason): Agent | undefined {
   });
 }
 
-/** Mark an agent as running (resume / re-attach). Clears exit metadata. */
+/** Mark an agent as running (resume / re-attach). Clears exit metadata.
+ *  `providerThreadId` is included so the resume-failure recovery path can reset
+ *  a dead Codex thread in the same write that resets the session id (a patch
+ *  value of `undefined` is dropped by saveAgent's JSON.stringify, clearing it). */
 export function markRunning(
   id: UUID,
-  patch: Partial<Pick<Agent, "provider" | "providerSessionId" | "startedAt">>,
+  patch: Partial<
+    Pick<
+      Agent,
+      "provider" | "providerSessionId" | "startedAt" | "providerThreadId"
+    >
+  >,
 ): Agent | undefined {
   const cache = readCache();
   const existing = cache.get(id);
