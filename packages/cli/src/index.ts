@@ -38,7 +38,7 @@ Commands:
   logs                 Tail the server log ($configDir/logs/autonomos.log)
                        Options: -f/--follow, -n/--lines=N (default 50)
   install-service      Install OS-native supervisor (launchd / systemd-user)
-                       Options: --prefix=DIR, --no-activate, --bin=PATH, --force
+                       Options: --prefix=DIR, --no-activate, --bin=PATH, --force, --open
   uninstall-service    Stop daemon and remove the service file
                        Options: --prefix=DIR
   upgrade              Fetch latest release, verify, atomic swap, restart daemon

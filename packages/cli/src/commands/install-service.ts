@@ -8,15 +8,22 @@
 //   --no-activate    Just write the file; don't run launchctl/systemctl
 //   --bin=PATH       Override the auto-detected program path
 //   --force          Re-install even if file already exists
+//   --open           After the daemon comes up, open the dashboard in a browser
+//
+// After activation it polls until the daemon is responsive (a real smoke test,
+// not a guess) and prints the dashboard URL + token — see lib/post-install.ts.
 //
 // Exit codes:
 //   0 — installed and activated (or written with --no-activate)
 //   1 — failure (file write, launchctl/systemctl, etc.)
 //   2 — unsupported platform
+//   3 — activated, but the daemon didn't become responsive in time (so a piped
+//       `curl install.sh` reports the failure instead of a false success)
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { detectPm2Install } from "../lib/pm2.js";
+import { verifyAndReportInstall } from "../lib/post-install.js";
 import {
   defaultPrefix,
   detectProgramArgs,
@@ -34,6 +41,7 @@ type InstallFlags = {
   bin: string | undefined;
   force: boolean;
   port: number | undefined;
+  open: boolean;
 };
 
 function parseFlags(argv: readonly string[]): InstallFlags {
@@ -42,9 +50,11 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   let bin: string | undefined;
   let force = false;
   let port: number | undefined;
+  let open = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--no-activate") noActivate = true;
+    else if (a === "--open") open = true;
     else if (a === "--force") force = true;
     else if (a.startsWith("--prefix=")) prefix = a.slice("--prefix=".length);
     else if (a === "--prefix") prefix = argv[++i] ?? defaultPrefix();
@@ -60,7 +70,7 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   ) {
     throw new Error(`Invalid --port value: must be 0-65535`);
   }
-  return { prefix, noActivate, bin, force, port };
+  return { prefix, noActivate, bin, force, port, open };
 }
 
 export async function runInstallServiceCommand(
@@ -169,8 +179,9 @@ export async function runInstallServiceCommand(
         );
         return 1;
       }
-      console.log("✓ Loaded via launchctl — daemon should be running shortly");
+      console.log("✓ Loaded via launchctl");
       console.log(`  Logs: ${paths.logDir}/autonomos.log`);
+      if (!(await verifyAndReportInstall({ open: flags.open }))) return 3;
     }
     return 0;
   }
@@ -206,6 +217,7 @@ export async function runInstallServiceCommand(
       }
       console.log("✓ Enabled and started via systemctl --user");
       console.log(`  Logs: ${paths.logDir}/autonomos.log`);
+      if (!(await verifyAndReportInstall({ open: flags.open }))) return 3;
     }
     return 0;
   }
