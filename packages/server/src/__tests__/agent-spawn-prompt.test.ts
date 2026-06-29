@@ -4,16 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
-  authedJson,
-  type BootedServer,
-  bootEmbedded,
-  RUN_INTEGRATION,
-  waitFor,
-} from "./helpers/embedded-server.js";
-import {
   type MockAnthropic,
   startMockAnthropic,
 } from "./helpers/mock-anthropic.js";
+import {
+  authedJson,
+  type BootedServer,
+  bootServer,
+  RUN_INTEGRATION,
+  waitFor,
+} from "./helpers/test-server.js";
 
 /**
  * L3 integration (CI-only, AUTONOMOS_INTEGRATION=1) — prompt delivery.
@@ -25,8 +25,8 @@ import {
  * submitted. The creating agent then waited forever.
  *
  * The guarantee under test: a spawn WITH a prompt leads to that prompt
- * actually executing — with NO manual keystrokes from anyone. The older
- * embedded-mode suite drives the terminal WebSocket by hand ("one Enter to
+ * actually executing — with NO manual keystrokes from anyone. An earlier
+ * hands-on approach drove the terminal WebSocket by hand ("one Enter to
  * submit the queued prompt"), which works around this exact bug instead of
  * catching it. This suite deliberately never touches the terminal: delivery
  * must succeed through the argv path, the hardened needle-driven auto-trust
@@ -60,7 +60,7 @@ describe("starting prompt delivery — no manual keystrokes", {
 
   before(async () => {
     mock = await startMockAnthropic({ mode: "text", text: "Done." });
-    server = await bootEmbedded({
+    server = await bootServer({
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });

@@ -72,7 +72,7 @@ jobs:
       - name: Tag release
         if: steps.changesets.outputs.hasChangesets == 'false'
         run: |
-          VERSION=$(node -p "require('./packages/app/package.json').version")
+          VERSION=$(node -p "require('./packages/server/package.json').version")
           if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
             echo "v${VERSION} already tagged — nothing to do."
             exit 0

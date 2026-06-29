@@ -5,7 +5,6 @@
 // Direct invocation paths that hit this file:
 //   - `tsx packages/server/src/index.ts` (make dev)
 //   - `node packages/server/dist/<platform>/index.js` (Phase 1A.1 bundle)
-//   - Phase 1B Electron child process
 
 import { runServer } from "./run.js";
 

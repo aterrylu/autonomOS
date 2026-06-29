@@ -111,10 +111,8 @@ export async function runInstallServiceCommand(
             `  pid:     ${owner.pid}\n` +
             `  port:    ${owner.port}\n` +
             `  version: ${owner.version}\n\n` +
-            `If this is autonomOS Desktop's Built-in server, quit the\n` +
-            `Desktop app first, then re-run install-service.\n\n` +
-            `Otherwise stop the server with \`autonomos stop\`, then\n` +
-            `re-run install-service.\n\n` +
+            `Stop the server with \`autonomos stop\`, then re-run\n` +
+            `install-service.\n\n` +
             `Or use --force to install anyway (risks port collision).`,
         );
         return 1;

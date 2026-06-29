@@ -7,7 +7,6 @@
   "commit": false,
   "fixed": [
     [
-      "@autonomos/app",
       "@autonomos/cli",
       "@autonomos/core",
       "@autonomos/dashboard",

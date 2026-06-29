@@ -15,18 +15,18 @@ like `.changeset/wise-otters-dance.md`:
 
 ```markdown
 ---
-"@autonomos/app": minor
+"@autonomos/server": minor
 ---
 
-Add "Try it out" ephemeral server mode to the Desktop Welcome screen.
+Add per-provider permission modes to the agent spawn flow.
 ```
 
 ## Lockstep versioning
 
-All five packages (`app`, `cli`, `core`, `dashboard`, `server`) are a **fixed
+All four packages (`cli`, `core`, `dashboard`, `server`) are a **fixed
 group** — they always share one version. You only need to name **one** package
-in the changeset; the whole group bumps together. The `app` package is the
-conventional one to name since the Desktop app is the user-facing product.
+in the changeset; the whole group bumps together. The `server` package is the
+conventional one to name since the server is the user-facing product.
 
 ## Bump kinds (semver)
 

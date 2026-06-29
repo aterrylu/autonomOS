@@ -12,7 +12,7 @@
 // write into a rotating `~/.autonomos/logs/autonomos.log` (stdout + stderr
 // merged, like the old pm2 `merge_logs: true`), keeping the newest N segments.
 // It echoes to the original sink ASYMMETRICALLY (see patch()): stdout ALWAYS —
-// it carries the `AUTONOMOS_READY` IPC + `--print-url`, and its supervisor sink
+// it carries `--print-url` + human-readable logs, and its supervisor sink
 // is /dev/null so echoing is free — while stderr echoes only on a TTY. Under
 // the service, stderr's supervisor sink is the boot.error.log FILE, so echoing
 // every runtime console.error there would regrow the unbounded log this design
@@ -134,7 +134,7 @@ function patch(
 ): void {
   const original = std.write.bind(std);
   // Echo to the original sink so existing behavior is preserved. For stdout we
-  // ALWAYS echo (it carries the AUTONOMOS_READY IPC + --print-url, and under the
+  // ALWAYS echo (it carries --print-url + human logs, and under the
   // service its sink is /dev/null, so echoing is free). For stderr we echo only
   // on a TTY (dev/foreground): under the service stderr's sink is the
   // boot.error.log file, and echoing every runtime console.error there would

@@ -6,7 +6,7 @@
  * We do NOT fake the claude binary. The provider's `buildEnv()` spreads the
  * server's `process.env` into every spawned session (providers/shared.ts
  * buildBaseEnv), so setting `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` on
- * the test server's environment (see helpers/embedded-server.ts) makes a real
+ * the test server's environment (see helpers/test-server.ts) makes a real
  * `claude` invocation stream against our SSE instead of Anthropic.
  *
  * Endpoints:
