@@ -60,7 +60,7 @@ const HOME = process.env.HOME || "/tmp";
 if (!process.env.HOME) {
   console.warn(
     "[providers] $HOME is not set — binary candidate paths will use /tmp. " +
-      "Set HOME in ecosystem.config.cjs env if running under PM2.",
+      "The launchd plist / systemd-user unit set HOME in the service env.",
   );
 }
 
@@ -97,7 +97,8 @@ function findNvmNodeBin(): string | undefined {
  * Well-known directories where CLI binaries are commonly installed.
  * Computed once at module load. Includes nvm if present on disk.
  * Used for both PATH enrichment and direct binary candidate resolution.
- * Keep in sync with EXTRA_PATHS in ecosystem.config.cjs.
+ * Keep in sync with EXTRA_PATHS in scripts/install-prod-service.sh (which sets
+ * the launchd/systemd-user service PATH).
  */
 const BINARY_DIRS: readonly string[] = (() => {
   const dirs = [

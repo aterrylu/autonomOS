@@ -7,6 +7,17 @@
 //
 // Both run as the invoking user (no sudo). Both restart on failure. Both
 // survive logout (via plist KeepAlive on mac, loginctl enable-linger on linux).
+//
+// LOGGING: the server owns its own rotating log (server/src/logger.ts tees
+// stdout+stderr into $logDir/autonomos.log and rotates it). The supervisor must
+// NOT also capture stdout to a growing file — two writers would corrupt it, and
+// a supervisor-held fd can't be rotated from outside. So we send the
+// supervisor's stdout to /dev/null and keep only a stderr backstop
+// ($logDir/autonomos.boot.error.log) for failures BEFORE the logger attaches.
+// The logger stops echoing stderr to this file once attached (it echoes stderr
+// only on a TTY), so the backstop stays bounded — runtime errors live in the
+// rotating autonomos.log instead. `autonomos logs` tails autonomos.log.
+export const BOOT_ERROR_LOG = "autonomos.boot.error.log";
 
 function escapeXml(s: string): string {
   return s
@@ -58,9 +69,9 @@ ${argsXml}
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${escapeXml(opts.logDir)}/autonomos.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>${escapeXml(opts.logDir)}/autonomos.error.log</string>
+    <string>${escapeXml(opts.logDir)}/${BOOT_ERROR_LOG}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
@@ -95,8 +106,8 @@ Type=simple
 ExecStart=${execStart}
 Restart=always
 RestartSec=5
-StandardOutput=append:${opts.logDir}/autonomos.log
-StandardError=append:${opts.logDir}/autonomos.error.log
+StandardOutput=null
+StandardError=append:${opts.logDir}/${BOOT_ERROR_LOG}
 Environment=HOME=${opts.home}
 Environment=PATH=${opts.path}
 
