@@ -63,6 +63,25 @@ export interface AgentProvider {
   attachStartupWatcher?(pty: PtyHandle, options: ResolvedSpawnOptions): void;
 
   /**
+   * Optional: does a RESUMABLE session actually exist on disk for these options?
+   *
+   * The runtime calls this on the resume path BEFORE building args. When it
+   * returns false, the runtime spawns a FRESH session (reusing the same
+   * providerSessionId) instead of emitting the provider's resume flags —
+   * preventing a doomed resume from crashing the agent and dropping it out of
+   * the dashboard.
+   *
+   * Motivating case: Claude Code writes its session JSONL lazily (on the first
+   * turn, not at session creation), so an agent that hasn't conversed yet has
+   * no `--resume` target. Codex handles this internally (a missing thread id
+   * means a fresh `--remote` thread), so it does NOT implement this hook.
+   *
+   * Providers that omit this hook are treated as "always resumable" — the
+   * runtime keeps its prior unconditional resume behavior for them.
+   */
+  hasResumableSession?(options: ResolvedSpawnOptions): boolean;
+
+  /**
    * Optional: translate a native hook event into CC-shaped vocabulary so the
    * shared status derivation can consume it. Return null to drop the event
    * (e.g. streaming chunks with no lifecycle meaning). The returned object

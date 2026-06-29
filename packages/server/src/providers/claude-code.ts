@@ -3,6 +3,8 @@
  * CC-specific CLI flags, env vars, and startup handling.
  */
 
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import {
   type AgentProvider,
   DEFAULT_PERMISSION_MODE,
@@ -13,6 +15,7 @@ import {
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
+import { cwdToDirName, projectsDir } from "../titleCache.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -254,6 +257,40 @@ export const claudeCodeProvider: AgentProvider = {
     const expectChannels =
       channels?.some((c) => c.startsWith("server:")) ?? false;
     attachStartupWatcherCore(pty, options, { expectChannels });
+  },
+
+  hasResumableSession(options: ResolvedSpawnOptions): boolean {
+    // CC stores each session at ~/.claude/projects/<cwdToDirName>/<id>.jsonl
+    // and writes it LAZILY — on the first turn, not at session creation. So an
+    // agent that hasn't conversed yet has no file here, and `claude --resume
+    // <id>` would exit code 1 on sight. Probe the exact path the SDK uses (same
+    // helpers titleCache resolves titles with) so the runtime can fall back to
+    // a fresh session instead of a doomed resume.
+    //
+    // Distinguish "genuinely absent" (ENOENT → not resumable) from "couldn't
+    // stat it right now" (EACCES/EIO/transient blip → assume resumable). Bare
+    // existsSync collapses both to false, which would let a momentary stat
+    // hiccup discard — and start a fresh session OVER — a real conversation
+    // under the same id. Fail OPEN on any non-ENOENT error: let the real
+    // `--resume` attempt proceed (the onExit safety net is the backstop if it
+    // truly can't resume).
+    //
+    // Path note: cwdToDirName matches the SDK exactly for cwd ≤ 200 chars (the
+    // normal case). For longer cwds the SDK's truncation hash may diverge
+    // (titleCache keeps a prefix-match fallback for exactly this reason); we
+    // accept a rare false-negative there rather than make this probe async.
+    const file = join(
+      projectsDir(),
+      cwdToDirName(options.cwd),
+      `${options.providerSessionId}.jsonl`,
+    );
+    try {
+      statSync(file);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      return true; // transient/unexpected error → don't discard a real session
+    }
   },
 };
 
