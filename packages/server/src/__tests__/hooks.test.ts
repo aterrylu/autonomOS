@@ -105,16 +105,31 @@ describe("hooks — agent status derivation", () => {
     assert.equal(getAgentState(sid).status, "working");
   });
 
-  it("PreCompact → compacting", async () => {
+  it("PreCompact from an active state → compacting (saves baseline)", async () => {
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    assert.equal(getAgentState(sid).status, "working");
     await postHookEvent(sid, { hook_event_name: "PreCompact" });
-    assert.equal(getAgentState(sid).status, "compacting");
+    const state = getAgentState(sid);
+    assert.equal(state.status, "compacting");
+    assert.equal(state.preCompactStatus, "working");
+  });
+
+  it("PreCompact at rest (idle) → stays idle (no spinner, nothing to interrupt)", async () => {
+    // A /compact issued while idle has no live turn — showing "compacting"
+    // would strand the agent, since the resolve signals only no-op from here.
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    await postHookEvent(sid, { hook_event_name: "Stop" });
+    assert.equal(getAgentState(sid).status, "idle");
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    assert.equal(getAgentState(sid).status, "idle");
   });
 
   it("PostCompact from unknown baseline → ready (fallback)", async () => {
-    // No prior status — PreCompact from "unknown" doesn't save a baseline.
-    // PostCompact falls back to "ready" so the UI doesn't spin forever.
+    // No prior state — PreCompact is blocked from "unknown" (no baseline), so
+    // status stays unknown; a resolve signal falls back to "ready" so the UI
+    // never spins forever.
     await postHookEvent(sid, { hook_event_name: "PreCompact" });
-    assert.equal(getAgentState(sid).status, "compacting");
+    assert.equal(getAgentState(sid).status, "unknown");
     await postHookEvent(sid, { hook_event_name: "PostCompact" });
     assert.equal(getAgentState(sid).status, "ready");
   });
@@ -135,13 +150,15 @@ describe("hooks — agent status derivation", () => {
   });
 
   it("SessionStart source=compact → PostCompact → ready (resume auto-compact)", async () => {
-    // Regression: after server restart, sessions auto-compact on resume.
-    // Previously stuck at "working" forever; now falls back to "ready".
+    // After server restart, sessions auto-compact on resume with no captured
+    // baseline. SessionStart(source=compact) is a resolve signal — from a cold
+    // store it goes straight to "ready" (no "compacting" flash for something
+    // the user didn't initiate), and the trailing PostCompact is a no-op.
     await postHookEvent(sid, {
       hook_event_name: "SessionStart",
       source: "compact",
     });
-    assert.equal(getAgentState(sid).status, "compacting");
+    assert.equal(getAgentState(sid).status, "ready");
     await postHookEvent(sid, { hook_event_name: "PostCompact" });
     assert.equal(getAgentState(sid).status, "ready");
   });
@@ -317,6 +334,149 @@ describe("hooks — sticky idle state", () => {
 
     await postHookEvent(sid, { hook_event_name: "SessionStart" });
     assert.equal(getAgentState(sid).status, "ready");
+  });
+});
+
+// ── Compaction is ORDER-INDEPENDENT ──────────────────────────────────
+// The bug (ADR-053): CC fires the compaction hooks — the summarizer's
+// SubagentStop, SessionStart(source=compact) and PostCompact — within ~90ms
+// as async fire-and-forget curls, so they can arrive in ANY order. The prior
+// fix (#154) assumed a single order (SessionStart(compact) before PostCompact)
+// and its tests encoded only that safe order, so ~2/6 real orderings stranded
+// the agent at "compacting" forever. These tests replay ALL orderings and
+// assert the agent always lands on the correct terminal status.
+describe("hooks — compaction order-independence", () => {
+  const RACERS = [
+    "SubagentStop",
+    "SessionStartCompact",
+    "PostCompact",
+  ] as const;
+  const EVENTS: Record<string, Record<string, unknown>> = {
+    SubagentStop: { hook_event_name: "SubagentStop" },
+    SessionStartCompact: { hook_event_name: "SessionStart", source: "compact" },
+    PostCompact: { hook_event_name: "PostCompact" },
+  };
+
+  function permutations<T>(arr: readonly T[]): T[][] {
+    if (arr.length <= 1) return [[...arr]];
+    const out: T[][] = [];
+    arr.forEach((x, i) => {
+      const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
+      for (const p of permutations(rest)) out.push([x, ...p]);
+    });
+    return out;
+  }
+
+  let counter = 0;
+  async function runCompaction(
+    seed: Array<Record<string, unknown>>,
+    order: readonly string[],
+  ): Promise<string> {
+    const sid = `compact-order-${counter++}`;
+    clearAgentState(sid);
+    for (const e of seed) await postHookEvent(sid, e);
+    // PreCompact always fires first (it's what triggers compaction); only the
+    // trailing trio races.
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    for (const name of order) await postHookEvent(sid, EVENTS[name]);
+    const status = getAgentState(sid).status;
+    clearAgentState(sid);
+    return status;
+  }
+
+  for (const order of permutations(RACERS)) {
+    const label = order.join(" → ");
+
+    it(`manual /compact from idle → idle  [${label}]`, async () => {
+      const status = await runCompaction(
+        [{ hook_event_name: "UserPromptSubmit" }, { hook_event_name: "Stop" }],
+        order,
+      );
+      assert.equal(status, "idle");
+    });
+
+    it(`auto-compact mid-turn (working) → working  [${label}]`, async () => {
+      const status = await runCompaction(
+        [{ hook_event_name: "UserPromptSubmit" }],
+        order,
+      );
+      assert.equal(status, "working");
+    });
+  }
+
+  // Resume auto-compact: no PreCompact, cold in-memory store (unknown). Both
+  // resolve orders must land on "ready" (Q1: no "compacting" flash on resume).
+  for (const order of permutations(["SessionStartCompact", "PostCompact"])) {
+    it(`resume auto-compact from unknown → ready  [${order.join(" → ")}]`, async () => {
+      const sid = `compact-resume-${counter++}`;
+      clearAgentState(sid);
+      for (const name of order) await postHookEvent(sid, EVENTS[name]);
+      assert.equal(getAgentState(sid).status, "ready");
+      clearAgentState(sid);
+    });
+  }
+
+  it("the summarizer's SubagentStop does not exit compacting prematurely", async () => {
+    const sid = "compact-subagent-noise";
+    clearAgentState(sid);
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    assert.equal(getAgentState(sid).status, "compacting");
+    // The compaction summarizer subagent stops mid-window — must be ignored.
+    await postHookEvent(sid, { hook_event_name: "SubagentStop" });
+    assert.equal(getAgentState(sid).status, "compacting");
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    assert.equal(getAgentState(sid).status, "working");
+    clearAgentState(sid);
+  });
+
+  it("a duplicate PreCompact must NOT poison the baseline with 'compacting'", async () => {
+    // A relay can send a duplicate PreCompact, or a back-to-back compaction's
+    // PreCompact can arrive before the first cycle resolved. Re-entering must
+    // preserve the ORIGINAL baseline, not overwrite it with "compacting" (which
+    // restoredStatus would then hand back verbatim → permanent strand).
+    const sid = "compact-dup-precompact";
+    clearAgentState(sid);
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    await postHookEvent(sid, { hook_event_name: "PreCompact" }); // duplicate
+    assert.equal(getAgentState(sid).preCompactStatus, "working");
+    await postHookEvent(sid, { hook_event_name: "PostCompact" });
+    assert.equal(getAgentState(sid).status, "working"); // NOT stuck compacting
+    clearAgentState(sid);
+  });
+
+  it("/compact from 'ready' (at rest) does not strand even if compaction fails", async () => {
+    // "ready" is an at-rest state (post session-start/resume) — like idle, a
+    // /compact here has no live turn. PreCompact must no-op so a failed
+    // compaction (no PostCompact) can't leave it spinning.
+    const sid = "compact-from-ready";
+    clearAgentState(sid);
+    await postHookEvent(sid, { hook_event_name: "SessionStart" });
+    assert.equal(getAgentState(sid).status, "ready");
+    await postHookEvent(sid, { hook_event_name: "PreCompact" });
+    // Compaction aborts (e.g. "not enough messages") — no resolve signal fires.
+    assert.equal(getAgentState(sid).status, "ready"); // stays ready, not compacting
+    clearAgentState(sid);
+  });
+
+  it("PreCompact-last from an active state self-heals on the trailing turn", async () => {
+    // If PreCompact is delivered AFTER both resolve signals (the resolves no-op
+    // with no baseline), it enters compacting last — but only from an active
+    // state, which always emits a trailing Stop/tool event to self-heal.
+    const sid = "compact-precompact-last";
+    clearAgentState(sid);
+    await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" }); // working
+    await postHookEvent(sid, { hook_event_name: "PostCompact" }); // no-op
+    await postHookEvent(sid, {
+      hook_event_name: "SessionStart",
+      source: "compact",
+    }); // no-op
+    await postHookEvent(sid, { hook_event_name: "PreCompact" }); // enters compacting last
+    assert.equal(getAgentState(sid).status, "compacting");
+    await postHookEvent(sid, { hook_event_name: "Stop" }); // turn ends → self-heal
+    assert.equal(getAgentState(sid).status, "idle");
+    clearAgentState(sid);
   });
 });
 
