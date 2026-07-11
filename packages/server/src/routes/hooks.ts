@@ -52,9 +52,11 @@ export interface AgentState {
   toolDetail?: string;
   lastEvent: string;
   updatedAt: number;
-  /** Status saved when entering "compacting" so PostCompact can restore it.
-   *  Cleared on PostCompact. Undefined when no meaningful baseline exists
-   *  (e.g., cold-start + auto-compact on session resume). */
+  /** Status saved when entering "compacting" (on PreCompact) so a compaction
+   *  resolve signal (PostCompact OR SessionStart source=compact) can restore it.
+   *  Cleared once resolved, or when any non-compaction status change ends the
+   *  interlude. Undefined when no meaningful baseline exists (e.g. cold-start +
+   *  auto-compact on session resume). See ADR-053. */
   preCompactStatus?: AgentStatus;
 }
 
@@ -84,6 +86,46 @@ const IDLE_EXIT_EVENTS = new Set([
   "Notification",
   "PreToolUse",
 ]);
+
+// ── Compaction resolution (order-independent) ────────────────────────
+// CC emits the compaction hooks — PreCompact, the summarizer's SubagentStop,
+// SessionStart(source=compact), and PostCompact — within ~90ms of each other
+// as async fire-and-forget curls, so they can arrive in ANY order. The router
+// (not deriveStatus) owns compaction so it can treat SessionStart(compact) and
+// PostCompact as idempotent "compaction resolved" signals. See ADR-053.
+
+/** Statuses that don't survive the JSONL collapse — a restored baseline of one
+ *  of these is coerced to "working" so the turn continues cleanly rather than
+ *  showing a phantom tool/prompt, or (for "compacting") re-stranding on the very
+ *  spinner we're trying to clear if a duplicate PreCompact ever poisoned it. */
+const STALE_ON_RESTORE = new Set<AgentStatus>([
+  "tool_running",
+  "needs_input",
+  "error",
+  "compacting",
+]);
+
+/** Statuses PreCompact enters "compacting" FROM — an allowlist of genuinely
+ *  active turns worth showing as interrupted. Fail-safe by construction: any
+ *  other state (idle/stopped/ready/unknown = at rest with no turn to interrupt;
+ *  "compacting" = a duplicate/overlapping PreCompact) is a no-op, so PreCompact
+ *  can never strand an at-rest agent or overwrite a live baseline with its own
+ *  spinner state. See ADR-053. */
+const COMPACT_ENTER_FROM = new Set<AgentStatus>([
+  "working",
+  "tool_running",
+  "orchestrating",
+  "needs_input",
+  "error",
+]);
+
+/** Resolve a compaction back to a non-spinning status: restore the saved
+ *  baseline (coercing transient states to "working"), or "ready" when no
+ *  baseline was captured (resume auto-compact from a cold in-memory store). */
+function restoredStatus(baseline: AgentStatus | undefined): AgentStatus {
+  if (baseline === undefined) return "ready";
+  return STALE_ON_RESTORE.has(baseline) ? "working" : baseline;
+}
 
 /** Events that generate a user-visible notification badge */
 const NOTIFY_EVENTS = new Set(["Notification", "Stop", "PermissionRequest"]);
@@ -176,9 +218,10 @@ export function setAgentStatus(sessionId: string, status: AgentStatus): void {
 function deriveStatus(event: HookEvent): Partial<AgentState> {
   switch (event.hook_event_name) {
     case "SessionStart":
-      return event.source === "compact"
-        ? { status: "compacting" }
-        : { status: "ready" };
+      // SessionStart(source=compact) is a compaction resolve signal handled
+      // upstream in the router (order-independent); it never reaches here.
+      // Every other SessionStart (startup, resume, clear) means "ready".
+      return { status: "ready" };
 
     case "UserPromptSubmit":
     case "PostToolUse":
@@ -223,16 +266,9 @@ function deriveStatus(event: HookEvent): Partial<AgentState> {
     case "SubagentStop":
       return { status: "working", ...CLEAR_TOOL };
 
-    case "PreCompact":
-      return { status: "compacting" };
-
-    case "PostCompact":
-      // Handler restores the saved preCompactStatus when present. This
-      // "ready" is the safe fallback when we have no baseline — e.g.,
-      // auto-compact on session resume, where the in-memory state was
-      // empty before compaction started. "working" would leave the UI
-      // stuck spinning since no subsequent Stop event fires in that case.
-      return { status: "ready", ...CLEAR_TOOL };
+    // PreCompact, PostCompact and SessionStart(source=compact) are handled in
+    // the router as order-independent compaction signals, not here — their
+    // correct status depends on prior state + delivery order. See ADR-053.
 
     case "SessionEnd":
       return { status: "stopped", ...CLEAR_TOOL };
@@ -314,67 +350,93 @@ hooksRouter.post("/:sessionId", async (c) => {
     typeof body.source === "string" ? body.source : undefined,
   );
 
-  // Update agent status
-  const statusUpdate = deriveStatus(body);
-  if (statusUpdate.status) {
-    const prev = getAgentState(sessionId);
+  // ── Update agent status ────────────────────────────────────────────
+  // Compaction is handled here (not deriveStatus) so it stays correct no
+  // matter what order the compaction hooks arrive in. CC fires PreCompact,
+  // the summarizer's SubagentStop, SessionStart(source=compact) and
+  // PostCompact within ~90ms as async fire-and-forget curls — delivery order
+  // is non-deterministic, so the previous single-order assumption stranded
+  // agents at "compacting" for ~2 of 6 orderings. See ADR-053.
+  const prev = getAgentState(sessionId);
+  const isCompactResolve =
+    event === "PostCompact" ||
+    (event === "SessionStart" && body.source === "compact");
 
-    // Guard: idle and stopped are "sticky" states — only specific events
-    // can transition out. Late-arriving PostToolUse etc. are dropped.
-    const isSticky = prev.status === "idle" || prev.status === "stopped";
-    if (isSticky && !IDLE_EXIT_EVENTS.has(event)) {
-      // Drop the transition — the agent is done with this turn
-    } else {
-      // Compact transitions: save prev status on entering "compacting" so
-      // PostCompact can restore it. Without this, a session that auto-
-      // compacts on resume (no active turn) would get stuck at "working".
-      // Invariant: preCompactStatus is only set while status === "compacting".
-      let nextStatus = statusUpdate.status;
-      let nextPreCompact: AgentStatus | undefined = prev.preCompactStatus;
-
-      const enteringCompacting =
-        statusUpdate.status === "compacting" &&
-        prev.status !== "compacting" &&
-        prev.status !== "unknown";
-      if (enteringCompacting) {
-        nextPreCompact = prev.status;
-      } else if (event === "PostCompact" && prev.preCompactStatus) {
-        // These statuses reflect transient conditions (in-flight tool,
-        // permission prompt, error) that don't survive the JSONL collapse
-        // — coerce to "working" so the agent continues its turn cleanly.
-        const stalePreCompact = new Set<AgentStatus>([
-          "tool_running",
-          "needs_input",
-          "error",
-        ]);
-        nextStatus = stalePreCompact.has(prev.preCompactStatus)
-          ? "working"
-          : prev.preCompactStatus;
-        nextPreCompact = undefined;
-      } else if (nextStatus !== "compacting") {
-        // Exiting compacting via any other path (SessionEnd, duplicate
-        // PostCompact, etc.) — clear the stale baseline.
-        nextPreCompact = undefined;
-      }
-
-      if (nextStatus === "needs_input" || nextStatus === "error") {
-        console.log(
-          `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${nextStatus}` +
-            ` (event=${event}, notification_type=${body.notification_type ?? "none"})`,
-        );
-      }
+  if (event === "PreCompact") {
+    // Enter "compacting" only from an actively-working state (allowlist). A
+    // /compact at rest (idle/stopped/ready) or before any state exists
+    // (unknown) has no live turn to interrupt, and a duplicate PreCompact while
+    // already "compacting" must not overwrite the saved baseline with the
+    // spinner state itself — all of these are no-ops here, so nothing strands.
+    if (COMPACT_ENTER_FROM.has(prev.status)) {
       agentStates.set(sessionId, {
         ...prev,
-        ...statusUpdate,
-        // currentTool/toolDetail are always stale after compaction —
-        // clear explicitly so the invariant doesn't depend on deriveStatus
-        // continuing to include CLEAR_TOOL for PostCompact.
-        ...(event === "PostCompact" ? CLEAR_TOOL : {}),
-        status: nextStatus,
-        preCompactStatus: nextPreCompact,
+        ...CLEAR_TOOL,
+        status: "compacting",
+        preCompactStatus: prev.status,
         lastEvent: event,
         updatedAt: timestamp,
       });
+    }
+  } else if (isCompactResolve) {
+    // Idempotent "compaction resolved" signal. SessionStart(source=compact)
+    // and PostCompact both land here; whichever arrives first restores the
+    // baseline and clears it, so the second is a no-op — order can't strand us.
+    // Act only while a compaction is in flight: mid-window ("compacting"), a
+    // saved baseline awaiting restore, or a cold "unknown" store (resume auto-
+    // compact — restoredStatus() maps its missing baseline to "ready", so there
+    // is no spurious "compacting" flash). Any other state is already resolved.
+    const compactionInFlight =
+      prev.status === "compacting" ||
+      prev.status === "unknown" ||
+      prev.preCompactStatus !== undefined;
+    if (compactionInFlight) {
+      agentStates.set(sessionId, {
+        ...prev,
+        ...CLEAR_TOOL,
+        status: restoredStatus(prev.preCompactStatus),
+        preCompactStatus: undefined,
+        lastEvent: event,
+        updatedAt: timestamp,
+      });
+    }
+    // else: already resolved by the sibling signal → no-op.
+  } else if (
+    prev.status === "compacting" &&
+    (event === "SubagentStart" || event === "SubagentStop")
+  ) {
+    // The compaction summarizer runs as a subagent; its Start/Stop fire inside
+    // the compaction window. Ignore them so the spinner stays stable until a
+    // resolve signal — otherwise it flickers to orchestrating/working.
+  } else {
+    // Generic path — derive status + sticky-idle guard (unchanged behavior).
+    const statusUpdate = deriveStatus(body);
+    if (statusUpdate.status) {
+      // Guard: idle and stopped are "sticky" states — only specific events
+      // can transition out. Late-arriving PostToolUse etc. are dropped.
+      const isSticky = prev.status === "idle" || prev.status === "stopped";
+      if (isSticky && !IDLE_EXIT_EVENTS.has(event)) {
+        // Drop the transition — the agent is done with this turn.
+      } else {
+        if (
+          statusUpdate.status === "needs_input" ||
+          statusUpdate.status === "error"
+        ) {
+          console.log(
+            `[hooks] ${sessionId.slice(0, 8)} ${prev.status} → ${statusUpdate.status}` +
+              ` (event=${event}, notification_type=${body.notification_type ?? "none"})`,
+          );
+        }
+        agentStates.set(sessionId, {
+          ...prev,
+          ...statusUpdate,
+          // Any non-compaction status change ends the compaction interlude —
+          // clear the baseline so it can't leak into a later cycle.
+          preCompactStatus: undefined,
+          lastEvent: event,
+          updatedAt: timestamp,
+        });
+      }
     }
   }
 
