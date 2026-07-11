@@ -15,6 +15,7 @@ import {
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
+import { getCachedBranch } from "../agents/branchCache.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -79,7 +80,17 @@ agentsRouter.onError((err, c) => {
 // ── Read ───────────────────────────────────────────────────────────
 
 agentsRouter.get("/", (c) => {
-  return c.json(listAgents());
+  // Enrich running agents with their current git branch (a derived, volatile
+  // field — NOT persisted on the durable Agent record) for the dashboard
+  // statusline. getCachedBranch is cached + async, so this stays a
+  // non-blocking O(agents) map over in-memory data. Exited agents are left
+  // untouched: they have no live pane and their cwd may no longer exist.
+  const agents = listAgents().map((a) =>
+    a.status === "running"
+      ? { ...a, branch: getCachedBranch(a.workingDirectory) ?? undefined }
+      : a,
+  );
+  return c.json(agents);
 });
 
 /** Node shape returned by `/api/agents/tree`. The `claudeSessionId` alias

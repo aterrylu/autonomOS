@@ -62,6 +62,7 @@ function useSidebarActions() {
     useShallow((s) => ({
       fetchSessions: s.fetchSessions,
       fetchProjects: s.fetchProjects,
+      fetchAppSettings: s.fetchAppSettings,
       createSession: s.createSession,
       switchPane: s.switchPane,
       closePreview: s.closePreview,
@@ -179,6 +180,7 @@ export function Sidebar() {
   const {
     fetchSessions,
     fetchProjects,
+    fetchAppSettings,
     switchPane,
     closePreview,
     fetchNotifications,
@@ -331,15 +333,20 @@ export function Sidebar() {
     fetchSessions();
     fetchProjects();
     fetchNotifications();
+    fetchAppSettings();
     const sessionsInterval = setInterval(fetchSessions, 5000);
     const projectsInterval = setInterval(fetchProjects, 30000);
     const notifInterval = setInterval(fetchNotifications, 3000);
+    // Settings change rarely (only via the settings panel); the panel already
+    // refetches on save, so a slow background poll is just a safety net.
+    const settingsInterval = setInterval(fetchAppSettings, 30000);
     return () => {
       clearInterval(sessionsInterval);
       clearInterval(projectsInterval);
       clearInterval(notifInterval);
+      clearInterval(settingsInterval);
     };
-  }, [fetchSessions, fetchProjects, fetchNotifications]);
+  }, [fetchSessions, fetchProjects, fetchNotifications, fetchAppSettings]);
 
   // Drag state — section-scoped. Reordering is confined to within one section;
   // moving between pinned/unpinned is done via the pin/unpin button, not drag.

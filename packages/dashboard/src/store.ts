@@ -61,6 +61,13 @@ export interface SessionInfo {
   providerSessionId?: string;
   template?: string;
   manager?: string;
+  /** Optional project scope (e.g. "autonomOS"), from the Agent record. Used by
+   *  the pane statusline to render the `Name@project` identity. */
+  project?: string;
+  /** Current git branch of the agent's working directory. Derived server-side
+   *  (not a durable field) and only present for running agents; undefined when
+   *  the cwd isn't a git repo or hasn't resolved yet. Statusline-only. */
+  branch?: string;
   createdAt: number;
   updatedAt: number;
   /** When this session transitioned to status "exited". Only set for exited rows;
@@ -413,6 +420,12 @@ interface AppState {
     string,
     { status: string; currentTool?: string; toolDetail?: string }
   >;
+  /** Whether the CC in-terminal statusline is enabled (from /api/settings).
+   *  The pane statusline uses this as Claude's opt-in gate: Claude agents get
+   *  the dashboard-chrome statusline only when their in-terminal one is OFF, so
+   *  they're never double-barred. Codex/Gemini (no in-terminal option) always
+   *  show it. Defaults true (matches the server default). */
+  statusLineEnabled: boolean;
 
   // Actions
   cycleTheme: () => void;
@@ -438,6 +451,8 @@ interface AppState {
   fetchSessions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
   fetchNotifications: () => Promise<void>;
+  /** Refresh statusLineEnabled from /api/settings (Claude opt-in gate). */
+  fetchAppSettings: () => Promise<void>;
   markNotificationsRead: (sessionId: string) => Promise<void>;
   createSession: (
     workingDirectory?: string,
@@ -605,6 +620,7 @@ export const useStore = create<AppState>()(
         schedulerStatus: null,
         notificationCounts: {},
         agentStatuses: {},
+        statusLineEnabled: true,
         sidebarOpen: true,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         permissionMode: DEFAULT_PERMISSION_MODE,
@@ -668,6 +684,7 @@ export const useStore = create<AppState>()(
             template?: string;
             managerId: string | null;
             project?: string;
+            branch?: string;
             createdAt: number;
             updatedAt: number;
             exitedAt?: number;
@@ -695,6 +712,8 @@ export const useStore = create<AppState>()(
             providerSessionId: a.providerSessionId,
             template: a.template,
             manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
+            project: a.project,
+            branch: a.branch,
             createdAt: a.createdAt,
             updatedAt: a.updatedAt,
             exitedAt: a.exitedAt,
@@ -714,7 +733,11 @@ export const useStore = create<AppState>()(
                 s.id === sessions[i].id &&
                 s.name === sessions[i].name &&
                 s.status === sessions[i].status &&
-                s.claudeSessionId === sessions[i].claudeSessionId,
+                s.claudeSessionId === sessions[i].claudeSessionId &&
+                // Branch resolves async (null on the first poll, populated on a
+                // later one) — include it so the statusline actually updates
+                // when it arrives or the agent switches worktree branches.
+                s.branch === sessions[i].branch,
             );
           const prevExited = get().exitedSessions;
           const exitedUnchanged =
@@ -763,6 +786,18 @@ export const useStore = create<AppState>()(
           if (!res?.ok) return;
           const projects: ProjectInfo[] = await res.json();
           set({ projects });
+        },
+        fetchAppSettings: async () => {
+          // Only statusLine.enabled is needed today (Claude's opt-in gate for
+          // the pane statusline). Server default is enabled → treat a missing
+          // key as true so the gate never silently flips on a partial payload.
+          const res = await fetch("/api/settings").catch(() => null);
+          if (!res?.ok) return;
+          const data = (await res.json().catch(() => null)) as {
+            statusLine?: { enabled?: boolean };
+          } | null;
+          if (!data || typeof data !== "object") return;
+          set({ statusLineEnabled: data.statusLine?.enabled !== false });
         },
         fetchNotifications: async () => {
           const res = await fetch("/api/hooks").catch(() => null);
