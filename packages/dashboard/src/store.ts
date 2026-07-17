@@ -737,7 +737,13 @@ export const useStore = create<AppState>()(
                 // Branch resolves async (null on the first poll, populated on a
                 // later one) — include it so the statusline actually updates
                 // when it arrives or the agent switches worktree branches.
-                s.branch === sessions[i].branch,
+                s.branch === sessions[i].branch &&
+                // Hierarchy fields PaneStatusline renders: a pure reparent
+                // (set_manager, no other field change) or a project change must
+                // still propagate, or the statusline shows a stale ↑Manager /
+                // ↓N reports / @project until some other tracked field flips.
+                s.manager === sessions[i].manager &&
+                s.project === sessions[i].project,
             );
           const prevExited = get().exitedSessions;
           const exitedUnchanged =
