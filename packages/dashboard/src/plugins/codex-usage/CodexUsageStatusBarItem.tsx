@@ -6,6 +6,22 @@ import { type CodexUsageWindow, isCodexCredentialError } from "./types";
 import { useCodexUsageData } from "./useCodexUsageData";
 import { utilizationColor, windowLabel } from "./utils";
 
+/**
+ * A thin vertical rule that separates the Codex item from the Claude usage item
+ * to its left. Both providers show similar "<span> <pct>%" numbers, so without a
+ * separator they read as one run — this is the standard status-bar group divider
+ * (cf. macOS menu bar / VS Code). Decorative + theme-colored.
+ */
+function Divider({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden
+      className="inline-block shrink-0"
+      style={{ width: 1, height: 12, background: color, opacity: 0.85 }}
+    />
+  );
+}
+
 /** Inline "<label> <pct>%" for one window, colored by utilization. */
 function WindowLabel({ window }: { window: CodexUsageWindow }) {
   const pct = Math.round(window.usedPercent);
@@ -39,7 +55,8 @@ export function CodexUsageStatusBarItem() {
   if (data.error) {
     const credential = isCodexCredentialError(data.errorKind);
     return (
-      <div className="relative">
+      <div className="relative flex items-center gap-2">
+        <Divider color={page.statusFg} />
         <button
           ref={toggleRef}
           type="button"
@@ -69,7 +86,8 @@ export function CodexUsageStatusBarItem() {
   if (windows.length === 0) return null;
 
   return (
-    <div className="relative">
+    <div className="relative flex items-center gap-2">
+      <Divider color={page.statusFg} />
       <button
         ref={toggleRef}
         type="button"
