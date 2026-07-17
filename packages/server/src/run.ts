@@ -32,6 +32,7 @@ import { initFileLogging } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
+import { codexUsageRouter } from "./plugins/codex-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { agentsRouter } from "./routes/agents.js";
@@ -271,6 +272,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
+  app.route("/api/plugins/codex-usage", codexUsageRouter);
   app.route("/api/usage-queue", usageQueueRouter);
   app.route("/api/system", systemRouter);
 

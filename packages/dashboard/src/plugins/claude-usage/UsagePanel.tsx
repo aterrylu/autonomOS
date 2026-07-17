@@ -12,22 +12,13 @@ import {
   type RateLimitWindow,
 } from "./types";
 import { useClickOutside } from "./useClickOutside";
-import { timeUntilReset, utilizationColor } from "./utils";
+import { timeAgo, timeUntilReset, utilizationColor } from "./utils";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
 function formatPlan(sub?: string): string {
   if (!sub) return "Unknown";
   return `Claude ${sub.charAt(0).toUpperCase()}${sub.slice(1)}`;
-}
-
-function timeAgo(iso: string): string {
-  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (secs < 10) return "just now";
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  return `${Math.floor(mins / 60)}h ago`;
 }
 
 function formatDollars(cents: number): string {

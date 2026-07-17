@@ -2,6 +2,16 @@
  * Shared utility functions for the Claude usage plugin.
  */
 
+/** Compact "just now" / "Nm ago" / "Nh ago" describing how old a timestamp is. */
+export function timeAgo(iso: string): string {
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
+}
+
 /** Returns a color hex string based on utilization percentage. */
 export function utilizationColor(pct: number): string {
   if (pct >= 80) return "#ea6c73"; // red
