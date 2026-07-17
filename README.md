@@ -72,13 +72,40 @@ install-service` / `uninstall-service`.
 
 ### Authentication
 
-Optional token-based auth. When `AUTONOMOS_TOKEN` is set, the dashboard shows a login page and all API/WebSocket endpoints require the token.
+Auth is always on. There is no way to disable it: on first start the server
+generates a random 256-bit token and saves it to `~/.autonomos/token` (mode
+`0600`). `install-service` prints it, and `autonomos status` will show you where
+it lives. The dashboard shows a login page; API, WebSocket and MCP routes all
+require the token.
+
+Set your own instead of the generated one:
 
 ```env
 AUTONOMOS_TOKEN=your-secure-token-here
 ```
 
-Leave unset to disable auth entirely.
+Two endpoints are currently exempt and reachable without a token —
+`POST /api/hooks/*` (the agent hook relay) and `GET /api/host` (hostname). They
+can't spawn or control agents, but they can forge agent status and inject
+dashboard notifications, so keep them in mind before exposing the port.
+
+### Network exposure
+
+The server binds `127.0.0.1` by default — reachable from your own machine, not
+from the network. To expose it (a remote always-on box you browse to), set
+`AUTONOMOS_HOST` in that machine's `.env`:
+
+```env
+AUTONOMOS_HOST=0.0.0.0
+```
+
+Or per-run: `autonomos start --host=0.0.0.0`. An exposed bind logs a warning at
+startup naming the interface. Prefer `0.0.0.0` over a specific IP — the
+post-install health check probes localhost, so a bind that excludes loopback
+reports a false install failure.
+
+Only expose on a network you trust. The token is the boundary; the loopback
+default is defense-in-depth.
 
 ### Remote Deployment
 
@@ -89,6 +116,12 @@ DEPLOY_HOST=your-server-hostname
 
 Run `make deploy` — rsyncs code, installs deps, builds, and supervises the
 server via systemd-user (launchd on a Mac remote), auto-migrating pm2 if present.
+
+**If you browse to this server over the network, set `AUTONOMOS_HOST=0.0.0.0` in
+the REMOTE machine's `.env` before deploying.** `.env` is not rsynced, so each
+box keeps its own — and without it the server takes the loopback default and the
+dashboard becomes unreachable from your browser. For a one-off deploy instead of
+a persistent setting: `make deploy BIND_HOST=0.0.0.0`.
 
 ## Structure
 

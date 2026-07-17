@@ -17,11 +17,22 @@
 #
 # Env:
 #   PORT          Port to supervise on (default 3100).
+#   HOST          Interface to bind, baked into the service file as --host.
+#                 Unset = the server's loopback default (reachable from this
+#                 machine only).
+#                 For a box that should ALWAYS be exposed, prefer
+#                 `AUTONOMOS_HOST=0.0.0.0` in this repo's .env: the wrapper below
+#                 runs `tsx --env-file=<repo>/.env`, so the server picks it up on
+#                 every start and it survives reinstalls that don't pass --host.
+#                 Expose only on a network you trust — the API/WebSocket/MCP
+#                 routes require the auth token, but POST /api/hooks/* and
+#                 GET /api/host are still unauthenticated.
 #   NO_MIGRATE=1  Skip pm2 auto-migration (you take responsibility for pm2).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-3100}"
+HOST="${HOST:-}"
 TSX="$REPO/packages/server/node_modules/.bin/tsx"
 CLI="$REPO/packages/cli/src/index.ts"
 WRAPPER_DIR="$REPO/.autonomos-bin"
@@ -79,6 +90,17 @@ pm2_manages_autonomos() {
   [ -n "$bin" ] && "$bin" jlist 2>/dev/null | grep -q '"name":"autonomos"'
 }
 
+# Only forward --host when the operator set HOST. Unset → the server's own
+# loopback default applies. Deliberately unquoted below: empty expands to no
+# argument at all, and a host is an IP/hostname (never contains spaces).
+# Plain string rather than a bash array — macOS ships bash 3.2, where an empty
+# array expansion under `set -u` is an "unbound variable" error.
+HOST_ARG=""
+if [ -n "$HOST" ]; then
+  HOST_ARG="--host=$HOST"
+  echo "[prod] Binding to HOST=$HOST (reachable from the network)."
+fi
+
 if [ "${NO_MIGRATE:-0}" != "1" ] && pm2_manages_autonomos; then
   echo ""
   echo "════════════════════════════════════════════════════════════════"
@@ -87,14 +109,17 @@ if [ "${NO_MIGRATE:-0}" != "1" ] && pm2_manages_autonomos; then
   echo "  Set NO_MIGRATE=1 to skip this and manage pm2 yourself."
   echo "════════════════════════════════════════════════════════════════"
   echo ""
-  # migrate-from-pm2 stops+deregisters pm2 then installs the service (forwarding
-  # --bin/--port). After it, the daemon is freshly running from source.
-  cli migrate-from-pm2 --bin="$WRAPPER" --port="$PORT"
+  # migrate-from-pm2 stops+deregisters pm2 then installs the service (it forwards
+  # its whole argv to install-service, so --bin/--port/--host all carry through).
+  # After it, the daemon is freshly running from source.
+  # shellcheck disable=SC2086
+  cli migrate-from-pm2 --bin="$WRAPPER" --port="$PORT" $HOST_ARG
 else
   # Fresh box or already-native: (re)install the unit and restart so the latest
   # source is live (systemd `enable --now` won't restart an already-running unit,
   # so the explicit restart below is load-bearing on re-runs).
-  cli install-service --bin="$WRAPPER" --port="$PORT" --force
+  # shellcheck disable=SC2086
+  cli install-service --bin="$WRAPPER" --port="$PORT" $HOST_ARG --force
   cli restart
 fi
 

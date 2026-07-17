@@ -63,13 +63,38 @@ type NodeEnv = {
 };
 
 /**
- * True when the server is bound to a loopback interface (so localhost-trust
- * exemptions are safe). An undefined bind host defaults to `localhost`.
- * Exported for tests.
+ * True when the server is bound to a loopback interface — i.e. reachable from
+ * this machine but not from the network. An undefined bind host defaults to
+ * `localhost`. Exported for tests.
+ *
+ * This is defense-in-depth for the startup warning, NOT an auth mechanism.
+ * Auth is required on every route regardless of bind; do not reintroduce
+ * "trusted because loopback" exemptions on top of this (see ADR-041's note on
+ * unconditional auth-exempt endpoints being a credential-injection vector).
  */
 export function isLoopbackBind(bindHost: string | undefined): boolean {
   const host = bindHost ?? "localhost";
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+/**
+ * Resolve the interface to bind. Precedence: --host > AUTONOMOS_HOST > loopback.
+ *
+ * The default is loopback, not all-interfaces. Node's `listen()` with no host
+ * binds `::`/`0.0.0.0`, which put the dashboard — and every agent it can spawn —
+ * on whatever network the machine is attached to. Opting into exposure is a
+ * decision the operator makes explicitly.
+ *
+ * Uses AUTONOMOS_HOST rather than HOST: bare `HOST` is set by unrelated tooling
+ * on some systems, and inheriting it here would silently move the bind.
+ * Exported for tests.
+ */
+export function resolveBindHost(
+  cliHost: string | undefined,
+  envHost: string | undefined,
+): string {
+  const host = cliHost ?? envHost?.trim();
+  return host ? host : "127.0.0.1";
 }
 
 /**
@@ -254,6 +279,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   app.use("/api/*", requireAuth);
   app.use("/ws/*", requireAuth);
+  // /mcp exposes the same orchestration tools as the dashboard API —
+  // create_agent, kill_agent, set_manager. It is NOT a public transport.
+  // Mounted here (before the route definitions below) so every method is
+  // covered; a client authenticates with the same token as everything else.
+  app.use("/mcp", requireAuth);
 
   app.get("/api/host", (c) =>
     c.json({ hostname: hostname(), dashboard: dashboardBuild }),
@@ -327,11 +357,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Port precedence: --port CLI flag > PORT env > 3000 default.
   // --port=0 asks the OS to assign a free port.
   const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
+  const bindHost = resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST);
 
   const server = serve(
     {
       fetch: app.fetch,
       port: requestedPort,
+      hostname: bindHost,
     },
     () => {
       // When --port=0 the OS assigned us a real port; read it from the listener.
@@ -343,10 +375,35 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // into their hook + MCP-gateway endpoints.
       setServerPort(actualPort);
       const base = `http://localhost:${actualPort}`;
+      // NOTE: keep this line's shape — helpers/test-server.ts parses
+      // "listening on <url>" to discover the ephemeral port.
       console.log(`autonomOS server listening on ${base}`);
       console.log(
         `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
       );
+
+      // An exposed bind is legitimate (a remote always-on box you browse to),
+      // but it should never be a surprise.
+      //
+      // Be precise about what auth covers. `requireAuth` exempts
+      // POST /api/hooks/* and GET /api/host unconditionally (see the exemptions
+      // above), so "everything needs a token" would be a comforting lie told at
+      // the exact moment someone decides whether to expose the port. Name the
+      // residual surface until those are authenticated too.
+      if (!isLoopbackBind(bindHost)) {
+        console.warn(
+          `⚠️  Bound to ${bindHost}:${actualPort} — reachable from the network, ` +
+            `not just this machine.\n` +
+            `    The dashboard API, WebSocket and MCP routes require the auth ` +
+            `token.\n` +
+            `    Still UNAUTHENTICATED: POST /api/hooks/* (can forge agent ` +
+            `status and inject\n` +
+            `    dashboard notifications) and GET /api/host (hostname). Only ` +
+            `expose this on a\n` +
+            `    network you trust.\n` +
+            `    Omit --host / AUTONOMOS_HOST to bind loopback-only.`,
+        );
+      }
 
       // --print-url: emit the full URL + token in one human-readable line
       // suitable for copy-paste to connect a browser or client.
