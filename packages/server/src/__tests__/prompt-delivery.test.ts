@@ -10,12 +10,45 @@ import {
 
 /**
  * Unit coverage for the prompt-delivery receipt state machine. Uses real
- * timers with millisecond-scale timeouts injected through the IO options —
- * deterministic without fake-timer plumbing.
+ * timers with millisecond-scale timeouts injected through the IO options.
+ *
+ * Timing discipline (why this file was deflaked): the state machine's effects
+ * (paste/Enter writes, notifications, phase transitions) land from *timer*
+ * callbacks. A fixed `await sleep(N)` before asserting the effect had happened
+ * raced the callback under full-suite load — the callback could be scheduled
+ * past N ms, so the assertion ran too early and intermittently failed. So we
+ * POLL for the expected effect ({@link waitFor}) instead of sleeping a guessed
+ * duration. Waits that assert an effect must NOT happen (e.g. "no second
+ * re-delivery", "no write into a cancelled session") still sleep a bounded
+ * window and then assert absence — those can't false-fail from load, only a
+ * real regression makes them red.
  */
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Poll `predicate` until it's true, or throw after `timeoutMs`. Replaces
+ * `sleep(guess)` for any assertion that an effect HAS happened: it returns the
+ * instant the effect is observed (fast + load-independent) rather than betting
+ * on a fixed delay. The 1s cap is far above any real callback latency, so a
+ * genuine hang still fails the test promptly-ish with a clear message.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  what: string,
+  timeoutMs = 1000,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `waitFor timed out after ${timeoutMs}ms waiting for: ${what}`,
+      );
+    }
+    await sleep(2);
+  }
+}
 
 class FakeIO {
   writes: string[] = [];
@@ -57,7 +90,7 @@ describe("prompt delivery receipt tracking", () => {
     notePromptHookEvent(sid, "SessionStart", "startup");
     notePromptHookEvent(sid, "UserPromptSubmit");
     assert.equal(_getPhaseForTesting(sid), undefined, "tracker must be gone");
-    await sleep(120);
+    await sleep(120); // no timer should ever fire — assert nothing happened
     assert.deepEqual(f.writes, [], "no PTY writes on the happy path");
     assert.deepEqual(f.notifications, []);
   });
@@ -66,19 +99,17 @@ describe("prompt delivery receipt tracking", () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "do the thing", f.io);
     notePromptHookEvent(sid, "SessionStart");
-    await sleep(70); // past promptSubmitTimeout (50ms) + enter delay (5ms)
+    await waitFor(() => f.writes.length === 2, "re-delivery paste + Enter");
 
-    assert.equal(f.writes.length, 2, "paste + Enter");
     assert.equal(f.writes[0], "\x1b[200~do the thing\x1b[201~");
     assert.equal(f.writes[1], "\r");
-    assert.equal(f.notifications.length, 1, "operator notification fired");
+    await waitFor(() => f.notifications.length === 1, "operator notification");
 
     // ONE retry only — even after another full timeout window, no more writes.
     await sleep(120);
     assert.equal(f.writes.length, 2, "never re-delivers a second time");
-    assert.equal(
-      _getPhaseForTesting(sid),
-      undefined,
+    await waitFor(
+      () => _getPhaseForTesting(sid) === undefined,
       "tracker finished after the post-redelivery window",
     );
   });
@@ -87,7 +118,9 @@ describe("prompt delivery receipt tracking", () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "p", f.io);
     notePromptHookEvent(sid, "SessionStart");
-    await sleep(20); // inside the window
+    // Note the submit immediately — deterministically inside the timeout window,
+    // regardless of load (a prior `sleep(20)` could overrun 50ms under load and
+    // let the re-delivery timer fire first).
     notePromptHookEvent(sid, "UserPromptSubmit");
     await sleep(120);
     assert.deepEqual(f.writes, []);
@@ -110,7 +143,12 @@ describe("prompt delivery receipt tracking", () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "p", f.io);
     notePromptHookEvent(sid, "SessionStart");
-    await sleep(70); // re-delivery fired
+    // Wait until the re-delivery has fully written (paste + Enter) so the submit
+    // below lands in the post-Enter confirm phase, not the paste→Enter gap.
+    await waitFor(
+      () => f.writes.length === 2,
+      "re-delivery paste + Enter done",
+    );
     assert.equal(_getPhaseForTesting(sid), "awaiting_redelivery_confirm");
     notePromptHookEvent(sid, "UserPromptSubmit");
     assert.equal(_getPhaseForTesting(sid), undefined);
@@ -123,14 +161,14 @@ describe("prompt delivery receipt tracking", () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "p", f.io);
     notePromptHookEvent(sid, "SessionStart");
-    await sleep(150); // re-delivery + second window both elapse
-    assert.equal(f.writes.length, 2);
-    assert.equal(
-      f.notifications.length,
-      2,
+    // Re-delivery notice fires with the paste; failure notice fires after the
+    // second window elapses unconfirmed.
+    await waitFor(
+      () => f.notifications.length === 2,
       "re-delivery notice + failure notice",
     );
-    assert.equal(_getPhaseForTesting(sid), undefined);
+    assert.equal(f.writes.length, 2);
+    await waitFor(() => _getPhaseForTesting(sid) === undefined, "tracker done");
   });
 
   it("no SessionStart at all → warns and gives up without ever writing", async () => {
@@ -144,7 +182,12 @@ describe("prompt delivery receipt tracking", () => {
   it("late SessionStart after the boot window → no re-delivery (tracking already over)", async () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "p", f.io);
-    await sleep(70);
+    // Wait until the boot window has expired and tracking gave up, then a late
+    // SessionStart must be a no-op.
+    await waitFor(
+      () => _getPhaseForTesting(sid) === undefined,
+      "boot window expired, tracking gave up",
+    );
     notePromptHookEvent(sid, "SessionStart");
     await sleep(120);
     assert.deepEqual(f.writes, []);
@@ -190,13 +233,20 @@ describe("prompt delivery receipt tracking", () => {
 
   it("confirming event during the paste→Enter gap abandons the paste and clears the draft", async () => {
     const f = makeIO();
-    f.io.redeliverEnterDelayMs = 40; // widen the gap so the event can land inside it
+    // Widen the paste→Enter gap generously so the confirming submit deterministically
+    // lands inside it even under load (a tight gap raced the Enter timer).
+    f.io.redeliverEnterDelayMs = 200;
     trackPromptDelivery(sid, "test", "p", f.io);
     notePromptHookEvent(sid, "SessionStart");
-    await sleep(60); // paste written, Enter still pending
-    assert.equal(f.writes.length, 1, "paste only so far");
-    notePromptHookEvent(sid, "UserPromptSubmit"); // original delivery confirms late
-    await sleep(80);
+    await waitFor(
+      () => f.writes.length === 1,
+      "paste written, Enter still pending",
+    );
+    notePromptHookEvent(sid, "UserPromptSubmit"); // original delivery confirms late, inside the gap
+    await waitFor(
+      () => f.writes.length === 2,
+      "pending Enter replaced by draft-clear",
+    );
     assert.deepEqual(
       f.writes,
       ["\x1b[200~p\x1b[201~", "\x15"],
@@ -215,7 +265,7 @@ describe("prompt delivery receipt tracking", () => {
     const prompt = "line one\nline two\nline three";
     trackPromptDelivery(sid, "test", prompt, f.io);
     notePromptHookEvent(sid, "SessionStart");
-    await sleep(120);
+    await waitFor(() => f.writes.length === 2, "multi-line paste + Enter");
     assert.equal(f.writes[0], `\x1b[200~${prompt}\x1b[201~`);
     assert.equal(f.writes[1], "\r");
   });
