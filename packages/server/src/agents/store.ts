@@ -190,14 +190,30 @@ export function listAgents(): Agent[] {
  *  its JSONL under, NOT the internal agent UUID. Used by the resume-by-session
  *  path so a raw CC session id (e.g. one discovered via listSessions, or a
  *  migrated agent whose id != providerSessionId) maps back to its record.
- *  O(N) over a small in-memory cache; only hit on the resume/adopt path. */
+ *  O(N) over a small in-memory cache; only hit on the resume/adopt path.
+ *
+ *  Multiplicity is handled rather than assumed away: nothing enforces
+ *  `providerSessionId` uniqueness, and the ADR-049 safety net REGENERATES the
+ *  field on a failed resume, so the id space isn't collision-free by
+ *  construction. Returning `readCache()`'s first hit would make the winner
+ *  filesystem-read order — arbitrary and unstable across restarts. Mirrors
+ *  `resolveAgentByName`'s tie-break: prefer a running candidate, else the most
+ *  recently updated. */
 export function getAgentByProviderSessionId(
   providerSessionId: string,
 ): Agent | undefined {
-  for (const a of readCache().values()) {
-    if (a.providerSessionId === providerSessionId) return a;
+  const matches = listAgents().filter(
+    (a) => a.providerSessionId === providerSessionId,
+  );
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return matches[0];
+  const running = matches.filter((a) => a.status === "running");
+  const pool = running.length > 0 ? running : matches;
+  let best = pool[0];
+  for (const a of pool) {
+    if (a.updatedAt > best.updatedAt) best = a;
   }
-  return undefined;
+  return best;
 }
 
 /** Resolve an agent by display name (case-insensitive).

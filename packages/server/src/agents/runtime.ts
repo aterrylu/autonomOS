@@ -272,6 +272,38 @@ export function resumeSafetyNetArmed(opts: {
   );
 }
 
+/**
+ * A spawn failure that already knows its own HTTP status.
+ *
+ * Every throw site this PR ADDED uses this, so the route no longer has to infer
+ * intent by substring-matching prose authored in this file — a coupling held
+ * together by a string literal and a test. Follows the `CachePoisonedError`
+ * precedent (store.ts) plus the router's `onError`.
+ *
+ * Messages are deliberately unchanged from the pre-typed versions, so
+ * `spawnErrorStatus`'s substring chain still classifies them identically for
+ * any caller that only sees the message. That chain remains the fallback for
+ * the pre-existing untyped throws — converting those is a follow-up.
+ */
+export class SpawnError extends Error {
+  readonly code:
+    | "INVALID_SESSION_ID"
+    | "NOT_ADOPTABLE"
+    | "NOTHING_TO_RESUME"
+    | "INVALID_WORKING_DIRECTORY";
+  readonly status: 400 | 422;
+  constructor(
+    code: SpawnError["code"],
+    status: SpawnError["status"],
+    message: string,
+  ) {
+    super(message);
+    this.name = "SpawnError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 /** Canonical UUID shape. Session ids double as the agent-record id AND its
  *  on-disk filename, and `UUID` is a bare string alias, so the shape has to be
  *  checked at runtime — the type system offers nothing here. */
@@ -302,12 +334,16 @@ export function assertAdoptable(
   sessionId: string,
 ): void {
   if (!provider.hasResumableSession) {
-    throw new Error(
+    throw new SpawnError(
+      "NOT_ADOPTABLE",
+      422,
       `${provider.displayName} cannot adopt an external session — nothing to resume`,
     );
   }
   if (!SESSION_ID_RE.test(sessionId)) {
-    throw new Error(
+    throw new SpawnError(
+      "INVALID_SESSION_ID",
+      400,
       `invalid session id ${JSON.stringify(sessionId)} — expected a UUID`,
     );
   }
@@ -394,8 +430,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   ] as const) {
     if (value === undefined) continue;
     if (typeof value !== "string" || value.trim() === "") {
-      // "invalid session id" prefix so spawnErrorStatus classifies this 400.
-      throw new Error(
+      // Message keeps the "invalid session id" prefix so the legacy substring
+      // chain classifies it identically for any caller that sees only text.
+      throw new SpawnError(
+        "INVALID_SESSION_ID",
+        400,
         `invalid session id: ${field} was provided but empty or not a string`,
       );
     }
@@ -441,7 +480,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
    * session id vs. a minted UUID), not in how the record is shaped. Encodes the
    * id == providerSessionId invariant in one place.
    */
-  function buildNewAgent(id: UUID, adoptedExternal = false): Agent {
+  function buildNewAgent(
+    id: UUID,
+    { adoptedExternal = false }: { adoptedExternal?: boolean } = {},
+  ): Agent {
     const dirName = basename(cwd) || cwd;
     return buildAgent({
       id,
@@ -479,7 +521,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       try {
         if (!statSync(own).isDirectory()) throw new Error("not a directory");
       } catch {
-        throw new Error(
+        throw new SpawnError(
+          "INVALID_WORKING_DIRECTORY",
+          400,
           `Invalid working directory: ${own} — the agent's directory no longer exists, so its session cannot be resumed there`,
         );
       }
@@ -569,7 +613,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       // doc. Without it, every resume AFTER this one takes the reattach path
       // with the safety net armed, and the first failure there regenerates
       // providerSessionId, destroying the pointer to the user's conversation.
-      agent = buildNewAgent(providerSessionId, true);
+      agent = buildNewAgent(providerSessionId, { adoptedExternal: true });
     }
   } else {
     // Fresh spawn or fork — both create a new Agent record. For fork, CC creates
@@ -664,7 +708,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       if (resolution === "adopt") {
-        throw new Error(
+        throw new SpawnError(
+          "NOTHING_TO_RESUME",
+          422,
           `could not verify a saved ${provider.displayName} session for "${params.resumeSessionId}" — refusing to adopt rather than risk starting an empty session (${detail})`,
         );
       }
@@ -679,7 +725,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         // content. Silently starting fresh would be a silent failure (and would
         // insert an empty managed record). Reject before insertAgent — nothing
         // to roll back (the record isn't persisted until after this block).
-        throw new Error(
+        throw new SpawnError(
+          "NOTHING_TO_RESUME",
+          422,
           `no saved ${provider.displayName} session found for "${params.resumeSessionId}" in ${cwd} — nothing to resume`,
         );
       }

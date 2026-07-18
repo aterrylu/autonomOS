@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   assertAdoptable,
   resumeSafetyNetArmed,
+  SpawnError,
   spawnAgent,
 } from "../agents/runtime.js";
 import {
@@ -419,6 +420,35 @@ describe("external-cc-resume — spawnErrorStatus mapping", () => {
     const msg =
       'no saved Claude Code session found for "d3efd88f-622c-4f4f-a170-e34b625f6c04" in /home/not found/proj — nothing to resume';
     assert.equal(spawnErrorStatus(msg), 422);
+  });
+
+  it("typed SpawnErrors carry a status matching the substring chain", () => {
+    // Belt-and-braces: the throw sites now declare their own status, and the
+    // route prefers it. The substring chain stays as the fallback for the
+    // pre-existing untyped throws, so the two must not disagree — otherwise
+    // which one a caller sees would depend on whether the error happened to be
+    // typed, which is exactly the kind of drift this PR is fixing elsewhere.
+    const cc = { hasResumableSession: () => true, displayName: "Claude Code" };
+    const validId = "d3efd88f-622c-4f4f-a170-e34b625f6c04";
+    const typed: Array<[() => void, number]> = [
+      [() => assertAdoptable({ displayName: "Codex" }, validId), 422],
+      [() => assertAdoptable(cc, "not-a-uuid"), 400],
+    ];
+    for (const [fn, expected] of typed) {
+      try {
+        fn();
+        assert.fail("expected a throw");
+      } catch (e) {
+        const err = e as SpawnError;
+        assert.ok(err instanceof SpawnError, "throws a typed SpawnError");
+        assert.equal(err.status, expected, err.message);
+        assert.equal(
+          spawnErrorStatus(err.message),
+          expected,
+          `substring chain must agree for: ${err.message}`,
+        );
+      }
+    }
   });
 
   it("classifies the empty-id guard's message as 400", () => {

@@ -19,6 +19,7 @@ import {
   killAttachment,
   restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
+  SpawnError,
   spawnAgent,
 } from "../agents/runtime.js";
 import {
@@ -270,7 +271,11 @@ agentsRouter.post("/", async (c) => {
     return c.json(result.agent, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    return c.json({ error: message }, spawnErrorStatus(message));
+    // Typed status when the throw site declared one; substring chain otherwise.
+    return c.json(
+      { error: message },
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message),
+    );
   }
 });
 
@@ -416,7 +421,11 @@ agentsRouter.post("/:id/attach", async (c) => {
     // that false: /attach passes `name: agent.name`, so a live namesake threw
     // "already running" and returned 500 where POST returned 409.
     const message = err instanceof Error ? err.message : "Unknown error";
-    return c.json({ error: message }, spawnErrorStatus(message));
+    // Typed status when the throw site declared one; substring chain otherwise.
+    return c.json(
+      { error: message },
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message),
+    );
   }
 });
 
