@@ -241,12 +241,26 @@ export function expandPath(path: string): string {
  * a bare `resumeSessionId` and no pre-flight (e.g. a future provider) must NOT
  * arm the net, or a persistent non-resume crash would re-fire it forever
  * (regenerating the id each time, never reaching a terminal `crashed` state).
+ *
+ * `isAdopt` is an absolute veto and lives INSIDE this function rather than at
+ * the callsite so it is covered by the same tests as the rest of the arming
+ * logic. The net's remedy — reset providerSessionId to a fresh UUID and respawn
+ * — is right for a managed record (a working agent beats one that vanishes from
+ * the dashboard) but catastrophic for an adopted external session: that record
+ * exists SOLELY to carry the user's prior conversation, and the reset overwrites
+ * the external CC session id, erasing the only pointer back to it. The user
+ * would be left with a healthy, named, EMPTY agent — after the API already
+ * returned 201 — and a retry would adopt a SECOND record instead of finding
+ * this one. An adopt that fails to resume takes the normal exit path instead:
+ * marked `crashed`, visible, and retryable.
  */
 export function resumeSafetyNetArmed(opts: {
   resumeSessionId?: string;
   providerThreadId?: string;
   hasResumeHook: boolean;
+  isAdopt?: boolean;
 }): boolean {
+  if (opts.isAdopt) return false;
   return (
     !!opts.providerThreadId || (!!opts.resumeSessionId && opts.hasResumeHook)
   );
@@ -793,25 +807,15 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // check above already cleared resumeSessionId, no resume was attempted and the
   // net won't fire. See resumeSafetyNetArmed for why the resumeSessionId arm is
   // gated on the provider owning a pre-flight hook (loop-breaker correctness).
-  //
-  // An ADOPT never arms the net. The net's remedy — reset providerSessionId to a
-  // fresh UUID and respawn — is right for a managed record (a working agent beats
-  // one that vanishes from the dashboard), but catastrophic for an adopted
-  // external session: that record exists SOLELY to carry the user's prior
-  // conversation, and the reset overwrites the external CC session id, erasing
-  // the only pointer back to it. The user would see a healthy, named, EMPTY
-  // agent — after the API already returned 201 — and a retry from the Projects
-  // panel would miss the record and adopt a SECOND one. A resume can fail here
-  // even though the pre-flight passed (the session is still open in the user's
-  // terminal, a CC version/schema mismatch, a truncated JSONL). For an adopt we
-  // take the normal exit path instead: marked `crashed`, visible, retryable.
-  const attemptedResume =
-    resolution !== "adopt" &&
-    resumeSafetyNetArmed({
-      resumeSessionId: resolved.resumeSessionId,
-      providerThreadId: resolved.providerThreadId,
-      hasResumeHook: !!provider.hasResumableSession,
-    });
+  // An adopt never arms the net (see resumeSafetyNetArmed for why) — a resume
+  // can still fail after a passing pre-flight: the session may be open in the
+  // user's terminal, or the JSONL truncated or version-mismatched.
+  const attemptedResume = resumeSafetyNetArmed({
+    resumeSessionId: resolved.resumeSessionId,
+    providerThreadId: resolved.providerThreadId,
+    hasResumeHook: !!provider.hasResumableSession,
+    isAdopt: resolution === "adopt",
+  });
 
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;

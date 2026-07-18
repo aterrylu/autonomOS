@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { assertAdoptable } from "../agents/runtime.js";
+import { assertAdoptable, resumeSafetyNetArmed } from "../agents/runtime.js";
 import {
   _resetCacheForTesting,
   buildAgent,
@@ -15,6 +15,7 @@ import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
 } from "../configDir.js";
+import { spawnErrorStatus } from "../routes/agents.js";
 
 /**
  * External Claude Code session resume — store-level resolution invariants.
@@ -111,7 +112,15 @@ describe("external-cc-resume — getAgentByProviderSessionId resolver", () => {
   });
 });
 
-describe("external-cc-resume — id == providerSessionId invariant", () => {
+/**
+ * NOTE ON SCOPE: these seed a unified-id record by hand and assert the LOOKUP
+ * contract holds for that shape. They do NOT verify that production code MINTS
+ * ids that way — that happens in `buildNewAgent` inside `spawnAgent`, behind a
+ * PTY spawn. The minting invariant is verified end-to-end in QA (the adopt
+ * response's `id` and `providerSessionId` are asserted equal against a real
+ * server). Don't read this block as covering the minting.
+ */
+describe("external-cc-resume — unified-id lookup contract", () => {
   beforeEach(() => {
     isolatedDir = mkdtempSync(join(tmpdir(), "autonomos-extresume-"));
     _setConfigDirForTesting(isolatedDir);
@@ -225,5 +234,121 @@ describe("external-cc-resume — assertAdoptable guard", () => {
 
   it("accepts uppercase UUIDs (CC ids are case-insensitive hex)", () => {
     assert.doesNotThrow(() => assertAdoptable(CC, VALID.toUpperCase()));
+  });
+
+  it("throws messages the route maps to non-500 statuses", () => {
+    // Pins the OTHER end of the cross-file coupling: routes/agents.ts classifies
+    // these by substring. If either side is reworded independently, an
+    // actionable 4xx silently degrades to a 500 and the dashboard shows
+    // "HTTP 500" instead of the reason. This is the half testable without a PTY.
+    const unsupported = (() => {
+      try {
+        assertAdoptable({ displayName: "Codex" }, VALID);
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    })();
+    const badId = (() => {
+      try {
+        assertAdoptable(CC, "nope");
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    })();
+    assert.equal(spawnErrorStatus(unsupported), 422, unsupported);
+    assert.equal(spawnErrorStatus(badId), 400, badId);
+  });
+});
+
+/**
+ * The adopt veto on the onExit safety net. This lived as a `resolution !==
+ * "adopt"` conjunction at the callsite, outside any test; it now lives inside
+ * the pure function so a refactor can't drop it unnoticed. If it regresses, an
+ * adopted session that crashes on boot gets its providerSessionId reset to a
+ * fresh UUID and respawned — erasing the only pointer to the user's real
+ * conversation, silently, after the API already returned 201.
+ */
+describe("external-cc-resume — safety net is vetoed for adopt", () => {
+  const SID = "55555555-5555-4555-8555-555555555555";
+  const TID = "66666666-6666-4666-8666-666666666666";
+
+  it("arms for a Claude Code REATTACH (unchanged ADR-049 behavior)", () => {
+    assert.equal(
+      resumeSafetyNetArmed({ resumeSessionId: SID, hasResumeHook: true }),
+      true,
+    );
+  });
+
+  it("does NOT arm for the same inputs when isAdopt", () => {
+    assert.equal(
+      resumeSafetyNetArmed({
+        resumeSessionId: SID,
+        hasResumeHook: true,
+        isAdopt: true,
+      }),
+      false,
+    );
+  });
+
+  it("isAdopt vetoes even a Codex-style threadId arm", () => {
+    // providerThreadId alone normally arms the net unconditionally; the adopt
+    // veto must win over every other arming reason, not just the CC one.
+    assert.equal(
+      resumeSafetyNetArmed({
+        resumeSessionId: SID,
+        providerThreadId: TID,
+        hasResumeHook: false,
+        isAdopt: true,
+      }),
+      false,
+    );
+  });
+});
+
+/**
+ * spawnErrorStatus — the runtime→HTTP classification. Extracted from the route
+ * so it can be pinned without a PTY.
+ */
+describe("external-cc-resume — spawnErrorStatus mapping", () => {
+  it("maps each distinctive phrase to its status", () => {
+    assert.equal(
+      spawnErrorStatus('invalid session id "x" — expected a UUID'),
+      400,
+    );
+    assert.equal(spawnErrorStatus("… — nothing to resume"), 422);
+    assert.equal(
+      spawnErrorStatus("… refusing to adopt rather than risk …"),
+      422,
+    );
+    assert.equal(
+      spawnErrorStatus('An active agent named "x" is already running'),
+      409,
+    );
+    assert.equal(spawnErrorStatus('Agent "x" (id) is already attached'), 409);
+    assert.equal(spawnErrorStatus('resumeAgentId "x" not found'), 404);
+    assert.equal(spawnErrorStatus("something nobody anticipated"), 500);
+  });
+
+  it("ORDERING: a cwd containing 'not found' must not flip 422 → 404", () => {
+    // The adopt error embeds a caller-supplied cwd. This is the exact hazard the
+    // ordering in spawnErrorStatus exists to prevent, and it was previously only
+    // asserted in a comment.
+    const msg =
+      'no saved Claude Code session found for "d3efd88f-622c-4f4f-a170-e34b625f6c04" in /home/not found/proj — nothing to resume';
+    assert.equal(spawnErrorStatus(msg), 422);
+  });
+
+  it("ORDERING: an unsupported-provider message resolves 422, not 404", () => {
+    // "Codex CLI cannot adopt an external session — nothing to resume" contains
+    // neither "not found" nor "already", but pin it so a reworded guard message
+    // that happens to contain a generic phrase can't silently reclassify.
+    assert.equal(
+      spawnErrorStatus(
+        "Codex CLI cannot adopt an external session — nothing to resume",
+      ),
+      422,
+    );
   });
 });

@@ -963,9 +963,14 @@ export const useStore = create<AppState>()(
           // already-running split-id agent, falls through to a spawn, and the
           // server rejects it with "already attached" — an error where the right
           // outcome is silently switching to the pane that's already open.
+          // The `!!claudeSessionId` guard is load-bearing: both SessionInfo id
+          // fields are optional, so without it a malformed entry with an
+          // undefined id would match ANY session whose providerSessionId is also
+          // undefined — switching the user to an arbitrary pane.
           const matchesId = (s: SessionInfo) =>
-            s.claudeSessionId === claudeSessionId ||
-            s.providerSessionId === claudeSessionId;
+            !!claudeSessionId &&
+            (s.claudeSessionId === claudeSessionId ||
+              s.providerSessionId === claudeSessionId);
           const existing = get().sessions.find(matchesId);
           if (existing) {
             const pane: ActivePane = { type: "session", id: existing.id };

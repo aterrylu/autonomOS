@@ -125,6 +125,45 @@ agentsRouter.get("/:id", (c) => {
 
 // ── Create ─────────────────────────────────────────────────────────
 
+/**
+ * Map a spawnAgent failure to an HTTP status.
+ *
+ * Extracted and exported so the mapping is testable without a PTY — the phrases
+ * are authored in agents/runtime.ts and matched here, a cross-file coupling that
+ * nothing else pins. Rewording a runtime error silently turns an actionable 422
+ * into a 500, and the dashboard would show "HTTP 500" instead of the reason.
+ *
+ * ORDER MATTERS. The adopt errors embed a caller-supplied cwd and session id, so
+ * a working directory containing the literal text "not found" would flip a 422
+ * into a 404 if the generic check ran first. Specific, distinctive phrases are
+ * tested BEFORE generic ones.
+ *
+ * (Substring sniffing is fragile — typed Error subclasses plus a central
+ * onError would be the durable shape. Deliberately out of scope for this fix;
+ * extracting it here at least makes the current behavior verifiable.)
+ */
+export function spawnErrorStatus(message: string): 400 | 404 | 409 | 422 | 500 {
+  // Malformed resumeSessionId (not a UUID) — a bad request, not a server fault.
+  if (message.includes("invalid session id")) return 400;
+  // Adopt preconditions: no saved conversation on disk, a provider that cannot
+  // adopt at all, or a probe we couldn't trust. Client-side situations — and
+  // never silently downgraded to a fresh session.
+  if (
+    message.includes("nothing to resume") ||
+    message.includes("refusing to adopt")
+  ) {
+    return 422;
+  }
+  // Name collision with a live agent.
+  if (message.includes("already running")) return 409;
+  // Resuming a session whose agent is already live. `/attach` maps this exact
+  // condition to 409, so the create/resume path must agree — same user error,
+  // same status, whichever entry point they came through.
+  if (message.includes("already attached")) return 409;
+  if (message.includes("not found")) return 404;
+  return 500;
+}
+
 agentsRouter.post("/", async (c) => {
   let body: Record<string, unknown>;
   try {
@@ -226,39 +265,7 @@ agentsRouter.post("/", async (c) => {
     return c.json(result.agent, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    // ORDER MATTERS: the adopt errors embed a caller-supplied cwd/session id, so
-    // a working directory containing the literal text "not found" would flip a
-    // 422 into a 404 if the generic check ran first. Test the specific,
-    // distinctive phrases BEFORE the generic ones. (Substring sniffing is
-    // fragile — typed Error subclasses + a central onError would be the durable
-    // shape here; deliberately out of scope for this fix.)
-    //
-    // Malformed resumeSessionId (not a UUID) — a bad request, not a 500.
-    if (message.includes("invalid session id")) {
-      return c.json({ error: message }, 400);
-    }
-    // Adopt preconditions: no saved conversation on disk, a provider that can't
-    // adopt at all, or a probe we couldn't trust. Client-side situations, not
-    // server faults — and never silently downgraded to a fresh session.
-    if (
-      message.includes("nothing to resume") ||
-      message.includes("refusing to adopt")
-    ) {
-      return c.json({ error: message }, 422);
-    }
-    if (message.includes("already running")) {
-      return c.json({ error: message }, 409);
-    }
-    // Resuming a session whose agent is already live. `/attach` maps this exact
-    // condition to 409, so the create/resume path must agree — same user error,
-    // same status, whichever entry point they came through.
-    if (message.includes("already attached")) {
-      return c.json({ error: message }, 409);
-    }
-    if (message.includes("not found")) {
-      return c.json({ error: message }, 404);
-    }
-    return c.json({ error: message }, 500);
+    return c.json({ error: message }, spawnErrorStatus(message));
   }
 });
 
