@@ -93,8 +93,25 @@ export function resolveBindHost(
   cliHost: string | undefined,
   envHost: string | undefined,
 ): string {
-  const host = cliHost ?? envHost?.trim();
+  const host = stripSurroundingQuotes((cliHost ?? envHost ?? "").trim());
   return host ? host : "127.0.0.1";
+}
+
+// `tsx --env-file` (the prod wrapper) and hand-quoted service-file args pass
+// `AUTONOMOS_HOST="0.0.0.0"` through WITH the quote characters, and a hostname
+// carrying quotes fails `serve()` with ENOTFOUND — a crash-loop on the exact
+// deploy where someone is enabling network exposure. A hostname/IP never
+// legitimately contains a surrounding quote pair, so peeling one matched pair
+// is safe and turns a habitual `.env` quoting mistake into the intended bind.
+function stripSurroundingQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    (value[0] === '"' || value[0] === "'") &&
+    value[value.length - 1] === value[0]
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
 }
 
 /**

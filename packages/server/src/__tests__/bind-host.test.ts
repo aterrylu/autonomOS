@@ -41,6 +41,31 @@ describe("resolveBindHost", () => {
   it("trims a padded env value rather than passing it to listen()", () => {
     assert.equal(resolveBindHost(undefined, " 0.0.0.0 "), "0.0.0.0");
   });
+
+  it("peels surrounding quotes from a hand-quoted env value", () => {
+    // `tsx --env-file` keeps the quotes: AUTONOMOS_HOST="0.0.0.0" arrives as
+    // the literal string "0.0.0.0", which would crash serve() with ENOTFOUND
+    // on the very deploy where someone is enabling network exposure.
+    assert.equal(resolveBindHost(undefined, '"0.0.0.0"'), "0.0.0.0");
+    assert.equal(resolveBindHost(undefined, "'0.0.0.0'"), "0.0.0.0");
+    assert.equal(resolveBindHost(undefined, ' "0.0.0.0" '), "0.0.0.0");
+  });
+
+  it("peels quotes from a service-file-baked --host arg too", () => {
+    assert.equal(resolveBindHost('"127.0.0.1"', undefined), "127.0.0.1");
+  });
+
+  it("does not strip a mismatched or single quote character", () => {
+    // Only a matched surrounding pair is a quoting artifact; anything else is a
+    // genuinely malformed host that should reach serve() and fail loudly, not
+    // be silently rewritten into something that happens to bind.
+    assert.equal(resolveBindHost(undefined, '"0.0.0.0'), '"0.0.0.0');
+    assert.equal(resolveBindHost(undefined, '0.0.0.0"'), '0.0.0.0"');
+  });
+
+  it("falls back to loopback when a value is only quotes", () => {
+    assert.equal(resolveBindHost(undefined, '""'), "127.0.0.1");
+  });
 });
 
 describe("isLoopbackBind", () => {
