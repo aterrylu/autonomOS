@@ -362,6 +362,26 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
   }
 
+  // A present-but-EMPTY resume/fork id means the caller intended to resume but
+  // lost the id somewhere. Every dispatch below is truthiness-based, so ""
+  // silently falls through to a fresh spawn and reports success — a resume
+  // request answered with a brand-new empty agent, no error anywhere.
+  //
+  // Enforced HERE, at the shared boundary, rather than only at the REST route:
+  // the HTTP MCP handler (mcp.ts) calls spawnAgent DIRECTLY and never passes
+  // through /api/agents, so a route-only guard leaves that entry point — and any
+  // future direct caller — silently uncovered. (Caught in review on #283.)
+  for (const [field, value] of [
+    ["resumeSessionId", params.resumeSessionId],
+    ["resumeAgentId", params.resumeAgentId],
+    ["forkFromAgentId", params.forkFromAgentId],
+  ] as const) {
+    if (typeof value === "string" && value.trim() === "") {
+      // "invalid session id" prefix so spawnErrorStatus classifies this 400.
+      throw new Error(`invalid session id: ${field} was provided but empty`);
+    }
+  }
+
   // Reject if a live agent with the same name is already running.
   // INVARIANT: synchronous between check and live.set — no TOCTOU.
   if (params.name) {

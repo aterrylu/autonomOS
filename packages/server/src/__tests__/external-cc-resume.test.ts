@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { assertAdoptable, resumeSafetyNetArmed } from "../agents/runtime.js";
+import {
+  assertAdoptable,
+  resumeSafetyNetArmed,
+  spawnAgent,
+} from "../agents/runtime.js";
 import {
   _resetCacheForTesting,
   buildAgent,
@@ -308,6 +312,57 @@ describe("external-cc-resume — safety net is vetoed for adopt", () => {
 });
 
 /**
+ * PLACEMENT of the empty-id guard. It must live in spawnAgent, not the REST
+ * route: the HTTP MCP handler (mcp.ts) calls spawnAgent DIRECTLY, so a
+ * route-only guard would let an MCP caller who lost their session id receive a
+ * fresh empty agent reported as success. Found in review on #283.
+ *
+ * These call the real spawnAgent — safe without a PTY or a `claude` binary
+ * because the guard is the first thing it does, before cwd validation, binary
+ * resolution, or any spawn.
+ */
+describe("external-cc-resume — empty-id guard is at the shared boundary", () => {
+  for (const field of [
+    "resumeSessionId",
+    "resumeAgentId",
+    "forkFromAgentId",
+  ] as const) {
+    it(`spawnAgent itself rejects an empty ${field}`, async () => {
+      await assert.rejects(
+        () =>
+          spawnAgent({
+            workingDirectory: "/tmp",
+            [field]: "",
+          } as Parameters<typeof spawnAgent>[0]),
+        /provided but empty/,
+        `empty ${field} must not fall through to a fresh spawn`,
+      );
+    });
+
+    it(`spawnAgent rejects a whitespace-only ${field}`, async () => {
+      await assert.rejects(
+        () =>
+          spawnAgent({
+            workingDirectory: "/tmp",
+            [field]: "   ",
+          } as Parameters<typeof spawnAgent>[0]),
+        /provided but empty/,
+      );
+    });
+  }
+
+  it("does NOT reject when the fields are simply absent", async () => {
+    // The guard must only fire on present-but-empty. An absent field is the
+    // normal fresh-spawn case; rejecting it would break every plain spawn.
+    // (Rejects later for a different reason — never "provided but empty".)
+    await assert.rejects(
+      () => spawnAgent({ workingDirectory: "/definitely/not/a/real/dir" }),
+      (err: Error) => !/provided but empty/.test(err.message),
+    );
+  });
+});
+
+/**
  * spawnErrorStatus — the runtime→HTTP classification. Extracted from the route
  * so it can be pinned without a PTY.
  */
@@ -338,6 +393,25 @@ describe("external-cc-resume — spawnErrorStatus mapping", () => {
     const msg =
       'no saved Claude Code session found for "d3efd88f-622c-4f4f-a170-e34b625f6c04" in /home/not found/proj — nothing to resume';
     assert.equal(spawnErrorStatus(msg), 422);
+  });
+
+  it("classifies the empty-id guard's message as 400", () => {
+    // The guard lives in spawnAgent (the shared boundary), NOT the REST route —
+    // the HTTP MCP handler calls spawnAgent directly and would bypass a
+    // route-level check, letting an empty resumeSessionId fall through to a
+    // fresh empty agent reported as success. Caught in review on #283. This
+    // pins the message→status half; the placement is asserted below.
+    for (const field of [
+      "resumeSessionId",
+      "resumeAgentId",
+      "forkFromAgentId",
+    ]) {
+      assert.equal(
+        spawnErrorStatus(`invalid session id: ${field} was provided but empty`),
+        400,
+        field,
+      );
+    }
   });
 
   it("ORDERING: an unsupported-provider message resolves 422, not 404", () => {

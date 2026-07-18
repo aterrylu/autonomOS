@@ -218,21 +218,10 @@ agentsRouter.post("/", async (c) => {
     ? body.permissionMode
     : (tmpl?.permissionMode ?? DEFAULT_PERMISSION_MODE);
 
-  // A present-but-EMPTY resume/fork id means the caller intended to resume but
-  // lost the id somewhere. Every downstream dispatch is truthiness-based, so an
-  // empty string would silently fall through to a fresh spawn and return 201 —
-  // a resume request answered with a brand-new empty agent, no error anywhere.
-  for (const field of [
-    "resumeSessionId",
-    "resumeAgentId",
-    "forkFromAgentId",
-  ] as const) {
-    const value = body[field];
-    if (typeof value === "string" && value.trim() === "") {
-      return c.json({ error: `${field} was provided but empty` }, 400);
-    }
-  }
-
+  // NOTE: the present-but-empty resume/fork id check lives in `spawnAgent`, not
+  // here. It has to be at the shared boundary — the HTTP MCP handler calls
+  // spawnAgent directly and would bypass a route-level guard. It surfaces below
+  // via spawnErrorStatus as a 400.
   try {
     const result = await spawnAgent({
       workingDirectory: body.workingDirectory,
