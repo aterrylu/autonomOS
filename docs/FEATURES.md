@@ -350,8 +350,8 @@ Session {
 | Send message | Yes | No |
 | Approve/deny tools | Yes | No |
 | Interrupt | Yes | No |
-| Resume (after app restart) | Yes (via session ID) | N/A |
-| Resume into a managed agent | Yes (attach) | Yes (adopt → managed, see ADR-056) |
+| Resume (after app restart) | Yes (via session ID) | N/A until adopted — see next row |
+| Resume into a managed agent | Yes (attach) | Yes (adopt → managed, see ADR-056). Once adopted it IS a managed agent, so the row above applies to it. |
 | View cost/tokens | Yes (real-time) | Yes (from JSONL) |
 | Archive | Yes | Yes |
 

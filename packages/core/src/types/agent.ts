@@ -77,6 +77,20 @@ export interface Agent {
    *  used by --resume. For migrated agents, equals `id`. */
   providerSessionId: string;
 
+  /** True when this record was ADOPTED from an external provider session — one
+   *  started outside autonomOS (terminal `claude`) and discovered in the
+   *  Projects panel (ADR-056).
+   *
+   *  Load-bearing, not cosmetic: `providerSessionId` here is the user's real
+   *  external session, and it is the ONLY pointer back to their conversation.
+   *  The onExit resume safety net regenerates `providerSessionId` on a failed
+   *  resume — correct for a managed agent, destructive for this one. The flag
+   *  must be PERSISTED rather than inferred at spawn time, because after the
+   *  adopting spawn an adopted record is otherwise indistinguishable from a
+   *  fresh one (both satisfy id === providerSessionId), so every LATER resume
+   *  would re-arm the net and erase the pointer on its first failure. */
+  adoptedExternal?: boolean;
+
   /** Codex only: the app-server thread id (== Codex session id) of this agent's
    *  conversation, captured once the daemon-backed TUI creates its thread. Used
    *  to resume the conversation across a server/daemon restart via

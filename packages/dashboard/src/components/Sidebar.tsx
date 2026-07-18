@@ -159,6 +159,36 @@ function useOrgChartData(refreshKey: number) {
   return { chart, status };
 }
 
+/** Enriched project data for one session, keyed by CC providerSessionId. */
+type SessionMeta = {
+  summary?: string;
+  projectName?: string;
+  gitBranch?: string;
+  lastModified: number;
+};
+
+/**
+ * Read sessionMetaMap for a live session, trying BOTH id-spaces.
+ *
+ * The map is keyed by `ProjectSession.sessionId` (the CC providerSessionId)
+ * while a live session is identified by `claudeSessionId` (the agent id). Those
+ * are equal for unified-id agents but DIFFER for split-id ones (spawned
+ * post-#165, before the id unification), so an agent-id-only lookup silently
+ * drops the summary / project / branch enrichment for exactly those agents.
+ * Prefer the CC id — it is what the map is actually keyed by.
+ */
+function lookupSessionMeta(
+  map: Map<string, SessionMeta>,
+  session: { claudeSessionId?: string; providerSessionId?: string },
+): SessionMeta | undefined {
+  return (
+    (session.providerSessionId
+      ? map.get(session.providerSessionId)
+      : undefined) ??
+    (session.claudeSessionId ? map.get(session.claudeSessionId) : undefined)
+  );
+}
+
 export function Sidebar() {
   const {
     theme,
@@ -293,7 +323,9 @@ export function Sidebar() {
     idx: number;
   } | null>(null);
 
-  // Build a lookup map from claudeSessionId → enriched project session data.
+  // Build a lookup map from the CC providerSessionId → enriched project data.
+  // NOTE the key: ProjectSession.sessionId is the CC session id, NOT the agent
+  // id. Read it via lookupSessionMeta, which tries both id-spaces.
   const sessionMetaMap = useMemo(() => {
     const map = new Map<
       string,
@@ -317,11 +349,17 @@ export function Sidebar() {
     return map;
   }, [projects]);
 
-  // Set of claudeSessionIds that have active live sessions.
+  // Ids that have an active live session. Holds BOTH id-spaces: this set is
+  // built from live sessions (keyed by agent id) but tested against
+  // ProjectSession.sessionId (the CC providerSessionId). Those are equal for
+  // unified-id agents and DIFFER for split-id ones (spawned post-#165, before
+  // the id unification) — so an agent-id-only set leaves split-id agents
+  // without their live dot in the Projects panel.
   const liveSessionIds = useMemo(() => {
     const set = new Set<string>();
     for (const s of sessions) {
       if (s.claudeSessionId) set.add(s.claudeSessionId);
+      if (s.providerSessionId) set.add(s.providerSessionId);
     }
     return set;
   }, [sessions]);
@@ -415,11 +453,7 @@ export function Sidebar() {
           isActive={isPaneActive(item.pane)}
           isVisible={visiblePaneIds.has(item.pane.id)}
           isDropTarget={isDropTarget}
-          meta={
-            item.session.claudeSessionId
-              ? sessionMetaMap.get(item.session.claudeSessionId)
-              : undefined
-          }
+          meta={lookupSessionMeta(sessionMetaMap, item.session)}
           agentState={agentStatuses[item.session.id]}
           notifCount={notificationCounts[item.session.id] ?? 0}
           indent={0}
@@ -1346,11 +1380,7 @@ function HierarchyNodeRow({
             isActive={isPaneActive({ type: "session", id: s.id })}
             isVisible={visiblePaneIds.has(s.id)}
             isDropTarget={isDropTarget}
-            meta={
-              s.claudeSessionId
-                ? sessionMetaMap.get(s.claudeSessionId)
-                : undefined
-            }
+            meta={lookupSessionMeta(sessionMetaMap, s)}
             agentState={agentStatuses[s.id]}
             notifCount={notificationCounts[s.id] ?? 0}
             indent={0}

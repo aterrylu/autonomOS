@@ -246,13 +246,19 @@ export function expandPath(path: string): string {
  * the callsite so it is covered by the same tests as the rest of the arming
  * logic. The net's remedy — reset providerSessionId to a fresh UUID and respawn
  * — is right for a managed record (a working agent beats one that vanishes from
- * the dashboard) but catastrophic for an adopted external session: that record
- * exists SOLELY to carry the user's prior conversation, and the reset overwrites
- * the external CC session id, erasing the only pointer back to it. The user
- * would be left with a healthy, named, EMPTY agent — after the API already
- * returned 201 — and a retry would adopt a SECOND record instead of finding
- * this one. An adopt that fails to resume takes the normal exit path instead:
- * marked `crashed`, visible, and retryable.
+ * the dashboard) but wrong for an adopted external session: that record exists
+ * SOLELY to carry the user's prior conversation, and the reset overwrites
+ * `providerSessionId`, the field `--resume` is actually issued against. The
+ * record's `id` still holds the external CC session id (adopt sets both), so a
+ * later resume does reattach THIS record rather than adopting a duplicate — but
+ * it now resumes the fresh random id, finds no transcript for it, and quietly
+ * starts empty. The user is left with a healthy, named, EMPTY agent after the
+ * API already returned 201.
+ *
+ * Callers must pass `isAdopt` for any spawn of a record with
+ * `adoptedExternal: true`, NOT merely the spawn that adopted it. The flag is
+ * persisted precisely because a later resume takes the reattach path, where a
+ * spawn-local `resolution` would read "reattach" and re-arm the net.
  */
 export function resumeSafetyNetArmed(opts: {
   resumeSessionId?: string;
@@ -318,8 +324,13 @@ export interface SpawnParams extends SpawnOptions {
    * Raw provider (CC/Codex) session id to resume — a DIFFERENT id-space from
    * `resumeAgentId`. Inherited from SpawnOptions; documented here because
    * spawnAgent gives it first-class meaning:
-   *   - if it matches an existing record's providerSessionId (or a migrated
-   *     agent whose id == providerSessionId) → reattach that managed record.
+   *   - if it matches an existing record's providerSessionId, OR an existing
+   *     record's agent id (ANY record — the id-space overlap is the point:
+   *     unified-id agents, migrated pre-#165 agents, and split-id agents whose
+   *     caller happens to hold the agent id all land here) → reattach that
+   *     managed record. `create_agent`'s public description promises exactly
+   *     this ("an autonomOS agent id OR a raw Claude Code session id"), so the
+   *     agent-id lookup is contract, not migration residue — do not prune it.
    *   - otherwise → ADOPT: an external session (e.g. one started via terminal
    *     `claude`, discovered via listSessions) with no autonomOS record yet.
    *     A new persistent managed record is synthesized adopting this CC id, then
@@ -371,14 +382,22 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // the HTTP MCP handler (mcp.ts) calls spawnAgent DIRECTLY and never passes
   // through /api/agents, so a route-only guard leaves that entry point — and any
   // future direct caller — silently uncovered. (Caught in review on #283.)
+  // Rejects "present but not a non-empty string", not merely "present and
+  // empty": the REST route coerces any non-string to undefined without an error
+  // (unlike workingDirectory/template/manager, which 400), so `resumeSessionId:
+  // 3421` or `: null` would ALSO be dropped and answered with a fresh agent.
+  // Same blast radius as "", so the same guard covers both.
   for (const [field, value] of [
     ["resumeSessionId", params.resumeSessionId],
     ["resumeAgentId", params.resumeAgentId],
     ["forkFromAgentId", params.forkFromAgentId],
   ] as const) {
-    if (typeof value === "string" && value.trim() === "") {
+    if (value === undefined) continue;
+    if (typeof value !== "string" || value.trim() === "") {
       // "invalid session id" prefix so spawnErrorStatus classifies this 400.
-      throw new Error(`invalid session id: ${field} was provided but empty`);
+      throw new Error(
+        `invalid session id: ${field} was provided but empty or not a string`,
+      );
     }
   }
 
@@ -422,7 +441,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
    * session id vs. a minted UUID), not in how the record is shaped. Encodes the
    * id == providerSessionId invariant in one place.
    */
-  function buildNewAgent(id: UUID): Agent {
+  function buildNewAgent(id: UUID, adoptedExternal = false): Agent {
     const dirName = basename(cwd) || cwd;
     return buildAgent({
       id,
@@ -434,6 +453,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
+      adoptedExternal,
     });
   }
 
@@ -448,7 +468,21 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
    */
   function reattachCwd(existing: Agent): string {
     const own = expandPath(existing.workingDirectory);
+    // Re-validate: the caller's workingDirectory was stat'd above, but THIS
+    // path never was, and it can have disappeared since the record was written
+    // — a first-class case here, since `wt-sync` deletes merged worktrees out
+    // from under agents that ran in them. Unchecked, a missing dir either makes
+    // node-pty throw (a 500 for a 400-class problem) or spawns a child that
+    // dies instantly, arming the safety net and regenerating providerSessionId
+    // for a reason that has nothing to do with the session's resumability.
     if (own !== cwd) {
+      try {
+        if (!statSync(own).isDirectory()) throw new Error("not a directory");
+      } catch {
+        throw new Error(
+          `Invalid working directory: ${own} — the agent's directory no longer exists, so its session cannot be resumed there`,
+        );
+      }
       console.warn(
         `[runtime] ${existing.id.slice(0, 8)} resume requested with workingDirectory ${cwd}, but the record lives in ${own} — using the record's`,
       );
@@ -491,7 +525,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // an external session we adopt into a NEW persistent record.
     const existing =
       getAgentByProviderSessionId(params.resumeSessionId) ??
-      // Migrated agents predate the id/providerSessionId split: id == CC id.
+      // Also accepts an agent id directly: migrated (pre-#165) records have
+      // id == CC id, and split-id records resolve here when the caller holds
+      // the agent id. This is the contract create_agent advertises ("an
+      // autonomOS agent id OR a raw Claude Code session id"), not dead code.
       getAgent(params.resumeSessionId as UUID);
     if (existing) {
       if (live.has(existing.id)) {
@@ -516,10 +553,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       // because no record already has this id (both lookups above missed) —
       // and assertAdoptable has vetted the id's shape, since it also becomes
       // the record's filename.
+      //
+      // INVARIANT: synchronous from those lookups through insertAgent + live.set
+      // — no TOCTOU. This holds only because claude-code declares no
+      // `buildSidecar`, so no `await` intervenes (the sidecar block is the only
+      // one, and assertAdoptable rejects every provider that has it). If Claude
+      // Code ever gains a sidecar, two concurrent adopts of the same session id
+      // would both miss, both insert, and the second would clobber the first's
+      // record while orphaning its live PTY — re-check the id before
+      // insertAgent if that changes. Mirrors the name-collision pin above.
       assertAdoptable(provider, params.resumeSessionId);
       resolution = "adopt";
       providerSessionId = params.resumeSessionId;
-      agent = buildNewAgent(providerSessionId);
+      // `adoptedExternal: true` is PERSISTED on the record — see the field's
+      // doc. Without it, every resume AFTER this one takes the reattach path
+      // with the safety net armed, and the first failure there regenerates
+      // providerSessionId, destroying the pointer to the user's conversation.
+      agent = buildNewAgent(providerSessionId, true);
     }
   } else {
     // Fresh spawn or fork — both create a new Agent record. For fork, CC creates
@@ -528,12 +578,19 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     if (params.forkFromAgentId && !getAgent(params.forkFromAgentId)) {
       throw new Error(`forkFromAgentId "${params.forkFromAgentId}" not found`);
     }
-    // INVARIANT: agent id == providerSessionId (the CC session id). One id, so
-    // callers never have to guess which to pass on resume. Historically these
-    // were two independent UUIDs (post-#165), which is why resuming a managed CC
-    // agent needed the autonomOS id but the CC session id got tried first, 404'd,
-    // then retried. Unifying them removes that footgun. Migrated (pre-#165)
-    // agents already satisfy this; adopted external sessions do too (above).
+    // INVARIANT (at mint time): agent id == providerSessionId (the CC session
+    // id). One id, so callers never have to guess which to pass on resume.
+    // Historically these were two independent UUIDs (post-#165), which is why
+    // resuming a managed CC agent needed the autonomOS id but the CC session id
+    // got tried first, 404'd, then retried. Unifying them removes that footgun.
+    // Migrated (pre-#165) agents already satisfy this; adopted external sessions
+    // do too (above).
+    //
+    // NOT a permanent invariant: the onExit force-fresh safety net regenerates
+    // `providerSessionId` alone (leaving `id`), which RE-SPLITS them for that
+    // agent. Never treat the two as interchangeable — always resolve through
+    // getAgentByProviderSessionId (with the getAgent fallback), never by
+    // assuming one equals the other.
     providerSessionId = crypto.randomUUID();
     agent = buildNewAgent(providerSessionId);
   }
@@ -582,6 +639,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // (there was no prior conversation) and the record's id stays stable. Codex
   // omits this hook — a missing thread id already takes its fresh `--remote`
   // path — so only Claude Code exercises this branch today.
+  //
+  // The fresh-fallback described above applies to REATTACH ONLY. An ADOPT throws
+  // instead (see below): there is no prior record to strand, and starting fresh
+  // would be exactly the silent failure the adopt path exists to prevent.
   if (resolved.resumeSessionId && provider.hasResumableSession) {
     // On REATTACH the probe is best-effort: if it THROWS we must never abort the
     // spawn (that would mark the agent crashed — the very outcome this fixes).
@@ -830,11 +891,17 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // An adopt never arms the net (see resumeSafetyNetArmed for why) — a resume
   // can still fail after a passing pre-flight: the session may be open in the
   // user's terminal, or the JSONL truncated or version-mismatched.
+  //
+  // Read the PERSISTED flag, not just this spawn's `resolution`. After the
+  // adopting spawn an adopted record reaches this code as a "reattach", and
+  // gating on `resolution` alone would re-arm the net on the very next resume —
+  // reintroducing the failure one retry later.
+  const isAdoptedRecord = resolution === "adopt" || !!persisted.adoptedExternal;
   const attemptedResume = resumeSafetyNetArmed({
     resumeSessionId: resolved.resumeSessionId,
     providerThreadId: resolved.providerThreadId,
     hasResumeHook: !!provider.hasResumableSession,
-    isAdopt: resolution === "adopt",
+    isAdopt: isAdoptedRecord,
   });
 
   pty.onExit(({ exitCode, signal }) => {
@@ -938,16 +1005,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     if (!shuttingDown) {
       const reason: "self_exited" | "crashed" =
         exitCode === 0 && !signal ? "self_exited" : "crashed";
-      // An adopt that died on boot almost always means the resume itself failed
-      // (the safety net is deliberately not armed for adopts — see above). Name
-      // the likely cause: the session being open in another terminal is the most
-      // common one, and it's fixable by the user. The record keeps its external
-      // session id, so retrying resume reattaches THIS record rather than
-      // adopting a duplicate.
-      if (resolution === "adopt" && reason === "crashed" && lifetime < 5_000) {
+      // An adopt that dies shortly after spawn almost always means the resume
+      // itself failed. Because the safety net is deliberately NOT armed for
+      // adopts, this notification is the ONLY signal the user gets — so it must
+      // not be narrower than the failure it covers:
+      //   - Not gated on `crashed`. A CC failure path that prints an error and
+      //     exits 0 yields `self_exited`; gating on `crashed` would leave those
+      //     entirely silent (a normal-looking ended agent with an empty pane).
+      //   - Window is generous, not 5s. CC's boot isn't instant, and a resume
+      //     that surfaces an error and lingers exits well past a tight bound.
+      // The record keeps its external session id, so retrying resume reattaches
+      // THIS record rather than adopting a duplicate.
+      if (isAdoptedRecord && lifetime < 60_000) {
         pushSystemNotification(
           persisted.id,
-          `Couldn't resume the external ${provider.displayName} session ${providerSessionId.slice(0, 8)} — it may still be open in another terminal. Close it there and resume again.`,
+          exitCode === 0
+            ? `The external ${provider.displayName} session ${providerSessionId.slice(0, 8)} ended right after resuming — if the pane looks empty, the session may still be open in another terminal. Close it there and resume again.`
+            : `Couldn't resume the external ${provider.displayName} session ${providerSessionId.slice(0, 8)} — it may still be open in another terminal. Close it there and resume again.`,
         );
       }
       const updated = markExited(persisted.id, reason);

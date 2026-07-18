@@ -955,7 +955,10 @@ export const useStore = create<AppState>()(
         openCreateAgent: () => {
           get().switchPane({ type: "create-agent", id: "create-agent" });
         },
-        resumeSession: async (claudeSessionId, cwd, name, opts) => {
+        // `_name` is accepted but deliberately unused — callers (the Projects
+        // panel) pass the session summary, which must NOT become the agent's
+        // name or reach `--name`. See the spawnSession call below.
+        resumeSession: async (claudeSessionId, cwd, _name, opts) => {
           // Match on BOTH id-spaces. The Projects panel keys sessions by the CC
           // session id, while SessionInfo.claudeSessionId is the agent id — equal
           // for unified-id agents, but NOT for split-id ones (spawned post-#165,
@@ -1023,6 +1026,16 @@ export const useStore = create<AppState>()(
             return;
           }
 
+          // Deliberately NOT forwarding `name`. The Projects panel passes the
+          // session's *summary* — for a terminal-started session with no
+          // customTitle that's an SDK-generated sentence like "Fixing the auth
+          // token refresh bug". Before this PR the external branch 404'd, so
+          // this was unreachable; now it would (a) become the agent's record
+          // name and therefore its `agent://<name>` address for send /
+          // set_manager / kill_agent, and (b) be passed as `--name` on the
+          // resume, which rewrites customTitle on the USER'S OWN external
+          // session. Let the server mint `<dir> · <id>` instead; the user can
+          // /rename afterwards.
           await spawnSession(
             set,
             get,
@@ -1031,7 +1044,6 @@ export const useStore = create<AppState>()(
             {
               workingDirectory: cwd,
               resumeSessionId: claudeSessionId,
-              name,
               permissionMode: get().permissionMode,
             },
           );

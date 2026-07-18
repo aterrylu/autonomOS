@@ -270,9 +270,15 @@ describe("external-cc-resume — assertAdoptable guard", () => {
  * The adopt veto on the onExit safety net. This lived as a `resolution !==
  * "adopt"` conjunction at the callsite, outside any test; it now lives inside
  * the pure function so a refactor can't drop it unnoticed. If it regresses, an
- * adopted session that crashes on boot gets its providerSessionId reset to a
- * fresh UUID and respawned — erasing the only pointer to the user's real
- * conversation, silently, after the API already returned 201.
+ * adopted session that fails to resume gets its providerSessionId reset to a
+ * fresh UUID and respawned. The record's `id` still holds the external session
+ * id, so it is not orphaned outright — but `--resume` is issued against the
+ * fresh id, finds no transcript, and quietly starts empty, after the API
+ * already returned 201.
+ *
+ * The caller must pass `isAdopt` for any spawn of an `adoptedExternal` record,
+ * not just the adopting one — otherwise the SECOND resume takes the reattach
+ * path and re-arms the net, reintroducing the bug one retry later.
  */
 describe("external-cc-resume — safety net is vetoed for adopt", () => {
   const SID = "55555555-5555-4555-8555-555555555555";
@@ -282,6 +288,26 @@ describe("external-cc-resume — safety net is vetoed for adopt", () => {
     assert.equal(
       resumeSafetyNetArmed({ resumeSessionId: SID, hasResumeHook: true }),
       true,
+    );
+  });
+
+  it("a persisted adoptedExternal record keeps the veto on LATER resumes", () => {
+    // The subtle case: after the adopting spawn, an adopted record reaches
+    // spawnAgent as a "reattach" (id == providerSessionId, same as any fresh
+    // agent). Callers must therefore derive isAdopt from the PERSISTED
+    // Agent.adoptedExternal flag, not the spawn-local resolution — otherwise
+    // the second resume re-arms the net and the first failure there resumes a
+    // regenerated id against no transcript. This asserts the contract the
+    // caller relies on: same reattach-shaped inputs, veto still wins.
+    const reattachShaped = {
+      resumeSessionId: SID,
+      hasResumeHook: true,
+    } as const;
+    assert.equal(resumeSafetyNetArmed(reattachShaped), true, "plain reattach");
+    assert.equal(
+      resumeSafetyNetArmed({ ...reattachShaped, isAdopt: true }),
+      false,
+      "same inputs + persisted adopted provenance → still vetoed",
     );
   });
 

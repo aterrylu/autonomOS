@@ -505,6 +505,7 @@ export function buildAgent(params: {
   status?: AgentStatus;
   startedAt?: number;
   createdAt?: number;
+  adoptedExternal?: boolean;
 }): Agent {
   const now = Date.now();
   return {
@@ -519,6 +520,9 @@ export function buildAgent(params: {
     status: params.status ?? "running",
     provider: params.provider,
     providerSessionId: params.providerSessionId,
+    // Omitted entirely (not `false`) for non-adopted agents so existing records
+    // round-trip unchanged.
+    ...(params.adoptedExternal ? { adoptedExternal: true as const } : {}),
     startedAt: params.startedAt ?? now,
     createdAt: params.createdAt ?? now,
     updatedAt: now,
