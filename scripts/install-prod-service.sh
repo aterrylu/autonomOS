@@ -18,15 +18,16 @@
 # Env:
 #   PORT          Port to supervise on (default 3100).
 #   HOST          Interface to bind, baked into the service file as --host.
-#                 Unset = the server's loopback default (reachable from this
-#                 machine only).
-#                 For a box that should ALWAYS be exposed, prefer
-#                 `AUTONOMOS_HOST=0.0.0.0` in this repo's .env: the wrapper below
-#                 runs `tsx --env-file=<repo>/.env`, so the server picks it up on
-#                 every start and it survives reinstalls that don't pass --host.
-#                 Expose only on a network you trust — the API/WebSocket/MCP
-#                 routes require the auth token, but POST /api/hooks/* and
-#                 GET /api/host are still unauthenticated.
+#                 Unset = the server's default: all interfaces (reachable over
+#                 the network — how this is normally deployed). Set
+#                 HOST=127.0.0.1 only to RESTRICT to loopback (a box reached
+#                 exclusively via an SSH tunnel). For a persistent restriction
+#                 prefer `AUTONOMOS_HOST=127.0.0.1` in this repo's .env: the
+#                 wrapper below runs `tsx --env-file=<repo>/.env`, so it survives
+#                 reinstalls that don't pass --host. Either way the auth token is
+#                 required on API/WebSocket/MCP; POST /api/hooks/* and
+#                 GET /api/host are not (yet) — a follow-up moves those onto a
+#                 loopback-only listener.
 #   NO_MIGRATE=1  Skip pm2 auto-migration (you take responsibility for pm2).
 set -euo pipefail
 
@@ -98,7 +99,7 @@ pm2_manages_autonomos() {
 HOST_ARG=""
 if [ -n "$HOST" ]; then
   HOST_ARG="--host=$HOST"
-  echo "[prod] Binding to HOST=$HOST (reachable from the network)."
+  echo "[prod] Restricting bind to HOST=$HOST (overrides the all-interfaces default)."
 fi
 
 if [ "${NO_MIGRATE:-0}" != "1" ] && pm2_manages_autonomos; then

@@ -91,21 +91,21 @@ dashboard notifications, so keep them in mind before exposing the port.
 
 ### Network exposure
 
-The server binds `127.0.0.1` by default — reachable from your own machine, not
-from the network. To expose it (a remote always-on box you browse to), set
-`AUTONOMOS_HOST` in that machine's `.env`:
+The server listens on all interfaces by default, so a dashboard deployed to a
+remote box is reachable over Tailscale, GCP IAP, or SSH the way it always has
+been. The token gates what you can do once connected; restrict *who can reach
+the port* at the network layer (Tailscale ACLs, a firewall, IAP, an SSH tunnel).
+
+To bind loopback-only — for a box you reach exclusively through an SSH tunnel —
+restrict it in that machine's `.env`:
 
 ```env
-AUTONOMOS_HOST=0.0.0.0
+AUTONOMOS_HOST=127.0.0.1
 ```
 
-Or per-run: `autonomos start --host=0.0.0.0`. An exposed bind logs a warning at
-startup naming the interface. Prefer `0.0.0.0` over a specific IP — the
-post-install health check probes localhost, so a bind that excludes loopback
-reports a false install failure.
-
-Only expose on a network you trust. The token is the boundary; the loopback
-default is defense-in-depth.
+Or per-run: `autonomos start --host=127.0.0.1`. Use a loopback address, not
+another specific IP — the post-install health check probes localhost, so a bind
+that excludes loopback reports a false install failure.
 
 ### Remote Deployment
 
@@ -116,12 +116,7 @@ DEPLOY_HOST=your-server-hostname
 
 Run `make deploy` — rsyncs code, installs deps, builds, and supervises the
 server via systemd-user (launchd on a Mac remote), auto-migrating pm2 if present.
-
-**If you browse to this server over the network, set `AUTONOMOS_HOST=0.0.0.0` in
-the REMOTE machine's `.env` before deploying.** `.env` is not rsynced, so each
-box keeps its own — and without it the server takes the loopback default and the
-dashboard becomes unreachable from your browser. For a one-off deploy instead of
-a persistent setting: `make deploy BIND_HOST=0.0.0.0`.
+The dashboard stays reachable at `dev-server:3100` with no extra configuration.
 
 ## Structure
 

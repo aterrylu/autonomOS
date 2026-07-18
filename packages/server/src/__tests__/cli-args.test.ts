@@ -11,7 +11,7 @@ import { describe, it } from "node:test";
 import { parseCliArgs } from "../cli-args.js";
 
 describe("parseCliArgs — --host", () => {
-  it("is undefined when not passed (server applies its loopback default)", () => {
+  it("is undefined when not passed (server then binds all interfaces)", () => {
     assert.equal(parseCliArgs([]).host, undefined);
   });
 

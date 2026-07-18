@@ -8,19 +8,21 @@ DEPLOY_PATH ?= ~/autonomOS
 PROD_PORT ?= 3100
 NO_MIGRATE ?=
 # Interface the prod server binds, for a ONE-OFF override:
-#   make deploy BIND_HOST=0.0.0.0
-# Empty = the server's own loopback default (reachable from this machine only).
+#   make deploy BIND_HOST=127.0.0.1
+# Empty = the server's default: all interfaces (reachable over the network —
+# Tailscale / IAP / SSH — which is how this is normally deployed). The auth
+# token gates what you can do once connected; the network layer gates who
+# reaches the port. Set BIND_HOST=127.0.0.1 only to RESTRICT to loopback, e.g.
+# a box you reach exclusively through an SSH tunnel.
 #
-# For a box that should ALWAYS be exposed (a remote always-on server you browse
-# to), prefer `AUTONOMOS_HOST=0.0.0.0` in THAT box's .env instead of this. The
-# service wrapper runs `tsx --env-file=<repo>/.env`, so the server reads it on
-# every start — it survives `install-service --force`, needs no service-file
-# surgery, and can't be blanked by a deploy that forgets to pass BIND_HOST.
-# BIND_HOST bakes `--host` into the service file, which a later reinstall
+# For a persistent restriction, prefer `AUTONOMOS_HOST=127.0.0.1` in THAT box's
+# .env instead of this. The service wrapper runs `tsx --env-file=<repo>/.env`,
+# so the server reads it on every start — it survives `install-service --force`,
+# whereas BIND_HOST bakes `--host` into the service file, which a later reinstall
 # without it would drop.
 #
 # Deliberately NOT named HOST: $(HOST) is already an alias for DEPLOY_HOST above,
-# so `HOST=0.0.0.0 make deploy` would try to deploy TO a host named "0.0.0.0".
+# so `HOST=x make deploy` would try to deploy TO a host named "x".
 #
 # Strip an inline `# comment` and any padding: this value lands in command-prefix
 # position below (`HOST=$(BIND_HOST) bash …`), where a stray `#` would comment

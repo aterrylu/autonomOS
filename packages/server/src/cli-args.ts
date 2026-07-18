@@ -3,8 +3,8 @@
 //
 // Recognized flags:
 //   --port=N | --port N    Override the listen port (env PORT also works)
-//   --host=H | --host H    Override the bind interface (env AUTONOMOS_HOST).
-//                          Defaults to loopback — see run.ts:resolveBindHost.
+//   --host=H | --host H    Restrict the bind interface (env AUTONOMOS_HOST).
+//                          Default: all interfaces — see run.ts:resolveBindHost.
 //   --print-url            On listen, print "URL: http://host:port  token: …"
 //                          for easy copy-paste into a browser or client
 //   --help                 Print usage and exit 0
@@ -20,16 +20,15 @@ const USAGE = `Usage: autonomos-server [options]
 
 Options:
   --port=N        Listen on port N (default: 3000, env PORT)
-  --host=H        Bind to interface H (default: 127.0.0.1, env AUTONOMOS_HOST).
-                  The default is loopback-only: the dashboard is reachable from
-                  this machine but not from the network. Pass --host=0.0.0.0 to
-                  expose it (e.g. a remote/always-on box you browse to), and only
-                  on a network you trust: the API/WebSocket/MCP routes require the
-                  auth token, but POST /api/hooks/* and GET /api/host are still
-                  unauthenticated.
-                  Prefer 0.0.0.0 over a specific IP — the post-install health
-                  check and the running-server guard both probe localhost, so a
-                  loopback-excluding bind reports a false install failure.
+  --host=H        Bind to interface H (env AUTONOMOS_HOST). Default: all
+                  interfaces, so the dashboard is reachable over the network
+                  (Tailscale / IAP / SSH). Every API/WebSocket/MCP route requires
+                  the auth token; POST /api/hooks/* and GET /api/host do not yet.
+                  Pass --host=127.0.0.1 to RESTRICT to loopback — e.g. a box you
+                  only reach through an SSH tunnel. Use a loopback address, not
+                  another specific IP: the post-install health check and the
+                  running-server guard probe localhost, so a loopback-excluding
+                  bind reports a false install failure.
   --print-url     After startup, print a human-readable line:
                   "URL: http://host:port  token: …" for easy copy-paste
                   to connect a browser or client.

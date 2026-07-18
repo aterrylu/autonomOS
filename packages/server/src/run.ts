@@ -63,46 +63,49 @@ type NodeEnv = {
 };
 
 /**
- * True when the server is bound to a loopback interface — i.e. reachable from
- * this machine but not from the network. An undefined bind host defaults to
- * `localhost`. Exported for tests.
+ * True when the bind is restricted to a loopback interface — reachable from
+ * this machine only, not the network. Exported for tests.
  *
- * This is defense-in-depth for the startup warning, NOT an auth mechanism.
- * Auth is required on every route regardless of bind; do not reintroduce
- * "trusted because loopback" exemptions on top of this (see ADR-041's note on
- * unconditional auth-exempt endpoints being a credential-injection vector).
+ * `undefined` means "no host set" → Node binds all interfaces (see
+ * resolveBindHost), so it is NOT loopback. This drives an informational startup
+ * line, not any auth decision: auth is required on every route regardless of
+ * bind, and per ADR-041 no route should be auth-exempt "because loopback".
  */
 export function isLoopbackBind(bindHost: string | undefined): boolean {
-  const host = bindHost ?? "localhost";
-  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  return (
+    bindHost === "localhost" || bindHost === "127.0.0.1" || bindHost === "::1"
+  );
 }
 
 /**
- * Resolve the interface to bind. Precedence: --host > AUTONOMOS_HOST > loopback.
+ * Resolve the interface to bind. Precedence: --host > AUTONOMOS_HOST > unset.
  *
- * The default is loopback, not all-interfaces. Node's `listen()` with no host
- * binds `::`/`0.0.0.0`, which put the dashboard — and every agent it can spawn —
- * on whatever network the machine is attached to. Opting into exposure is a
- * decision the operator makes explicitly.
+ * Returns `undefined` when nothing is set, and the caller passes that straight
+ * to `serve()` — Node then binds all interfaces (`::` dual-stack), which is the
+ * server's long-standing behavior. We deliberately do NOT default to a safer
+ * loopback bind: this server is commonly deployed to a remote box reached over
+ * Tailscale / IAP / SSH, and those need a network interface. The RCE it used to
+ * enable is closed by requiring auth on `/mcp`, not by hiding the port.
  *
- * Uses AUTONOMOS_HOST rather than HOST: bare `HOST` is set by unrelated tooling
- * on some systems, and inheriting it here would silently move the bind.
+ * The flag is therefore an opt-in to RESTRICT (`--host=127.0.0.1` for a box you
+ * only reach via an SSH tunnel), not to expose. Uses AUTONOMOS_HOST rather than
+ * bare HOST, which unrelated tooling sets and would silently move the bind.
  * Exported for tests.
  */
 export function resolveBindHost(
   cliHost: string | undefined,
   envHost: string | undefined,
-): string {
+): string | undefined {
   const host = stripSurroundingQuotes((cliHost ?? envHost ?? "").trim());
-  return host ? host : "127.0.0.1";
+  return host || undefined;
 }
 
 // `tsx --env-file` (the prod wrapper) and hand-quoted service-file args pass
-// `AUTONOMOS_HOST="0.0.0.0"` through WITH the quote characters, and a hostname
-// carrying quotes fails `serve()` with ENOTFOUND — a crash-loop on the exact
-// deploy where someone is enabling network exposure. A hostname/IP never
-// legitimately contains a surrounding quote pair, so peeling one matched pair
-// is safe and turns a habitual `.env` quoting mistake into the intended bind.
+// `AUTONOMOS_HOST="127.0.0.1"` through WITH the quote characters, and a hostname
+// carrying quotes fails `serve()` with ENOTFOUND — a crash-loop from a habitual
+// `.env` quoting mistake. A hostname/IP never legitimately contains a
+// surrounding quote pair, so peeling one matched pair is safe and yields the
+// intended bind.
 function stripSurroundingQuotes(value: string): string {
   if (
     value.length >= 2 &&
@@ -399,26 +402,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
       );
 
-      // An exposed bind is legitimate (a remote always-on box you browse to),
-      // but it should never be a surprise.
-      //
-      // Be precise about what auth covers. `requireAuth` exempts
-      // POST /api/hooks/* and GET /api/host unconditionally (see the exemptions
-      // above), so "everything needs a token" would be a comforting lie told at
-      // the exact moment someone decides whether to expose the port. Name the
-      // residual surface until those are authenticated too.
+      // The default bind is all-interfaces (unchanged, long-standing): this
+      // server is commonly reached over Tailscale / IAP / SSH. Surface that
+      // posture once, precisely — the API/WebSocket/MCP routes need the token,
+      // but `requireAuth` still exempts POST /api/hooks/* and GET /api/host
+      // (see the exemptions above), so don't imply blanket coverage. This is an
+      // informational line, not an alarm; a loopback-restricted bind is silent.
       if (!isLoopbackBind(bindHost)) {
-        console.warn(
-          `⚠️  Bound to ${bindHost}:${actualPort} — reachable from the network, ` +
-            `not just this machine.\n` +
-            `    The dashboard API, WebSocket and MCP routes require the auth ` +
-            `token.\n` +
-            `    Still UNAUTHENTICATED: POST /api/hooks/* (can forge agent ` +
-            `status and inject\n` +
-            `    dashboard notifications) and GET /api/host (hostname). Only ` +
-            `expose this on a\n` +
-            `    network you trust.\n` +
-            `    Omit --host / AUTONOMOS_HOST to bind loopback-only.`,
+        const iface = bindHost ?? "all interfaces";
+        console.log(
+          `ℹ Reachable on the network (${iface}). API/WebSocket/MCP require the ` +
+            `token; POST /api/hooks/* and GET /api/host do not (yet). ` +
+            `Restrict with --host=127.0.0.1 / AUTONOMOS_HOST=127.0.0.1.`,
         );
       }
 
