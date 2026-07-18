@@ -4,6 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import { buildBaseEnv } from "../providers/shared.js";
 import {
   _resetServerStateForTesting,
+  assertControlPlaneReady,
   ControlPlaneNotReadyError,
   getInternalSocketPath,
   setAuthToken,
@@ -74,6 +75,22 @@ describe("control plane readiness", () => {
     assert.equal(getInternalSocketPath(), "/tmp/aos-test/control.sock");
     const env = buildBaseEnv("session-id", "Agent1");
     assert.equal(env.AUTONOMOS_INTERNAL_SOCKET, "/tmp/aos-test/control.sock");
+  });
+
+  // restart-all can't ride the buildBaseEnv funnel: its per-agent catch
+  // swallows respawn failures into `failures[]` and marks those agents
+  // "crashed". So it asserts readiness up front, BEFORE the kill pass — a late
+  // throw would either report "crashed" for "still starting", or abort
+  // mid-loop and strand already-killed agents as status:"running" zombies.
+  it("assertControlPlaneReady throws before the socket binds", () => {
+    setServerPort(53919);
+    assert.throws(() => assertControlPlaneReady(), ControlPlaneNotReadyError);
+  });
+
+  it("assertControlPlaneReady passes once bound", () => {
+    setServerPort(53919);
+    setInternalSocketPath("/tmp/aos-test/control.sock");
+    assert.doesNotThrow(() => assertControlPlaneReady());
   });
 
   // The window is transient by nature; a readiness signal that never cleared

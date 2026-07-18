@@ -70,10 +70,17 @@ export function setInternalSocketPath(path: string): void {
  * agent whose hook relay points at a socket that does not exist yet.
  *
  * Typed so the routes' central onError can map it to an actionable 503 +
- * Retry-After instead of leaking an internal invariant string as a 500. Every
- * spawn path funnels through buildBaseEnv → getInternalSocketPath(), so this
- * covers POST /api/agents, /:id/attach, /restart-all — and any spawn route
- * added later — without each having to remember a guard.
+ * Retry-After instead of leaking an internal invariant string as a 500.
+ *
+ * Two paths raise it, for different reasons:
+ *   - POST /api/agents and /:id/attach — implicitly, because both funnel
+ *     through buildBaseEnv → getInternalSocketPath(). Any spawn route added
+ *     later inherits the guard for free.
+ *   - POST /restart-all — explicitly, via assertControlPlaneReady() BEFORE it
+ *     kills anything (see restartAllAttachments). It cannot rely on the funnel:
+ *     its per-agent catch deliberately swallows respawn failures into
+ *     `failures[]` and marks those agents crashed, so a late throw would report
+ *     "crashed" for what is really "server still starting".
  */
 export class ControlPlaneNotReadyError extends Error {
   readonly code = "CONTROL_PLANE_NOT_READY";
@@ -91,6 +98,20 @@ export function getInternalSocketPath(): string {
     throw new ControlPlaneNotReadyError();
   }
   return _internalSocketPath;
+}
+
+/**
+ * Raise ControlPlaneNotReadyError if the control plane has not bound yet.
+ *
+ * For callers that must check readiness BEFORE doing destructive work, rather
+ * than discovering it when they reach for the socket path. Calling
+ * getInternalSocketPath() purely for its throw would express the same thing far
+ * less honestly.
+ */
+export function assertControlPlaneReady(): void {
+  if (_internalSocketPath === null) {
+    throw new ControlPlaneNotReadyError();
+  }
 }
 
 /** Test-only — reset module state between tests. */
