@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
-import { isDegenerate } from "../terminal/resize";
+import { isDegenerate, isPlausibleFit } from "../terminal/resize";
 import type {
   IFitAddon,
   ILink,
@@ -331,6 +331,65 @@ export function useTerminal(
       const isContainerVisible = (): boolean =>
         container.offsetWidth > 0 && container.offsetHeight > 0;
 
+      // Last container box we actually fit to — lets us skip redundant fits
+      // (a ResizeObserver can fire without a real dimension change), which is
+      // what bakes sub-pixel cell-measurement drift into a stepwise shrink.
+      // Reset to 0 to force the next fit (e.g. after an implausible mis-measure).
+      let lastFitW = 0;
+      let lastFitH = 0;
+
+      // Fit the terminal to its container and push the size to the PTY — but
+      // ONLY if the fit produced a PLAUSIBLE geometry. A freshly (re)created
+      // WebGL renderer may not have measured its character cell yet, so fit()
+      // can compute a wildly-too-small cols/rows (isPlausibleFit's headline
+      // case). isDegenerate alone only blocks the 2×1 floor, so such a
+      // mis-measure would otherwise reach the PTY and wedge the remote tty until
+      // a manual refresh (the idle self-shrink). On an implausible fit we skip
+      // the send, invalidate the cache (so a later box change still retries), and
+      // let scheduleFit retry on a settled frame. Returns true once applied.
+      const applyFit = (): boolean => {
+        if (disposed || !terminal || !fitAddon || !isContainerVisible())
+          return false;
+        try {
+          fitAddon.fit();
+        } catch (err) {
+          console.warn("fitAddon.fit() failed:", err);
+          return false;
+        }
+        const w = container.offsetWidth;
+        const h = container.offsetHeight;
+        if (!isPlausibleFit(terminal.cols, terminal.rows, w, h)) {
+          lastFitW = 0;
+          lastFitH = 0;
+          return false;
+        }
+        lastFitW = w;
+        lastFitH = h;
+        if (wsRef.current && document.hasFocus()) {
+          sendResize(wsRef.current, terminal);
+        }
+        return true;
+      };
+
+      // Fit on the next frame(s), retrying while the renderer still reports an
+      // implausible size — a single rAF isn't always enough for a recreated
+      // renderer or a slow font swap to measure its cell.
+      const scheduleFit = (retries = 5): void => {
+        if (disposed) return;
+        requestAnimationFrame(() => {
+          if (disposed || !isContainerVisible()) return;
+          if (applyFit()) return;
+          if (retries > 0) scheduleFit(retries - 1);
+          // Exhausted all retries while still visible — the renderer never
+          // settled. Log so a mis-sized terminal is diagnosable instead of a
+          // silent give-up (the not-visible case returned above, so no noise).
+          else
+            console.warn(
+              "[autonomOS] terminal fit still implausible after retries; leaving PTY size unchanged",
+            );
+        });
+      };
+
       // Load the WebGL renderer and keep it alive across GPU context loss.
       // xterm's WebglAddon silently stops painting if its GL context is lost
       // — common when several panes each hold a context (browsers cap WebGL
@@ -353,24 +412,13 @@ export function useTerminal(
             if (!disposed && isContainerVisible()) {
               loadWebglAddon();
               // The recreated renderer hasn't measured its character cell yet;
-              // fitting against that stale/unsettled cell size mis-computes
-              // cols/rows and shrinks the PTY. Re-fit on the next frame, once
-              // the new renderer has painted, and correct the PTY to the real
-              // size. (Backstops the idle WebGL context-loss self-shrink.)
-              requestAnimationFrame(() => {
-                if (disposed || !isContainerVisible()) return;
-                try {
-                  fitAddon?.fit();
-                } catch (err) {
-                  console.warn(
-                    "fitAddon.fit() failed after WebGL reload:",
-                    err,
-                  );
-                }
-                if (wsRef.current && document.hasFocus()) {
-                  sendResize(wsRef.current, terminal!);
-                }
-              });
+              // fitting against that stale/unsettled cell mis-computes cols/rows
+              // and shrinks the PTY. scheduleFit re-fits on settled frames (with
+              // retries + the plausibility guard) and corrects the PTY to the
+              // real size, invalidating the change-cache so the ResizeObserver
+              // is free to re-fit at the same box. This is the fix for the idle
+              // WebGL context-loss self-shrink.
+              scheduleFit();
             }
           });
         } catch (err) {
@@ -388,34 +436,20 @@ export function useTerminal(
           isContainerVisible() &&
           wsRef.current?.readyState === WebSocket.OPEN
         ) {
-          try {
-            // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
-            fitAddon!.fit();
-          } catch (err) {
-            console.warn("fitAddon.fit() failed on focus reclaim:", err);
+          // Re-fit (plausibility-guarded) to correct any stale size taken while
+          // unfocused, then nudge for a repaint. Only nudge on a PLAUSIBLE fit —
+          // nudgeResize is guarded solely by isDegenerate, so nudging after a
+          // failed fit could ship a mis-measured size to the PTY for a frame.
+          // If the renderer isn't settled, scheduleFit retries instead.
+          if (applyFit()) {
+            if (nudgeTimer) clearTimeout(nudgeTimer);
+            nudgeTimer = nudgeResize(wsRef.current, terminal!);
+          } else {
+            scheduleFit();
           }
-          if (nudgeTimer) clearTimeout(nudgeTimer);
-          nudgeTimer = nudgeResize(wsRef.current, terminal!);
         }
       };
       window.addEventListener("focus", handleFocus);
-
-      // Last container box we actually fit to — lets us skip redundant fits
-      // (a ResizeObserver can fire without a real dimension change), which is
-      // what bakes sub-pixel cell-measurement drift into a stepwise shrink.
-      let lastFitW = 0;
-      let lastFitH = 0;
-      const applyFit = (): void => {
-        try {
-          // biome-ignore lint/suspicious/noFocusedTests: fit() is FitAddon.fit(), not a test
-          fitAddon!.fit();
-        } catch (err) {
-          console.warn("fitAddon.fit() failed in ResizeObserver:", err);
-        }
-        if (wsRef.current && document.hasFocus()) {
-          sendResize(wsRef.current, terminal!);
-        }
-      };
 
       resizeObserver = new ResizeObserver(() => {
         const isVisible = isContainerVisible();
@@ -437,17 +471,13 @@ export function useTerminal(
         const h = container.offsetHeight;
         if (!hadAddon && webglAddon) {
           // Just (re)created the renderer this tick — it hasn't measured its
-          // cell yet, so fit on the next frame against a settled renderer
-          // rather than synchronously (avoids a mis-measured shrink).
-          lastFitW = w;
-          lastFitH = h;
-          requestAnimationFrame(() => {
-            if (!disposed && isContainerVisible()) applyFit();
-          });
+          // cell yet, so fit on a settled frame (scheduleFit retries until the
+          // fit is plausible) rather than synchronously against a stale cell.
+          scheduleFit();
         } else if (w !== lastFitW || h !== lastFitH) {
-          lastFitW = w;
-          lastFitH = h;
-          applyFit();
+          // Box actually changed — fit now; if the renderer looks unsettled,
+          // applyFit invalidates the cache and scheduleFit retries next frame.
+          if (!applyFit()) scheduleFit();
         }
       });
       resizeObserver.observe(container);

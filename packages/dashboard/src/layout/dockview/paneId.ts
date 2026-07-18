@@ -30,3 +30,25 @@ export function paneFromId(id: string, previewIds: Set<string>): ActivePane {
   if (previewIds.has(id)) return { type: "preview", id };
   return { type: "session", id };
 }
+
+/**
+ * Validate a value parsed from persisted storage is a well-formed `ActivePane`.
+ *
+ * `activePane` is the one persisted layout field that flows into dockview's
+ * `addPanel({ id })` on restore. A malformed shape (legacy `{type:"leaf"}`, a
+ * session pane with a missing/blank `id`, arbitrary corrupt JSON) makes
+ * `addPanel` throw during the restore effect — and because that value
+ * re-persists, it throws again on the *next* reload too. Without a top-level
+ * ErrorBoundary that is a permanent blank screen. Reject anything that isn't a
+ * known union member here so a bad blob degrades to "no active pane" (the
+ * friendly empty state) instead. Singletons must carry `id === type`;
+ * session/preview panes need a non-empty string id.
+ */
+export function isValidActivePane(v: unknown): v is ActivePane {
+  if (!v || typeof v !== "object") return false;
+  const { type, id } = v as { type?: unknown; id?: unknown };
+  if (typeof type !== "string" || typeof id !== "string" || id === "")
+    return false;
+  if (SINGLETON_TYPES.has(type)) return id === type;
+  return type === "session" || type === "preview";
+}
