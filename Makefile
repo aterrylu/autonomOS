@@ -7,6 +7,30 @@ DEPLOY_HOST ?= $(or $(HOST),$(shell grep -s '^DEPLOY_HOST=' .env | cut -d= -f2))
 DEPLOY_PATH ?= ~/autonomOS
 PROD_PORT ?= 3100
 NO_MIGRATE ?=
+# Interface the prod server binds, for a ONE-OFF override:
+#   make deploy BIND_HOST=127.0.0.1
+# Empty = the server's default: all interfaces (reachable over the network —
+# Tailscale / IAP / SSH — which is how this is normally deployed). The auth
+# token gates what you can do once connected; the network layer gates who
+# reaches the port. Set BIND_HOST=127.0.0.1 only to RESTRICT to loopback, e.g.
+# a box you reach exclusively through an SSH tunnel.
+#
+# For a persistent restriction, prefer `AUTONOMOS_HOST=127.0.0.1` in THAT box's
+# .env instead of this. The service wrapper runs `tsx --env-file=<repo>/.env`,
+# so the server reads it on every start — it survives `install-service --force`,
+# whereas BIND_HOST bakes `--host` into the service file, which a later reinstall
+# without it would drop.
+#
+# Deliberately NOT named HOST: $(HOST) is already an alias for DEPLOY_HOST above,
+# so `HOST=x make deploy` would try to deploy TO a host named "x".
+#
+# Strip an inline `# comment` and any padding: this value lands in command-prefix
+# position below (`HOST=$(BIND_HOST) bash …`), where a stray `#` would comment
+# out the rest of the recipe line and make `make prod` a SILENT no-op — a deploy
+# that reports success and changes nothing. `-f2-` keeps values containing `=`.
+# (the \# is escaped for make — an unescaped # would comment out the rest of
+# this line, including the closing paren.)
+BIND_HOST ?= $(strip $(shell grep -s '^BIND_HOST=' .env | cut -d= -f2- | cut -d'\#' -f1))
 
 # ── dev: isolated per worktree ───────────────────
 # Ports are derived from the directory path hash so each worktree gets unique ports.
@@ -44,7 +68,7 @@ prod:
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
 	@echo "Handing off to OS-native supervisor (launchd/systemd-user)..."
-	@PORT=$(PROD_PORT) NO_MIGRATE=$(NO_MIGRATE) bash scripts/install-prod-service.sh
+	@PORT=$(PROD_PORT) NO_MIGRATE=$(NO_MIGRATE) HOST='$(BIND_HOST)' bash scripts/install-prod-service.sh
 
 # ── doctor: preflight checks (node-pty ABI vs runtime node) ──
 #   Run standalone to diagnose/repair a crash-loop after a node upgrade.
@@ -94,7 +118,10 @@ deploy:
 	@echo "Installing dependencies..."
 	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.bun/bin:$$PATH && bun install'
 	@echo "Building and starting on $(DEPLOY_HOST) (launchd/systemd-user, auto-migrates pm2)..."
-	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.local/bin:$$HOME/.bun/bin:$$PATH && make prod'
+	@# Forward BIND_HOST only when set locally. Passing an empty BIND_HOST= would
+	@# override (and blank out) the remote's own .env value, silently flipping a
+	@# deliberately-exposed box back to loopback and cutting off browser access.
+	ssh $(DEPLOY_HOST) 'cd $(DEPLOY_PATH) && export PATH=$$HOME/.local/bin:$$HOME/.bun/bin:$$PATH && make prod $(if $(BIND_HOST),BIND_HOST=$(BIND_HOST),)'
 
 # ── fmt: auto-fix lint + formatting ─────────────
 fmt:

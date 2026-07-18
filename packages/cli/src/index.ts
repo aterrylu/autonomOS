@@ -31,14 +31,17 @@ const USAGE = `Usage: autonomos <command> [options]
 
 Commands:
   start [options]      Run the server in the foreground (default if no command)
-                       Options: --port=N
+                       Options: --port=N, --host=H (default 127.0.0.1 —
+                       loopback only; --host=0.0.0.0 exposes to the network)
   stop                 Gracefully stop a running daemon (SIGTERM)
   restart              Restart the installed service (launchctl / systemctl)
   status               Print running daemon's state
   logs                 Tail the server log ($configDir/logs/autonomos.log)
                        Options: -f/--follow, -n/--lines=N (default 50)
   install-service      Install OS-native supervisor (launchd / systemd-user)
-                       Options: --prefix=DIR, --no-activate, --bin=PATH, --force, --open
+                       Options: --prefix=DIR, --no-activate, --bin=PATH, --force,
+                       --open, --port=N, --host=H (bakes the bind into the
+                       service file; prefer AUTONOMOS_HOST in .env to persist it)
   uninstall-service    Stop daemon and remove the service file
                        Options: --prefix=DIR
   upgrade              Fetch latest release, verify, atomic swap, restart daemon

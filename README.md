@@ -72,13 +72,40 @@ install-service` / `uninstall-service`.
 
 ### Authentication
 
-Optional token-based auth. When `AUTONOMOS_TOKEN` is set, the dashboard shows a login page and all API/WebSocket endpoints require the token.
+Auth is always on. There is no way to disable it: on first start the server
+generates a random 256-bit token and saves it to `~/.autonomos/token` (mode
+`0600`). `install-service` prints it, and `autonomos status` will show you where
+it lives. The dashboard shows a login page; API, WebSocket and MCP routes all
+require the token.
+
+Set your own instead of the generated one:
 
 ```env
 AUTONOMOS_TOKEN=your-secure-token-here
 ```
 
-Leave unset to disable auth entirely.
+Two endpoints are currently exempt and reachable without a token —
+`POST /api/hooks/*` (the agent hook relay) and `GET /api/host` (hostname). They
+can't spawn or control agents, but they can forge agent status and inject
+dashboard notifications, so keep them in mind before exposing the port.
+
+### Network exposure
+
+The server listens on all interfaces by default, so a dashboard deployed to a
+remote box is reachable over Tailscale, GCP IAP, or SSH the way it always has
+been. The token gates what you can do once connected; restrict *who can reach
+the port* at the network layer (Tailscale ACLs, a firewall, IAP, an SSH tunnel).
+
+To bind loopback-only — for a box you reach exclusively through an SSH tunnel —
+restrict it in that machine's `.env`:
+
+```env
+AUTONOMOS_HOST=127.0.0.1
+```
+
+Or per-run: `autonomos start --host=127.0.0.1`. Use a loopback address, not
+another specific IP — the post-install health check probes localhost, so a bind
+that excludes loopback reports a false install failure.
 
 ### Remote Deployment
 
@@ -89,6 +116,7 @@ DEPLOY_HOST=your-server-hostname
 
 Run `make deploy` — rsyncs code, installs deps, builds, and supervises the
 server via systemd-user (launchd on a Mac remote), auto-migrating pm2 if present.
+The dashboard stays reachable at `dev-server:3100` with no extra configuration.
 
 ## Structure
 

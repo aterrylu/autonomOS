@@ -63,13 +63,58 @@ type NodeEnv = {
 };
 
 /**
- * True when the server is bound to a loopback interface (so localhost-trust
- * exemptions are safe). An undefined bind host defaults to `localhost`.
- * Exported for tests.
+ * True when the bind is restricted to a loopback interface — reachable from
+ * this machine only, not the network. Exported for tests.
+ *
+ * `undefined` means "no host set" → Node binds all interfaces (see
+ * resolveBindHost), so it is NOT loopback. This drives an informational startup
+ * line, not any auth decision: auth is required on every route regardless of
+ * bind, and per ADR-041 no route should be auth-exempt "because loopback".
  */
 export function isLoopbackBind(bindHost: string | undefined): boolean {
-  const host = bindHost ?? "localhost";
-  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  return (
+    bindHost === "localhost" || bindHost === "127.0.0.1" || bindHost === "::1"
+  );
+}
+
+/**
+ * Resolve the interface to bind. Precedence: --host > AUTONOMOS_HOST > unset.
+ *
+ * Returns `undefined` when nothing is set, and the caller passes that straight
+ * to `serve()` — Node then binds all interfaces (`::` dual-stack), which is the
+ * server's long-standing behavior. We deliberately do NOT default to a safer
+ * loopback bind: this server is commonly deployed to a remote box reached over
+ * Tailscale / IAP / SSH, and those need a network interface. The RCE it used to
+ * enable is closed by requiring auth on `/mcp`, not by hiding the port.
+ *
+ * The flag is therefore an opt-in to RESTRICT (`--host=127.0.0.1` for a box you
+ * only reach via an SSH tunnel), not to expose. Uses AUTONOMOS_HOST rather than
+ * bare HOST, which unrelated tooling sets and would silently move the bind.
+ * Exported for tests.
+ */
+export function resolveBindHost(
+  cliHost: string | undefined,
+  envHost: string | undefined,
+): string | undefined {
+  const host = stripSurroundingQuotes((cliHost ?? envHost ?? "").trim());
+  return host || undefined;
+}
+
+// `tsx --env-file` (the prod wrapper) and hand-quoted service-file args pass
+// `AUTONOMOS_HOST="127.0.0.1"` through WITH the quote characters, and a hostname
+// carrying quotes fails `serve()` with ENOTFOUND — a crash-loop from a habitual
+// `.env` quoting mistake. A hostname/IP never legitimately contains a
+// surrounding quote pair, so peeling one matched pair is safe and yields the
+// intended bind.
+function stripSurroundingQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    (value[0] === '"' || value[0] === "'") &&
+    value[value.length - 1] === value[0]
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
 }
 
 /**
@@ -254,6 +299,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   app.use("/api/*", requireAuth);
   app.use("/ws/*", requireAuth);
+  // /mcp exposes the same orchestration tools as the dashboard API —
+  // create_agent, kill_agent, set_manager. It is NOT a public transport.
+  // Mounted here (before the route definitions below) so every method is
+  // covered; a client authenticates with the same token as everything else.
+  app.use("/mcp", requireAuth);
 
   app.get("/api/host", (c) =>
     c.json({ hostname: hostname(), dashboard: dashboardBuild }),
@@ -327,11 +377,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Port precedence: --port CLI flag > PORT env > 3000 default.
   // --port=0 asks the OS to assign a free port.
   const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
+  const bindHost = resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST);
 
   const server = serve(
     {
       fetch: app.fetch,
       port: requestedPort,
+      hostname: bindHost,
     },
     () => {
       // When --port=0 the OS assigned us a real port; read it from the listener.
@@ -343,10 +395,27 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // into their hook + MCP-gateway endpoints.
       setServerPort(actualPort);
       const base = `http://localhost:${actualPort}`;
+      // NOTE: keep this line's shape — helpers/test-server.ts parses
+      // "listening on <url>" to discover the ephemeral port.
       console.log(`autonomOS server listening on ${base}`);
       console.log(
         `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
       );
+
+      // The default bind is all-interfaces (unchanged, long-standing): this
+      // server is commonly reached over Tailscale / IAP / SSH. Surface that
+      // posture once, precisely — the API/WebSocket/MCP routes need the token,
+      // but `requireAuth` still exempts POST /api/hooks/* and GET /api/host
+      // (see the exemptions above), so don't imply blanket coverage. This is an
+      // informational line, not an alarm; a loopback-restricted bind is silent.
+      if (!isLoopbackBind(bindHost)) {
+        const iface = bindHost ?? "all interfaces";
+        console.log(
+          `ℹ Reachable on the network (${iface}). API/WebSocket/MCP require the ` +
+            `token; POST /api/hooks/* and GET /api/host do not (yet). ` +
+            `Restrict with --host=127.0.0.1 / AUTONOMOS_HOST=127.0.0.1.`,
+        );
+      }
 
       // --print-url: emit the full URL + token in one human-readable line
       // suitable for copy-paste to connect a browser or client.

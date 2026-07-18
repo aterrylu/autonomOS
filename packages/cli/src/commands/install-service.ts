@@ -8,6 +8,10 @@
 //   --no-activate    Just write the file; don't run launchctl/systemctl
 //   --bin=PATH       Override the auto-detected program path
 //   --force          Re-install even if file already exists
+//   --port=N         Supervise on port N (default: the server's own default)
+//   --host=H         Bake `--host=H` into the service file. Omit for the
+//                    server's loopback default; pass 0.0.0.0 for a remote box
+//                    you browse to over a trusted network.
 //   --open           After the daemon comes up, open the dashboard in a browser
 //
 // After activation it polls until the daemon is responsive (a real smoke test,
@@ -41,6 +45,7 @@ type InstallFlags = {
   bin: string | undefined;
   force: boolean;
   port: number | undefined;
+  host: string | undefined;
   open: boolean;
 };
 
@@ -50,6 +55,7 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   let bin: string | undefined;
   let force = false;
   let port: number | undefined;
+  let host: string | undefined;
   let open = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -62,6 +68,8 @@ function parseFlags(argv: readonly string[]): InstallFlags {
     else if (a === "--bin") bin = argv[++i];
     else if (a.startsWith("--port=")) port = Number(a.slice("--port=".length));
     else if (a === "--port") port = Number(argv[++i]);
+    else if (a.startsWith("--host=")) host = a.slice("--host=".length);
+    else if (a === "--host") host = argv[++i];
     else throw new Error(`Unknown flag: ${a}`);
   }
   if (
@@ -70,7 +78,16 @@ function parseFlags(argv: readonly string[]): InstallFlags {
   ) {
     throw new Error(`Invalid --port value: must be 0-65535`);
   }
-  return { prefix, noActivate, bin, force, port, open };
+  // An empty --host would reach the server as "bind everything" — the opposite
+  // of the safe default. Reject it here rather than bake it into a service file
+  // that then silently exposes the port on every boot.
+  if (host !== undefined && host.trim() === "") {
+    throw new Error(
+      "Invalid --host value: must not be empty " +
+        "(use --host=0.0.0.0 to bind all interfaces, or omit for loopback)",
+    );
+  }
+  return { prefix, noActivate, bin, force, port, host, open };
 }
 
 export async function runInstallServiceCommand(
@@ -146,10 +163,15 @@ export async function runInstallServiceCommand(
   }
 
   // Program-args either auto-detected or overridden via --bin. Append --port
-  // when explicitly requested (preserves the port on pm2 migrations).
+  // when explicitly requested (preserves the port on pm2 migrations), and
+  // --host when the operator opted into a non-default bind. Omitting --host
+  // leaves the server's own loopback default in charge — the service file
+  // never silently widens the bind.
   const baseArgs = flags.bin ? [flags.bin, "start"] : detectProgramArgs();
-  const programArgs =
+  const withPort =
     flags.port !== undefined ? [...baseArgs, `--port=${flags.port}`] : baseArgs;
+  const programArgs =
+    flags.host !== undefined ? [...withPort, `--host=${flags.host}`] : withPort;
 
   mkdirSync(paths.serviceDir, { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });
