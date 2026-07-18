@@ -587,14 +587,14 @@ async function spawnSession(
   set({ status: pendingStatus });
 
   // Translate the legacy SessionInfo-shaped body into the new /api/agents shape.
-  // - resumeSessionId → resumeAgentId (same value: agent.id == old claudeSessionId)
   // - forkFrom → forkFromAgentId (same value)
+  // resumeSessionId is passed THROUGH unchanged: the server resolves it against
+  // both the agent store and disk (reattach a managed record OR adopt an external
+  // CC session). It must NOT be rewritten to resumeAgentId — that rewrite assumed
+  // agent.id == claudeSessionId, which is false for external sessions and was the
+  // root cause of external-session resume 404ing (the #165 regression).
   // The server still accepts `manager` (name) at the API boundary.
   const agentBody: Record<string, unknown> = { ...body };
-  if (typeof agentBody.resumeSessionId === "string") {
-    agentBody.resumeAgentId = agentBody.resumeSessionId;
-    delete agentBody.resumeSessionId;
-  }
   if (typeof agentBody.forkFrom === "string") {
     agentBody.forkFromAgentId = agentBody.forkFrom;
     delete agentBody.forkFrom;
@@ -610,7 +610,13 @@ async function spawnSession(
     return;
   }
   if (!res.ok) {
-    set({ status: failureStatus });
+    // Surface the server's reason (e.g. "nothing to resume", template not found)
+    // instead of a bare generic status — otherwise a failed resume reads as an
+    // unexplained dead-end. Falls back to the generic status if there's no body.
+    const err = await res.json().catch(() => null);
+    const detail =
+      err && typeof err.error === "string" ? err.error : `HTTP ${res.status}`;
+    set({ status: `${failureStatus}: ${detail}` });
     return;
   }
 
@@ -949,10 +955,26 @@ export const useStore = create<AppState>()(
         openCreateAgent: () => {
           get().switchPane({ type: "create-agent", id: "create-agent" });
         },
-        resumeSession: async (claudeSessionId, cwd, name, opts) => {
-          const existing = get().sessions.find(
-            (s) => s.claudeSessionId === claudeSessionId,
-          );
+        // `_name` is accepted but deliberately unused — callers (the Projects
+        // panel) pass the session summary, which must NOT become the agent's
+        // name or reach `--name`. See the spawnSession call below.
+        resumeSession: async (claudeSessionId, cwd, _name, opts) => {
+          // Match on BOTH id-spaces. The Projects panel keys sessions by the CC
+          // session id, while SessionInfo.claudeSessionId is the agent id — equal
+          // for unified-id agents, but NOT for split-id ones (spawned post-#165,
+          // before the id unification). Matching only the agent id misses an
+          // already-running split-id agent, falls through to a spawn, and the
+          // server rejects it with "already attached" — an error where the right
+          // outcome is silently switching to the pane that's already open.
+          // The `!!claudeSessionId` guard is load-bearing: both SessionInfo id
+          // fields are optional, so without it a malformed entry with an
+          // undefined id would match ANY session whose providerSessionId is also
+          // undefined — switching the user to an arbitrary pane.
+          const matchesId = (s: SessionInfo) =>
+            !!claudeSessionId &&
+            (s.claudeSessionId === claudeSessionId ||
+              s.providerSessionId === claudeSessionId);
+          const existing = get().sessions.find(matchesId);
           if (existing) {
             const pane: ActivePane = { type: "session", id: existing.id };
             get().switchPane(pane);
@@ -978,9 +1000,10 @@ export const useStore = create<AppState>()(
               return;
             }
             await get().fetchSessions();
-            const resumed = get().sessions.find(
-              (s) => s.claudeSessionId === claudeSessionId,
-            );
+            // Same dual-id match: for a split-id agent (the case the /attach
+            // providerSessionId fallback now unblocks) an agent-id-only lookup
+            // misses and drops the user into the retry path instead of switching.
+            const resumed = get().sessions.find(matchesId);
             if (resumed) {
               get().switchPane({ type: "session", id: resumed.id });
               set({ status: "connected" });
@@ -991,9 +1014,7 @@ export const useStore = create<AppState>()(
               );
               setTimeout(async () => {
                 await get().fetchSessions();
-                const retry = get().sessions.find(
-                  (s) => s.claudeSessionId === claudeSessionId,
-                );
+                const retry = get().sessions.find(matchesId);
                 if (retry) {
                   get().switchPane({ type: "session", id: retry.id });
                   set({ status: "connected" });
@@ -1005,6 +1026,16 @@ export const useStore = create<AppState>()(
             return;
           }
 
+          // Deliberately NOT forwarding `name`. The Projects panel passes the
+          // session's *summary* — for a terminal-started session with no
+          // customTitle that's an SDK-generated sentence like "Fixing the auth
+          // token refresh bug". Before this PR the external branch 404'd, so
+          // this was unreachable; now it would (a) become the agent's record
+          // name and therefore its `agent://<name>` address for send /
+          // set_manager / kill_agent, and (b) be passed as `--name` on the
+          // resume, which rewrites customTitle on the USER'S OWN external
+          // session. Let the server mint `<dir> · <id>` instead; the user can
+          // /rename afterwards.
           await spawnSession(
             set,
             get,
@@ -1013,7 +1044,6 @@ export const useStore = create<AppState>()(
             {
               workingDirectory: cwd,
               resumeSessionId: claudeSessionId,
-              name,
               permissionMode: get().permissionMode,
             },
           );

@@ -19,6 +19,7 @@ import {
   killAttachment,
   restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
+  SpawnError,
   spawnAgent,
 } from "../agents/runtime.js";
 import {
@@ -27,6 +28,7 @@ import {
   childrenOf,
   deleteAgentRaw,
   getAgent,
+  getAgentByProviderSessionId,
   listAgents,
   patchAgent,
   resolveAgent,
@@ -124,6 +126,64 @@ agentsRouter.get("/:id", (c) => {
 
 // ── Create ─────────────────────────────────────────────────────────
 
+/**
+ * Map a spawnAgent failure to an HTTP status.
+ *
+ * Extracted and exported so the mapping is testable without a PTY — the phrases
+ * are authored in agents/runtime.ts and matched here, a cross-file coupling.
+ * `assertAdoptable`'s messages are pinned end-to-end in external-cc-resume.test.ts;
+ * the inline throws in `spawnAgent` ("nothing to resume", "refusing to adopt",
+ * "already attached") are pinned only as string literals — reword THOSE and an
+ * actionable 4xx silently degrades to a 500, which the dashboard renders as a
+ * bare "HTTP 500" instead of the reason.
+ *
+ * ORDER MATTERS — several of these messages interpolate caller-supplied text (an
+ * adopt error embeds cwd and session id; the 409s embed the agent name), so any
+ * phrase can appear inside any message. The order puts the adopt-specific
+ * phrases ahead of the generic "not found", which is the hazard that actually
+ * bites: a cwd containing "not found" would otherwise flip a 422 into a 404. It
+ * is NOT injection-proof in the other direction — an agent literally named
+ * "nothing to resume" classifies 422, not 409. Accepted as low-risk.
+ *
+ * (Substring sniffing is fragile — typed Error subclasses plus a central
+ * onError would be the durable shape. Deliberately out of scope for this fix;
+ * extracting it here at least makes the current behavior verifiable.)
+ */
+export function spawnErrorStatus(message: string): 400 | 404 | 409 | 422 | 500 {
+  // Malformed or empty resume/fork id — a non-UUID resumeSessionId
+  // (assertAdoptable) or any of the three id fields present-but-empty/non-string
+  // (the spawnAgent boundary guard). A bad request, not a server fault.
+  if (message.includes("invalid session id")) return 400;
+  // Adopt preconditions: no saved conversation on disk, a provider that cannot
+  // adopt at all, or a probe we couldn't trust. Client-side situations — and
+  // never silently downgraded to a fresh session.
+  if (
+    message.includes("nothing to resume") ||
+    message.includes("refusing to adopt")
+  ) {
+    return 422;
+  }
+  // Client errors that previously fell through to 500. A 500 tells every other
+  // client (and any retry logic) "server fault, retry" for a request that can
+  // never succeed as-sent. "Invalid working directory" is the most commonly hit
+  // of these — any typo'd or deleted path, including a record whose worktree was
+  // removed by wt-sync.
+  if (
+    message.includes("Invalid working directory") ||
+    message.includes("Cannot use both")
+  ) {
+    return 400;
+  }
+  // Name collision with a live agent.
+  if (message.includes("already running")) return 409;
+  // Resuming a session whose agent is already live. `/attach` maps this exact
+  // condition to 409, so the create/resume path must agree — same user error,
+  // same status, whichever entry point they came through.
+  if (message.includes("already attached")) return 409;
+  if (message.includes("not found")) return 404;
+  return 500;
+}
+
 agentsRouter.post("/", async (c) => {
   let body: Record<string, unknown>;
   try {
@@ -178,17 +238,24 @@ agentsRouter.post("/", async (c) => {
     ? body.permissionMode
     : (tmpl?.permissionMode ?? DEFAULT_PERMISSION_MODE);
 
+  // NOTE: the present-but-empty resume/fork id check lives in `spawnAgent`, not
+  // here. It has to be at the shared boundary — the HTTP MCP handler calls
+  // spawnAgent directly and would bypass a route-level guard. It surfaces below
+  // via spawnErrorStatus as a 400.
   try {
     const result = await spawnAgent({
       workingDirectory: body.workingDirectory,
       name: typeof body.name === "string" ? body.name : undefined,
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
-      resumeAgentId:
-        typeof body.resumeAgentId === "string" ? body.resumeAgentId : undefined,
-      forkFromAgentId:
-        typeof body.forkFromAgentId === "string"
-          ? body.forkFromAgentId
-          : undefined,
+      // The three id fields are forwarded RAW (not coerced to undefined on a
+      // type mismatch) so spawnAgent's boundary guard can reject a present-but-
+      // malformed value. Coercing here would silently drop `resumeSessionId: 42`
+      // and answer a resume request with a brand-new empty agent.
+      resumeAgentId: body.resumeAgentId as UUID | undefined,
+      // Raw provider (CC) session id — reattach a managed record OR adopt an
+      // external terminal-started session. Distinct id-space from resumeAgentId.
+      resumeSessionId: body.resumeSessionId as string | undefined,
+      forkFromAgentId: body.forkFromAgentId as UUID | undefined,
       permissionMode,
       appendSystemPrompt: systemPrompt,
       template: templateName,
@@ -204,13 +271,11 @@ agentsRouter.post("/", async (c) => {
     return c.json(result.agent, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("already running")) {
-      return c.json({ error: message }, 409);
-    }
-    if (message.includes("not found")) {
-      return c.json({ error: message }, 404);
-    }
-    return c.json({ error: message }, 500);
+    // Typed status when the throw site declared one; substring chain otherwise.
+    return c.json(
+      { error: message },
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message),
+    );
   }
 });
 
@@ -331,7 +396,11 @@ agentsRouter.post("/:id/manager", async (c) => {
 
 agentsRouter.post("/:id/attach", async (c) => {
   const param = c.req.param("id");
-  const agent = resolveAgent(param);
+  // Resolve by agent id or name, then fall back to the CC providerSessionId.
+  // The Projects panel keys managed sessions by their CC session id, which for
+  // split-id agents (spawned post-#165, before id==providerSessionId was
+  // unified) is NOT the agent id — without this fallback those 404 on resume.
+  const agent = resolveAgent(param) ?? getAgentByProviderSessionId(param);
   if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
 
   try {
@@ -347,11 +416,16 @@ agentsRouter.post("/:id/attach", async (c) => {
     });
     return c.json(result.agent);
   } catch (err) {
+    // Same classifier as POST / — spawnErrorStatus's doc asserts the two entry
+    // points agree on a given user error, and a hand-rolled mapping here made
+    // that false: /attach passes `name: agent.name`, so a live namesake threw
+    // "already running" and returned 500 where POST returned 409.
     const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("already attached")) {
-      return c.json({ error: message }, 409);
-    }
-    return c.json({ error: message }, 500);
+    // Typed status when the throw site declared one; substring chain otherwise.
+    return c.json(
+      { error: message },
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message),
+    );
   }
 });
 
