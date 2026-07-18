@@ -8,8 +8,12 @@ import {
   _setConfigDirForTesting,
 } from "../configDir.js";
 import { claudeCodeProvider } from "../providers/claude-code.js";
-import { buildBaseEnv } from "../providers/shared.js";
-import { _resetServerStateForTesting, setServerPort } from "../serverState.js";
+import { buildBaseEnv, HOOK_CMD } from "../providers/shared.js";
+import {
+  _resetServerStateForTesting,
+  setInternalSocketPath,
+  setServerPort,
+} from "../serverState.js";
 
 /**
  * buildEnv contract after the Anthropic API-override removal:
@@ -39,6 +43,7 @@ describe("claudeCodeProvider.buildEnv — ANTHROPIC_* handling", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "autonomos-provider-env-"));
     _setConfigDirForTesting(tmpDir);
     setServerPort(53917);
+    setInternalSocketPath("/tmp/aos-test/control.sock");
     // Isolate from any ambient values on the host/CI runner.
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_AUTH_TOKEN;
@@ -106,6 +111,7 @@ describe("buildBaseEnv — host CLAUDE_CODE_* contamination strip", () => {
 
   before(() => {
     setServerPort(53918);
+    setInternalSocketPath("/tmp/aos-test/control.sock");
     for (const k of KEYS) saved[k] = process.env[k];
   });
 
@@ -141,9 +147,66 @@ describe("buildBaseEnv — host CLAUDE_CODE_* contamination strip", () => {
     assert.equal(env.AUTONOMOS_SERVER, "http://localhost:53918");
     assert.equal(env.AUTONOMOS_SESSION_ID, "agent-session-id");
     assert.equal(env.AUTONOMOS_AGENT_NAME, "Agent1");
+    assert.equal(
+      env.AUTONOMOS_INTERNAL_SOCKET,
+      "/tmp/aos-test/control.sock",
+      "hooks address the control plane by socket path, not by URL",
+    );
     assert.ok(
       env.PATH?.includes(".bun/bin"),
       "expected BINARY_DIRS prepended to PATH",
+    );
+  });
+
+  // ADR-055 layer 4. AUTONOMOS_SERVER used to serve BOTH planes: the hook
+  // relay's /api/hooks (internal) and statusline.mjs's /api/agents (public).
+  // Splitting them is the point — and a regression that re-merged them would
+  // be silent, because hook curls are `-sf >/dev/null 2>&1` and a broken
+  // statusline just renders nothing. Pin both ends.
+  it("keeps the public and internal planes on separate single-purpose vars", () => {
+    const env = buildBaseEnv("session-x", "Agent1");
+
+    // Public plane: an http URL on the real bound port. statusline.mjs reads
+    // this to GET /api/agents, which lives on the public listener.
+    assert.equal(env.AUTONOMOS_SERVER, "http://localhost:53918");
+    assert.ok(
+      env.AUTONOMOS_SERVER?.startsWith("http://"),
+      "statusline needs a dialable URL, not a socket path",
+    );
+
+    // Internal plane: a filesystem path for `curl --unix-socket`.
+    assert.equal(env.AUTONOMOS_INTERNAL_SOCKET, "/tmp/aos-test/control.sock");
+    assert.ok(
+      !env.AUTONOMOS_INTERNAL_SOCKET?.includes("://"),
+      "the control plane is addressed by socket path, not a URL",
+    );
+
+    // They must not be the same value — that collapse is the coupling this
+    // decoupling exists to prevent.
+    assert.notEqual(env.AUTONOMOS_SERVER, env.AUTONOMOS_INTERNAL_SOCKET);
+  });
+});
+
+describe("HOOK_CMD targets the internal socket", () => {
+  it("curls the control socket, not the public port", () => {
+    // Shell vars stay UNEXPANDED on purpose — they are interpolated by the
+    // agent's shell at hook time, from the env buildBaseEnv provides.
+    assert.ok(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting the literal shell var
+      HOOK_CMD.includes('--unix-socket "${AUTONOMOS_INTERNAL_SOCKET}"'),
+      `HOOK_CMD must dial the control socket. Got: ${HOOK_CMD}`,
+    );
+    assert.ok(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting the literal shell var
+      HOOK_CMD.includes('"http://localhost/api/hooks/${AUTONOMOS_SESSION_ID}"'),
+      "the URL host is a placeholder curl never resolves; --unix-socket routes it",
+    );
+    // The old public-port form must be gone: if AUTONOMOS_SERVER crept back
+    // into HOOK_CMD, hooks would ride the public listener again — where the
+    // route no longer exists and every post would silently 401/404.
+    assert.ok(
+      !HOOK_CMD.includes("AUTONOMOS_SERVER"),
+      "HOOK_CMD must not reference the PUBLIC base URL",
     );
   });
 });

@@ -97,6 +97,9 @@ const RESERVED_ENV_KEYS = new Set([
   "PATH",
   "HOME",
   "AUTONOMOS_SERVER",
+  // Reserved for the same reason as the rest: user-supplied customEnvVars must
+  // not be able to repoint the hook relay's control-plane destination.
+  "AUTONOMOS_INTERNAL_SOCKET",
   "AUTONOMOS_SESSION_ID",
   "AUTONOMOS_AGENT_NAME",
 ]);

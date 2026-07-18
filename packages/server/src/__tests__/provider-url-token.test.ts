@@ -14,6 +14,7 @@ import { buildBaseEnv } from "../providers/shared.js";
 import {
   _resetServerStateForTesting,
   setAuthToken,
+  setInternalSocketPath,
   setServerPort,
 } from "../serverState.js";
 
@@ -55,6 +56,7 @@ describe("Built-in mode URL + token forwarding", () => {
     _setConfigDirForTesting(tmpDir);
     setServerPort(53917);
     setAuthToken("test-token-1234567890abcdef");
+    setInternalSocketPath("/tmp/aos-test/control.sock");
   });
 
   after(() => {

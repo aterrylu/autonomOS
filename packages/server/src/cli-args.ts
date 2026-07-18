@@ -22,8 +22,10 @@ Options:
   --port=N        Listen on port N (default: 3000, env PORT)
   --host=H        Bind to interface H (env AUTONOMOS_HOST). Default: all
                   interfaces, so the dashboard is reachable over the network
-                  (Tailscale / IAP / SSH). Every API/WebSocket/MCP route requires
-                  the auth token; POST /api/hooks/* and GET /api/host do not yet.
+                  (Tailscale / IAP / SSH). Every API/WebSocket route requires
+                  the auth token; only GET /api/host does not yet. /mcp and hook
+                  ingestion are not served here at all — they live on the
+                  internal control socket ($configDir/control.sock).
                   Pass --host=127.0.0.1 to RESTRICT to loopback — e.g. a box you
                   only reach through an SSH tunnel. Use a loopback address, not
                   another specific IP: the post-install health check and the
