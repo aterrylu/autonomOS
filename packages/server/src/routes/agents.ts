@@ -27,6 +27,7 @@ import {
   childrenOf,
   deleteAgentRaw,
   getAgent,
+  getAgentByProviderSessionId,
   listAgents,
   patchAgent,
   resolveAgent,
@@ -178,6 +179,21 @@ agentsRouter.post("/", async (c) => {
     ? body.permissionMode
     : (tmpl?.permissionMode ?? DEFAULT_PERMISSION_MODE);
 
+  // A present-but-EMPTY resume/fork id means the caller intended to resume but
+  // lost the id somewhere. Every downstream dispatch is truthiness-based, so an
+  // empty string would silently fall through to a fresh spawn and return 201 —
+  // a resume request answered with a brand-new empty agent, no error anywhere.
+  for (const field of [
+    "resumeSessionId",
+    "resumeAgentId",
+    "forkFromAgentId",
+  ] as const) {
+    const value = body[field];
+    if (typeof value === "string" && value.trim() === "") {
+      return c.json({ error: `${field} was provided but empty` }, 400);
+    }
+  }
+
   try {
     const result = await spawnAgent({
       workingDirectory: body.workingDirectory,
@@ -185,6 +201,12 @@ agentsRouter.post("/", async (c) => {
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
       resumeAgentId:
         typeof body.resumeAgentId === "string" ? body.resumeAgentId : undefined,
+      // Raw provider (CC) session id — reattach a managed record OR adopt an
+      // external terminal-started session. Distinct id-space from resumeAgentId.
+      resumeSessionId:
+        typeof body.resumeSessionId === "string"
+          ? body.resumeSessionId
+          : undefined,
       forkFromAgentId:
         typeof body.forkFromAgentId === "string"
           ? body.forkFromAgentId
@@ -204,7 +226,33 @@ agentsRouter.post("/", async (c) => {
     return c.json(result.agent, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    // ORDER MATTERS: the adopt errors embed a caller-supplied cwd/session id, so
+    // a working directory containing the literal text "not found" would flip a
+    // 422 into a 404 if the generic check ran first. Test the specific,
+    // distinctive phrases BEFORE the generic ones. (Substring sniffing is
+    // fragile — typed Error subclasses + a central onError would be the durable
+    // shape here; deliberately out of scope for this fix.)
+    //
+    // Malformed resumeSessionId (not a UUID) — a bad request, not a 500.
+    if (message.includes("invalid session id")) {
+      return c.json({ error: message }, 400);
+    }
+    // Adopt preconditions: no saved conversation on disk, a provider that can't
+    // adopt at all, or a probe we couldn't trust. Client-side situations, not
+    // server faults — and never silently downgraded to a fresh session.
+    if (
+      message.includes("nothing to resume") ||
+      message.includes("refusing to adopt")
+    ) {
+      return c.json({ error: message }, 422);
+    }
     if (message.includes("already running")) {
+      return c.json({ error: message }, 409);
+    }
+    // Resuming a session whose agent is already live. `/attach` maps this exact
+    // condition to 409, so the create/resume path must agree — same user error,
+    // same status, whichever entry point they came through.
+    if (message.includes("already attached")) {
       return c.json({ error: message }, 409);
     }
     if (message.includes("not found")) {
@@ -331,7 +379,11 @@ agentsRouter.post("/:id/manager", async (c) => {
 
 agentsRouter.post("/:id/attach", async (c) => {
   const param = c.req.param("id");
-  const agent = resolveAgent(param);
+  // Resolve by agent id or name, then fall back to the CC providerSessionId.
+  // The Projects panel keys managed sessions by their CC session id, which for
+  // split-id agents (spawned post-#165, before id==providerSessionId was
+  // unified) is NOT the agent id — without this fallback those 404 on resume.
+  const agent = resolveAgent(param) ?? getAgentByProviderSessionId(param);
   if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
 
   try {

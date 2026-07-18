@@ -63,7 +63,7 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       resumeSessionId: {
         type: "string",
         description:
-          "Claude Code session ID to resume (for reconnecting to an existing agent)",
+          "Session id to resume: an autonomOS agent id OR a raw Claude Code session id — including an EXTERNAL session started via terminal `claude`. External sessions are adopted into a new managed agent and resumed.",
       },
       forkFrom: {
         type: "string",

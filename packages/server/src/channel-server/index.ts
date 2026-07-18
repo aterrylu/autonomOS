@@ -391,7 +391,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             workingDirectory,
             name: agentName,
             prompt,
-            resumeAgentId: resumeSessionId,
+            // Raw CC/agent session id — the server's polymorphic resolver
+            // reattaches a managed record or adopts an external CC session.
+            resumeSessionId,
             forkFromAgentId: forkFrom,
             // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
             permissionMode,

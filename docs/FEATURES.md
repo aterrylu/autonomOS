@@ -351,6 +351,7 @@ Session {
 | Approve/deny tools | Yes | No |
 | Interrupt | Yes | No |
 | Resume (after app restart) | Yes (via session ID) | N/A |
+| Resume into a managed agent | Yes (attach) | Yes (adopt → managed, see ADR-056) |
 | View cost/tokens | Yes (real-time) | Yes (from JSONL) |
 | Archive | Yes | Yes |
 

@@ -186,6 +186,20 @@ export function listAgents(): Agent[] {
   return Array.from(readCache().values());
 }
 
+/** Resolve an agent by its provider (CC/Codex) session id — the id CC writes
+ *  its JSONL under, NOT the internal agent UUID. Used by the resume-by-session
+ *  path so a raw CC session id (e.g. one discovered via listSessions, or a
+ *  migrated agent whose id != providerSessionId) maps back to its record.
+ *  O(N) over a small in-memory cache; only hit on the resume/adopt path. */
+export function getAgentByProviderSessionId(
+  providerSessionId: string,
+): Agent | undefined {
+  for (const a of readCache().values()) {
+    if (a.providerSessionId === providerSessionId) return a;
+  }
+  return undefined;
+}
+
 /** Resolve an agent by display name (case-insensitive).
  *  Returns the running candidate if multiple share a name, otherwise the
  *  most recently updated. Returns undefined if no match. */

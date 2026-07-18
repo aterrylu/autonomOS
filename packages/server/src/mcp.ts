@@ -97,7 +97,7 @@ function createMcpServer(): McpServer {
         .string()
         .optional()
         .describe(
-          "Agent id to resume (was: claudeSessionId). For migrated agents these are equal.",
+          "Session id to resume: an autonomOS agent id, OR a raw Claude Code session id — including an EXTERNAL session started via terminal `claude` (discovered in the Projects panel). External sessions are adopted into a new managed agent and resumed.",
         ),
       forkFrom: z
         .string()
@@ -173,7 +173,9 @@ function createMcpServer(): McpServer {
           workingDirectory: args.workingDirectory,
           prompt: args.prompt,
           name: args.name,
-          resumeAgentId: args.resumeSessionId,
+          // Polymorphic resolver in spawnAgent: reattaches a managed record
+          // (by agent id or providerSessionId) or adopts an external CC session.
+          resumeSessionId: args.resumeSessionId,
           forkFromAgentId: args.forkFrom,
           permissionMode,
           appendSystemPrompt: systemPrompt,
