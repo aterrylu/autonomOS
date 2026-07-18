@@ -139,6 +139,10 @@ export function DockviewLayout() {
   // highlight through them (the flicker). We gate the writeback while this is
   // set and apply only the FINAL active panel once the drag settles.
   const internalDragActive = useRef(false);
+  // Guards against settling the same internal drag twice — a mouse drag fires
+  // BOTH dragend and pointerup, and we only want one settle (one bindWorkspace +
+  // one writeback).
+  const settleScheduled = useRef(false);
 
   const activePane = useStore((s) => s.activePane);
   const sessions = useStore((s) => s.sessions);
@@ -230,6 +234,16 @@ export function DockviewLayout() {
         }
         api.getPanel(pane.id)?.api.setActive();
         appliedActiveId.current = pane.id;
+      } catch (err) {
+        // Last-ditch guard: showSolo()/setActive() throwing here would escape the
+        // restore effect and (with the ErrorBoundary) force a full "reset layout"
+        // screen. Instead clear the active pane so we land on the recoverable
+        // empty state — the user just re-picks an agent from the sidebar.
+        console.error(
+          `[autonomOS] syncToActive failed for pane ${pane.id}; clearing active pane to recover:`,
+          err,
+        );
+        useStore.getState().setActivePane(null);
       } finally {
         suppressWriteback.current = false;
       }
@@ -306,6 +320,20 @@ export function DockviewLayout() {
       const { pane } = data;
       const api = apiRef.current;
       if (!api) return;
+
+      // A drag can outlive the agent's exit — the sidebar only lists live agents,
+      // but the payload is captured at dragstart. Dropping a since-dead session
+      // would mount a broken terminal stuck in a perpetual WS reconnect loop
+      // (the same case store.fetchSessions filters out). Ignore it.
+      if (
+        pane.type === "session" &&
+        !useStore.getState().sessions.some((s) => s.id === pane.id)
+      ) {
+        console.warn(
+          `[autonomOS] ignored drop of dead session ${pane.id} (agent exited mid-drag)`,
+        );
+        return;
+      }
 
       // Already open — focus it, never add a duplicate (addPanel throws on dupe).
       const existing = api.getPanel(pane.id);
@@ -443,14 +471,23 @@ export function DockviewLayout() {
         ? (decodeDragData(raw)?.pane.id ?? null)
         : null;
     };
-    const onDragEnd = () => {
-      draggingPaneId.current = null;
-      if (!internalDragActive.current) return;
+    // Settle an internal dockview drag on its terminus. The html5 backend (mouse)
+    // fires a native `dragend`; the POINTER backend (touch / coarse-pointer /
+    // PWA) fires NO drag events at all, so we ALSO settle on pointerup/
+    // pointercancel — otherwise `internalDragActive` latches `true` forever after
+    // the first touch drag and active-pane tracking (sidebar highlight following
+    // taps) silently dies for the rest of the session. A plain tap with no drag
+    // in flight is a no-op (the flag is false).
+    const settleInternalDrag = () => {
+      if (!internalDragActive.current || settleScheduled.current) return;
+      settleScheduled.current = true;
       // Defer one frame so dockview has finished its drop/rebuild and
-      // api.activePanel + api.panels are final, then: clear the drag gate,
-      // write back the single final active panel (no flicker), and re-bind the
+      // api.activePanel + api.panels are final. Keep the drag gate up until then
+      // so transient mid-rebuild activations don't flicker the sidebar. Then:
+      // clear the gate, write back the single final active panel, and re-bind the
       // rearranged panes into their workspace so the change survives a switch.
       requestAnimationFrame(() => {
+        settleScheduled.current = false;
         internalDragActive.current = false;
         const api = apiRef.current;
         if (!api) return;
@@ -464,11 +501,19 @@ export function DockviewLayout() {
         st.setActivePane(paneFromId(id, previewIds));
       });
     };
+    const onDragEnd = () => {
+      draggingPaneId.current = null;
+      settleInternalDrag();
+    };
     document.addEventListener("dragstart", onDragStart);
     document.addEventListener("dragend", onDragEnd);
+    document.addEventListener("pointerup", settleInternalDrag);
+    document.addEventListener("pointercancel", settleInternalDrag);
     return () => {
       document.removeEventListener("dragstart", onDragStart);
       document.removeEventListener("dragend", onDragEnd);
+      document.removeEventListener("pointerup", settleInternalDrag);
+      document.removeEventListener("pointercancel", settleInternalDrag);
     };
   }, [bindWorkspace]);
 

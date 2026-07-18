@@ -7,6 +7,7 @@ import {
 } from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { isValidActivePane, SINGLETON_TYPES } from "./layout/dockview/paneId";
 
 // ── Desktop notifications ────────────────────────────────────────────
 
@@ -352,6 +353,75 @@ export type AgentIconStyle = "provider" | "status";
 export interface DvWorkspace {
   paneIds: string[];
   serialized: unknown;
+}
+
+/**
+ * Drop dead panes from every bound workspace and dissolve any group left with
+ * ≤1 member. Returns the next `{ workspaces, paneWorkspace }` maps, or `null`
+ * when nothing changed (so callers skip a needless `set`).
+ *
+ * Without this, a killed/exited member lingers in `dvWorkspaces[wsId].paneIds`
+ * forever: `syncToActive` then computes `desired` from that stale list, which can
+ * never match the live `current` panels, so EVERY click on a surviving member
+ * forces a full `fromJSON` teardown + terminal reconnect (the "every click
+ * rebuilds the whole group" bug). Mirrors `StatusTab.handleClose`, minus the
+ * dockview re-serialize (only the mounted layout can call `toJSON`) — the stale
+ * `serialized` blob self-heals via syncToActive's dead-panel strip on next restore.
+ */
+export function reconcileDeadWorkspaces(
+  workspaces: Record<string, DvWorkspace>,
+  paneWorkspace: Record<string, string>,
+  isDead: (paneId: string) => boolean,
+): {
+  workspaces: Record<string, DvWorkspace>;
+  paneWorkspace: Record<string, string>;
+} | null {
+  let changed = false;
+  const nextWs = { ...workspaces };
+  const nextPw = { ...paneWorkspace };
+  for (const [wsId, ws] of Object.entries(workspaces)) {
+    const remaining = ws.paneIds.filter((id) => !isDead(id));
+    if (remaining.length === ws.paneIds.length) continue; // no dead member here
+    changed = true;
+    // A group needs ≥2 members to exist; drop it entirely once ≤1 survives.
+    const dissolve = remaining.length <= 1;
+    // Unbind every id whose mapping still points at this workspace but which
+    // isn't in the surviving set (all ids if we dissolve).
+    const survivors = dissolve ? new Set<string>() : new Set(remaining);
+    if (dissolve) {
+      delete nextWs[wsId];
+    } else {
+      nextWs[wsId] = { paneIds: remaining, serialized: ws.serialized };
+    }
+    for (const id of ws.paneIds) {
+      if (!survivors.has(id) && nextPw[id] === wsId) delete nextPw[id];
+    }
+  }
+  return changed ? { workspaces: nextWs, paneWorkspace: nextPw } : null;
+}
+
+/**
+ * Pick the pane to focus when the active session `deadId` disappears: prefer a
+ * still-live sibling from its bound workspace (so a multi-pane split doesn't
+ * collapse to the empty "no agent" screen just because one member died), else
+ * the first other live session, else `null`. `liveSessionIds` must already
+ * exclude `deadId`.
+ */
+export function pickActiveFallback(
+  deadId: string,
+  workspaces: Record<string, DvWorkspace>,
+  paneWorkspace: Record<string, string>,
+  liveSessionIds: string[],
+): ActivePane | null {
+  const live = new Set(liveSessionIds);
+  const wsId = paneWorkspace[deadId];
+  const ws = wsId ? workspaces[wsId] : undefined;
+  if (ws) {
+    const sibling = ws.paneIds.find((id) => id !== deadId && live.has(id));
+    if (sibling) return { type: "session", id: sibling };
+  }
+  const next = liveSessionIds.find((id) => id !== deadId);
+  return next ? { type: "session", id: next } : null;
 }
 
 interface AppState {
@@ -744,13 +814,43 @@ export const useStore = create<AppState>()(
               }),
             });
 
-            const { activePane } = get();
-            if (
-              activePane?.type === "session" &&
-              !sessions.some((s) => s.id === activePane.id)
-            ) {
-              set({ activePane: null, status: "disconnected" });
+            const liveIds = new Set(sessions.map((s) => s.id));
+            const { activePane, dvWorkspaces, dvPaneWorkspace, previewPanes } =
+              get();
+
+            // If the pane we're viewing just died, fall back to a live sibling
+            // from its group (or any live session) instead of blanking the dock.
+            // Compute this BEFORE reconcile, which may dissolve the group.
+            if (activePane?.type === "session" && !liveIds.has(activePane.id)) {
+              const fallback = pickActiveFallback(
+                activePane.id,
+                dvWorkspaces,
+                dvPaneWorkspace,
+                sessions.map((s) => s.id),
+              );
+              set(
+                fallback
+                  ? { activePane: fallback, status: "connected" }
+                  : { activePane: null, status: "disconnected" },
+              );
             }
+
+            // Drop dead members from bound workspaces so surviving members don't
+            // trigger a full teardown/rebuild on every click (see helper).
+            const previewIds = new Set(previewPanes.map((p) => p.id));
+            const reconciled = reconcileDeadWorkspaces(
+              dvWorkspaces,
+              dvPaneWorkspace,
+              (paneId) =>
+                !SINGLETON_TYPES.has(paneId) &&
+                !previewIds.has(paneId) &&
+                !liveIds.has(paneId),
+            );
+            if (reconciled)
+              set({
+                dvWorkspaces: reconciled.workspaces,
+                dvPaneWorkspace: reconciled.paneWorkspace,
+              });
           } else if (!get().sessionsInitialFetchDone) {
             // No change in session arrays (both empty) but this was the
             // first successful fetch — flip the flag so App.tsx can act
@@ -919,12 +1019,39 @@ export const useStore = create<AppState>()(
           );
         },
         killSession: async (id) => {
-          await fetch(`/api/agents/${id}/kill`, { method: "POST" }).catch(
-            () => null,
-          );
-          const { activePane } = get();
+          const res = await fetch(`/api/agents/${id}/kill`, {
+            method: "POST",
+          }).catch(() => null);
+          // Only give optimistic feedback if the kill was actually accepted —
+          // otherwise the agent is still alive and retargeting would fake a
+          // success the next fetchSessions() would silently reverse.
+          if (!res?.ok) {
+            console.error(
+              `[autonomOS] killSession failed for ${id}:`,
+              res ? `HTTP ${res.status}` : "network error",
+            );
+            await get().fetchSessions();
+            return;
+          }
+          const { activePane, sessions, dvWorkspaces, dvPaneWorkspace } = get();
           if (activePane?.type === "session" && activePane.id === id) {
-            set({ activePane: null, status: "disconnected" });
+            // Immediate feedback: retarget to a live sibling/session rather than
+            // blanking the dock. fetchSessions() below reconciles the workspace
+            // maps once the server confirms the kill.
+            const liveIds = sessions
+              .filter((s) => s.id !== id)
+              .map((s) => s.id);
+            const fallback = pickActiveFallback(
+              id,
+              dvWorkspaces,
+              dvPaneWorkspace,
+              liveIds,
+            );
+            set(
+              fallback
+                ? { activePane: fallback, status: "connected" }
+                : { activePane: null, status: "disconnected" },
+            );
           }
           await get().fetchSessions();
         },
@@ -1152,6 +1279,18 @@ export const useStore = create<AppState>()(
           // If the order array is empty, it hasn't been initialized yet.
           // The caller should pass the current name list first time.
           if (order.length === 0) return;
+          // Bounds guard (mirrors reorderFlat): a drop with stale indices — the
+          // sibling list changed mid-drag (agent added/removed/renamed) — would
+          // otherwise splice `undefined` into the persisted order, poisoning
+          // hierarchyOrder[groupKey] with an entry matching no agent. No-op instead.
+          if (
+            fromIndex < 0 ||
+            toIndex < 0 ||
+            fromIndex >= order.length ||
+            toIndex >= order.length ||
+            fromIndex === toIndex
+          )
+            return;
           const [moved] = order.splice(fromIndex, 1);
           order.splice(toIndex, 0, moved);
           set({ hierarchyOrder: { ...prev, [groupKey]: order } });
@@ -1310,7 +1449,14 @@ export const useStore = create<AppState>()(
               v &&
               typeof v === "object" &&
               Array.isArray((v as DvWorkspace).paneIds) &&
-              (v as DvWorkspace).paneIds.every((id) => typeof id === "string")
+              (v as DvWorkspace).paneIds.every(
+                (id) => typeof id === "string",
+              ) &&
+              // serialized is dockview's SerializedDockview (always an object
+              // from api.toJSON()); reject a primitive/null blob so it can't
+              // reach api.fromJSON() and throw during restore.
+              typeof (v as DvWorkspace).serialized === "object" &&
+              (v as DvWorkspace).serialized !== null
             ) {
               clean[k] = v as DvWorkspace;
             } else {
@@ -1377,11 +1523,21 @@ export const useStore = create<AppState>()(
         if (Array.isArray(saved?.previewPanes))
           merged.previewPanes = saved.previewPanes as PreviewPaneInfo[];
 
-        // Migrate old sessionId → activePane
-        if (saved?.activePane && typeof saved.activePane === "object") {
-          merged.activePane = saved.activePane as ActivePane;
+        // Migrate old sessionId → activePane. Validate the persisted shape:
+        // activePane is the one layout field that reaches dockview's
+        // addPanel({ id }) on restore, so a malformed blob (legacy shape, blank
+        // id) must degrade to "no active pane" rather than throw every reload.
+        if (isValidActivePane(saved?.activePane)) {
+          merged.activePane = saved.activePane;
         } else if (typeof saved?.sessionId === "string") {
           merged.activePane = { type: "session", id: saved.sessionId };
+        } else {
+          // Log only when a value was actually present but rejected — mirrors the
+          // malformed-workspace warning above so a non-restoring last-viewed pane
+          // is diagnosable; a legitimately-absent value stays quiet.
+          if (saved?.activePane != null)
+            console.warn("[autonomOS] Dropping malformed persisted activePane");
+          merged.activePane = null;
         }
 
         // Flat-view order. New keys (pinnedOrder/unpinnedOrder) win when
