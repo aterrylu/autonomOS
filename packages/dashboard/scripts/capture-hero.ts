@@ -124,12 +124,9 @@ interface Caps {
 const onPath = (bin: string): boolean =>
   spawnSync("which", [bin], { encoding: "utf-8" }).status === 0;
 
-function detectCaps(): Caps {
-  if (!onPath("claude")) {
-    throw new Error("`claude` not on PATH — required to render the base scene.");
-  }
-  // Claude creds: a keychain read (does NOT prompt for the Claude item) or the
-  // on-disk credentials file. Either is enough for a real turn.
+/** Read the current Claude OAuth token from the macOS keychain (does NOT prompt
+ *  for the Claude item). Returns the trimmed JSON blob, or null if absent. */
+function readClaudeKeychainToken(): string | null {
   const kc = spawnSync(
     "security",
     [
@@ -142,9 +139,19 @@ function detectCaps(): Caps {
     ],
     { encoding: "utf-8", timeout: 3_000 },
   );
+  if (kc.status !== 0) return null;
+  const out = kc.stdout.trim();
+  return out.startsWith("{") ? out : null;
+}
+
+function detectCaps(): Caps {
+  if (!onPath("claude")) {
+    throw new Error("`claude` not on PATH — required to render the base scene.");
+  }
+  // Claude creds: a keychain read (does NOT prompt for the Claude item) or the
+  // on-disk credentials file. Either is enough for a real turn.
   const claudeCreds =
-    (kc.status === 0 && kc.stdout.trim().startsWith("{")) ||
-    existsSync(REAL_CLAUDE_CREDS);
+    readClaudeKeychainToken() !== null || existsSync(REAL_CLAUDE_CREDS);
   const codex = onPath("codex") && existsSync(join(REAL_CODEX_DIR, "auth.json"));
   const gemini = onPath("gemini");
 
@@ -372,8 +379,10 @@ function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
         });
         const member = canned.find((m) => raw.includes(m.mock!.matchKey));
         if (member) {
-          served.set(member.name, (served.get(member.name) ?? 0) + 1);
           streamText(res, member.mock!.reply);
+          // Count only after the stream completed (res.end inside streamText) —
+          // a throw mid-stream must NOT mark the turn as rendered.
+          served.set(member.name, (served.get(member.name) ?? 0) + 1);
         } else {
           streamText(res, "Standing by.");
         }
@@ -382,8 +391,8 @@ function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{}");
     });
-    req.on("error", () => {});
-    res.on("error", () => {});
+    req.on("error", (err) => console.warn(`mock: request error: ${err.message}`));
+    res.on("error", (err) => console.warn(`mock: response error: ${err.message}`));
   });
 
   return new Promise((resolveFn) => {
@@ -444,6 +453,16 @@ interface DemoServer {
   kill: () => void;
 }
 
+/** Temp dirs + child registered AS bootServer creates them, so a throw or
+ *  Ctrl-C mid-boot (before a full DemoServer exists) can still reap the
+ *  partially-constructed, credential-bearing state. */
+interface Resources {
+  configDir?: string;
+  fakeHome?: string;
+  workspace?: string;
+  child?: ChildProcess;
+}
+
 let shuttingDown = false;
 
 /** Copy the current Claude keychain OAuth token into the fake home's
@@ -451,20 +470,9 @@ let shuttingDown = false;
  *  real store. Best-effort: warns and continues if nothing is found. */
 function seedClaudeToken(fakeHome: string): void {
   const dst = join(fakeHome, ".claude", ".credentials.json");
-  const fresh = spawnSync(
-    "security",
-    [
-      "find-generic-password",
-      "-s",
-      "Claude Code-credentials",
-      "-a",
-      process.env.USER ?? "",
-      "-w",
-    ],
-    { encoding: "utf-8", timeout: 3_000 },
-  );
-  if (fresh.status === 0 && fresh.stdout.trim().startsWith("{")) {
-    writeFileSync(dst, fresh.stdout.trim());
+  const fresh = readClaudeKeychainToken();
+  if (fresh) {
+    writeFileSync(dst, fresh);
     chmodSync(dst, 0o600);
     console.log("Seeded fake HOME with the current keychain OAuth token (Claude)");
   } else if (existsSync(REAL_CLAUDE_CREDS)) {
@@ -480,8 +488,10 @@ async function bootServer(
   workspace: string,
   caps: Caps,
   mockUrl: string | undefined,
+  resources: Resources,
 ): Promise<DemoServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-demo-"));
+  resources.configDir = configDir; // register for interrupt-safe cleanup
   const token = `demo-${Math.random().toString(36).slice(2, 10)}`;
 
   writeFileSync(
@@ -498,6 +508,7 @@ async function bootServer(
   // demo agents' session state here. Seed onboarding + bypass flags so a fresh
   // claude skips prompts.
   const fakeHome = mkdtempSync(join(tmpdir(), "autonomos-demo-home-"));
+  resources.fakeHome = fakeHome; // register BEFORE seeding creds into it
   mkdirSync(join(fakeHome, ".claude", "projects"), { recursive: true });
   writeFileSync(
     join(fakeHome, ".claude.json"),
@@ -590,6 +601,7 @@ async function bootServer(
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  resources.child = child; // register so a readiness-timeout throw won't orphan it
 
   const out: string[] = [];
   child.stdout?.on("data", (d: Buffer) => out.push(d.toString()));
@@ -692,13 +704,11 @@ async function warmUsage(server: DemoServer, label: string): Promise<void> {
       "/api/plugins/claude-usage",
     );
     const b = body as { error?: string; needsSetup?: boolean; fiveHour?: unknown };
-    const summary = b.error
-      ? `error: ${b.error}`
-      : b.needsSetup
-        ? "needsSetup"
-        : b.fiveHour
-          ? `fiveHour=${JSON.stringify(b.fiveHour)}`
-          : "no-data";
+    let summary: string;
+    if (b.error) summary = `error: ${b.error}`;
+    else if (b.needsSetup) summary = "needsSetup";
+    else if (b.fiveHour) summary = `fiveHour=${JSON.stringify(b.fiveHour)}`;
+    else summary = "no-data";
     console.log(`  claude-usage[${label}] ${status}: ${summary}`);
   } catch (err) {
     console.warn(`  claude-usage[${label}] failed: ${err}`);
@@ -717,13 +727,12 @@ async function warmCodexUsage(server: DemoServer, label: string): Promise<void> 
       primary?: unknown;
       secondary?: unknown;
     };
-    const summary = b.error
-      ? `error: ${b.error}`
-      : b.needsData
-        ? "needsData"
-        : b.primary || b.secondary
-          ? `primary=${JSON.stringify(b.primary)} secondary=${JSON.stringify(b.secondary)}`
-          : "no-windows";
+    let summary: string;
+    if (b.error) summary = `error: ${b.error}`;
+    else if (b.needsData) summary = "needsData";
+    else if (b.primary || b.secondary)
+      summary = `primary=${JSON.stringify(b.primary)} secondary=${JSON.stringify(b.secondary)}`;
+    else summary = "no-windows";
     console.log(`  codex-usage[${label}] ${status}: ${summary}`);
   } catch (err) {
     console.warn(`  codex-usage[${label}] failed: ${err}`);
@@ -817,6 +826,12 @@ async function stageScene(
 
   // Wait for the two SHOWN turns to render. Per visible agent: Codex → rollout
   // agent_message; real Claude → assistant JSONL; mock Claude → served count.
+  //
+  // FUTURE HARDENING (deferred follow-ups, tracked separately):
+  //   #2 scope each turn check to THIS agent's session-id instead of the current
+  //      any-assistant-JSONL / any-codex-rollout scan (a coarse OR across agents).
+  //   #4 assert the terminal panes actually rendered non-empty CONTENT (not just
+  //      that a turn was recorded server-side) before capturing.
   const visible = cast.filter((m) => m.visible);
   const turnOk = (m: CastMember): boolean => {
     if (m.provider === "codex") return codexProducedOutput(server.fakeHome);
@@ -826,11 +841,23 @@ async function stageScene(
   console.log(`Waiting for ${visible.length} shown turns to render…`);
   const start = Date.now();
   const deadline = start + 200_000;
+  let allRendered = false;
   while (Date.now() < deadline) {
     const done = visible.map((m) => `${m.name}=${turnOk(m) ? "y" : "n"}`);
     console.log(`  turns: ${done.join(" ")} t=${((Date.now() - start) / 1000).toFixed(0)}s`);
-    if (visible.every(turnOk)) break;
+    if (visible.every(turnOk)) {
+      allRendered = true;
+      break;
+    }
     await sleep(3_000);
+  }
+  if (!allRendered) {
+    // Loud failure beats a blank committed hero — never screenshot empty panes.
+    const map = visible.map((m) => `${m.name}=${turnOk(m) ? "y" : "n"}`).join(" ");
+    throw new Error(
+      `Shown turns did not render within ${((deadline - start) / 1000).toFixed(0)}s (${map}).\n` +
+        `--- server logs ---\n${server.logs()}`,
+    );
   }
   await sleep(8_000); // let the TUIs paint + settle
 
@@ -958,7 +985,15 @@ async function shoot(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   server: DemoServer,
   seed: string,
-  opts: { file: string; waitOrgNodes: number; settleMs: number },
+  opts: {
+    file: string;
+    waitOrgNodes: number;
+    settleMs: number;
+    /** Minimum dockview panes + xterm terminals that must exist before the
+     *  screenshot — the guard against a drifted blob degrading to a solo pane. */
+    expectPanes: number;
+    expectTerminals: number;
+  },
 ): Promise<void> {
   const context = await browser.newContext({
     viewport: VIEWPORT,
@@ -978,6 +1013,16 @@ async function shoot(
 
     const page = await context.newPage();
 
+    // If seedBlob3 drifts from the dockview schema, api.fromJSON throws IN the
+    // browser, DockviewLayout degrades to a solo pane and only logs to the
+    // browser console — which a screenshot would silently bless. Capture that
+    // line and fail the run. (Guards the "a future agent changes the UI" case.)
+    let dockviewError: string | null = null;
+    page.on("console", (msg) => {
+      const t = msg.text();
+      if (t.includes("dockview workspace restore failed")) dockviewError = t;
+    });
+
     // Rewrite /api/host → generic "dev-server" (preserve the rest of the shape
     // so the health probe stays green and dashboardFreshness matches).
     await page.route("**/api/host", async (route) => {
@@ -988,7 +1033,11 @@ async function shoot(
           response: res,
           json: { ...body, hostname: "dev-server" },
         });
-      } catch {
+      } catch (err) {
+        console.warn(
+          `/api/host route-mock: upstream fetch failed, sending minimal ` +
+            `{hostname} body (dashboardFreshness check may not match): ${err}`,
+        );
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -1012,6 +1061,27 @@ async function shoot(
     await sleep(opts.settleMs);
     // Re-assert the overrides in case a late re-render re-inlined opacity.
     await page.addStyleTag({ content: UNDIM_CSS + ORG_FIT_CSS });
+
+    // Drift guards — fail loudly instead of committing a broken hero.
+    if (dockviewError) {
+      throw new Error(
+        `dockview workspace restore failed in-browser (blob drift → solo ` +
+          `fallback): ${dockviewError}`,
+      );
+    }
+    const dom = await page.evaluate(() => ({
+      panes: document.querySelectorAll(".dv-pane-fill").length,
+      terminals: document.querySelectorAll(".xterm").length,
+    }));
+    if (dom.panes < opts.expectPanes || dom.terminals < opts.expectTerminals) {
+      throw new Error(
+        `Layout drift: expected ≥${opts.expectPanes} dockview panes and ` +
+          `≥${opts.expectTerminals} terminals, got panes=${dom.panes} ` +
+          `terminals=${dom.terminals} — the dockview blob likely degraded to a ` +
+          `solo pane. Refusing to screenshot.`,
+      );
+    }
+
     await page.screenshot({ path: join(OUT_DIR, opts.file) });
     console.log(`  ✓ ${opts.file}`);
   } finally {
@@ -1050,6 +1120,9 @@ async function captureWeb(
         file: "hero.png",
         waitOrgNodes: Math.min(cast.length - 1, 5),
         settleMs: 10_000,
+        // org chart + 2 terminals; both terminal panes must have rendered.
+        expectPanes: 3,
+        expectTerminals: 2,
       },
     );
   } finally {
@@ -1063,7 +1136,8 @@ function descendantPids(rootPid: number): number[] {
   let out: string;
   try {
     out = spawnSync("ps", ["-Ao", "pid,ppid"], { encoding: "utf-8" }).stdout;
-  } catch {
+  } catch (err) {
+    console.warn(`teardown: descendantPids ps failed (tree sweep skipped): ${err}`);
     return [];
   }
   const children = new Map<number, number[]>();
@@ -1095,7 +1169,11 @@ function fakeHomePids(fakeHome: string): number[] {
   let listing: string;
   try {
     listing = spawnSync("ps", ["-Ao", "pid,command"], { encoding: "utf-8" }).stdout;
-  } catch {
+  } catch (err) {
+    console.warn(
+      `teardown: fakeHomePids ps failed (fake-HOME PID sweep skipped — ` +
+        `leftover procs possible): ${err}`,
+    );
     return [];
   }
   const candidates: number[] = [];
@@ -1199,38 +1277,89 @@ async function teardown(
   }
 }
 
+/** Cleanup for a PARTIALLY-constructed run — a throw or Ctrl-C during boot,
+ *  before a full DemoServer exists. Mirrors teardown's child-kill + HOME-scoped
+ *  PID sweep + temp-dir removal, minus the agent-API deletes (no reachable
+ *  server). Scoped by PID + HOME===fakeHome — never by name — so the operator's
+ *  real agents are untouched. Removes the credential-bearing temp dirs. */
+async function bestEffortReap(r: Resources): Promise<void> {
+  shuttingDown = true;
+  console.log("Interrupted/failed during boot — best-effort cleanup…");
+
+  const child = r.child;
+  const treePids = child?.pid !== undefined ? descendantPids(child.pid) : [];
+
+  try {
+    if (child && child.exitCode === null) {
+      const exited = new Promise<void>((res) => child.once("exit", () => res()));
+      child.kill("SIGTERM");
+      const result = await Promise.race([
+        exited.then(() => "exited" as const),
+        sleep(3_000).then(() => "timeout" as const),
+      ]);
+      if (result === "timeout") {
+        child.kill("SIGKILL");
+        await Promise.race([exited, sleep(1_500)]);
+      }
+    }
+  } catch (err) {
+    console.warn(`cleanup: child kill failed: ${err}`);
+  }
+
+  await sleep(400);
+  if (r.fakeHome) {
+    for (const pid of fakeHomePids(r.fakeHome)) {
+      try {
+        process.kill(pid, "SIGKILL");
+        console.warn(`cleanup: reaped fake-HOME pid ${pid}`);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  for (const pid of treePids) {
+    try {
+      process.kill(pid, 0);
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* gone */
+    }
+  }
+
+  for (const dir of [r.configDir, r.fakeHome, r.workspace]) {
+    if (!dir) continue;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`cleanup: rm ${dir} failed: ${err}`);
+    }
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   const caps = detectCaps();
   const cast = buildCast(caps);
 
-  if (!existsSync(join(DASHBOARD_DIR, "dist/index.html"))) {
-    console.log("Dashboard dist missing — building…");
-    const r = spawnSync("bun", ["run", "build"], {
-      cwd: DASHBOARD_DIR,
-      stdio: "inherit",
-    });
-    if (r.status !== 0) throw new Error("dashboard build failed");
-  }
-  mkdirSync(OUT_DIR, { recursive: true });
-
-  const workspace = makeDemoWorkspace();
-  // Mock is booted whenever Claude has no creds (drives Claude's canned turns).
-  const mock = caps.claudeCreds ? null : await startDemoMock(cast);
-  const server = await bootServer(workspace, caps, mock?.url);
-  console.log(
-    `Demo server: http://127.0.0.1:${server.port} (config: ${server.configDir})`,
-  );
-
+  // These are populated as boot proceeds; cleanup reads whatever exists so an
+  // interrupt during boot never leaks temp dirs (with seeded creds) or orphans.
+  const resources: Resources = {};
+  let server: DemoServer | undefined;
+  let mock: DemoMock | null = null;
   let agents: AgentInfo[] = [];
   let cleanedUp = false;
+  let cleanupPromise: Promise<void> | undefined;
+
   const cleanup = async (): Promise<void> => {
     if (cleanedUp) return;
     cleanedUp = true;
     try {
-      await teardown(server, agents, workspace);
+      // Full path when a reachable server exists (agent-API deletes + sweep);
+      // otherwise the partial-boot reaper (fs + PID cleanup only).
+      if (server) await teardown(server, agents, resources.workspace ?? "");
+      else await bestEffortReap(resources);
     } catch (err) {
-      console.error("teardown failed:", err);
+      console.error("cleanup failed:", err);
     }
     try {
       await mock?.close();
@@ -1239,14 +1368,41 @@ async function main(): Promise<void> {
     }
   };
 
+  // Install signal handlers BEFORE any temp-dir / credential-copy / spawn work,
+  // so a Ctrl-C during boot still reaps partial resources. A SECOND signal while
+  // cleanup is in flight is ignored (and logged) rather than aborting cleanup
+  // mid-way with process.exit.
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
+      if (cleanupPromise) {
+        console.log(`\n${sig} — cleanup already in progress, please wait…`);
+        return;
+      }
       console.log(`\n${sig} — tearing down…`);
-      void cleanup().then(() => process.exit(130));
+      cleanupPromise = cleanup().finally(() => process.exit(130));
     });
   }
 
   try {
+    if (!existsSync(join(DASHBOARD_DIR, "dist/index.html"))) {
+      console.log("Dashboard dist missing — building…");
+      const r = spawnSync("bun", ["run", "build"], {
+        cwd: DASHBOARD_DIR,
+        stdio: "inherit",
+      });
+      if (r.status !== 0) throw new Error("dashboard build failed");
+    }
+    mkdirSync(OUT_DIR, { recursive: true });
+
+    const workspace = makeDemoWorkspace();
+    resources.workspace = workspace;
+    // Mock is booted whenever Claude has no creds (drives Claude's canned turns).
+    mock = caps.claudeCreds ? null : await startDemoMock(cast);
+    server = await bootServer(workspace, caps, mock?.url, resources);
+    console.log(
+      `Demo server: http://127.0.0.1:${server.port} (config: ${server.configDir})`,
+    );
+
     agents = await stageScene(
       server,
       cast,
@@ -1262,7 +1418,9 @@ async function main(): Promise<void> {
       await new Promise(() => {});
     }
   } catch (err) {
-    console.error(`Run failed — server logs:\n${server.logs()}`);
+    console.error(
+      `Run failed — server logs:\n${server?.logs() ?? "(server not started)"}`,
+    );
     throw err;
   } finally {
     if (!KEEP_ALIVE) await cleanup();
