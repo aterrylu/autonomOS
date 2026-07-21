@@ -137,6 +137,11 @@ All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When
 ### Session Naming
 CC owns session names via JSONL `customTitle`. `titleCache.ts` reads them (256KB tail scan, mtime-cached). The `--name` flag sets the initial name at spawn. `/rename` updates it. The titleCache is more reliable than the SDK's `listSessions()` (which only reads 64KB).
 
+### README Hero Image (keep it current)
+The README's hero screenshot (`docs/assets/hero.png`) is generated, not hand-captured. It's produced by `make hero` (→ `packages/dashboard/scripts/capture-hero.ts`), which boots an isolated demo instance (own config dir + fake HOME + ephemeral port — never touches `:3100`), stages a multi-agent scene (org chart across Claude Code / Codex / Gemini, live terminals, both usage bars), and screenshots it via headless Chrome.
+
+**If you change the dashboard UI, re-run `make hero` and commit the updated `docs/assets/hero.png`** — otherwise the front-page hero drifts from the real product. This applies to any visible change: layout/dockview, sidebar, org chart, status bar, terminal chrome, themes, provider icons, usage bars. The script header documents prerequisites (a `claude` binary; optional Codex/Gemini auth for those panes) and the capture-time tweaks it applies. Re-shoots are *similar, not pixel-identical* (the Codex/Claude turns are real).
+
 ### Development Philosophy
 - **Personal tool first** — ship for Terry, generalize later
 - **Both paths share core** — abstractions should work for dev agents AND robots
@@ -148,6 +153,7 @@ CC owns session names via JSONL `customTitle`. `titleCache.ts` reads them (256KB
 - Don't ignore existing research — check RESEARCH.md before investigating something
 - Don't over-engineer for the robot path yet — it's aspirational
 - Don't define MCP tool schemas directly in `mcp.ts` or `channel-server/index.ts` — they go in `mcp/tools.ts`
+- Don't ship a visible dashboard UI change without re-running `make hero` — the README hero (`docs/assets/hero.png`) must reflect the real product
 
 ## Agent Workflow
 

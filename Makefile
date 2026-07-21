@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy doctor
+.PHONY: dev prod stop restart logs down check fmt deploy doctor hero
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -133,3 +133,11 @@ check:
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) --test packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && node_modules/.bin/vitest run
+
+# ── hero: regenerate the README hero screenshot (docs/assets/hero.png) ───────────────
+# Boots an isolated demo instance (own config dir + fake HOME + ephemeral port,
+# never :3100), stages the multi-agent scene, and captures via headless Chrome.
+# RE-RUN THIS AFTER ANY DASHBOARD UI CHANGE so the README hero stays accurate.
+# See packages/dashboard/scripts/capture-hero.ts for prerequisites + details.
+hero:
+	bun --cwd packages/dashboard run capture-hero
