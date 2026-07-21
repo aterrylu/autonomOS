@@ -2,7 +2,7 @@
 # autonomOS installer.
 #
 # Usage:
-#   curl -fsSL https://autonomos.dev/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh | bash
 #
 # Environment variables (for advanced / hermetic-test invocation):
 #   INSTALL_PREFIX        Install root (default: $HOME/.local)

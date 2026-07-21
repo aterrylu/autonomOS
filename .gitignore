@@ -25,3 +25,11 @@ packages/dashboard/.playwright/
 # single root CHANGELOG.md (assembled by scripts/sync-changelog.ts) is the
 # canonical product history. See .changeset/README.md.
 packages/*/CHANGELOG.md
+
+# Ad-hoc QA / dev screenshots dropped in the repo root during sessions — they
+# accumulate and clutter `git status`. Committed images live in docs/assets/,
+# not the root, so a root-only ignore is safe. (Existing stray root PNGs can be
+# deleted anytime; this just keeps new ones out of the way.)
+/*.png
+/*.gif
+
