@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-e6b450.svg)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/aterrylu/autonomOS?color=626a73)](https://github.com/aterrylu/autonomOS/commits/main)
 [![Stars](https://img.shields.io/github/stars/aterrylu/autonomOS?color=e6b450)](https://github.com/aterrylu/autonomOS/stargazers)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-91b362.svg)](https://github.com/aterrylu/autonomOS/pulls)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-91b362.svg)](CONTRIBUTING.md)
 
 ![Claude Code · Codex · Gemini](https://img.shields.io/badge/Claude_Code_·_Codex_·_Gemini-0a0e14.svg)
 
@@ -155,7 +155,7 @@ each agent its identity, its teammates, and MCP tools to coordinate. See
 
 ## Contributing
 
-Issues and PRs welcome — open one on [GitHub](https://github.com/aterrylu/autonomOS/issues).
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 ## License
 
