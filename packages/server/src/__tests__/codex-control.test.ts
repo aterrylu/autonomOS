@@ -7,6 +7,7 @@ import {
   disposeCodexControl,
   formatInbound,
   setCodexInboundNotifier,
+  startCodexStatusWatch,
 } from "../gateway/codexControl.js";
 import {
   captureLogs,
@@ -306,5 +307,77 @@ describe("codex inbound delivery observability", () => {
     });
 
     assert.deepEqual(daemon.injected, ["first", "second"]);
+  });
+});
+
+/**
+ * Two escalation paths that were unreachable or one-shot. Both are BEHAVIOR,
+ * not logging, which is why they get their own coverage: a notification that
+ * can never fire is indistinguishable from a healthy system.
+ */
+describe("codex control escalation", () => {
+  const AGENT = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const ENDPOINT = "ws://127.0.0.1:1/fake";
+  let installed: FakeCodexDaemon | null = null;
+
+  afterEach(() => {
+    _resetCodexControlForTesting();
+    installed?.restore();
+    installed = null;
+  });
+
+  it("warns when the daemon accepts the socket but never answers thread/read", async () => {
+    // The regression: queryIdle swallows read failures and returns null, so the
+    // statusLoop catch never ran and `statusFailures` reset to 0 every cycle —
+    // the "status feed unreadable" warning could NEVER fire for the likeliest
+    // daemon failure of all, and the dashboard would freeze silently in the
+    // reconciler built to prevent exactly that.
+    installed = installFakeCodexDaemon();
+    installed.failThreadRead = true; // socket fine, reads fail
+    _setCodexTimingsForTesting({ statusPollMs: 10, idlePollMs: 5 });
+    const notes: string[] = [];
+    setCodexInboundNotifier((_id, message) => notes.push(message));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      await waitUntil(
+        () => notes.length > 0,
+        "the status-feed-unreadable notification",
+        3_000,
+      );
+    });
+
+    assert.match(notes[0], /Live status for this Codex agent is unavailable/);
+  });
+
+  it("re-notifies on a backoff instead of once per controller lifetime", async () => {
+    // `=== FAILURES_BEFORE_WARN` meant an agent wedged at hour 0 produced ONE
+    // warning; at hour 6, with a deeper queue, nothing re-raised and the queue
+    // depth in the original text was frozen at its failure-#3 value.
+    installed = installFakeCodexDaemon();
+    installed.threadIds = []; // no thread ever appears -> drain keeps failing
+    _setCodexTimingsForTesting({
+      threadWaitMs: 20,
+      threadPollMs: 5,
+      retryBackoffMs: 10,
+      statusPollMs: 5_000, // keep the status loop out of this test
+    });
+    const notes: string[] = [];
+    setCodexInboundNotifier((_id, message) => notes.push(message));
+
+    await captureLogs(async () => {
+      deliverToCodex(AGENT, ENDPOINT, "nobody home");
+      await waitUntil(
+        () => notes.length >= 2,
+        "a SECOND notification after further failures",
+        5_000,
+      );
+    });
+
+    assert.ok(
+      notes.length >= 2,
+      `expected re-notification, got ${notes.length}`,
+    );
+    for (const n of notes) assert.match(n, /aren't being delivered/);
   });
 });

@@ -55,6 +55,8 @@ const DEFAULT_TIMINGS = {
   idleDeadlineMs: 15 * 60_000,
   /** Max time to wait for the TUI to create its thread before backing off. */
   threadWaitMs: 60_000,
+  /** How often to re-ask the daemon whether the TUI has created its thread. */
+  threadPollMs: 1_000,
   /** Backoff before re-attempting a drain after a transient failure. */
   retryBackoffMs: 5_000,
   /** How long a queued message may wait before we tell the operator. Separate
@@ -527,7 +529,7 @@ class CodexController {
         );
         return null;
       }
-      await sleep(1_000);
+      await sleep(timings.threadPollMs);
     }
     return null;
   }
