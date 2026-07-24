@@ -33,7 +33,12 @@ import {
   updateSchedule,
   validateScheduleInput,
 } from "./schedules.js";
-import { getTemplate, listTemplates, saveTemplate } from "./templates.js";
+import {
+  DEPRECATED_CAPABILITIES_NOTE,
+  getTemplate,
+  listTemplates,
+  saveTemplate,
+} from "./templates.js";
 
 // ── MCP Server (HTTP transport — for external clients) ─────────────────
 // Claude Desktop, CI pipelines, other MCP clients can connect here.
@@ -453,6 +458,18 @@ function createMcpServer(): McpServer {
         .string()
         .optional()
         .describe("Model override (e.g. 'opus', 'haiku')"),
+      // Declared solely so it can be REPORTED as ignored. Zod strips unknown
+      // keys, so without this the field vanishes silently — and agents spawned
+      // before ADR-058 still hold the old schema and keep sending it. Naming it
+      // deprecated here also teaches the fleet, which is the whole thesis of
+      // ADR-058: tell the agent, don't hide from it. Removable once no
+      // pre-ADR-058 agent is still running.
+      capabilities: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "DEPRECATED (ADR-058) — ignored. It never restricted anything. Constrain workers in systemPrompt instead.",
+        ),
     },
     async (args) => {
       try {
@@ -463,11 +480,20 @@ function createMcpServer(): McpServer {
           permissionMode: args.permissionMode ?? DEFAULT_PERMISSION_MODE,
           model: args.model,
         });
+        if (args.capabilities) {
+          console.warn(
+            `[mcp] ignoring deprecated 'capabilities' on template "${args.name}"`,
+          );
+        }
         return {
           content: [
             {
               type: "text",
-              text: `Template "${args.name}" created at ~/.autonomos/templates/${args.name}.json`,
+              text:
+                `Template "${args.name}" created at ~/.autonomos/templates/${args.name}.json` +
+                (args.capabilities
+                  ? `\n\n${DEPRECATED_CAPABILITIES_NOTE}`
+                  : ""),
             },
           ],
         };

@@ -229,6 +229,16 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
         description:
           "Model override for litellm routing (e.g. 'opus', 'sonnet', 'haiku'). Omit for CC default.",
       },
+      // Kept only to be reported as ignored, matching the HTTP MCP schema.
+      // Agents spawned before ADR-058 still hold the old schema and keep
+      // sending this; the write path answers with a deprecation notice rather
+      // than dropping it silently. Remove once no pre-ADR-058 agent is running.
+      capabilities: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "DEPRECATED (ADR-058) — ignored. It never restricted anything. Constrain workers in systemPrompt instead.",
+      },
     },
     required: ["name", "role", "description", "systemPrompt"],
   },

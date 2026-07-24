@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -28,9 +29,21 @@ const TEMPLATES_DIR = join(CONFIG_DIR, "templates");
 /** Allowed template name pattern — prevents path traversal */
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
-/** Template names already warned about a deprecated `capabilities` field.
- *  Keeps the ADR-058 notice to one line per template per server process. */
-const warnedDeprecatedCapabilities = new Set<string>();
+/** Returned to any caller that still sends `capabilities` on a write (ADR-058).
+ *  Long-running agents keep the pre-ADR tool schema in their context, so they
+ *  will go on sending it well after the upgrade — and would otherwise be told
+ *  the restriction succeeded. */
+export const DEPRECATED_CAPABILITIES_NOTE =
+  "'capabilities' is deprecated and was ignored — it never restricted anything (agents reach the same REST API directly). Restrict workers via systemPrompt instead.";
+
+/** template name → mtime of the version we last warned about (ADR-058).
+ *  Keyed by file version, not just name: the operator's whole job after seeing
+ *  the notice is to edit that file, and "no warning" must mean "the field is
+ *  gone", not "you were told once, three weeks ago, about a version that no
+ *  longer exists". Editing the WRONG host's copy is the likely mistake here
+ *  (the field is on more than one machine), and a name-keyed guard reports
+ *  that as success. Bounded by template count — one entry per name. */
+const warnedDeprecatedCapabilities = new Map<string, number>();
 
 function validateName(name: string): void {
   if (!SAFE_NAME_RE.test(name)) {
@@ -93,10 +106,18 @@ export function getTemplate(name: string): AgentTemplate | null {
     // getTemplate() runs on every spawn and this is informational, not a
     // behaviour change the operator must act on.
     if ("capabilities" in tmpl) {
-      if (!warnedDeprecatedCapabilities.has(name)) {
-        warnedDeprecatedCapabilities.add(name);
+      // NaN on a stat failure, and NaN !== NaN, so a pathological stat re-warns
+      // rather than going quiet. Bookkeeping must never fail the load.
+      let stamp = Number.NaN;
+      try {
+        stamp = statSync(filePath).mtimeMs;
+      } catch {
+        /* keep NaN — warn again rather than suppress */
+      }
+      if (warnedDeprecatedCapabilities.get(name) !== stamp) {
+        warnedDeprecatedCapabilities.set(name, stamp);
         console.warn(
-          `[templates] ignoring deprecated 'capabilities' on template "${name}" — agents now get the full tool set; restrict workers via systemPrompt instead`,
+          `[templates] ignoring deprecated 'capabilities' in ${filePath} — agents now get the full tool set; restrict workers via systemPrompt instead`,
         );
       }
       delete tmpl.capabilities;

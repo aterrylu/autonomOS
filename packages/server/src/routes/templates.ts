@@ -8,6 +8,7 @@
 import { DEFAULT_PERMISSION_MODE, isPermissionMode } from "@autonomos/core";
 import { Hono } from "hono";
 import {
+  DEPRECATED_CAPABILITIES_NOTE,
   deleteTemplate,
   getTemplate,
   listTemplates,
@@ -54,6 +55,18 @@ templateRouter.post("/", async (c) => {
       `[api/templates] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; using default`,
     );
 
+  // Agents spawned before ADR-058 still hold the OLD create_template schema in
+  // their context and will keep sending `capabilities`. Dropping it silently
+  // would answer "ok: true" to a request that was partly ignored, leaving the
+  // caller believing it restricted a worker. Tell it instead.
+  const deprecated =
+    "capabilities" in body ? DEPRECATED_CAPABILITIES_NOTE : null;
+  if (deprecated) {
+    console.warn(
+      `[api/templates] ignoring deprecated 'capabilities' on "${name}"`,
+    );
+  }
+
   try {
     saveTemplate(name, {
       role,
@@ -67,6 +80,7 @@ templateRouter.post("/", async (c) => {
     return c.json({
       ok: true,
       message: `Template "${name}" created`,
+      ...(deprecated ? { warnings: [deprecated] } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

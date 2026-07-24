@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it, mock } from "node:test";
@@ -75,6 +81,19 @@ describe("template legacy autonomousMode migration (ADR-045)", () => {
  * templates on disk still carry the field, and a template that fails to load —
  * or that throws — takes its agents down with it.
  */
+/** Run `body` with console.warn silenced; return only the ADR-058 notices. */
+function captureCapabilityWarnings(body: () => void): string[] {
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    body();
+    return warn.mock.calls
+      .map((call) => String(call.arguments[0]))
+      .filter((line) => line.includes("deprecated 'capabilities'"));
+  } finally {
+    warn.mock.restore();
+  }
+}
+
 describe("deprecated capabilities field (ADR-058)", () => {
   it("loads an old-shape template and scrubs the field", () => {
     writeRaw("legacy-caps", { ...base, capabilities: ["send"] });
@@ -104,36 +123,54 @@ describe("deprecated capabilities field (ADR-058)", () => {
   it("warns once per template, not once per load", () => {
     // getTemplate() runs on every spawn. An unguarded warn would fill the
     // rotating server log with a line the operator cannot act on.
+    // The warn-once map lives in the module, so it is shared by every test in
+    // this file — "noisy" must not be loaded anywhere else, or the first warn
+    // is spent before we start counting.
     writeRaw("noisy", { ...base, capabilities: ["send"] });
-    const warn = mock.method(console, "warn", () => {});
-    try {
+    const notices = captureCapabilityWarnings(() => {
       getTemplate("noisy");
       getTemplate("noisy");
       getTemplate("noisy");
-      const capsWarnings = warn.mock.calls.filter((c) =>
-        String(c.arguments[0]).includes("deprecated 'capabilities'"),
-      );
-      assert.equal(capsWarnings.length, 1, "one notice across three loads");
-      assert.match(String(capsWarnings[0].arguments[0]), /"noisy"/);
-    } finally {
-      warn.mock.restore();
-    }
+    });
+    assert.equal(notices.length, 1, "one notice across three loads");
+    assert.match(
+      notices[0],
+      /noisy\.json/,
+      "names the file to edit, not just the template",
+    );
+  });
+
+  it("warns again after the file changes, so silence means fixed", () => {
+    // The suppression is per file VERSION, not per name. An operator who edits
+    // the wrong host's copy (the field lives on more than one machine) must not
+    // read the resulting silence as confirmation — under name-keying they would.
+    const file = join(templatesDir, "edited.json");
+    writeRaw("edited", { ...base, capabilities: ["send"] });
+    const first = captureCapabilityWarnings(() => getTemplate("edited"));
+    assert.equal(first.length, 1, "warns on the original");
+
+    // Rewrite with the field STILL present, stamping an explicit mtime —
+    // two writes in the same millisecond would otherwise look unchanged.
+    writeRaw("edited", { ...base, capabilities: ["send", "list_agents"] });
+    utimesSync(file, new Date(), new Date(Date.now() + 5000));
+    const second = captureCapabilityWarnings(() => {
+      getTemplate("edited");
+      getTemplate("edited");
+    });
+    assert.equal(second.length, 1, "re-warns once for the new version");
+
+    // Now actually fix it — silence here is meaningful.
+    writeRaw("edited", { ...base, permissionMode: "plan" });
+    utimesSync(file, new Date(), new Date(Date.now() + 10_000));
+    const third = captureCapabilityWarnings(() => getTemplate("edited"));
+    assert.deepEqual(third, [], "no notice once the field is gone");
   });
 
   it("says nothing for a template that never had the field", () => {
     writeRaw("modern", { ...base, permissionMode: "plan" });
-    const warn = mock.method(console, "warn", () => {});
-    try {
-      const t = getTemplate("modern");
-      assert.equal(t?.permissionMode, "plan");
-      assert.equal(
-        warn.mock.calls.filter((c) =>
-          String(c.arguments[0]).includes("deprecated 'capabilities'"),
-        ).length,
-        0,
-      );
-    } finally {
-      warn.mock.restore();
-    }
+    const notices = captureCapabilityWarnings(() => {
+      assert.equal(getTemplate("modern")?.permissionMode, "plan");
+    });
+    assert.deepEqual(notices, []);
   });
 });
