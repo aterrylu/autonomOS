@@ -17,7 +17,33 @@
  *
  * Leaf module by design: runtime.ts injects the PTY writer, routes/hooks.ts
  * feeds events in. No imports from either, so no cycles.
+ *
+ * The whole mechanism is hook-relay-shaped, so it applies only to providers
+ * that HAVE a hook relay — see supportsPromptDeliveryReceipt().
  */
+
+import type { ProviderCapabilities } from "@autonomos/core";
+
+/**
+ * Can this provider's prompt delivery be tracked at all?
+ *
+ * Every signal here (SessionStart, UserPromptSubmit, the activity events that
+ * cancel the fallback) arrives through the hook relay. A provider that emits
+ * no hook events can never produce a receipt, so tracking it guarantees the
+ * timeout fires: Codex derives status from its app-server event stream and has
+ * `eventCount: 0`, which made EVERY prompted Codex agent log "may have failed
+ * to boot" and push a SystemWarning — including agents that had already run
+ * their prompt correctly. That false alarm actively misdirected a real
+ * investigation.
+ *
+ * Gated on the CAPABILITY rather than the provider name so it stays correct if
+ * Codex ever ships hooks (it would start being tracked automatically).
+ */
+export function supportsPromptDeliveryReceipt(
+  capabilities: ProviderCapabilities,
+): boolean {
+  return capabilities.hooks.eventCount > 0;
+}
 
 /** No SessionStart within this window of spawn → warn (broken boot), give up. */
 export const SESSION_START_TIMEOUT_MS = 15_000;

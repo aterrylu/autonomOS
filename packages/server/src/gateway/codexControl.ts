@@ -18,9 +18,16 @@
  * one turn per confirmed-idle window.
  *
  * Delivery is best-effort + async (the sender's send() is acknowledged on
- * ENQUEUE; the turn lands when the agent next goes idle). Hard, persistent
- * failures (daemon unreachable, no thread ever appears) are surfaced to the
- * operator via the injected notifier, not just stdout.
+ * ENQUEUE; the turn lands when the agent next goes idle). Because that ack does
+ * NOT mean "delivered", every step of the wait is logged — enqueue, a wait that
+ * outlives queueWaitWarnMs, and each expired drain attempt. An idle-gated queue
+ * that says nothing is indistinguishable from a dropped message, which is
+ * exactly how correctly-queued inbound once got reported as lost. Hard,
+ * persistent failures (daemon unreachable, no thread ever appears, a turn that
+ * never finishes) also reach the operator via the injected notifier.
+ *
+ * Message TEXT is never logged — inbound can carry sensitive content, so the
+ * logs carry ids, char counts and queue depth only.
  *
  * No autonomOS imports here (endpoint passed in, notifier injected) — keeps this
  * free of an import cycle with the runtime, which calls dispose() on teardown.
@@ -28,20 +35,47 @@
 
 const log = (...a: unknown[]) => console.log("[codex-inbound]", ...a);
 
-/** How often to re-check thread status while waiting for an idle window. */
-const IDLE_POLL_MS = 1_500;
-/** Max time to wait for a single in-flight turn to finish before giving up a
- *  drain pass (agents can legitimately work for many minutes). */
-const IDLE_DEADLINE_MS = 15 * 60_000;
-/** Max time to wait for the TUI to create its thread before backing off. */
-const THREAD_WAIT_MS = 60_000;
-/** Backoff before re-attempting a drain after a transient failure. */
-const RETRY_BACKOFF_MS = 5_000;
 /** Consecutive drain failures before we surface a SystemWarning. */
 const FAILURES_BEFORE_WARN = 3;
-/** How often the eager status watcher reconciles ground-truth status — a safety
- *  net so a missed thread/status/changed can't leave the dashboard stale. */
-const STATUS_POLL_MS = 10_000;
+/** Per-request JSON-RPC deadline. Not part of `timings` — it bounds a single
+ *  round-trip to a local daemon, not a poll cadence a test needs to shrink. */
+const RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * Poll/backoff timings. Mutable only so tests can shrink them — the delivery
+ * paths worth testing are gated behind minutes of real waiting, and a test that
+ * cannot reach them is how the silent-drain gap survived in the first place.
+ * Production never calls the setter; _resetCodexControlForTesting restores it.
+ */
+const DEFAULT_TIMINGS = {
+  /** How often to re-check thread status while waiting for an idle window. */
+  idlePollMs: 1_500,
+  /** Max time to wait for a single in-flight turn to finish before giving up a
+   *  drain pass (agents can legitimately work for many minutes). */
+  idleDeadlineMs: 15 * 60_000,
+  /** Max time to wait for the TUI to create its thread before backing off. */
+  threadWaitMs: 60_000,
+  /** Backoff before re-attempting a drain after a transient failure. */
+  retryBackoffMs: 5_000,
+  /** How long a queued message may wait before we tell the operator. Separate
+   *  from idleDeadlineMs: waiting out a long turn is CORRECT (that tolerance
+   *  stays 15m), but a wait this long is worth knowing about — it is the only
+   *  signal that separates "queued behind a wedged turn" from "delivered".
+   *  Without it the first operator-visible sign was 3 × 15m ≈ 45 minutes out. */
+  queueWaitWarnMs: 5 * 60_000,
+  /** How often the eager status watcher reconciles ground-truth status — a
+   *  safety net so a missed thread/status/changed can't leave the UI stale. */
+  statusPollMs: 10_000,
+};
+type Timings = typeof DEFAULT_TIMINGS;
+let timings: Timings = { ...DEFAULT_TIMINGS };
+
+/** For tests — shrink the waits so drain outcomes are reachable in ms. Seeded
+ *  from DEFAULTS, not from the current values, so a test that forgets the reset
+ *  can't silently inherit the previous test's timings. */
+export function _setCodexTimingsForTesting(overrides: Partial<Timings>): void {
+  timings = { ...DEFAULT_TIMINGS, ...overrides };
+}
 
 /** Operator-facing notifier (wired to pushSystemNotification at startup). */
 let notifier: ((agentId: string, message: string) => void) | null = null;
@@ -116,22 +150,58 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Human-readable duration for logs/notifications. Falls back to seconds below
+ *  a minute so shrunk test timings don't print "0m". */
+function fmtDuration(ms: number): string {
+  return ms >= 60_000
+    ? `${Math.round(ms / 60_000)}m`
+    : `${Math.max(1, Math.round(ms / 1000))}s`;
+}
+
+/** A queued inbound message. `queuedAt` exists so a long wait is reportable —
+ *  message TEXT is never logged (inbound can carry sensitive content); only
+ *  ids, char counts and queue depth are. */
+interface QueuedInbound {
+  readonly text: string;
+  readonly queuedAt: number;
+  /** Set once the operator has been told about this item's wait (warn once). */
+  warned: boolean;
+}
+
+/** Outcome of waiting for an injectable window. Distinguishing "the turn is
+ *  still running" from "we can't read the thread at all" matters: they have
+ *  very different causes (a busy agent vs a dead daemon) and used to produce
+ *  the same silent `return`. */
+type IdleWait = "idle" | "busy" | "unreadable";
+
 class CodexController {
   private ws: WebSocket | null = null;
   private nextId = 1;
   private readonly pending = new Map<
     number,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    {
+      resolve: (v: unknown) => void;
+      reject: (e: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
   >();
   private threadId: string | null = null;
-  private readonly queue: string[] = [];
+  private readonly queue: QueuedInbound[] = [];
   private draining = false;
   private connectPromise: Promise<void> | null = null;
   private disposed = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
+  /** Next failure count that warrants an operator notification (doubles). */
+  private nextFailureWarnAt = FAILURES_BEFORE_WARN;
   private watching = false;
   private statusFailures = 0;
+  /** One long-wait warning per stall episode; cleared on a successful inject. */
+  private longWaitWarned = false;
+  /** Why the last thread/read failed, so the drain log can name the cause. */
+  private lastReadError: Error | null = null;
+  /** Set once we've reported unparseable daemon frames (dedupe a firehose). */
+  private framingErrorLogged = false;
   /** Codex status types we've already logged as unmapped (dedupe the warning). */
   private readonly unmappedSeen = new Set<string>();
 
@@ -160,7 +230,15 @@ class CodexController {
         await this.connect();
         const threadId = await this.ensureThread();
         if (threadId) {
-          await this.queryIdle(threadId); // reads + emits status
+          // queryIdle SWALLOWS read failures (returns null), so awaiting it and
+          // resetting unconditionally made the escalation below unreachable for
+          // the likeliest failure of all: a daemon that accepts the socket but
+          // answers no thread/read. The counter reset every cycle, the status
+          // froze, and the reconciler that exists to prevent exactly that said
+          // nothing. Only a CONFIRMED read counts as reconciled.
+          const idle = await this.queryIdle(threadId); // reads + emits status
+          if (idle === null)
+            throw this.lastReadError ?? new Error("thread/read failed");
           this.statusFailures = 0; // reconciled ground truth this cycle
         }
       } catch (err) {
@@ -168,6 +246,7 @@ class CodexController {
         // unreachable daemon would silently leave the dashboard stale forever —
         // the exact failure this reconciler exists to prevent — so escalate
         // once it's clearly not transient (mirrors the delivery-path warning).
+        if (this.disposed) return; // torn down mid-cycle — expected, not a fault
         if (++this.statusFailures === FAILURES_BEFORE_WARN) {
           log(
             `${this.agentId.slice(0, 8)} status feed unreadable:`,
@@ -179,7 +258,7 @@ class CodexController {
           );
         }
       }
-      await sleep(STATUS_POLL_MS);
+      await sleep(timings.statusPollMs);
     }
   }
 
@@ -192,13 +271,49 @@ class CodexController {
   }
 
   enqueue(text: string): void {
-    this.queue.push(text);
+    // getOrCreate treats a disposed controller as absent, but deliverToCodex
+    // resolves it and enqueues in separate statements — a kill landing between
+    // them would otherwise print "queued" and then never speak again, the worst
+    // possible log shape (a positive claim followed by silence).
+    if (this.disposed) {
+      log(
+        `${this.agentId.slice(0, 8)} NOT queued (${text.length} chars) — agent was terminated`,
+      );
+      notifier?.(
+        this.agentId,
+        "An inbound message could not be delivered — this Codex agent was terminated.",
+      );
+      return;
+    }
+    this.queue.push({ text, queuedAt: Date.now(), warned: false });
+    // Log on ENQUEUE, not only on injection. Delivery is idle-gated, so a
+    // message can legitimately sit here for minutes; without this line the log
+    // is byte-identical to the message having been dropped, which is exactly
+    // how a correctly-queued message got reported as lost.
+    log(
+      `${this.agentId.slice(0, 8)} queued (${text.length} chars, queue=${this.queue.length})`,
+    );
     void this.drain();
   }
 
   dispose(): void {
     this.disposed = true;
     this.watching = false;
+    // The ONLY hard drop in this module. Every other failure path is careful to
+    // keep the queue and retry, so clearing it in silence here would reproduce
+    // the exact symptom this file's logging exists to eliminate — "queued (N
+    // chars)" followed by nothing, forever — except the message really is gone.
+    // Reached on kill, delete, PTY exit and the resume-failure respawn.
+    if (this.queue.length > 0) {
+      log(
+        `${this.agentId.slice(0, 8)} DROPPING ${this.queue.length} undelivered inbound message(s) — agent terminated`,
+      );
+      notifier?.(
+        this.agentId,
+        `${this.queue.length} inbound message(s) to this Codex agent were never delivered — ` +
+          `the agent was terminated while they were queued.`,
+      );
+    }
     this.queue.length = 0;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
@@ -212,8 +327,10 @@ class CodexController {
     this.ws = null;
     this.connectPromise = null;
     this.threadId = null;
-    for (const { reject } of this.pending.values())
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
       reject(new Error("codex control socket closed"));
+    }
     this.pending.clear();
     if (ws) {
       try {
@@ -232,7 +349,7 @@ class CodexController {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       void this.drain();
-    }, RETRY_BACKOFF_MS);
+    }, timings.retryBackoffMs);
     this.retryTimer.unref?.();
   }
 
@@ -305,12 +422,22 @@ class CodexController {
     try {
       msg = JSON.parse(raw);
     } catch {
+      // A Codex version that changed its framing would make every reply
+      // unparseable → every RPC times out at 30s → the operator sees only
+      // "thread status unreadable" with no hint that the PROTOCOL broke.
+      // Report it once (a firehose of these would drown the log).
+      if (!this.framingErrorLogged) {
+        this.framingErrorLogged = true;
+        log(
+          `${this.agentId.slice(0, 8)} unparseable frame from the Codex daemon ` +
+            `(${raw.length} bytes) — protocol mismatch? Further frames not logged.`,
+        );
+      }
       return;
     }
     if (msg.id !== undefined && (msg.result !== undefined || msg.error)) {
-      const p = this.pending.get(msg.id);
+      const p = this.takePending(msg.id);
       if (p) {
-        this.pending.delete(msg.id);
         if (msg.error) p.reject(new Error(msg.error.message ?? "rpc error"));
         else p.resolve(msg.result);
       }
@@ -343,20 +470,32 @@ class CodexController {
     }
   }
 
+  /** Claim a pending RPC, disarming its timeout — each one settles exactly
+   *  once, whoever gets there first (reply, timeout or socket teardown).
+   *  Returns null if it was already settled. */
+  private takePending(id: number) {
+    const p = this.pending.get(id);
+    if (!p) return null;
+    this.pending.delete(id);
+    clearTimeout(p.timer);
+    return p;
+  }
+
   private rpc(method: string, params: unknown): Promise<unknown> {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN)
       return Promise.reject(new Error("codex control socket not open"));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      // The timeout is cleared when the reply lands (see takePending) — leaving
+      // it armed kept a 30s timer alive per RPC, and the status watcher issues
+      // two every poll, so the process could never idle out.
+      const timer = setTimeout(() => {
+        if (this.takePending(id)) reject(new Error(`${method} timed out`));
+      }, RPC_TIMEOUT_MS);
+      timer.unref?.();
+      this.pending.set(id, { resolve, reject, timer });
       ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`${method} timed out`));
-        }
-      }, 30_000);
     });
   }
 
@@ -365,7 +504,7 @@ class CodexController {
    *  caller backs off and retries so messages aren't silently lost. */
   private async ensureThread(): Promise<string | null> {
     if (this.threadId) return this.threadId;
-    const deadline = Date.now() + THREAD_WAIT_MS;
+    const deadline = Date.now() + timings.threadWaitMs;
     while (Date.now() < deadline && !this.disposed) {
       try {
         const res = (await this.rpc("thread/loaded/list", {})) as {
@@ -396,7 +535,12 @@ class CodexController {
   /** Query ground-truth thread status. "idle" | "active" | null (unreadable).
    *  Also refreshes the dashboard working-status for free (this is the same read
    *  the status feed would do — piggyback it so a missed notification can't keep
-   *  the status stale forever). */
+   *  the status stale forever).
+   *
+   *  The failure CAUSE is stashed rather than discarded: "socket closed",
+   *  "thread/read timed out" and "no rollout for thread" all surface as the same
+   *  `null` here but have completely different remedies, and the operator can
+   *  only act if the drain log names which one it was. */
   private async queryIdle(threadId: string): Promise<boolean | null> {
     try {
       const r = (await this.rpc("thread/read", { threadId })) as {
@@ -404,25 +548,59 @@ class CodexController {
       };
       const type = r?.thread?.status?.type;
       this.emitStatus(type);
+      this.lastReadError = null;
       if (type === "idle") return true;
       if (type) return false; // active / compacting / etc — not safe to inject
+      this.lastReadError = new Error(`thread status missing (type=${type})`);
       return null;
-    } catch {
+    } catch (err) {
+      this.lastReadError =
+        err instanceof Error ? err : new Error(String(err ?? "unknown"));
       return null;
     }
   }
 
-  /** Wait until the thread is confirmed idle (poll). Returns false if it never
-   *  settles within the deadline or the socket becomes unreadable. */
-  private async waitForIdle(threadId: string): Promise<boolean> {
-    const deadline = Date.now() + IDLE_DEADLINE_MS;
+  /** Wait until the thread is confirmed idle (poll). "busy" = still running at
+   *  the deadline, "unreadable" = socket/daemon problem. */
+  private async waitForIdle(threadId: string): Promise<IdleWait> {
+    const deadline = Date.now() + timings.idleDeadlineMs;
     while (Date.now() < deadline && !this.disposed) {
       const idle = await this.queryIdle(threadId);
-      if (idle === true) return true;
-      if (idle === null) return false; // socket/daemon problem — back off
-      await sleep(IDLE_POLL_MS); // active — keep waiting
+      if (idle === true) return "idle";
+      if (idle === null) return "unreadable"; // socket/daemon problem — back off
+      this.noteLongWait(); // active — keep waiting, but don't wait in silence
+      await sleep(timings.idlePollMs);
     }
-    return false;
+    return "busy";
+  }
+
+  /** Tell the operator once per STALL EPISODE when the head of the queue has
+   *  been waiting behind an unfinished turn for too long. This is the signal
+   *  that surfaces a WEDGED thread: the sender was ack'd on enqueue, the
+   *  dashboard just shows "working" forever, and nothing else here speaks until
+   *  ~45 minutes of failed drains.
+   *
+   *  The flag is per-CONTROLLER, not per-message, and is cleared by a successful
+   *  injection. Per-message would fire again for every backlogged item the
+   *  instant the stall ENDS — each one inherits an old `queuedAt`, so it trips
+   *  the threshold on its first poll — burying the operator in "its current turn
+   *  hasn't finished" notifications at the exact moment delivery is succeeding. */
+  private noteLongWait(): void {
+    const head = this.queue[0];
+    if (!head || this.longWaitWarned) return;
+    const waitedMs = Date.now() - head.queuedAt;
+    if (waitedMs < timings.queueWaitWarnMs) return;
+    this.longWaitWarned = true;
+    const waited = fmtDuration(waitedMs);
+    log(
+      `${this.agentId.slice(0, 8)} inbound waiting ${waited} for an idle window ` +
+        `(thread still active) — ${this.queue.length} queued`,
+    );
+    notifier?.(
+      this.agentId,
+      `Inbound messages to this Codex agent have been queued for ${waited} — ` +
+        `its current turn hasn't finished. ${this.queue.length} message(s) waiting.`,
+    );
   }
 
   private async drain(): Promise<void> {
@@ -433,16 +611,39 @@ class CodexController {
       const threadId = await this.ensureThread();
       if (!threadId) {
         // No thread yet (or transient error). Keep the queue and retry — never
-        // drop. Surface a warning if this keeps failing.
+        // drop. Say so EVERY attempt: this branch is the same shape as the
+        // idle-window one below and was equally silent, and the queue-wait
+        // warning can't cover it (noteLongWait only runs inside waitForIdle,
+        // which we never reach without a thread). A daemon whose --remote TUI
+        // never attached sits here forever.
+        log(
+          `${this.agentId.slice(0, 8)} no Codex thread yet (TUI not attached?) — ` +
+            `${this.queue.length} queued, retrying`,
+        );
         this.noteFailure("waiting for the Codex session to be ready");
         this.scheduleRetry();
         return;
       }
       while (this.queue.length > 0 && !this.disposed) {
         // Poll ground truth — never inject mid-turn (it interleaves).
-        const idle = await this.waitForIdle(threadId);
-        if (!idle) {
-          this.noteFailure("could not reach an idle window");
+        const wait = await this.waitForIdle(threadId);
+        if (this.disposed) return; // torn down mid-wait; queue is already gone
+        if (wait !== "idle") {
+          // Previously both outcomes returned here with NO log at all, so a
+          // thread that never went idle produced 15 minutes of pure silence
+          // per attempt. Say which one happened, and say it every attempt.
+          const busy = wait === "busy";
+          const reason = busy
+            ? `no idle window in ${fmtDuration(timings.idleDeadlineMs)} (thread still active)`
+            : `thread status unreadable (${this.lastReadError?.message ?? "unknown"})`;
+          log(
+            `${this.agentId.slice(0, 8)} ${reason} — ${this.queue.length} queued, retrying`,
+          );
+          this.noteFailure(
+            busy
+              ? "could not reach an idle window"
+              : "the thread status is unreadable",
+          );
           this.scheduleRetry();
           return;
         }
@@ -451,12 +652,17 @@ class CodexController {
         try {
           await this.rpc("turn/start", {
             threadId,
-            input: [{ type: "text", text: next }],
+            input: [{ type: "text", text: next.text }],
           });
           this.queue.shift();
           this.consecutiveFailures = 0;
-          log(`${this.agentId.slice(0, 8)} injected (${next.length} chars)`);
+          this.nextFailureWarnAt = FAILURES_BEFORE_WARN;
+          this.longWaitWarned = false; // the stall (if any) is over — re-arm
+          log(
+            `${this.agentId.slice(0, 8)} injected (${next.text.length} chars)`,
+          );
         } catch (err) {
+          if (this.disposed) return; // teardown, not a delivery failure
           // Leave the message at the queue head and retry (e.g. socket dropped).
           log(
             `${this.agentId.slice(0, 8)} turn/start failed:`,
@@ -468,6 +674,7 @@ class CodexController {
         }
       }
     } catch (err) {
+      if (this.disposed) return; // the socket was closed BY us — expected
       log(
         `${this.agentId.slice(0, 8)} drain error:`,
         err instanceof Error ? err.message : err,
@@ -480,15 +687,21 @@ class CodexController {
   }
 
   /** Count consecutive failures; once persistent, tell the operator (the sender
-   *  was already optimistically ack'd, so this is the only visible signal). */
+   *  was already optimistically ack'd, so this is the only visible signal).
+   *
+   *  Re-notifies on a doubling backoff rather than exactly once: a strict
+   *  `=== FAILURES_BEFORE_WARN` meant one notification per controller LIFETIME,
+   *  so an agent wedged at hour 0 produced a single warning the operator could
+   *  miss, then nothing at hour 6 with a nine-deep queue — and the reported
+   *  queue depth stayed frozen at whatever it was on failure #3. */
   private noteFailure(reason: string): void {
     this.consecutiveFailures++;
-    if (this.consecutiveFailures === FAILURES_BEFORE_WARN) {
-      notifier?.(
-        this.agentId,
-        `Inbound messages to this Codex agent aren't being delivered (${reason}). ${this.queue.length} message(s) queued.`,
-      );
-    }
+    if (this.consecutiveFailures < this.nextFailureWarnAt) return;
+    this.nextFailureWarnAt *= 2;
+    notifier?.(
+      this.agentId,
+      `Inbound messages to this Codex agent aren't being delivered (${reason}). ${this.queue.length} message(s) queued.`,
+    );
   }
 }
 
@@ -549,4 +762,7 @@ export function _resetCodexControlForTesting(): void {
   for (const ctrl of controllers.values()) ctrl.dispose();
   controllers.clear();
   notifier = null;
+  statusSink = null;
+  threadIdSink = null;
+  timings = { ...DEFAULT_TIMINGS };
 }

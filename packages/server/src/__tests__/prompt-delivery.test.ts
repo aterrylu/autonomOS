@@ -5,8 +5,10 @@ import {
   cancelPromptTracking,
   notePromptHookEvent,
   _resetForTesting as resetPromptDelivery,
+  supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "../agents/promptDelivery.js";
+import { getProvider } from "../providers/index.js";
 
 /**
  * Unit coverage for the prompt-delivery receipt state machine. Uses real
@@ -268,5 +270,50 @@ describe("prompt delivery receipt tracking", () => {
     await waitFor(() => f.writes.length === 2, "multi-line paste + Enter");
     assert.equal(f.writes[0], `\x1b[200~${prompt}\x1b[201~`);
     assert.equal(f.writes[1], "\r");
+  });
+});
+
+/**
+ * The receipt is HOOK-RELAY-shaped: SessionStart, UserPromptSubmit and the
+ * activity events that cancel the fallback all arrive through hooks. Tracking a
+ * provider that emits none guarantees the timeout fires — Codex derived status
+ * from its app-server event stream instead, so every prompted Codex agent
+ * logged "may have failed to boot" and pushed a SystemWarning, on agents that
+ * had already executed their prompt correctly. That false alarm misdirected a
+ * live investigation, so the gate is pinned here against the REAL provider
+ * capability objects rather than a hand-written fixture.
+ */
+describe("prompt-delivery receipt applies only to providers with a hook relay", () => {
+  it("is skipped for Codex — zero hook events means no receipt can ever arrive", () => {
+    const codex = getProvider("codex");
+    assert.equal(codex.capabilities.hooks.eventCount, 0);
+    assert.equal(supportsPromptDeliveryReceipt(codex.capabilities), false);
+  });
+
+  it("is applied for every provider that does emit hook events", () => {
+    for (const name of ["claude-code", "gemini-cli"]) {
+      const provider = getProvider(name);
+      assert.ok(
+        provider.capabilities.hooks.eventCount > 0,
+        `${name} should have a hook relay`,
+      );
+      assert.equal(
+        supportsPromptDeliveryReceipt(provider.capabilities),
+        true,
+        `${name} must keep its delivery receipt`,
+      );
+    }
+  });
+
+  it("keys off the capability, not the provider name", () => {
+    // If Codex ever ships hooks, it starts being tracked with no code change.
+    const codex = getProvider("codex");
+    assert.equal(
+      supportsPromptDeliveryReceipt({
+        ...codex.capabilities,
+        hooks: { ...codex.capabilities.hooks, eventCount: 4 },
+      }),
+      true,
+    );
   });
 });

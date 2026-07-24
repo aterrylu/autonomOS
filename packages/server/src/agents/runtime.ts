@@ -38,6 +38,7 @@ import { batchGetTitles } from "../titleCache.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
+  supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
 import { pickFreePort, type Sidecar, startSidecarDaemon } from "./sidecar.js";
@@ -883,7 +884,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // startup-dialog race can silently drop it (agent sits at an empty input
   // forever). Track spawn → SessionStart → UserPromptSubmit via the hook
   // stream and re-deliver via PTY paste if the receipt never arrives.
-  if (params.prompt) {
+  //
+  // Only for providers with a hook relay — see supportsPromptDeliveryReceipt.
+  //
+  // Nothing is lost by skipping Codex: its re-delivery fallback needs a
+  // SessionStart to reach the `awaiting_prompt_submit` phase, so it was never
+  // reachable — the tracker was a detector with a 100% false-positive rate and
+  // zero true-positive capability.
+  //
+  // But be clear about the gap this leaves: CODEX SPAWN-WITH-PROMPT NOW HAS NO
+  // DELIVERY DETECTOR AT ALL. If the `--remote` TUI fails to attach, the
+  // positional prompt is gone, and the daemon reports the thread as idle — so a
+  // Codex agent that never started its task looks exactly like one that
+  // finished it, and the spawner waits forever. A daemon-side receipt is
+  // cheap (statusLoop already polls thread/read: "spawned with a prompt and the
+  // thread never left idle within Ns") and is tracked as follow-up work, NOT
+  // handled here. The inbound queue-wait warning does not cover this case.
+  if (params.prompt && supportsPromptDeliveryReceipt(provider.capabilities)) {
     trackPromptDelivery(
       persisted.id,
       `${persisted.name} (${persisted.id.slice(0, 8)})`,
