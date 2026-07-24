@@ -438,22 +438,10 @@ export const ALL_TOOLS: ToolDef[] = [
   TOOL_RUN_SCHEDULE,
 ];
 
-/** Tools available without gateway connection (HTTP MCP for external clients) */
-export const SERVER_TOOLS: ToolDef[] = [
-  TOOL_CREATE_AGENT,
-  TOOL_LIST_AGENTS,
-  TOOL_KILL_AGENT,
-  TOOL_SET_MANAGER,
-  TOOL_GET_ORG_CHART,
-  TOOL_LIST_TEMPLATES,
-  TOOL_CREATE_TEMPLATE,
-  TOOL_CREATE_SCHEDULE,
-  TOOL_LIST_SCHEDULES,
-  TOOL_GET_SCHEDULE,
-  TOOL_UPDATE_SCHEDULE,
-  TOOL_DELETE_SCHEDULE,
-  TOOL_RUN_SCHEDULE,
-];
+// SERVER_TOOLS (the HTTP-MCP subset) was removed here: it had zero consumers.
+// mcp.ts registers its tools through individual McpServer.tool() calls with
+// their own zod schemas rather than reading an array. It survived only because
+// it sat beside ALL_TOOLS, which did have one.
 
 // ── Shared MCP metadata ──────────────────────────────────────────
 

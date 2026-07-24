@@ -81,18 +81,24 @@ describe("template legacy autonomousMode migration (ADR-045)", () => {
  * templates on disk still carry the field, and a template that fails to load —
  * or that throws — takes its agents down with it.
  */
-/** Run `body` with console.warn silenced; return only the ADR-058 notices. */
-function captureCapabilityWarnings(body: () => void): string[] {
+/** Run `body` with console.warn silenced; return warnings matching `match`.
+ *  Defaults to the ADR-058 deprecation notices. */
+function captureWarnings(
+  body: () => void,
+  match = "deprecated 'capabilities'",
+) {
   const warn = mock.method(console, "warn", () => {});
   try {
     body();
     return warn.mock.calls
       .map((call) => String(call.arguments[0]))
-      .filter((line) => line.includes("deprecated 'capabilities'"));
+      .filter((line) => line.includes(match));
   } finally {
     warn.mock.restore();
   }
 }
+
+const captureCapabilityWarnings = (body: () => void) => captureWarnings(body);
 
 describe("deprecated capabilities field (ADR-058)", () => {
   it("loads an old-shape template and scrubs the field", () => {
@@ -172,5 +178,65 @@ describe("deprecated capabilities field (ADR-058)", () => {
       assert.equal(getTemplate("modern")?.permissionMode, "plan");
     });
     assert.deepEqual(notices, []);
+  });
+});
+
+/**
+ * Load-path hardening found while polishing ADR-058. Each case here is a way a
+ * template could previously load "successfully" while meaning something other
+ * than what the file said — or take other agents down on the way.
+ */
+describe("template load-path hardening", () => {
+  it("rejects a JSON array instead of spawning a role-less agent", () => {
+    // Arrays are objects, so every `in` check no-ops and the result is truthy.
+    // Callers only test truthiness, so `[{...}]` from a list-wrapped write used
+    // to spawn an agent with no role and no permission mode, silently.
+    writeRaw("wrapped", [{ ...base }]);
+    assert.throws(() => getTemplate("wrapped"), /found an array/);
+    writeRaw("empty-arr", []);
+    assert.throws(() => getTemplate("empty-arr"), /found an array/);
+  });
+
+  it("rejects scalars and null with a message naming the file, not a field", () => {
+    // Previously: "Cannot use 'in' operator to search for 'autonomousMode' in
+    // hello" — naming a field the operator never wrote.
+    writeFileSync(join(templatesDir, "trunc.json"), '"hello"');
+    assert.throws(() => getTemplate("trunc"), /found a string.*trunc\.json/s);
+    writeRaw("nulled", null);
+    assert.throws(() => getTemplate("nulled"), /found null/);
+  });
+
+  it("still distinguishes missing from broken", () => {
+    assert.equal(getTemplate("no-such-template"), null, "ENOENT → null");
+  });
+
+  it("reports an invalid permissionMode even when a legacy field is present", () => {
+    // The notice used to live in an `else` of the legacy migration, so a
+    // template with BOTH a typo'd mode and autonomousMode had the typo dropped
+    // in silence while the log said "migrated legacy autonomousMode" — pointing
+    // away from the real cause. "autonomous" is a very plausible typo given the
+    // old field's name.
+    writeRaw("typo-plus-legacy", {
+      ...base,
+      permissionMode: "autonomous",
+      autonomousMode: false,
+    });
+    const notices = captureWarnings(() => {
+      const t = getTemplate("typo-plus-legacy");
+      assert.equal(t?.permissionMode, "default", "legacy value still applies");
+    }, "invalid permissionMode");
+    assert.equal(notices.length, 1, "the typo is reported, not swallowed");
+  });
+
+  it("throttles the legacy-mode notice per file version, like the ADR-058 one", () => {
+    // getTemplate() runs on every spawn AND every GET /api/templates, which the
+    // dashboard polls every 10s. Unthrottled, this was ~6 lines/minute forever.
+    writeRaw("chatty", { ...base, autonomousMode: true });
+    const notices = captureWarnings(() => {
+      getTemplate("chatty");
+      getTemplate("chatty");
+      getTemplate("chatty");
+    }, "migrated legacy 'autonomousMode'");
+    assert.equal(notices.length, 1, "one notice across three loads");
   });
 });
