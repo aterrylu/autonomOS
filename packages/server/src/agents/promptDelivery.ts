@@ -38,6 +38,9 @@ import type { ProviderCapabilities } from "@autonomos/core";
  *
  * Gated on the CAPABILITY rather than the provider name so it stays correct if
  * Codex ever ships hooks (it would start being tracked automatically).
+ *
+ * See ADR-057 for the decision, the rejected alternatives, and the consequence
+ * this leaves behind (Codex spawn-with-prompt has no delivery detector).
  */
 export function supportsPromptDeliveryReceipt(
   capabilities: ProviderCapabilities,
