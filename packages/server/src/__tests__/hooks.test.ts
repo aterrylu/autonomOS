@@ -9,7 +9,8 @@ import {
   clearAgentState,
   clearNotifications,
   getAgentState,
-  hooksRouter,
+  hooksIngestRouter,
+  hooksReadRouter,
 } from "../routes/hooks.js";
 
 // Helper: simulate a hook event POST
@@ -17,7 +18,7 @@ async function postHookEvent(
   sessionId: string,
   event: Record<string, unknown>,
 ) {
-  return hooksRouter.request(`/${sessionId}`, {
+  return hooksIngestRouter.request(`/${sessionId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(event),
@@ -491,7 +492,7 @@ describe("hooks — notifications", () => {
     const res = await postHookEvent(sid, { hook_event_name: "Stop" });
     const body = await res.json();
     assert.equal(body.ok, true);
-    const bulk = await hooksRouter.request("/", { method: "GET" });
+    const bulk = await hooksReadRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread, 1);
   });
@@ -501,7 +502,7 @@ describe("hooks — notifications", () => {
     await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
     clearNotifications(sid);
     await postHookEvent(sid, { hook_event_name: "Notification" });
-    const bulk = await hooksRouter.request("/", { method: "GET" });
+    const bulk = await hooksReadRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread, 1);
   });
@@ -511,7 +512,7 @@ describe("hooks — notifications", () => {
       hook_event_name: "PreToolUse",
       tool_name: "Bash",
     });
-    const bulk = await hooksRouter.request("/", { method: "GET" });
+    const bulk = await hooksReadRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread ?? 0, 0);
   });

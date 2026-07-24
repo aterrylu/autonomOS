@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
-import { getServerPort } from "../serverState.js";
+import { getInternalSocketPath, getServerPort } from "../serverState.js";
 
 // ── Base context injected into every spawned agent session ────
 export const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
@@ -48,10 +48,21 @@ a managing agent (such as your manager or a superior) ends it.`;
 // ── Hook relay command (shared curl template, session-specific via env vars) ──
 // Posts event JSON to /api/hooks via curl. No trailing & — most CLIs handle
 // backgrounding via their own async mechanism.
+//
+// Goes over the internal Unix socket (ADR-055), NOT the public port. The
+// hostname in the URL is a placeholder curl requires but never resolves —
+// `--unix-socket` decides the destination, the URL only supplies the path.
+//
+// Deliberately NOT reusing AUTONOMOS_SERVER: that var is the PUBLIC base URL
+// and is still read by statusline.mjs for /api/agents. One var serving both
+// planes is what welded them together in the first place, so hooks get their
+// own single-purpose AUTONOMOS_INTERNAL_SOCKET.
 export const HOOK_CMD =
   'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
-  ' -d @- "${AUTONOMOS_SERVER}/api/hooks/${AUTONOMOS_SESSION_ID}"' +
+  ' --unix-socket "${AUTONOMOS_INTERNAL_SOCKET}"' +
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  ' -d @- "http://localhost/api/hooks/${AUTONOMOS_SESSION_ID}"' +
   " >/dev/null 2>&1";
 
 // ── Binary discovery helpers ─────────────────────────────────
@@ -151,7 +162,12 @@ export function buildBaseEnv(
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
+  // PUBLIC base URL. Consumed by statusline.mjs (/api/agents) — a read of the
+  // browser-facing surface, so it must stay an http:// URL on the real port.
   env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
+  // INTERNAL control plane. Consumed by HOOK_CMD's `curl --unix-socket`.
+  // Single-purpose on purpose (ADR-055): the two planes no longer share a var.
+  env.AUTONOMOS_INTERNAL_SOCKET = getInternalSocketPath();
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
 

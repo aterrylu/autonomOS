@@ -72,7 +72,7 @@ The gateway router parses the URI scheme and delivers to the right destination.
 
 ### MCP Tool Architecture
 Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
-- **HTTP MCP server** (`mcp.ts`) — for external clients (Claude Desktop, CI)
+- **HTTP MCP server** (`mcp.ts`) — served on the internal Unix control socket (`$configDir/control.sock`), NOT the public port (ADR-055). Reachable only by same-user processes on the box; a remote client would need a tunnel or a local forwarder. Still requires the auth token.
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
 Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`. The channel server also has `send` (requires gateway WebSocket).

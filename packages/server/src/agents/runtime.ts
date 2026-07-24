@@ -31,7 +31,7 @@ import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
-import { getServerPort } from "../serverState.js";
+import { assertControlPlaneReady, getServerPort } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
@@ -1264,6 +1264,21 @@ export async function restartAllAttachments(): Promise<{
   idMap: Record<UUID, UUID>;
   failures: Array<{ id: UUID; name: string; error: string }>;
 }> {
+  // Readiness is checked UP FRONT, before a single PTY is killed (ADR-055).
+  //
+  // Placement is the whole point. This condition applies uniformly to every
+  // agent — if the control socket isn't bound, no respawn can succeed — so
+  // discovering it inside the respawn loop would mean aborting AFTER the kill
+  // pass and live.clear(), leaving every not-yet-respawned agent as a
+  // status:"running" record with no PTY: precisely the zombie the per-agent
+  // catch below exists to prevent. Letting it fall into that catch instead is
+  // no better — it would mark every agent "crashed" for what is really "the
+  // server is still starting up", and return 200 while doing it.
+  //
+  // Throwing here is clean: nothing has been destroyed, and the route has no
+  // local catch, so it reaches agentsRouter.onError as a 503 + Retry-After.
+  assertControlPlaneReady();
+
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
   const failures: Array<{ id: UUID; name: string; error: string }> = [];

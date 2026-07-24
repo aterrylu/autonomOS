@@ -13,7 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { serve } from "@hono/node-server";
+import { createAdaptorServer, serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { Context, MiddlewareHandler } from "hono";
@@ -28,6 +28,13 @@ import {
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
+import {
+  assertUsableSocketPath,
+  getControlSocketPath,
+  prepareControlSocket,
+  removeControlSocket,
+  restrictControlSocket,
+} from "./internalSocket.js";
 import { initFileLogging } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
@@ -39,7 +46,7 @@ import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
-import { hooksRouter } from "./routes/hooks.js";
+import { hooksIngestRouter, hooksReadRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
@@ -50,7 +57,11 @@ import { terminalRouter } from "./routes/terminal.js";
 import { usageQueueRouter } from "./routes/usageQueue.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
-import { setAuthToken, setServerPort } from "./serverState.js";
+import {
+  setAuthToken,
+  setInternalSocketPath,
+  setServerPort,
+} from "./serverState.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
@@ -212,6 +223,14 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
+  // The internal control plane (ADR-055). A SEPARATE Hono app served over a
+  // Unix domain socket rather than the public TCP listener, so the routes that
+  // exist for autonomOS's own processes — `/mcp` today, `/api/hooks` alongside
+  // it — are simply not reachable from the network. Not "reachable but
+  // rejected": there is no port to connect to. The public listener below keeps
+  // only the browser surface.
+  const internalApp = new Hono<NodeEnv>();
+
   // Serve dashboard static files in production.
   //
   // Path resolution order:
@@ -283,8 +302,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
 
   const requireAuth: MiddlewareHandler = async (c, next) => {
-    if (c.req.method === "POST" && c.req.path.startsWith("/api/hooks/"))
-      return next();
+    // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
+    // moved to the internal socket, so nothing on the public listener needs to
+    // accept an unauthenticated write any more. The exemption was also wider
+    // than its purpose — it covered the dashboard's `POST /api/hooks/:id/read`
+    // too. Removing it means there is no unauthenticated POST anywhere on the
+    // public surface; the browser already sends the token for /read.
     if (c.req.method === "GET" && c.req.path === "/api/host") return next();
     const token = extractToken(c) ?? c.req.query("token") ?? undefined;
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
@@ -301,15 +324,22 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.use("/ws/*", requireAuth);
   // /mcp exposes the same orchestration tools as the dashboard API —
   // create_agent, kill_agent, set_manager. It is NOT a public transport.
-  // Mounted here (before the route definitions below) so every method is
-  // covered; a client authenticates with the same token as everything else.
-  app.use("/mcp", requireAuth);
+  //
+  // It now lives on the internal socket (ADR-055), so the token is no longer
+  // the only thing standing between the network and agent spawning — reaching
+  // it at all requires being a process on this box running as this user. The
+  // auth check stays as defense in depth: the socket answers the "who can
+  // connect" question, the token still answers "prove it".
+  internalApp.use("/mcp", requireAuth);
 
   app.get("/api/host", (c) =>
     c.json({ hostname: hostname(), dashboard: dashboardBuild }),
   );
 
-  app.route("/api/hooks", hooksRouter);
+  // Hook INGEST is internal-only; the hook READ surface stays public because
+  // the dashboard (a browser, not an agent) is what calls it. See routes/hooks.ts.
+  internalApp.route("/api/hooks", hooksIngestRouter);
+  app.route("/api/hooks", hooksReadRouter);
 
   // REST API (behind auth)
   app.route("/api/files", fileRouter);
@@ -326,21 +356,21 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/usage-queue", usageQueueRouter);
   app.route("/api/system", systemRouter);
 
-  // MCP — Streamable HTTP transport for agent-to-agent communication
-  app.post("/mcp", async (c) => {
+  // MCP — Streamable HTTP transport, served on the internal socket only.
+  internalApp.post("/mcp", async (c) => {
     const req = c.env.incoming as IncomingMessage;
     const res = c.env.outgoing as ServerResponse;
     const body = await c.req.json().catch(() => undefined);
     await handleMcpRequest(req, res, body);
     return new Response(null);
   });
-  app.get("/mcp", async (c) => {
+  internalApp.get("/mcp", async (c) => {
     const req = c.env.incoming as IncomingMessage;
     const res = c.env.outgoing as ServerResponse;
     await handleMcpSessionRequest(req, res);
     return new Response(null);
   });
-  app.delete("/mcp", async (c) => {
+  internalApp.delete("/mcp", async (c) => {
     const req = c.env.incoming as IncomingMessage;
     const res = c.env.outgoing as ServerResponse;
     await handleMcpSessionRequest(req, res);
@@ -363,6 +393,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       c.json({ error: `Not found: ${c.req.path}` }, 404),
     );
     app.all("/ws/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+    // /mcp is internal-socket-only (ADR-055) and has no public handler. This
+    // must stay: without it the SPA catch-all below would answer a public
+    // /mcp probe with index.html, which reads like "the endpoint is here" to
+    // anyone scanning. 404 is the honest answer.
     app.all("/mcp", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
 
     app.use("/*", serveStatic({ root: dashboardDist }));
@@ -372,6 +406,85 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       "utf-8",
     );
     app.get("*", (c) => c.html(indexHtml));
+  }
+
+  // The internal listener. `serve()` is port-only, so we build the adaptor
+  // server directly — it is a plain node http.Server, which listen()s on a
+  // socket path just as happily as on a port.
+  const internalServer = createAdaptorServer({ fetch: internalApp.fetch });
+  const controlSocketPath = getControlSocketPath();
+
+  /**
+   * Bind the internal control plane.
+   *
+   * Called from inside the pid-file "we own this config dir" branch, and
+   * awaited BEFORE resumeActiveAgents() — resumed agents dial this socket for
+   * their hook relay, so it must be accepting connections before the first PTY
+   * spawns, not merely "starting".
+   */
+  async function startInternalControlPlane(): Promise<void> {
+    assertUsableSocketPath(controlSocketPath);
+    await prepareControlSocket(controlSocketPath);
+
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const onError = (err: Error): void => rejectListen(err);
+      internalServer.once("error", onError);
+      internalServer.listen(controlSocketPath, () => {
+        internalServer.off("error", onError);
+        restrictControlSocket(controlSocketPath);
+        setInternalSocketPath(controlSocketPath);
+        // NOTE: deliberately NOT shaped like "listening on <url>" —
+        // helpers/test-server.ts parses that phrase to discover the public
+        // port, and a second matching line would hand tests a socket path
+        // where they expect a URL.
+        console.log(`[internal] control socket ready at ${controlSocketPath}`);
+        resolveListen();
+      });
+    });
+  }
+
+  /**
+   * Arm every init that mutates ~/.autonomos state or spawns processes.
+   *
+   * Ordering is load-bearing: the control socket must accept connections
+   * before any agent PTY exists, or a resumed agent's hook curls fail against
+   * a socket that isn't there yet — and hook failures are SILENT by design
+   * (`curl -sf ... >/dev/null 2>&1`), so the symptom would be a dashboard that
+   * has simply gone blind on telemetry, with nothing in the logs.
+   */
+  async function armRuntimeInits(): Promise<void> {
+    try {
+      await startInternalControlPlane();
+    } catch (err) {
+      // Fatal by choice. Without the control plane, agents spawn but their
+      // hooks vanish silently and /mcp is unreachable — a server that looks
+      // healthy and isn't. Better to fail the boot loudly so the supervisor
+      // (launchd/systemd-user) surfaces it.
+      console.error(
+        "[internal] FAILED to bind the control socket — refusing to start " +
+          "without a control plane (agent hooks and /mcp would silently break):",
+      );
+      console.error(err instanceof Error ? (err.stack ?? err.message) : err);
+      process.exit(3);
+    }
+
+    // Initialize gateway (platform adapters, routing table).
+    const { initGateway } = await import("./gateway/index.js");
+    initGateway().catch((err) => console.error("[gateway] init failed:", err));
+
+    // Auto-resume agents whose persisted status is "running" — handles
+    // all failure modes (cwd missing, provider gone, etc) by marking
+    // the failed ones exited/crashed so they don't zombie. Spawns
+    // PTYs into ~/.autonomos/ — must NOT run if we lost the claim.
+    //
+    // Now async (provider sidecar daemons start before each PTY). Start
+    // the scheduler AFTER agents are up so agent:<name> targets resolve —
+    // chain it off the resume promise rather than racing it.
+    void resumeActiveAgents()
+      .catch((err) =>
+        console.error("[startup] resumeActiveAgents failed:", err),
+      )
+      .finally(() => initScheduler());
   }
 
   // Port precedence: --port CLI flag > PORT env > 3000 default.
@@ -404,15 +517,16 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
       // The default bind is all-interfaces (unchanged, long-standing): this
       // server is commonly reached over Tailscale / IAP / SSH. Surface that
-      // posture once, precisely — the API/WebSocket/MCP routes need the token,
-      // but `requireAuth` still exempts POST /api/hooks/* and GET /api/host
-      // (see the exemptions above), so don't imply blanket coverage. This is an
-      // informational line, not an alarm; a loopback-restricted bind is silent.
+      // posture once, precisely. Post-ADR-055 the only remaining unauthenticated
+      // route here is GET /api/host; `/mcp` and hook ingestion are not served on
+      // this listener at all. Stay accurate rather than implying blanket
+      // coverage. Informational, not an alarm; a loopback bind is silent.
       if (!isLoopbackBind(bindHost)) {
         const iface = bindHost ?? "all interfaces";
         console.log(
-          `ℹ Reachable on the network (${iface}). API/WebSocket/MCP require the ` +
-            `token; POST /api/hooks/* and GET /api/host do not (yet). ` +
+          `ℹ Reachable on the network (${iface}). API/WebSocket require the ` +
+            `token; only GET /api/host does not (yet). /mcp and hook ingestion ` +
+            `are not served here — they are on the internal control socket. ` +
             `Restrict with --host=127.0.0.1 / AUTONOMOS_HOST=127.0.0.1.`,
         );
       }
@@ -452,27 +566,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           }
 
           // We are the owner. Arm the destructive inits.
-
-          // Initialize gateway (platform adapters, routing table).
-          import("./gateway/index.js").then(({ initGateway }) => {
-            initGateway().catch((err) =>
-              console.error("[gateway] init failed:", err),
-            );
-          });
-
-          // Auto-resume agents whose persisted status is "running" — handles
-          // all failure modes (cwd missing, provider gone, etc) by marking
-          // the failed ones exited/crashed so they don't zombie. Spawns
-          // PTYs into ~/.autonomos/ — must NOT run if we lost the claim.
-          //
-          // Now async (provider sidecar daemons start before each PTY). Start
-          // the scheduler AFTER agents are up so agent:<name> targets resolve —
-          // chain it off the resume promise rather than racing it.
-          void resumeActiveAgents()
-            .catch((err) =>
-              console.error("[startup] resumeActiveAgents failed:", err),
-            )
-            .finally(() => initScheduler());
+          void armRuntimeInits();
         })
         .catch((err) => {
           console.warn(
@@ -485,16 +579,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
           // we would in the "acquired" branch. This preserves the prior
           // behavior of "graceful degradation" when the lock can't be
           // acquired for some unrelated reason (filesystem error, etc).
-          import("./gateway/index.js").then(({ initGateway }) => {
-            initGateway().catch((gwErr) =>
-              console.error("[gateway] init failed:", gwErr),
-            );
-          });
-          void resumeActiveAgents()
-            .catch((err) =>
-              console.error("[startup] resumeActiveAgents failed:", err),
-            )
-            .finally(() => initScheduler());
+          //
+          // The control socket's own liveness probe still applies here: if a
+          // live server holds it, startInternalControlPlane refuses rather
+          // than stealing it, which is the protection the unacquired pid file
+          // failed to give us.
+          void armRuntimeInits();
         });
     },
   );
@@ -515,6 +605,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // Release the pid file (claimed via acquireOwnership at startup),
     // per ADR-029.
     removePidFile();
+    // Unlink the control socket. A Unix socket file outlives its process, and
+    // a leftover one makes the next boot's bind fail EADDRINUSE — the next
+    // start recovers via the stale-socket probe, but only after logging a
+    // warning that implies an unclean shutdown. Clean up when we can.
+    internalServer.close();
+    removeControlSocket(controlSocketPath);
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
