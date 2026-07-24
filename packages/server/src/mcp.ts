@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { type AgentCapability, DEFAULT_PERMISSION_MODE } from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -18,11 +18,7 @@ import {
   setManager,
 } from "./agents/store.js";
 import { emitAgentDelta } from "./events/agents.js";
-import {
-  DEFAULT_CAPABILITIES,
-  MCP_INSTRUCTIONS_EXTERNAL,
-  MCP_SERVER_INFO,
-} from "./mcp/tools.js";
+import { MCP_INSTRUCTIONS_EXTERNAL, MCP_SERVER_INFO } from "./mcp/tools.js";
 import {
   addScheduleJob,
   removeScheduleJob,
@@ -447,10 +443,6 @@ function createMcpServer(): McpServer {
       systemPrompt: z
         .string()
         .describe("System prompt defining the agent's behavior"),
-      capabilities: z
-        .array(z.string())
-        .optional()
-        .describe(`Capabilities: ${DEFAULT_CAPABILITIES.join(", ")}`),
       permissionMode: z
         .enum(["default", "auto", "plan", "bypass"])
         .optional()
@@ -468,9 +460,6 @@ function createMcpServer(): McpServer {
           role: args.role,
           description: args.description,
           systemPrompt: args.systemPrompt,
-          capabilities:
-            (args.capabilities as AgentCapability[]) ??
-            (DEFAULT_CAPABILITIES as AgentCapability[]),
           permissionMode: args.permissionMode ?? DEFAULT_PERMISSION_MODE,
           model: args.model,
         });

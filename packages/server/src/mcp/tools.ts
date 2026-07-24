@@ -21,17 +21,6 @@ export interface ToolDef {
   };
 }
 
-// ── Capabilities ─────────────────────────────────────────────────
-
-/** Default capabilities granted when no template specifies them */
-export const DEFAULT_CAPABILITIES: string[] = [
-  "send",
-  "list_agents",
-  "create_agent",
-  "kill_agent",
-  "self_exit",
-];
-
 // ── Tool Definitions ──────────────────────────────────────────────
 
 export const TOOL_CREATE_AGENT: ToolDef = {
@@ -80,7 +69,7 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       template: {
         type: "string",
         description:
-          "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and capabilities.",
+          "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and permission mode.",
       },
       manager: {
         type: "string",
@@ -206,7 +195,7 @@ export const TOOL_LIST_TEMPLATES: ToolDef = {
 export const TOOL_CREATE_TEMPLATE: ToolDef = {
   name: "create_template",
   description:
-    "Create a reusable agent template (blueprint) that defines a role, system prompt, and capabilities. Saved to ~/.autonomos/templates/.",
+    "Create a reusable agent template (blueprint) that defines a role, system prompt, and permission mode. Saved to ~/.autonomos/templates/.",
   inputSchema: {
     type: "object",
     properties: {
@@ -228,11 +217,6 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
         type: "string",
         description:
           "System prompt appended to the agent's CC session. Defines the agent's behavior and responsibilities.",
-      },
-      capabilities: {
-        type: "array",
-        items: { type: "string" },
-        description: `Capabilities to grant: ${DEFAULT_CAPABILITIES.map((c) => `'${c}'`).join(", ")}. Defaults to all.`,
       },
       permissionMode: {
         type: "string",
@@ -421,7 +405,11 @@ export const TOOL_RUN_SCHEDULE: ToolDef = {
   },
 };
 
-/** All tools — channel MCP gets these (filtered by capabilities) */
+/** All tools — the channel MCP registers every one of these.
+ *  Kept deliberately in sync with MCP_INSTRUCTIONS below: the instructions are
+ *  injected verbatim into each agent's system prompt, so any tool advertised
+ *  there must actually register. Per-template filtering was removed in ADR-058
+ *  precisely because it broke that correspondence. */
 export const ALL_TOOLS: ToolDef[] = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
@@ -456,20 +444,6 @@ export const SERVER_TOOLS: ToolDef[] = [
   TOOL_DELETE_SCHEDULE,
   TOOL_RUN_SCHEDULE,
 ];
-
-/**
- * Tools that require a matching capability to be visible.
- * Tools NOT in this set are always available (e.g. set_manager, get_org_chart).
- */
-const CAPABILITY_GATED_TOOLS = new Set(DEFAULT_CAPABILITIES);
-
-/** Filter ALL_TOOLS to only those the agent's capabilities allow */
-export function filterToolsByCapabilities(capabilities: string[]): ToolDef[] {
-  const allowed = new Set(capabilities);
-  return ALL_TOOLS.filter((tool) => {
-    return !CAPABILITY_GATED_TOOLS.has(tool.name) || allowed.has(tool.name);
-  });
-}
 
 // ── Shared MCP metadata ──────────────────────────────────────────
 

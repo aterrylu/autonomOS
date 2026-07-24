@@ -2,7 +2,7 @@
  * Agent template loader — reads from ~/.autonomos/templates/*.json
  *
  * Templates are blueprints for creating agents. They define a role,
- * system prompt, and capabilities. Users create custom templates
+ * system prompt, and permission mode. Users create custom templates
  * alongside the built-in defaults.
  */
 
@@ -27,6 +27,10 @@ const TEMPLATES_DIR = join(CONFIG_DIR, "templates");
 
 /** Allowed template name pattern — prevents path traversal */
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/** Template names already warned about a deprecated `capabilities` field.
+ *  Keeps the ADR-058 notice to one line per template per server process. */
+const warnedDeprecatedCapabilities = new Set<string>();
 
 function validateName(name: string): void {
   if (!SAFE_NAME_RE.test(name)) {
@@ -55,6 +59,7 @@ export function getTemplate(name: string): AgentTemplate | null {
     const raw = readFileSync(filePath, "utf-8");
     const tmpl = JSON.parse(raw) as AgentTemplate & {
       autonomousMode?: boolean;
+      capabilities?: unknown;
     };
     // Accept-and-discard: migrate user-authored templates that predate
     // permissionMode. A template the user deliberately set to AUTONOMOUS
@@ -78,6 +83,24 @@ export function getTemplate(name: string): AgentTemplate | null {
       }
     }
     if ("autonomousMode" in tmpl) delete tmpl.autonomousMode;
+    // Accept-and-discard: `capabilities` used to filter which MCP tools an
+    // agent's channel server registered. Removed in ADR-058 — it gated only the
+    // MCP tool list while every agent holds the server token and can drive the
+    // same REST API directly, so it restricted nothing; and the injected system
+    // prompt always advertised the full tool list, so a restricted agent was
+    // told it had tools it could not call. Old templates keep loading; the field
+    // is ignored rather than rejected. Warned once per template name because
+    // getTemplate() runs on every spawn and this is informational, not a
+    // behaviour change the operator must act on.
+    if ("capabilities" in tmpl) {
+      if (!warnedDeprecatedCapabilities.has(name)) {
+        warnedDeprecatedCapabilities.add(name);
+        console.warn(
+          `[templates] ignoring deprecated 'capabilities' on template "${name}" — agents now get the full tool set; restrict workers via systemPrompt instead`,
+        );
+      }
+      delete tmpl.capabilities;
+    }
     return tmpl;
   } catch (err: unknown) {
     if (
@@ -153,13 +176,6 @@ export function seedDefaultTemplates(): void {
         "3. Monitor progress and coordinate between agents\n" +
         "4. Report results back to the user\n\n" +
         "Use create_agent() to spawn workers, send() to communicate, and list_agents() to monitor.",
-      capabilities: [
-        "send",
-        "list_agents",
-        "create_agent",
-        "kill_agent",
-        "self_exit",
-      ],
       permissionMode: DEFAULT_PERMISSION_MODE,
     },
     "team-lead": {
@@ -173,13 +189,6 @@ export function seedDefaultTemplates(): void {
         "3. Review completed work and provide feedback\n" +
         "4. Escalate blockers to the human operator\n\n" +
         "Coordinate via send(), monitor with list_agents(), spawn with create_agent().",
-      capabilities: [
-        "send",
-        "list_agents",
-        "create_agent",
-        "kill_agent",
-        "self_exit",
-      ],
       permissionMode: DEFAULT_PERMISSION_MODE,
     },
     "feature-worker": {
@@ -192,8 +201,12 @@ export function seedDefaultTemplates(): void {
         "2. Write tests and verify your work\n" +
         "3. Report completion to your manager via send()\n" +
         "4. Ask for clarification if requirements are unclear\n\n" +
-        "Focus on one task at a time. Ship quality code.",
-      capabilities: ["send", "list_agents", "self_exit"],
+        "Focus on one task at a time. Ship quality code.\n\n" +
+        "You are a worker executing a bounded task. Do not spawn peer agents via " +
+        "create_agent() — recursive spawning multiplies cost and nobody is tracking " +
+        "the fleet you would create. Do not terminate other agents via kill_agent(). " +
+        "Complete your work and exit via self_exit() when done, or wait for " +
+        "kill_agent() from your manager.",
       permissionMode: DEFAULT_PERMISSION_MODE,
     },
   };

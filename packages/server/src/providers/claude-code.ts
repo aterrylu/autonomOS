@@ -190,7 +190,6 @@ export const claudeCodeProvider: AgentProvider = {
                 AUTONOMOS_SERVER_URL: `ws://localhost:${options.serverPort}/ws/gateway`,
                 AUTONOMOS_SESSION_ID: options.sessionId,
                 AUTONOMOS_AGENT_NAME: options.agentName,
-                AUTONOMOS_CAPABILITIES: options.capabilities.join(","),
                 // Forward the in-process auth token (from serverState, set at
                 // server boot in run.ts) rather than `process.env.AUTONOMOS_TOKEN`.
                 // resolveAuthToken() falls back to ~/.autonomos/token on disk,

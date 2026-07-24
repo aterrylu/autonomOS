@@ -1,15 +1,11 @@
 /**
  * REST API for agent templates (~/.autonomos/templates/<name>.json).
  *
- * Templates are blueprints for agents — role, system prompt, capabilities.
+ * Templates are blueprints for agents — role, system prompt, permission mode.
  * Extracted from the legacy routes/hierarchy.ts on the unified-Agent refactor.
  */
 
-import {
-  type AgentCapability,
-  DEFAULT_PERMISSION_MODE,
-  isPermissionMode,
-} from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE, isPermissionMode } from "@autonomos/core";
 import { Hono } from "hono";
 import {
   deleteTemplate,
@@ -63,11 +59,6 @@ templateRouter.post("/", async (c) => {
       role,
       description,
       systemPrompt,
-      capabilities: Array.isArray(body.capabilities)
-        ? (body.capabilities.filter(
-            (c): c is string => typeof c === "string",
-          ) as AgentCapability[])
-        : ["send", "list_agents", "create_agent", "kill_agent"],
       permissionMode: isPermissionMode(body.permissionMode)
         ? body.permissionMode
         : DEFAULT_PERMISSION_MODE,

@@ -21,7 +21,6 @@ const dispatcherTemplate: AgentTemplate = {
   role: "Dispatcher",
   description: "Routes work to the right agents",
   systemPrompt: "You are the dispatcher.",
-  capabilities: ["send", "create_agent"],
   permissionMode: "bypass",
 };
 
@@ -29,7 +28,6 @@ const workerTemplate: AgentTemplate = {
   role: "Worker",
   description: "Does focused implementation work",
   systemPrompt: "You are a worker.",
-  capabilities: ["send"],
 };
 
 let createSession: ReturnType<typeof vi.fn>;

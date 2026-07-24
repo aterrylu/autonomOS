@@ -27,7 +27,6 @@ import {
   disposeCodexControl,
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
-import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
@@ -661,9 +660,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     injectChannelServer: !!channels?.includes("server:autonomos"),
     channelServerScript: CHANNEL_SERVER_SCRIPT,
     serverPort: String(getServerPort()),
-    capabilities:
-      (params.template ? getTemplate(params.template)?.capabilities : null) ??
-      DEFAULT_CAPABILITIES,
     // Set by the sidecar block below (when the provider declares buildSidecar)
     // so buildArgs can emit `--remote <endpoint>` against the daemon.
     sidecarEndpoint: undefined as string | undefined,

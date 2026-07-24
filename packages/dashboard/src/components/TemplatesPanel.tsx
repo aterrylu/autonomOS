@@ -1,5 +1,4 @@
 import {
-  type AgentCapability,
   type AgentTemplate,
   DEFAULT_PERMISSION_MODE,
   type PermissionMode,
@@ -29,13 +28,6 @@ type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 type PanelMode =
   | { kind: "list" }
   | { kind: "edit"; name: string; existing: boolean };
-
-const ALL_CAPABILITIES: AgentCapability[] = [
-  "send",
-  "list_agents",
-  "create_agent",
-  "kill_agent",
-];
 
 // ── Running agent count ──────────────────────────────────────────
 
@@ -144,8 +136,11 @@ function TemplateCard({
 
       {/* Footer */}
       <div className="flex items-center justify-between">
-        <span className="text-[10px]" style={{ color: page.statusFg }}>
-          {template.capabilities.length} capabilities
+        <span
+          className="text-[10px] font-mono"
+          style={{ color: page.statusFg }}
+        >
+          {template.permissionMode ?? DEFAULT_PERMISSION_MODE}
         </span>
         <span
           className="text-[10px] font-medium"
@@ -196,7 +191,7 @@ function ListView({
           </h2>
           <p className="text-[11px] mt-0.5" style={{ color: page.statusFg }}>
             Blueprints for spawning agents — role, system prompt, and
-            capabilities
+            permissions
           </p>
         </div>
         <button
@@ -330,9 +325,6 @@ function EditorView({
   // Restore Cmd/Ctrl+Z undo for the controlled System Prompt textarea —
   // React's value replacement wipes the browser's native undo stack.
   const systemPromptUndo = useUndoableTextValue(systemPrompt, setSystemPrompt);
-  const [capabilities, setCapabilities] = useState<AgentCapability[]>(
-    template?.capabilities ?? [...ALL_CAPABILITIES],
-  );
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     template?.permissionMode ?? DEFAULT_PERMISSION_MODE,
   );
@@ -341,14 +333,6 @@ function EditorView({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const toggleCapability = (cap: AgentCapability) => {
-    setCapabilities((current) =>
-      current.includes(cap)
-        ? current.filter((c) => c !== cap)
-        : [...current, cap],
-    );
-  };
 
   const handleSave = async () => {
     setError(null);
@@ -373,7 +357,6 @@ function EditorView({
         role: role.trim(),
         description: description.trim(),
         systemPrompt,
-        capabilities,
         permissionMode,
         ...(model.trim() ? { model: model.trim() } : {}),
       };
@@ -506,40 +489,6 @@ function EditorView({
                 minHeight: 180,
               }}
             />
-          </Field>
-
-          {/* Capabilities */}
-          <Field label="Capabilities">
-            <div className="grid grid-cols-2 gap-2">
-              {ALL_CAPABILITIES.map((cap) => {
-                const checked = capabilities.includes(cap);
-                return (
-                  <label
-                    key={cap}
-                    className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded"
-                    style={{
-                      background: checked
-                        ? "rgba(34,197,94,0.1)"
-                        : "rgba(0,0,0,0.2)",
-                      border: `1px solid ${checked ? "rgba(34,197,94,0.3)" : page.border}`,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleCapability(cap)}
-                      className="cursor-pointer"
-                    />
-                    <span
-                      className="text-[12px] font-mono"
-                      style={{ color: "#e6e1cf" }}
-                    >
-                      {cap}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
           </Field>
 
           {/* Permission mode */}

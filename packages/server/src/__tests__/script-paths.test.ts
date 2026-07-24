@@ -98,7 +98,6 @@ describe("claudeCodeProvider.buildArgs — statusLine command path", () => {
       injectChannelServer: false,
       channelServerScript: CHANNEL_SERVER_SCRIPT,
       serverPort: "3101",
-      capabilities: [],
     };
     const args = claudeCodeProvider.buildArgs(options);
     const settingsIdx = args.indexOf("--settings");
