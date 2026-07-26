@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents } from "../agents/store.js";
 import { getProvider } from "../providers/index.js";
@@ -328,6 +329,20 @@ export const hooksIngestRouter = new Hono();
 // before deriveStatus consumes them. CC has no translator (identity).
 hooksIngestRouter.post("/:sessionId", async (c) => {
   const sessionId = c.req.param("sessionId");
+
+  // Per-agent identity (ADR-055 PR B): a hook post must carry the token minted
+  // for THIS session. The socket already restricts ingest to same-user on-box
+  // processes; this additionally stops one agent forging status/notifications
+  // for another agent's session. Fail-closed — an unknown session has no minted
+  // token (verifyAgentToken returns false), so a stale hook from a dead session
+  // is rejected rather than mutating state under a defunct id.
+  if (!verifyAgentToken(sessionId, c.req.header("X-Agent-Token"))) {
+    console.warn(
+      `[hooks] ${sessionId.slice(0, 8)} rejected — missing or invalid per-agent token`,
+    );
+    return c.json({ error: "Invalid agent credential" }, 401);
+  }
+
   let rawBody: Record<string, unknown>;
   try {
     rawBody = await c.req.json();

@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { mintAgentToken } from "../agentCredentials.js";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
 import {
   assertSpawnReady,
@@ -63,6 +64,10 @@ a managing agent (such as your manager or a superior) ends it.`;
 // own single-purpose AUTONOMOS_INTERNAL_SOCKET.
 export const HOOK_CMD =
   'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
+  // Per-agent identity (ADR-055 PR B): ${...} stays UNEXPANDED here — the agent's
+  // shell substitutes it at hook time from env, so the token is never in argv.
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  ' -H "X-Agent-Token: ${AUTONOMOS_AGENT_TOKEN}"' +
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
   ' --unix-socket "${AUTONOMOS_INTERNAL_SOCKET}"' +
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
@@ -184,6 +189,13 @@ export function buildBaseEnv(
   env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
+  // Per-agent identity (ADR-055 PR B). HOOK_CMD sends this as X-Agent-Token so
+  // hook ingest can verify the POST is for THIS agent's own session. Referenced
+  // as ${AUTONOMOS_AGENT_TOKEN} in the (unexpanded) curl template, so the value
+  // lives only in env — never in the process argv a `ps` would show. mintOrGet:
+  // buildArgs injects the same token into the channel-server env for the gateway
+  // register, in whichever order the two run.
+  env.AUTONOMOS_AGENT_TOKEN = mintAgentToken(sessionId);
 
   return env;
 }

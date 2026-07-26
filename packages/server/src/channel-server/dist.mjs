@@ -425,7 +425,11 @@ function connectToServer() {
     reconnectDelay = 1e3;
     const msg = {
       type: "register",
-      sessionId: SESSION_ID
+      sessionId: SESSION_ID,
+      // Per-agent identity (ADR-055 PR B): prove we are this session, not just
+      // asserting its id. Undefined only for a pre-PR-B server that didn't set
+      // it — the gateway then rejects, which is correct for a new server.
+      agentToken: process.env.AUTONOMOS_AGENT_TOKEN
     };
     ws?.send(JSON.stringify(msg));
     process.stderr.write("autonomos-channel: connected to gateway\n");

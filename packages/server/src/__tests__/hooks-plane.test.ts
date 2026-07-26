@@ -30,6 +30,12 @@ import {
  * pinned here: hook curls are `-sf >/dev/null 2>&1` so a broken ingest path
  * shows up only as a fleet that mysteriously stops updating, and a read route
  * accidentally moved to the socket just leaves the dashboard blank.
+ *
+ * ADR-055 PR B additionally gates ingest on a per-agent token: reaching the
+ * socket is necessary but not sufficient, so one same-user process can't forge
+ * hooks for another agent. These tests assert the rejection contract; the happy
+ * path (a real agent's own curl carrying its token) is covered end-to-end by
+ * agent-spawn-prompt.test.ts.
  */
 
 interface HookState {
@@ -66,20 +72,22 @@ describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
     );
   });
 
-  it("accepts ingest over the socket without a token", async () => {
-    // No credential on purpose: on the socket, being able to connect at all
-    // IS the credential — the OS already restricted it to same-user on-box
-    // processes, which is exactly the set of real agents.
+  it("rejects socket ingest that lacks a valid per-agent token", async () => {
+    // ADR-055 PR B tightened PR A's model: reaching the socket is necessary but
+    // no longer sufficient. SESSION was never spawned, so it has no minted
+    // token — a same-user process that can open the socket still cannot forge a
+    // hook for an agent it isn't. (A real agent's own curl carries the token;
+    // that happy path is covered end-to-end by agent-spawn-prompt.test.ts.)
     const res = await ingest("UserPromptSubmit");
     assert.equal(
       res.status,
-      200,
-      `ingest must succeed on the socket: ${res.body}`,
+      401,
+      `tokenless socket ingest must be refused post-PR-B: ${res.body}`,
     );
   });
 
   it("refuses unauthenticated ingest on the public listener", async () => {
-    // THE headline of this PR: the unauthenticated network write is gone.
+    // Still true, and now doubly so: no route on TCP + no valid token.
     const res = await fetch(
       `http://127.0.0.1:${server.port}/api/hooks/${SESSION}`,
       {
@@ -91,24 +99,21 @@ describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
     assert.notEqual(
       res.status,
       200,
-      `unauthenticated hook ingest over TCP must NOT succeed — that is the ` +
-        `forgery hole ADR-055 closes.\n${server.logs()}`,
+      `unauthenticated hook ingest over TCP must NOT succeed.\n${server.logs()}`,
     );
   });
 
-  it("still serves the dashboard's read surface publicly, with a token", async () => {
-    // Written over the socket above; read back over TCP here. Both planes are
-    // the same process, so state is shared — the split is about reachability,
-    // not about two disconnected stores.
-    const { status, body } = await authedJson<HookState>(
+  it("the rejected write did not mutate agent state", async () => {
+    // The tokenless ingest above must have changed nothing — read it back on
+    // the public surface and confirm the session never reached a live status.
+    const { body } = await authedJson<HookState>(
       server,
       `/api/hooks/${SESSION}/status`,
     );
-    assert.equal(status, 200);
-    assert.equal(
+    assert.notEqual(
       body.lastEvent,
       "UserPromptSubmit",
-      "the public read surface must observe what socket ingest wrote",
+      "a rejected hook must not have written status",
     );
   });
 

@@ -29,6 +29,7 @@ import {
   type ResolvedSpawnOptions,
   type SidecarSpec,
 } from "@autonomos/core";
+import { mintAgentToken } from "../agentCredentials.js";
 import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
@@ -125,6 +126,9 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       // and rejected by /ws/* auth).
       "-c",
       `mcp_servers.autonomos.env.AUTONOMOS_TOKEN=${JSON.stringify(getAuthToken())}`,
+      // Per-agent identity (ADR-055 PR B) — sent in the gateway register.
+      "-c",
+      `mcp_servers.autonomos.env.AUTONOMOS_AGENT_TOKEN=${JSON.stringify(mintAgentToken(options.sessionId))}`,
     );
   }
 

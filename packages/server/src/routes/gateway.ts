@@ -10,6 +10,7 @@
 
 import type { GatewayWsMessage } from "@autonomos/core";
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
+import { verifyAgentToken } from "../agentCredentials.js";
 import {
   getAgentList,
   registerDashboard,
@@ -44,6 +45,26 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
 
         switch (msg.type) {
           case "register": {
+            // Per-agent identity (ADR-055 PR B): verify the token maps to the
+            // claimed session id BEFORE trusting it. Previously the client's
+            // asserted sessionId was taken verbatim and used as the sender
+            // identity for every routed message — any connected client could
+            // register as any agent. Now a register with a missing/wrong token
+            // is refused, so `sessionId` below (and thus routeMessage's sender)
+            // is attributable. Fail-closed: an unknown session has no minted
+            // token, so verifyAgentToken returns false.
+            if (!verifyAgentToken(msg.sessionId, msg.agentToken)) {
+              console.warn(
+                `[gateway] rejected register for ${msg.sessionId.slice(0, 8)} — ` +
+                  "missing or invalid per-agent token",
+              );
+              try {
+                ws.close(1008, "invalid agent credential");
+              } catch {
+                // already closing
+              }
+              break;
+            }
             clientType = "session";
             sessionId = msg.sessionId;
             registerSessionClient(msg.sessionId, ws);
