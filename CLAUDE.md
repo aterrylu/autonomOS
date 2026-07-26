@@ -62,6 +62,8 @@ Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enabl
 ### Prompt Delivery Receipt (`agents/promptDelivery.ts`)
 A starting prompt travels only as a CLI arg (`claude ... -- <prompt>`), so a startup-dialog race can silently drop it. Sessions spawned WITH a prompt are tracked through the hook stream: spawn → SessionStart → UserPromptSubmit confirms delivery. If SessionStart arrives but UserPromptSubmit doesn't within 20s, the prompt is re-delivered ONCE via PTY bracketed paste + Enter (any turn activity cancels — double-submission is worse than a manual nudge). No SessionStart within 15s → warning only. Failures surface as `SystemWarning` notifications in the dashboard notification panel.
 
+**Hook-relay providers only** (`hooks.eventCount > 0` — Claude Code, Gemini). Codex derives status from its app-server event stream and emits no hook events, so it can never produce a receipt; tracking it fired a false "may have failed to boot" warning on every prompted Codex agent. Consequence: **Codex spawn-with-prompt has no delivery detector** — a `--remote` TUI that fails to attach loses the prompt, and the daemon reports the thread idle, so it looks identical to a finished agent. A daemon-side receipt via `statusLoop` is possible follow-up work.
+
 ### Agent Communication (URI-based)
 Agents communicate via URI-based addressing through the gateway:
 - `agent://name` — send to a named agent

@@ -267,6 +267,19 @@ async function routeToAgent(
     return "Cannot send to yourself.";
   }
 
+  // A Codex agent that failed the running-check above falls through to here,
+  // and it DOES hold a channel-server WS (it needs one for outbound send()) —
+  // so this path would "succeed" into a socket whose reader ignores inbound
+  // (Codex consumes turns from its daemon, never channel notifications). That
+  // happens in the seconds between markExited and the MCP subprocess dropping
+  // its socket, and across a resume-crash respawn. Fail loudly instead.
+  if (getAgent(targetSessionId)?.provider === "codex") {
+    console.warn(
+      `[gateway] Codex agent "${targetName}" is not running — inbound not delivered`,
+    );
+    return `Codex agent "${targetName}" is not currently running — message not delivered.`;
+  }
+
   const senderName = await resolveAgentName(fromSessionId);
   const wsMsg: GatewayWsMessage = {
     type: "message",
@@ -317,49 +330,83 @@ function routeToPlatform(
 // ── Broadcast ─────────────────────────────────────────────────────
 
 function broadcastToAllAgents(fromSessionId: string, content: string): void {
-  resolveAgentName(fromSessionId).then((senderName) => {
-    const wsMsg: GatewayWsMessage = {
-      type: "message",
-      payload: buildAgentMessage(fromSessionId, senderName, content),
-    };
-    const json = JSON.stringify(wsMsg);
+  // routeMessage already ack'd the sender before any of this runs, so an
+  // unhandled rejection in here would take out EVERY recipient (channel-server,
+  // Codex and the dashboard fan-out) while the sender was told it succeeded —
+  // the same accepted-then-dropped shape this file logs against elsewhere.
+  // listAgents() can throw by design on a degraded store, so this is reachable.
+  resolveAgentName(fromSessionId)
+    .then((senderName) => {
+      const wsMsg: GatewayWsMessage = {
+        type: "message",
+        payload: buildAgentMessage(fromSessionId, senderName, content),
+      };
+      const json = JSON.stringify(wsMsg);
 
-    // Claude Code (and other channel-server) agents: deliver over their WS.
-    // Codex agents ALSO register a channel-server WS (for outbound send()), but
-    // they ignore inbound notifications/claude/channel — they receive via the
-    // daemon fan-out below. Skip them here so a broadcast isn't delivered twice
-    // (a wasted WS write today, and a user-visible duplicate if a future
-    // provider ever surfaces that MCP notification).
-    for (const [sessionId, client] of sessionClients) {
-      if (sessionId === fromSessionId) continue;
-      if (getAgent(sessionId)?.provider === "codex") continue;
-      try {
-        client.send(json);
-      } catch (err) {
-        console.warn(
-          `[gateway] broadcast to agent ${sessionId} failed, removing:`,
-          err,
-        );
-        sessionClients.delete(sessionId);
+      // Claude Code (and other channel-server) agents: deliver over their WS.
+      // Codex agents ALSO register a channel-server WS (for outbound send()),
+      // but they ignore inbound notifications/claude/channel — they receive via
+      // the daemon fan-out below. Skip them here so a broadcast isn't delivered
+      // twice (a wasted WS write today, and a user-visible duplicate if a future
+      // provider ever surfaces that MCP notification).
+      let delivered = 0;
+      for (const [sessionId, client] of sessionClients) {
+        if (sessionId === fromSessionId) continue;
+        if (getAgent(sessionId)?.provider === "codex") continue;
+        try {
+          client.send(json);
+          delivered++;
+        } catch (err) {
+          console.warn(
+            `[gateway] broadcast to agent ${sessionId} failed, removing:`,
+            err,
+          );
+          sessionClients.delete(sessionId);
+        }
       }
-    }
 
-    // Codex agents receive via their app-server daemon, not the channel-server
-    // WS — fan out to every running Codex agent that has a live endpoint.
-    const attributed = formatInbound(
-      senderName,
-      `agent://${senderName}`,
-      content,
-    );
-    for (const agent of listAgents()) {
-      if (agent.provider !== "codex" || agent.status !== "running") continue;
-      if (agent.id === fromSessionId) continue;
-      const endpoint = getAgentSidecarEndpoint(agent.id);
-      if (endpoint) deliverToCodex(agent.id, endpoint, attributed);
-    }
+      // Codex agents receive via their app-server daemon, not the channel-server
+      // WS — fan out to every running Codex agent that has a live endpoint.
+      const attributed = formatInbound(
+        senderName,
+        `agent://${senderName}`,
+        content,
+      );
+      let undeliverable = 0;
+      for (const agent of listAgents()) {
+        if (agent.provider !== "codex" || agent.status !== "running") continue;
+        if (agent.id === fromSessionId) continue;
+        const endpoint = getAgentSidecarEndpoint(agent.id);
+        if (!endpoint) {
+          // Unlike the unicast path (which returns a reachability error to the
+          // sender), broadcast has no per-recipient ack — so a bare skip here
+          // was invisible from every angle. Say it out loud.
+          console.warn(
+            `[gateway] broadcast: Codex agent "${agent.name}" has no live app-server ` +
+              `daemon endpoint — not delivered`,
+          );
+          undeliverable++;
+          continue;
+        }
+        deliverToCodex(agent.id, endpoint, attributed);
+        delivered++;
+      }
 
-    fanOutToDashboard(wsMsg);
-  });
+      // The denominator for the per-recipient warning above — and the only way
+      // to tell "broadcast to a fleet of zero" from "broadcast delivered".
+      console.log(
+        `[gateway] broadcast from ${senderName} reached ${delivered} agent(s)` +
+          (undeliverable > 0 ? `, ${undeliverable} unreachable` : ""),
+      );
+
+      fanOutToDashboard(wsMsg);
+    })
+    .catch((err) => {
+      console.error(
+        `[gateway] broadcast from ${fromSessionId.slice(0, 8)} failed — no recipient received it:`,
+        err,
+      );
+    });
 }
 
 // ── Agent discovery ───────────────────────────────────────────────
