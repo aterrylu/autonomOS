@@ -27,17 +27,17 @@ import {
   disposeCodexControl,
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
-import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
-import { getServerPort } from "../serverState.js";
+import { assertControlPlaneReady, getServerPort } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
+  supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
 import { pickFreePort, type Sidecar, startSidecarDaemon } from "./sidecar.js";
@@ -660,9 +660,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     injectChannelServer: !!channels?.includes("server:autonomos"),
     channelServerScript: CHANNEL_SERVER_SCRIPT,
     serverPort: String(getServerPort()),
-    capabilities:
-      (params.template ? getTemplate(params.template)?.capabilities : null) ??
-      DEFAULT_CAPABILITIES,
     // Set by the sidecar block below (when the provider declares buildSidecar)
     // so buildArgs can emit `--remote <endpoint>` against the daemon.
     sidecarEndpoint: undefined as string | undefined,
@@ -883,7 +880,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // startup-dialog race can silently drop it (agent sits at an empty input
   // forever). Track spawn → SessionStart → UserPromptSubmit via the hook
   // stream and re-deliver via PTY paste if the receipt never arrives.
-  if (params.prompt) {
+  //
+  // Only for providers with a hook relay — see supportsPromptDeliveryReceipt.
+  //
+  // Nothing is lost by skipping Codex: its re-delivery fallback needs a
+  // SessionStart to reach the `awaiting_prompt_submit` phase, so it was never
+  // reachable — the tracker was a detector with a 100% false-positive rate and
+  // zero true-positive capability.
+  //
+  // But be clear about the gap this leaves: CODEX SPAWN-WITH-PROMPT NOW HAS NO
+  // DELIVERY DETECTOR AT ALL. If the `--remote` TUI fails to attach, the
+  // positional prompt is gone, and the daemon reports the thread as idle — so a
+  // Codex agent that never started its task looks exactly like one that
+  // finished it, and the spawner waits forever. A daemon-side receipt is
+  // cheap (statusLoop already polls thread/read: "spawned with a prompt and the
+  // thread never left idle within Ns") and is tracked as follow-up work, NOT
+  // handled here. The inbound queue-wait warning does not cover this case.
+  if (params.prompt && supportsPromptDeliveryReceipt(provider.capabilities)) {
     trackPromptDelivery(
       persisted.id,
       `${persisted.name} (${persisted.id.slice(0, 8)})`,
@@ -1216,12 +1229,20 @@ export async function resumeActiveAgents(): Promise<void> {
   console.log(`Resuming ${agents.length} agent(s)...`);
   let resumed = 0;
   for (const a of agents) {
-    if (a.template && !getTemplate(a.template)) {
-      console.warn(
-        `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
-      );
-    }
     try {
+      // Inside the try, deliberately. getTemplate() throws on anything that
+      // isn't ENOENT — that is its contract — so one corrupt or truncated
+      // template file used to escape this loop entirely and reject
+      // resumeActiveAgents(). The caller only .catch()es it to a log line, so
+      // EVERY agent after the bad one stayed status:"running" in sessions.json
+      // with no PTY behind it: a dashboard full of green agents whose terminals
+      // are dead, never markExited, never notified. The per-agent recovery
+      // below exists precisely to prevent that; this call was bypassing it.
+      if (a.template && !getTemplate(a.template)) {
+        console.warn(
+          `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
+        );
+      }
       await respawnAgent(a);
       console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...)`);
       resumed++;
@@ -1264,6 +1285,21 @@ export async function restartAllAttachments(): Promise<{
   idMap: Record<UUID, UUID>;
   failures: Array<{ id: UUID; name: string; error: string }>;
 }> {
+  // Readiness is checked UP FRONT, before a single PTY is killed (ADR-055).
+  //
+  // Placement is the whole point. This condition applies uniformly to every
+  // agent — if the control socket isn't bound, no respawn can succeed — so
+  // discovering it inside the respawn loop would mean aborting AFTER the kill
+  // pass and live.clear(), leaving every not-yet-respawned agent as a
+  // status:"running" record with no PTY: precisely the zombie the per-agent
+  // catch below exists to prevent. Letting it fall into that catch instead is
+  // no better — it would mark every agent "crashed" for what is really "the
+  // server is still starting up", and return 200 while doing it.
+  //
+  // Throwing here is clean: nothing has been destroyed, and the route has no
+  // local catch, so it reaches agentsRouter.onError as a 503 + Retry-After.
+  assertControlPlaneReady();
+
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
   const failures: Array<{ id: UUID; name: string; error: string }> = [];

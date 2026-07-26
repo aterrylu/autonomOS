@@ -213,8 +213,6 @@ export interface ResolvedSpawnOptions extends SpawnOptions {
   channelServerScript: string;
   /** autonomOS server port */
   serverPort: string;
-  /** Resolved capabilities from template (for MCP capability gating) */
-  capabilities: string[];
   /**
    * ws:// endpoint of the provider's sidecar daemon, set by the runtime before
    * buildSidecar/buildArgs when the provider declares buildSidecar. The daemon

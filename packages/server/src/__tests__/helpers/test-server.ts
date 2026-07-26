@@ -15,7 +15,8 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,6 +173,25 @@ export async function bootServer(opts?: {
     }, READY_TIMEOUT_MS);
   });
 
+  // The "listening on" banner is the PUBLIC listener's readiness signal, but
+  // the internal control socket binds a moment later (after pid-file
+  // arbitration, inside the acquired branch — see run.ts armRuntimeInits).
+  // Tests that address the socket, or that spawn an agent whose hook relay
+  // needs it, must wait for both. Poll the path rather than parse a second log
+  // line: the file appearing IS the bind completing.
+  const socketPath = join(configDir, "control.sock");
+  const socketDeadline = Date.now() + READY_TIMEOUT_MS;
+  while (!existsSync(socketPath)) {
+    if (Date.now() > socketDeadline) {
+      throw new Error(
+        `Internal control socket never appeared at ${socketPath} within ` +
+          `${READY_TIMEOUT_MS}ms.\nstdout:\n${stdoutChunks.join("")}\n` +
+          `stderr:\n${stderrChunks.join("")}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
   return {
     port,
     token,
@@ -209,6 +229,62 @@ export async function authedJson<T>(
     body = { error: text } as T;
   }
   return { status: res.status, body };
+}
+
+// ── Internal control socket (ADR-055) ────────────────────────────────
+
+/** Path of the booted server's internal control socket. */
+export function controlSocketPath(server: BootedServer): string {
+  return join(server.configDir, "control.sock");
+}
+
+export interface SocketResponse {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}
+
+/**
+ * Make an HTTP request over the server's internal Unix socket.
+ *
+ * `fetch()` cannot address a Unix socket, so this drops to node:http with
+ * `socketPath`. The hostname in the URL is irrelevant — the socket decides the
+ * destination — which is exactly how the agent-side `curl --unix-socket`
+ * reaches the same routes.
+ */
+export function socketRequest(
+  server: BootedServer,
+  path: string,
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
+): Promise<SocketResponse> {
+  return new Promise((resolveFn, rejectFn) => {
+    const req = request(
+      {
+        socketPath: controlSocketPath(server),
+        path,
+        method: init?.method ?? "GET",
+        headers: init?.headers ?? {},
+      },
+      (res) => {
+        const chunks: string[] = [];
+        res.on("data", (d: Buffer) => chunks.push(d.toString()));
+        res.on("end", () =>
+          resolveFn({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: chunks.join(""),
+          }),
+        );
+      },
+    );
+    req.on("error", rejectFn);
+    if (init?.body) req.write(init.body);
+    req.end();
+  });
 }
 
 export const sleep = (ms: number): Promise<void> =>

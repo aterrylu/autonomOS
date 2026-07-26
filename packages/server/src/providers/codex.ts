@@ -117,8 +117,6 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       `mcp_servers.autonomos.env.AUTONOMOS_SESSION_ID=${JSON.stringify(options.sessionId)}`,
       "-c",
       `mcp_servers.autonomos.env.AUTONOMOS_AGENT_NAME=${JSON.stringify(options.agentName)}`,
-      "-c",
-      `mcp_servers.autonomos.env.AUTONOMOS_CAPABILITIES=${JSON.stringify(options.capabilities.join(","))}`,
       // Forward the in-process auth token (server may have booted without
       // AUTONOMOS_TOKEN in env; reading process.env would leave it tokenless
       // and rejected by /ws/* auth).

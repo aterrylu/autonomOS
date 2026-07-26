@@ -9,13 +9,6 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 // packages/server/src/mcp/tools.ts
-var DEFAULT_CAPABILITIES = [
-  "send",
-  "list_agents",
-  "create_agent",
-  "kill_agent",
-  "self_exit"
-];
 var TOOL_CREATE_AGENT = {
   name: "create_agent",
   description: "Create a new agent \u2014 a dedicated CLI session with a name, context, and optional task. Defaults to Claude Code; set `provider` to spawn a Codex or Gemini agent instead.",
@@ -40,7 +33,7 @@ var TOOL_CREATE_AGENT = {
       },
       resumeSessionId: {
         type: "string",
-        description: "Claude Code session ID to resume (for reconnecting to an existing agent)"
+        description: "Session id to resume: an autonomOS agent id OR a raw Claude Code session id \u2014 including an EXTERNAL session started via terminal `claude`. External sessions are adopted into a new managed agent and resumed."
       },
       forkFrom: {
         type: "string",
@@ -54,7 +47,7 @@ var TOOL_CREATE_AGENT = {
       },
       template: {
         type: "string",
-        description: "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and capabilities."
+        description: "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and permission mode."
       },
       manager: {
         type: "string",
@@ -160,7 +153,7 @@ var TOOL_LIST_TEMPLATES = {
 };
 var TOOL_CREATE_TEMPLATE = {
   name: "create_template",
-  description: "Create a reusable agent template (blueprint) that defines a role, system prompt, and capabilities. Saved to ~/.autonomos/templates/.",
+  description: "Create a reusable agent template (blueprint) that defines a role, system prompt, and permission mode. Saved to ~/.autonomos/templates/.",
   inputSchema: {
     type: "object",
     properties: {
@@ -180,11 +173,6 @@ var TOOL_CREATE_TEMPLATE = {
         type: "string",
         description: "System prompt appended to the agent's CC session. Defines the agent's behavior and responsibilities."
       },
-      capabilities: {
-        type: "array",
-        items: { type: "string" },
-        description: `Capabilities to grant: ${DEFAULT_CAPABILITIES.map((c) => `'${c}'`).join(", ")}. Defaults to all.`
-      },
       permissionMode: {
         type: "string",
         enum: ["default", "auto", "plan", "bypass"],
@@ -193,6 +181,15 @@ var TOOL_CREATE_TEMPLATE = {
       model: {
         type: "string",
         description: "Model override for litellm routing (e.g. 'opus', 'sonnet', 'haiku'). Omit for CC default."
+      },
+      // Kept only to be reported as ignored, matching the HTTP MCP schema.
+      // Agents spawned before ADR-058 still hold the old schema and keep
+      // sending this; the write path answers with a deprecation notice rather
+      // than dropping it silently. Remove once no pre-ADR-058 agent is running.
+      capabilities: {
+        type: "array",
+        items: { type: "string" },
+        description: "DEPRECATED (ADR-058) \u2014 ignored. It never restricted anything. Constrain workers in systemPrompt instead."
       }
     },
     required: ["name", "role", "description", "systemPrompt"]
@@ -366,13 +363,6 @@ var ALL_TOOLS = [
   TOOL_DELETE_SCHEDULE,
   TOOL_RUN_SCHEDULE
 ];
-var CAPABILITY_GATED_TOOLS = new Set(DEFAULT_CAPABILITIES);
-function filterToolsByCapabilities(capabilities) {
-  const allowed = new Set(capabilities);
-  return ALL_TOOLS.filter((tool) => {
-    return !CAPABILITY_GATED_TOOLS.has(tool.name) || allowed.has(tool.name);
-  });
-}
 var MCP_SERVER_INFO = {
   name: "autonomos",
   version: "0.3.0"
@@ -408,7 +398,6 @@ var MCP_INSTRUCTIONS = [
 var SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 var SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
 var AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
-var CAPABILITIES = process.env.AUTONOMOS_CAPABILITIES ? process.env.AUTONOMOS_CAPABILITIES.split(",") : DEFAULT_CAPABILITIES;
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
     "autonomos-channel: AUTONOMOS_SESSION_ID and AUTONOMOS_SERVER_URL required\n"
@@ -554,25 +543,11 @@ async function serverFetch(path, init) {
   const pretty = typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
   return { content: [{ type: "text", text: pretty }] };
 }
-var agentTools = filterToolsByCapabilities(CAPABILITIES);
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: agentTools
+  tools: ALL_TOOLS
 }));
-var capSet = new Set(CAPABILITIES);
-var gatedTools = new Set(DEFAULT_CAPABILITIES);
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
-  if (gatedTools.has(name) && !capSet.has(name)) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Tool "${name}" is not available. Missing capability: "${name}".`
-        }
-      ],
-      isError: true
-    };
-  }
   switch (name) {
     case "send": {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -668,7 +643,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             workingDirectory,
             name: agentName,
             prompt,
-            resumeAgentId: resumeSessionId,
+            // Raw CC/agent session id — the server's polymorphic resolver
+            // reattaches a managed record or adopts an external CC session.
+            resumeSessionId,
             forkFromAgentId: forkFrom,
             // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
             permissionMode,

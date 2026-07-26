@@ -62,6 +62,8 @@ Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enabl
 ### Prompt Delivery Receipt (`agents/promptDelivery.ts`)
 A starting prompt travels only as a CLI arg (`claude ... -- <prompt>`), so a startup-dialog race can silently drop it. Sessions spawned WITH a prompt are tracked through the hook stream: spawn → SessionStart → UserPromptSubmit confirms delivery. If SessionStart arrives but UserPromptSubmit doesn't within 20s, the prompt is re-delivered ONCE via PTY bracketed paste + Enter (any turn activity cancels — double-submission is worse than a manual nudge). No SessionStart within 15s → warning only. Failures surface as `SystemWarning` notifications in the dashboard notification panel.
 
+**Hook-relay providers only** (`hooks.eventCount > 0` — Claude Code, Gemini). Codex derives status from its app-server event stream and emits no hook events, so it can never produce a receipt; tracking it fired a false "may have failed to boot" warning on every prompted Codex agent. Consequence: **Codex spawn-with-prompt has no delivery detector** — a `--remote` TUI that fails to attach loses the prompt, and the daemon reports the thread idle, so it looks identical to a finished agent. A daemon-side receipt via `statusLoop` is possible follow-up work.
+
 ### Agent Communication (URI-based)
 Agents communicate via URI-based addressing through the gateway:
 - `agent://name` — send to a named agent
@@ -72,7 +74,7 @@ The gateway router parses the URI scheme and delivers to the right destination.
 
 ### MCP Tool Architecture
 Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
-- **HTTP MCP server** (`mcp.ts`) — for external clients (Claude Desktop, CI)
+- **HTTP MCP server** (`mcp.ts`) — served on the internal Unix control socket (`$configDir/control.sock`), NOT the public port (ADR-055). Reachable only by same-user processes on the box; a remote client would need a tunnel or a local forwarder. Still requires the auth token.
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
 Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`. The channel server also has `send` (requires gateway WebSocket).
@@ -87,7 +89,9 @@ Native timer-based scheduling using Croner v10. Each enabled schedule gets its o
 **Key behaviors:** Overlap policies (`skip` default, `allow`), global concurrency limits (`maxConcurrentRuns`, default 3, FIFO queue), startup catch-up for missed runs, one-time schedules (`once:ISO` format). Agents create schedules via MCP tools; the dashboard SchedulesPanel monitors and controls them (no create button in UI). REST API: `GET/POST /api/schedules`, `GET/PUT/DELETE /api/schedules/:name`, `POST /api/schedules/:name/run`, `GET /api/schedules/:name/runs`, `GET /api/scheduler/status`, `PUT /api/scheduler/settings`. See ADR-026.
 
 ### Agent Templates (`~/.autonomos/templates/`)
-Reusable blueprints for creating agents. Individual JSON files with: `role`, `description`, `systemPrompt`, `capabilities`, `autonomousMode`, `model`. Created via `create_template` MCP tool or by dropping a `.json` file in the templates directory. Used via `create_agent(template: "team-lead", ...)`.
+Reusable blueprints for creating agents. Individual JSON files with: `role`, `description`, `systemPrompt`, `permissionMode`, `model`. Created via `create_template` MCP tool or by dropping a `.json` file in the templates directory. Used via `create_agent(template: "team-lead", ...)`.
+
+Two fields are accepted-and-ignored for backward compatibility: `autonomousMode` (migrated to `permissionMode`, ADR-045) and `capabilities` (removed, ADR-058 — it filtered the MCP tool list without restricting the REST API every agent can already reach, while the injected system prompt advertised the full list either way). Restrict worker agents via `systemPrompt` prose instead.
 
 ### Agent Hierarchy (Org Chart)
 Hierarchy metadata (`template`, `manager`, `project`) is stored on persisted sessions in `sessions.json`. The org chart is derived at query time from `manager` references. Configured at runtime via `set_manager` MCP tool — agents or the human can organize the hierarchy after spawning. REST API: `GET /api/org`, `PUT /api/org/manager`, `GET/POST /api/templates`.

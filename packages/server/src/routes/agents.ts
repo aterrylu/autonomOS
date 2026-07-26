@@ -36,6 +36,7 @@ import {
   setManager,
 } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
+import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
 
 export const agentsRouter = new Hono();
@@ -53,6 +54,21 @@ export const agentsRouter = new Hono();
 // to keep WS clients in sync with disk before the response goes out.
 // This onError covers the simpler routes that don't have that.
 agentsRouter.onError((err, c) => {
+  // A spawn that lands in the boot window before the control socket binds
+  // (ADR-055). Distinct from CachePoisonedError below in one important way:
+  // this one IS retryable, and clears on its own within a moment of startup —
+  // so say so, rather than leaking the raw invariant string as a 500 and
+  // leaving the caller to guess whether retrying is pointless.
+  if (err instanceof ControlPlaneNotReadyError) {
+    console.warn(
+      `[agents] ${err.code} on ${c.req.method} ${c.req.path} — spawn arrived before the control socket bound`,
+    );
+    return c.json(
+      { error: err.message, code: err.code, retryable: true },
+      503,
+      { "Retry-After": "1" },
+    );
+  }
   if (err instanceof CachePoisonedError) {
     console.error(`[agents] CACHE_POISONED on ${c.req.method} ${c.req.path}`);
     return c.json(
@@ -196,10 +212,21 @@ agentsRouter.post("/", async (c) => {
     return c.json({ error: "workingDirectory is required" }, 400);
   }
 
-  // Resolve template if provided
+  // Resolve template if provided. getTemplate() returns null for a missing file
+  // but THROWS for a corrupt one (bad JSON, wrong shape) — the message names the
+  // file. Catch it here and map to 400: unwrapped, the throw escapes to Hono's
+  // default handler and becomes an opaque 500, dropping exactly the guidance an
+  // operator needs. The MCP create_agent path already wraps this call, so
+  // without this the two surfaces disagree about the same corrupt file.
   const templateName =
     typeof body.template === "string" ? body.template : undefined;
-  const tmpl = templateName ? getTemplate(templateName) : null;
+  let tmpl: ReturnType<typeof getTemplate> = null;
+  try {
+    tmpl = templateName ? getTemplate(templateName) : null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ error: `Template "${templateName}": ${message}` }, 400);
+  }
   if (templateName && !tmpl) {
     return c.json({ error: `Template "${templateName}" not found` }, 400);
   }
@@ -270,6 +297,11 @@ agentsRouter.post("/", async (c) => {
     });
     return c.json(result.agent, 201);
   } catch (err) {
+    // Let the boot-window case reach onError, which owns the 503 + Retry-After
+    // shape. Re-throwing rather than duplicating that response here keeps one
+    // definition of "not ready yet" — this local catch exists to classify
+    // SPAWN failures, and "the server hasn't finished starting" isn't one.
+    if (err instanceof ControlPlaneNotReadyError) throw err;
     const message = err instanceof Error ? err.message : "Unknown error";
     // Typed status when the throw site declared one; substring chain otherwise.
     return c.json(
@@ -416,6 +448,10 @@ agentsRouter.post("/:id/attach", async (c) => {
     });
     return c.json(result.agent);
   } catch (err) {
+    // ADR-055: the boot-window case must reach onError (retryable 503) rather
+    // than fall into the classifier below, which would map it to a generic
+    // status. Re-throw before any classification. See POST / above.
+    if (err instanceof ControlPlaneNotReadyError) throw err;
     // Same classifier as POST / — spawnErrorStatus's doc asserts the two entry
     // points agree on a given user error, and a hand-rolled mapping here made
     // that false: /attach passes `name: agent.name`, so a live namesake threw

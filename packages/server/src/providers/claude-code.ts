@@ -97,6 +97,9 @@ const RESERVED_ENV_KEYS = new Set([
   "PATH",
   "HOME",
   "AUTONOMOS_SERVER",
+  // Reserved for the same reason as the rest: user-supplied customEnvVars must
+  // not be able to repoint the hook relay's control-plane destination.
+  "AUTONOMOS_INTERNAL_SOCKET",
   "AUTONOMOS_SESSION_ID",
   "AUTONOMOS_AGENT_NAME",
 ]);
@@ -187,7 +190,6 @@ export const claudeCodeProvider: AgentProvider = {
                 AUTONOMOS_SERVER_URL: `ws://localhost:${options.serverPort}/ws/gateway`,
                 AUTONOMOS_SESSION_ID: options.sessionId,
                 AUTONOMOS_AGENT_NAME: options.agentName,
-                AUTONOMOS_CAPABILITIES: options.capabilities.join(","),
                 // Forward the in-process auth token (from serverState, set at
                 // server boot in run.ts) rather than `process.env.AUTONOMOS_TOKEN`.
                 // resolveAuthToken() falls back to ~/.autonomos/token on disk,

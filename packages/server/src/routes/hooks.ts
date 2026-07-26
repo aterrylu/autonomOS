@@ -4,8 +4,13 @@ import { getAgent, listAgents } from "../agents/store.js";
 import { getProvider } from "../providers/index.js";
 
 /**
- * Hook events received from Claude Code sessions via autonomos-relay.sh.
- * Tracks agent status (working, idle, needs input) and notifications.
+ * Hook events received from spawned agent sessions (any provider) via the
+ * inline `HOOK_CMD` curl in providers/shared.ts, which posts over the internal
+ * control socket. Tracks agent status (working, idle, needs input) and
+ * notifications.
+ *
+ * (The `hooks/autonomos-relay.sh` script this comment used to name is not
+ * wired into any spawn path — HOOK_CMD superseded it.)
  */
 
 export interface HookEvent {
@@ -294,15 +299,34 @@ function extractToolDetail(event: HookEvent): string | undefined {
   return undefined;
 }
 
-// ── Router ───────────────────────────────────────────────────────────
+// ── Routers ──────────────────────────────────────────────────────────
+//
+// `/api/hooks` looks like one surface but is two, split along a trust boundary
+// (ADR-055):
+//
+//   INGEST — `POST /:sessionId`, written to by spawned agents. Served ONLY on
+//     the internal Unix socket. This is the route that used to accept
+//     unauthenticated writes from anywhere on the network (the residual
+//     ADR-054 left open): a hook post drives agent status and notifications,
+//     so anyone who could reach it could forge either. On the socket it is
+//     reachable only by same-user on-box processes — i.e. actual agents.
+//
+//   READ — everything else, called by the DASHBOARD (browser). Stays on the
+//     public listener behind the token, because that is where the browser is.
+//     Moving these to the socket would blind the notification panel and the
+//     sidebar's status poll.
+//
+// They are separate Hono instances rather than one router mounted twice: the
+// whole point is that ingest is NOT reachable publicly, which a shared mount
+// would silently undo.
 
-export const hooksRouter = new Hono();
+export const hooksIngestRouter = new Hono();
 
 // Receive hook events from agent sessions (any provider).
 // Providers may emit native event names (e.g. Gemini's "BeforeTool") — the
 // provider's optional normalizeEvent() translates them to CC-shaped vocabulary
 // before deriveStatus consumes them. CC has no translator (identity).
-hooksRouter.post("/:sessionId", async (c) => {
+hooksIngestRouter.post("/:sessionId", async (c) => {
   const sessionId = c.req.param("sessionId");
   let rawBody: Record<string, unknown>;
   try {
@@ -482,14 +506,18 @@ hooksRouter.post("/:sessionId", async (c) => {
   return c.json({ ok: true, event, sessionId });
 });
 
+// ── Read surface (public listener, token-gated) ──────────────────────
+
+export const hooksReadRouter = new Hono();
+
 // Get agent status for a session
-hooksRouter.get("/:sessionId/status", (c) => {
+hooksReadRouter.get("/:sessionId/status", (c) => {
   const sessionId = c.req.param("sessionId");
   return c.json(getAgentState(sessionId));
 });
 
 // Bulk notifications across all sessions (for notification panel)
-hooksRouter.get("/notifications", (c) => {
+hooksReadRouter.get("/notifications", (c) => {
   const allAgents = listAgents();
   const sessionNames = new Map(allAgents.map((a) => [a.id, a.name]));
 
@@ -518,7 +546,7 @@ hooksRouter.get("/notifications", (c) => {
 });
 
 // Get notifications for a session
-hooksRouter.get("/:sessionId/notifications", (c) => {
+hooksReadRouter.get("/:sessionId/notifications", (c) => {
   const sessionId = c.req.param("sessionId");
   return c.json({
     notifications: getNotifications(sessionId),
@@ -527,14 +555,14 @@ hooksRouter.get("/:sessionId/notifications", (c) => {
 });
 
 // Mark all notifications as read for a session
-hooksRouter.post("/:sessionId/read", (c) => {
+hooksReadRouter.post("/:sessionId/read", (c) => {
   const sessionId = c.req.param("sessionId");
   markRead(sessionId);
   return c.json({ ok: true });
 });
 
 // Bulk status for all sessions (efficient single call from sidebar)
-hooksRouter.get("/", (c) => {
+hooksReadRouter.get("/", (c) => {
   const result: Record<string, { status: AgentState; unread: number }> = {};
   for (const [id, state] of agentStates) {
     result[id] = { status: state, unread: getUnreadCount(id) };
