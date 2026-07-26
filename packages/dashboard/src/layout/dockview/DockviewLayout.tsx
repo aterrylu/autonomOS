@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { type ActivePane, THEMES, type ThemeName, useStore } from "../../store";
 import { DRAG_TYPE, decodeDragData } from "../DragContext";
 import { PaneContent, type PaneParams } from "./PaneContent";
-import { paneFromId, SINGLETON_TYPES } from "./paneId";
+import { paneFromPanel, SINGLETON_TYPES } from "./paneId";
 import { StatusTab } from "./StatusTab";
 
 /** dockview drop Position → addPanel Direction (inlined to avoid importing from
@@ -146,7 +146,6 @@ export function DockviewLayout() {
 
   const activePane = useStore((s) => s.activePane);
   const sessions = useStore((s) => s.sessions);
-  const previewPanes = useStore((s) => s.previewPanes);
   const theme = useStore((s) => s.theme);
 
   // Mirror the panel ids dockview is currently showing into the store so the
@@ -217,14 +216,9 @@ export function DockviewLayout() {
             // panes before the first fetch lands.
             if (restored && st.sessionsInitialFetchDone) {
               const live = new Set(st.sessions.map((s) => s.id));
-              const previewIds = new Set(st.previewPanes.map((p) => p.id));
               for (const panel of [...api.panels]) {
                 const id = panel.id;
-                if (
-                  !SINGLETON_TYPES.has(id) &&
-                  !previewIds.has(id) &&
-                  !live.has(id)
-                )
+                if (!SINGLETON_TYPES.has(id) && !live.has(id))
                   api.removePanel(panel);
               }
             }
@@ -261,13 +255,11 @@ export function DockviewLayout() {
     // (their sessions aren't "live" yet) leaving a blank pane area.
     if (!st.sessionsInitialFetchDone) return;
     const live = new Set(st.sessions.map((s) => s.id));
-    const previewIds = new Set(st.previewPanes.map((p) => p.id));
     suppressWriteback.current = true;
     try {
       for (const panel of [...api.panels]) {
         const id = panel.id;
-        const isSession = !SINGLETON_TYPES.has(id) && !previewIds.has(id);
-        if (isSession && !live.has(id)) api.removePanel(panel);
+        if (!SINGLETON_TYPES.has(id) && !live.has(id)) api.removePanel(panel);
       }
     } finally {
       suppressWriteback.current = false;
@@ -386,9 +378,12 @@ export function DockviewLayout() {
         if (!id) return;
         const st = useStore.getState();
         if (st.activePane?.id === id) return;
+        // Skip retired panels (see paneFromPanel) rather than laundering them
+        // into a session pane that would survive the next reload's validation.
+        const next = paneFromPanel(id, api.activePanel?.params?.pane);
+        if (!next) return;
         appliedActiveId.current = id;
-        const previewIds = new Set(st.previewPanes.map((p) => p.id));
-        st.setActivePane(paneFromId(id, previewIds));
+        st.setActivePane(next);
       });
 
       // Mark internal tab/group drags so the writeback above is gated for their
@@ -444,15 +439,14 @@ export function DockviewLayout() {
     }
   }, [activePane, syncToActive]);
 
-  // Prune ghost panels whenever the live session list OR the open previews
-  // change — a dead session (exit) and a closed preview both leave an orphan
-  // panel that pruneDead removes. `sessions`/`previewPanes` are the intentional
-  // triggers (pruneDead reads them fresh via getState(), so biome can't see the
-  // usage); keep the deps or the prune never re-runs.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sessions/previewPanes are the re-run triggers
+  // Prune ghost panels whenever the live session list changes — a dead session
+  // (exit) leaves an orphan panel that pruneDead removes. `sessions` is the
+  // intentional trigger (pruneDead reads it fresh via getState(), so biome can't
+  // see the usage); keep the dep or the prune never re-runs.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessions is the re-run trigger
   useEffect(() => {
     if (apiRef.current) pruneDead(apiRef.current);
-  }, [sessions, previewPanes, pruneDead]);
+  }, [sessions, pruneDead]);
 
   // Clear visiblePaneIds when this component unmounts — SessionViewManager
   // unmounts DockviewLayout when activePane goes null (the empty state), and a
@@ -496,9 +490,12 @@ export function DockviewLayout() {
         if (!id) return;
         const st = useStore.getState();
         if (st.activePane?.id === id) return;
+        // Skip retired panels (see paneFromPanel) rather than laundering them
+        // into a session pane that would survive the next reload's validation.
+        const next = paneFromPanel(id, api.activePanel?.params?.pane);
+        if (!next) return;
         appliedActiveId.current = id;
-        const previewIds = new Set(st.previewPanes.map((p) => p.id));
-        st.setActivePane(paneFromId(id, previewIds));
+        st.setActivePane(next);
       });
     };
     const onDragEnd = () => {

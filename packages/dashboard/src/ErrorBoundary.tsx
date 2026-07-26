@@ -16,12 +16,7 @@ const RESET_WINDOW_MS = 10_000;
  * Clearing just these keys recovers the layout while preserving theme, sidebar,
  * and other preferences.
  */
-const LAYOUT_KEYS = [
-  "dvWorkspaces",
-  "dvPaneWorkspace",
-  "activePane",
-  "previewPanes",
-];
+const LAYOUT_KEYS = ["dvWorkspaces", "dvPaneWorkspace", "activePane"];
 
 /** True if a layout reset was attempted in the last RESET_WINDOW_MS — i.e. this
  *  mount is the reload that followed a reset. A crash now means the reset failed. */

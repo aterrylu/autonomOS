@@ -123,7 +123,7 @@ A booming trend with 7+ active open-source projects:
 - Lowest effort, immediate value
 
 ### Phase 2: React Flow Canvas Panel
-- New panel type alongside terminal/preview
+- New panel type alongside the terminal
 - Custom nodes: status icon, name, current tool, message snippets
 - Animated edges for message flow
 - Auto-layout with Dagre

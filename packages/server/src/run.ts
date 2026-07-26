@@ -44,7 +44,6 @@ import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
-import { fileRouter, fileWatchRouter } from "./routes/files.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { hooksIngestRouter, hooksReadRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
@@ -342,7 +341,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/hooks", hooksReadRouter);
 
   // REST API (behind auth)
-  app.route("/api/files", fileRouter);
   app.route("/api/projects", projectRouter);
   app.route("/api/agents", agentsRouter);
   app.route("/api/settings", settingsRouter);
@@ -377,9 +375,8 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     return new Response(null);
   });
 
-  // WebSocket — terminal PTY streaming, file watching, gateway, agent deltas
+  // WebSocket — terminal PTY streaming, gateway, agent deltas
   app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
-  app.get("/ws/files/watch", fileWatchRouter(upgradeWebSocket));
   app.get("/ws/gateway", gatewayRouter(upgradeWebSocket));
   app.get("/ws/agents", agentsWsRouter(upgradeWebSocket));
 

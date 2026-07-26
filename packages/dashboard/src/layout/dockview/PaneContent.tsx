@@ -2,11 +2,11 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateAgentPanel } from "../../components/CreateAgentPanel";
 import { HierarchyPanel } from "../../components/HierarchyPanel";
-import { PreviewPane } from "../../components/PreviewPane";
 import { SchedulesPanel } from "../../components/SchedulesPanel";
 import { SessionPane } from "../../components/SessionPane";
 import { TemplatesPanel } from "../../components/TemplatesPanel";
-import { type ActivePane, useStore } from "../../store";
+import type { ActivePane } from "../../store";
+import { isValidActivePane } from "./paneId";
 
 /** Params carried on every dockview panel — the autonomOS pane it renders. */
 export interface PaneParams {
@@ -21,7 +21,7 @@ export interface PaneParams {
  * Visibility: dockview's `defaultRenderer: "always"` keeps every panel's DOM
  * mounted, hiding inactive ones with `visibility:hidden` (NOT `display:none`),
  * so they retain full layout dimensions. We forward dockview's authoritative
- * `props.api.isVisible` into `SessionPane`/`PreviewPane` as `visible`, which
+ * `props.api.isVisible` into `SessionPane` as `visible`, which
  * toggles `display:none` on the hidden panel. That is load-bearing for the
  * terminal: `useTerminal` infers "is this pane showing?" from a nonzero offset
  * box (`offsetWidth > 0 && offsetHeight > 0`) to dispose the WebGL context +
@@ -32,7 +32,37 @@ export interface PaneParams {
  */
 export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
   const { pane } = props.params;
-  const previewPanes = useStore((s) => s.previewPanes);
+
+  // Retired/unknown pane type → close the panel loudly instead of rendering an
+  // empty box. This is reachable ONLY from persisted state: dockview's
+  // `toJSON()` serializes each panel's `params`, so a pane descriptor written by
+  // an older build (e.g. the removed markdown preview's `{type:"preview"}`)
+  // survives inside `dvWorkspaces[*].serialized` and is re-created verbatim by
+  // `fromJSON` on restore. `activePane` is validated on rehydrate, but
+  // `serialized` is not — so this is the second, unvalidated carrier.
+  //
+  // The dead-panel strip in DockviewLayout can't be relied on here: it's gated
+  // on `sessionsInitialFetchDone`, which never flips while `/api/agents` is
+  // failing, leaving a permanently blank tab. TypeScript can't help either —
+  // the type was deleted from the union, so this branch looks unreachable to the
+  // compiler while being live at runtime against untyped JSON. Hence a runtime
+  // check at the one boundary every panel path (fromJSON, showSolo, addPanel,
+  // drop) funnels through.
+  //
+  // `pane` is typed non-nullable but arrives from that untrusted JSON, so it can
+  // be absent entirely. Render must therefore bail BEFORE touching `pane.type`
+  // (render runs before effects — reading it here would throw a TypeError into
+  // the ErrorBoundary instead of closing the panel with the warning below).
+  const paneIsRenderable = isValidActivePane(pane);
+  useEffect(() => {
+    if (paneIsRenderable) return;
+    const { type, id } = (pane ?? {}) as { type?: unknown; id?: unknown };
+    console.warn(
+      `[autonomOS] Closing panel "${String(id)}": unknown pane type "${String(type)}" ` +
+        `from a saved layout (feature removed in a newer build).`,
+    );
+    props.api.close();
+  }, [paneIsRenderable, pane, props.api]);
 
   // Track dockview's real visibility for this panel (active tab in a shown
   // group). Forwarded to the content so hidden panes get `display:none`.
@@ -85,16 +115,14 @@ export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
     return () => d.dispose();
   }, [props.api]);
 
+  // Nothing to render for a pane the switch below can't handle; the effect
+  // above closes the panel. Placed after every hook so hook order is stable.
+  if (!paneIsRenderable) return null;
+
   const inner = (() => {
     switch (pane.type) {
       case "session":
         return <SessionPane sessionId={pane.id} visible={visible} />;
-      case "preview": {
-        const preview = previewPanes.find((p) => p.id === pane.id);
-        return preview ? (
-          <PreviewPane preview={preview} visible={visible} />
-        ) : null;
-      }
       case "orgchart":
         return <HierarchyPanel />;
       case "templates":

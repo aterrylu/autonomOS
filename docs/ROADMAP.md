@@ -27,9 +27,9 @@ Last updated: 2026-04-14
 - [x] xterm.js 6 upgrade — native synchronized output support (flicker-free rendering)
 - [x] Auto-persist sessions — survive server restarts, PM2 daemon mode
 - [x] Settings panel — configure API keys, channels, auto-trust toggle
-- [x] Markdown preview — Ctrl+click .md links in terminal, mermaid diagram support (ADR-018)
+- [x] Markdown preview — shipped (ADR-018), then removed 2026-07-25 after silently regressing (ADR-059)
 - [x] Codicon icons — VSCode-style iconography throughout UI
-- [x] Drag-to-reorder — reorder sessions and preview panes in sidebar
+- [x] Drag-to-reorder — reorder sessions in sidebar
 - [x] Simplified Makefile — dev/prod split, PM2 daemon, remote deployment via rsync
 - [x] Research: agent platform design (ADR-019–022) — folder model, session model, context assembly, audience types
 - [x] Research: multi-agent landscape — Jinn, Marc Nuri, Claudia, ccswarm, multiclaude, OpenSwarm

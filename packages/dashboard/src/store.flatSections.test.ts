@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  buildFlatSections,
-  type PreviewPaneInfo,
-  type SessionInfo,
-  useStore,
-} from "./store";
+import { buildFlatSections, type SessionInfo, useStore } from "./store";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -22,22 +17,16 @@ function sess(id: string): SessionInfo {
   };
 }
 
-function preview(id: string): PreviewPaneInfo {
-  return { id, filePath: `/tmp/${id}.md`, title: id };
-}
-
-/** Section items → their order keys, for terse assertions. */
-function keys(items: { type: string; data: { id: string } }[]): string[] {
-  return items.map((i) =>
-    i.type === "preview" ? `preview:${i.data.id}` : i.data.id,
-  );
+/** Section sessions → their order keys, for terse assertions. */
+function keys(sessions: SessionInfo[]): string[] {
+  return sessions.map((s) => s.id);
 }
 
 // ── buildFlatSections (pure) ─────────────────────────────────────────
 
 describe("buildFlatSections", () => {
   it("returns empty sections for no items", () => {
-    const r = buildFlatSections([], [], [], []);
+    const r = buildFlatSections([], [], []);
     expect(r.pinned).toEqual([]);
     expect(r.unpinned).toEqual([]);
   });
@@ -45,7 +34,6 @@ describe("buildFlatSections", () => {
   it("orders unpinned by unpinnedOrder", () => {
     const r = buildFlatSections(
       [sess("a"), sess("b"), sess("c")],
-      [],
       [],
       ["c", "a", "b"],
     );
@@ -56,7 +44,6 @@ describe("buildFlatSections", () => {
   it("places pinned (in pinnedOrder) above unpinned", () => {
     const r = buildFlatSections(
       [sess("a"), sess("b"), sess("c")],
-      [],
       ["b"],
       ["a", "c"],
     );
@@ -68,14 +55,13 @@ describe("buildFlatSections", () => {
     const r = buildFlatSections(
       [sess("a"), sess("b"), sess("fresh")],
       [],
-      [],
       ["a", "b"],
     );
     expect(keys(r.unpinned)).toEqual(["fresh", "a", "b"]);
   });
 
   it("a fresh arrival never lands in the pinned section", () => {
-    const r = buildFlatSections([sess("a"), sess("fresh")], [], ["a"], []);
+    const r = buildFlatSections([sess("a"), sess("fresh")], ["a"], []);
     expect(keys(r.pinned)).toEqual(["a"]);
     expect(keys(r.unpinned)).toEqual(["fresh"]);
   });
@@ -83,7 +69,6 @@ describe("buildFlatSections", () => {
   it("ignores stale keys with no matching live item", () => {
     const r = buildFlatSections(
       [sess("a")],
-      [],
       ["dead-pinned"],
       ["a", "dead-unpinned"],
     );
@@ -91,19 +76,8 @@ describe("buildFlatSections", () => {
     expect(keys(r.unpinned)).toEqual(["a"]);
   });
 
-  it("keeps previews in the unpinned section", () => {
-    const r = buildFlatSections(
-      [sess("a")],
-      [preview("p1")],
-      ["a"],
-      ["preview:p1"],
-    );
-    expect(keys(r.pinned)).toEqual(["a"]);
-    expect(keys(r.unpinned)).toEqual(["preview:p1"]);
-  });
-
   it("dedupes a key present in both arrays — pinned wins", () => {
-    const r = buildFlatSections([sess("a")], [], ["a"], ["a"]);
+    const r = buildFlatSections([sess("a")], ["a"], ["a"]);
     expect(keys(r.pinned)).toEqual(["a"]);
     expect(keys(r.unpinned)).toEqual([]);
   });
@@ -112,7 +86,6 @@ describe("buildFlatSections", () => {
     // All of a,b,c pinned (unpinnedOrder empty); a fresh 'd' spawns.
     const r = buildFlatSections(
       [sess("a"), sess("b"), sess("c"), sess("d")],
-      [],
       ["a", "b", "c"],
       [],
     );
@@ -125,13 +98,11 @@ describe("buildFlatSections", () => {
 
 function seed(opts: {
   sessions: string[];
-  previews?: string[];
   pinnedOrder?: string[];
   unpinnedOrder?: string[];
 }) {
   useStore.setState({
     sessions: opts.sessions.map(sess),
-    previewPanes: (opts.previews ?? []).map(preview),
     pinnedOrder: opts.pinnedOrder ?? [],
     unpinnedOrder: opts.unpinnedOrder ?? [],
   });
@@ -256,15 +227,15 @@ describe("remapSessionIds (restart id remap)", () => {
     expect(get().unpinnedOrder).toEqual(["new-unpinned"]);
   });
 
-  it("leaves preview keys and unmapped keys untouched", () => {
+  it("leaves unmapped keys untouched", () => {
     seed({
       sessions: ["a"],
       pinnedOrder: ["a"],
-      unpinnedOrder: ["preview:p1", "unmapped"],
+      unpinnedOrder: ["unmapped", "also-unmapped"],
     });
     get().remapSessionIds({ a: "a2" });
     expect(get().pinnedOrder).toEqual(["a2"]);
-    expect(get().unpinnedOrder).toEqual(["preview:p1", "unmapped"]);
+    expect(get().unpinnedOrder).toEqual(["unmapped", "also-unmapped"]);
   });
 });
 

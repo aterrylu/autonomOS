@@ -15,22 +15,17 @@
   },
   "dependencies": {
     "@autonomos/core": "workspace:*",
-    "@types/dompurify": "^3.2.0",
     "@vscode/codicons": "^0.0.45",
     "@xterm/addon-fit": "^0.11",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-webgl": "^0.19",
     "@xterm/xterm": "^6",
     "dockview-react": "^7.0.2",
-    "dompurify": "^3.3.3",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.0.1",
-    "mermaid": "^11.13.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-markdown": "^10.1.0",
     "react-organizational-chart": "^2.2.1",
-    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.11"
   },
   "devDependencies": {

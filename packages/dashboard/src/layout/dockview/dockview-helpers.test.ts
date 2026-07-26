@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { isDegenerate, isPlausibleFit } from "../../terminal/resize";
-import { isValidActivePane, paneFromId, SINGLETON_TYPES } from "./paneId";
+import {
+  isValidActivePane,
+  paneFromId,
+  paneFromPanel,
+  SINGLETON_TYPES,
+} from "./paneId";
 
 // ── isDegenerate (PTY resize guard) ──────────────────────────────────
 // The FitAddon floors at 2 cols / 1 row; a fit against an unsettled renderer
@@ -59,9 +64,16 @@ describe("isPlausibleFit", () => {
 // blanking the app on every reload. Reject anything that isn't a known union
 // member so a bad blob degrades to "no active pane".
 describe("isValidActivePane", () => {
-  it("accepts well-formed session/preview panes", () => {
+  it("accepts well-formed session panes", () => {
     expect(isValidActivePane({ type: "session", id: "s1" })).toBe(true);
-    expect(isValidActivePane({ type: "preview", id: "preview-1" })).toBe(true);
+  });
+
+  // Backward-compat: the markdown preview feature persisted
+  // `activePane: {type:"preview"}`. After its removal PaneContent has no
+  // "preview" case, so accepting the shape here would restore a silently BLANK
+  // pane. Rejecting it degrades the stale blob to "no active pane" instead.
+  it("rejects a stale preview pane from the removed preview feature", () => {
+    expect(isValidActivePane({ type: "preview", id: "preview-1" })).toBe(false);
   });
 
   it("accepts singletons only when id === type", () => {
@@ -85,27 +97,62 @@ describe("isValidActivePane", () => {
 
 // ── paneFromId (dockview panel id → ActivePane) ──────────────────────
 // Used on the dockview→store writeback path; a wrong classification renders the
-// wrong surface. The id space is unambiguous: singleton id == its type, tracked
-// preview ids → preview, everything else → session.
+// wrong surface. The id space is unambiguous: singleton id == its type,
+// everything else → session.
 describe("paneFromId", () => {
   it("maps each singleton id to its own type", () => {
     for (const id of SINGLETON_TYPES) {
-      expect(paneFromId(id, new Set())).toEqual({ type: id, id });
+      expect(paneFromId(id)).toEqual({ type: id, id });
     }
   });
 
-  it("maps a known preview id to a preview pane", () => {
-    const previews = new Set(["preview-abc"]);
-    expect(paneFromId("preview-abc", previews)).toEqual({
-      type: "preview",
-      id: "preview-abc",
-    });
-  });
-
   it("treats any other id as a session", () => {
-    expect(paneFromId("9f3c-uuid-session", new Set())).toEqual({
+    expect(paneFromId("9f3c-uuid-session")).toEqual({
       type: "session",
       id: "9f3c-uuid-session",
     });
+  });
+});
+
+// ── paneFromPanel (writeback guard) ──────────────────────────────────
+// `isValidActivePane` guards `activePane` on rehydrate, but dockview's toJSON
+// also persists each panel's `params` inside `dvWorkspaces[*].serialized`, which
+// is NOT validated. Without this guard, activating such a panel would write back
+// `paneFromId(id)` = `{type:"session", id}` — a shape that then PASSES
+// `isValidActivePane` on the next reload, laundering a retired pane into a
+// terminal for a session id that never existed.
+describe("paneFromPanel", () => {
+  it("skips the writeback for a panel declaring a removed pane type", () => {
+    expect(
+      paneFromPanel("preview-1750000000000-1", {
+        type: "preview",
+        id: "preview-1750000000000-1",
+      }),
+    ).toBeNull();
+  });
+
+  it("skips the writeback for a malformed declared pane", () => {
+    expect(paneFromPanel("x", { type: "session" })).toBeNull(); // no id
+    expect(paneFromPanel("x", { type: "leaf", id: "x" })).toBeNull(); // legacy
+  });
+
+  it("classifies by id when the panel declares no pane", () => {
+    expect(paneFromPanel("9f3c-uuid-session", undefined)).toEqual({
+      type: "session",
+      id: "9f3c-uuid-session",
+    });
+    for (const id of SINGLETON_TYPES) {
+      expect(paneFromPanel(id, undefined)).toEqual({ type: id, id });
+    }
+  });
+
+  it("accepts panels declaring a still-valid pane", () => {
+    expect(paneFromPanel("s1", { type: "session", id: "s1" })).toEqual({
+      type: "session",
+      id: "s1",
+    });
+    expect(
+      paneFromPanel("orgchart", { type: "orgchart", id: "orgchart" }),
+    ).toEqual({ type: "orgchart", id: "orgchart" });
   });
 });
