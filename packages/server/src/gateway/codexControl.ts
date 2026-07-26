@@ -162,12 +162,11 @@ function fmtDuration(ms: number): string {
 
 /** A queued inbound message. `queuedAt` exists so a long wait is reportable —
  *  message TEXT is never logged (inbound can carry sensitive content); only
- *  ids, char counts and queue depth are. */
+ *  ids, char counts and queue depth are. Warn-once for a long wait is tracked
+ *  per-CONTROLLER (`longWaitWarned`), not per-message — see `noteLongWait`. */
 interface QueuedInbound {
   readonly text: string;
   readonly queuedAt: number;
-  /** Set once the operator has been told about this item's wait (warn once). */
-  warned: boolean;
 }
 
 /** Outcome of waiting for an injectable window. Distinguishing "the turn is
@@ -198,6 +197,10 @@ class CodexController {
   private nextFailureWarnAt = FAILURES_BEFORE_WARN;
   private watching = false;
   private statusFailures = 0;
+  /** Next status-failure count that warrants a notification (doubles). Mirrors
+   *  `nextFailureWarnAt` on the delivery path — a strict equality would warn
+   *  exactly once per controller lifetime and then go silent forever. */
+  private nextStatusWarnAt = FAILURES_BEFORE_WARN;
   /** One long-wait warning per stall episode; cleared on a successful inject. */
   private longWaitWarned = false;
   /** Why the last thread/read failed, so the drain log can name the cause. */
@@ -242,14 +245,18 @@ class CodexController {
           if (idle === null)
             throw this.lastReadError ?? new Error("thread/read failed");
           this.statusFailures = 0; // reconciled ground truth this cycle
+          this.nextStatusWarnAt = FAILURES_BEFORE_WARN; // re-arm the escalation
         }
       } catch (err) {
         // A transient hiccup self-corrects next cycle. But a PERSISTENTLY
         // unreachable daemon would silently leave the dashboard stale forever —
         // the exact failure this reconciler exists to prevent — so escalate
-        // once it's clearly not transient (mirrors the delivery-path warning).
+        // on a doubling backoff (mirrors the delivery-path warning). A strict
+        // equality would fire exactly once per controller lifetime, so a daemon
+        // still unreachable an hour later would have gone quiet after the first.
         if (this.disposed) return; // torn down mid-cycle — expected, not a fault
-        if (++this.statusFailures === FAILURES_BEFORE_WARN) {
+        if (++this.statusFailures >= this.nextStatusWarnAt) {
+          this.nextStatusWarnAt *= 2;
           log(
             `${this.agentId.slice(0, 8)} status feed unreadable:`,
             err instanceof Error ? err.message : err,
@@ -287,7 +294,7 @@ class CodexController {
       );
       return;
     }
-    this.queue.push({ text, queuedAt: Date.now(), warned: false });
+    this.queue.push({ text, queuedAt: Date.now() });
     // Log on ENQUEUE, not only on injection. Delivery is idle-gated, so a
     // message can legitimately sit here for minutes; without this line the log
     // is byte-identical to the message having been dropped, which is exactly

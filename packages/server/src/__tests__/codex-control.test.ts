@@ -350,6 +350,34 @@ describe("codex control escalation", () => {
     assert.match(notes[0], /Live status for this Codex agent is unavailable/);
   });
 
+  it("re-notifies the stale-status warning on a backoff, not once per lifetime", async () => {
+    // Same one-shot flaw the delivery path had: `=== FAILURES_BEFORE_WARN` warned
+    // exactly once, so a daemon still unreachable much later went silent. The
+    // status reconciler now escalates on a doubling backoff like noteFailure.
+    installed = installFakeCodexDaemon();
+    installed.failThreadRead = true;
+    _setCodexTimingsForTesting({ statusPollMs: 5, idlePollMs: 5 });
+    const notes: string[] = [];
+    setCodexInboundNotifier((_id, message) => notes.push(message));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      // 3rd failure warns, then 6th — a strict equality would stop at one.
+      await waitUntil(
+        () => notes.length >= 2,
+        "a SECOND stale-status notification",
+        3_000,
+      );
+    });
+
+    assert.ok(
+      notes.length >= 2,
+      `expected re-notification, got ${notes.length}`,
+    );
+    for (const n of notes)
+      assert.match(n, /Live status for this Codex agent is unavailable/);
+  });
+
   it("re-notifies on a backoff instead of once per controller lifetime", async () => {
     // `=== FAILURES_BEFORE_WARN` meant an agent wedged at hour 0 produced ONE
     // warning; at hour 6, with a deeper queue, nothing re-raised and the queue
