@@ -79,6 +79,27 @@ describe("PaneContent — retired pane types", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  // The descriptor can be missing entirely, not just unknown — `params` comes
+  // from the same untrusted persisted JSON. Render must bail BEFORE reading
+  // `pane.type`: render precedes effects, so touching it would throw a
+  // TypeError into the ErrorBoundary instead of closing the panel.
+  it("closes a panel whose descriptor is missing entirely, without throwing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props, close } = makeProps(undefined);
+
+    expect(() => render(<PaneContent {...props} />)).not.toThrow();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a panel whose descriptor is a non-object, without throwing", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props, close } = makeProps("preview");
+    expect(() => render(<PaneContent {...props} />)).not.toThrow();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves a valid session panel mounted and open", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { props, close } = makeProps({ type: "session", id: "agent-a" });

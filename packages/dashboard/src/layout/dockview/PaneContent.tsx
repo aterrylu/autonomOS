@@ -48,6 +48,11 @@ export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
   // compiler while being live at runtime against untyped JSON. Hence a runtime
   // check at the one boundary every panel path (fromJSON, showSolo, addPanel,
   // drop) funnels through.
+  //
+  // `pane` is typed non-nullable but arrives from that untrusted JSON, so it can
+  // be absent entirely. Render must therefore bail BEFORE touching `pane.type`
+  // (render runs before effects — reading it here would throw a TypeError into
+  // the ErrorBoundary instead of closing the panel with the warning below).
   const paneIsRenderable = isValidActivePane(pane);
   useEffect(() => {
     if (paneIsRenderable) return;
@@ -109,6 +114,10 @@ export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
     const d = props.api.onDidActiveChange(focusContent);
     return () => d.dispose();
   }, [props.api]);
+
+  // Nothing to render for a pane the switch below can't handle; the effect
+  // above closes the panel. Placed after every hook so hook order is stable.
+  if (!paneIsRenderable) return null;
 
   const inner = (() => {
     switch (pane.type) {

@@ -25,8 +25,13 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
   const agentStatuses = useStore((s) => s.agentStatuses);
   const page = THEMES[theme].page;
 
+  // `pane` is typed non-nullable but comes from persisted panel params, which
+  // are never validated (see PaneContent) — so every read here is nullish-safe.
+  // Read the raw discriminant up front: inside the exhausted `default` below,
+  // TS has narrowed `pane` to `never`, so it can't be inspected there.
+  const declaredType = (pane as { type?: unknown } | undefined)?.type;
   const title = ((): string => {
-    switch (pane.type) {
+    switch (pane?.type) {
       case "session":
         return (
           sessions.find((s) => s.id === pane.id)?.name || pane.id.slice(0, 8)
@@ -40,15 +45,15 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
       case "create-agent":
         return "New Agent";
       default:
-        // Only reachable from a saved layout naming a since-removed pane type;
-        // PaneContent closes such panels, but name the type so the brief moment
-        // it is on screen (or a screenshot of it) is diagnosable.
-        return `Unknown (${String((pane as { type?: unknown }).type)})`;
+        // Only reachable from a saved layout naming a since-removed (or absent)
+        // pane type; PaneContent closes such panels, but name the type so the
+        // brief moment it is on screen — or a screenshot of it — is diagnosable.
+        return `Unknown (${String(declaredType)})`;
     }
   })();
 
   const status: AgentStatus | null =
-    pane.type === "session"
+    pane?.type === "session"
       ? ((agentStatuses[pane.id]?.status as AgentStatus) ?? "unknown")
       : null;
 
@@ -56,18 +61,20 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
     e.stopPropagation();
     const api = props.containerApi;
     const st = useStore.getState();
-    const wsId = st.dvPaneWorkspace[pane.id];
+    const paneId = pane?.id;
+    const wsId = paneId ? st.dvPaneWorkspace[paneId] : undefined;
 
     // Remove the panel from dockview (it owns the topology).
     props.api.close();
 
-    // Reconcile the bound workspace this pane belonged to.
-    if (wsId && st.dvWorkspaces[wsId]) {
+    // Reconcile the bound workspace this pane belonged to. A panel with no
+    // usable descriptor has no binding to reconcile — closing it is the job.
+    if (paneId && wsId && st.dvWorkspaces[wsId]) {
       const ws = st.dvWorkspaces[wsId];
-      const remaining = ws.paneIds.filter((id) => id !== pane.id);
+      const remaining = ws.paneIds.filter((id) => id !== paneId);
       const workspaces = { ...st.dvWorkspaces };
       const paneWorkspace = { ...st.dvPaneWorkspace };
-      delete paneWorkspace[pane.id];
+      delete paneWorkspace[paneId];
       if (remaining.length <= 1) {
         // A lone pane isn't a group — dissolve the workspace, unbind the rest.
         delete workspaces[wsId];
