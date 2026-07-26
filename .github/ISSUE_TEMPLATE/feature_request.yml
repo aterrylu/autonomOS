@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an idea or improvement for autonomOS
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Focus on the underlying need, not a specific implementation.
+      placeholder: When I run several agents, I can't tell which one…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Dashboard / UI
+        - Agent orchestration / messaging
+        - A specific runtime (Claude Code / Codex / Gemini)
+        - Scheduling
+        - Server / deployment
+        - Other

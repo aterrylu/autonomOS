@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in autonomOS isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report! Please include enough detail to reproduce it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what went wrong?
+      placeholder: Spawned a Codex agent from the dashboard and…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. `make dev`
+        2. Create an agent with provider …
+        3. …
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which agent runtime? (if relevant)
+      options:
+        - Not runtime-specific
+        - Claude Code
+        - Codex
+        - Gemini
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS + arch, Node version (`node -v`), how you're running it (`make dev` / installed daemon / `make deploy`), and the autonomOS version or commit.
+      placeholder: macOS 15 arm64 · Node 20.11 · make dev · commit abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server log (`~/.autonomos/logs/autonomos.log` or `make logs`) and/or browser console. Redact your token.
+      render: shell
