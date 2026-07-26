@@ -1,17 +1,14 @@
 /**
  * REST API for agent templates (~/.autonomos/templates/<name>.json).
  *
- * Templates are blueprints for agents — role, system prompt, capabilities.
+ * Templates are blueprints for agents — role, system prompt, permission mode.
  * Extracted from the legacy routes/hierarchy.ts on the unified-Agent refactor.
  */
 
-import {
-  type AgentCapability,
-  DEFAULT_PERMISSION_MODE,
-  isPermissionMode,
-} from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE, isPermissionMode } from "@autonomos/core";
 import { Hono } from "hono";
 import {
+  DEPRECATED_CAPABILITIES_NOTE,
   deleteTemplate,
   getTemplate,
   listTemplates,
@@ -50,32 +47,45 @@ templateRouter.post("/", async (c) => {
   if (typeof systemPrompt !== "string") {
     return c.json({ error: "systemPrompt is required" }, 400);
   }
+  // Anything accepted-but-ignored goes back to the caller, not just the log.
+  // A 200 with `ok: true` on a request that was only partly honored is how a
+  // caller ends up believing it configured something it did not — the same
+  // defect class ADR-058 removed from the tool layer.
+  const warnings: string[] = [];
+
+  const permissionMode = isPermissionMode(body.permissionMode)
+    ? body.permissionMode
+    : DEFAULT_PERMISSION_MODE;
   if (
     body.permissionMode !== undefined &&
     !isPermissionMode(body.permissionMode)
-  )
+  ) {
+    const note = `Invalid permissionMode ${JSON.stringify(body.permissionMode)} ignored — using "${DEFAULT_PERMISSION_MODE}".`;
+    warnings.push(note);
+    console.warn(`[api/templates] ${note}`);
+  }
+
+  // Agents spawned before ADR-058 still hold the OLD create_template schema in
+  // their context and will keep sending `capabilities` for as long as they run.
+  if ("capabilities" in body) {
+    warnings.push(DEPRECATED_CAPABILITIES_NOTE);
     console.warn(
-      `[api/templates] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; using default`,
+      `[api/templates] ignoring deprecated 'capabilities' on "${name}"`,
     );
+  }
 
   try {
     saveTemplate(name, {
       role,
       description,
       systemPrompt,
-      capabilities: Array.isArray(body.capabilities)
-        ? (body.capabilities.filter(
-            (c): c is string => typeof c === "string",
-          ) as AgentCapability[])
-        : ["send", "list_agents", "create_agent", "kill_agent"],
-      permissionMode: isPermissionMode(body.permissionMode)
-        ? body.permissionMode
-        : DEFAULT_PERMISSION_MODE,
+      permissionMode,
       model: typeof body.model === "string" ? body.model : undefined,
     });
     return c.json({
       ok: true,
       message: `Template "${name}" created`,
+      ...(warnings.length ? { warnings } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

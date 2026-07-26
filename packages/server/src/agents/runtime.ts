@@ -27,7 +27,6 @@ import {
   disposeCodexControl,
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
-import { DEFAULT_CAPABILITIES } from "../mcp/tools.js";
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
@@ -661,9 +660,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     injectChannelServer: !!channels?.includes("server:autonomos"),
     channelServerScript: CHANNEL_SERVER_SCRIPT,
     serverPort: String(getServerPort()),
-    capabilities:
-      (params.template ? getTemplate(params.template)?.capabilities : null) ??
-      DEFAULT_CAPABILITIES,
     // Set by the sidecar block below (when the provider declares buildSidecar)
     // so buildArgs can emit `--remote <endpoint>` against the daemon.
     sidecarEndpoint: undefined as string | undefined,
@@ -1233,12 +1229,20 @@ export async function resumeActiveAgents(): Promise<void> {
   console.log(`Resuming ${agents.length} agent(s)...`);
   let resumed = 0;
   for (const a of agents) {
-    if (a.template && !getTemplate(a.template)) {
-      console.warn(
-        `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
-      );
-    }
     try {
+      // Inside the try, deliberately. getTemplate() throws on anything that
+      // isn't ENOENT — that is its contract — so one corrupt or truncated
+      // template file used to escape this loop entirely and reject
+      // resumeActiveAgents(). The caller only .catch()es it to a log line, so
+      // EVERY agent after the bad one stayed status:"running" in sessions.json
+      // with no PTY behind it: a dashboard full of green agents whose terminals
+      // are dead, never markExited, never notified. The per-agent recovery
+      // below exists precisely to prevent that; this call was bypassing it.
+      if (a.template && !getTemplate(a.template)) {
+        console.warn(
+          `  ⚠ Template "${a.template}" not found for ${a.name} — agent will resume without role context`,
+        );
+      }
       await respawnAgent(a);
       console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...)`);
       resumed++;

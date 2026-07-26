@@ -45,7 +45,6 @@ function baseOptions(
     injectChannelServer: true,
     channelServerScript: "/tmp/channel-server.mjs",
     serverPort: "53917",
-    capabilities: ["test"],
     ...overrides,
   };
 }

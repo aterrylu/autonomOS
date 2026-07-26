@@ -34,19 +34,11 @@ import {
 // Tool definitions are shared with the HTTP MCP server.
 // Import paths use relative since this runs as a standalone subprocess.
 // At build time, esbuild resolves these from the same package.
-import {
-  DEFAULT_CAPABILITIES,
-  filterToolsByCapabilities,
-  MCP_INSTRUCTIONS,
-  MCP_SERVER_INFO,
-} from "../mcp/tools.js";
+import { ALL_TOOLS, MCP_INSTRUCTIONS, MCP_SERVER_INFO } from "../mcp/tools.js";
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 const SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
 const AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
-const CAPABILITIES = process.env.AUTONOMOS_CAPABILITIES
-  ? process.env.AUTONOMOS_CAPABILITIES.split(",")
-  : DEFAULT_CAPABILITIES;
 
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
@@ -246,30 +238,12 @@ async function serverFetch(
   return { content: [{ type: "text", text: pretty }] };
 }
 
-const agentTools = filterToolsByCapabilities(CAPABILITIES);
-
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: agentTools,
+  tools: ALL_TOOLS,
 }));
-
-const capSet = new Set(CAPABILITIES);
-const gatedTools = new Set(DEFAULT_CAPABILITIES);
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
-
-  // Enforce capability gating at execution time, not just listing
-  if (gatedTools.has(name) && !capSet.has(name)) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Tool "${name}" is not available. Missing capability: "${name}".`,
-        },
-      ],
-      isError: true,
-    };
-  }
 
   switch (name) {
     case "send": {
