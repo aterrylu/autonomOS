@@ -22,7 +22,6 @@ function resetStore() {
     permissionMode: "bypass",
     pinnedOrder: [],
     unpinnedOrder: [],
-    previewPanes: [],
     visiblePaneIds: [],
     dvWorkspaces: {},
     dvPaneWorkspace: {},

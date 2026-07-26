@@ -59,9 +59,16 @@ describe("isPlausibleFit", () => {
 // blanking the app on every reload. Reject anything that isn't a known union
 // member so a bad blob degrades to "no active pane".
 describe("isValidActivePane", () => {
-  it("accepts well-formed session/preview panes", () => {
+  it("accepts well-formed session panes", () => {
     expect(isValidActivePane({ type: "session", id: "s1" })).toBe(true);
-    expect(isValidActivePane({ type: "preview", id: "preview-1" })).toBe(true);
+  });
+
+  // Backward-compat: the markdown preview feature persisted
+  // `activePane: {type:"preview"}`. After its removal PaneContent has no
+  // "preview" case, so accepting the shape here would restore a silently BLANK
+  // pane. Rejecting it degrades the stale blob to "no active pane" instead.
+  it("rejects a stale preview pane from the removed preview feature", () => {
+    expect(isValidActivePane({ type: "preview", id: "preview-1" })).toBe(false);
   });
 
   it("accepts singletons only when id === type", () => {
@@ -85,25 +92,17 @@ describe("isValidActivePane", () => {
 
 // ── paneFromId (dockview panel id → ActivePane) ──────────────────────
 // Used on the dockview→store writeback path; a wrong classification renders the
-// wrong surface. The id space is unambiguous: singleton id == its type, tracked
-// preview ids → preview, everything else → session.
+// wrong surface. The id space is unambiguous: singleton id == its type,
+// everything else → session.
 describe("paneFromId", () => {
   it("maps each singleton id to its own type", () => {
     for (const id of SINGLETON_TYPES) {
-      expect(paneFromId(id, new Set())).toEqual({ type: id, id });
+      expect(paneFromId(id)).toEqual({ type: id, id });
     }
   });
 
-  it("maps a known preview id to a preview pane", () => {
-    const previews = new Set(["preview-abc"]);
-    expect(paneFromId("preview-abc", previews)).toEqual({
-      type: "preview",
-      id: "preview-abc",
-    });
-  });
-
   it("treats any other id as a session", () => {
-    expect(paneFromId("9f3c-uuid-session", new Set())).toEqual({
+    expect(paneFromId("9f3c-uuid-session")).toEqual({
       type: "session",
       id: "9f3c-uuid-session",
     });

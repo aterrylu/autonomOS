@@ -86,7 +86,6 @@ describe("ErrorBoundary", () => {
           dvWorkspaces: { w1: { paneIds: ["a"], serialized: {} } },
           dvPaneWorkspace: { a: "w1" },
           activePane: { type: "session", id: "a" },
-          previewPanes: [{ id: "p" }],
         },
         version: 0,
       }),
@@ -106,7 +105,6 @@ describe("ErrorBoundary", () => {
     expect(saved.state.dvWorkspaces).toBeUndefined();
     expect(saved.state.dvPaneWorkspace).toBeUndefined();
     expect(saved.state.activePane).toBeUndefined();
-    expect(saved.state.previewPanes).toBeUndefined();
     expect(sessionStorage.getItem(RESET_MARKER)).toBeTruthy(); // loop marker set
     expect(reload).toHaveBeenCalledOnce();
   });

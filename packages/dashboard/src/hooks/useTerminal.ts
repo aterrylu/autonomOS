@@ -212,9 +212,6 @@ export function useTerminal(
         handleKeyEvent(event, terminal!, wsRef),
       );
 
-      terminal.registerLinkProvider(
-        new MarkdownLinkProvider(terminal, sessionId),
-      );
       terminal.registerLinkProvider(new UrlLinkProvider(terminal));
       // xterm.js handles OSC 8 hyperlinks via the linkHandler constructor
       // option in xterm-backend.ts (Ctrl/Cmd+Click gated).
@@ -694,65 +691,6 @@ class UrlLinkProvider implements ILinkProvider {
           if (hasPrimaryModifier(event)) {
             deduplicatedOpen(url);
           }
-        },
-      });
-    }
-    this.pattern.lastIndex = 0;
-
-    callback(links.length > 0 ? links : undefined);
-  }
-}
-
-/**
- * Detects file paths ending in .md in terminal output.
- * Ctrl+click opens them in the dashboard's /preview route.
- */
-class MarkdownLinkProvider implements ILinkProvider {
-  private readonly pattern = /(?:^|[\s"'`(])(\/?(?:[\w.~-]+\/)*[\w.-]+\.md)\b/g;
-  private readonly terminal: TerminalInstance;
-  private readonly sessionId: string;
-
-  constructor(terminal: TerminalInstance, sessionId: string) {
-    this.terminal = terminal;
-    this.sessionId = sessionId;
-  }
-
-  provideLinks(
-    bufferLineNumber: number,
-    callback: (links: ILink[] | undefined) => void,
-  ): void {
-    const text = getLineText(this.terminal, bufferLineNumber);
-    if (!text) {
-      callback(undefined);
-      return;
-    }
-
-    const links: ILink[] = [];
-
-    let match: RegExpExecArray | null;
-    // biome-ignore lint/suspicious/noAssignInExpressions: standard regex loop
-    while ((match = this.pattern.exec(text)) !== null) {
-      const filePath = match[1];
-      const startX = match.index + match[0].indexOf(filePath);
-
-      links.push({
-        range: {
-          start: { x: startX + 1, y: bufferLineNumber },
-          end: { x: startX + filePath.length + 1, y: bufferLineNumber },
-        },
-        text: filePath,
-        activate: (event) => {
-          if (!hasPrimaryModifier(event)) return;
-          let resolved = filePath;
-          if (!filePath.startsWith("/") && !filePath.startsWith("~/")) {
-            const session = useStore
-              .getState()
-              .sessions.find((s) => s.id === this.sessionId);
-            if (session?.workingDirectory) {
-              resolved = `${session.workingDirectory}/${filePath}`;
-            }
-          }
-          useStore.getState().openPreview(resolved);
         },
       });
     }

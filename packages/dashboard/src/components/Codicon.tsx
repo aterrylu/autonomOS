@@ -7,16 +7,13 @@ import circleLargeSvg from "@vscode/codicons/src/icons/circle-large.svg?raw";
 import claudeSvg from "@vscode/codicons/src/icons/claude.svg?raw";
 import closeSvg from "@vscode/codicons/src/icons/close.svg?raw";
 import commentDiscussionSvg from "@vscode/codicons/src/icons/comment-discussion.svg?raw";
-import copySvg from "@vscode/codicons/src/icons/copy.svg?raw";
 import debugStartSvg from "@vscode/codicons/src/icons/debug-start.svg?raw";
 import eyeSvg from "@vscode/codicons/src/icons/eye.svg?raw";
 import eyeClosedSvg from "@vscode/codicons/src/icons/eye-closed.svg?raw";
 import gearSvg from "@vscode/codicons/src/icons/gear.svg?raw";
-import linkExternalSvg from "@vscode/codicons/src/icons/link-external.svg?raw";
 import listFlatSvg from "@vscode/codicons/src/icons/list-flat.svg?raw";
 import listTreeSvg from "@vscode/codicons/src/icons/list-tree.svg?raw";
 import lockSvg from "@vscode/codicons/src/icons/lock.svg?raw";
-import markdownSvg from "@vscode/codicons/src/icons/markdown.svg?raw";
 import pinSvg from "@vscode/codicons/src/icons/pin.svg?raw";
 import pinnedSvg from "@vscode/codicons/src/icons/pinned.svg?raw";
 import radioTowerSvg from "@vscode/codicons/src/icons/radio-tower.svg?raw";
@@ -38,16 +35,13 @@ const ICONS = {
   claude: extractPaths(claudeSvg),
   close: extractPaths(closeSvg),
   "comment-discussion": extractPaths(commentDiscussionSvg),
-  copy: extractPaths(copySvg),
   "debug-start": extractPaths(debugStartSvg),
   eye: extractPaths(eyeSvg),
   "eye-closed": extractPaths(eyeClosedSvg),
   gear: extractPaths(gearSvg),
-  "link-external": extractPaths(linkExternalSvg),
   "list-flat": extractPaths(listFlatSvg),
   "list-tree": extractPaths(listTreeSvg),
   lock: extractPaths(lockSvg),
-  markdown: extractPaths(markdownSvg),
   pin: extractPaths(pinSvg),
   pinned: extractPaths(pinnedSvg),
   "radio-tower": extractPaths(radioTowerSvg),

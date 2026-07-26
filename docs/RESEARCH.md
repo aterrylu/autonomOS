@@ -162,7 +162,7 @@ Full analysis: [`docs/research/zo-computer/`](research/zo-computer/)
 - **Notification system is table stakes.** OSC sequence detection + visual rings on panes + notification panel + jump-to-unread shortcut is the design autonomOS should match. The `cmux notify` CLI (wired into hooks) solves the daily pain of not knowing which agent needs attention.
 - **Sidebar metadata density.** Each workspace tab shows: git branch, PR status/number, working directory, listening ports, latest notification text. autonomOS session cards should show the same.
 - **Primitive vs orchestrator.** cmux explicitly says it is "a primitive, not a solution" — composable building blocks, no prescriptive workflow. This is the opposite of autonomOS's orchestrator-first vision (ADR-012). Not competitive — different bets.
-- **Integrated browser with agent automation API.** WKWebView + vercel-labs/agent-browser port. Agents can interact with dev servers directly. autonomOS has no equivalent (markdown preview is close but not agent-scriptable).
+- **Integrated browser with agent automation API.** WKWebView + vercel-labs/agent-browser port. Agents can interact with dev servers directly. autonomOS has no equivalent (the markdown preview was the closest thing, and was removed in ADR-059).
 - **Native performance advantage.** libghostty (C) vs xterm.js/WebGL. Real difference for heavy terminal workloads.
 - **No session persistence for processes.** cmux restores layout/scrollback on relaunch but NOT live process state. autonomOS's PM2 + pinned sessions is a genuine advantage.
 - **No orchestration layer.** cmux has no project model, no PM agent, no cross-workspace coordination. autonomOS's entire ADR-012 vision is what cmux explicitly chose not to build.

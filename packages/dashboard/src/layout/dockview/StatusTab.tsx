@@ -22,7 +22,6 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
   const { pane } = props.params;
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
-  const previewPanes = useStore((s) => s.previewPanes);
   const agentStatuses = useStore((s) => s.agentStatuses);
   const page = THEMES[theme].page;
 
@@ -32,8 +31,6 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
         return (
           sessions.find((s) => s.id === pane.id)?.name || pane.id.slice(0, 8)
         );
-      case "preview":
-        return previewPanes.find((p) => p.id === pane.id)?.title || "Preview";
       case "orgchart":
         return "Org Chart";
       case "templates":
@@ -82,8 +79,7 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
     // Follow dockview's new active panel (or clear to the empty state).
     const nextId = api.activePanel?.id;
     if (nextId) {
-      const previewIds = new Set(st.previewPanes.map((p) => p.id));
-      st.setActivePane(paneFromId(nextId, previewIds));
+      st.setActivePane(paneFromId(nextId));
     } else {
       st.setActivePane(null);
     }

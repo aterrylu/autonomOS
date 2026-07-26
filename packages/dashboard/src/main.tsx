@@ -1,7 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { PreviewPage } from "./PreviewPage";
 import { useStore } from "./store";
 import "./index.css";
 
@@ -15,8 +14,8 @@ if (import.meta.env.DEV) {
   ).__autonomosStore = useStore;
 }
 
-const isPreview = window.location.pathname.startsWith("/preview");
-
 createRoot(document.getElementById("root")!).render(
-  <ErrorBoundary>{isPreview ? <PreviewPage /> : <App />}</ErrorBoundary>,
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
 );

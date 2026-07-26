@@ -21,13 +21,11 @@ export const SINGLETON_TYPES = new Set<string>(Object.keys(SINGLETON_PANES));
 
 /**
  * Reconstruct an ActivePane descriptor from a dockview panel id: singleton views
- * use a fixed id == their type, preview panes are tracked in the store
- * (`previewIds`), everything else is a session.
+ * use a fixed id == their type, everything else is a session.
  */
-export function paneFromId(id: string, previewIds: Set<string>): ActivePane {
+export function paneFromId(id: string): ActivePane {
   if (id in SINGLETON_PANES)
     return SINGLETON_PANES[id as keyof typeof SINGLETON_PANES];
-  if (previewIds.has(id)) return { type: "preview", id };
   return { type: "session", id };
 }
 
@@ -41,8 +39,13 @@ export function paneFromId(id: string, previewIds: Set<string>): ActivePane {
  * re-persists, it throws again on the *next* reload too. Without a top-level
  * ErrorBoundary that is a permanent blank screen. Reject anything that isn't a
  * known union member here so a bad blob degrades to "no active pane" (the
- * friendly empty state) instead. Singletons must carry `id === type`;
- * session/preview panes need a non-empty string id.
+ * friendly empty state) instead. Singletons must carry `id === type`; session
+ * panes need a non-empty string id.
+ *
+ * This also retires `{type:"preview"}`, persisted by the removed markdown
+ * preview feature. Rejecting it here is load-bearing: a stale preview
+ * `activePane` would otherwise restore fine and then render as a silently blank
+ * pane (PaneContent has no "preview" case and falls through to `null`).
  */
 export function isValidActivePane(v: unknown): v is ActivePane {
   if (!v || typeof v !== "object") return false;
@@ -50,5 +53,5 @@ export function isValidActivePane(v: unknown): v is ActivePane {
   if (typeof type !== "string" || typeof id !== "string" || id === "")
     return false;
   if (SINGLETON_TYPES.has(type)) return id === type;
-  return type === "session" || type === "preview";
+  return type === "session";
 }

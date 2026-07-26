@@ -97,24 +97,17 @@ export interface ProjectInfo {
   lastActive: number;
 }
 
-export interface PreviewPaneInfo {
-  id: string;
-  filePath: string;
-  title: string;
-}
-
 export type ActivePane =
   | { type: "session"; id: string }
-  | { type: "preview"; id: string }
   | { type: "orgchart"; id: "orgchart" }
   | { type: "templates"; id: "templates" }
   | { type: "schedules"; id: "schedules" }
   | { type: "create-agent"; id: "create-agent" };
 
-/** Sidebar item — unified type for sessions and previews */
-export type SidebarItem =
-  | { type: "session"; data: SessionInfo }
-  | { type: "preview"; data: PreviewPaneInfo };
+/** Sidebar item. Kept as a discriminated shape (rather than a bare
+ *  `SessionInfo`) because the flat-view ordering helpers key off `type`; it
+ *  previously also covered markdown preview panes. */
+export type SidebarItem = { type: "session"; data: SessionInfo };
 
 export const THEMES: Record<ThemeName, AppTheme> = {
   midnight: {
@@ -244,38 +237,28 @@ function sessionOrderKey(s: SessionInfo): string {
   return s.claudeSessionId || s.id;
 }
 
-/** Key used in the flat-view order arrays for a preview */
-function previewOrderKey(id: string): string {
-  return `preview:${id}`;
-}
-
 /**
  * Build the two ordered flat-view sections — pinned (top) and unpinned (below)
- * — from live sessions + previews and the two persisted order arrays.
+ * — from live sessions and the two persisted order arrays.
  *
  * - An item is pinned iff its key appears in `pinnedOrder`; membership in the
  *   array IS the pinned set (no separate flag).
  * - Items render in the order their key appears in the relevant array.
  * - A live item in NEITHER array is a fresh arrival and goes to the TOP of the
  *   unpinned section (spec: new agents land at the top of unpinned). Multiple
- *   simultaneous arrivals keep their sessions/previews insertion order.
- * - Previews are never pinned, so they only ever appear in the unpinned section.
+ *   simultaneous arrivals keep their sessions insertion order.
  *
  * Stale keys (no matching live item) are skipped here; pruning of the persisted
  * arrays happens on write (reorder/pin/unpin) and in fetchSessions.
  */
 export function buildFlatSections(
   sessions: SessionInfo[],
-  previews: PreviewPaneInfo[],
   pinnedOrder: string[],
   unpinnedOrder: string[],
 ): { pinned: SidebarItem[]; unpinned: SidebarItem[] } {
   const itemsByKey = new Map<string, SidebarItem>();
   for (const s of sessions) {
     itemsByKey.set(sessionOrderKey(s), { type: "session", data: s });
-  }
-  for (const p of previews) {
-    itemsByKey.set(previewOrderKey(p.id), { type: "preview", data: p });
   }
 
   const placed = new Set<string>();
@@ -306,8 +289,7 @@ export function buildFlatSections(
 
 /** Get the order-array key for a SidebarItem */
 export function sidebarItemKey(item: SidebarItem): string {
-  if (item.type === "session") return sessionOrderKey(item.data);
-  return previewOrderKey(item.data.id);
+  return sessionOrderKey(item.data);
 }
 
 /**
@@ -317,13 +299,11 @@ export function sidebarItemKey(item: SidebarItem): string {
  */
 function frozenFlatKeys(s: {
   sessions: SessionInfo[];
-  previewPanes: PreviewPaneInfo[];
   pinnedOrder: string[];
   unpinnedOrder: string[];
 }): { pinnedKeys: string[]; unpinnedKeys: string[] } {
   const { pinned, unpinned } = buildFlatSections(
     s.sessions,
-    s.previewPanes,
     s.pinnedOrder,
     s.unpinnedOrder,
   );
@@ -335,9 +315,7 @@ function frozenFlatKeys(s: {
 
 /** Get the ActivePane for a SidebarItem */
 export function sidebarItemPane(item: SidebarItem): ActivePane {
-  return item.type === "session"
-    ? { type: "session", id: item.data.id }
-    : { type: "preview", id: item.data.id };
+  return { type: "session", id: item.data.id };
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -446,12 +424,11 @@ interface AppState {
   /** Display order of PINNED agents (top flat-view section). An agent is
    *  pinned iff its key is in this array. New pins append (bottom of pinned). */
   pinnedOrder: string[];
-  /** Display order of the UNPINNED flat-view section (agents + previews). Fresh
-   *  arrivals and freshly-unpinned agents prepend (top); see buildFlatSections. */
+  /** Display order of the UNPINNED flat-view section. Fresh arrivals and
+   *  freshly-unpinned agents prepend (top); see buildFlatSections. */
   unpinnedOrder: string[];
   /** Ordering of children within each hierarchy group. Key = parent name (lowercase) or "__root__". */
   hierarchyOrder: Record<string, string[]>;
-  previewPanes: PreviewPaneInfo[];
 
   // Transient
   /** Pane ids dockview is currently showing (the panels mounted in the dock).
@@ -527,8 +504,6 @@ interface AppState {
     opts?: { isAutonomosAgent?: boolean },
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
-  openPreview: (filePath: string) => void;
-  closePreview: (id: string) => void;
   openOrgChart: () => void;
   openTemplates: () => void;
   openSchedules: () => void;
@@ -653,8 +628,6 @@ async function spawnSession(
   await get().fetchSessions();
 }
 
-let previewCounter = 0;
-
 export const useStore = create<AppState>()(
   persist(
     (set, get) => {
@@ -687,7 +660,6 @@ export const useStore = create<AppState>()(
         pinnedOrder: [],
         unpinnedOrder: [],
         hierarchyOrder: {},
-        previewPanes: [],
 
         cycleTheme: () => {
           const current = get().theme;
@@ -798,12 +770,12 @@ export const useStore = create<AppState>()(
             prevExited.every((s, i) => s.id === exitedSessions[i].id);
           if (!unchanged || !exitedUnchanged) {
             // Prune flat-view order keys whose agent no longer exists so dead
-            // entries don't accumulate for users who never reorder/pin. Preview
-            // keys are kept (previews live in unpinnedOrder too). Reorder/pin/
-            // unpin also re-freeze, so this only matters between interactions.
+            // entries don't accumulate for users who never reorder/pin. This
+            // also retires leftover `preview:*` keys from the removed markdown
+            // preview feature. Reorder/pin/unpin also re-freeze, so this only
+            // matters between interactions.
             const live = new Set<string>(sessions.map(sessionOrderKey));
-            const keepKey = (k: string) =>
-              k.startsWith("preview:") || live.has(k);
+            const keepKey = (k: string) => live.has(k);
             const { pinnedOrder, unpinnedOrder } = get();
             const prunedPinned = pinnedOrder.filter(keepKey);
             const prunedUnpinned = unpinnedOrder.filter(keepKey);
@@ -821,8 +793,7 @@ export const useStore = create<AppState>()(
             });
 
             const liveIds = new Set(sessions.map((s) => s.id));
-            const { activePane, dvWorkspaces, dvPaneWorkspace, previewPanes } =
-              get();
+            const { activePane, dvWorkspaces, dvPaneWorkspace } = get();
 
             // If the pane we're viewing just died, fall back to a live sibling
             // from its group (or any live session) instead of blanking the dock.
@@ -843,14 +814,10 @@ export const useStore = create<AppState>()(
 
             // Drop dead members from bound workspaces so surviving members don't
             // trigger a full teardown/rebuild on every click (see helper).
-            const previewIds = new Set(previewPanes.map((p) => p.id));
             const reconciled = reconcileDeadWorkspaces(
               dvWorkspaces,
               dvPaneWorkspace,
-              (paneId) =>
-                !SINGLETON_TYPES.has(paneId) &&
-                !previewIds.has(paneId) &&
-                !liveIds.has(paneId),
+              (paneId) => !SINGLETON_TYPES.has(paneId) && !liveIds.has(paneId),
             );
             if (reconciled)
               set({
@@ -1085,29 +1052,6 @@ export const useStore = create<AppState>()(
           }
           await get().fetchSessions();
         },
-        openPreview: (filePath) => {
-          const { previewPanes } = get();
-          // If already open, switch to it (find its leaf + tab)
-          const existing = previewPanes.find((p) => p.filePath === filePath);
-          if (existing) {
-            get().switchPane({ type: "preview", id: existing.id });
-            return;
-          }
-          const id = `preview-${Date.now()}-${++previewCounter}`;
-          const title = filePath.split("/").pop() || filePath;
-          const pane: PreviewPaneInfo = { id, filePath, title };
-          const { unpinnedOrder } = get();
-          const activeP: ActivePane = { type: "preview", id };
-          // Register the preview and navigate to it. A new preview is a fresh
-          // arrival → top of the unpinned section. DockviewLayout reacts to the
-          // activePane change and mounts the preview panel.
-          set({
-            previewPanes: [...previewPanes, pane],
-            unpinnedOrder: [previewOrderKey(id), ...unpinnedOrder],
-            activePane: activeP,
-          });
-        },
-
         openOrgChart: () => {
           get().switchPane({ type: "orgchart", id: "orgchart" });
         },
@@ -1340,33 +1284,6 @@ export const useStore = create<AppState>()(
           await get().fetchSessions();
         },
 
-        closePreview: (id) => {
-          const {
-            previewPanes,
-            pinnedOrder,
-            unpinnedOrder,
-            activePane,
-            sessions,
-          } = get();
-          const previewKey = previewOrderKey(id);
-          const updated: Partial<AppState> = {
-            previewPanes: previewPanes.filter((p) => p.id !== id),
-            pinnedOrder: pinnedOrder.filter((k) => k !== previewKey),
-            unpinnedOrder: unpinnedOrder.filter((k) => k !== previewKey),
-          };
-
-          // If this preview was the active pane, fall back to a session (or
-          // nothing). DockviewLayout reacts to the activePane change.
-          if (activePane?.type === "preview" && activePane.id === id) {
-            updated.activePane =
-              sessions.length > 0
-                ? { type: "session", id: sessions[0].id }
-                : null;
-          }
-
-          set(updated);
-        },
-
         reorderFlat: (section, fromIndex, toIndex) => {
           const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
           const target = section === "pinned" ? pinnedKeys : unpinnedKeys;
@@ -1417,10 +1334,7 @@ export const useStore = create<AppState>()(
           // Remap both flat-view order arrays — keys are raw claudeSessionId or
           // internal id (no prefix). claudeSessionId doesn't change on restart,
           // so only entries that used the internal id need remapping.
-          const remapKey = (key: string) => {
-            if (key.startsWith("preview:")) return key;
-            return idMap[key] ?? key;
-          };
+          const remapKey = (key: string) => idMap[key] ?? key;
 
           set({
             activePane: remapPane(activePane),
@@ -1449,7 +1363,6 @@ export const useStore = create<AppState>()(
         pinnedOrder: state.pinnedOrder,
         unpinnedOrder: state.unpinnedOrder,
         hierarchyOrder: state.hierarchyOrder,
-        previewPanes: state.previewPanes,
         projects: state.projects,
       }),
       merge: (persisted, current) => {
@@ -1550,8 +1463,6 @@ export const useStore = create<AppState>()(
             string,
             string[]
           >;
-        if (Array.isArray(saved?.previewPanes))
-          merged.previewPanes = saved.previewPanes as PreviewPaneInfo[];
 
         // Migrate old sessionId → activePane. Validate the persisted shape:
         // activePane is the one layout field that reaches dockview's

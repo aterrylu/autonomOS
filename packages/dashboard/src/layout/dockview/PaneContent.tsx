@@ -2,11 +2,10 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateAgentPanel } from "../../components/CreateAgentPanel";
 import { HierarchyPanel } from "../../components/HierarchyPanel";
-import { PreviewPane } from "../../components/PreviewPane";
 import { SchedulesPanel } from "../../components/SchedulesPanel";
 import { SessionPane } from "../../components/SessionPane";
 import { TemplatesPanel } from "../../components/TemplatesPanel";
-import { type ActivePane, useStore } from "../../store";
+import type { ActivePane } from "../../store";
 
 /** Params carried on every dockview panel — the autonomOS pane it renders. */
 export interface PaneParams {
@@ -21,7 +20,7 @@ export interface PaneParams {
  * Visibility: dockview's `defaultRenderer: "always"` keeps every panel's DOM
  * mounted, hiding inactive ones with `visibility:hidden` (NOT `display:none`),
  * so they retain full layout dimensions. We forward dockview's authoritative
- * `props.api.isVisible` into `SessionPane`/`PreviewPane` as `visible`, which
+ * `props.api.isVisible` into `SessionPane` as `visible`, which
  * toggles `display:none` on the hidden panel. That is load-bearing for the
  * terminal: `useTerminal` infers "is this pane showing?" from a nonzero offset
  * box (`offsetWidth > 0 && offsetHeight > 0`) to dispose the WebGL context +
@@ -32,7 +31,6 @@ export interface PaneParams {
  */
 export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
   const { pane } = props.params;
-  const previewPanes = useStore((s) => s.previewPanes);
 
   // Track dockview's real visibility for this panel (active tab in a shown
   // group). Forwarded to the content so hidden panes get `display:none`.
@@ -89,12 +87,6 @@ export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
     switch (pane.type) {
       case "session":
         return <SessionPane sessionId={pane.id} visible={visible} />;
-      case "preview": {
-        const preview = previewPanes.find((p) => p.id === pane.id);
-        return preview ? (
-          <PreviewPane preview={preview} visible={visible} />
-        ) : null;
-      }
       case "orgchart":
         return <HierarchyPanel />;
       case "templates":
