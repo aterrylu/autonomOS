@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { type ActivePane, THEMES, type ThemeName, useStore } from "../../store";
 import { DRAG_TYPE, decodeDragData } from "../DragContext";
 import { PaneContent, type PaneParams } from "./PaneContent";
-import { paneFromId, SINGLETON_TYPES } from "./paneId";
+import { paneFromPanel, SINGLETON_TYPES } from "./paneId";
 import { StatusTab } from "./StatusTab";
 
 /** dockview drop Position → addPanel Direction (inlined to avoid importing from
@@ -378,8 +378,12 @@ export function DockviewLayout() {
         if (!id) return;
         const st = useStore.getState();
         if (st.activePane?.id === id) return;
+        // Skip retired panels (see paneFromPanel) rather than laundering them
+        // into a session pane that would survive the next reload's validation.
+        const next = paneFromPanel(id, api.activePanel?.params?.pane);
+        if (!next) return;
         appliedActiveId.current = id;
-        st.setActivePane(paneFromId(id));
+        st.setActivePane(next);
       });
 
       // Mark internal tab/group drags so the writeback above is gated for their
@@ -486,8 +490,12 @@ export function DockviewLayout() {
         if (!id) return;
         const st = useStore.getState();
         if (st.activePane?.id === id) return;
+        // Skip retired panels (see paneFromPanel) rather than laundering them
+        // into a session pane that would survive the next reload's validation.
+        const next = paneFromPanel(id, api.activePanel?.params?.pane);
+        if (!next) return;
         appliedActiveId.current = id;
-        st.setActivePane(paneFromId(id));
+        st.setActivePane(next);
       });
     };
     const onDragEnd = () => {

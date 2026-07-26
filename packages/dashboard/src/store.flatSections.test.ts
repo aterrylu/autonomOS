@@ -17,9 +17,9 @@ function sess(id: string): SessionInfo {
   };
 }
 
-/** Section items → their order keys, for terse assertions. */
-function keys(items: { type: string; data: { id: string } }[]): string[] {
-  return items.map((i) => i.data.id);
+/** Section sessions → their order keys, for terse assertions. */
+function keys(sessions: SessionInfo[]): string[] {
+  return sessions.map((s) => s.id);
 }
 
 // ── buildFlatSections (pure) ─────────────────────────────────────────

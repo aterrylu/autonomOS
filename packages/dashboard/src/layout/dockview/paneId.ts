@@ -30,6 +30,29 @@ export function paneFromId(id: string): ActivePane {
 }
 
 /**
+ * The ActivePane to write back when a dockview panel becomes active, or `null`
+ * when the panel must NOT be written back.
+ *
+ * `paneFromId` classifies every non-singleton id as a session. On its own that
+ * would launder a panel restored from an older build (one whose `params.pane`
+ * names a since-removed type) into `{type:"session", id}` — a value that then
+ * *passes* `isValidActivePane` on the next reload, defeating that guard and
+ * mounting a terminal for a session id that never existed (a perpetual
+ * WebSocket reconnect loop). So when a panel carries its own descriptor, trust
+ * it: an invalid descriptor means the panel is retired, and the writeback is
+ * skipped rather than promoted. Panels with no descriptor fall back to
+ * id-classification, which is what live sessions and singletons rely on.
+ */
+export function paneFromPanel(
+  id: string,
+  declaredPane: unknown,
+): ActivePane | null {
+  if (declaredPane !== undefined && !isValidActivePane(declaredPane))
+    return null;
+  return paneFromId(id);
+}
+
+/**
  * Validate a value parsed from persisted storage is a well-formed `ActivePane`.
  *
  * `activePane` is the one persisted layout field that flows into dockview's

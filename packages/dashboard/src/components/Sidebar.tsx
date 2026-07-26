@@ -9,14 +9,7 @@ import { useShallow } from "zustand/react/shallow";
 import { focusTerminal } from "../hooks/useTerminal";
 import { DRAG_TYPE, encodeDragData } from "../layout/DragContext";
 import type { ActivePane, ProjectInfo, SessionInfo } from "../store";
-import {
-  buildFlatSections,
-  type SidebarItem,
-  sidebarItemKey,
-  sidebarItemPane,
-  THEMES,
-  useStore,
-} from "../store";
+import { buildFlatSections, sessionOrderKey, THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
 import {
   mergeOrgWithSessions,
@@ -74,15 +67,6 @@ function useSidebarActions() {
 }
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
-
-// ── Display list types ──────────────────────────────────────────────────────
-
-type DisplayItem = {
-  type: "session";
-  session: SessionInfo;
-  pane: ActivePane;
-  key: string;
-};
 
 /** Which flat-view section a row belongs to. */
 type FlatSection = "pinned" | "unpinned";
@@ -225,19 +209,10 @@ export function Sidebar() {
 
   // Flat-view sections — pinned on top, unpinned below. Each is a plain list of
   // sessions (no group containers).
-  const flatSections = useMemo(() => {
-    const toDisplay = (item: SidebarItem): DisplayItem => {
-      const pane = sidebarItemPane(item);
-      const key = sidebarItemKey(item);
-      return { type: "session", session: item.data, pane, key };
-    };
-    const { pinned, unpinned } = buildFlatSections(
-      sessions,
-      pinnedOrder,
-      unpinnedOrder,
-    );
-    return { pinned: pinned.map(toDisplay), unpinned: unpinned.map(toDisplay) };
-  }, [sessions, pinnedOrder, unpinnedOrder]);
+  const flatSections = useMemo(
+    () => buildFlatSections(sessions, pinnedOrder, unpinnedOrder),
+    [sessions, pinnedOrder, unpinnedOrder],
+  );
 
   // Compute a stable fingerprint of the session fields that affect the org
   // chart. When this changes (spawn, kill, rename, set_manager, status flip),
@@ -415,46 +390,51 @@ export function Sidebar() {
     return activePane.type === pane.type && activePane.id === pane.id;
   }
 
-  // Render one flat-view row within a given section. Drag
-  // handlers are bound to the section so reordering stays section-local; the
-  // pin/unpin button is the only way to cross sections.
+  // Render one flat-view row within a given section. Drag handlers are bound to
+  // the section so reordering stays section-local; the pin/unpin button is the
+  // only way to cross sections.
   function renderFlatItem(
-    item: DisplayItem,
+    session: SessionInfo,
     section: FlatSection,
     idx: number,
   ) {
     const isDropTarget =
       dropTarget?.section === section && dropTarget.idx === idx;
-
     const isPinned = section === "pinned";
+    const pane: ActivePane = { type: "session", id: session.id };
+    // Pin/unpin address rows by their ORDER key (claudeSessionId || id), which
+    // is not always the agent id — see sessionOrderKey.
+    const orderKey = sessionOrderKey(session);
+
     return (
       <SessionRow
-        key={`s-${item.session.id}`}
-        session={item.session}
-        pane={item.pane}
+        key={`s-${session.id}`}
+        session={session}
+        pane={pane}
         idx={idx}
         page={page}
-        isActive={isPaneActive(item.pane)}
-        isVisible={visiblePaneIds.has(item.pane.id)}
+        isActive={isPaneActive(pane)}
+        isVisible={visiblePaneIds.has(session.id)}
         isDropTarget={isDropTarget}
-        meta={lookupSessionMeta(sessionMetaMap, item.session)}
-        agentState={agentStatuses[item.session.id]}
-        notifCount={notificationCounts[item.session.id] ?? 0}
+        meta={lookupSessionMeta(sessionMetaMap, session)}
+        agentState={agentStatuses[session.id]}
+        notifCount={notificationCounts[session.id] ?? 0}
         indent={0}
         isPinned={isPinned}
         onTogglePin={() =>
-          isPinned ? unpinAgent(item.key) : pinAgent(item.key)
+          isPinned ? unpinAgent(orderKey) : pinAgent(orderKey)
         }
         draggable
-        onDragStart={(e, i, pane) => handleDragStart(e, section, i, pane)}
+        onDragStart={(e, i, dragPane) =>
+          handleDragStart(e, section, i, dragPane)
+        }
         onDragOver={(e, i) => handleDragOver(e, section, i)}
         onDrop={(i) => handleDrop(section, i)}
         onDragEnd={handleDragEnd}
         onClick={() => {
-          switchPane(item.pane);
-          if (item.pane.type === "session") focusTerminal(item.pane.id);
-          if (notificationCounts[item.session.id])
-            markNotificationsRead(item.session.id);
+          switchPane(pane);
+          focusTerminal(session.id);
+          if (notificationCounts[session.id]) markNotificationsRead(session.id);
         }}
       />
     );
@@ -546,8 +526,8 @@ export function Sidebar() {
               </p>
             )}
 
-          {flatSections.pinned.map((item, idx) =>
-            renderFlatItem(item, "pinned", idx),
+          {flatSections.pinned.map((session, idx) =>
+            renderFlatItem(session, "pinned", idx),
           )}
 
           {/* Divider — only between two non-empty sections (no dangling line). */}
@@ -561,8 +541,8 @@ export function Sidebar() {
               />
             )}
 
-          {flatSections.unpinned.map((item, idx) =>
-            renderFlatItem(item, "unpinned", idx),
+          {flatSections.unpinned.map((session, idx) =>
+            renderFlatItem(session, "unpinned", idx),
           )}
         </div>
       ) : (

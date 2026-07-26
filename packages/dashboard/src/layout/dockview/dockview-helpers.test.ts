@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { isDegenerate, isPlausibleFit } from "../../terminal/resize";
-import { isValidActivePane, paneFromId, SINGLETON_TYPES } from "./paneId";
+import {
+  isValidActivePane,
+  paneFromId,
+  paneFromPanel,
+  SINGLETON_TYPES,
+} from "./paneId";
 
 // ── isDegenerate (PTY resize guard) ──────────────────────────────────
 // The FitAddon floors at 2 cols / 1 row; a fit against an unsettled renderer
@@ -106,5 +111,48 @@ describe("paneFromId", () => {
       type: "session",
       id: "9f3c-uuid-session",
     });
+  });
+});
+
+// ── paneFromPanel (writeback guard) ──────────────────────────────────
+// `isValidActivePane` guards `activePane` on rehydrate, but dockview's toJSON
+// also persists each panel's `params` inside `dvWorkspaces[*].serialized`, which
+// is NOT validated. Without this guard, activating such a panel would write back
+// `paneFromId(id)` = `{type:"session", id}` — a shape that then PASSES
+// `isValidActivePane` on the next reload, laundering a retired pane into a
+// terminal for a session id that never existed.
+describe("paneFromPanel", () => {
+  it("skips the writeback for a panel declaring a removed pane type", () => {
+    expect(
+      paneFromPanel("preview-1750000000000-1", {
+        type: "preview",
+        id: "preview-1750000000000-1",
+      }),
+    ).toBeNull();
+  });
+
+  it("skips the writeback for a malformed declared pane", () => {
+    expect(paneFromPanel("x", { type: "session" })).toBeNull(); // no id
+    expect(paneFromPanel("x", { type: "leaf", id: "x" })).toBeNull(); // legacy
+  });
+
+  it("classifies by id when the panel declares no pane", () => {
+    expect(paneFromPanel("9f3c-uuid-session", undefined)).toEqual({
+      type: "session",
+      id: "9f3c-uuid-session",
+    });
+    for (const id of SINGLETON_TYPES) {
+      expect(paneFromPanel(id, undefined)).toEqual({ type: id, id });
+    }
+  });
+
+  it("accepts panels declaring a still-valid pane", () => {
+    expect(paneFromPanel("s1", { type: "session", id: "s1" })).toEqual({
+      type: "session",
+      id: "s1",
+    });
+    expect(
+      paneFromPanel("orgchart", { type: "orgchart", id: "orgchart" }),
+    ).toEqual({ type: "orgchart", id: "orgchart" });
   });
 });

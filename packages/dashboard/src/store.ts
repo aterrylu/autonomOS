@@ -104,11 +104,6 @@ export type ActivePane =
   | { type: "schedules"; id: "schedules" }
   | { type: "create-agent"; id: "create-agent" };
 
-/** Sidebar item. Kept as a discriminated shape (rather than a bare
- *  `SessionInfo`) because the flat-view ordering helpers key off `type`; it
- *  previously also covered markdown preview panes. */
-export type SidebarItem = { type: "session"; data: SessionInfo };
-
 export const THEMES: Record<ThemeName, AppTheme> = {
   midnight: {
     terminal: {
@@ -233,7 +228,7 @@ export function resolveSidebarViewMode(
 // ── Pane ordering helpers ──────────────────────────────────────────────
 
 /** Key used in the flat-view order arrays for a session */
-function sessionOrderKey(s: SessionInfo): string {
+export function sessionOrderKey(s: SessionInfo): string {
   return s.claudeSessionId || s.id;
 }
 
@@ -241,34 +236,34 @@ function sessionOrderKey(s: SessionInfo): string {
  * Build the two ordered flat-view sections — pinned (top) and unpinned (below)
  * — from live sessions and the two persisted order arrays.
  *
- * - An item is pinned iff its key appears in `pinnedOrder`; membership in the
+ * - A session is pinned iff its key appears in `pinnedOrder`; membership in the
  *   array IS the pinned set (no separate flag).
- * - Items render in the order their key appears in the relevant array.
- * - A live item in NEITHER array is a fresh arrival and goes to the TOP of the
- *   unpinned section (spec: new agents land at the top of unpinned). Multiple
- *   simultaneous arrivals keep their sessions insertion order.
+ * - Sessions render in the order their key appears in the relevant array.
+ * - A live session in NEITHER array is a fresh arrival and goes to the TOP of
+ *   the unpinned section (spec: new agents land at the top of unpinned).
+ *   Multiple simultaneous arrivals keep their `sessions` insertion order.
  *
- * Stale keys (no matching live item) are skipped here; pruning of the persisted
- * arrays happens on write (reorder/pin/unpin) and in fetchSessions.
+ * Stale keys (no matching live session) are skipped here; pruning of the
+ * persisted arrays happens on write (reorder/pin/unpin) and in fetchSessions.
  */
 export function buildFlatSections(
   sessions: SessionInfo[],
   pinnedOrder: string[],
   unpinnedOrder: string[],
-): { pinned: SidebarItem[]; unpinned: SidebarItem[] } {
-  const itemsByKey = new Map<string, SidebarItem>();
+): { pinned: SessionInfo[]; unpinned: SessionInfo[] } {
+  const byKey = new Map<string, SessionInfo>();
   for (const s of sessions) {
-    itemsByKey.set(sessionOrderKey(s), { type: "session", data: s });
+    byKey.set(sessionOrderKey(s), s);
   }
 
   const placed = new Set<string>();
-  const take = (order: string[]): SidebarItem[] => {
-    const out: SidebarItem[] = [];
+  const take = (order: string[]): SessionInfo[] => {
+    const out: SessionInfo[] = [];
     for (const key of order) {
       if (placed.has(key)) continue;
-      const item = itemsByKey.get(key);
-      if (item) {
-        out.push(item);
+      const session = byKey.get(key);
+      if (session) {
+        out.push(session);
         placed.add(key);
       }
     }
@@ -279,17 +274,12 @@ export function buildFlatSections(
   const unpinned = take(unpinnedOrder);
 
   // Fresh arrivals (in neither array) prepend to the unpinned section.
-  const fresh: SidebarItem[] = [];
-  for (const [key, item] of itemsByKey) {
-    if (!placed.has(key)) fresh.push(item);
+  const fresh: SessionInfo[] = [];
+  for (const [key, session] of byKey) {
+    if (!placed.has(key)) fresh.push(session);
   }
 
   return { pinned, unpinned: [...fresh, ...unpinned] };
-}
-
-/** Get the order-array key for a SidebarItem */
-export function sidebarItemKey(item: SidebarItem): string {
-  return sessionOrderKey(item.data);
 }
 
 /**
@@ -308,14 +298,9 @@ function frozenFlatKeys(s: {
     s.unpinnedOrder,
   );
   return {
-    pinnedKeys: pinned.map(sidebarItemKey),
-    unpinnedKeys: unpinned.map(sidebarItemKey),
+    pinnedKeys: pinned.map(sessionOrderKey),
+    unpinnedKeys: unpinned.map(sessionOrderKey),
   };
-}
-
-/** Get the ActivePane for a SidebarItem */
-export function sidebarItemPane(item: SidebarItem): ActivePane {
-  return { type: "session", id: item.data.id };
 }
 
 // ── Store ──────────────────────────────────────────────────────────────

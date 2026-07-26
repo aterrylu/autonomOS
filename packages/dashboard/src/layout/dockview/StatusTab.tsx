@@ -5,7 +5,7 @@ import {
 } from "../../components/ui/agent-status-icon";
 import { THEMES, useStore } from "../../store";
 import type { PaneParams } from "./PaneContent";
-import { paneFromId } from "./paneId";
+import { paneFromPanel } from "./paneId";
 
 /**
  * StatusTab — custom dockview tab renderer (registered as `"status"` and the
@@ -40,7 +40,10 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
       case "create-agent":
         return "New Agent";
       default:
-        return "Tab";
+        // Only reachable from a saved layout naming a since-removed pane type;
+        // PaneContent closes such panels, but name the type so the brief moment
+        // it is on screen (or a screenshot of it) is diagnosable.
+        return `Unknown (${String((pane as { type?: unknown }).type)})`;
     }
   })();
 
@@ -78,11 +81,9 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
 
     // Follow dockview's new active panel (or clear to the empty state).
     const nextId = api.activePanel?.id;
-    if (nextId) {
-      st.setActivePane(paneFromId(nextId));
-    } else {
-      st.setActivePane(null);
-    }
+    st.setActivePane(
+      nextId ? paneFromPanel(nextId, api.activePanel?.params?.pane) : null,
+    );
   }
 
   return (
