@@ -212,10 +212,21 @@ agentsRouter.post("/", async (c) => {
     return c.json({ error: "workingDirectory is required" }, 400);
   }
 
-  // Resolve template if provided
+  // Resolve template if provided. getTemplate() returns null for a missing file
+  // but THROWS for a corrupt one (bad JSON, wrong shape) — the message names the
+  // file. Catch it here and map to 400: unwrapped, the throw escapes to Hono's
+  // default handler and becomes an opaque 500, dropping exactly the guidance an
+  // operator needs. The MCP create_agent path already wraps this call, so
+  // without this the two surfaces disagree about the same corrupt file.
   const templateName =
     typeof body.template === "string" ? body.template : undefined;
-  const tmpl = templateName ? getTemplate(templateName) : null;
+  let tmpl: ReturnType<typeof getTemplate> = null;
+  try {
+    tmpl = templateName ? getTemplate(templateName) : null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ error: `Template "${templateName}": ${message}` }, 400);
+  }
   if (templateName && !tmpl) {
     return c.json({ error: `Template "${templateName}" not found` }, 400);
   }
