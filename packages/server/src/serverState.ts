@@ -84,12 +84,40 @@ export function setInternalSocketPath(path: string): void {
  */
 export class ControlPlaneNotReadyError extends Error {
   readonly code = "CONTROL_PLANE_NOT_READY";
-  constructor() {
+  constructor(missing = "the agent hook socket has not bound yet") {
     super(
-      "The internal control plane is still starting up — the agent hook " +
-        "socket has not bound yet. This clears within a moment of boot; retry.",
+      `The server is still starting up — ${missing}. ` +
+        "This clears within a moment of boot; retry.",
     );
     this.name = "ControlPlaneNotReadyError";
+  }
+}
+
+/**
+ * Assert every precondition a spawn needs, as ONE typed failure.
+ *
+ * A spawn needs both the bound public port (baked into AUTONOMOS_SERVER for the
+ * statusline) and the control socket path (AUTONOMOS_INTERNAL_SOCKET for the
+ * hook relay). Both are published at different points in boot, so a spawn can
+ * arrive with either one missing.
+ *
+ * Without this, the status a too-early spawn receives depends on which getter
+ * buildBaseEnv happens to touch first: getInternalSocketPath() throws the typed
+ * error (→ retryable 503), getServerPort() throws a bare Error (→ generic,
+ * non-retryable 500). That is a correctness property resting on statement order
+ * in an unrelated function — exactly the fragile-guard-placement shape #283
+ * taught us to distrust.
+ *
+ * Asserting both up front makes the typed 503 unconditional regardless of read
+ * order or future boot-sequence changes, and names WHICH precondition is missing
+ * so the log says something true.
+ */
+export function assertSpawnReady(): void {
+  const missing: string[] = [];
+  if (_internalSocketPath === null) missing.push("the agent hook socket");
+  if (_port === null) missing.push("the public listener");
+  if (missing.length > 0) {
+    throw new ControlPlaneNotReadyError(`${missing.join(" and ")} not ready`);
   }
 }
 

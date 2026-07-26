@@ -18,6 +18,8 @@ import {
   type PermissionMode,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
+import { getControlSocketPath } from "../internalSocket.js";
+import { getServerPort } from "../serverState.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -187,8 +189,15 @@ export const geminiCliProvider: AgentProvider = {
 
 /**
  * Write the shared Gemini settings file (~/.autonomos/gemini-settings.json).
- * Called on server startup. Contains hooks + MCP config, shared across all
- * Gemini sessions. Session differentiation via AUTONOMOS_SESSION_ID env var.
+ * Contains hooks + MCP config, shared across all Gemini sessions; session
+ * differentiation is via the AUTONOMOS_SESSION_ID env var.
+ *
+ * MUST be called AFTER the public port and the control socket are both bound
+ * (see run.ts armRuntimeInits) — unlike claude-code/codex, which build per-spawn
+ * args, Gemini's MCP endpoint lives in this write-once file, so it can only be
+ * correct once both planes exist. Reading getServerPort() before setServerPort()
+ * (the old `process.env.PORT || "3000"` fallback) is exactly the bug that baked
+ * `localhost:3000` into every Gemini agent's URLs regardless of the real port.
  */
 export function writeGeminiSettings(channelServerScript: string): void {
   if (!existsSync(channelServerScript)) {
@@ -198,7 +207,10 @@ export function writeGeminiSettings(channelServerScript: string): void {
     );
   }
 
-  const port = process.env.PORT || "3000";
+  // Gateway → internal socket (ws+unix); REST base → public port. Both read from
+  // serverState, which is why this must run after both are published.
+  const socketPath = getControlSocketPath();
+  const apiUrl = `http://localhost:${getServerPort()}`;
 
   const hookEntry = (timeout = 3000) => ({
     hooks: [{ type: "command", command: HOOK_CMD, timeout }],
@@ -223,7 +235,8 @@ export function writeGeminiSettings(channelServerScript: string): void {
         command: "node",
         args: [channelServerScript],
         env: {
-          AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
+          AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
+          AUTONOMOS_API_URL: apiUrl,
         },
       },
     },

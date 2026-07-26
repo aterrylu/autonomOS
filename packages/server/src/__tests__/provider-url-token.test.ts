@@ -45,6 +45,9 @@ function baseOptions(
     injectChannelServer: true,
     channelServerScript: "/tmp/channel-server.mjs",
     serverPort: "53917",
+    socketPath: "/tmp/aos-test/control.sock",
+    apiUrl: "http://localhost:53917",
+
     ...overrides,
   };
 }
@@ -95,14 +98,19 @@ describe("Built-in mode URL + token forwarding", () => {
       return config.mcpServers.autonomos.env;
     }
 
-    it("encodes the WebSocket gateway URL using the resolved serverPort", () => {
+    it("points the gateway at the control socket and the REST base at the public port", () => {
       writeFileSync(
         join(tmpDir, "settings.json"),
         `${JSON.stringify({ channels: ["server:autonomos"] })}\n`,
       );
       const args = claudeCodeProvider.buildArgs(baseOptions());
       const env = readMcpEnv(args);
-      assert.equal(env.AUTONOMOS_SERVER_URL, "ws://localhost:53917/ws/gateway");
+      // ADR-055 PR B: gateway on the socket (ws+unix), REST base stays public.
+      assert.equal(
+        env.AUTONOMOS_SERVER_URL,
+        "ws+unix:///tmp/aos-test/control.sock:/ws/gateway",
+      );
+      assert.equal(env.AUTONOMOS_API_URL, "http://localhost:53917");
     });
 
     it("always forwards the in-process auth token — even when process.env.AUTONOMOS_TOKEN is unset", () => {
@@ -140,13 +148,18 @@ describe("Built-in mode URL + token forwarding", () => {
       return null;
     }
 
-    it("encodes WebSocket gateway URL from the resolved serverPort", () => {
+    it("points the gateway at the control socket and the REST base at the public port", () => {
       const args = codexProvider.buildArgs(baseOptions());
       const url = readCfgValue(
         args,
         "mcp_servers.autonomos.env.AUTONOMOS_SERVER_URL",
       );
-      assert.equal(url, "ws://localhost:53917/ws/gateway");
+      assert.equal(url, "ws+unix:///tmp/aos-test/control.sock:/ws/gateway");
+      const apiUrl = readCfgValue(
+        args,
+        "mcp_servers.autonomos.env.AUTONOMOS_API_URL",
+      );
+      assert.equal(apiUrl, "http://localhost:53917");
     });
 
     it("always forwards the in-process auth token (no env fallthrough)", () => {

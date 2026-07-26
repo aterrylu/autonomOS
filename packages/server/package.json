@@ -29,6 +29,7 @@
     "hono": "^4",
     "impit": "^0.10.1",
     "node-pty": "1.0.0",
+    "ws": "^8.18.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

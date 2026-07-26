@@ -112,7 +112,10 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       "-c",
       `mcp_servers.autonomos.args=${JSON.stringify([options.channelServerScript])}`,
       "-c",
-      `mcp_servers.autonomos.env.AUTONOMOS_SERVER_URL=${JSON.stringify(`ws://localhost:${options.serverPort}/ws/gateway`)}`,
+      // Gateway on the internal socket (ADR-055 PR B); REST base stays public.
+      `mcp_servers.autonomos.env.AUTONOMOS_SERVER_URL=${JSON.stringify(`ws+unix://${options.socketPath}:/ws/gateway`)}`,
+      "-c",
+      `mcp_servers.autonomos.env.AUTONOMOS_API_URL=${JSON.stringify(options.apiUrl)}`,
       "-c",
       `mcp_servers.autonomos.env.AUTONOMOS_SESSION_ID=${JSON.stringify(options.sessionId)}`,
       "-c",

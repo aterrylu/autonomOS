@@ -10,7 +10,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
-import { getInternalSocketPath, getServerPort } from "../serverState.js";
+import {
+  assertSpawnReady,
+  getInternalSocketPath,
+  getServerPort,
+} from "../serverState.js";
 
 // ── Base context injected into every spawned agent session ────
 export const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
@@ -162,12 +166,22 @@ export function buildBaseEnv(
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
-  // PUBLIC base URL. Consumed by statusline.mjs (/api/agents) — a read of the
-  // browser-facing surface, so it must stay an http:// URL on the real port.
-  env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
+  // Assert BOTH spawn preconditions up front, as one typed failure.
+  //
+  // This is the funnel every spawn path goes through, so it is the right place
+  // to decide what a too-early spawn sees. Relying on the individual getters
+  // below is fragile: getInternalSocketPath() throws the typed error (→ 503),
+  // getServerPort() throws a bare Error (→ 500), so the status would depend on
+  // which one happens to be missing AND on the order these two statements
+  // appear in. Asserting first makes the retryable 503 unconditional.
+  assertSpawnReady();
+
   // INTERNAL control plane. Consumed by HOOK_CMD's `curl --unix-socket`.
   // Single-purpose on purpose (ADR-055): the two planes no longer share a var.
   env.AUTONOMOS_INTERNAL_SOCKET = getInternalSocketPath();
+  // PUBLIC base URL. Consumed by statusline.mjs (/api/agents) — a read of the
+  // browser-facing surface, so it must stay an http:// URL on the real port.
+  env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
 

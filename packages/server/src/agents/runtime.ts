@@ -30,7 +30,11 @@ import {
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
-import { assertControlPlaneReady, getServerPort } from "../serverState.js";
+import {
+  assertControlPlaneReady,
+  getInternalSocketPath,
+  getServerPort,
+} from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
@@ -686,6 +690,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     injectChannelServer: !!channels?.includes("server:autonomos"),
     channelServerScript: CHANNEL_SERVER_SCRIPT,
     serverPort: String(getServerPort()),
+    // ADR-055 PR B: the gateway is on the control socket; the REST base stays
+    // public. Both resolved here so providers inject single-purpose env vars
+    // instead of the channel server string-deriving one plane from the other.
+    socketPath: getInternalSocketPath(),
+    apiUrl: `http://localhost:${getServerPort()}`,
     // Set by the sidecar block below (when the provider declares buildSidecar)
     // so buildArgs can emit `--remote <endpoint>` against the daemon.
     sidecarEndpoint: undefined as string | undefined,
@@ -893,13 +902,22 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         err instanceof Error ? err.message : err,
       );
     }
-    // Codex OUTBOUND (send + org tools) rides a channel-server MCP subprocess the
-    // daemon launches from `-c mcp_servers`. If that launch fails (bad node/script
-    // path, esp. in a bundled build) the model silently has no outbound while
-    // still receiving inbound. Verify it actually registered; warn if not.
-    if (resolved.injectChannelServer) {
-      scheduleChannelServerCheck(persisted.id, persisted.name, pty);
-    }
+  }
+
+  // OUTBOUND (send + org tools) rides a channel-server MCP subprocess that dials
+  // the gateway. If that launch/connect fails (bad node/script path, esp. in a
+  // bundled build; or the ws+unix dial failing — ADR-055 PR B) the agent
+  // silently has no outbound while still receiving inbound. Verify it actually
+  // registered; warn if not.
+  //
+  // Hoisted out of the `if (sidecar)` block above (ADR-055 PR B): the Codex-only
+  // scoping was an accident of nesting, not intent. EVERY agent with a channel
+  // server dials the gateway and can hit this failure — a Claude agent whose
+  // channel server never comes up is just as silently outbound-dead as a Codex
+  // one, and now that the dial is over a Unix socket the failure surface is
+  // wider. Gate purely on injectChannelServer.
+  if (resolved.injectChannelServer) {
+    scheduleChannelServerCheck(persisted.id, persisted.name, pty);
   }
 
   // Delivery receipt: a starting prompt travels only as a CLI arg, and a

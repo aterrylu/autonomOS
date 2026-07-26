@@ -211,8 +211,19 @@ export interface ResolvedSpawnOptions extends SpawnOptions {
   injectChannelServer: boolean;
   /** Absolute path to the channel server script */
   channelServerScript: string;
-  /** autonomOS server port */
+  /** autonomOS server port (public listener) */
   serverPort: string;
+  /**
+   * Filesystem path of the internal control socket (ADR-055 PR B). The agent's
+   * channel server dials the gateway as `ws+unix://<socketPath>:/ws/gateway`.
+   */
+  socketPath: string;
+  /**
+   * Public REST base (`http://localhost:<serverPort>`) for the channel server's
+   * create_agent/kill_agent/schedules calls, which stay on the public listener.
+   * Decoupled from the gateway WS URL (ADR-055 PR B), which is now a socket.
+   */
+  apiUrl: string;
   /**
    * ws:// endpoint of the provider's sidecar daemon, set by the runtime before
    * buildSidecar/buildArgs when the provider declares buildSidecar. The daemon

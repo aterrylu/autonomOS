@@ -7,6 +7,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
+import WebSocket from "ws";
 
 // packages/server/src/mcp/tools.ts
 var TOOL_CREATE_AGENT = {
@@ -515,7 +516,15 @@ var mcp = new Server(
   }
 );
 var SERVER_BASE = (() => {
-  const wsUrl = SERVER_URL;
+  const explicit = process.env.AUTONOMOS_API_URL;
+  if (explicit) return explicit.replace(/\/$/, "");
+  const wsUrl = SERVER_URL ?? "";
+  if (wsUrl.startsWith("ws+unix:")) {
+    process.stderr.write(
+      "autonomos-channel: AUTONOMOS_API_URL not set with a ws+unix gateway \u2014 create_agent/kill_agent/schedules will be unavailable\n"
+    );
+    return "";
+  }
   return wsUrl.replace("ws://", "http://").replace("wss://", "https://").replace(/\/ws\/gateway$/, "");
 })();
 function authHeaders(contentType) {

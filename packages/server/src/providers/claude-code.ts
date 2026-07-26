@@ -187,7 +187,12 @@ export const claudeCodeProvider: AgentProvider = {
               command: "node",
               args: [options.channelServerScript],
               env: {
-                AUTONOMOS_SERVER_URL: `ws://localhost:${options.serverPort}/ws/gateway`,
+                // Gateway on the internal socket (ADR-055 PR B). ws+unix://
+                // <socketPath>:/ws/gateway — the channel server uses the `ws`
+                // package, which parses this scheme (undici's global does not).
+                AUTONOMOS_SERVER_URL: `ws+unix://${options.socketPath}:/ws/gateway`,
+                // REST base stays PUBLIC (create_agent/kill_agent/schedules).
+                AUTONOMOS_API_URL: options.apiUrl,
                 AUTONOMOS_SESSION_ID: options.sessionId,
                 AUTONOMOS_AGENT_NAME: options.agentName,
                 // Forward the in-process auth token (from serverState, set at

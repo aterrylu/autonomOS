@@ -92,9 +92,15 @@ export type SocketProbe = "absent" | "stale" | "live" | "not-a-socket";
  * a crash or SIGKILL leaves the file behind, and the next bind() fails
  * EADDRINUSE. So a stale file must be unlinked before listen(). But unlinking
  * unconditionally is how you get two servers fighting over one config dir — the
- * PR #172 failure mode — because our mutual exclusion (acquireOwnership) hasn't
- * run yet at that point. A file that a live peer is still serving must be left
+ * PR #172 failure mode. A file that a live peer is still serving must be left
  * alone.
+ *
+ * On the normal path acquireOwnership() HAS already run by the time we get here
+ * (run.ts binds this socket inside the pid-file "acquired" branch), so the pid
+ * file is the primary mutual exclusion and this probe is defence in depth. The
+ * case where the probe is the ONLY guard is the degraded branch: when
+ * acquireOwnership itself throws (filesystem error), run.ts proceeds anyway, and
+ * then a live peer's socket is the sole thing standing between us and its state.
  *
  * connect() distinguishes the two: a live listener accepts, a stale file
  * refuses with ECONNREFUSED.

@@ -13,7 +13,8 @@
  *   kill_agent(agent)   — terminate an agent by name or ID
  *
  * Environment variables (set by autonomOS at spawn time):
- *   AUTONOMOS_SERVER_URL  — WebSocket URL
+ *   AUTONOMOS_SERVER_URL  — gateway WebSocket URL (ws+unix://<sock>:/ws/gateway, ADR-055 PR B)
+ *   AUTONOMOS_API_URL     — public REST base (http://localhost:<port>) for create_agent/schedules
  *   AUTONOMOS_SESSION_ID  — this agent's autonomOS session ID
  *   AUTONOMOS_TOKEN       — auth token (optional)
  */
@@ -30,6 +31,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+// The gateway now listens on a Unix socket, addressed as
+// `ws+unix://<socketPath>:/ws/gateway`. Node's built-in global WebSocket (undici)
+// rejects that scheme outright ("expected a ws: or wss: url"); the `ws` package
+// supports it, splitting socketPath from request-path on the FIRST ':'. So this
+// import is load-bearing, not stylistic — do not drop back to the global.
+import WebSocket from "ws";
 
 // Tool definitions are shared with the HTTP MCP server.
 // Import paths use relative since this runs as a standalone subprocess.
@@ -189,9 +196,27 @@ const mcp = new Server(
 // Handlers route through the gateway WebSocket for send/list_agents,
 // and through the server's HTTP API for create_agent/kill_agent.
 
+// Public REST base for create_agent / kill_agent / schedules — the routes that
+// stay on the PUBLIC listener. It used to be string-derived from SERVER_URL, but
+// that only worked while the gateway WS was an http(s) URL on the same port. Now
+// the gateway is `ws+unix://<sock>:/ws/gateway` (ADR-055 PR B), which has no
+// http host to munge — the two planes are genuinely separate, so the REST base
+// is its own injected env var. Falls back to the old derivation for a mixed-
+// version window (an agent spawned by a pre-PR-B server that lacks the new var).
 const SERVER_BASE = (() => {
-  // Derive HTTP base URL from the WebSocket URL
-  const wsUrl = SERVER_URL!;
+  const explicit = process.env.AUTONOMOS_API_URL;
+  if (explicit) return explicit.replace(/\/$/, "");
+  // Legacy fallback: derive from an http(s) gateway URL. Cannot work for
+  // ws+unix; if we're on ws+unix without AUTONOMOS_API_URL, REST tools are
+  // unavailable and we say so rather than dialing a nonsense host.
+  const wsUrl = SERVER_URL ?? "";
+  if (wsUrl.startsWith("ws+unix:")) {
+    process.stderr.write(
+      "autonomos-channel: AUTONOMOS_API_URL not set with a ws+unix gateway — " +
+        "create_agent/kill_agent/schedules will be unavailable\n",
+    );
+    return "";
+  }
   return wsUrl
     .replace("ws://", "http://")
     .replace("wss://", "https://")
