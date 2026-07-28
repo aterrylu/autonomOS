@@ -7,6 +7,7 @@ import {
   disposeCodexControl,
   formatInbound,
   setCodexInboundNotifier,
+  setCodexStatusSink,
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
 import {
@@ -42,13 +43,16 @@ describe("codex inbound formatting", () => {
 });
 
 /**
- * Inbound delivery is idle-gated: a `turn/start` mid-turn interleaves with the
- * running turn, so messages queue until the daemon reports the thread idle.
- * That is correct — but it used to happen in COMPLETE SILENCE, for up to 15
- * minutes per attempt and ~45 minutes before any operator-visible signal. From
- * the outside, "queued behind a long turn" and "silently dropped" produced
- * byte-identical logs, and a correctly-queued message was duly reported as a
- * lost message. These tests pin the signals that tell the two apart.
+ * Inbound delivery is IMMEDIATE, including into a busy thread — Codex delivers
+ * at its own turn boundaries, so the idle gate that used to sit here was both
+ * unnecessary and the cause of a `wait_agent` deadlock (ADR-060 reverses
+ * ADR-057's untested assumption). What remains behind the injection is a retry
+ * buffer for genuine TRANSPORT failures.
+ *
+ * These tests pin the SIGNALS on those paths. The failure this file exists
+ * against is not a dropped message but an indistinguishable one: a queue that
+ * says nothing produces logs byte-identical to a silent drop, which is how a
+ * correctly-queued message was duly reported as lost.
  */
 describe("codex inbound delivery observability", () => {
   const AGENT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -75,7 +79,7 @@ describe("codex inbound delivery observability", () => {
   it("logs the enqueue — with char count and depth, never the message body", async () => {
     const daemon = startDaemon();
     daemon.status = "idle";
-    _setCodexTimingsForTesting({ idlePollMs: 5, statusPollMs: 50 });
+    _setCodexTimingsForTesting({ statusPollMs: 50 });
     const secret = "wire-transfer code 8842";
 
     const logs = await captureLogs(async (lines) => {
@@ -110,146 +114,16 @@ describe("codex inbound delivery observability", () => {
     assert.deepEqual(daemon.injected, [secret]);
   });
 
-  it("logs every expired drain attempt when the thread never goes idle", async () => {
-    const daemon = startDaemon();
-    daemon.status = "active"; // a turn that starts and never finishes
-    _setCodexTimingsForTesting({
-      idlePollMs: 5,
-      idleDeadlineMs: 80,
-      retryBackoffMs: 5_000, // long: keep this test to a single attempt
-      statusPollMs: 50,
-    });
-
-    const logs = await captureLogs(async (lines) => {
-      deliverToCodex(AGENT, ENDPOINT, "are you still there?");
-      // Poll for the line rather than sleeping a guessed budget — 400ms is the
-      // ceiling here, not the trigger.
-      await waitUntil(
-        () =>
-          lines.some(
-            (l) =>
-              l.includes("no idle window in") &&
-              l.includes("thread still active") &&
-              l.includes("1 queued, retrying"),
-          ),
-        "the drain deadline-expiry log",
-        400,
-      );
-    });
-
-    assert.ok(logs.length > 0);
-    assert.equal(daemon.injected.length, 0, "must not inject mid-turn");
-  });
-
-  it("distinguishes an unreadable thread from a busy one", async () => {
-    const daemon = startDaemon();
-    daemon.failThreadRead = true; // daemon up, thread unreadable
-    _setCodexTimingsForTesting({
-      idlePollMs: 5,
-      idleDeadlineMs: 500,
-      retryBackoffMs: 5_000,
-      statusPollMs: 50,
-    });
-
-    const logs = await captureLogs(async (lines) => {
-      deliverToCodex(AGENT, ENDPOINT, "hello?");
-      await waitUntil(
-        () => lines.some((l) => l.includes("thread status unreadable")),
-        "the unreadable-status log",
-        300,
-      );
-    });
-
-    // The CAUSE must be named — "socket closed", "timed out" and "no rollout
-    // for thread" all surface as unreadable but have different remedies.
-    assert.ok(
-      logs.some((l) => l.includes("thread status unreadable (no rollout")),
-      `expected the failure cause in the log, got:\n${logs.join("\n")}`,
-    );
-    assert.ok(
-      !logs.some((l) => l.includes("thread still active")),
-      "an unreadable thread must not be reported as busy",
-    );
-  });
-
-  it("notifies the operator once when a message waits too long behind a turn", async () => {
-    const daemon = startDaemon();
-    daemon.status = "active";
-    _setCodexTimingsForTesting({
-      idlePollMs: 5,
-      queueWaitWarnMs: 40,
-      idleDeadlineMs: 5_000, // stay inside one drain attempt
-      statusPollMs: 50,
-    });
-    const notes: string[] = [];
-    setCodexInboundNotifier((_id, message) => notes.push(message));
-
-    await captureLogs(async () => {
-      deliverToCodex(AGENT, ENDPOINT, "ping");
-      await waitUntil(
-        () => notes.length > 0,
-        "an operator notification",
-        1_000,
-      );
-      // Keep polling well past the threshold — the warning must not repeat.
-      await delay(150);
-    });
-
-    assert.equal(notes.length, 1, `warn once, got ${notes.length}`);
-    assert.match(notes[0], /queued for/);
-    assert.match(notes[0], /hasn't finished/);
-    assert.match(notes[0], /1 message\(s\) waiting/);
-  });
-
-  it("does not re-warn for each backlogged message once the stall clears", async () => {
-    // The warn-once flag belongs to the CONTROLLER, not the message. Per-message
-    // it re-fired for every queued item the instant the stall ENDED — each one
-    // inherits an old queuedAt, so it trips the threshold on its first poll —
-    // burying the operator in "its current turn hasn't finished" at the exact
-    // moment delivery was succeeding.
-    const daemon = startDaemon();
-    daemon.status = "active";
-    _setCodexTimingsForTesting({
-      idlePollMs: 5,
-      queueWaitWarnMs: 40,
-      idleDeadlineMs: 5_000,
-      statusPollMs: 50,
-    });
-    const notes: string[] = [];
-    setCodexInboundNotifier((_id, message) => notes.push(message));
-
-    await captureLogs(async () => {
-      for (const text of ["one", "two", "three"]) {
-        deliverToCodex(AGENT, ENDPOINT, text);
-      }
-      await waitUntil(() => notes.length > 0, "the stall warning", 1_000);
-      daemon.status = "idle"; // the wedged turn finishes
-      await waitUntil(
-        () => daemon.injected.length === 3,
-        "the whole backlog delivered",
-      );
-      await delay(100);
-    });
-
-    assert.deepEqual(daemon.injected, ["one", "two", "three"]);
-    assert.equal(
-      notes.length,
-      1,
-      `one warning per stall episode, got ${notes.length}:\n${notes.join("\n")}`,
-    );
-  });
-
   it("reports undelivered messages when the agent is terminated — the one real drop", async () => {
     // dispose() empties the queue. Doing that silently reproduces the exact
     // symptom this file logs against ("queued (N chars)" then nothing forever),
     // except here the message really is gone and nobody is coming back for it.
     const daemon = startDaemon();
-    daemon.status = "active"; // keep the message queued
-    _setCodexTimingsForTesting({
-      idlePollMs: 5,
-      idleDeadlineMs: 5_000,
-      statusPollMs: 50,
-    });
+    // Hold the message in the queue with a real TRANSPORT failure — a daemon
+    // whose TUI never created a thread. A busy thread no longer holds anything
+    // back, which is the point of the gate removal.
+    daemon.threadIds = [];
+    _setCodexTimingsForTesting({ threadPollMs: 5, statusPollMs: 50 });
     const notes: string[] = [];
     setCodexInboundNotifier((_id, message) => notes.push(message));
 
@@ -284,28 +158,109 @@ describe("codex inbound delivery observability", () => {
     assert.equal(daemon.injected.length, 0);
   });
 
-  it("delivers as soon as the turn finishes — the queue is a delay, not a drop", async () => {
+  it("injects immediately into a BUSY thread — the idle gate is gone", async () => {
+    // The behavior this replaced: delivery used to wait for a confirmed-idle
+    // window. That gate was unnecessary (Codex delivers at its own turn
+    // boundaries) and it deadlocked an agent blocked in `collaboration.
+    // wait_agent`, which reads as `active` — so we withheld the very message
+    // that would have released it.
     const daemon = startDaemon();
-    daemon.status = "active";
-    _setCodexTimingsForTesting({
-      idlePollMs: 5,
-      idleDeadlineMs: 5_000,
-      statusPollMs: 50,
-    });
+    daemon.status = "active"; // never goes idle for the duration of this test
+    _setCodexTimingsForTesting({ statusPollMs: 50 });
 
     await captureLogs(async () => {
       deliverToCodex(AGENT, ENDPOINT, "first");
       deliverToCodex(AGENT, ENDPOINT, "second");
-      await delay(60);
-      assert.equal(daemon.injected.length, 0, "nothing injected while active");
-      daemon.status = "idle";
       await waitUntil(
         () => daemon.injected.length === 2,
-        "both messages delivered",
+        () =>
+          `both messages delivered while active (saw ${daemon.injected.length})`,
       );
     });
 
     assert.deepEqual(daemon.injected, ["first", "second"]);
+    assert.equal(daemon.status, "active", "the thread never went idle");
+  });
+
+  it("does not hold inbound forever on a STALE compacting status", async () => {
+    // The wedge the compacting skip could otherwise create: `lastStatus` is a
+    // CACHE fed by daemon pushes and the status poll. Report compacting, then
+    // break `thread/read` so the poll can never refresh it — the "compaction
+    // finished" push is gone and we are a non-creator, so it is never replayed.
+    // Without a bound the message queues forever, logging every few seconds,
+    // and the only notification says the DASHBOARD may be stale — pointing the
+    // operator at cosmetics while every message they send is swallowed.
+    const daemon = startDaemon();
+    daemon.status = "compacting";
+    _setCodexTimingsForTesting({
+      statusPollMs: 10,
+      retryBackoffMs: 10,
+      compactingMaxHoldMs: 60,
+    });
+    const seen: string[] = [];
+    const notes: string[] = [];
+    setCodexStatusSink((_id, status) => seen.push(status));
+    setCodexInboundNotifier((_id, message) => notes.push(message));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      await waitUntil(
+        () => seen.includes("compacting"),
+        () => `the status feed to report compacting (saw ${seen.join(",")})`,
+      );
+      daemon.failThreadRead = true; // the status can never refresh again
+      deliverToCodex(AGENT, ENDPOINT, "do not swallow me");
+      await waitUntil(
+        () => daemon.injected.length === 1,
+        () =>
+          `delivery once the stale hold is bounded (injected ${daemon.injected.length})`,
+      );
+    });
+
+    assert.deepEqual(daemon.injected, ["do not swallow me"]);
+    assert.ok(
+      notes.some((n) => /may be stale/.test(n)),
+      `the operator must be told we stopped believing the status, got:\n${notes.join("\n")}`,
+    );
+  });
+
+  it("holds delivery only while COMPACTING, then delivers", async () => {
+    // The one state we still refuse to inject into. This is untested
+    // conservatism rather than a measured requirement — nothing was determined
+    // about compaction — so it is deliberately cheap: a window that ends on its
+    // own, with the retry picking the message up. This test pins that it is a
+    // DELAY and not a drop.
+    const daemon = startDaemon();
+    daemon.status = "compacting";
+    _setCodexTimingsForTesting({ statusPollMs: 10, retryBackoffMs: 10 });
+
+    await captureLogs(async () => {
+      // Wait until the controller has actually OBSERVED "compacting", not
+      // merely until the daemon was asked. The fake counts a read when it
+      // RECEIVES the request, which is before the reply lands and the status is
+      // recorded — polling that counter races the very state under test.
+      const seen: string[] = [];
+      setCodexStatusSink((_id, status) => seen.push(status));
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      await waitUntil(
+        () => seen.includes("compacting"),
+        () => `the status feed to report compacting (saw ${seen.join(",")})`,
+      );
+      deliverToCodex(AGENT, ENDPOINT, "during compaction");
+      await delay(60);
+      assert.equal(
+        daemon.injected.length,
+        0,
+        "must not inject while the thread is compacting",
+      );
+      daemon.status = "idle";
+      await waitUntil(
+        () => daemon.injected.length === 1,
+        () => `delivery once compaction ends (saw ${daemon.injected.length})`,
+      );
+    });
+
+    assert.deepEqual(daemon.injected, ["during compaction"]);
   });
 });
 
@@ -333,7 +288,7 @@ describe("codex control escalation", () => {
     // reconciler built to prevent exactly that.
     installed = installFakeCodexDaemon();
     installed.failThreadRead = true; // socket fine, reads fail
-    _setCodexTimingsForTesting({ statusPollMs: 10, idlePollMs: 5 });
+    _setCodexTimingsForTesting({ statusPollMs: 10 });
     const notes: string[] = [];
     setCodexInboundNotifier((_id, message) => notes.push(message));
 
@@ -355,7 +310,7 @@ describe("codex control escalation", () => {
     // status reconciler now escalates on a doubling backoff like noteFailure.
     installed = installFakeCodexDaemon();
     installed.failThreadRead = true;
-    _setCodexTimingsForTesting({ statusPollMs: 5, idlePollMs: 5 });
+    _setCodexTimingsForTesting({ statusPollMs: 5 });
     const notes: string[] = [];
     setCodexInboundNotifier((_id, message) => notes.push(message));
 

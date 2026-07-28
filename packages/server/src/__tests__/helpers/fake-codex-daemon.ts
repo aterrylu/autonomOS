@@ -12,8 +12,10 @@
  */
 
 export interface FakeCodexDaemon {
-  /** Ground-truth thread status returned by `thread/read`. Mutate mid-test. */
-  status: "idle" | "active";
+  /** Ground-truth thread status returned by `thread/read`. Mutate mid-test.
+   *  Includes "compacting" — the one state delivery still refuses to inject
+   *  into, so a test needs to be able to report it. */
+  status: "idle" | "active" | "compacting";
   /** Thread ids returned by `thread/loaded/list`. Empty = no thread yet. */
   threadIds: string[];
   /** When true, `thread/read` answers with a JSON-RPC error (unreadable). */

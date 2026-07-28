@@ -4,9 +4,9 @@
 
 Stop losing Codex inbound messages in silence, and stop crying wolf on every prompted Codex agent.
 
-Sending to a busy Codex agent looked like the message vanished: `send()` returned success and nothing else was ever logged. The message wasn't lost — inbound is idle-gated by design (injecting a turn mid-turn corrupts the thread), so it was correctly queued. But the wait emitted **nothing**: no enqueue line, a 15-minute silent poll, and an operator notification only after three consecutive failures — about 45 minutes. A working queue and a dropped message produced byte-identical logs, so a correctly-queued message got reported as a bug.
+Sending to a busy Codex agent looked like the message vanished: `send()` returned success and nothing else was ever logged. The message wasn't lost — it was queued — but the wait emitted **nothing**: no enqueue line, a long silent poll, and an operator notification only after three consecutive failures. A working queue and a dropped message produced byte-identical logs, so a correctly-queued message got reported as a bug.
 
-Delivery now narrates itself. You get a line when a message is queued, a line every time an attempt expires (naming whether the thread is still active or its status is unreadable, and why), and a dashboard warning once a message has waited five minutes — which is also the signal that surfaces a wedged turn. The fifteen-minute tolerance for legitimately long turns is unchanged: waiting was always correct, not *saying* you were waiting was the bug.
+Delivery now narrates itself. You get a line when a message is queued, a line every time an attempt fails (naming the cause), and a dashboard warning once failures persist. Not *saying* what was happening was the bug.
 
 Four genuine silent drops are fixed alongside it. Terminating an agent with queued messages cleared them with no trace (the module's only real drop — reachable on kill, delete, PTY exit and resume-failure respawn); broadcasts skipped Codex agents with no live daemon endpoint; sending to a Codex agent whose record isn't running "succeeded" into a socket whose reader ignores inbound; and a throw inside the broadcast fan-out could take out every recipient after the sender had already been told it worked.
 
