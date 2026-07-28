@@ -174,8 +174,16 @@ export interface ManagedAttachment {
    * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
    * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
    * the ws:// the gateway uses to inject inbound turns + read status.
+   *
+   * Narrowed to the two members anything here actually uses. `Sidecar.proc` is
+   * never read through the interface ANYWHERE — `sidecar.ts` closes over its
+   * own local `proc` — so widening this to the full `Sidecar` would buy nothing
+   * and would force test-only synthetic attachments through a double cast that
+   * silently disables checking in both directions: if `Sidecar` later grew a
+   * member the runtime DOES read, the cast would keep compiling while the fake
+   * lacked it. Stating the real coupling lets the compiler enforce it instead.
    */
-  sidecar?: Sidecar;
+  sidecar?: Pick<Sidecar, "endpoint" | "dispose">;
 }
 
 /** ws:// endpoint of an agent's provider daemon (Codex), or undefined. */
@@ -201,21 +209,39 @@ export function getLiveAgentIds(): UUID[] {
  * output-buffer wiring that `spawnAgent` installs, so reconnect-replay
  * scenarios are exercised faithfully too. Not reachable from any product code
  * path (no caller in `src/` outside tests/perf).
+ *
+ * `sidecarEndpoint` makes the agent look, to `getAgentSidecarEndpoint`, like a
+ * Codex agent whose app-server daemon is up. `live` is module-private and only
+ * `spawnAgent` writes it, so without this the entire inbound delivery path
+ * (router → endpoint lookup → codexControl → socket) was reachable only by
+ * spawning a real `codex` binary — which is why that composition went untested
+ * while each of its parts was covered. The lookup itself stays real.
  */
 export function _registerSyntheticAttachment(
   agentId: UUID,
   pty: IPty,
+  opts?: { sidecarEndpoint?: string },
 ): ManagedAttachment {
   const managed: ManagedAttachment = {
     agentId,
     pty,
     outputBuffer: [],
     outputSize: 0,
+    ...(opts?.sidecarEndpoint
+      ? { sidecar: { endpoint: opts.sidecarEndpoint, dispose: () => {} } }
+      : {}),
   };
   // Mirror spawnAgent's output-buffer onData so replay works.
   pty.onData((data: string) => appendToOutputBuffer(managed, data));
   live.set(agentId, managed);
   return managed;
+}
+
+/** PERF/TEST ONLY — drop a synthetic attachment, so a suite that registers
+ *  several does not leak them into each other through the module-private map.
+ *  Deliberately does NOT touch the PTY or sidecar: neither is real here. */
+export function _unregisterSyntheticAttachment(agentId: UUID): void {
+  live.delete(agentId);
 }
 
 export function expandPath(path: string): string {

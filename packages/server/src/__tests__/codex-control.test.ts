@@ -11,11 +11,10 @@ import {
 } from "../gateway/codexControl.js";
 import {
   captureLogs,
-  delay,
   type FakeCodexDaemon,
   installFakeCodexDaemon,
-  waitUntil,
 } from "./helpers/fake-codex-daemon.js";
+import { delay, waitUntil } from "./helpers/wait.js";
 
 /**
  * Codex inbound is injected as an attributed user turn into the agent's
