@@ -190,8 +190,15 @@ class CodexController {
    *  exists) and the skip that reads it is time-bounded, because a missed
    *  "compaction finished" push would otherwise pin delivery forever. */
   private lastStatus: CodexStatus | null = null;
-  /** When the current run of compacting-skips began; null when not skipping. */
+  /** When the current compacting EPISODE was first observed; null when none is
+   *  in flight. Scoped to the episode, not to a message — see below. */
   private compactingSince: number | null = null;
+  /** Set once we have stopped believing a reported compaction and started
+   *  injecting through it. Episode-scoped: without it, each queued message
+   *  re-armed a fresh hold, so a backlog drained one message per bound (a
+   *  5-deep queue = 5 waits and 5 identical notifications). The bound has to
+   *  protect the QUEUE, not just its head. */
+  private compactingDisbelieved = false;
   /** Why the last thread/read failed, so the status-feed log can name the
    *  cause — its only consumer since the drain stopped reading status. */
   private lastReadError: Error | null = null;
@@ -330,8 +337,14 @@ class CodexController {
     // A cached status describes the socket we are dropping. Carrying it across
     // a reconnect lets a missed "compaction finished" push hold inbound back
     // indefinitely — and we are a NON-creator, so that push is never replayed.
-    // Unknown must mean unknown; the compacting skip fails open on null.
+    // Unknown must mean unknown; the compacting skip fails open on null. Both
+    // halves of that guard's state go together — a surviving `compactingSince`
+    // would make a genuinely NEW compaction after the reconnect look like it
+    // had already outlived the bound, firing a "status likely stale" log and
+    // notification that are simply false.
     this.lastStatus = null;
+    this.compactingSince = null;
+    this.compactingDisbelieved = false;
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer);
       reject(new Error("codex control socket closed"));
@@ -471,6 +484,13 @@ class CodexController {
   private emitStatus(type: string | undefined): void {
     const mapped = mapStatus(type);
     if (mapped) {
+      // Leaving "compacting" is what ends an episode — not a delivered message
+      // and not a timer. Reset both halves so the next real compaction gets a
+      // full hold and its own single notification.
+      if (mapped !== "compacting" && this.lastStatus === "compacting") {
+        this.compactingSince = null;
+        this.compactingDisbelieved = false;
+      }
       this.lastStatus = mapped;
       statusSink?.(this.agentId, mapped);
       return;
@@ -612,7 +632,7 @@ class CodexController {
         // (first delivery on a new connection).
         if (this.lastStatus === null) await this.queryIdle(threadId);
         if (this.disposed) return;
-        if (this.lastStatus === "compacting") {
+        if (this.lastStatus === "compacting" && !this.compactingDisbelieved) {
           this.compactingSince ??= Date.now();
           const heldMs = Date.now() - this.compactingSince;
           if (heldMs < timings.compactingMaxHoldMs) {
@@ -632,6 +652,10 @@ class CodexController {
           // it is the safe direction — the untested risk of injecting during
           // compaction is bounded, whereas holding forever is a guaranteed
           // silent drop of a message whose sender was already ack'd.
+          // Latch, rather than clearing the clock: the decision is about the
+          // reported STATUS, so it holds until that status actually changes.
+          // Clearing here would re-arm a full hold for the next queued message.
+          this.compactingDisbelieved = true;
           log(
             `${this.agentId.slice(0, 8)} still reported compacting after ` +
               `${Math.round(heldMs / 60_000)}m — status likely stale, injecting anyway`,
@@ -640,7 +664,6 @@ class CodexController {
             this.agentId,
             "Inbound to this Codex agent was held for a reported compaction that never ended — its status feed may be stale. Delivering anyway.",
           );
-          this.compactingSince = null;
         }
         const next = this.queue[0]; // peek; only dequeue once delivered
         if (next === undefined) break;
@@ -664,7 +687,6 @@ class CodexController {
           // and shifting earlier makes that test go red.
           this.queue.shift();
           this.consecutiveFailures = 0;
-          this.compactingSince = null;
           this.nextFailureWarnAt = FAILURES_BEFORE_WARN;
           log(
             `${this.agentId.slice(0, 8)} injected (${next.text.length} chars)`,

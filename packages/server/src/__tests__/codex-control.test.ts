@@ -218,9 +218,55 @@ describe("codex inbound delivery observability", () => {
     });
 
     assert.deepEqual(daemon.injected, ["do not swallow me"]);
+    // Match something UNIQUE to the fail-open branch. `/may be stale/` also
+    // appears in statusLoop's "the dashboard status may be stale" warning,
+    // which fires within ~30ms of failThreadRead — before the bound expires —
+    // so it would satisfy this assertion whether or not the branch ever ran.
     assert.ok(
-      notes.some((n) => /may be stale/.test(n)),
+      notes.some((n) => /Delivering anyway/.test(n)),
       `the operator must be told we stopped believing the status, got:\n${notes.join("\n")}`,
+    );
+  });
+
+  it("drains a whole backlog once it stops believing a stale compacting status", async () => {
+    // The bound has to protect the QUEUE, not just its head. Clearing the clock
+    // on fail-open re-armed a full hold for each following message, so a 5-deep
+    // backlog drained one message per bound — 5 waits and 5 identical "status
+    // may be stale" notifications. The decision is about the reported STATUS,
+    // so it latches until that status actually changes.
+    const daemon = startDaemon();
+    daemon.status = "compacting";
+    _setCodexTimingsForTesting({
+      statusPollMs: 10,
+      retryBackoffMs: 10,
+      compactingMaxHoldMs: 60,
+    });
+    const seen: string[] = [];
+    const notes: string[] = [];
+    setCodexStatusSink((_id, status) => seen.push(status));
+    setCodexInboundNotifier((_id, message) => notes.push(message));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      await waitUntil(
+        () => seen.includes("compacting"),
+        () => `the status feed to report compacting (saw ${seen.join(",")})`,
+      );
+      daemon.failThreadRead = true; // the status can never refresh again
+      for (const text of ["one", "two", "three"])
+        deliverToCodex(AGENT, ENDPOINT, text);
+      await waitUntil(
+        () => daemon.injected.length === 3,
+        () => `the whole backlog (injected ${daemon.injected.length})`,
+        3_000,
+      );
+    });
+
+    assert.deepEqual(daemon.injected, ["one", "two", "three"]);
+    assert.equal(
+      notes.filter((n) => /Delivering anyway/.test(n)).length,
+      1,
+      `one fail-open notification per EPISODE, got:\n${notes.join("\n")}`,
     );
   });
 
