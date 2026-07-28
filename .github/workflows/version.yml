@@ -36,6 +36,36 @@ permissions:
 jobs:
   version:
     runs-on: ubuntu-latest
+    # `bun install` runs the root `prepare` script, which runs `lefthook install`
+    # and writes .git/hooks/{pre-commit,commit-msg,pre-push}. This job both
+    # commits and pushes — the changesets action stages the regenerated
+    # package.json + CHANGELOG.md and commits them (the `commit:` input below)
+    # before pushing, and the tag step pushes again — so all three fire on the
+    # runner, each a DEVELOPER-machine gate never meant to run here.
+    #
+    # Both failure modes are opaque. `pre-push` (`biome check && make check`)
+    # surfaces only as `error: failed to push some refs`, which reads like a
+    # permissions problem rather than a test failure. `pre-commit` runs biome
+    # over the staged files — which include generated package.json files — and
+    # would abort the commit, so the Version PR would simply never appear.
+    #
+    # It should not run here regardless: this job's environment is deliberately
+    # leaner than the PR gate's (test.yml installs the Claude Code CLI for the
+    # integration suites; this job installs nothing), so `make check` is not even
+    # running the same thing. The PR `check` workflow is the real gate — nothing
+    # reaches main without passing it (`check` is required, `strict: true`,
+    # `enforce_admins: true`), so re-running a subset of it against a bot's push
+    # of generated changelog files gates releases on noise.
+    #
+    # Be honest about what this costs, though: that leaner environment was also
+    # the one thing here worth having. This was the only CI run of the suite on a
+    # box with no `claude` installed, which is why it — and only it — caught a
+    # test that had come to depend on host-installed tooling. Turning the hook off
+    # removes that detector. The replacement is to make such tests assert their
+    # own preconditions rather than inherit them from the runner; see the
+    # resolveBinary() assertion in control-plane-503.test.ts for the pattern.
+    env:
+      LEFTHOOK: "0"
     steps:
       - uses: actions/checkout@v4
         with:
