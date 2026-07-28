@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { createAdaptorServer } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
+import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import WebSocket from "ws";
-
 import {
   _resetAgentCredentialsForTesting,
   mintAgentToken,
@@ -156,5 +156,76 @@ describe("gateway send-delivery over ws+unix", () => {
     const code = await d.closed;
     assert.equal(code, 1008, "tokenless register must be closed with 1008");
     assert.equal(isSessionClientRegistered("sess-D"), false);
+  });
+});
+
+/**
+ * The `?token=` query MUST survive the ws+unix colon-split (nox review, #293).
+ *
+ * The gateway also sits behind the global-token /ws/* auth. The channel-server
+ * appends `?token=<global>` to the ws+unix URL, and `ws@^8.x` computes
+ * `opts.path = pathname + search` BEFORE splitting the socket path off on the
+ * first ':'. If a future `ws` reordered those steps the query would be lost and
+ * every agent would fail auth — but nothing in the repo would fail; it was only
+ * covered by an ADR note about a dependency's internals + a manual live check.
+ * This pins it: assert the server actually SEES the query token over ws+unix.
+ */
+describe("gateway ws+unix preserves the ?token= query", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aos-gw-token-"));
+  const sock = join(dir, "control.sock");
+  const url = (token?: string) =>
+    `ws+unix://${sock}:/ws/gateway${token ? `?token=${token}` : ""}`;
+  const GOOD = "good-global-token";
+  let srv: Server;
+
+  // Mirrors the query-token branch of run.ts's requireAuth — the ONLY branch a
+  // ws+unix upgrade can exercise (no cookie/header on a raw ws handshake).
+  const requireQueryToken: MiddlewareHandler = async (c, next) => {
+    if (c.req.query("token") === GOOD) return next();
+    return c.json({ error: "Unauthorized" }, 401);
+  };
+
+  before(async () => {
+    const app = new Hono();
+    const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
+    app.use("/ws/gateway", requireQueryToken);
+    app.get("/ws/gateway", gatewayRouter(upgradeWebSocket));
+    srv = createAdaptorServer({ fetch: app.fetch }) as Server;
+    injectWebSocket(srv);
+    await new Promise<void>((r) => srv.listen(sock, r));
+  });
+
+  after(() => {
+    _resetAgentCredentialsForTesting();
+    srv?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Did the ws open (auth passed) or close before opening (auth rejected)? */
+  function openOutcome(u: string): Promise<"open" | "closed"> {
+    const ws = new WebSocket(u);
+    return new Promise((resolve) => {
+      ws.addEventListener("open", () => {
+        ws.close();
+        resolve("open");
+      });
+      ws.addEventListener("close", () => resolve("closed"));
+      ws.addEventListener("error", () => {});
+      setTimeout(() => resolve("closed"), 2000);
+    });
+  }
+
+  it("accepts the upgrade when ?token= is the valid global token", async () => {
+    // If the query survived the colon-split, requireQueryToken sees GOOD and the
+    // upgrade completes.
+    assert.equal(await openOutcome(url(GOOD)), "open");
+  });
+
+  it("rejects the upgrade when ?token= is missing", async () => {
+    assert.equal(await openOutcome(url(undefined)), "closed");
+  });
+
+  it("rejects the upgrade when ?token= is wrong", async () => {
+    assert.equal(await openOutcome(url("wrong")), "closed");
   });
 });

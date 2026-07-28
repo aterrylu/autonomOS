@@ -60,6 +60,23 @@ import {
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
 
 /**
+ * Redact secrets before spawn args reach the server log.
+ *
+ * Two shapes carry credentials into argv: Claude's `{"mcpServers":...}` /
+ * `{"hooks":...}` JSON blobs (whole-arg redaction), and Codex's per-`-c` flags
+ * `mcp_servers.autonomos.env.AUTONOMOS_[AGENT_]TOKEN="<hex>"` (the token is a
+ * substring of the arg). The latter is why a blanket startsWith() check leaked:
+ * the global token has ridden Codex argv all along, and PR B's per-agent token
+ * joins it. On Linux `/proc/<pid>/cmdline` is world-readable, so this only
+ * scrubs the LOG — argv exposure itself is documented in ADR-055's honest scope.
+ */
+export function redactArgForLog(a: string): string {
+  if (a.startsWith('{"hooks"')) return '{"hooks":...}';
+  if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
+  return a.replace(/(AUTONOMOS_(?:AGENT_)?TOKEN=)("?)[^"\s]+("?)/g, "$1$2…$3");
+}
+
+/**
  * Append a PTY chunk to an attachment's scrollback buffer, evicting the oldest
  * chunks (FIFO) once total size exceeds OUTPUT_BUFFER_LIMIT. Always retains at
  * least the most recent chunk. Shared by `spawnAgent` and the test-only
@@ -822,11 +839,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw err;
   }
 
-  const logArgs = args.map((a) => {
-    if (a.startsWith('{"hooks"')) return '{"hooks":...}';
-    if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
-    return a;
-  });
+  const logArgs = args.map(redactArgForLog);
   console.log(
     `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
       (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),

@@ -2,15 +2,12 @@
  * Internal control-plane Unix socket — lifecycle helpers (ADR-055).
  *
  * The internal control plane listens on a Unix domain socket instead of a TCP
- * port. As of PR A it carries exactly two things:
+ * port. It carries three things, none of them reachable from the network:
  *
  *   - `POST /mcp` (+ GET/DELETE) — the orchestration transport
  *   - `POST /api/hooks/:sessionId` — agent hook ingestion
- *
- * `/ws/gateway` is NOT here: it remains on the PUBLIC token-gated listener
- * (run.ts). ADR-055 plans to move it, but that lands in PR B alongside
- * per-agent gateway identity — do not read this module as evidence that
- * inter-agent traffic is already off the network. It is not.
+ *   - `GET /ws/gateway` — inter-agent messaging (moved off the public listener
+ *     in PR B; the channel-server dials it as `ws+unix://<socketPath>:/ws/gateway`)
  *
  * A socket is reachable only by
  * processes running as the server's user on this box — which is exactly what an
@@ -44,15 +41,12 @@ export function getControlSocketPath(): string {
 /**
  * Reject socket paths the clients can't express.
  *
- * The colon rule is FORWARD DEFENSE for PR B, not a description of today's
- * clients: nothing currently dials a `ws+unix:` URL. When PR B moves the
- * gateway onto this socket, the channel-server will address it as
- * `ws+unix://<socketPath>:/ws/gateway`, and the `ws` client splits that on the
- * FIRST `:` to separate socket path from request path — so a `:` anywhere in
- * the socket path would silently truncate it and the agent would dial a
- * nonexistent socket. Rejecting it at boot now means PR B cannot inherit a
- * config dir that was already quietly incompatible. The guard becomes
- * load-bearing then; today it is cheap insurance.
+ * The colon rule is LOAD-BEARING (PR B): every agent's channel-server dials the
+ * gateway as `ws+unix://<socketPath>:/ws/gateway` (providers/claude-code.ts,
+ * codex.ts, gemini-cli.ts), and the `ws` client splits that on the FIRST `:` to
+ * separate socket path from request path — so a `:` anywhere in the socket path
+ * would silently truncate it and every agent would dial a nonexistent socket.
+ * Rejecting it at boot turns that into a loud, immediate failure.
  *
  * The length cap is the OS limit on `sockaddr_un.sun_path` (~104 bytes on
  * macOS/BSD, 108 on Linux); exceeding it fails bind() with a bare EINVAL.
