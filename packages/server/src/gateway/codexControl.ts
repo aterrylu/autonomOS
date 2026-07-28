@@ -9,22 +9,27 @@
  *
  * The gateway opens a SECOND JSON-RPC client to each Codex agent's daemon (the
  * TUI is the first). It is a NON-creator of the thread, so it can't subscribe to
- * full turn events (`thread/resume` → "no rollout") and must NOT rely on
- * edge-triggered `thread/status/changed` for idle (a single missed event would
- * wedge the queue forever). Instead it QUERIES ground truth via `thread/read`
- * (`thread.status.type` = "idle" | "active") right before each injection —
- * polling is dumb but can't get stuck, and self-corrects every cycle. Injecting
- * a `turn/start` mid-turn interleaves/corrupts, so we queue inbound and inject
- * one turn per confirmed-idle window.
+ * full turn events (`thread/resume` → "no rollout"). It reads `thread/read`
+ * for the dashboard's busy/idle STATUS only — never as a delivery gate.
  *
- * Delivery is best-effort + async (the sender's send() is acknowledged on
- * ENQUEUE; the turn lands when the agent next goes idle). Because that ack does
- * NOT mean "delivered", every step of the wait is logged — enqueue, a wait that
- * outlives queueWaitWarnMs, and each expired drain attempt. An idle-gated queue
- * that says nothing is indistinguishable from a dropped message, which is
- * exactly how correctly-queued inbound once got reported as lost. Hard,
- * persistent failures (daemon unreachable, no thread ever appears, a turn that
- * never finishes) also reach the operator via the injected notifier.
+ * Inbound is injected IMMEDIATELY, including into a busy thread. Codex owns
+ * mid-turn delivery safety: its `followup_task` contract delivers at a message
+ * boundary while sampling, or after the pending tool call completes. An earlier
+ * design duplicated that guarantee with an idle gate of our own, on the
+ * untested assumption that a mid-turn `turn/start` would interleave and corrupt
+ * the thread. Measurement refuted it, and the gate turned out to CAUSE a
+ * deadlock: a thread blocked in `collaboration.wait_agent` reads as `active`,
+ * so we withheld the very message that would have released it.
+ *
+ * The queue survives, with its job narrowed to what it is actually good for:
+ * buffering across genuine TRANSPORT failures (socket down, no thread yet,
+ * a turn the daemon refuses) and retrying, never dropping.
+ *
+ * Delivery is still best-effort + async — the sender's send() is acknowledged
+ * on ENQUEUE, before the turn lands — so every failure path stays logged. A
+ * queue that says nothing is indistinguishable from a dropped message, which is
+ * exactly how correctly-queued inbound once got reported as lost. Persistent
+ * failures also reach the operator via the injected notifier.
  *
  * Message TEXT is never logged — inbound can carry sensitive content, so the
  * logs carry ids, char counts and queue depth only.
@@ -42,32 +47,27 @@ const FAILURES_BEFORE_WARN = 3;
 const RPC_TIMEOUT_MS = 30_000;
 
 /**
- * Poll/backoff timings. Mutable only so tests can shrink them — the delivery
- * paths worth testing are gated behind minutes of real waiting, and a test that
- * cannot reach them is how the silent-drain gap survived in the first place.
+ * Poll/backoff timings — transport retry/poll cadences, not delivery gates.
+ * Mutable only so tests can shrink them: some of these paths back off for a
+ * minute or more, and a test that cannot reach them is how the silent-drain gap
+ * survived in the first place.
  * Production never calls the setter; _resetCodexControlForTesting restores it.
  */
 const DEFAULT_TIMINGS = {
-  /** How often to re-check thread status while waiting for an idle window. */
-  idlePollMs: 1_500,
-  /** Max time to wait for a single in-flight turn to finish before giving up a
-   *  drain pass (agents can legitimately work for many minutes). */
-  idleDeadlineMs: 15 * 60_000,
   /** Max time to wait for the TUI to create its thread before backing off. */
   threadWaitMs: 60_000,
   /** How often to re-ask the daemon whether the TUI has created its thread. */
   threadPollMs: 1_000,
   /** Backoff before re-attempting a drain after a transient failure. */
   retryBackoffMs: 5_000,
-  /** How long a queued message may wait before we tell the operator. Separate
-   *  from idleDeadlineMs: waiting out a long turn is CORRECT (that tolerance
-   *  stays 15m), but a wait this long is worth knowing about — it is the only
-   *  signal that separates "queued behind a wedged turn" from "delivered".
-   *  Without it the first operator-visible sign was 3 × 15m ≈ 45 minutes out. */
-  queueWaitWarnMs: 5 * 60_000,
   /** How often the eager status watcher reconciles ground-truth status — a
    *  safety net so a missed thread/status/changed can't leave the UI stale. */
   statusPollMs: 10_000,
+  /** How long inbound may be held for a REPORTED compaction before we stop
+   *  believing the report and inject anyway. Real compaction ends in minutes;
+   *  past this, a cached "compacting" is likelier stale than true, and an
+   *  unbounded hold is a silent drop with extra steps. */
+  compactingMaxHoldMs: 5 * 60_000,
 };
 type Timings = typeof DEFAULT_TIMINGS;
 let timings: Timings = { ...DEFAULT_TIMINGS };
@@ -152,28 +152,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Human-readable duration for logs/notifications. Falls back to seconds below
- *  a minute so shrunk test timings don't print "0m". */
-function fmtDuration(ms: number): string {
-  return ms >= 60_000
-    ? `${Math.round(ms / 60_000)}m`
-    : `${Math.max(1, Math.round(ms / 1000))}s`;
-}
-
-/** A queued inbound message. `queuedAt` exists so a long wait is reportable —
- *  message TEXT is never logged (inbound can carry sensitive content); only
- *  ids, char counts and queue depth are. Warn-once for a long wait is tracked
- *  per-CONTROLLER (`longWaitWarned`), not per-message — see `noteLongWait`. */
+/** A queued inbound message. Message TEXT is never logged (inbound can carry
+ *  sensitive content); only ids, char counts and queue depth are. */
 interface QueuedInbound {
   readonly text: string;
-  readonly queuedAt: number;
 }
-
-/** Outcome of waiting for an injectable window. Distinguishing "the turn is
- *  still running" from "we can't read the thread at all" matters: they have
- *  very different causes (a busy agent vs a dead daemon) and used to produce
- *  the same silent `return`. */
-type IdleWait = "idle" | "busy" | "unreadable";
 
 class CodexController {
   private ws: WebSocket | null = null;
@@ -201,9 +184,23 @@ class CodexController {
    *  `nextFailureWarnAt` on the delivery path — a strict equality would warn
    *  exactly once per controller lifetime and then go silent forever. */
   private nextStatusWarnAt = FAILURES_BEFORE_WARN;
-  /** One long-wait warning per stall episode; cleared on a successful inject. */
-  private longWaitWarned = false;
-  /** Why the last thread/read failed, so the drain log can name the cause. */
+  /** Last status the daemon reported, kept for the compacting skip in drain().
+   *  Fed by the same status feed the dashboard uses. A CACHED value, not ground
+   *  truth: it is cleared on teardown (it describes a socket that no longer
+   *  exists) and the skip that reads it is time-bounded, because a missed
+   *  "compaction finished" push would otherwise pin delivery forever. */
+  private lastStatus: CodexStatus | null = null;
+  /** When the current compacting EPISODE was first observed; null when none is
+   *  in flight. Scoped to the episode, not to a message — see below. */
+  private compactingSince: number | null = null;
+  /** Set once we have stopped believing a reported compaction and started
+   *  injecting through it. Episode-scoped: without it, each queued message
+   *  re-armed a fresh hold, so a backlog drained one message per bound (a
+   *  5-deep queue = 5 waits and 5 identical notifications). The bound has to
+   *  protect the QUEUE, not just its head. */
+  private compactingDisbelieved = false;
+  /** Why the last thread/read failed, so the status-feed log can name the
+   *  cause — its only consumer since the drain stopped reading status. */
   private lastReadError: Error | null = null;
   /** Set once we've reported unparseable daemon frames (dedupe a firehose). */
   private framingErrorLogged = false;
@@ -294,9 +291,10 @@ class CodexController {
       );
       return;
     }
-    this.queue.push({ text, queuedAt: Date.now() });
-    // Log on ENQUEUE, not only on injection. Delivery is idle-gated, so a
-    // message can legitimately sit here for minutes; without this line the log
+    this.queue.push({ text });
+    // Log on ENQUEUE, not only on injection. Delivery is immediate now, so a
+    // message sitting here means a TRANSPORT failure is being retried; without
+    // this line the log
     // is byte-identical to the message having been dropped, which is exactly
     // how a correctly-queued message got reported as lost.
     log(
@@ -336,6 +334,17 @@ class CodexController {
     this.ws = null;
     this.connectPromise = null;
     this.threadId = null;
+    // A cached status describes the socket we are dropping. Carrying it across
+    // a reconnect lets a missed "compaction finished" push hold inbound back
+    // indefinitely — and we are a NON-creator, so that push is never replayed.
+    // Unknown must mean unknown; the compacting skip fails open on null. Both
+    // halves of that guard's state go together — a surviving `compactingSince`
+    // would make a genuinely NEW compaction after the reconnect look like it
+    // had already outlived the bound, firing a "status likely stale" log and
+    // notification that are simply false.
+    this.lastStatus = null;
+    this.compactingSince = null;
+    this.compactingDisbelieved = false;
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer);
       reject(new Error("codex control socket closed"));
@@ -396,11 +405,16 @@ class CodexController {
         fail(new Error("codex control socket closed before ready"));
       };
       ws.onerror = (e: unknown) => {
-        if (!this.disposed)
+        if (!this.disposed) {
+          // `??` does not rescue an EMPTY string, and an undici ErrorEvent's
+          // `message` is exactly that — its cause hangs off `.error`. So the
+          // one line that names a dead daemon used to name nothing at all.
+          const ev = e as { message?: string; error?: { message?: string } };
           log(
             `${this.agentId.slice(0, 8)} control socket error:`,
-            (e as { message?: string })?.message ?? "unknown",
+            ev?.message || ev?.error?.message || "unknown",
           );
+        }
         fail(new Error("codex control socket error before ready"));
       };
       ws.onopen = async () => {
@@ -452,10 +466,13 @@ class CodexController {
       }
       return;
     }
-    // Notifications drive STATUS (cosmetic, eventually-consistent — a missed one
-    // self-corrects on the next change or the queryIdle refresh). They are NOT
-    // used for the idle-GATE, which polls thread/read for ground truth so a
-    // dropped event can never wedge inbound delivery.
+    // Notifications drive STATUS — and since the idle gate went away (ADR-060)
+    // they also feed `lastStatus`, the compacting skip's only input. So a MISSED
+    // "compaction finished" push CAN hold inbound back, which is exactly why
+    // teardownSocket clears lastStatus and the skip is time-bounded. Do not
+    // reason about this feed as purely cosmetic. The statusPollMs queryIdle
+    // refresh is the other feed, and it is not guaranteed either: thread/read
+    // can answer "no rollout for thread" for a non-creator client.
     if (msg.method === "thread/status/changed") {
       this.emitStatus(msg.params?.status?.type);
     } else if (msg.method === "thread/started") {
@@ -467,6 +484,14 @@ class CodexController {
   private emitStatus(type: string | undefined): void {
     const mapped = mapStatus(type);
     if (mapped) {
+      // Leaving "compacting" is what ends an episode — not a delivered message
+      // and not a timer. Reset both halves so the next real compaction gets a
+      // full hold and its own single notification.
+      if (mapped !== "compacting" && this.lastStatus === "compacting") {
+        this.compactingSince = null;
+        this.compactingDisbelieved = false;
+      }
+      this.lastStatus = mapped;
       statusSink?.(this.agentId, mapped);
       return;
     }
@@ -508,8 +533,11 @@ class CodexController {
     });
   }
 
-  /** Discover the agent's (TUI-created) thread. The thread doesn't exist until
-   *  the TUI connects, so poll — but never DROP the queue on timeout; the
+  /** Discover the agent's thread. It does not exist until the TUI has created
+   *  it — observed on codex 0.144.6 to require a first turn, so an agent spawned
+   *  without a starting prompt can sit here indefinitely even though its TUI
+   *  attached. The "(TUI not attached?)" hint in the drain log below is
+   *  therefore a guess, not a diagnosis. Poll — but never DROP the queue on timeout; the
    *  caller backs off and retries so messages aren't silently lost. */
   private async ensureThread(): Promise<string | null> {
     if (this.threadId) return this.threadId;
@@ -549,7 +577,7 @@ class CodexController {
    *  The failure CAUSE is stashed rather than discarded: "socket closed",
    *  "thread/read timed out" and "no rollout for thread" all surface as the same
    *  `null` here but have completely different remedies, and the operator can
-   *  only act if the drain log names which one it was. */
+   *  only act if the status-feed log names which one it was. */
   private async queryIdle(threadId: string): Promise<boolean | null> {
     try {
       const r = (await this.rpc("thread/read", { threadId })) as {
@@ -559,7 +587,7 @@ class CodexController {
       this.emitStatus(type);
       this.lastReadError = null;
       if (type === "idle") return true;
-      if (type) return false; // active / compacting / etc — not safe to inject
+      if (type) return false; // a status was read, just not "idle"
       this.lastReadError = new Error(`thread status missing (type=${type})`);
       return null;
     } catch (err) {
@@ -569,49 +597,6 @@ class CodexController {
     }
   }
 
-  /** Wait until the thread is confirmed idle (poll). "busy" = still running at
-   *  the deadline, "unreadable" = socket/daemon problem. */
-  private async waitForIdle(threadId: string): Promise<IdleWait> {
-    const deadline = Date.now() + timings.idleDeadlineMs;
-    while (Date.now() < deadline && !this.disposed) {
-      const idle = await this.queryIdle(threadId);
-      if (idle === true) return "idle";
-      if (idle === null) return "unreadable"; // socket/daemon problem — back off
-      this.noteLongWait(); // active — keep waiting, but don't wait in silence
-      await sleep(timings.idlePollMs);
-    }
-    return "busy";
-  }
-
-  /** Tell the operator once per STALL EPISODE when the head of the queue has
-   *  been waiting behind an unfinished turn for too long. This is the signal
-   *  that surfaces a WEDGED thread: the sender was ack'd on enqueue, the
-   *  dashboard just shows "working" forever, and nothing else here speaks until
-   *  ~45 minutes of failed drains.
-   *
-   *  The flag is per-CONTROLLER, not per-message, and is cleared by a successful
-   *  injection. Per-message would fire again for every backlogged item the
-   *  instant the stall ENDS — each one inherits an old `queuedAt`, so it trips
-   *  the threshold on its first poll — burying the operator in "its current turn
-   *  hasn't finished" notifications at the exact moment delivery is succeeding. */
-  private noteLongWait(): void {
-    const head = this.queue[0];
-    if (!head || this.longWaitWarned) return;
-    const waitedMs = Date.now() - head.queuedAt;
-    if (waitedMs < timings.queueWaitWarnMs) return;
-    this.longWaitWarned = true;
-    const waited = fmtDuration(waitedMs);
-    log(
-      `${this.agentId.slice(0, 8)} inbound waiting ${waited} for an idle window ` +
-        `(thread still active) — ${this.queue.length} queued`,
-    );
-    notifier?.(
-      this.agentId,
-      `Inbound messages to this Codex agent have been queued for ${waited} — ` +
-        `its current turn hasn't finished. ${this.queue.length} message(s) waiting.`,
-    );
-  }
-
   private async drain(): Promise<void> {
     if (this.draining || this.disposed || this.queue.length === 0) return;
     this.draining = true;
@@ -619,12 +604,11 @@ class CodexController {
       await this.connect();
       const threadId = await this.ensureThread();
       if (!threadId) {
-        // No thread yet (or transient error). Keep the queue and retry — never
-        // drop. Say so EVERY attempt: this branch is the same shape as the
-        // idle-window one below and was equally silent, and the queue-wait
-        // warning can't cover it (noteLongWait only runs inside waitForIdle,
-        // which we never reach without a thread). A daemon whose --remote TUI
-        // never attached sits here forever.
+        // No thread yet (or transient error) — a genuine TRANSPORT failure, and
+        // the queue is doing its remaining job: buffer and retry, never drop.
+        // Say so EVERY attempt; a daemon whose --remote TUI never attached sits
+        // here forever, and this log is the only thing that distinguishes that
+        // from a healthy agent.
         log(
           `${this.agentId.slice(0, 8)} no Codex thread yet (TUI not attached?) — ` +
             `${this.queue.length} queued, retrying`,
@@ -634,27 +618,52 @@ class CodexController {
         return;
       }
       while (this.queue.length > 0 && !this.disposed) {
-        // Poll ground truth — never inject mid-turn (it interleaves).
-        const wait = await this.waitForIdle(threadId);
-        if (this.disposed) return; // torn down mid-wait; queue is already gone
-        if (wait !== "idle") {
-          // Previously both outcomes returned here with NO log at all, so a
-          // thread that never went idle produced 15 minutes of pure silence
-          // per attempt. Say which one happened, and say it every attempt.
-          const busy = wait === "busy";
-          const reason = busy
-            ? `no idle window in ${fmtDuration(timings.idleDeadlineMs)} (thread still active)`
-            : `thread status unreadable (${this.lastReadError?.message ?? "unknown"})`;
+        // The ONE remaining reason to hold a message back. Compaction is the
+        // single thread state we did not test, so this is untested
+        // conservatism, NOT a measured requirement — we determined nothing
+        // about compaction, not that it is unsafe. It stays because it is
+        // cheap (a window that ends on its own, and the retry picks it up)
+        // while the unknown behind it is severe. Read from the status feed we
+        // already maintain for the dashboard, so it costs no extra round-trip
+        // on the delivery path.
+        // `lastStatus` is a CACHE, so an unknown status must not be treated as
+        // compacting. Refresh once when we have nothing — the only read left on
+        // the delivery path, and only when the guard would otherwise be blind
+        // (first delivery on a new connection).
+        if (this.lastStatus === null) await this.queryIdle(threadId);
+        if (this.disposed) return;
+        if (this.lastStatus === "compacting" && !this.compactingDisbelieved) {
+          this.compactingSince ??= Date.now();
+          const heldMs = Date.now() - this.compactingSince;
+          if (heldMs < timings.compactingMaxHoldMs) {
+            // Log the FIRST skip of an episode only. At retryBackoffMs this
+            // path repeats every few seconds; logging each one drowns the file
+            // rather than signalling anything.
+            if (heldMs < timings.retryBackoffMs)
+              log(
+                `${this.agentId.slice(0, 8)} thread is compacting — ` +
+                  `${this.queue.length} queued, retrying`,
+              );
+            this.scheduleRetry();
+            return;
+          }
+          // Past the bound: stop believing the status and deliver. Failing OPEN
+          // matches what this skip already does when the status is unknown, and
+          // it is the safe direction — the untested risk of injecting during
+          // compaction is bounded, whereas holding forever is a guaranteed
+          // silent drop of a message whose sender was already ack'd.
+          // Latch, rather than clearing the clock: the decision is about the
+          // reported STATUS, so it holds until that status actually changes.
+          // Clearing here would re-arm a full hold for the next queued message.
+          this.compactingDisbelieved = true;
           log(
-            `${this.agentId.slice(0, 8)} ${reason} — ${this.queue.length} queued, retrying`,
+            `${this.agentId.slice(0, 8)} still reported compacting after ` +
+              `${Math.round(heldMs / 60_000)}m — status likely stale, injecting anyway`,
           );
-          this.noteFailure(
-            busy
-              ? "could not reach an idle window"
-              : "the thread status is unreadable",
+          notifier?.(
+            this.agentId,
+            "Inbound to this Codex agent was held for a reported compaction that never ended — its status feed may be stale. Delivering anyway.",
           );
-          this.scheduleRetry();
-          return;
         }
         const next = this.queue[0]; // peek; only dequeue once delivered
         if (next === undefined) break;
@@ -679,7 +688,6 @@ class CodexController {
           this.queue.shift();
           this.consecutiveFailures = 0;
           this.nextFailureWarnAt = FAILURES_BEFORE_WARN;
-          this.longWaitWarned = false; // the stall (if any) is over — re-arm
           log(
             `${this.agentId.slice(0, 8)} injected (${next.text.length} chars)`,
           );
@@ -757,8 +765,10 @@ export function startCodexStatusWatch(agentId: string, endpoint: string): void {
 
 /**
  * Deliver an inbound message to a Codex agent by injecting an attributed user
- * turn into its app-server daemon. Idempotent connection; queued + idle-gated.
- * Best-effort async: returns immediately; the turn lands when the agent is idle.
+ * turn into its app-server daemon. Idempotent connection. Best-effort async:
+ * returns immediately and the turn is injected right away, INCLUDING into a
+ * busy thread — Codex delivers it at its own turn boundary (ADR-060). The queue
+ * behind this is a retry buffer for transport failures, not a delivery gate.
  */
 export function deliverToCodex(
   agentId: string,

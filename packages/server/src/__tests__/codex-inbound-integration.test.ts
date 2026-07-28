@@ -137,12 +137,11 @@ beforeEach(async () => {
   _resetCacheForTesting();
   _resetCodexControlForTesting();
   // Poll CADENCES only, shrunk so a real socket round-trip is the slow part
-  // rather than a production-tuned interval. Deliberately does NOT touch
-  // `idleDeadlineMs` or `queueWaitWarnMs`: those belong to the idle-gate
-  // mechanism this suite is meant to outlive, and referencing them would make
-  // the regression net fail to compile against the code it is guarding.
+  // rather than a production-tuned interval. This call is the ONLY thing the
+  // idle-gate removal changed in this suite — `idlePollMs` went with the gate.
+  // Not one assertion moved, which is what it means for a net to be written at
+  // the invariant level rather than cast around the mechanism.
   _setCodexTimingsForTesting({
-    idlePollMs: 20,
     threadPollMs: 20,
     threadWaitMs: 200,
     retryBackoffMs: 20,

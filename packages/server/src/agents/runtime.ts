@@ -1206,13 +1206,39 @@ export function shutdownAllAttachments(): void {
   shuttingDown = true;
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
-  for (const [, managed] of live) {
+  for (const [agentId, managed] of live) {
     try {
       managed.pty.kill();
     } catch {
       // best-effort during shutdown
     }
-    managed.sidecar?.dispose();
+    // Dispose the Codex control client HERE, on the shutdown PATH, rather than
+    // leaving it to process exit. Its queue may hold inbound that was ack'd to
+    // the sender and never delivered, and dispose() is what LOGS that. (It also
+    // pushes a notification, but that lands in an in-memory store this process
+    // is about to destroy — the durable half is the rotating log, which uses a
+    // synchronous write. Do not read the notification as an operator signal on
+    // this path.) At process exit there is no hook where even the log could
+    // fire, so a restart mid-queue dropped the buffer in total silence.
+    //
+    // Ordering: the PTY's own onExit handler also disposes, but kill() only
+    // signals and onExit is async, so it cannot preempt this call in a
+    // SYNCHRONOUS loop. Do not introduce an `await` here without revisiting.
+    // (`live.clear()` below is unrelated — the queue lives in codexControl's
+    // own registry, not in `live`.)
+    try {
+      disposeCodexControl(agentId);
+      managed.sidecar?.dispose();
+    } catch (err) {
+      // A throw here would skip every REMAINING agent's teardown and — since
+      // the signal handler that calls this has no catch — removePidFile,
+      // removeControlSocket and process.exit too, leaving a stale pid file and
+      // socket that make the next boot's bind fail.
+      console.warn(
+        `[runtime] teardown for ${agentId.slice(0, 8)} threw during shutdown:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   live.clear();
 }
