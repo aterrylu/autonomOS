@@ -108,9 +108,25 @@ function connectToServer(): void {
     }
   });
 
-  ws.addEventListener("close", () => {
-    process.stderr.write("autonomos-channel: disconnected from gateway\n");
+  ws.addEventListener("close", (event) => {
     ws = null;
+    // 1008 (policy violation) is how the gateway rejects a bad/missing
+    // per-agent credential (ADR-055 PR B). Reconnecting is POINTLESS — the
+    // token can't change within this process's lifetime — so a silent backoff
+    // loop here would turn a credential misconfig into an undiagnosable "agent
+    // went quiet". Say so loudly and STOP. The server-side
+    // scheduleChannelServerCheck surfaces the never-registered agent as a
+    // dashboard SystemWarning within its grace window, so the operator still
+    // gets a signal even though stderr isn't shown.
+    if (event.code === 1008) {
+      process.stderr.write(
+        "autonomos-channel: gateway REJECTED our per-agent credential " +
+          `(1008: ${event.reason || "policy violation"}) — NOT reconnecting; ` +
+          "retrying cannot help. Check AUTONOMOS_AGENT_TOKEN injection.\n",
+      );
+      return;
+    }
+    process.stderr.write("autonomos-channel: disconnected from gateway\n");
     scheduleReconnect();
   });
 

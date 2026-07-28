@@ -445,9 +445,16 @@ function connectToServer() {
 `);
     }
   });
-  ws.addEventListener("close", () => {
-    process.stderr.write("autonomos-channel: disconnected from gateway\n");
+  ws.addEventListener("close", (event) => {
     ws = null;
+    if (event.code === 1008) {
+      process.stderr.write(
+        `autonomos-channel: gateway REJECTED our per-agent credential (1008: ${event.reason || "policy violation"}) \u2014 NOT reconnecting; retrying cannot help. Check AUTONOMOS_AGENT_TOKEN injection.
+`
+      );
+      return;
+    }
+    process.stderr.write("autonomos-channel: disconnected from gateway\n");
     scheduleReconnect();
   });
   ws.addEventListener("error", (err) => {
