@@ -1257,7 +1257,11 @@ async function captureWeb(
     );
 
     // Frame the raw capture in the macOS/PWA window (fresh context + page).
-    const frameCtx = await browser.newContext({ deviceScaleFactor: HERO_DSF });
+    // deviceScaleFactor:1 (NOT HERO_DSF) — pngDimensions() returns the raw
+    // capture's DEVICE px, which the frame HTML consumes as CSS px; rendering
+    // 1:1 preserves the retina pixels and keeps the output DSF-agnostic (a 2×
+    // context would bilinearly upscale the screenshot and double the output).
+    const frameCtx = await browser.newContext({ deviceScaleFactor: 1 });
     try {
       await frameMacWindow(frameCtx, rawPath, destPath);
     } finally {
