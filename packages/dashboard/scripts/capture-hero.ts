@@ -951,7 +951,7 @@ async function stageScene(
 }
 
 // ── Web capture ──────────────────────────────────────────────────────────────
-const THEME = "void"; // pure-black theme (#000000 bg) — see store.ts THEMES
+const THEME = "midnight"; // dark navy theme (#0a0e14 bg) — see store.ts THEMES
 const VIEWPORT = { width: HERO_W, height: HERO_H };
 
 type PaneObj =
@@ -1176,10 +1176,10 @@ async function frameMacWindow(
   // V1 frame — matches the design Terry picked; edit with care.
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
-.mat{ padding:92px 100px 112px; background:radial-gradient(120% 130% at 50% 0%, #23272f 0%, #12151b 72%); display:inline-block; }
+.mat{ padding:92px 100px 112px; background:radial-gradient(120% 130% at 50% 0%, #12161d 0%, #05070b 70%); display:inline-block; }
 .win{ width:${w}px; border-radius:15px; overflow:hidden; border:1px solid rgba(255,255,255,.08);
   box-shadow:0 2px 0 rgba(255,255,255,.05) inset, 0 60px 120px rgba(0,0,0,.6), 0 24px 48px rgba(0,0,0,.45); }
-.bar{ height:40px; background:#000000; display:flex; align-items:center; gap:9px; padding:0 17px; }
+.bar{ height:40px; background:#0a0e14; display:flex; align-items:center; gap:9px; padding:0 17px; }
 .dot{ width:13px; height:13px; border-radius:50% }
 .r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
 .shot{ display:block; width:${w}px; height:${h}px }
