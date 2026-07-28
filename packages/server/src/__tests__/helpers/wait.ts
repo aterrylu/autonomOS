@@ -1,0 +1,42 @@
+/**
+ * Polling waits shared by the test suites.
+ *
+ * Extracted because two copies had already drifted three ways (default
+ * timeout, poll interval, and the shape of the timeout message) between the two
+ * Codex daemon helpers — sibling suites that fail in the same CI job were
+ * producing differently-worded failures for the identical class of failure.
+ */
+
+export function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Poll `predicate` until it is true; throw after `timeoutMs`.
+ *
+ * Prefer this over a fixed sleep anywhere an assertion depends on the wait.
+ * Real ports and real servers race, and a guessed sleep is how a suite passes
+ * locally and fails only under CI load.
+ *
+ * `message` may be a THUNK, and should be whenever it reports observed state.
+ * A plain template literal is evaluated at CALL time — i.e. before the wait —
+ * so `waitUntil(() => x.length === 1, \`saw ${x.length}\`)` always reports
+ * "saw 0" no matter what actually arrived, which is precisely the least
+ * informative thing it could say on the failure you wrote it to diagnose.
+ */
+export async function waitUntil(
+  predicate: () => boolean,
+  message: string | (() => string),
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(5);
+  }
+  throw new Error(
+    `timed out after ${timeoutMs}ms waiting for: ${
+      typeof message === "function" ? message() : message
+    }`,
+  );
+}

@@ -113,26 +113,6 @@ export function installFakeCodexDaemon(): FakeCodexDaemon {
   return state;
 }
 
-/** Wait a fixed window — used where the assertion is "nothing happened yet" or
- *  "the log appeared during this window", which has no predicate to poll on. */
-export function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/** Poll until `predicate()` is true, or fail after `timeoutMs`. */
-export async function waitUntil(
-  predicate: () => boolean,
-  message: string,
-  timeoutMs = 3_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await delay(10);
-  }
-  throw new Error(`timed out waiting for: ${message}`);
-}
-
 /**
  * Capture console.log for the duration of `fn`, returning the lines.
  *

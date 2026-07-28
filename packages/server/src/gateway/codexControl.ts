@@ -663,6 +663,19 @@ class CodexController {
             threadId,
             input: [{ type: "text", text: next.text }],
           });
+          // Dequeue on the turn/start REPLY, not on send and not on the daemon
+          // accepting the turn. That ordering is deliberate, and it has a known
+          // cosmetic cost: a dispose() landing while a reply is in flight sees a
+          // non-empty queue and logs "DROPPING ... undelivered" for a message
+          // that did in fact arrive. Do NOT "fix" that by shifting earlier —
+          // then any turn/start that fails after the write (socket dropped,
+          // daemon died mid-call) is dropped with the log claiming delivery,
+          // which is the silent-drop class #287 exists to have removed. The
+          // false alarm errs toward over-reporting loss; the alternative errs
+          // toward hiding it. Guarded by "keeps a rejected turn and delivers it
+          // once the daemon accepts again" (codex-inbound-integration.test.ts):
+          // a rejected turn is the one case where this ordering is observable,
+          // and shifting earlier makes that test go red.
           this.queue.shift();
           this.consecutiveFailures = 0;
           this.nextFailureWarnAt = FAILURES_BEFORE_WARN;
@@ -766,7 +779,13 @@ export function disposeCodexControl(agentId: string): void {
   }
 }
 
-/** For tests. */
+/** For tests.
+ *
+ *  Must stay SYNCHRONOUS. It disposes every controller and restores production
+ *  timings in a single tick, so no suspended `sleep()` inside a status loop can
+ *  ever resume to find `disposed === false` with the long timings back. Insert
+ *  a single `await` here and a torn-down loop starts holding the test runner
+ *  open for a full `statusPollMs` (10s in production values) per controller. */
 export function _resetCodexControlForTesting(): void {
   for (const ctrl of controllers.values()) ctrl.dispose();
   controllers.clear();
