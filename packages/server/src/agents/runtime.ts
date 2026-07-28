@@ -142,7 +142,7 @@ function scheduleChannelServerCheck(
     );
     pushSystemNotification(
       agentId,
-      `${name} can't send messages — its autonomos channel server didn't start, so send() and the org tools are unavailable (it can still receive inbound). The channel-server script likely failed to launch.`,
+      `${name} can't send messages — its autonomos channel server never registered on the gateway (it either failed to launch or couldn't connect/authenticate), so send() and the org tools are unavailable. It can still receive inbound.`,
     );
   }, CHANNEL_SERVER_REGISTER_GRACE_MS);
   timer.unref?.();
