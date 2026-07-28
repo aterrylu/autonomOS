@@ -174,15 +174,25 @@ afterEach(async () => {
   // synthetic by construction — and a mirror of that list is one an added
   // registration can silently desync, leaking an endpoint into the next test.
   for (const id of getLiveAgentIds()) _unregisterSyntheticAttachment(id);
+  // allSettled, not all: a close that times out must not skip the cleanup
+  // below, and its reason has to survive to the assertions.
+  const closes = await Promise.allSettled(daemons.map((d) => d.close()));
+  // Collected AFTER close, because close() itself records into `errors` (a
+  // socket that refuses to close). Snapshotting before it would leave that
+  // path writing to an array nothing ever reads — a fault log that is itself
+  // silent, which is the exact defect this suite exists to catch.
   const harnessFaults = daemons.flatMap((d) => d.errors);
-  await Promise.all(daemons.map((d) => d.close()));
+  const closeFailures = closes
+    .filter((r) => r.status === "rejected")
+    .map((r) => String((r as PromiseRejectedResult).reason));
   _resetConfigDirForTesting();
   _resetCacheForTesting();
   rmSync(isolatedDir, { recursive: true, force: true });
-  // Last, so it doesn't skip the cleanup above: if the fake daemon itself
+  // Last, so they don't skip the cleanup above: if the fake daemon itself
   // misbehaved, say so. Otherwise a harness fault presents as "production
   // didn't deliver" and sends the reader to the wrong file.
   assert.deepEqual(harnessFaults, [], "the fake daemon reported no faults");
+  assert.deepEqual(closeFailures, [], "every fake daemon closed cleanly");
 });
 
 describe("Codex inbound — a routed message reaches the agent's daemon", () => {
