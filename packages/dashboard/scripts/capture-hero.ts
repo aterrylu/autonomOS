@@ -1,8 +1,9 @@
 /**
  * capture-hero — the README/marketing hero-shot generator for autonomOS.
  *
- * PRODUCES: docs/assets/hero.png — ONE 3-pane frame that proves the multi-CLI
- * story:
+ * PRODUCES: docs/assets/hero.png — the 3-pane dashboard shot COMPOSITED into a
+ * macOS/PWA "polaroid" window frame (title bar + traffic-light dots, matted on a
+ * dark radial-gradient). The dashboard content proves the multi-CLI story:
  *   (left)         org-chart hierarchy — mixed provider icons (Claude + Codex +
  *                  Gemini), the money shot for "orchestrate any coding agent"
  *   (top-right)    a LIVE Claude Code terminal  (real turn, subscription OAuth)
@@ -10,6 +11,9 @@
  * Gemini appears in the ORG CHART / agents list ONLY (its own icon + a clean
  * status) — no Gemini terminal is shown, so no Gemini auth is required for a
  * good shot (see PROVIDERS below).
+ *
+ * The pipeline screenshots the dashboard to a TEMP raw png, then frameMacWindow
+ * composites it into the window frame → the final docs/assets/hero.png.
  *
  * HOW TO RUN:
  *   make hero
@@ -48,6 +52,9 @@
  *   - Gemini MCP is stripped from the generated Gemini settings so it sidesteps
  *     the Gemini→gateway auth reconnect loop (hooks stay on for status).
  *   - Viewport ~1680×920 at dsf 1 for legible fonts across three panes.
+ *   - Frame: after capture, the raw screenshot is composited into a macOS/PWA
+ *     window (frameMacWindow) — window + image sizes derive from the raw png's
+ *     real pixel dims, so the frame tracks any viewport change automatically.
  *
  * SAFETY (load-bearing — the operator may run a LIVE autonomOS on :3100 with
  * their own real agents at HOME=<real home>):
@@ -85,7 +92,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "@playwright/test";
+import { type BrowserContext, chromium } from "@playwright/test";
 
 // ── Paths — derived from the script location so this works from ANY checkout ──
 // This file lives at <repo>/packages/dashboard/scripts/capture-hero.ts.
@@ -986,7 +993,9 @@ async function shoot(
   server: DemoServer,
   seed: string,
   opts: {
-    file: string;
+    /** Absolute path for the RAW dashboard screenshot (later composited into
+     *  the macOS-window frame by frameMacWindow). */
+    outPath: string;
     waitOrgNodes: number;
     settleMs: number;
     /** Minimum dockview panes + xterm terminals that must exist before the
@@ -1082,10 +1091,73 @@ async function shoot(
       );
     }
 
-    await page.screenshot({ path: join(OUT_DIR, opts.file) });
-    console.log(`  ✓ ${opts.file}`);
+    await page.screenshot({ path: opts.outPath });
+    console.log("  ✓ raw dashboard capture");
   } finally {
     await context.close();
+  }
+}
+
+/** Read a PNG's real pixel dimensions from its IHDR header (width @ byte 16,
+ *  height @ byte 20, big-endian) — no decode needed. Drives the window + image
+ *  size in the frame so it stays correct if the capture viewport ever changes. */
+function pngDimensions(buf: Buffer): { w: number; h: number } {
+  const PNG_SIG = "89504e470d0a1a0a";
+  if (buf.length < 24 || buf.subarray(0, 8).toString("hex") !== PNG_SIG) {
+    throw new Error("frameMacWindow: raw capture is not a valid PNG");
+  }
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+}
+
+/** Composite the raw dashboard screenshot into the macOS/PWA "polaroid" window
+ *  frame (V1 design) → destPngPath. Reuses the Playwright browser context; opens
+ *  a fresh page, base64-embeds the raw png, waits for it to decode, then
+ *  screenshots the `.mat` element. Window/image sizes derive from the raw png's
+ *  real dimensions (never hardcoded). */
+async function frameMacWindow(
+  context: BrowserContext,
+  rawPngPath: string,
+  destPngPath: string,
+): Promise<void> {
+  const raw = readFileSync(rawPngPath);
+  const { w, h } = pngDimensions(raw);
+  const b64 = raw.toString("base64");
+
+  // V1 frame — matches the design Terry picked; edit with care.
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+.mat{ padding:92px 100px 112px; background:radial-gradient(120% 130% at 50% 0%, #12161d 0%, #05070b 70%); display:inline-block; }
+.win{ width:${w}px; border-radius:15px; overflow:hidden; border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 2px 0 rgba(255,255,255,.05) inset, 0 60px 120px rgba(0,0,0,.6), 0 24px 48px rgba(0,0,0,.45); }
+.bar{ height:40px; background:#0a0e14; display:flex; align-items:center; gap:9px; padding:0 17px; }
+.dot{ width:13px; height:13px; border-radius:50% }
+.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+.shot{ display:block; width:${w}px; height:${h}px }
+</style></head><body>
+<div class="mat"><div class="win">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+  <img class="shot" src="data:image/png;base64,${b64}">
+</div></div>
+</body></html>`;
+
+  const page = await context.newPage();
+  try {
+    // Size the viewport to comfortably contain the mat (padding: 200px wide,
+    // 204px tall) so the element screenshot never clips.
+    await page.setViewportSize({ width: w + 240, height: h + 260 });
+    await page.setContent(html, { waitUntil: "load" });
+    // Wait for the embedded image to actually decode before capturing.
+    await page.waitForFunction(
+      () => {
+        const img = document.querySelector("img.shot") as HTMLImageElement | null;
+        return !!img && img.complete && img.naturalWidth > 0;
+      },
+      { timeout: 15_000 },
+    );
+    await page.locator(".mat").screenshot({ path: destPngPath });
+    console.log(`  ✓ framed hero → ${destPngPath}`);
+  } finally {
+    await page.close();
   }
 }
 
@@ -1104,6 +1176,14 @@ async function captureWeb(
   const topPane: PaneObj = { type: "session", id: top.id };
   const bottomPane: PaneObj = { type: "session", id: bottom.id };
 
+  // Capture the dashboard to a TEMP raw png, then composite it into the
+  // macOS-window frame → docs/assets/hero.png (the committed, framed hero).
+  const rawPath = join(
+    tmpdir(),
+    `autonomos-hero-raw-${Math.random().toString(36).slice(2, 10)}.png`,
+  );
+  const destPath = join(OUT_DIR, "hero.png");
+
   const browser = await chromium.launch();
   try {
     // org chart LEFT · Claude terminal TOP-RIGHT · Codex/Claude BOTTOM-RIGHT.
@@ -1117,7 +1197,7 @@ async function captureWeb(
         { id: bottom.id, pane: bottomPane },
       ),
       {
-        file: "hero.png",
+        outPath: rawPath,
         waitOrgNodes: Math.min(cast.length - 1, 5),
         settleMs: 10_000,
         // org chart + 2 terminals; both terminal panes must have rendered.
@@ -1125,8 +1205,21 @@ async function captureWeb(
         expectTerminals: 2,
       },
     );
+
+    // Frame the raw capture in the macOS/PWA window (fresh context + page).
+    const frameCtx = await browser.newContext({ deviceScaleFactor: HERO_DSF });
+    try {
+      await frameMacWindow(frameCtx, rawPath, destPath);
+    } finally {
+      await frameCtx.close();
+    }
   } finally {
     await browser.close();
+    try {
+      rmSync(rawPath, { force: true });
+    } catch (err) {
+      console.warn(`captureWeb: could not remove temp raw png: ${err}`);
+    }
   }
 }
 
