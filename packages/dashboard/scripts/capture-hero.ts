@@ -88,7 +88,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -786,6 +791,47 @@ interface AgentInfo {
   provider?: string;
 }
 
+/** The internal control socket path — hook INGEST moved off the HTTP port onto
+ *  this Unix socket (ADR-055), so status poses must go here, not to
+ *  `POST /api/hooks` on the TCP port (which now only serves hook READS → 404).
+ *  Parsed from the boot log, with a fallback to `$configDir/control.sock`. */
+function controlSocketPath(server: DemoServer): string {
+  const m = server.logs().match(/control socket ready at (\S+)/);
+  return m ? m[1] : join(server.configDir, "control.sock");
+}
+
+/** POST a synthetic hook event to the internal control socket to pose an
+ *  agent's status badge. The socket is the auth boundary (no token needed — same
+ *  as the agents' own `curl --unix-socket` hook relay). Resolves the HTTP
+ *  status; the caller treats non-200 as non-fatal. */
+function poseHook(
+  socketPath: string,
+  sessionId: string,
+  event: Record<string, unknown>,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ ...event, session_id: sessionId });
+    const req = httpRequest(
+      {
+        socketPath,
+        path: `/api/hooks/${sessionId}`,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        res.resume(); // drain
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      },
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 async function stageScene(
   server: DemoServer,
   cast: CastMember[],
@@ -880,16 +926,20 @@ async function stageScene(
   }
   console.log("Org chart wired");
 
-  // Pose status badges (Claude CC-native events; Gemini Gemini-native events —
-  // the hooks route maps each provider's vocabulary via normalizeEvent).
+  // Pose status badges via the internal control socket (Claude CC-native events;
+  // Gemini Gemini-native events — the ingest router maps each provider's
+  // vocabulary via normalizeEvent). Best-effort: badges are cosmetic, so a pose
+  // failure warns rather than aborting the (expensive) capture.
+  const socketPath = controlSocketPath(server);
   for (const m of cast) {
     if (!m.pose) continue;
     for (const ev of m.pose) {
-      const { status } = await api(server, `/api/hooks/${idOf(m.name)}`, {
-        method: "POST",
-        body: JSON.stringify({ ...ev, session_id: idOf(m.name) }),
-      });
-      if (status !== 200) throw new Error(`pose ${m.name} → ${status}`);
+      try {
+        const status = await poseHook(socketPath, idOf(m.name), ev);
+        if (status !== 200) console.warn(`pose ${m.name} → ${status} (non-fatal)`);
+      } catch (err) {
+        console.warn(`pose ${m.name} failed (non-fatal): ${err}`);
+      }
       await sleep(120);
     }
   }
@@ -901,7 +951,7 @@ async function stageScene(
 }
 
 // ── Web capture ──────────────────────────────────────────────────────────────
-const THEME = "midnight";
+const THEME = "void"; // pure-black theme (#000000 bg) — see store.ts THEMES
 const VIEWPORT = { width: HERO_W, height: HERO_H };
 
 type PaneObj =
@@ -1126,10 +1176,10 @@ async function frameMacWindow(
   // V1 frame — matches the design Terry picked; edit with care.
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
-.mat{ padding:92px 100px 112px; background:radial-gradient(120% 130% at 50% 0%, #12161d 0%, #05070b 70%); display:inline-block; }
+.mat{ padding:92px 100px 112px; background:radial-gradient(120% 130% at 50% 0%, #23272f 0%, #12151b 72%); display:inline-block; }
 .win{ width:${w}px; border-radius:15px; overflow:hidden; border:1px solid rgba(255,255,255,.08);
   box-shadow:0 2px 0 rgba(255,255,255,.05) inset, 0 60px 120px rgba(0,0,0,.6), 0 24px 48px rgba(0,0,0,.45); }
-.bar{ height:40px; background:#0a0e14; display:flex; align-items:center; gap:9px; padding:0 17px; }
+.bar{ height:40px; background:#000000; display:flex; align-items:center; gap:9px; padding:0 17px; }
 .dot{ width:13px; height:13px; border-radius:50% }
 .r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
 .shot{ display:block; width:${w}px; height:${h}px }
