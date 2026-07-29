@@ -34,6 +34,7 @@ import {
   type PermissionMode,
   type Provider,
   permissionModeFromLegacy,
+  permissionModeFromStored,
   type UUID,
 } from "@autonomos/core";
 import { revokeAgentToken } from "../agentCredentials.js";
@@ -126,15 +127,19 @@ function loadFromDisk(): Map<UUID, Agent> {
       if (typeof data.provider !== "string") {
         data.provider = "claude-code";
       }
-      // Accept-and-discard: migrate legacy `autonomousMode: boolean` →
-      // `permissionMode`. true preserved skip-permissions (→ bypass), false
-      // kept prompts (→ default). The guard is isPermissionMode (not just
-      // "is a string") so a malformed/hand-edited value is also coerced rather
-      // than trusted blindly into the provider mappers. Scrub the old field;
-      // the cleaned record is written back on the next saveAgent. See ADR-045.
+      // Accept-and-discard migration for two older shapes, newest first:
+      //   1. `permissionMode: "default"` — this enum's pre-rename spelling of
+      //      `ask`. Normalized so exactly ONE spelling exists past this line.
+      //   2. `autonomousMode: boolean` — true preserved skip-permissions
+      //      (→ bypass), false kept prompts (→ ask).
+      // The guard is isPermissionMode (not just "is a string") so a malformed
+      // or hand-edited value is coerced rather than trusted blindly into the
+      // provider mappers. Scrub the old boolean; the cleaned record is written
+      // back on the next saveAgent. See ADR-045 + the permission-mode refactor.
       const legacy = data as Agent & { autonomousMode?: boolean };
       if (!isPermissionMode(data.permissionMode)) {
         data.permissionMode =
+          permissionModeFromStored(data.permissionMode) ??
           permissionModeFromLegacy(legacy.autonomousMode) ??
           DEFAULT_PERMISSION_MODE;
         migratedPermissionMode++;
@@ -419,7 +424,11 @@ export function markRunning(
   patch: Partial<
     Pick<
       Agent,
-      "provider" | "providerSessionId" | "startedAt" | "providerThreadId"
+      | "provider"
+      | "providerSessionId"
+      | "startedAt"
+      | "providerThreadId"
+      | "permissionMode"
     >
   >,
 ): Agent | undefined {
@@ -429,6 +438,17 @@ export function markRunning(
   return saveAgent({
     ...existing,
     ...patch,
+    // permissionMode is the one patchable field that is NON-optional on Agent,
+    // so it can't use the "undefined clears it" convention the others rely on
+    // (see the doc above): spreading `permissionMode: undefined` would drop the
+    // key at saveAgent's JSON.stringify and silently demote the agent to the
+    // fallback mode on its next load. Absent means "keep the record's value".
+    //
+    // It is patchable at all because a resume may carry an explicit mode that
+    // differs from the record. Before this, markRunning could not express a
+    // mode, so such a resume spawned the PTY with the caller's mode while the
+    // record kept the old one — permanently. See ADR (permission-mode refactor).
+    permissionMode: patch.permissionMode ?? existing.permissionMode,
     status: "running" as AgentStatus,
     exitReason: undefined,
     exitedAt: undefined,

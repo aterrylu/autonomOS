@@ -16,6 +16,7 @@ import {
   type AgentProvider,
   DEFAULT_PERMISSION_MODE,
   type ExitReason,
+  type PermissionMode,
   type Provider,
   type SpawnOptions,
   type UUID,
@@ -425,6 +426,24 @@ export interface SpawnParams extends SpawnOptions {
   forkFromAgentId?: UUID;
   /** Manager agent id for the org chart. */
   managerId?: UUID | null;
+  /**
+   * The permission mode declared by the resolved template, if any — kept
+   * SEPARATE from the inherited `permissionMode` (which means "the caller
+   * explicitly asked for this") because the two rank differently on a resume.
+   *
+   * On a reattach, only an EXPLICIT `permissionMode` may change an existing
+   * agent's autonomy; a template's mode must not, or naming a template while
+   * resuming would silently re-level an agent someone deliberately set. This
+   * mirrors `respawnAgent`, which reads `tmpl?.systemPrompt` but pointedly not
+   * `tmpl?.permissionMode`. On a fresh spawn there is no record to defer to, so
+   * the template's mode applies normally.
+   *
+   * Callers MUST forward `undefined` rather than pre-resolving to
+   * DEFAULT_PERMISSION_MODE — collapsing it here erases the distinction between
+   * "the caller said `ask`" and "the caller said nothing", and the latter must
+   * leave a resumed agent's mode alone.
+   */
+  templatePermissionMode?: PermissionMode;
 }
 
 export interface SpawnResult {
@@ -521,6 +540,20 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   const provider = getProvider(providerName);
   const binary = provider.resolveBinary();
 
+  // Mode for a record that does not exist yet (fresh / fork / adopt). There is
+  // no prior autonomy to preserve in those cases, so the template's declared
+  // mode applies and the fail-closed default backs it.
+  //
+  // The EFFECTIVE mode — the one the argv and the write-back use — is resolved
+  // below, after `agent` is known, because a reattach must be able to fall back
+  // to the record. Deliberately not merged into one expression up here: doing
+  // that is what made a body-less resume overwrite a `bypass` record with the
+  // fallback. See the effective-mode comment for the full story.
+  const newRecordPermissionMode =
+    params.permissionMode ??
+    params.templatePermissionMode ??
+    DEFAULT_PERMISSION_MODE;
+
   /**
    * Build a NEW managed record for `id`. Shared by the adopt and fresh/fork
    * branches — they differ only in where the id comes from (an external CC
@@ -538,7 +571,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       workingDirectory: cwd,
       provider: providerName,
       providerSessionId: id,
-      permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
+      permissionMode: newRecordPermissionMode,
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
@@ -686,11 +719,48 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     agent = buildNewAgent(providerSessionId);
   }
 
+  // ── The effective permission mode ────────────────────────────────
+  //
+  // THE one place. Everything downstream — the provider argv, the reattach
+  // write-back — reads this, so the record and the running process cannot
+  // disagree about how much autonomy an agent has.
+  //
+  // It resolves HERE, after `agent`, because the fallback is the agent's own
+  // record. That ordering is the whole correctness argument:
+  //   - explicit `params.permissionMode` wins (a caller asking for a mode gets
+  //     it, and the record follows — the divergence this PR fixes);
+  //   - otherwise the agent's mode stands. On a reattach that is the EXISTING
+  //     record, so a resume that says nothing about permissions changes
+  //     nothing. On fresh/fork/adopt it is `newRecordPermissionMode`, already
+  //     baked into the record just above.
+  //
+  // Resolving before `agent` — collapsing `undefined` to the fallback up front,
+  // which is what the callers used to do — silently DEMOTED a deliberately
+  // autonomous agent on any body-less resume: `create_agent(resumeSessionId)`
+  // with no mode wrote the fallback over a `bypass` record, permanently, with
+  // nothing logged. Callers therefore forward `undefined`; do not "tidy" that
+  // back into a `??` at the call site.
+  const permissionMode = params.permissionMode ?? agent.permissionMode;
+
+  // A resume that CHANGES autonomy is worth a line in the log either way. The
+  // change is legitimate (the caller asked for it), but "this agent's autonomy
+  // changed and nothing said so" is precisely the class of silence that made
+  // the original bug take days to see.
+  if (resolution === "reattach" && permissionMode !== agent.permissionMode) {
+    console.warn(
+      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): permission mode ` +
+        `${agent.permissionMode} → ${permissionMode} on resume (caller-specified)`,
+    );
+  }
+
   // Build provider args + env
   const { channels } = getSettings();
 
   const resolved = {
     ...params,
+    // Must come AFTER the spread: params.permissionMode may be undefined, and
+    // the provider argv has to reflect the same resolved mode the record holds.
+    permissionMode,
     sessionId: agent.id,
     agentName: agent.name,
     cwd,
@@ -868,12 +938,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   // Persist the agent record: reattaching an existing record → markRunning;
   // a freshly-built record (fresh spawn, fork, OR external adopt) → insertAgent.
+  //
+  // `permissionMode` is written on the reattach path too, because the PTY above
+  // was launched with `resolved.permissionMode` — which a caller may have set
+  // explicitly to something other than what the record holds. Omitting it here
+  // is what let a resume run one mode while its record advertised another, for
+  // the life of the process. The record now follows the process.
+  //
+  // Record-driven respawns (restart-all, /attach, startup resume, the crash
+  // net) pass the record's own mode in, so this write is a no-op for them —
+  // they cannot be elevated by it.
   const persisted =
     resolution === "reattach"
       ? markRunning(agent.id, {
           provider: providerName,
           providerSessionId,
           startedAt: Date.now(),
+          permissionMode,
         })
       : insertAgent(agent);
   if (!persisted) {

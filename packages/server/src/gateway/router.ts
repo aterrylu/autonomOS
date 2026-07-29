@@ -433,6 +433,7 @@ export async function getAgentList(): Promise<AgentInfo[]> {
       name,
       uri: `agent://${name}`,
       status: "running",
+      permissionMode: a.permissionMode,
     };
   });
 }

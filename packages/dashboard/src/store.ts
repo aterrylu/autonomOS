@@ -1,9 +1,9 @@
 import {
   type AgentTemplate,
   DEFAULT_PERMISSION_MODE,
-  isPermissionMode,
   type PermissionMode,
   permissionModeFromLegacy,
+  permissionModeFromStored,
 } from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -62,6 +62,13 @@ export interface SessionInfo {
   providerSessionId?: string;
   template?: string;
   manager?: string;
+  /** How much autonomy THIS agent actually has — its own record's value, not
+   *  the store's `permissionMode`, which is only a browser-local default for
+   *  spawns started from this dashboard. The API has always returned this
+   *  field; it used to be dropped in the Agent → SessionInfo map, which is why
+   *  nothing could show an agent's real mode. Optional because a pre-schema
+   *  record (or a stubbed fixture) may not carry one. */
+  permissionMode?: PermissionMode;
   createdAt: number;
   updatedAt: number;
   /** When this session transitioned to status "exited". Only set for exited rows;
@@ -597,6 +604,11 @@ async function spawnSession(
     providerSessionId: agent.providerSessionId,
     template: agent.template,
     manager: undefined, // managerId is a UUID; resolve to name handled in fetchSessions
+    // The mode the server actually resolved for this spawn — which is not
+    // necessarily the one requested (a template can supply it, and an invalid
+    // request value falls back). Carry the server's answer, never the local
+    // default that was sent.
+    permissionMode: agent.permissionMode,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
@@ -701,6 +713,7 @@ export const useStore = create<AppState>()(
             template?: string;
             managerId: string | null;
             project?: string;
+            permissionMode?: PermissionMode;
             createdAt: number;
             updatedAt: number;
             exitedAt?: number;
@@ -728,6 +741,7 @@ export const useStore = create<AppState>()(
             providerSessionId: a.providerSessionId,
             template: a.template,
             manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
+            permissionMode: a.permissionMode,
             createdAt: a.createdAt,
             updatedAt: a.updatedAt,
             exitedAt: a.exitedAt,
@@ -988,6 +1002,20 @@ export const useStore = create<AppState>()(
           // resume, which rewrites customTitle on the USER'S OWN external
           // session. Let the server mint `<dir> · <id>` instead; the user can
           // /rename afterwards.
+          // permissionMode is deliberately OMITTED, not set to this browser's
+          // default. `resumeSessionId` resolves polymorphically on the server:
+          // it adopts a genuinely external session (no record → the fallback
+          // chain applies, which is what we want), but it REATTACHES a managed
+          // record when the id matches one — and this panel can show a managed
+          // agent as external, because it matches on providerSessionId while
+          // the ADR-049 crash net regenerates exactly that field, orphaning the
+          // agent's original JSONL under its still-valid agent id.
+          //
+          // Sending an explicit mode here would count as "the caller asked for
+          // this" and permanently overwrite that agent's record with whatever
+          // this browser tab's dropdown last said. Omitting it lets the server
+          // preserve the record on a reattach and apply the default only where
+          // there is genuinely no record to preserve.
           await spawnSession(
             set,
             get,
@@ -996,7 +1024,6 @@ export const useStore = create<AppState>()(
             {
               workingDirectory: cwd,
               resumeSessionId: claudeSessionId,
-              permissionMode: get().permissionMode,
             },
           );
         },
@@ -1422,10 +1449,14 @@ export const useStore = create<AppState>()(
             saved.sidebarWidth,
             window.innerWidth * 0.5,
           );
-        // Accept new permissionMode; otherwise migrate legacy autonomousMode
-        // (true→bypass, false→default). See ADR-045.
-        if (isPermissionMode(saved?.permissionMode)) {
-          merged.permissionMode = saved.permissionMode;
+        // Accept a current permissionMode, or this enum's pre-rename spelling
+        // ("default" → "ask"); otherwise migrate legacy autonomousMode
+        // (true→bypass, false→ask). Browsers hold whichever spelling was
+        // current when the user last picked one, so both must load.
+        // See ADR-045 + the permission-mode refactor.
+        const storedMode = permissionModeFromStored(saved?.permissionMode);
+        if (storedMode !== undefined) {
+          merged.permissionMode = storedMode;
         } else {
           const migrated = permissionModeFromLegacy(
             typeof saved?.autonomousMode === "boolean"

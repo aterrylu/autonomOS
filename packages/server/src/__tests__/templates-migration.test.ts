@@ -50,11 +50,24 @@ before(async () => {
 after(() => rmSync(tmpDir, { recursive: true, force: true }));
 
 describe("template legacy autonomousMode migration (ADR-045)", () => {
-  it("maps legacy autonomousMode:false → 'default' (supervised intent preserved)", () => {
+  it("maps legacy autonomousMode:false → 'ask' (supervised intent preserved)", () => {
     writeRaw("legacy-supervised", { ...base, autonomousMode: false });
     const t = getTemplate("legacy-supervised");
-    assert.equal(t?.permissionMode, "default");
+    assert.equal(t?.permissionMode, "ask");
     assert.ok(!("autonomousMode" in (t as object)), "old field scrubbed");
+  });
+
+  it("normalizes the pre-rename 'default' spelling WITHOUT a typo notice", () => {
+    // A template written before the rename is not a user error. Routed through
+    // the invalid-mode notice it would still end up on "ask" (the fallback), so
+    // the VALUE alone can't tell the two paths apart — assert the absence of the
+    // warning, which is the part that would misdirect whoever reads the log.
+    const notices = captureWarnings(() => {
+      writeRaw("legacy-spelling", { ...base, permissionMode: "default" });
+      const t = getTemplate("legacy-spelling");
+      assert.equal(t?.permissionMode, "ask");
+    }, "invalid permissionMode");
+    assert.equal(notices.length, 0, "a legacy spelling is not a typo");
   });
 
   it("maps legacy autonomousMode:true → 'bypass'", () => {
@@ -223,7 +236,7 @@ describe("template load-path hardening", () => {
     });
     const notices = captureWarnings(() => {
       const t = getTemplate("typo-plus-legacy");
-      assert.equal(t?.permissionMode, "default", "legacy value still applies");
+      assert.equal(t?.permissionMode, "ask", "legacy value still applies");
     }, "invalid permissionMode");
     assert.equal(notices.length, 1, "the typo is reported, not swallowed");
   });

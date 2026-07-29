@@ -48,7 +48,7 @@ describe("PermissionModeSelect", () => {
   it("disables 'plan' when the provider is Codex (and only then)", () => {
     const { rerender } = render(
       <PermissionModeSelect
-        value="default"
+        value="ask"
         onChange={() => {}}
         page={page}
         provider="codex"
@@ -62,7 +62,7 @@ describe("PermissionModeSelect", () => {
 
     // No provider → every mode selectable.
     rerender(
-      <PermissionModeSelect value="default" onChange={() => {}} page={page} />,
+      <PermissionModeSelect value="ask" onChange={() => {}} page={page} />,
     );
     expect(
       (screen.getByRole("option", { name: /^Plan$/ }) as HTMLOptionElement)
@@ -73,7 +73,7 @@ describe("PermissionModeSelect", () => {
   it("does NOT disable plan for Claude/Gemini providers", () => {
     render(
       <PermissionModeSelect
-        value="default"
+        value="ask"
         onChange={() => {}}
         page={page}
         provider="claude-code"

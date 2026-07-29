@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DEFAULT_PERMISSION_MODE } from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -106,11 +106,23 @@ function createMcpServer(): McpServer {
         .describe(
           "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
         ),
+      // Deliberately the CURRENT values only, matching mcp/tools.ts exactly.
+      // Adding the legacy spelling here would publish it in the machine-readable
+      // `enum` — the field a model actually trusts — teaching "default" as
+      // current to every client reading this schema, and making the two MCP
+      // transports advertise different vocabularies. That divergence is the bug
+      // class this PR closes, not one to reintroduce.
+      //
+      // Backward compatibility lives where it is needed instead: autonomOS-
+      // spawned agents reach create_agent through the CHANNEL server, which
+      // forwards to POST /api/agents, and that route normalizes the legacy
+      // spelling. This schema is read by external clients, which see the
+      // current vocabulary and have no old one to hold onto.
       permissionMode: z
-        .enum(["default", "auto", "plan", "bypass"])
+        .enum(PERMISSION_MODES)
         .optional()
         .describe(
-          "Tool-use autonomy: 'default' (ask each time), 'auto' (auto-edit), 'plan' (read-only; Codex falls back to default), 'bypass' (skip prompts). Default: default — set 'bypass' for fully autonomous.",
+          "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
         ),
       template: z
         .string()
@@ -165,10 +177,11 @@ function createMcpServer(): McpServer {
         }
 
         const systemPrompt = args.systemPrompt ?? tmpl?.systemPrompt;
-        const permissionMode =
-          args.permissionMode ??
-          tmpl?.permissionMode ??
-          DEFAULT_PERMISSION_MODE;
+        // Forwarded as-is, INCLUDING undefined — spawnAgent owns the fallback
+        // so it can prefer a resumed agent's own record over it. Collapsing to
+        // DEFAULT_PERMISSION_MODE here made a body-less resume overwrite a
+        // `bypass` record with the fallback. See SpawnParams.
+        const permissionMode = args.permissionMode;
 
         const result = await spawnAgent({
           workingDirectory: args.workingDirectory,
@@ -179,6 +192,8 @@ function createMcpServer(): McpServer {
           resumeSessionId: args.resumeSessionId,
           forkFromAgentId: args.forkFrom,
           permissionMode,
+          // Ranked BELOW the record on a resume — see SpawnParams.
+          templatePermissionMode: tmpl?.permissionMode,
           appendSystemPrompt: systemPrompt,
           template: args.template,
           managerId,
@@ -449,10 +464,10 @@ function createMcpServer(): McpServer {
         .string()
         .describe("System prompt defining the agent's behavior"),
       permissionMode: z
-        .enum(["default", "auto", "plan", "bypass"])
+        .enum(PERMISSION_MODES)
         .optional()
         .describe(
-          "Default tool-use autonomy for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: default.",
+          "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'.",
         ),
       model: z
         .string()

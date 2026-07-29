@@ -21,6 +21,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
   permissionModeFromLegacy,
+  permissionModeFromStored,
 } from "@autonomos/core";
 import { CONFIG_DIR } from "./configDir.js";
 
@@ -147,7 +148,7 @@ export function getTemplate(name: string): AgentTemplate | null {
     // (autonomousMode:true) must still map to bypass — without this it would load
     // with permissionMode undefined and silently fall back to the safe
     // DEFAULT_PERMISSION_MODE, quietly demoting their autonomous template.
-    // true→bypass, false→default. See ADR-045.
+    // true→bypass, false→ask. See ADR-045.
     //
     // The invalid-mode notice is deliberately NOT in an `else` of the migration
     // below. It used to be, which meant a template carrying BOTH a typo'd
@@ -155,6 +156,14 @@ export function getTemplate(name: string): AgentTemplate | null {
     // silence while the log said "migrated legacy autonomousMode" — pointing
     // away from the real cause. Guessing "autonomous" for the mode is very
     // plausible given the old field's name, so say so unconditionally.
+    // Normalize this enum's pre-rename spelling ("default" → "ask") BEFORE the
+    // invalid-mode notice below, not after. The end value would be "ask" either
+    // way — an unrecognized mode falls back to DEFAULT_PERMISSION_MODE — but
+    // routed through the notice it would be reported as a user typo, blaming a
+    // template the user never got wrong. See the permission-mode refactor ADR.
+    const normalizedMode = permissionModeFromStored(tmpl.permissionMode);
+    if (normalizedMode !== undefined) tmpl.permissionMode = normalizedMode;
+
     if (
       tmpl.permissionMode !== undefined &&
       !isPermissionMode(tmpl.permissionMode)
@@ -162,7 +171,7 @@ export function getTemplate(name: string): AgentTemplate | null {
       warnOncePerVersion(
         `${name}:bad-mode`,
         stamp,
-        `[templates] ignoring invalid permissionMode ${JSON.stringify(tmpl.permissionMode)} in ${filePath}; using default`,
+        `[templates] ignoring invalid permissionMode ${JSON.stringify(tmpl.permissionMode)} in ${filePath}; falling back to "${DEFAULT_PERMISSION_MODE}"`,
       );
       tmpl.permissionMode = undefined;
     }

@@ -177,10 +177,31 @@ Data flows as raw bytes over WebSocket for terminal rendering. In parallel, the 
 
 ### Permission Handling
 
-When Claude Code requests tool approval, autonomOS intercepts and shows:
+**Shipped — permission modes (ADR-045, ADR-061).** Every agent carries one `permissionMode`, set at spawn and stored on its record:
+
+| Mode | Meaning | Claude Code | Gemini CLI | Codex |
+|---|---|---|---|---|
+| `ask` | Prompt before each privileged action (the fallback) | *no flag* | `--approval-mode default` | `approval_policy=on-request` |
+| `auto` | Auto-approve edits, still gate riskier actions | `--permission-mode acceptEdits` | `--approval-mode auto_edit` | `approval_policy=on-failure` |
+| `plan` | Read-only investigation | `--permission-mode plan` | `--approval-mode plan` | *unsupported — clamps to `ask`* |
+| `bypass` | Skip all prompts, full autonomy | `--dangerously-skip-permissions` | `--approval-mode yolo` | `approval_policy=never` |
+
+Resolution at spawn: **explicit request → (on a resume) the agent's own record → the template → `ask`.** The resolved value is baked into the record and is the single source for that agent's argv and its API representation.
+
+An agent's autonomy therefore changes only when a request explicitly says so — a resume that says nothing about permissions keeps the agent's mode, and `restart-all` / attach send no body at all, so they cannot re-level a fleet. A change that does happen is logged. Codex's OS sandbox is separately infra-locked to `danger-full-access` (autonomOS is the trust boundary), so it is not a user choice.
+
+A **fork** takes the fresh-spawn path, so it does not inherit its parent's mode — a fork of a `bypass` agent is `ask` unless asked otherwise. Fail-closed and consistent with a fork not inheriting `template`/`manager`/`project` either, but worth stating since inheritance is the natural expectation there.
+
+One gap worth knowing: Codex cannot represent `plan`, so it is clamped to `ask`-equivalent approvals at spawn (logged) while the record still shows `plan` — there, the record reflects what was requested, not what runs.
+
+The dashboard's Permission Mode setting is a **browser-local** preselection for spawns started from that dashboard, not a server-wide policy.
+
+**Aspirational — richer approval UX.** When Claude Code requests tool approval, autonomOS could intercept and show:
 - Inline in the terminal (as Claude Code normally does), OR
 - A richer overlay/dialog with more context (file diff preview, tool description)
 - Keyboard shortcuts for approve/deny (e.g., `y`/`n` or `Cmd+Enter`/`Esc`)
+
+Not built. Today an `ask`-mode agent prompts inside its own terminal pane.
 
 ### Session Lifecycle
 

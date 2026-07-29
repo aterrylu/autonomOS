@@ -69,10 +69,12 @@ const CHANNELS_NEEDLES = [
 // ── Permission mode → Claude Code flags ───────────────────────
 // `bypass` keeps the legacy --dangerously-skip-permissions (which also
 // auto-accepts the trust-folder prompt); `auto`/`plan` go through the explicit
-// --permission-mode flag. `default` emits NO flag — it IS Claude Code's built-in
-// behavior, so passing `--permission-mode default` is redundant AND perturbs the
-// interactive TUI's startup enough to break real-spawn timing (the usage-queue
-// auto-Enter), which the old flag-less supervised spawn never did.
+// --permission-mode flag. Our `ask` emits NO flag — it IS Claude Code's
+// built-in behavior, so passing CC's own `--permission-mode default` would be
+// redundant AND perturbs the interactive TUI's startup enough to break
+// real-spawn timing (the usage-queue auto-Enter), which the old flag-less
+// supervised spawn never did. (Our value is `ask`; the word "default" below
+// refers only to CC's native flag vocabulary and the switch's catch-all.)
 function claudePermissionArgs(
   mode: PermissionMode = DEFAULT_PERMISSION_MODE,
 ): string[] {

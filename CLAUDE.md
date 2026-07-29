@@ -54,7 +54,22 @@ Every spawned session gets `--settings` with inline hook entries for all 13 Clau
 **Events:** SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, Notification, PermissionRequest, SubagentStart, SubagentStop, PreCompact, PostCompact, SessionEnd
 
 ### Session Spawning Flags
-Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), and optionally `--dangerously-skip-permissions` (autonomous mode), `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
+Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), the agent's permission-mode flags (see below), and optionally `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
+
+### Permission Modes (`core/src/types/permissions.ts`, ADR-045 + ADR-061)
+`PermissionMode` is `ask | auto | plan | bypass` — **our** vocabulary, mapped per provider. `PERMISSION_MODES` in core is the canonical list; the type derives from it, and both Zod schemas are built from it so a new value reaches them automatically.
+
+What that does and does NOT enforce, precisely: adding a value gives a compile error only where a mode is exhaustively keyed (`PERMISSION_MODE_INFO`'s `Record<PermissionMode, …>`). It does **not** error in the provider mappers — they end in `default:` catch-alls, so a fifth mode would silently map to ask-equivalent behavior. And `mcp/tools.ts` keeps a hand-copy (see below) checked by a test, not the compiler. Adding a mode means: core list, `PERMISSION_MODE_INFO`, all three provider mappers, `mcp/tools.ts`.
+
+Two mappings are non-obvious and deliberate: **`ask` emits NO Claude flag** (it IS Claude Code's built-in behavior, and passing `--permission-mode default` perturbs TUI startup enough to break the usage-queue auto-Enter), and **`bypass` emits `--dangerously-skip-permissions` without `--permission-mode`**. Gemini's own flag value for ask-before-acting is the word `default` — an our-name → their-name translation, not an identity.
+
+**One agent, one mode, one source.** `spawnAgent` resolves the effective mode **once, after the agent is resolved** — `params.permissionMode ?? agent.permissionMode` — and the argv plus the reattach write-back both read it. Ordering is the correctness argument: on a reattach the fallback is the EXISTING record, so a resume that says nothing changes nothing; on a fresh spawn it is the just-built record (request → template → `ask`).
+
+Callers (`routes/agents.ts`, `mcp.ts`) must forward `undefined` rather than pre-resolving to `DEFAULT_PERMISSION_MODE` — collapsing it at the call site erases "the caller said nothing", which silently demoted `bypass` agents on every body-less resume. A template's mode ranks BELOW the record on a resume (`templatePermissionMode`), matching `respawnAgent`, which reads `tmpl?.systemPrompt` but pointedly not `tmpl?.permissionMode`. Any mode change on a resume is logged. `restart-all` / `/attach` send no body and respawn from each agent's own record, so they **cannot** re-level an agent.
+
+Persisted layers may still hold the pre-rename spelling `"default"`; every load boundary normalizes via `permissionModeFromStored`. The dashboard's Permission Mode control is a **browser-local localStorage default** for spawns started from that dashboard — it is not a server setting and does not affect agent-initiated spawns. There is no server-side default-permission setting.
+
+`mcp/tools.ts` duplicates the value list on purpose — it must NOT import `@autonomos/core` (it is bundled into `channel-server/dist.mjs` and copied into the binary bundle dir, where that specifier won't resolve). `tools-permission-schema.test.ts` keeps the copy honest.
 
 ### Auto-Trust
 `attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Each Enter is needle-verified (retry if the dialog re-renders or the PTY stays silent, capped attempts) because CC's TUI attaches its stdin handler 100-500ms after first paint — blind early writes get swallowed. Configurable via settings panel toggle (default: ON).
@@ -95,7 +110,7 @@ Native timer-based scheduling using Croner v10. Each enabled schedule gets its o
 ### Agent Templates (`~/.autonomos/templates/`)
 Reusable blueprints for creating agents. Individual JSON files with: `role`, `description`, `systemPrompt`, `permissionMode`, `model`. Created via `create_template` MCP tool or by dropping a `.json` file in the templates directory. Used via `create_agent(template: "team-lead", ...)`.
 
-Two fields are accepted-and-ignored for backward compatibility: `autonomousMode` (migrated to `permissionMode`, ADR-045) and `capabilities` (removed, ADR-058 — it filtered the MCP tool list without restricting the REST API every agent can already reach, while the injected system prompt advertised the full list either way). Restrict worker agents via `systemPrompt` prose instead.
+Two fields are accepted-and-ignored for backward compatibility: `autonomousMode` (migrated to `permissionMode`, ADR-045 — and a `permissionMode: "default"` written before ADR-061 loads as `ask`) and `capabilities` (removed, ADR-058 — it filtered the MCP tool list without restricting the REST API every agent can already reach, while the injected system prompt advertised the full list either way). Restrict worker agents via `systemPrompt` prose instead.
 
 ### Agent Hierarchy (Org Chart)
 Hierarchy metadata (`template`, `manager`, `project`) is stored on persisted sessions in `sessions.json`. The org chart is derived at query time from `manager` references. Configured at runtime via `set_manager` MCP tool — agents or the human can organize the hierarchy after spawning. REST API: `GET /api/org`, `PUT /api/org/manager`, `GET/POST /api/templates`.

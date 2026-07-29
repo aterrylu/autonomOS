@@ -10,6 +10,19 @@
  * But the schemas and descriptions are identical.
  */
 
+// NOTE: this module must not import from @autonomos/core.
+//
+// It is bundled into channel-server/dist.mjs with `--packages=external`, and
+// build-binary.ts COPIES that file into the bundle dir (see RUNTIME_SCRIPTS in
+// scriptPaths.ts). A bare `@autonomos/core` import survives bundling as an
+// unresolved external and would fail to resolve from the copied location —
+// breaking every agent spawn in the packaged build, at runtime only.
+//
+// So the permission-mode values below are duplicated from core rather than
+// derived. `__tests__/tools-permission-schema.test.ts` asserts the copy matches
+// PERMISSION_MODES / DEFAULT_PERMISSION_MODE exactly, which buys the same
+// drift protection a shared import would, without the runtime dependency.
+
 /** Tool definition shape matching MCP SDK's tool list format */
 export interface ToolDef {
   name: string;
@@ -61,10 +74,15 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       },
       permissionMode: {
         type: "string",
-        enum: ["default", "auto", "plan", "bypass"],
+        enum: ["ask", "auto", "plan", "bypass"],
+        // NO `default` key. It would say "omitting this yields ask", which is
+        // false on every resume — omission PRESERVES the agent's current mode.
+        // A client that materializes an advertised default would then send
+        // `permissionMode: "ask"` explicitly on a resume and re-level a
+        // deliberately autonomous agent: the exact demotion this schema's own
+        // description tells it to avoid.
         description:
-          "How much autonomy the agent has over tool use: 'default' (ask before each action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to default), 'bypass' (skip all prompts). Default: default — set 'bypass' for fully autonomous.",
-        default: "default",
+          "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
       },
       template: {
         type: "string",
@@ -220,9 +238,9 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
       },
       permissionMode: {
         type: "string",
-        enum: ["default", "auto", "plan", "bypass"],
+        enum: ["ask", "auto", "plan", "bypass"],
         description:
-          "Default permission mode for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: default.",
+          "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'.",
       },
       model: {
         type: "string",

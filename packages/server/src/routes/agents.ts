@@ -7,11 +7,12 @@
  */
 
 import {
-  DEFAULT_PERMISSION_MODE,
   type ExitReason,
   isExitReason,
   isPermissionMode,
+  type PermissionMode,
   type Provider,
+  permissionModeFromStored,
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
@@ -111,6 +112,10 @@ interface AgentTreeApiNode {
   project?: string;
   status: string;
   provider: string;
+  /** Each agent's OWN resolved mode. Included because this endpoint is how
+   *  external MCP clients see the fleet, and omitting it left them unable to
+   *  tell a supervised agent from a fully autonomous one. */
+  permissionMode: PermissionMode;
   children: AgentTreeApiNode[];
 }
 
@@ -128,6 +133,7 @@ agentsRouter.get("/tree", (c) => {
       project: a.project,
       status: a.status,
       provider: a.provider,
+      permissionMode: a.permissionMode,
     }),
   });
   return c.json(tree);
@@ -251,19 +257,24 @@ agentsRouter.post("/", async (c) => {
     typeof body.appendSystemPrompt === "string"
       ? body.appendSystemPrompt
       : tmpl?.systemPrompt;
-  // An invalid mode here would silently fall back to the template/default mode,
-  // so surface it rather than swallow it. The dashboard and MCP (z.enum) paths
-  // only send valid values; this guards hand-crafted requests.
-  if (
-    body.permissionMode !== undefined &&
-    !isPermissionMode(body.permissionMode)
-  )
+  // `permissionModeFromStored` also accepts the pre-rename spelling
+  // ("default" → "ask"), so a client holding the older tool schema — every
+  // agent spawned before that rename — keeps working instead of failing.
+  //
+  // The result is deliberately left as `undefined` when the caller said
+  // nothing. Resolving it to a concrete mode HERE is what silently demoted a
+  // deliberately autonomous agent on a body-less resume: spawnAgent could no
+  // longer tell "the caller asked for ask" from "the caller said nothing", and
+  // wrote the fallback over the record. spawnAgent owns the fallback; this
+  // boundary only reports what was asked for.
+  const permissionMode = permissionModeFromStored(body.permissionMode);
+  // An unusable mode falls back rather than 400s, so say so — silence here
+  // reads as "accepted". The dashboard and MCP (z.enum) paths only send valid
+  // values; this guards hand-crafted requests.
+  if (body.permissionMode !== undefined && permissionMode === undefined)
     console.warn(
-      `[api/agents] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; falling back to template/default`,
+      `[api/agents] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; falling back to template/record/default`,
     );
-  const permissionMode = isPermissionMode(body.permissionMode)
-    ? body.permissionMode
-    : (tmpl?.permissionMode ?? DEFAULT_PERMISSION_MODE);
 
   // NOTE: the present-but-empty resume/fork id check lives in `spawnAgent`, not
   // here. It has to be at the shared boundary — the HTTP MCP handler calls
@@ -284,6 +295,9 @@ agentsRouter.post("/", async (c) => {
       resumeSessionId: body.resumeSessionId as string | undefined,
       forkFromAgentId: body.forkFromAgentId as UUID | undefined,
       permissionMode,
+      // Ranked BELOW the record on a resume — see SpawnParams. Naming a
+      // template while resuming must not re-level an existing agent.
+      templatePermissionMode: tmpl?.permissionMode,
       appendSystemPrompt: systemPrompt,
       template: templateName,
       managerId,

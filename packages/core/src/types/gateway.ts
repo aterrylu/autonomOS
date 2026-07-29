@@ -3,6 +3,8 @@
  * and the server:autonomos MCP channel server.
  */
 
+import type { PermissionMode } from "./permissions";
+
 // ── Platform Messages ─────────────────────────────────────────────
 
 export type Platform = "slack";
@@ -50,6 +52,14 @@ export interface AgentInfo {
   name: string;
   uri: string;
   status: string;
+  /** How much autonomy this agent has over tool use.
+   *
+   *  Present so an agent can VERIFY a peer's mode rather than infer it. Without
+   *  it, `list_agents` — the only fleet view a spawned agent has — reported just
+   *  name/uri/status, so an agent that restarted a peer into a different mode
+   *  had no way to confirm it took effect. Optional so a channel server from a
+   *  NEWER build stays readable against an older server that doesn't send it. */
+  permissionMode?: PermissionMode;
 }
 
 // ── Gateway WebSocket Protocol ────────────────────────────────────

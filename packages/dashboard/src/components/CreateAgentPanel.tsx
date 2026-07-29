@@ -1,4 +1,5 @@
 import {
+  DEFAULT_PERMISSION_MODE,
   PERMISSION_MODE_INFO,
   type PermissionMode,
   type Provider,
@@ -90,16 +91,17 @@ export function CreateAgentPanel() {
   }, [templates, selectedTemplate, autoDefaulted, nameManuallyEdited]);
 
   // Codex can't represent every mode (e.g. plan, which has no Codex equivalent).
-  // If the selected provider doesn't support the current mode, fall back to
-  // default so the dropdown and the eventual spawn agree — the option is also
+  // If the selected provider doesn't support the current mode, fall back to the
+  // safe mode so the dropdown and the eventual spawn agree — the option is also
   // disabled in the dropdown, but a provider switch can strand a prior pick.
+  // Mirrors the server-side clamp in codexApprovalPolicy.
   useEffect(() => {
     if (
       PERMISSION_MODE_INFO[permissionMode].unsupportedBy?.includes(
         selectedProvider as Provider,
       )
     ) {
-      setPermissionMode("default");
+      setPermissionMode(DEFAULT_PERMISSION_MODE);
     }
   }, [selectedProvider, permissionMode]);
 

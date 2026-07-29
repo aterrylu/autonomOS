@@ -7,6 +7,7 @@ import {
   PERMISSION_MODES,
   type PermissionMode,
   permissionModeFromLegacy,
+  permissionModeFromStored,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
 import { claudeCodeProvider } from "../providers/claude-code.js";
@@ -38,16 +39,58 @@ function baseOptions(
 }
 
 describe("core permission helpers", () => {
-  it("DEFAULT_PERMISSION_MODE is the fail-closed 'default' (ask before acting)", () => {
+  it("DEFAULT_PERMISSION_MODE is the fail-closed 'ask' (prompt before acting)", () => {
     // A spawn that forgets to set a mode must NOT silently get full autonomy.
     // bypass is opt-in (the original ADR-045 default was flipped — see ADR-045).
-    assert.equal(DEFAULT_PERMISSION_MODE, "default");
+    assert.equal(DEFAULT_PERMISSION_MODE, "ask");
   });
 
   it("permissionModeFromLegacy maps the old boolean (accept-and-discard)", () => {
     assert.equal(permissionModeFromLegacy(true), "bypass");
-    assert.equal(permissionModeFromLegacy(false), "default");
+    assert.equal(permissionModeFromLegacy(false), "ask");
     assert.equal(permissionModeFromLegacy(undefined), undefined);
+  });
+
+  it("permissionModeFromStored accepts the pre-rename spelling", () => {
+    // Records, templates, and browser localStorage written before the rename
+    // still say "default". They must load as "ask", not as garbage — a coercion
+    // to the fallback would happen to produce the same value here, so assert
+    // the alias path specifically rather than the end result.
+    assert.equal(permissionModeFromStored("default"), "ask");
+    // Current spellings pass through untouched.
+    for (const mode of PERMISSION_MODES) {
+      assert.equal(permissionModeFromStored(mode), mode);
+    }
+    // Anything else is NOT silently mapped — callers decide the fallback.
+    assert.equal(permissionModeFromStored("yolo"), undefined);
+    assert.equal(permissionModeFromStored(undefined), undefined);
+    assert.equal(permissionModeFromStored(true), undefined);
+  });
+
+  it("prototype keys are not mistaken for modes", () => {
+    // The alias table is indexed with an arbitrary stored string, so an object
+    // LITERAL would answer these eight from Object.prototype — returning a
+    // function typed as PermissionMode. Not an escalation path (no prototype
+    // member equals a real mode), but a function reaching
+    // PERMISSION_MODE_INFO[mode] throws on dashboard mount, and on the server it
+    // survives `??` and then vanishes at JSON.stringify. The null-prototype map
+    // makes the lookup total; these cases keep it that way.
+    for (const key of [
+      "constructor",
+      "__proto__",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "isPrototypeOf",
+      "propertyIsEnumerable",
+      "toLocaleString",
+    ]) {
+      assert.equal(
+        permissionModeFromStored(key),
+        undefined,
+        `${key} must not resolve to a mode`,
+      );
+    }
   });
 
   it("isPermissionMode is a correct type guard", () => {
@@ -72,10 +115,11 @@ describe("core permission helpers", () => {
 });
 
 describe("claude-code permission mapping", () => {
-  // `default` emits NO permission flag (Claude's built-in behavior); the others
-  // carry an explicit leading flag.
+  // `ask` emits NO permission flag (it IS Claude's built-in behavior, and
+  // passing `--permission-mode default` explicitly perturbs TUI startup); the
+  // others carry an explicit leading flag.
   const expected: Record<PermissionMode, string[]> = {
-    default: [],
+    ask: [],
     auto: ["--permission-mode", "acceptEdits"],
     plan: ["--permission-mode", "plan"],
     bypass: ["--dangerously-skip-permissions"],
@@ -90,9 +134,9 @@ describe("claude-code permission mapping", () => {
     });
   }
 
-  it("default mode emits NO permission flag (claude's built-in default)", () => {
+  it("ask mode emits NO permission flag (claude's built-in default)", () => {
     const args = claudeCodeProvider.buildArgs(
-      baseOptions({ permissionMode: "default" }),
+      baseOptions({ permissionMode: "ask" }),
     );
     assert.ok(!args.includes("--permission-mode"));
     assert.ok(!args.includes("--dangerously-skip-permissions"));
@@ -107,8 +151,12 @@ describe("claude-code permission mapping", () => {
 });
 
 describe("gemini-cli permission mapping", () => {
+  // Note `ask: "default"` — Gemini's OWN flag value for ask-before-acting is
+  // the word "default". Our enum no longer uses that word, so this line is now
+  // an explicit our-name → their-name translation rather than an identity that
+  // hid one. Do not "simplify" it back.
   const expected: Record<PermissionMode, string> = {
-    default: "default",
+    ask: "default",
     auto: "auto_edit",
     plan: "plan",
     bypass: "yolo",
