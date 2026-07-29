@@ -19,7 +19,7 @@
 // breaking every agent spawn in the packaged build, at runtime only.
 //
 // So the permission-mode values below are duplicated from core rather than
-// derived. `mcp/tools.permission-schema.test.ts` asserts the copy matches
+// derived. `__tests__/tools-permission-schema.test.ts` asserts the copy matches
 // PERMISSION_MODES / DEFAULT_PERMISSION_MODE exactly, which buys the same
 // drift protection a shared import would, without the runtime dependency.
 
@@ -76,7 +76,7 @@ export const TOOL_CREATE_AGENT: ToolDef = {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
         description:
-          "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit and the agent's template decides, or 'ask' if it has none — pass 'bypass' explicitly for full autonomy.",
+          "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
         default: "ask",
       },
       template: {

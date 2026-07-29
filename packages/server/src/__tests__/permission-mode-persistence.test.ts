@@ -15,8 +15,14 @@
  * direction. Only comparing the two layers reveals it. That is what these
  * tests do.
  *
- * They pin the persistence seam directly (deterministic, no PTY). The
- * end-to-end argv-vs-record check lives in the RUN_INTEGRATION spawn suite.
+ * SCOPE — read this before trusting a green run. These tests call `markRunning`
+ * directly; they do NOT go through `spawnAgent`, so they pin the store's
+ * contract, not the fact that the spawn path honours it. Removing the
+ * `permissionMode` argument from runtime.ts's reattach call leaves this file
+ * green. The end-to-end argv-vs-record check that catches THAT lives in
+ * `permission-mode-resume.test.ts`, which is RUN_INTEGRATION-gated — meaning a
+ * plain `make check` does not cover the spawn-path half. Run
+ * `AUTONOMOS_INTEGRATION=1 make check` (as CI does) for the full guarantee.
  */
 
 import assert from "node:assert/strict";
@@ -168,11 +174,15 @@ describe("permission mode survives the reattach persist", () => {
     assert.equal(modeOnDisk("agent-explicit-undef"), "auto");
   });
 
-  it("restarting many agents preserves each one's OWN mode", () => {
-    // The shape of restart-all: it re-reads each record and passes that
-    // record's mode back in. Nothing global is consulted, so a heterogeneous
-    // fleet must stay heterogeneous — no agent is levelled up to the most
-    // permissive mode in the set, or down to the fallback.
+  it("write-back of a per-agent mode does not leak across agents", () => {
+    // NOT a restart-all test — it reimplements what respawnAgent passes rather
+    // than calling it, so it would stay green if restart-all started consulting
+    // a global. The real guarantee is pinned in permission-mode-resume.test.ts,
+    // which POSTs /api/agents/restart-all against a live mixed fleet.
+    //
+    // What this DOES cover is narrower and still worth having: that the store's
+    // write-back is per-record, so a heterogeneous fleet's modes don't bleed
+    // into one another through a shared cache.
     const fleet: Array<[string, PermissionMode]> = [
       ["fleet-ask", "ask"],
       ["fleet-auto", "auto"],

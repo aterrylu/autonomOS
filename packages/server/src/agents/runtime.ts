@@ -16,6 +16,7 @@ import {
   type AgentProvider,
   DEFAULT_PERMISSION_MODE,
   type ExitReason,
+  type PermissionMode,
   type Provider,
   type SpawnOptions,
   type UUID,
@@ -425,6 +426,24 @@ export interface SpawnParams extends SpawnOptions {
   forkFromAgentId?: UUID;
   /** Manager agent id for the org chart. */
   managerId?: UUID | null;
+  /**
+   * The permission mode declared by the resolved template, if any — kept
+   * SEPARATE from the inherited `permissionMode` (which means "the caller
+   * explicitly asked for this") because the two rank differently on a resume.
+   *
+   * On a reattach, only an EXPLICIT `permissionMode` may change an existing
+   * agent's autonomy; a template's mode must not, or naming a template while
+   * resuming would silently re-level an agent someone deliberately set. This
+   * mirrors `respawnAgent`, which reads `tmpl?.systemPrompt` but pointedly not
+   * `tmpl?.permissionMode`. On a fresh spawn there is no record to defer to, so
+   * the template's mode applies normally.
+   *
+   * Callers MUST forward `undefined` rather than pre-resolving to
+   * DEFAULT_PERMISSION_MODE — collapsing it here erases the distinction between
+   * "the caller said `ask`" and "the caller said nothing", and the latter must
+   * leave a resumed agent's mode alone.
+   */
+  templatePermissionMode?: PermissionMode;
 }
 
 export interface SpawnResult {
@@ -521,20 +540,19 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   const provider = getProvider(providerName);
   const binary = provider.resolveBinary();
 
-  // The ONE place an unspecified permission mode becomes a concrete one.
+  // Mode for a record that does not exist yet (fresh / fork / adopt). There is
+  // no prior autonomy to preserve in those cases, so the template's declared
+  // mode applies and the fail-closed default backs it.
   //
-  // Placement is the point. Three consumers downstream need a mode — the
-  // persisted record (buildNewAgent), the provider argv (`resolved`), and the
-  // reattach write-back — and each used to default independently: buildNewAgent
-  // had its own `?? DEFAULT_PERMISSION_MODE`, and every provider's mapper still
-  // carries a `= DEFAULT_PERMISSION_MODE` parameter default. They agreed only
-  // because all of them happened to name the same constant. Resolving once here
-  // means the record and the running process cannot disagree about how much
-  // autonomy an agent has, which is exactly the defect this replaces.
-  //
-  // The provider-side parameter defaults stay as a boundary guard for any
-  // future caller that reaches buildArgs without coming through here.
-  const permissionMode = params.permissionMode ?? DEFAULT_PERMISSION_MODE;
+  // The EFFECTIVE mode — the one the argv and the write-back use — is resolved
+  // below, after `agent` is known, because a reattach must be able to fall back
+  // to the record. Deliberately not merged into one expression up here: doing
+  // that is what made a body-less resume overwrite a `bypass` record with the
+  // fallback. See the effective-mode comment for the full story.
+  const newRecordPermissionMode =
+    params.permissionMode ??
+    params.templatePermissionMode ??
+    DEFAULT_PERMISSION_MODE;
 
   /**
    * Build a NEW managed record for `id`. Shared by the adopt and fresh/fork
@@ -553,7 +571,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       workingDirectory: cwd,
       provider: providerName,
       providerSessionId: id,
-      permissionMode,
+      permissionMode: newRecordPermissionMode,
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
@@ -699,6 +717,40 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // assuming one equals the other.
     providerSessionId = crypto.randomUUID();
     agent = buildNewAgent(providerSessionId);
+  }
+
+  // ── The effective permission mode ────────────────────────────────
+  //
+  // THE one place. Everything downstream — the provider argv, the reattach
+  // write-back — reads this, so the record and the running process cannot
+  // disagree about how much autonomy an agent has.
+  //
+  // It resolves HERE, after `agent`, because the fallback is the agent's own
+  // record. That ordering is the whole correctness argument:
+  //   - explicit `params.permissionMode` wins (a caller asking for a mode gets
+  //     it, and the record follows — the divergence this PR fixes);
+  //   - otherwise the agent's mode stands. On a reattach that is the EXISTING
+  //     record, so a resume that says nothing about permissions changes
+  //     nothing. On fresh/fork/adopt it is `newRecordPermissionMode`, already
+  //     baked into the record just above.
+  //
+  // Resolving before `agent` — collapsing `undefined` to the fallback up front,
+  // which is what the callers used to do — silently DEMOTED a deliberately
+  // autonomous agent on any body-less resume: `create_agent(resumeSessionId)`
+  // with no mode wrote the fallback over a `bypass` record, permanently, with
+  // nothing logged. Callers therefore forward `undefined`; do not "tidy" that
+  // back into a `??` at the call site.
+  const permissionMode = params.permissionMode ?? agent.permissionMode;
+
+  // A resume that CHANGES autonomy is worth a line in the log either way. The
+  // change is legitimate (the caller asked for it), but "this agent's autonomy
+  // changed and nothing said so" is precisely the class of silence that made
+  // the original bug take days to see.
+  if (resolution === "reattach" && permissionMode !== agent.permissionMode) {
+    console.warn(
+      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): permission mode ` +
+        `${agent.permissionMode} → ${permissionMode} on resume (caller-specified)`,
+    );
   }
 
   // Build provider args + env

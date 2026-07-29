@@ -56,25 +56,34 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
  * still hold the old spelling, so all of them normalize on read via
  * `permissionModeFromStored`.
  */
+// `Object.create(null)` — NOT an object literal. A literal inherits from
+// Object.prototype, so indexing it with an arbitrary stored string returns a
+// prototype member for eight well-known keys: `permissionModeFromStored("toString")`
+// would hand back a FUNCTION typed as PermissionMode, and `"__proto__"` an
+// object. None of them equal a real mode, so this was never an
+// escalation path — but a function reaching PERMISSION_MODE_INFO[mode] throws
+// on dashboard mount, and on the server it survives `??` and then vanishes at
+// JSON.stringify. A null-prototype map makes the lookup total.
 const LEGACY_PERMISSION_MODE_ALIASES: Readonly<Record<string, PermissionMode>> =
-  {
-    default: "ask",
-  };
+  Object.assign(Object.create(null), { default: "ask" });
+
+/** Spellings this enum used to use, still accepted on input and in storage. */
+export const LEGACY_PERMISSION_MODE_SPELLINGS = ["default"] as const;
 
 /**
- * Normalize a persisted permission mode to a current enum value.
+ * Normalize a stored or requested permission mode to a current enum value.
  *
  * Returns `undefined` for anything unrecognized — callers decide whether that
  * means "apply the default" or "reject". Deliberately narrower than a
- * passthrough: normalizing at the load boundary keeps exactly ONE spelling
- * alive past it, so no downstream comparison has to check for two.
+ * passthrough: normalizing at the boundary keeps exactly ONE spelling alive
+ * past it, so no downstream comparison has to check for two.
  */
 export function permissionModeFromStored(
   value: unknown,
 ): PermissionMode | undefined {
   if (isPermissionMode(value)) return value;
-  if (typeof value === "string") return LEGACY_PERMISSION_MODE_ALIASES[value];
-  return undefined;
+  if (typeof value !== "string") return undefined;
+  return LEGACY_PERMISSION_MODE_ALIASES[value];
 }
 
 /**

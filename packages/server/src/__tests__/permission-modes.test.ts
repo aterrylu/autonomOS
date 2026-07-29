@@ -67,6 +67,32 @@ describe("core permission helpers", () => {
     assert.equal(permissionModeFromStored(true), undefined);
   });
 
+  it("prototype keys are not mistaken for modes", () => {
+    // The alias table is indexed with an arbitrary stored string, so an object
+    // LITERAL would answer these eight from Object.prototype — returning a
+    // function typed as PermissionMode. Not an escalation path (no prototype
+    // member equals a real mode), but a function reaching
+    // PERMISSION_MODE_INFO[mode] throws on dashboard mount, and on the server it
+    // survives `??` and then vanishes at JSON.stringify. The null-prototype map
+    // makes the lookup total; these cases keep it that way.
+    for (const key of [
+      "constructor",
+      "__proto__",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "isPrototypeOf",
+      "propertyIsEnumerable",
+      "toLocaleString",
+    ]) {
+      assert.equal(
+        permissionModeFromStored(key),
+        undefined,
+        `${key} must not resolve to a mode`,
+      );
+    }
+  });
+
   it("isPermissionMode is a correct type guard", () => {
     for (const mode of PERMISSION_MODES) assert.ok(isPermissionMode(mode));
     assert.ok(!isPermissionMode("nonsense"));

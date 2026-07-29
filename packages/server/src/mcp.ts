@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "@autonomos/core";
+import {
+  DEFAULT_PERMISSION_MODE,
+  LEGACY_PERMISSION_MODE_SPELLINGS,
+  PERMISSION_MODES,
+  permissionModeFromStored,
+} from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -106,11 +111,17 @@ function createMcpServer(): McpServer {
         .describe(
           "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
         ),
+      // The legacy spelling is accepted (and normalized) rather than rejected:
+      // every agent spawned before the rename still holds the OLD tool schema
+      // in its context and will keep sending "default". Rejecting it would turn
+      // a rename into a hard tool failure for the already-running fleet. It is
+      // deliberately absent from the description so nobody learns it as current.
       permissionMode: z
-        .enum(PERMISSION_MODES)
+        .enum([...PERMISSION_MODES, ...LEGACY_PERMISSION_MODE_SPELLINGS])
         .optional()
+        .transform(permissionModeFromStored)
         .describe(
-          "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit and the agent's template decides, or 'ask' if it has none — pass 'bypass' explicitly for full autonomy.",
+          "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
         ),
       template: z
         .string()
@@ -165,10 +176,11 @@ function createMcpServer(): McpServer {
         }
 
         const systemPrompt = args.systemPrompt ?? tmpl?.systemPrompt;
-        const permissionMode =
-          args.permissionMode ??
-          tmpl?.permissionMode ??
-          DEFAULT_PERMISSION_MODE;
+        // Forwarded as-is, INCLUDING undefined — spawnAgent owns the fallback
+        // so it can prefer a resumed agent's own record over it. Collapsing to
+        // DEFAULT_PERMISSION_MODE here made a body-less resume overwrite a
+        // `bypass` record with the fallback. See SpawnParams.
+        const permissionMode = args.permissionMode;
 
         const result = await spawnAgent({
           workingDirectory: args.workingDirectory,
@@ -179,6 +191,8 @@ function createMcpServer(): McpServer {
           resumeSessionId: args.resumeSessionId,
           forkFromAgentId: args.forkFrom,
           permissionMode,
+          // Ranked BELOW the record on a resume — see SpawnParams.
+          templatePermissionMode: tmpl?.permissionMode,
           appendSystemPrompt: systemPrompt,
           template: args.template,
           managerId,

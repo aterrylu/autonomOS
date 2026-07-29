@@ -88,15 +88,17 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
   args.push("-c", `sandbox_mode="danger-full-access"`);
 
   // Approval gating is separate from sandboxing: the permission mode maps to a
-  // Codex approval_policy (bypass→never, auto→on-failure, default/plan→
+  // Codex approval_policy (bypass→never, auto→on-failure, ask/plan→
   // on-request). The TUI flag in buildArgs is the primary control; this
   // daemon-side policy backs it for gateway-injected turns that share the
   // same thread. Codex has no plan mode — warn once here when we clamp it.
   if (options.permissionMode === "plan") {
     console.warn(
       "[codex] permission mode 'plan' has no Codex equivalent — clamping to " +
-        "'default' (approval_policy=on-request). Sandbox stays " +
-        "danger-full-access (autonomOS is the trust boundary).",
+        "'ask' (approval_policy=on-request). Sandbox stays " +
+        "danger-full-access (autonomOS is the trust boundary). NOTE: the " +
+        "agent's record still says 'plan' — it reflects what was requested, " +
+        "not this clamp.",
     );
   }
   args.push(
