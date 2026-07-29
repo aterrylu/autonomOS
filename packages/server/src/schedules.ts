@@ -258,8 +258,14 @@ export function validateScheduleInput(
     if (typeof input.target !== "string" || !input.target.trim()) {
       return "target must be a non-empty string";
     }
-    if (input.target !== "isolated" && !input.target.startsWith("agent:")) {
-      return `Invalid target "${input.target}": must be "isolated" or "agent:<name>"`;
+    // "isolated" gets its own message. Folding it into the generic error would
+    // tell an operator with a pre-removal schedule that their target is
+    // "invalid" without saying it used to be valid, or what replaces it.
+    if (input.target === "isolated") {
+      return `The "isolated" target was removed — a schedule now sends its prompt to a running agent. Use "agent:<name>".`;
+    }
+    if (!input.target.startsWith("agent:")) {
+      return `Invalid target "${input.target}": must be "agent:<name>"`;
     }
   }
 

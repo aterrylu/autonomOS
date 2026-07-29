@@ -6,15 +6,9 @@
  * and one-time schedule support.
  */
 
-import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { RunRecord, RunStatus, Schedule } from "@autonomos/core";
 import { Cron } from "croner";
-import { resolveClaudePath } from "./agents/runtime.js";
-import { CONFIG_DIR } from "./configDir.js";
 import {
   appendRun,
   getSchedule,
@@ -23,11 +17,6 @@ import {
   saveSchedule,
 } from "./schedules.js";
 import { getSettings } from "./settings.js";
-
-// ── Constants ───────────────────────────────────────────────────
-
-const MAX_OUTPUT_BUFFER = 64 * 1024; // 64KB in-memory cap per stream
-const OUTPUT_TRUNCATE_THRESHOLD = 10240; // 10KB in JSONL records
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -38,7 +27,6 @@ interface RunState {
   runId: string;
   scheduleName: string;
   startedAt: string;
-  childProcess?: ChildProcess;
 }
 
 const runningRuns = new Map<string, RunState>();
@@ -54,20 +42,15 @@ export type ExecutorFn = (
   runState: RunState,
 ) => void | Promise<void>;
 
-let _isolatedExecutor: ExecutorFn | null = null;
 let _agentExecutor: ExecutorFn | null = null;
 
 // Dependency overrides (for testing real executor code paths)
-type SpawnFn = typeof spawn;
-type ResolveClaudePathFn = typeof resolveClaudePath;
 type RouteMessageFn = (
   to: string,
   message: string,
   from: string,
 ) => Promise<string | null>;
 
-let _spawnOverride: SpawnFn | null = null;
-let _resolveClaudePathOverride: ResolveClaudePathFn | null = null;
 let _routeMessageOverride: RouteMessageFn | null = null;
 
 // ── Public API ──────────────────────────────────────────────────
@@ -129,6 +112,25 @@ export function initScheduler(): void {
 
   console.log(`[scheduler] Loading ${names.length} schedule(s)...`);
 
+  // Surface schedules still pointing at the removed `isolated` target. They
+  // load fine (nothing validates on read) and stay editable, but they can
+  // never run again.
+  //
+  // Reported here rather than left to fail on the next fire, because a
+  // DISABLED one has no next fire — nothing would ever mention it. Scoped
+  // honestly: this is a log line, and it lands in $configDir/logs/autonomos.log
+  // rather than the UI. SchedulesPanel still renders `isolated` as ordinary
+  // target text, so the panel alone still cannot distinguish dormant from
+  // broken. Surfacing it there is a separate change.
+  const orphaned = names.filter((n) => schedules[n].target === "isolated");
+  if (orphaned.length > 0) {
+    console.warn(
+      `[scheduler] ${orphaned.length} schedule(s) target the removed "isolated" mode ` +
+        `and cannot run: ${orphaned.join(", ")}. Point each at a running agent ` +
+        `("agent:<name>") or delete it.`,
+    );
+  }
+
   for (const name of names) {
     const schedule = schedules[name];
     if (!schedule.enabled) continue;
@@ -159,11 +161,9 @@ export function stopScheduler(): void {
   for (const timer of oneTimeTimers.values()) clearTimeout(timer);
   oneTimeTimers.clear();
 
-  for (const [name, run] of runningRuns) {
-    // Kill child processes to avoid orphans
-    if (run.childProcess && !run.childProcess.killed) {
-      run.childProcess.kill("SIGTERM");
-    }
+  // No child processes to reap: every run is now a gateway message to an
+  // already-running agent, which owns its own lifecycle.
+  for (const [name] of runningRuns) {
     const schedule = getSchedule(name);
     if (schedule) {
       schedule.state.currentRunId = null;
@@ -395,23 +395,29 @@ function dispatchOrQueue(name: string, schedule: Schedule): { error?: string } {
   const runState: RunState = { runId, scheduleName: name, startedAt };
   runningRuns.set(name, runState);
 
-  // Execute based on target (use overrides if set, for testing)
-  if (schedule.target === "isolated") {
-    if (_isolatedExecutor) {
-      _isolatedExecutor(name, schedule, runState);
-    } else {
-      executeIsolated(name, schedule, runState);
-    }
-  } else if (schedule.target.startsWith("agent:")) {
+  // Execute based on target (use overrides if set, for testing).
+  //
+  // `agent:<name>` is the ONLY target. The former `isolated` target spawned a
+  // headless `claude -p` child; it was removed because it was the one spawn
+  // path in the product that lived outside PermissionMode entirely, defaulting
+  // to --dangerously-skip-permissions. See the scheduler ADR.
+  if (schedule.target.startsWith("agent:")) {
     if (_agentExecutor) {
       _agentExecutor(name, schedule, runState);
     } else {
       executeAgentSend(name, schedule, runState);
     }
   } else {
+    // Names the removed target specifically when that's what was asked for —
+    // a bare "unknown target" would leave an operator with a pre-existing
+    // schedule guessing why it stopped.
     onRunCompleted(name, {
       status: "failure",
-      error: `Unknown target: "${schedule.target}"`,
+      error:
+        schedule.target === "isolated"
+          ? `The "isolated" target was removed — schedules now message a running agent. ` +
+            `Change "${name}" to target "agent:<name>".`
+          : `Unknown target: "${schedule.target}"`,
     });
   }
 
@@ -419,107 +425,6 @@ function dispatchOrQueue(name: string, schedule: Schedule): { error?: string } {
 }
 
 // ── Executors ───────────────────────────────────────────────────
-
-function executeIsolated(
-  name: string,
-  schedule: Schedule,
-  runState: RunState,
-): void {
-  let claudePath: string;
-  try {
-    claudePath = (_resolveClaudePathOverride ?? resolveClaudePath)();
-  } catch (err) {
-    onRunCompleted(name, {
-      status: "failure",
-      error: `claude binary not found: ${err instanceof Error ? err.message : err}`,
-    });
-    return;
-  }
-
-  const args = ["-p", schedule.prompt, "--output-format", "text"];
-  if (schedule.autonomous !== false) {
-    args.push("--dangerously-skip-permissions");
-  }
-
-  const home = process.env.HOME;
-  const cwd = home
-    ? schedule.workingDirectory.replace(/^~/, home)
-    : schedule.workingDirectory;
-
-  if (!cwd || cwd.startsWith("~")) {
-    onRunCompleted(name, {
-      status: "failure",
-      error: `Cannot resolve working directory "${schedule.workingDirectory}" — HOME is not set`,
-    });
-    return;
-  }
-
-  const spawnFn = _spawnOverride ?? spawn;
-  const child = spawnFn(claudePath, args, {
-    cwd,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env },
-  });
-
-  runState.childProcess = child;
-
-  let stdout = "";
-  let stderr = "";
-  let completed = false;
-
-  child.stdout?.on("data", (chunk: Buffer) => {
-    if (stdout.length < MAX_OUTPUT_BUFFER) stdout += chunk.toString();
-  });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    if (stderr.length < MAX_OUTPUT_BUFFER) stderr += chunk.toString();
-  });
-
-  child.on("error", (err) => {
-    if (completed) return;
-    completed = true;
-    onRunCompleted(name, {
-      status: "failure",
-      error: err.message,
-      output: stderr || undefined,
-    });
-  });
-
-  child.on("close", (code) => {
-    if (completed) return;
-    completed = true;
-
-    const output = stdout || stderr || undefined;
-    const truncatedOutput =
-      output && output.length > OUTPUT_TRUNCATE_THRESHOLD
-        ? `${output.slice(0, OUTPUT_TRUNCATE_THRESHOLD)}\n... (truncated)`
-        : output;
-
-    if (output && output.length > OUTPUT_TRUNCATE_THRESHOLD) {
-      try {
-        const outDir = join(CONFIG_DIR, "schedule-runs", name);
-        if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-        writeFileSync(join(outDir, `${runState.runId}.out`), output, {
-          mode: 0o600,
-        });
-      } catch (err) {
-        console.error(
-          `[scheduler] Failed to write output for "${name}" run ${runState.runId}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-
-    if (code === 0) {
-      onRunCompleted(name, { status: "success", output: truncatedOutput });
-    } else {
-      onRunCompleted(name, {
-        status: "failure",
-        error: `Exit code ${code}`,
-        output: truncatedOutput,
-      });
-    }
-  });
-}
 
 async function executeAgentSend(
   name: string,
@@ -608,33 +513,8 @@ function onRunCompleted(name: string, result: RunResult): void {
     saveSchedule(name, schedule);
   }
 
-  if (schedule?.onComplete && schedule.target === "isolated") {
-    deliverOnComplete(schedule.onComplete, name, result).catch((err) => {
-      console.error(
-        `[scheduler] onComplete delivery failed for "${name}":`,
-        err instanceof Error ? err.message : err,
-      );
-    });
-  }
-
   pruneRuns(name);
   drainQueue();
-}
-
-async function deliverOnComplete(
-  uri: string,
-  name: string,
-  result: RunResult,
-): Promise<void> {
-  let routeMsg: RouteMessageFn;
-  if (_routeMessageOverride) {
-    routeMsg = _routeMessageOverride;
-  } else {
-    const { routeMessage } = await import("./gateway/router.js");
-    routeMsg = routeMessage;
-  }
-  const summary = `Schedule "${name}" completed: ${result.status}${result.error ? ` — ${result.error}` : ""}`;
-  await routeMsg(uri, summary, "scheduler");
 }
 
 function drainQueue(): void {
@@ -656,29 +536,17 @@ function drainQueue(): void {
 export function _resetForTesting(): void {
   stopScheduler();
   schedulerRunning = false;
-  _isolatedExecutor = null;
   _agentExecutor = null;
-  _spawnOverride = null;
-  _resolveClaudePathOverride = null;
   _routeMessageOverride = null;
 }
 
-export function _setExecutors(
-  isolated: ExecutorFn | null,
-  agent: ExecutorFn | null,
-): void {
-  _isolatedExecutor = isolated;
+export function _setExecutors(agent: ExecutorFn | null): void {
   _agentExecutor = agent;
 }
 
 export function _setDependencies(deps: {
-  spawn?: SpawnFn | null;
-  resolveClaudePath?: ResolveClaudePathFn | null;
   routeMessage?: RouteMessageFn | null;
 }): void {
-  if ("spawn" in deps) _spawnOverride = deps.spawn ?? null;
-  if ("resolveClaudePath" in deps)
-    _resolveClaudePathOverride = deps.resolveClaudePath ?? null;
   if ("routeMessage" in deps) _routeMessageOverride = deps.routeMessage ?? null;
 }
 

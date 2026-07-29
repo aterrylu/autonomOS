@@ -43,7 +43,7 @@ async function req(
 const validBody = {
   name: "test-schedule",
   schedule: "0 9 * * 1-5",
-  target: "isolated",
+  target: "agent:worker",
   prompt: "Run tests",
   workingDirectory: "~/workspace",
 };
@@ -61,10 +61,7 @@ describe("POST /api/schedules — validation", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      () => {},
-      () => {},
-    );
+    _setExecutors(() => {});
     initScheduler();
   });
   afterEach(() => {
@@ -120,13 +117,50 @@ describe("POST /api/schedules — validation", () => {
     assert.equal(json.error, "prompt is required");
   });
 
-  it("rejects missing workingDirectory", async () => {
-    const { status, json } = await req(createApp(), "POST", "/api/schedules", {
+  it("ACCEPTS a missing workingDirectory — it is deprecated and ignored", () => {
+    // It used to be required. Keeping that check would demand a value the
+    // server no longer reads, which tells the caller the field still matters.
+    return req(createApp(), "POST", "/api/schedules", {
       ...validBody,
+      name: `test-${randomUUID().slice(0, 8)}`,
       workingDirectory: undefined,
+    }).then(({ status, json }) => {
+      assert.equal(status, 200);
+      assert.equal(json.ok, true);
     });
-    assert.equal(status, 400);
-    assert.equal(json.error, "workingDirectory is required");
+  });
+
+  it("does NOT default `autonomous` to true — the old fail-open", async () => {
+    // One of the three fail-open sites ADR-062 names (the others were the
+    // executor's `!== false` and the MCP schema's `.default(true)`). The field
+    // is ignored now, but synthesizing `true` for a caller who said nothing
+    // still misreports what they asked for when the record is read back — and
+    // it is the shape that would matter again if anything ever read it.
+    const name = `no-autodefault-${randomUUID().slice(0, 8)}`;
+    const { status } = await req(createApp(), "POST", "/api/schedules", {
+      ...validBody,
+      name,
+    });
+    assert.equal(status, 200);
+    assert.equal(
+      getSchedule(name)?.autonomous,
+      undefined,
+      "an omitted `autonomous` must stay omitted, not become true",
+    );
+  });
+
+  it("stores a supplied `workingDirectory` verbatim rather than dropping it", async () => {
+    // Deprecated and ignored is not the same as discarded. A round-trip
+    // through this endpoint must not silently delete an operator's value —
+    // they would only find out by diffing the file.
+    const name = `keeps-cwd-${randomUUID().slice(0, 8)}`;
+    const { status } = await req(createApp(), "POST", "/api/schedules", {
+      ...validBody,
+      name,
+      workingDirectory: "~/some/where",
+    });
+    assert.equal(status, 200);
+    assert.equal(getSchedule(name)?.workingDirectory, "~/some/where");
   });
 
   it("rejects invalid target format", async () => {
@@ -138,14 +172,18 @@ describe("POST /api/schedules — validation", () => {
     assert.ok((json.error as string).includes("Invalid target"));
   });
 
-  it("accepts target 'isolated'", async () => {
+  it("rejects target 'isolated' with a message naming the replacement", async () => {
+    // This endpoint used to accept "isolated". A 400 here is the intended
+    // breaking change; the assertion is on the MESSAGE because that is what an
+    // operator with an existing schedule has to act on.
     const { status, json } = await req(createApp(), "POST", "/api/schedules", {
       ...validBody,
       name: `test-${randomUUID().slice(0, 8)}`,
       target: "isolated",
     });
-    assert.equal(status, 200);
-    assert.equal(json.ok, true);
+    assert.equal(status, 400);
+    assert.match(json.error as string, /removed/);
+    assert.match(json.error as string, /agent:<name>/);
   });
 
   it("accepts target 'agent:<name>'", async () => {
@@ -216,10 +254,7 @@ describe("POST /api/schedules — happy path", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      () => {},
-      () => {},
-    );
+    _setExecutors(() => {});
     initScheduler();
   });
   afterEach(() => {
@@ -247,10 +282,7 @@ describe("GET /api/schedules", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      () => {},
-      () => {},
-    );
+    _setExecutors(() => {});
     initScheduler();
   });
   afterEach(() => {
@@ -286,10 +318,7 @@ describe("GET /api/schedules/:name", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      () => {},
-      () => {},
-    );
+    _setExecutors(() => {});
     initScheduler();
   });
   afterEach(() => {
@@ -335,10 +364,7 @@ describe("PUT /api/schedules/:name", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      () => {},
-      () => {},
-    );
+    _setExecutors(() => {});
     initScheduler();
   });
   afterEach(() => {
@@ -464,10 +490,7 @@ describe("DELETE /api/schedules/:name", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      () => {},
-      () => {},
-    );
+    _setExecutors(() => {});
     initScheduler();
   });
   afterEach(() => {
@@ -514,14 +537,9 @@ describe("POST /api/schedules/:name/run", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-    );
+    _setExecutors((name) => {
+      _onRunCompleted(name, { status: "success" });
+    });
     initScheduler();
   });
   afterEach(() => {
@@ -559,12 +577,9 @@ describe("GET /api/schedules/:name/runs", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-      () => {},
-    );
+    _setExecutors((name) => {
+      _onRunCompleted(name, { status: "success" });
+    });
     initScheduler();
   });
   afterEach(() => {

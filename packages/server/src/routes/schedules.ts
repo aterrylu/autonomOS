@@ -58,8 +58,10 @@ scheduleRouter.post("/", async (c) => {
     return c.json({ error: "target is required" }, 400);
   if (typeof prompt !== "string" || !prompt.trim())
     return c.json({ error: "prompt is required" }, 400);
-  if (typeof workingDirectory !== "string" || !workingDirectory.trim())
-    return c.json({ error: "workingDirectory is required" }, 400);
+  // workingDirectory is NO LONGER required. It only ever configured the
+  // removed `isolated` executor's child process; an `agent:` run happens
+  // inside the target agent's own cwd. Demanding a field the server ignores
+  // is worse than ignoring it quietly — it tells the caller the value matters.
 
   const overlapPolicy =
     typeof body.overlapPolicy === "string" ? body.overlapPolicy : undefined;
@@ -80,12 +82,24 @@ scheduleRouter.post("/", async (c) => {
       schedule: schedule.trim(),
       target: target.trim(),
       prompt: prompt.trim(),
-      workingDirectory: workingDirectory.trim(),
+      // Stored verbatim when supplied (deprecated, ignored) so a round-trip
+      // through this endpoint doesn't silently drop an operator's value.
+      workingDirectory:
+        typeof workingDirectory === "string" && workingDirectory.trim()
+          ? workingDirectory.trim()
+          : undefined,
       description:
         typeof body.description === "string" ? body.description : undefined,
       timezone,
       template: typeof body.template === "string" ? body.template : undefined,
-      autonomous: typeof body.autonomous === "boolean" ? body.autonomous : true,
+      // Passed through, never defaulted. The old `: true` here was a third
+      // fail-open default (alongside the executor's `!== false` and the MCP
+      // schema's `.default(true)`) — it materialized full autonomy for any
+      // caller that simply omitted the field. Deprecated and ignored now, but
+      // synthesizing a value for a dead field would still misreport what the
+      // operator asked for when the record is read back.
+      autonomous:
+        typeof body.autonomous === "boolean" ? body.autonomous : undefined,
       overlapPolicy: overlapPolicy as ScheduleConfig["overlapPolicy"],
       onComplete:
         typeof body.onComplete === "string" ? body.onComplete : undefined,

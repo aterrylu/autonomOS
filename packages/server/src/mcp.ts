@@ -532,15 +532,39 @@ function createMcpServer(): McpServer {
     {
       name: z.string().describe("Schedule name (kebab-case)"),
       schedule: z.string().describe("Cron expression or once:ISO"),
-      target: z.string().describe('"isolated" or "agent:<name>"'),
+      target: z
+        .string()
+        .describe(
+          '"agent:<name>" — send the prompt to a running agent (its own permission mode governs the run)',
+        ),
       prompt: z.string().describe("Task prompt"),
-      workingDirectory: z.string().describe("Working directory"),
+      // The three below are accepted-and-ignored leftovers of the removed
+      // `isolated` target, kept so pre-removal clients still validate.
+      // `workingDirectory` is optional now — it used to be required.
+      // `autonomous` has no `.default(true)` any more: advertising that
+      // omission grants full autonomy is what made this the one scheduled
+      // path outside PermissionMode.
+      workingDirectory: z
+        .string()
+        .optional()
+        .describe("DEPRECATED — ignored (the target agent's cwd is used)"),
       description: z.string().optional().describe("Description"),
       timezone: z.string().optional().describe("IANA timezone"),
-      template: z.string().optional().describe("Template name"),
-      autonomous: z.boolean().optional().default(true),
+      template: z
+        .string()
+        .optional()
+        .describe("DEPRECATED — ignored (never had an effect)"),
+      autonomous: z
+        .boolean()
+        .optional()
+        .describe(
+          "DEPRECATED — ignored (autonomy is the target agent's permissionMode)",
+        ),
       overlapPolicy: z.string().optional().describe("skip or allow"),
-      onComplete: z.string().optional().describe("Gateway URI for results"),
+      onComplete: z
+        .string()
+        .optional()
+        .describe("DEPRECATED — ignored (see create_schedule in mcp/tools.ts)"),
       notify: z.string().optional().describe("always, failure, or never"),
       enabled: z.boolean().optional().default(true),
     },

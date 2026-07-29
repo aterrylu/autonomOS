@@ -39,7 +39,7 @@ function makeConfig(overrides: Partial<ScheduleConfig> = {}): ScheduleConfig {
   return {
     name: `test-${randomUUID().slice(0, 8)}`,
     schedule: "0 9 * * 1-5",
-    target: "isolated",
+    target: "agent:worker",
     prompt: "Run daily standup",
     workingDirectory: "~/workspace",
     enabled: true,
@@ -53,7 +53,7 @@ function makeRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
     startedAt: new Date().toISOString(),
     completedAt: new Date().toISOString(),
     status: "success",
-    target: "isolated",
+    target: "agent:worker",
     durationMs: 1234,
     error: null,
     sessionId: null,
@@ -126,7 +126,7 @@ describe("schedules CRUD", () => {
 
       assert.equal(schedule.name, "my-schedule");
       assert.equal(schedule.schedule, config.schedule);
-      assert.equal(schedule.target, "isolated");
+      assert.equal(schedule.target, "agent:worker");
       assert.equal(schedule.prompt, config.prompt);
 
       // File should exist
@@ -329,11 +329,21 @@ describe("schedules CRUD", () => {
     it("rejects invalid target", () => {
       const err = validateScheduleInput({ target: "local" });
       assert.ok(err);
-      assert.match(err!, /must be "isolated" or "agent:<name>"/);
+      assert.match(err!, /must be "agent:<name>"/);
     });
 
-    it("accepts isolated and agent: targets", () => {
-      assert.equal(validateScheduleInput({ target: "isolated" }), null);
+    it("rejects the removed 'isolated' target, and SAYS it was removed", () => {
+      // Not folded into the generic invalid-target case on purpose. An
+      // operator with a pre-removal schedule needs to learn that the target
+      // used to be valid and what replaces it — "Invalid target" alone reads
+      // like they typo'd something that never existed.
+      const err = validateScheduleInput({ target: "isolated" });
+      assert.ok(err);
+      assert.match(err!, /removed/);
+      assert.match(err!, /agent:<name>/);
+    });
+
+    it("accepts an agent: target", () => {
       assert.equal(validateScheduleInput({ target: "agent:worker" }), null);
     });
 

@@ -132,14 +132,9 @@ describe("channel server schedule tool routing", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-    );
+    _setExecutors((name) => {
+      _onRunCompleted(name, { status: "success" });
+    });
     initScheduler();
     app = createApp();
   });
@@ -153,7 +148,7 @@ describe("channel server schedule tool routing", () => {
     const result = await routeToolCall(app, "create_schedule", {
       name: "chan-create",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "test",
       workingDirectory: "~",
     });
@@ -169,7 +164,7 @@ describe("channel server schedule tool routing", () => {
     await routeToolCall(app, "create_schedule", {
       name: "chan-list",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "test",
       workingDirectory: "~",
     });
@@ -184,7 +179,7 @@ describe("channel server schedule tool routing", () => {
     await routeToolCall(app, "create_schedule", {
       name: "chan-get",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "test",
       workingDirectory: "~",
     });
@@ -210,7 +205,7 @@ describe("channel server schedule tool routing", () => {
     await routeToolCall(app, "create_schedule", {
       name: "chan-update",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "old",
       workingDirectory: "~",
     });
@@ -233,7 +228,7 @@ describe("channel server schedule tool routing", () => {
     await routeToolCall(app, "create_schedule", {
       name: "chan-delete",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "test",
       workingDirectory: "~",
     });
@@ -261,7 +256,7 @@ describe("channel server schedule tool routing", () => {
     await routeToolCall(app, "create_schedule", {
       name: "chan-run",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "test",
       workingDirectory: "~",
     });
@@ -286,7 +281,7 @@ describe("channel server schedule tool routing", () => {
     await routeToolCall(app, "create_schedule", {
       name: "test-123",
       schedule: "0 9 * * *",
-      target: "isolated",
+      target: "agent:worker",
       prompt: "test",
       workingDirectory: "~",
     });

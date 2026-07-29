@@ -294,15 +294,20 @@ export const TOOL_CREATE_SCHEDULE: ToolDef = {
       target: {
         type: "string",
         description:
-          '"isolated" (headless claude -p) or "agent:<name>" (send to running agent)',
+          '"agent:<name>" — send the prompt to a running agent. That agent must be alive when the schedule fires; its own permission mode governs what the run may do.',
       },
       prompt: {
         type: "string",
         description: "The prompt/task to execute on each run",
       },
+      // Kept so a client written before the isolated target was removed still
+      // validates; the server ignores it. Marked in the description because a
+      // silently-ignored field is exactly what makes an agent believe it
+      // configured something it didn't.
       workingDirectory: {
         type: "string",
-        description: "Working directory for isolated execution (~ allowed)",
+        description:
+          "DEPRECATED — ignored. The run happens inside the target agent, in that agent's working directory.",
       },
       description: {
         type: "string",
@@ -315,12 +320,15 @@ export const TOOL_CREATE_SCHEDULE: ToolDef = {
       },
       template: {
         type: "string",
-        description: "Template name for isolated mode execution",
+        description: "DEPRECATED — ignored. Never had an effect.",
       },
+      // No `default: true` any more. It advertised that omitting the field
+      // grants full autonomy, which is both untrue now and the shape that made
+      // this the one scheduled-execution path outside PermissionMode.
       autonomous: {
         type: "boolean",
-        description: "Skip permission prompts in isolated mode (default: true)",
-        default: true,
+        description:
+          "DEPRECATED — ignored. Autonomy is the target agent's own permissionMode; a schedule cannot change it.",
       },
       overlapPolicy: {
         type: "string",
@@ -330,7 +338,7 @@ export const TOOL_CREATE_SCHEDULE: ToolDef = {
       onComplete: {
         type: "string",
         description:
-          "Gateway URI to send results to when run completes (isolated mode only)",
+          "DEPRECATED — ignored. Only ever fired for the removed isolated target; an agent: run 'completes' on delivery, before the agent has started.",
       },
       notify: {
         type: "string",
@@ -343,7 +351,13 @@ export const TOOL_CREATE_SCHEDULE: ToolDef = {
         default: true,
       },
     },
-    required: ["name", "schedule", "target", "prompt", "workingDirectory"],
+    // workingDirectory is NOT required — it is deprecated and ignored. Leaving
+    // it here while the property description says DEPRECATED told a caller two
+    // contradictory things, and forced an agent to invent a value for a dead
+    // field (which the POST route then persisted verbatim). The channel server
+    // is the path autonomOS-spawned agents actually use, so this array is the
+    // contract they see.
+    required: ["name", "schedule", "target", "prompt"],
   },
 };
 
@@ -392,7 +406,10 @@ export const TOOL_UPDATE_SCHEDULE: ToolDef = {
       description: { type: "string", description: "New description" },
       timezone: { type: "string", description: "New timezone" },
       template: { type: "string", description: "New template" },
-      autonomous: { type: "boolean", description: "New autonomous mode" },
+      autonomous: {
+        type: "boolean",
+        description: "DEPRECATED — ignored. See create_schedule.",
+      },
       overlapPolicy: { type: "string", description: "New overlap policy" },
       onComplete: { type: "string", description: "New onComplete URI" },
       notify: { type: "string", description: "New notify policy" },
