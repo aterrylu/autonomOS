@@ -19,6 +19,8 @@
  *   AUTONOMOS_TOKEN       — auth token (optional)
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   AgentInfo,
   GatewayMessage,
@@ -31,11 +33,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-// The gateway now listens on a Unix socket, addressed as
+// The gateway listens on a Unix socket, addressed as
 // `ws+unix://<socketPath>:/ws/gateway`. Node's built-in global WebSocket (undici)
 // rejects that scheme outright ("expected a ws: or wss: url"); the `ws` package
 // supports it, splitting socketPath from request-path on the FIRST ':'. So this
 // import is load-bearing, not stylistic — do not drop back to the global.
+// (biome's import sorter keeps this comment with the line below.)
 import WebSocket from "ws";
 
 // Tool definitions are shared with the HTTP MCP server.
@@ -53,6 +56,41 @@ if (!SESSION_ID || !SERVER_URL) {
   );
   process.exit(1);
 }
+
+/**
+ * The per-agent token (ADR-055 follow-up), presented in the gateway `register`.
+ *
+ * Read from the per-session FILE `<configDir>/agent-tokens/<sessionId>`, a path
+ * derived from AUTONOMOS_CONFIG_DIR + AUTONOMOS_SESSION_ID — both non-secret env
+ * names every provider propagates (unlike AUTONOMOS_AGENT_TOKEN, which Gemini
+ * filters out of the MCP subprocess env, and which was world-readable argv for
+ * Codex). Falls back to the env var for a mixed-version window (a pre-follow-up
+ * server that still injected it), so a Claude/Codex agent spawned by an older
+ * server still registers.
+ */
+const AGENT_TOKEN = ((): string | undefined => {
+  const configDir = process.env.AUTONOMOS_CONFIG_DIR;
+  // Validate SESSION_ID inline before using it as a path segment. The server's
+  // write side already guards this (assertSafeSessionId in agentCredentials.ts),
+  // so today this is transitively safe — but this is a standalone bundled
+  // subprocess deriving a filesystem path from an env var it was handed, and it
+  // should not trust that the value is well-formed just because the current
+  // caller happens to be. A `/` or `..` here must never traverse out of the
+  // agent-tokens dir. Fail to the env fallback rather than read an escaped path.
+  const safeSession =
+    /^[A-Za-z0-9._-]+$/.test(SESSION_ID) && !SESSION_ID.includes("..");
+  if (configDir && safeSession) {
+    try {
+      return readFileSync(
+        join(configDir, "agent-tokens", SESSION_ID),
+        "utf8",
+      ).trim();
+    } catch {
+      // No file (older server, or already revoked) — fall back to env.
+    }
+  }
+  return process.env.AUTONOMOS_AGENT_TOKEN;
+})();
 
 // ── WebSocket connection to autonomOS server ──────────────────────
 
@@ -91,7 +129,7 @@ function connectToServer(): void {
       // Per-agent identity (ADR-055 PR B): prove we are this session, not just
       // asserting its id. Undefined only for a pre-PR-B server that didn't set
       // it — the gateway then rejects, which is correct for a new server.
-      agentToken: process.env.AUTONOMOS_AGENT_TOKEN,
+      agentToken: AGENT_TOKEN,
     };
     ws?.send(JSON.stringify(msg));
     process.stderr.write("autonomos-channel: connected to gateway\n");

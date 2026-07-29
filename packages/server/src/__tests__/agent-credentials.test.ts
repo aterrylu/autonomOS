@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import {
   _resetAgentCredentialsForTesting,
+  agentTokenFilePath,
   getAgentToken,
   mintAgentToken,
   revokeAgentToken,
+  sweepAgentTokenFiles,
   verifyAgentToken,
+  writeAgentTokenFile,
 } from "../agentCredentials.js";
+import {
+  _resetConfigDirForTesting,
+  _setConfigDirForTesting,
+} from "../configDir.js";
 
 /**
  * Per-agent credential store (ADR-055 PR B, layer 3).
@@ -80,5 +90,99 @@ describe("agent credentials", () => {
     assert.notEqual(before, after);
     assert.equal(verifyAgentToken("sess-i", before), false);
     assert.ok(verifyAgentToken("sess-i", after));
+  });
+});
+
+/**
+ * Per-session token FILE (ADR-055 follow-up) — the channel-server's delivery
+ * path. This is what fixes Gemini (its MCP subprocess env strips `*TOKEN*`) and
+ * keeps the Codex token off world-readable argv. The security-relevant facts:
+ * the file holds the SAME token the store minted, is mode 0600 (other users
+ * can't read it), lives under the config dir, resolves per-session, and is
+ * unlinked on revoke so a dead session leaves no secret on disk.
+ */
+describe("agent token file", () => {
+  let dir: string;
+
+  afterEach(() => {
+    _resetAgentCredentialsForTesting();
+    _resetConfigDirForTesting();
+  });
+
+  const isolate = () => {
+    dir = mkdtempSync(join(tmpdir(), "autonomos-tokenfile-"));
+    _setConfigDirForTesting(dir);
+  };
+
+  it("writes the minted token to <configDir>/agent-tokens/<sessionId>", () => {
+    isolate();
+    const path = writeAgentTokenFile("sess-file-a");
+    assert.equal(path, join(dir, "agent-tokens", "sess-file-a"));
+    // The file content must be exactly the token the store verifies against —
+    // this is the value the channel-server presents in its gateway register.
+    const onDisk = readFileSync(path, "utf8");
+    assert.ok(verifyAgentToken("sess-file-a", onDisk));
+    assert.equal(onDisk, getAgentToken("sess-file-a"));
+  });
+
+  it("writes the file mode 0600 (other users can't read it)", () => {
+    isolate();
+    const path = writeAgentTokenFile("sess-file-b");
+    // 0o777 masks off the type bits; the token must not be group/other readable.
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  });
+
+  it("is idempotent with a prior mint — file matches the hook-path token", () => {
+    isolate();
+    // buildBaseEnv mints for the hook curl before spawn writes the file; both
+    // must carry the same value or the hook and channel planes disagree.
+    const minted = mintAgentToken("sess-file-c");
+    const onDisk = readFileSync(writeAgentTokenFile("sess-file-c"), "utf8");
+    assert.equal(onDisk, minted);
+  });
+
+  it("revoke unlinks the file — no stale secret on disk", () => {
+    isolate();
+    const path = writeAgentTokenFile("sess-file-d");
+    assert.ok(existsSync(path));
+    revokeAgentToken("sess-file-d");
+    assert.equal(existsSync(path), false);
+  });
+
+  it("revoke of a session that never wrote a file does not throw", () => {
+    isolate();
+    mintAgentToken("sess-file-e");
+    // In-memory only (no channel server) — unlink is best-effort.
+    assert.doesNotThrow(() => revokeAgentToken("sess-file-e"));
+  });
+
+  it("rejects a sessionId that isn't a safe filename (path traversal)", () => {
+    isolate();
+    // sessionId is attacker-influenceable on the resume/adopt path and lands as
+    // a path segment — a `/` or `..` must fail loud, never traverse.
+    assert.throws(() => agentTokenFilePath("../escape"));
+    assert.throws(() => agentTokenFilePath("a/b"));
+    assert.throws(() => agentTokenFilePath("with space"));
+    // A normal UUID-shaped id is fine.
+    assert.doesNotThrow(() =>
+      agentTokenFilePath("6f1e2d3c-4b5a-6789-0abc-def012345678"),
+    );
+  });
+
+  it("boot sweep removes stale files a crash left behind", () => {
+    isolate();
+    // Two agents wrote files; the server crashed (no revoke). On the next boot
+    // sweepAgentTokenFiles() clears the dir before respawn re-writes fresh ones.
+    const p1 = writeAgentTokenFile("sess-stale-1");
+    const p2 = writeAgentTokenFile("sess-stale-2");
+    assert.ok(existsSync(p1) && existsSync(p2));
+    sweepAgentTokenFiles();
+    assert.equal(existsSync(p1), false);
+    assert.equal(existsSync(p2), false);
+  });
+
+  it("boot sweep on a never-written dir does not throw (first boot)", () => {
+    isolate();
+    assert.doesNotThrow(() => sweepAgentTokenFiles());
   });
 });

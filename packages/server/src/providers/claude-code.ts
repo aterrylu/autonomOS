@@ -12,7 +12,7 @@ import {
   type PtyHandle,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
-import { mintAgentToken } from "../agentCredentials.js";
+import { getConfigDir } from "../configDir.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
@@ -108,6 +108,10 @@ const RESERVED_ENV_KEYS = new Set([
   // Per-agent identity credential — a user-supplied override would let an agent
   // present a token for the wrong session (or a forged one).
   "AUTONOMOS_AGENT_TOKEN",
+  // Config dir locates the channel-server's per-session token file
+  // (<configDir>/agent-tokens/<sessionId>). Gemini's channel server inherits it
+  // from the agent env, so an override would repoint it at a bogus token file.
+  "AUTONOMOS_CONFIG_DIR",
 ]);
 
 export const claudeCodeProvider: AgentProvider = {
@@ -201,6 +205,9 @@ export const claudeCodeProvider: AgentProvider = {
                 AUTONOMOS_API_URL: options.apiUrl,
                 AUTONOMOS_SESSION_ID: options.sessionId,
                 AUTONOMOS_AGENT_NAME: options.agentName,
+                // CONFIG_DIR lets the channel server derive its per-agent token
+                // file path (<configDir>/agent-tokens/<sessionId>). See below.
+                AUTONOMOS_CONFIG_DIR: getConfigDir(),
                 // Forward the in-process auth token (from serverState, set at
                 // server boot in run.ts) rather than `process.env.AUTONOMOS_TOKEN`.
                 // resolveAuthToken() falls back to ~/.autonomos/token on disk,
@@ -209,11 +216,11 @@ export const claudeCodeProvider: AgentProvider = {
                 // would be undefined and the channel server would be rejected
                 // by the gateway's /ws/* auth.
                 AUTONOMOS_TOKEN: getAuthToken(),
-                // Per-agent identity (ADR-055 PR B): the channel server sends
-                // this in its gateway `register` so the gateway can reject a
-                // spoofed session id. Same token buildBaseEnv put in the agent
-                // env for hooks (mintAgentToken is idempotent per session).
-                AUTONOMOS_AGENT_TOKEN: mintAgentToken(options.sessionId),
+                // The per-agent token is NOT injected here (ADR-055 follow-up):
+                // the channel server reads it from the per-session file the
+                // server wrote at spawn. Uniform across providers — Gemini
+                // filters the token out of MCP env, Codex would expose it in
+                // world-readable argv; the file avoids both.
               },
             },
           },

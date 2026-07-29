@@ -19,7 +19,7 @@ import {
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
 import { getControlSocketPath } from "../internalSocket.js";
-import { getServerPort } from "../serverState.js";
+import { getAuthToken, getServerPort } from "../serverState.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -234,28 +234,46 @@ export function writeGeminiSettings(channelServerScript: string): void {
       autonomos: {
         command: "node",
         args: [channelServerScript],
-        // KNOWN GAP (ADR-055 PR B), verified empirically against main: Gemini's
-        // channel-server CANNOT authenticate to the gateway, so send() and the
-        // org tools are unavailable for Gemini agents. Two causes, both
-        // pre-existing (this is NOT a PR B regression — confirmed on main):
-        //   1. Gemini filters the env it passes to an MCP subprocess down to a
-        //      curated allowlist that EXCLUDES both AUTONOMOS_TOKEN (global) and
-        //      AUTONOMOS_AGENT_TOKEN (per-agent). So the per-session identity
-        //      that reaches claude/codex via env simply does not arrive here.
-        //   2. This is a WRITE-ONCE SHARED file (one for all Gemini agents), so
-        //      it cannot carry a per-session token even if we wanted to.
-        // Do NOT "fix" this by adding AUTONOMOS_AGENT_TOKEN to this env block —
-        // Gemini strips it, and a per-session value can't live in a shared file.
-        // Gemini HOOK identity DOES work (the hook curl runs in Gemini's own
-        // shell env, which has the token). The real fix for outbound is a
-        // per-session token FILE keyed by session id (SESSION_ID + CONFIG_DIR +
-        // INTERNAL_SOCKET all DO propagate here, so the channel-server could read
-        // it) — filed as a follow-up. Until then, the hoisted
-        // scheduleChannelServerCheck surfaces this as a dashboard SystemWarning
-        // per Gemini agent, so the gap is visible rather than silent.
+        // Token-delivery PRECONDITION for Gemini (ADR-055 follow-up) — NOT a
+        // working-outbound fix. Gemini filters the env it passes to an MCP
+        // subprocess down to a curated allowlist that EXCLUDES `*TOKEN*` names,
+        // so we cannot hand the channel server AUTONOMOS_AGENT_TOKEN directly.
+        // The server instead writes each agent's token to a 0600 file
+        // (<configDir>/agent-tokens/<sessionId>); the channel server reads it,
+        // deriving the path from CONFIG_DIR + SESSION_ID, both NON-secret names
+        // the filter lets through. Do NOT add AUTONOMOS_AGENT_TOKEN back here —
+        // Gemini strips it; the file is the delivery path. CONFIG_DIR is
+        // agent-invariant so it is set explicitly in this SHARED (write-once)
+        // settings file; SESSION_ID is per-process and reaches the channel server
+        // via Gemini's env passthrough from the agent process (buildBaseEnv sets
+        // it; non-`*TOKEN*`, so the allowlist passes it).
+        //
+        // AUTONOMOS_TOKEN (GLOBAL) authenticates the /ws/gateway UPGRADE itself:
+        // `requireAuth` gates the socket before the gateway ever sees a `register`,
+        // and the channel server presents it as the `?token=` query. Claude and
+        // Codex both inject it into their channel-server env; Gemini must too, or
+        // even a launched channel server would 401 before reaching register. It is
+        // agent-invariant, so unlike SESSION_ID it can live in this shared file;
+        // it is 0600, and getAuthToken() is populated (setAuthToken runs before
+        // writeGeminiSettings at boot). The per-AGENT token is the separate 0600
+        // FILE (read via CONFIG_DIR + SESSION_ID below), not this value.
+        //
+        // KNOWN OPEN GAP (verified by real-spawn QA, 2026-07-28): Gemini in this
+        // `-i` PTY mode does NOT launch the autonomos MCP channel-server subprocess
+        // AT ALL (ps shows the gemini process has no `dist.mjs` child), so it never
+        // dials the gateway and outbound `send()`/org tools remain unavailable —
+        // the SAME pre-existing gap as before this change, for a DEEPER reason than
+        // credential delivery. This wiring makes BOTH tokens available once that
+        // launch gap is fixed; it does not itself make Gemini outbound work. (Also
+        // still unverified, part of the same follow-up: whether Gemini's `*TOKEN*`
+        // env filter strips these EXPLICIT mcpServers.env values too, not just
+        // inherited env — the ADR-055 finding was about inherited env.) Gemini HOOK
+        // identity is unaffected and works (inbound/status). See agentCredentials.ts.
         env: {
           AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
           AUTONOMOS_API_URL: apiUrl,
+          AUTONOMOS_CONFIG_DIR,
+          AUTONOMOS_TOKEN: getAuthToken(),
         },
       },
     },

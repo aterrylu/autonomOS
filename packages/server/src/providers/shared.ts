@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { mintAgentToken } from "../agentCredentials.js";
+import { getConfigDir } from "../configDir.js";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
 import {
   assertSpawnReady,
@@ -189,21 +190,19 @@ export function buildBaseEnv(
   env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
-  // Per-agent identity (ADR-055 PR B). HOOK_CMD sends this as X-Agent-Token so
-  // hook ingest can verify the POST is for THIS agent's own session. Referenced
-  // as ${AUTONOMOS_AGENT_TOKEN} in the (unexpanded) curl template, so on the
-  // HOOK path the value lives only in env — never in the process argv a `ps`
-  // would show.
-  //
-  // ARGV CAVEAT (provider-specific): buildArgs injects the same token into the
-  // channel-server env for the gateway register (mintOrGet is idempotent per
-  // session). For Claude that goes in the `--mcp-config` JSON, redacted in
-  // logs; for the CODEX daemon it is a literal `-c ...AUTONOMOS_AGENT_TOKEN=`
-  // flag, so it DOES appear in that process's argv (`/proc/<pid>/cmdline`,
-  // world-readable on default Linux) — same as the global AUTONOMOS_TOKEN has
-  // always been. The server LOG is scrubbed (see redactArgForLog); the argv
-  // exposure is real and documented in ADR-055's honest-scope section. So this
-  // is "env-only for the hook path", not "env-only everywhere".
+  // Set the config dir explicitly (getConfigDir() defaults to ~/.autonomos when
+  // AUTONOMOS_CONFIG_DIR is unset, which is the prod case). The channel-server
+  // needs it — with AUTONOMOS_SESSION_ID — to derive its token-file path
+  // (`<configDir>/agent-tokens/<sessionId>`), and both are non-secret names
+  // every provider propagates, unlike the token itself which Gemini filters.
+  env.AUTONOMOS_CONFIG_DIR = getConfigDir();
+  // Per-agent identity — HOOK path only. HOOK_CMD sends this as X-Agent-Token so
+  // hook ingest can verify the POST is for THIS agent's own session; the curl
+  // references ${AUTONOMOS_AGENT_TOKEN} unexpanded, so the value stays in env,
+  // never in argv. The CHANNEL-SERVER gets the SAME token by a different route —
+  // the per-session file (writeAgentTokenFile at spawn) — because env doesn't
+  // reach Gemini's MCP subprocess and argv is world-readable for Codex. One
+  // token, two delivery paths; see agentCredentials.ts.
   env.AUTONOMOS_AGENT_TOKEN = mintAgentToken(sessionId);
 
   return env;

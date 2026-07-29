@@ -29,7 +29,7 @@ import {
   type ResolvedSpawnOptions,
   type SidecarSpec,
 } from "@autonomos/core";
-import { mintAgentToken } from "../agentCredentials.js";
+import { getConfigDir } from "../configDir.js";
 import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
@@ -123,14 +123,18 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       `mcp_servers.autonomos.env.AUTONOMOS_SESSION_ID=${JSON.stringify(options.sessionId)}`,
       "-c",
       `mcp_servers.autonomos.env.AUTONOMOS_AGENT_NAME=${JSON.stringify(options.agentName)}`,
+      // CONFIG_DIR lets the channel server derive its per-session token-file path
+      // (<configDir>/agent-tokens/<sessionId>). The token itself is NOT passed as
+      // a `-c` flag: codex writes argv to world-readable /proc/<pid>/cmdline and
+      // logs it, so the token would leak. The channel server reads it from the
+      // 0600 file instead (ADR-055 follow-up).
+      "-c",
+      `mcp_servers.autonomos.env.AUTONOMOS_CONFIG_DIR=${JSON.stringify(getConfigDir())}`,
       // Forward the in-process auth token (server may have booted without
       // AUTONOMOS_TOKEN in env; reading process.env would leave it tokenless
       // and rejected by /ws/* auth).
       "-c",
       `mcp_servers.autonomos.env.AUTONOMOS_TOKEN=${JSON.stringify(getAuthToken())}`,
-      // Per-agent identity (ADR-055 PR B) — sent in the gateway register.
-      "-c",
-      `mcp_servers.autonomos.env.AUTONOMOS_AGENT_TOKEN=${JSON.stringify(mintAgentToken(options.sessionId))}`,
     );
   }
 

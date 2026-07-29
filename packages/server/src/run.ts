@@ -20,6 +20,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { sweepAgentTokenFiles } from "./agentCredentials.js";
 import { migrateIfNeeded } from "./agents/migrate.js";
 import {
   resumeActiveAgents,
@@ -474,6 +475,27 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       console.error(err instanceof Error ? (err.stack ?? err.message) : err);
       process.exit(3);
     }
+
+    // Clear stale per-agent token files a crash left behind (no markExited
+    // revoke), before any respawn re-writes them — the resume below re-mints +
+    // re-writes for every agent that actually comes back, so sweeping first
+    // makes the on-disk set match reality (ADR-055 follow-up). Best-effort.
+    //
+    // Placement is load-bearing, TWO constraints:
+    //   1. AFTER startInternalControlPlane() succeeds, never earlier. The socket
+    //      bind doubles as the cross-process mutual-exclusion guard — a second
+    //      server that loses the race process.exit(3)s *inside* that call. Sweep
+    //      before it and a doomed second server would wipe the LIVE server's
+    //      whole token dir on its way out, killing every live agent's outbound.
+    //   2. BEFORE the first `await` below (the gateway import). assertSpawnReady
+    //      passes the moment BOTH the port and this socket are set, so `POST
+    //      /api/agents` → spawnAgent → writeAgentTokenFile(agent.id) is live from
+    //      the bind onward. Any `await` here yields the loop to such a handler; a
+    //      token file written in that window would be swept out from under a fresh
+    //      agent, which (with the env fallback now gone) leaves it silently
+    //      outbound-dead. There is no `await` between the bind and this line, so
+    //      the window is closed — the loop cannot run a handler between them.
+    sweepAgentTokenFiles();
 
     // Initialize gateway (platform adapters, routing table).
     const { initGateway } = await import("./gateway/index.js");

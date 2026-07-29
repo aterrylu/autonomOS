@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 // packages/server/src/channel-server/index.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -43,8 +45,13 @@ var TOOL_CREATE_AGENT = {
       permissionMode: {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
-        description: "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit and the agent's template decides, or 'ask' if it has none \u2014 pass 'bypass' explicitly for full autonomy.",
-        default: "ask"
+        // NO `default` key. It would say "omitting this yields ask", which is
+        // false on every resume — omission PRESERVES the agent's current mode.
+        // A client that materializes an advertised default would then send
+        // `permissionMode: "ask"` explicitly on a resume and re-level a
+        // deliberately autonomous agent: the exact demotion this schema's own
+        // description tells it to avoid.
+        description: "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn \u2014 pass 'bypass' explicitly for full autonomy."
       },
       template: {
         type: "string",
@@ -405,6 +412,20 @@ if (!SESSION_ID || !SERVER_URL) {
   );
   process.exit(1);
 }
+var AGENT_TOKEN = (() => {
+  const configDir = process.env.AUTONOMOS_CONFIG_DIR;
+  const safeSession = /^[A-Za-z0-9._-]+$/.test(SESSION_ID) && !SESSION_ID.includes("..");
+  if (configDir && safeSession) {
+    try {
+      return readFileSync(
+        join(configDir, "agent-tokens", SESSION_ID),
+        "utf8"
+      ).trim();
+    } catch {
+    }
+  }
+  return process.env.AUTONOMOS_AGENT_TOKEN;
+})();
 var ws = null;
 var reconnectDelay = 1e3;
 var MAX_RECONNECT_DELAY = 3e4;
@@ -429,7 +450,7 @@ function connectToServer() {
       // Per-agent identity (ADR-055 PR B): prove we are this session, not just
       // asserting its id. Undefined only for a pre-PR-B server that didn't set
       // it — the gateway then rejects, which is correct for a new server.
-      agentToken: process.env.AUTONOMOS_AGENT_TOKEN
+      agentToken: AGENT_TOKEN
     };
     ws?.send(JSON.stringify(msg));
     process.stderr.write("autonomos-channel: connected to gateway\n");
@@ -672,7 +693,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             // reattaches a managed record or adopts an external CC session.
             resumeSessionId,
             forkFromAgentId: forkFrom,
-            // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
+            // Pass through, INCLUDING undefined. /api/agents owns the
+            // fallback so it can prefer a resumed agent's own record over it —
+            // do not substitute a default here.
             permissionMode,
             appendSystemPrompt: systemPrompt,
             template,
