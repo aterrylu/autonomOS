@@ -19,11 +19,6 @@
  *   AUTONOMOS_TOKEN       — auth token (optional)
  */
 
-// The gateway now listens on a Unix socket, addressed as
-// `ws+unix://<socketPath>:/ws/gateway`. Node's built-in global WebSocket (undici)
-// rejects that scheme outright ("expected a ws: or wss: url"); the `ws` package
-// supports it, splitting socketPath from request-path on the FIRST ':'. So this
-// import is load-bearing, not stylistic — do not drop back to the global.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -38,6 +33,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+// The gateway listens on a Unix socket, addressed as
+// `ws+unix://<socketPath>:/ws/gateway`. Node's built-in global WebSocket (undici)
+// rejects that scheme outright ("expected a ws: or wss: url"); the `ws` package
+// supports it, splitting socketPath from request-path on the FIRST ':'. So this
+// import is load-bearing, not stylistic — do not drop back to the global.
+// (biome's import sorter keeps this comment with the line below.)
 import WebSocket from "ws";
 
 // Tool definitions are shared with the HTTP MCP server.

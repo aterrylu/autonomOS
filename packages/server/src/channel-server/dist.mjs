@@ -45,8 +45,13 @@ var TOOL_CREATE_AGENT = {
       permissionMode: {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
-        description: "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit and the agent's template decides, or 'ask' if it has none \u2014 pass 'bypass' explicitly for full autonomy.",
-        default: "ask"
+        // NO `default` key. It would say "omitting this yields ask", which is
+        // false on every resume — omission PRESERVES the agent's current mode.
+        // A client that materializes an advertised default would then send
+        // `permissionMode: "ask"` explicitly on a resume and re-level a
+        // deliberately autonomous agent: the exact demotion this schema's own
+        // description tells it to avoid.
+        description: "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn \u2014 pass 'bypass' explicitly for full autonomy."
       },
       template: {
         type: "string",
@@ -688,7 +693,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             // reattaches a managed record or adopts an external CC session.
             resumeSessionId,
             forkFromAgentId: forkFrom,
-            // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
+            // Pass through, INCLUDING undefined. /api/agents owns the
+            // fallback so it can prefer a resumed agent's own record over it —
+            // do not substitute a default here.
             permissionMode,
             appendSystemPrompt: systemPrompt,
             template,
