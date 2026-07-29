@@ -114,9 +114,14 @@ export function initScheduler(): void {
 
   // Surface schedules still pointing at the removed `isolated` target. They
   // load fine (nothing validates on read) and stay editable, but they can
-  // never run again. Reported here rather than left to fail on the next fire,
-  // because a DISABLED one has no next fire — it would sit in the panel
-  // looking dormant rather than broken, with no way to tell the difference.
+  // never run again.
+  //
+  // Reported here rather than left to fail on the next fire, because a
+  // DISABLED one has no next fire — nothing would ever mention it. Scoped
+  // honestly: this is a log line, and it lands in $configDir/logs/autonomos.log
+  // rather than the UI. SchedulesPanel still renders `isolated` as ordinary
+  // target text, so the panel alone still cannot distinguish dormant from
+  // broken. Surfacing it there is a separate change.
   const orphaned = names.filter((n) => schedules[n].target === "isolated");
   if (orphaned.length > 0) {
     console.warn(
@@ -508,46 +513,8 @@ function onRunCompleted(name: string, result: RunResult): void {
     saveSchedule(name, schedule);
   }
 
-  // Deliberately still gated on a target that no longer exists, i.e. dead —
-  // and kept that way rather than "fixed" by un-gating it.
-  //
-  // The gate looks arbitrary but is load-bearing. For the removed `isolated`
-  // target a run completed when the child process exited, so "completed:
-  // success" meant the task had RUN. For an `agent:` target the run completes
-  // when the prompt is DELIVERED (see executeAgentSend: success == routeMessage
-  // returned no error), while the agent has not started yet. Firing onComplete
-  // there would announce a completion that has not happened.
-  //
-  // So the field is deprecated with the executor it belonged to, rather than
-  // rehomed onto semantics it does not fit. Reporting real agent-side
-  // completion would need the agent to signal back — a different feature.
-  if (schedule?.onComplete && schedule.target === "isolated") {
-    deliverOnComplete(schedule.onComplete, name, result).catch((err) => {
-      console.error(
-        `[scheduler] onComplete delivery failed for "${name}":`,
-        err instanceof Error ? err.message : err,
-      );
-    });
-  }
-
   pruneRuns(name);
   drainQueue();
-}
-
-async function deliverOnComplete(
-  uri: string,
-  name: string,
-  result: RunResult,
-): Promise<void> {
-  let routeMsg: RouteMessageFn;
-  if (_routeMessageOverride) {
-    routeMsg = _routeMessageOverride;
-  } else {
-    const { routeMessage } = await import("./gateway/router.js");
-    routeMsg = routeMessage;
-  }
-  const summary = `Schedule "${name}" completed: ${result.status}${result.error ? ` — ${result.error}` : ""}`;
-  await routeMsg(uri, summary, "scheduler");
 }
 
 function drainQueue(): void {

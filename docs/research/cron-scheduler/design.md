@@ -1,8 +1,26 @@
 # Cron Scheduler Design Document
 
 **Date:** 2026-04-11
-**Status:** Design complete, ready for implementation
+**Status:** Implemented (ADR-026), then **partially superseded by ADR-062**
 **Author:** Terry Lu + design agent (collaborative session)
+
+> **⚠️ Superseded in part — read this before the schemas below.**
+>
+> This document describes **two** execution targets. Only `agent:<name>` still
+> exists. The `isolated` target (headless `claude -p`) was **removed in
+> ADR-062**: it spawned a child outside the `PermissionMode` system and passed
+> `--dangerously-skip-permissions` whenever `autonomous` wasn't explicitly
+> `false`, so a schedule created without that field ran with full autonomy.
+>
+> Consequently, every `"isolated"` below is historical, and four fields shown
+> here as live are now accepted-and-ignored no-ops: **`autonomous`**,
+> **`workingDirectory`** (shown as *required* — it is optional and unused),
+> **`template`**, and **`onComplete`**. `RunRecord.output` is no longer written.
+>
+> `docs/FEATURES.md` links here as the scheduler's design reference, so this
+> banner exists to stop a reader adopting a removed target from an otherwise
+> accurate document. Everything else — Croner engine, storage layout, overlap
+> policies, concurrency limits, catch-up — is unchanged and still current.
 
 ---
 

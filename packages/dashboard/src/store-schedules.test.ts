@@ -14,7 +14,7 @@ function resetStore() {
 const mockSchedule = {
   name: "test-sched",
   schedule: "0 9 * * 1-5",
-  target: "isolated",
+  target: "agent:worker",
   prompt: "Run tests",
   workingDirectory: "~/workspace",
   enabled: true,

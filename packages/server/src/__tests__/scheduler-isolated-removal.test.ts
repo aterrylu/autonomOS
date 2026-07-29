@@ -31,9 +31,13 @@ import type { Schedule, ScheduleConfig } from "@autonomos/core";
 const TEST_DIR = join(tmpdir(), `autonomos-isoremoval-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 
-const { createSchedule, getSchedule, validateScheduleInput } = await import(
-  "../schedules.js"
-);
+const {
+  createSchedule,
+  getRecentRuns,
+  getSchedule,
+  updateSchedule,
+  validateScheduleInput,
+} = await import("../schedules.js");
 const {
   initScheduler,
   runScheduleNow,
@@ -131,6 +135,15 @@ describe("the isolated target is removed", () => {
 
     const after = getSchedule("legacy-iso");
     assert.equal(after?.state.lastRunStatus, "failure");
+
+    // The status alone proved nothing about the MESSAGE, which is the whole
+    // point of this test's name — the operator-facing payload is the only
+    // thing that tells them what to change. Asserted here so degrading it back
+    // to a bare "Unknown target" fails.
+    const [run] = getRecentRuns("legacy-iso", 1);
+    assert.ok(run, "a run record must exist");
+    assert.match(run.error ?? "", /removed/);
+    assert.match(run.error ?? "", /agent:<name>/);
   });
 
   it("warns ONCE at startup about schedules that can no longer run", () => {
@@ -177,10 +190,42 @@ describe("deprecated schedule fields are accepted and ignored", () => {
     createSchedule(config);
     const stored = getSchedule("legacy-fields");
     assert.ok(stored);
-    // Stored verbatim rather than stripped — a round-trip through the API
-    // must not silently mutate an operator's file.
+    // Stored verbatim rather than stripped — a round-trip must not silently
+    // mutate an operator's file. All four, not a sample: dropping any one of
+    // them is a distinct way to lose their data.
     assert.equal(stored.autonomous, true);
+    assert.equal(stored.workingDirectory, "~/workspace");
+    assert.equal(stored.template, "some-template");
+    assert.equal(stored.onComplete, "agent://reporter");
     assert.equal(stored.target, "agent:worker");
+  });
+
+  it("a PARTIAL update preserves every deprecated field", () => {
+    // The data-loss scenario this whole deprecation exists to prevent, and the
+    // one the create-path test above does NOT cover: editing an unrelated
+    // field must not drop the ignored ones. `updateSchedule` merges onto the
+    // existing record, so wiping them here would be silent — the operator sees
+    // a successful edit.
+    createSchedule(
+      makeConfig({
+        name: "partial-update",
+        autonomous: true,
+        workingDirectory: "~/workspace",
+        template: "some-template",
+        onComplete: "agent://reporter",
+      }),
+    );
+
+    updateSchedule("partial-update", { description: "edited" });
+
+    const after = getSchedule("partial-update");
+    assert.ok(after);
+    assert.equal(after.description, "edited");
+    assert.equal(after.autonomous, true, "autonomous must survive the edit");
+    assert.equal(after.workingDirectory, "~/workspace");
+    assert.equal(after.template, "some-template");
+    assert.equal(after.onComplete, "agent://reporter");
+    assert.equal(after.target, "agent:worker");
   });
 
   it("`autonomous: true` grants nothing — the run is still a gateway message", () => {

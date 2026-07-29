@@ -259,22 +259,22 @@ describe("scheduler engine", () => {
 
       assert.equal(result.error, undefined);
       assert.ok(capturedArgs);
-      const isoArgs = capturedArgs as { name: string; schedule: Schedule };
-      assert.equal(isoArgs.name, "agent-dispatch");
-      assert.equal(isoArgs.schedule.prompt, "Run tests please");
-      assert.equal(isoArgs.schedule.target, "agent:worker");
+      const dispatchArgs = capturedArgs as { name: string; schedule: Schedule };
+      assert.equal(dispatchArgs.name, "agent-dispatch");
+      assert.equal(dispatchArgs.schedule.prompt, "Run tests please");
+      assert.equal(dispatchArgs.schedule.target, "agent:worker");
     });
 
     it("records success in run history", () => {
-      createSchedule(makeSchedule({ name: "iso-success" }));
+      createSchedule(makeSchedule({ name: "agent-success" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "success", output: "done" });
       });
 
       initScheduler();
-      runScheduleNow("iso-success");
+      runScheduleNow("agent-success");
 
-      const runs = getRecentRuns("iso-success", 10);
+      const runs = getRecentRuns("agent-success", 10);
       // Should have: running record + success record
       const successRun = runs.find((r) => r.status === "success");
       assert.ok(successRun, "should have success record");
@@ -283,15 +283,15 @@ describe("scheduler engine", () => {
     });
 
     it("records failure in run history", () => {
-      createSchedule(makeSchedule({ name: "iso-fail" }));
+      createSchedule(makeSchedule({ name: "agent-fail" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "failure", error: "Exit code 1" });
       });
 
       initScheduler();
-      runScheduleNow("iso-fail");
+      runScheduleNow("agent-fail");
 
-      const runs = getRecentRuns("iso-fail", 10);
+      const runs = getRecentRuns("agent-fail", 10);
       const failRun = runs.find((r) => r.status === "failure");
       assert.ok(failRun);
       assert.equal(failRun!.error, "Exit code 1");

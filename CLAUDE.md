@@ -103,7 +103,7 @@ Native timer-based scheduling using Croner v10. Each enabled schedule gets its o
 
 **One execution mode: `agent:<name>`** — sends the prompt to a running agent via the gateway (`routeMessage`). A schedule fires a message; the agent does the work under **its own** `permissionMode`. A schedule cannot grant autonomy, and the target must be alive when it fires (a dead agent = a failed run until it's back).
 
-Note the completion semantics: a run is `success` as soon as the prompt is **delivered**, not when the agent finishes. That's why `onComplete` is deprecated rather than rehomed — it would announce a completion that hasn't happened.
+Note the completion semantics: a run is `success` as soon as the prompt is **delivered**, not when the agent finishes. That's why `onComplete` is deprecated rather than rehomed onto this target — it would announce a completion that hasn't happened. Its delivery code is deleted outright: left gated on the removed target it was still reachable for schedules already on disk, which is the population the deprecation exists to protect.
 
 **The `isolated` mode was REMOVED** (spawned a headless `claude -p`). It was the one execution path in the product outside `PermissionMode`, and it was fail-open in three places at once: the executor's `autonomous !== false`, the MCP schema's `.default(true)`, and the REST route's `: true`. Omitting the field granted `--dangerously-skip-permissions`. Fail-closed wasn't an option — measured, a headless run with no permission flag can't do write work at all, and "no flag" isn't even well-defined there (it inherits the user's `~/.claude/settings.json`). So the path went instead of the default flipping.
 

@@ -130,6 +130,39 @@ describe("POST /api/schedules — validation", () => {
     });
   });
 
+  it("does NOT default `autonomous` to true — the old fail-open", async () => {
+    // One of the three fail-open sites ADR-062 names (the others were the
+    // executor's `!== false` and the MCP schema's `.default(true)`). The field
+    // is ignored now, but synthesizing `true` for a caller who said nothing
+    // still misreports what they asked for when the record is read back — and
+    // it is the shape that would matter again if anything ever read it.
+    const name = `no-autodefault-${randomUUID().slice(0, 8)}`;
+    const { status } = await req(createApp(), "POST", "/api/schedules", {
+      ...validBody,
+      name,
+    });
+    assert.equal(status, 200);
+    assert.equal(
+      getSchedule(name)?.autonomous,
+      undefined,
+      "an omitted `autonomous` must stay omitted, not become true",
+    );
+  });
+
+  it("stores a supplied `workingDirectory` verbatim rather than dropping it", async () => {
+    // Deprecated and ignored is not the same as discarded. A round-trip
+    // through this endpoint must not silently delete an operator's value —
+    // they would only find out by diffing the file.
+    const name = `keeps-cwd-${randomUUID().slice(0, 8)}`;
+    const { status } = await req(createApp(), "POST", "/api/schedules", {
+      ...validBody,
+      name,
+      workingDirectory: "~/some/where",
+    });
+    assert.equal(status, 200);
+    assert.equal(getSchedule(name)?.workingDirectory, "~/some/where");
+  });
+
   it("rejects invalid target format", async () => {
     const { status, json } = await req(createApp(), "POST", "/api/schedules", {
       ...validBody,

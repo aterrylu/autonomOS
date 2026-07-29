@@ -1,14 +1,7 @@
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -48,37 +41,6 @@ function makeConfig(overrides: Partial<ScheduleConfig> = {}): ScheduleConfig {
     ...overrides,
   };
 }
-
-/**
- * Creates a fake ChildProcess that emits events like a real one.
- * Tests can control when it emits close/error to simulate behavior.
- */
-function createFakeChild(): EventEmitter & {
-  stdout: EventEmitter;
-  stderr: EventEmitter;
-  killed: boolean;
-  kill: (signal?: string) => boolean;
-  pid: number;
-} {
-  const child = new EventEmitter() as EventEmitter & {
-    stdout: EventEmitter;
-    stderr: EventEmitter;
-    killed: boolean;
-    kill: (signal?: string) => boolean;
-    pid: number;
-  };
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
-  child.killed = false;
-  child.pid = 12345;
-  child.kill = () => {
-    child.killed = true;
-    return true;
-  };
-  return child;
-}
-
-// ── Isolated executor tests ────────────────────────────────────
 
 describe("executeAgentSend (real code path)", () => {
   beforeEach(() => {

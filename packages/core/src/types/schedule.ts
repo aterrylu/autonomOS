@@ -71,12 +71,18 @@ export interface ScheduleConfig {
   autonomous?: boolean;
 
   overlapPolicy?: OverlapPolicy;
-  /** @deprecated No effect. Fired only for `isolated` runs, where "completed"
-   *  meant the child process had exited. For an `agent:` target a run
-   *  completes when the prompt is DELIVERED — the agent has not started — so
-   *  firing here would announce a completion that has not happened. Reporting
-   *  real agent-side completion needs the agent to signal back, which is a
-   *  different feature. See the scheduler ADR. */
+  /** @deprecated No effect — the delivery code is deleted, not merely gated.
+   *
+   *  It fired only for `isolated` runs, where "completed" meant the child
+   *  process had exited. For an `agent:` target a run completes when the prompt
+   *  is DELIVERED — the agent has not started — so rehoming it would announce a
+   *  completion that has not happened. Reporting real agent-side completion
+   *  needs the agent to signal back; that is a different feature.
+   *
+   *  Left gated on the dead target instead of deleted, it was NOT inert: an
+   *  `isolated` schedule still on disk satisfied the gate, so an enabled
+   *  recurring one would have fired a gateway message on every tick forever
+   *  while five other places called the field a no-op. See ADR-062. */
   onComplete?: string;
   notify?: NotifyPolicy;
   enabled: boolean;
