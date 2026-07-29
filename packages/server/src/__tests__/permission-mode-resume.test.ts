@@ -24,7 +24,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -43,12 +43,39 @@ interface AgentRecord {
 }
 
 /**
+ * Full argv of `pid`, or "" if it's gone.
+ *
+ * Two ways argv gets silently shortened, either of which makes a matching
+ * process look like no process at all:
+ *   - `ps` renders to terminal width and falls back to 80 columns when stdout
+ *     isn't a tty (it never is here). `-ww` removes the limit.
+ *   - `--append-system-prompt` contains newlines, so line-based parsing keeps
+ *     only the first line. Flatten before matching.
+ *
+ * /proc is preferred where it exists: the kernel's own copy, no formatting
+ * layer to truncate. (Neither trap is what broke this suite on CI — see
+ * `waitForProcessMode` — but both are real and cheap to close.)
+ */
+function argvOf(pid: string): string {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, "utf-8").replace(/\0/g, " ");
+  } catch {
+    // Not Linux (or the process exited) — fall back to ps, unrestricted width.
+  }
+  try {
+    return execFileSync("ps", ["-ww", "-p", pid, "-o", "command="], {
+      encoding: "utf-8",
+    }).replace(/\n/g, " ");
+  } catch {
+    return ""; // raced with exit
+  }
+}
+
+/**
  * The permission flags the live PTY for `agentId` is actually running with.
  *
- * Reads `ps` rather than trusting anything the server reports — the whole class
- * of bug here is the server's own view disagreeing with the process. argv is
- * flattened because `--append-system-prompt` contains newlines, which silently
- * truncates naive line-based parsing to the first line.
+ * Reads the OS rather than anything the server reports — the whole class of bug
+ * here is the server's own view disagreeing with the process.
  */
 function processMode(agentId: string): "bypass" | "other" | "no-process" {
   let pids: string;
@@ -58,18 +85,40 @@ function processMode(agentId: string): "bypass" | "other" | "no-process" {
     return "no-process"; // pgrep exits 1 when nothing matches
   }
   for (const pid of pids.split("\n").filter(Boolean)) {
-    let argv: string;
-    try {
-      argv = execFileSync("ps", ["-p", pid, "-o", "command="], {
-        encoding: "utf-8",
-      }).replace(/\n/g, " ");
-    } catch {
-      continue; // raced with exit
-    }
+    const argv = argvOf(pid);
     if (!argv.includes(agentId)) continue;
     return argv.includes("--dangerously-skip-permissions") ? "bypass" : "other";
   }
   return "no-process";
+}
+
+/**
+ * Poll until `agentId`'s PTY reports `expected`, then assert it.
+ *
+ * A fixed sleep is not good enough here and CI proved it: `restart-all` kills
+ * every PTY and respawns them one at a time, each doing binary resolution, a
+ * resumability probe and a PTY spawn. On a loaded runner two agents took longer
+ * than a 10s wait, so the argv check ran against a process that had not come
+ * back yet and read `no-process` — a real timing artifact, NOT a permission
+ * defect (the record assertions in the same test passed).
+ *
+ * Polling also keeps the failure honest: on timeout it reports what was
+ * actually observed, so a genuine wrong-mode failure can never be mistaken for
+ * a slow respawn.
+ */
+async function waitForProcessMode(
+  agentId: string,
+  expected: "bypass" | "other",
+  label: string,
+  timeoutMs = 45_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let seen = processMode(agentId);
+  while (seen !== expected && Date.now() < deadline) {
+    await sleep(1000);
+    seen = processMode(agentId);
+  }
+  assert.equal(seen, expected, `${label} (observed "${seen}")`);
 }
 
 describe("permission mode — process and record agree across a resume", {
@@ -133,10 +182,10 @@ describe("permission mode — process and record agree across a resume", {
       "bypass",
       "a resume that says nothing about permissions must not re-level the agent",
     );
-    assert.equal(
-      processMode(agent.id),
+    await waitForProcessMode(
+      agent.id,
       "bypass",
-      "and the process must match the record it kept",
+      "the process must match the record it kept",
     );
   });
 
@@ -158,8 +207,8 @@ describe("permission mode — process and record agree across a resume", {
     await sleep(5000);
 
     // Before the fix this was the divergence: process bypass, record ask.
-    assert.equal(
-      processMode(agent.id),
+    await waitForProcessMode(
+      agent.id,
       "bypass",
       "the explicit mode must reach the argv",
     );
@@ -176,7 +225,7 @@ describe("permission mode — process and record agree across a resume", {
       permissionMode: "bypass",
     });
     await sleep(4000);
-    assert.equal(processMode(agent.id), "bypass");
+    await waitForProcessMode(agent.id, "bypass", "fresh bypass spawn argv");
     assert.equal(await recordedMode(agent.id), "bypass");
 
     const { body: all } = await authedJson<AgentRecord[]>(
@@ -201,8 +250,8 @@ describe("permission mode — process and record agree across a resume", {
     });
     await sleep(4000);
     assert.equal(await recordedMode(agent.id), "ask");
-    assert.equal(
-      processMode(agent.id),
+    await waitForProcessMode(
+      agent.id,
       "other",
       "ask must emit no skip-permissions flag",
     );
@@ -288,8 +337,17 @@ describe("restart-all preserves per-agent permission modes", {
       "restart-all must not DEMOTE a deliberately autonomous agent",
     );
     // Records agreeing with themselves is not enough — check the argv the
-    // respawned processes actually carry.
-    assert.equal(processMode(autonomous.id), "bypass");
-    assert.equal(processMode(supervised.id), "other");
+    // respawned processes actually carry. Polled, because respawning a whole
+    // fleet is slower than any fixed wait worth hard-coding.
+    await waitForProcessMode(
+      autonomous.id,
+      "bypass",
+      "the respawned autonomous agent must still carry skip-permissions",
+    );
+    await waitForProcessMode(
+      supervised.id,
+      "other",
+      "the respawned supervised agent must still carry no permission flag",
+    );
   });
 });
