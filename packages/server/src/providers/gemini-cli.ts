@@ -18,6 +18,8 @@ import {
   type PermissionMode,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
+import { getControlSocketPath } from "../internalSocket.js";
+import { getServerPort } from "../serverState.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -187,8 +189,15 @@ export const geminiCliProvider: AgentProvider = {
 
 /**
  * Write the shared Gemini settings file (~/.autonomos/gemini-settings.json).
- * Called on server startup. Contains hooks + MCP config, shared across all
- * Gemini sessions. Session differentiation via AUTONOMOS_SESSION_ID env var.
+ * Contains hooks + MCP config, shared across all Gemini sessions; session
+ * differentiation is via the AUTONOMOS_SESSION_ID env var.
+ *
+ * MUST be called AFTER the public port and the control socket are both bound
+ * (see run.ts armRuntimeInits) — unlike claude-code/codex, which build per-spawn
+ * args, Gemini's MCP endpoint lives in this write-once file, so it can only be
+ * correct once both planes exist. Reading getServerPort() before setServerPort()
+ * (the old `process.env.PORT || "3000"` fallback) is exactly the bug that baked
+ * `localhost:3000` into every Gemini agent's URLs regardless of the real port.
  */
 export function writeGeminiSettings(channelServerScript: string): void {
   if (!existsSync(channelServerScript)) {
@@ -198,7 +207,10 @@ export function writeGeminiSettings(channelServerScript: string): void {
     );
   }
 
-  const port = process.env.PORT || "3000";
+  // Gateway → internal socket (ws+unix); REST base → public port. Both read from
+  // serverState, which is why this must run after both are published.
+  const socketPath = getControlSocketPath();
+  const apiUrl = `http://localhost:${getServerPort()}`;
 
   const hookEntry = (timeout = 3000) => ({
     hooks: [{ type: "command", command: HOOK_CMD, timeout }],
@@ -222,8 +234,28 @@ export function writeGeminiSettings(channelServerScript: string): void {
       autonomos: {
         command: "node",
         args: [channelServerScript],
+        // KNOWN GAP (ADR-055 PR B), verified empirically against main: Gemini's
+        // channel-server CANNOT authenticate to the gateway, so send() and the
+        // org tools are unavailable for Gemini agents. Two causes, both
+        // pre-existing (this is NOT a PR B regression — confirmed on main):
+        //   1. Gemini filters the env it passes to an MCP subprocess down to a
+        //      curated allowlist that EXCLUDES both AUTONOMOS_TOKEN (global) and
+        //      AUTONOMOS_AGENT_TOKEN (per-agent). So the per-session identity
+        //      that reaches claude/codex via env simply does not arrive here.
+        //   2. This is a WRITE-ONCE SHARED file (one for all Gemini agents), so
+        //      it cannot carry a per-session token even if we wanted to.
+        // Do NOT "fix" this by adding AUTONOMOS_AGENT_TOKEN to this env block —
+        // Gemini strips it, and a per-session value can't live in a shared file.
+        // Gemini HOOK identity DOES work (the hook curl runs in Gemini's own
+        // shell env, which has the token). The real fix for outbound is a
+        // per-session token FILE keyed by session id (SESSION_ID + CONFIG_DIR +
+        // INTERNAL_SOCKET all DO propagate here, so the channel-server could read
+        // it) — filed as a follow-up. Until then, the hoisted
+        // scheduleChannelServerCheck surfaces this as a dashboard SystemWarning
+        // per Gemini agent, so the gap is visible rather than silent.
         env: {
-          AUTONOMOS_SERVER_URL: `ws://localhost:${port}/ws/gateway`,
+          AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
+          AUTONOMOS_API_URL: apiUrl,
         },
       },
     },

@@ -182,17 +182,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     }
   }
 
-  // Write Gemini CLI settings file (hooks + MCP config) if Gemini is installed
-  if (isProviderInstalled("gemini-cli")) {
-    try {
-      writeGeminiSettings(CHANNEL_SERVER_SCRIPT);
-    } catch (err) {
-      console.warn(
-        "[gemini-cli] Failed to write settings — Gemini agents will launch without hooks/MCP:",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
+  // NOTE: Gemini settings are written later, inside armRuntimeInits, once the
+  // port and control socket are both bound (ADR-055 PR B). Writing them here —
+  // before either exists — is what baked a wrong URL into every Gemini agent.
 
   // Run sessions.json → per-file agents migration if needed.
   // MUST happen before resumeActiveAgents() reads from the new layout.
@@ -224,11 +216,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // The internal control plane (ADR-055). A SEPARATE Hono app served over a
   // Unix domain socket rather than the public TCP listener, so the routes that
-  // exist for autonomOS's own processes — `/mcp` today, `/api/hooks` alongside
-  // it — are simply not reachable from the network. Not "reachable but
-  // rejected": there is no port to connect to. The public listener below keeps
-  // only the browser surface.
+  // exist for autonomOS's own processes — `/mcp`, `/api/hooks`, and (PR B)
+  // `/ws/gateway` — are simply not reachable from the network. Not "reachable
+  // but rejected": there is no port to connect to. The public listener below
+  // keeps only the browser surface.
   const internalApp = new Hono<NodeEnv>();
+
+  // Per-app WebSocket closures for the internal listener. createNodeWebSocket
+  // returns per-app upgrade/inject functions — calling it a second time for
+  // internalApp does NOT conflict with the public app's pair above (no shared
+  // singleton). iInject is wired to internalServer once it exists (below).
+  const { upgradeWebSocket: iUpgrade, injectWebSocket: iInject } =
+    createNodeWebSocket({ app: internalApp });
 
   // Serve dashboard static files in production.
   //
@@ -377,8 +376,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // WebSocket — terminal PTY streaming, gateway, agent deltas
   app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
-  app.get("/ws/gateway", gatewayRouter(upgradeWebSocket));
   app.get("/ws/agents", agentsWsRouter(upgradeWebSocket));
+
+  // /ws/gateway is the inter-agent messaging transport (ADR-055 PR B): it lives
+  // on the internal socket, NOT the public listener. The token check stays as
+  // defense in depth — same posture as /mcp: the socket answers "who may
+  // connect" (same-user on-box), the token still answers "prove it". Per-agent
+  // identity (a later layer) will replace the client-asserted register name.
+  internalApp.use("/ws/gateway", requireAuth);
+  internalApp.get("/ws/gateway", gatewayRouter(iUpgrade));
 
   if (isProduction && dashboardDist !== null) {
     console.log(
@@ -409,6 +415,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // server directly — it is a plain node http.Server, which listen()s on a
   // socket path just as happily as on a port.
   const internalServer = createAdaptorServer({ fetch: internalApp.fetch });
+  // Attach the internal app's WebSocket upgrade handler (for /ws/gateway) to the
+  // internal server. Wired before listen() so no upgrade can race an unhandled
+  // socket — the exact gap flagged in the PR A boot-ordering review.
+  iInject(internalServer);
   const controlSocketPath = getControlSocketPath();
 
   /**
@@ -468,6 +478,23 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // Initialize gateway (platform adapters, routing table).
     const { initGateway } = await import("./gateway/index.js");
     initGateway().catch((err) => console.error("[gateway] init failed:", err));
+
+    // Write the shared Gemini settings file HERE, not at top-of-boot: its MCP
+    // config bakes in the control-socket path AND the public REST base, so it
+    // can only be correct once both are published (setServerPort in the listen
+    // callback + the socket bind just above). Must precede resumeActiveAgents,
+    // which may resume a Gemini agent that reads this file. Best-effort — a
+    // failure never blocks boot (mirrors the old top-of-boot guard).
+    if (isProviderInstalled("gemini-cli")) {
+      try {
+        writeGeminiSettings(CHANNEL_SERVER_SCRIPT);
+      } catch (err) {
+        console.warn(
+          "[gemini-cli] Failed to write settings — Gemini agents will launch without hooks/MCP:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
 
     // Auto-resume agents whose persisted status is "running" — handles
     // all failure modes (cwd missing, provider gone, etc) by marking

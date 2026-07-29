@@ -98,6 +98,8 @@ describe("claudeCodeProvider.buildArgs — statusLine command path", () => {
       injectChannelServer: false,
       channelServerScript: CHANNEL_SERVER_SCRIPT,
       serverPort: "3101",
+      socketPath: "/tmp/aos-test/control.sock",
+      apiUrl: "http://localhost:3101",
     };
     const args = claudeCodeProvider.buildArgs(options);
     const settingsIdx = args.indexOf("--settings");

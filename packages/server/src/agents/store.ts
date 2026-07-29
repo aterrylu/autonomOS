@@ -36,6 +36,7 @@ import {
   permissionModeFromLegacy,
   type UUID,
 } from "@autonomos/core";
+import { revokeAgentToken } from "../agentCredentials.js";
 import { ensureConfigDir, getConfigDir } from "../configDir.js";
 
 // ── Paths ──────────────────────────────────────────────────────────
@@ -395,6 +396,12 @@ export function markExited(id: UUID, reason: ExitReason): Agent | undefined {
     return undefined;
   }
   if (existing.status === "exited" && existing.exitReason) return existing;
+  // Drop the per-agent credential (ADR-055 PR B). markExited is the single
+  // chokepoint every exit path funnels through (onExit, kill, resume-failure,
+  // restart-all), so revoking here guarantees a dead session's token can't be
+  // replayed. A resume re-mints a fresh one via buildEnv. In-memory only, so
+  // this never touches the durable record write below.
+  revokeAgentToken(id);
   return saveAgent({
     ...existing,
     status: "exited" as AgentStatus,

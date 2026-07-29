@@ -7,6 +7,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
+import WebSocket from "ws";
 
 // packages/server/src/mcp/tools.ts
 var TOOL_CREATE_AGENT = {
@@ -424,7 +425,11 @@ function connectToServer() {
     reconnectDelay = 1e3;
     const msg = {
       type: "register",
-      sessionId: SESSION_ID
+      sessionId: SESSION_ID,
+      // Per-agent identity (ADR-055 PR B): prove we are this session, not just
+      // asserting its id. Undefined only for a pre-PR-B server that didn't set
+      // it — the gateway then rejects, which is correct for a new server.
+      agentToken: process.env.AUTONOMOS_AGENT_TOKEN
     };
     ws?.send(JSON.stringify(msg));
     process.stderr.write("autonomos-channel: connected to gateway\n");
@@ -440,9 +445,16 @@ function connectToServer() {
 `);
     }
   });
-  ws.addEventListener("close", () => {
-    process.stderr.write("autonomos-channel: disconnected from gateway\n");
+  ws.addEventListener("close", (event) => {
     ws = null;
+    if (event.code === 1008) {
+      process.stderr.write(
+        `autonomos-channel: gateway REJECTED our per-agent credential (1008: ${event.reason || "policy violation"}) \u2014 NOT reconnecting; retrying cannot help. Check AUTONOMOS_AGENT_TOKEN injection.
+`
+      );
+      return;
+    }
+    process.stderr.write("autonomos-channel: disconnected from gateway\n");
     scheduleReconnect();
   });
   ws.addEventListener("error", (err) => {
@@ -515,7 +527,15 @@ var mcp = new Server(
   }
 );
 var SERVER_BASE = (() => {
-  const wsUrl = SERVER_URL;
+  const explicit = process.env.AUTONOMOS_API_URL;
+  if (explicit) return explicit.replace(/\/$/, "");
+  const wsUrl = SERVER_URL ?? "";
+  if (wsUrl.startsWith("ws+unix:")) {
+    process.stderr.write(
+      "autonomos-channel: AUTONOMOS_API_URL not set with a ws+unix gateway \u2014 create_agent/kill_agent/schedules will be unavailable\n"
+    );
+    return "";
+  }
   return wsUrl.replace("ws://", "http://").replace("wss://", "https://").replace(/\/ws\/gateway$/, "");
 })();
 function authHeaders(contentType) {

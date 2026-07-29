@@ -9,8 +9,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { mintAgentToken } from "../agentCredentials.js";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
-import { getInternalSocketPath, getServerPort } from "../serverState.js";
+import {
+  assertSpawnReady,
+  getInternalSocketPath,
+  getServerPort,
+} from "../serverState.js";
 
 // ── Base context injected into every spawned agent session ────
 export const BASE_CONTEXT = `You are running inside autonomOS — an agent orchestration platform that manages \
@@ -59,6 +64,10 @@ a managing agent (such as your manager or a superior) ends it.`;
 // own single-purpose AUTONOMOS_INTERNAL_SOCKET.
 export const HOOK_CMD =
   'curl -sf --max-time 2 -X POST -H "Content-Type: application/json"' +
+  // Per-agent identity (ADR-055 PR B): ${...} stays UNEXPANDED here — the agent's
+  // shell substitutes it at hook time from env, so the token is never in argv.
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
+  ' -H "X-Agent-Token: ${AUTONOMOS_AGENT_TOKEN}"' +
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
   ' --unix-socket "${AUTONOMOS_INTERNAL_SOCKET}"' +
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
@@ -162,14 +171,40 @@ export function buildBaseEnv(
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
 
-  // PUBLIC base URL. Consumed by statusline.mjs (/api/agents) — a read of the
-  // browser-facing surface, so it must stay an http:// URL on the real port.
-  env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
+  // Assert BOTH spawn preconditions up front, as one typed failure.
+  //
+  // This is the funnel every spawn path goes through, so it is the right place
+  // to decide what a too-early spawn sees. Relying on the individual getters
+  // below is fragile: getInternalSocketPath() throws the typed error (→ 503),
+  // getServerPort() throws a bare Error (→ 500), so the status would depend on
+  // which one happens to be missing AND on the order these two statements
+  // appear in. Asserting first makes the retryable 503 unconditional.
+  assertSpawnReady();
+
   // INTERNAL control plane. Consumed by HOOK_CMD's `curl --unix-socket`.
   // Single-purpose on purpose (ADR-055): the two planes no longer share a var.
   env.AUTONOMOS_INTERNAL_SOCKET = getInternalSocketPath();
+  // PUBLIC base URL. Consumed by statusline.mjs (/api/agents) — a read of the
+  // browser-facing surface, so it must stay an http:// URL on the real port.
+  env.AUTONOMOS_SERVER = `http://localhost:${getServerPort()}`;
   env.AUTONOMOS_SESSION_ID = sessionId;
   env.AUTONOMOS_AGENT_NAME = agentName;
+  // Per-agent identity (ADR-055 PR B). HOOK_CMD sends this as X-Agent-Token so
+  // hook ingest can verify the POST is for THIS agent's own session. Referenced
+  // as ${AUTONOMOS_AGENT_TOKEN} in the (unexpanded) curl template, so on the
+  // HOOK path the value lives only in env — never in the process argv a `ps`
+  // would show.
+  //
+  // ARGV CAVEAT (provider-specific): buildArgs injects the same token into the
+  // channel-server env for the gateway register (mintOrGet is idempotent per
+  // session). For Claude that goes in the `--mcp-config` JSON, redacted in
+  // logs; for the CODEX daemon it is a literal `-c ...AUTONOMOS_AGENT_TOKEN=`
+  // flag, so it DOES appear in that process's argv (`/proc/<pid>/cmdline`,
+  // world-readable on default Linux) — same as the global AUTONOMOS_TOKEN has
+  // always been. The server LOG is scrubbed (see redactArgForLog); the argv
+  // exposure is real and documented in ADR-055's honest-scope section. So this
+  // is "env-only for the hook path", not "env-only everywhere".
+  env.AUTONOMOS_AGENT_TOKEN = mintAgentToken(sessionId);
 
   return env;
 }

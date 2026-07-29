@@ -93,6 +93,38 @@ describe("control plane readiness", () => {
     assert.doesNotThrow(() => assertControlPlaneReady());
   });
 
+  // The typed 503 must not depend on WHICH precondition is missing.
+  //
+  // buildBaseEnv needs two things published at different points in boot, and the
+  // individual getters disagree about how they fail: getInternalSocketPath()
+  // throws the typed ControlPlaneNotReadyError (→ retryable 503), getServerPort()
+  // throws a bare Error (→ generic, non-retryable 500). So without a combined
+  // guard the caller's status depends on which value happens to be missing.
+  //
+  // The PORT-missing case is the one that actually regressed: it is the only
+  // state where the old code produced a 500. A test that leaves the SOCKET
+  // missing passes either way and proves nothing — verified by mutation, it
+  // survived reverting the very code it was meant to protect.
+  for (const [label, setup] of [
+    ["neither published", () => {}],
+    [
+      "socket published, port missing",
+      () => setInternalSocketPath("/tmp/s.sock"),
+    ],
+    ["port published, socket missing", () => setServerPort(53919)],
+  ] as const) {
+    it(`raises the retryable typed error when ${label}`, () => {
+      setAuthToken("test-token-1234567890abcdef");
+      setup();
+      assert.throws(
+        () => buildBaseEnv("session-id", "Agent1"),
+        ControlPlaneNotReadyError,
+        `spawning with ${label} must yield the TYPED error so the route answers ` +
+          `503 + Retry-After, not an opaque 500`,
+      );
+    });
+  }
+
   // The window is transient by nature; a readiness signal that never cleared
   // would be worse than the 500 it replaced.
   it("is not sticky — a reset-then-bind recovers", () => {

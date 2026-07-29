@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { mintAgentToken, verifyAgentToken } from "../agentCredentials.js";
 import {
   _resetCacheForTesting as _resetAgentsForTesting,
   buildAgent,
@@ -13,14 +14,20 @@ import {
   hooksReadRouter,
 } from "../routes/hooks.js";
 
-// Helper: simulate a hook event POST
+// Helper: simulate a hook event POST. Ingest now requires the per-agent token
+// (ADR-055 PR B); mint one for the session (idempotent) and send it, so these
+// status-derivation tests exercise the happy path. Reject cases are covered
+// separately below.
 async function postHookEvent(
   sessionId: string,
   event: Record<string, unknown>,
 ) {
   return hooksIngestRouter.request(`/${sessionId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Agent-Token": mintAgentToken(sessionId),
+    },
     body: JSON.stringify(event),
   });
 }
@@ -515,6 +522,68 @@ describe("hooks — notifications", () => {
     const bulk = await hooksReadRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread ?? 0, 0);
+  });
+});
+
+describe("hooks — per-agent token gate (ADR-055 PR B)", () => {
+  const sid = "test-hooktoken-001";
+
+  afterEach(() => {
+    clearAgentState(sid);
+    clearNotifications(sid);
+  });
+
+  it("rejects ingest with no X-Agent-Token", async () => {
+    mintAgentToken(sid); // session is known, but the request omits the token
+    const res = await hooksIngestRouter.request(`/${sid}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hook_event_name: "SessionStart" }),
+    });
+    assert.equal(res.status, 401);
+    // The forged/tokenless post must NOT have mutated status.
+    assert.equal(getAgentState(sid).status, "unknown");
+  });
+
+  it("rejects ingest with a wrong token", async () => {
+    mintAgentToken(sid);
+    const res = await hooksIngestRouter.request(`/${sid}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Agent-Token": "not-the-real-token",
+      },
+      body: JSON.stringify({ hook_event_name: "SessionStart" }),
+    });
+    assert.equal(res.status, 401);
+    assert.equal(getAgentState(sid).status, "unknown");
+  });
+
+  it("rejects ingest for a session that was never spawned (no minted token)", async () => {
+    // Fail-closed: an unknown session has no credential, so even a plausible
+    // token is refused — a stale hook from a dead/foreign session can't mutate
+    // state under its id.
+    const res = await hooksIngestRouter.request("/never-spawned-999", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Agent-Token": "anything",
+      },
+      body: JSON.stringify({ hook_event_name: "SessionStart" }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it("accepts ingest with the correct minted token", async () => {
+    const token = mintAgentToken(sid);
+    assert.ok(verifyAgentToken(sid, token));
+    const res = await hooksIngestRouter.request(`/${sid}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Agent-Token": token },
+      body: JSON.stringify({ hook_event_name: "SessionStart" }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(getAgentState(sid).status, "ready");
   });
 });
 

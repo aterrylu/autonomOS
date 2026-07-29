@@ -30,6 +30,9 @@ function baseOptions(
     injectChannelServer: false,
     channelServerScript: "/tmp/channel-server.mjs",
     serverPort: "53917",
+    socketPath: "/tmp/aos-test/control.sock",
+    apiUrl: "http://localhost:53917",
+
     ...overrides,
   };
 }

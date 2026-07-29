@@ -56,7 +56,10 @@ export interface AgentInfo {
 // Between autonomOS server and server:autonomos MCP channel subprocess
 
 export type GatewayWsMessage =
-  | { type: "register"; sessionId: string }
+  // agentToken: per-agent credential (ADR-055 PR B). The gateway verifies it
+  // maps to sessionId before trusting the registration; a register without a
+  // valid token is rejected, closing the "assert any name" spoof.
+  | { type: "register"; sessionId: string; agentToken?: string }
   | { type: "dashboard_connect" }
   | { type: "message"; payload: GatewayMessage }
   | { type: "send"; to: string; message: string; requestId: string }

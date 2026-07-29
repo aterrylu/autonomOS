@@ -12,6 +12,7 @@ import {
   type PtyHandle,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
+import { mintAgentToken } from "../agentCredentials.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
@@ -102,6 +103,9 @@ const RESERVED_ENV_KEYS = new Set([
   "AUTONOMOS_INTERNAL_SOCKET",
   "AUTONOMOS_SESSION_ID",
   "AUTONOMOS_AGENT_NAME",
+  // Per-agent identity credential — a user-supplied override would let an agent
+  // present a token for the wrong session (or a forged one).
+  "AUTONOMOS_AGENT_TOKEN",
 ]);
 
 export const claudeCodeProvider: AgentProvider = {
@@ -187,7 +191,12 @@ export const claudeCodeProvider: AgentProvider = {
               command: "node",
               args: [options.channelServerScript],
               env: {
-                AUTONOMOS_SERVER_URL: `ws://localhost:${options.serverPort}/ws/gateway`,
+                // Gateway on the internal socket (ADR-055 PR B). ws+unix://
+                // <socketPath>:/ws/gateway — the channel server uses the `ws`
+                // package, which parses this scheme (undici's global does not).
+                AUTONOMOS_SERVER_URL: `ws+unix://${options.socketPath}:/ws/gateway`,
+                // REST base stays PUBLIC (create_agent/kill_agent/schedules).
+                AUTONOMOS_API_URL: options.apiUrl,
                 AUTONOMOS_SESSION_ID: options.sessionId,
                 AUTONOMOS_AGENT_NAME: options.agentName,
                 // Forward the in-process auth token (from serverState, set at
@@ -198,6 +207,11 @@ export const claudeCodeProvider: AgentProvider = {
                 // would be undefined and the channel server would be rejected
                 // by the gateway's /ws/* auth.
                 AUTONOMOS_TOKEN: getAuthToken(),
+                // Per-agent identity (ADR-055 PR B): the channel server sends
+                // this in its gateway `register` so the gateway can reject a
+                // spoofed session id. Same token buildBaseEnv put in the agent
+                // env for hooks (mintAgentToken is idempotent per session).
+                AUTONOMOS_AGENT_TOKEN: mintAgentToken(options.sessionId),
               },
             },
           },

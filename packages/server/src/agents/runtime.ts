@@ -30,7 +30,11 @@ import {
 import { getProvider } from "../providers/index.js";
 import { pushSystemNotification } from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
-import { assertControlPlaneReady, getServerPort } from "../serverState.js";
+import {
+  assertControlPlaneReady,
+  getInternalSocketPath,
+  getServerPort,
+} from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
@@ -54,6 +58,23 @@ import {
 } from "./store.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
+
+/**
+ * Redact secrets before spawn args reach the server log.
+ *
+ * Two shapes carry credentials into argv: Claude's `{"mcpServers":...}` /
+ * `{"hooks":...}` JSON blobs (whole-arg redaction), and Codex's per-`-c` flags
+ * `mcp_servers.autonomos.env.AUTONOMOS_[AGENT_]TOKEN="<hex>"` (the token is a
+ * substring of the arg). The latter is why a blanket startsWith() check leaked:
+ * the global token has ridden Codex argv all along, and PR B's per-agent token
+ * joins it. On Linux `/proc/<pid>/cmdline` is world-readable, so this only
+ * scrubs the LOG — argv exposure itself is documented in ADR-055's honest scope.
+ */
+export function redactArgForLog(a: string): string {
+  if (a.startsWith('{"hooks"')) return '{"hooks":...}';
+  if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
+  return a.replace(/(AUTONOMOS_(?:AGENT_)?TOKEN=)("?)[^"\s]+("?)/g, "$1$2…$3");
+}
 
 /**
  * Append a PTY chunk to an attachment's scrollback buffer, evicting the oldest
@@ -138,7 +159,7 @@ function scheduleChannelServerCheck(
     );
     pushSystemNotification(
       agentId,
-      `${name} can't send messages — its autonomos channel server didn't start, so send() and the org tools are unavailable (it can still receive inbound). The channel-server script likely failed to launch.`,
+      `${name} can't send messages — its autonomos channel server never registered on the gateway (it either failed to launch or couldn't connect/authenticate), so send() and the org tools are unavailable. It can still receive inbound.`,
     );
   }, CHANNEL_SERVER_REGISTER_GRACE_MS);
   timer.unref?.();
@@ -686,6 +707,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     injectChannelServer: !!channels?.includes("server:autonomos"),
     channelServerScript: CHANNEL_SERVER_SCRIPT,
     serverPort: String(getServerPort()),
+    // ADR-055 PR B: the gateway is on the control socket; the REST base stays
+    // public. Both resolved here so providers inject single-purpose env vars
+    // instead of the channel server string-deriving one plane from the other.
+    socketPath: getInternalSocketPath(),
+    apiUrl: `http://localhost:${getServerPort()}`,
     // Set by the sidecar block below (when the provider declares buildSidecar)
     // so buildArgs can emit `--remote <endpoint>` against the daemon.
     sidecarEndpoint: undefined as string | undefined,
@@ -813,11 +839,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw err;
   }
 
-  const logArgs = args.map((a) => {
-    if (a.startsWith('{"hooks"')) return '{"hooks":...}';
-    if (a.startsWith('{"mcpServers"')) return '{"mcpServers":...}';
-    return a;
-  });
+  const logArgs = args.map(redactArgForLog);
   console.log(
     `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
       (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
@@ -893,13 +915,22 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         err instanceof Error ? err.message : err,
       );
     }
-    // Codex OUTBOUND (send + org tools) rides a channel-server MCP subprocess the
-    // daemon launches from `-c mcp_servers`. If that launch fails (bad node/script
-    // path, esp. in a bundled build) the model silently has no outbound while
-    // still receiving inbound. Verify it actually registered; warn if not.
-    if (resolved.injectChannelServer) {
-      scheduleChannelServerCheck(persisted.id, persisted.name, pty);
-    }
+  }
+
+  // OUTBOUND (send + org tools) rides a channel-server MCP subprocess that dials
+  // the gateway. If that launch/connect fails (bad node/script path, esp. in a
+  // bundled build; or the ws+unix dial failing — ADR-055 PR B) the agent
+  // silently has no outbound while still receiving inbound. Verify it actually
+  // registered; warn if not.
+  //
+  // Hoisted out of the `if (sidecar)` block above (ADR-055 PR B): the Codex-only
+  // scoping was an accident of nesting, not intent. EVERY agent with a channel
+  // server dials the gateway and can hit this failure — a Claude agent whose
+  // channel server never comes up is just as silently outbound-dead as a Codex
+  // one, and now that the dial is over a Unix socket the failure surface is
+  // wider. Gate purely on injectChannelServer.
+  if (resolved.injectChannelServer) {
+    scheduleChannelServerCheck(persisted.id, persisted.name, pty);
   }
 
   // Delivery receipt: a starting prompt travels only as a CLI arg, and a
