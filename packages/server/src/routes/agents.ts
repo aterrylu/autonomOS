@@ -11,6 +11,7 @@ import {
   type ExitReason,
   isExitReason,
   isPermissionMode,
+  type PermissionMode,
   type Provider,
   type UUID,
 } from "@autonomos/core";
@@ -111,6 +112,10 @@ interface AgentTreeApiNode {
   project?: string;
   status: string;
   provider: string;
+  /** Each agent's OWN resolved mode. Included because this endpoint is how
+   *  external MCP clients see the fleet, and omitting it left them unable to
+   *  tell a supervised agent from a fully autonomous one. */
+  permissionMode: PermissionMode;
   children: AgentTreeApiNode[];
 }
 
@@ -128,6 +133,7 @@ agentsRouter.get("/tree", (c) => {
       project: a.project,
       status: a.status,
       provider: a.provider,
+      permissionMode: a.permissionMode,
     }),
   });
   return c.json(tree);

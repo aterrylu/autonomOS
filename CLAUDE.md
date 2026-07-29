@@ -54,7 +54,18 @@ Every spawned session gets `--settings` with inline hook entries for all 13 Clau
 **Events:** SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, Notification, PermissionRequest, SubagentStart, SubagentStop, PreCompact, PostCompact, SessionEnd
 
 ### Session Spawning Flags
-Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), and optionally `--dangerously-skip-permissions` (autonomous mode), `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
+Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), the agent's permission-mode flags (see below), and optionally `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
+
+### Permission Modes (`core/src/types/permissions.ts`, ADR-045 + ADR-061)
+`PermissionMode` is `ask | auto | plan | bypass` — **our** vocabulary, mapped per provider. `PERMISSION_MODES` is the sole declaration and the type derives from it, so adding a mode there propagates to both Zod schemas by compile error.
+
+Two mappings are non-obvious and deliberate: **`ask` emits NO Claude flag** (it IS Claude Code's built-in behavior, and passing `--permission-mode default` perturbs TUI startup enough to break the usage-queue auto-Enter), and **`bypass` emits `--dangerously-skip-permissions` without `--permission-mode`**. Gemini's own flag value for ask-before-acting is the word `default` — an our-name → their-name translation, not an identity.
+
+**One agent, one mode, one source.** `spawnAgent` resolves `params.permissionMode ?? DEFAULT_PERMISSION_MODE` **once**; the persisted record, the provider argv, and the reattach write-back all read that value. An explicit mode on a resume wins and is written to the record — before ADR-061, `markRunning` could not express a mode, so such a resume ran one mode while its record advertised another. `restart-all` / `/attach` send no body and respawn from each agent's own record, so they **cannot** elevate an agent.
+
+Persisted layers may still hold the pre-rename spelling `"default"`; every load boundary normalizes via `permissionModeFromStored`. The dashboard's Permission Mode control is a **browser-local localStorage default** for spawns started from that dashboard — it is not a server setting and does not affect agent-initiated spawns. There is no server-side default-permission setting.
+
+`mcp/tools.ts` duplicates the value list on purpose — it must NOT import `@autonomos/core` (it is bundled into `channel-server/dist.mjs` and copied into the binary bundle dir, where that specifier won't resolve). `tools-permission-schema.test.ts` keeps the copy honest.
 
 ### Auto-Trust
 `attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Each Enter is needle-verified (retry if the dialog re-renders or the PTY stays silent, capped attempts) because CC's TUI attaches its stdin handler 100-500ms after first paint — blind early writes get swallowed. Configurable via settings panel toggle (default: ON).
@@ -95,7 +106,7 @@ Native timer-based scheduling using Croner v10. Each enabled schedule gets its o
 ### Agent Templates (`~/.autonomos/templates/`)
 Reusable blueprints for creating agents. Individual JSON files with: `role`, `description`, `systemPrompt`, `permissionMode`, `model`. Created via `create_template` MCP tool or by dropping a `.json` file in the templates directory. Used via `create_agent(template: "team-lead", ...)`.
 
-Two fields are accepted-and-ignored for backward compatibility: `autonomousMode` (migrated to `permissionMode`, ADR-045) and `capabilities` (removed, ADR-058 — it filtered the MCP tool list without restricting the REST API every agent can already reach, while the injected system prompt advertised the full list either way). Restrict worker agents via `systemPrompt` prose instead.
+Two fields are accepted-and-ignored for backward compatibility: `autonomousMode` (migrated to `permissionMode`, ADR-045 — and a `permissionMode: "default"` written before ADR-061 loads as `ask`) and `capabilities` (removed, ADR-058 — it filtered the MCP tool list without restricting the REST API every agent can already reach, while the injected system prompt advertised the full list either way). Restrict worker agents via `systemPrompt` prose instead.
 
 ### Agent Hierarchy (Org Chart)
 Hierarchy metadata (`template`, `manager`, `project`) is stored on persisted sessions in `sessions.json`. The org chart is derived at query time from `manager` references. Configured at runtime via `set_manager` MCP tool — agents or the human can organize the hierarchy after spawning. REST API: `GET /api/org`, `PUT /api/org/manager`, `GET/POST /api/templates`.

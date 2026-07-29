@@ -362,7 +362,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ],
         };
       }
-      const lines = agents.map((a) => `${a.name} (${a.uri}) — ${a.status}`);
+      // Permission mode is included because this listing is the ONLY fleet view
+      // a spawned agent has, and without it an agent could not check a peer's
+      // autonomy — only assume it. That gap is what turned one confused restart
+      // into a loop: the restart had taken effect, but nothing could say so.
+      // Omitted (rather than guessed) when an older server didn't send one.
+      const lines = agents.map((a) =>
+        [
+          `${a.name} (${a.uri}) — ${a.status}`,
+          a.permissionMode ? ` — ${a.permissionMode}` : "",
+        ].join(""),
+      );
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
 

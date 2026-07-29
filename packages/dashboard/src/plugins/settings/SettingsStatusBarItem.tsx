@@ -466,7 +466,12 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
         </button>
       </div>
 
-      {/* Permission mode (default for new sessions; per-spawn overridable) */}
+      {/* Permission mode — seeds the Create Agent form in THIS browser only.
+          It is stored in localStorage, not on the server, so it does not apply
+          to agents spawned by other agents (MCP create_agent) or by any other
+          client. Saying so matters: read as a server-wide setting, it explains
+          neither why an agent-spawned agent came up in a different mode nor why
+          another browser disagrees. */}
       <div className="flex items-center justify-between">
         <span className="text-xs" style={labelStyle}>
           Permission Mode
@@ -478,8 +483,10 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
         />
       </div>
       <div className="text-[10px]" style={labelStyle}>
-        Default tool-use autonomy for new sessions. Override per spawn in Create
-        Agent.
+        Preselects tool-use autonomy in Create Agent, overridable per spawn.
+        Saved in this browser only — it does not change how agents spawned by
+        other agents start, which is <code>ask</code> unless their template or
+        the spawn request says otherwise.
       </div>
 
       {/* Agent icon style */}

@@ -103,7 +103,7 @@ function seedAgent(
       workingDirectory: "/tmp",
       provider,
       providerSessionId: id,
-      permissionMode: "default",
+      permissionMode: "ask",
     }),
   );
 }

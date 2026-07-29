@@ -97,3 +97,50 @@ describe("flat-view order rehydration (pin/unpin migration)", () => {
     expect(useStore.getState().unpinnedOrder).toEqual(["new"]);
   });
 });
+
+/**
+ * Permission mode is persisted per-browser, so a returning user's localStorage
+ * can hold any spelling that was current when they last touched the dropdown:
+ * today's `ask`, the pre-rename `default`, or the pre-ADR-045 `autonomousMode`
+ * boolean. All three have to land on a valid mode — an unrecognized value would
+ * leave the Create Agent form seeded with something the server rejects.
+ */
+describe("permission mode rehydration", () => {
+  beforeEach(() => {
+    useStore.setState({ permissionMode: "ask" });
+  });
+
+  it("restores a current spelling unchanged", async () => {
+    seed({ permissionMode: "bypass" });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().permissionMode).toBe("bypass");
+  });
+
+  it("migrates the pre-rename 'default' spelling to 'ask'", async () => {
+    // Distinguishing detail: seed a NON-ask starting state, so passing this
+    // requires the alias to actually fire. If "default" were dropped as
+    // unrecognized, the store would keep "bypass" below rather than move.
+    useStore.setState({ permissionMode: "bypass" });
+    seed({ permissionMode: "default" });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().permissionMode).toBe("ask");
+  });
+
+  it("still migrates the legacy autonomousMode boolean (ADR-045)", async () => {
+    seed({ autonomousMode: true });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().permissionMode).toBe("bypass");
+  });
+
+  it("an explicit (aliased) mode wins over the legacy boolean", async () => {
+    seed({ permissionMode: "default", autonomousMode: true });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().permissionMode).toBe("ask");
+  });
+
+  it("ignores an unrecognized mode rather than adopting it", async () => {
+    seed({ permissionMode: "yolo" });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().permissionMode).toBe("ask");
+  });
+});

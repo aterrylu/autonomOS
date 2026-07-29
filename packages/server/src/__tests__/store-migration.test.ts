@@ -70,26 +70,47 @@ describe("agent record upgrade compat: legacy autonomousMode → permissionMode"
     assert.equal(a?.permissionMode, "bypass");
   });
 
-  it("autonomousMode:false → permissionMode 'default' (preserves supervised)", () => {
+  it("autonomousMode:false → permissionMode 'ask' (preserves supervised)", () => {
     writeLegacyAgent("agent-false", { autonomousMode: false });
     const a = load("agent-false");
-    assert.equal(a?.permissionMode, "default");
+    assert.equal(a?.permissionMode, "ask");
     assert.ok(
       !("autonomousMode" in (a as object)),
       "legacy field scrubbed in memory",
     );
   });
 
-  it("missing both fields → DEFAULT ('default'), never undefined", () => {
+  it("missing both fields → DEFAULT ('ask'), never undefined", () => {
     writeLegacyAgent("agent-none", {});
     const a = load("agent-none");
-    assert.equal(a?.permissionMode, "default");
+    assert.equal(a?.permissionMode, "ask");
   });
 
   it("malformed permissionMode string is coerced, not trusted", () => {
     writeLegacyAgent("agent-bad", { permissionMode: "yolo" });
     const a = load("agent-bad");
-    assert.equal(a?.permissionMode, "default");
+    assert.equal(a?.permissionMode, "ask");
+  });
+
+  it("pre-rename permissionMode 'default' loads as 'ask'", () => {
+    // Every install has records written before the rename. This asserts the
+    // ALIAS path, which the coercion above would mask: an unrecognized value
+    // also lands on "ask" via DEFAULT_PERMISSION_MODE, so a broken alias would
+    // still look right here. Pin it by checking a NON-default legacy record too
+    // — if "default" were being treated as garbage rather than as an alias, an
+    // accompanying autonomousMode would win and this would come back "bypass".
+    writeLegacyAgent("agent-legacy-spelling", { permissionMode: "default" });
+    assert.equal(load("agent-legacy-spelling")?.permissionMode, "ask");
+
+    writeLegacyAgent("agent-legacy-both", {
+      permissionMode: "default",
+      autonomousMode: true,
+    });
+    assert.equal(
+      load("agent-legacy-both")?.permissionMode,
+      "ask",
+      "explicit (aliased) mode must win over the legacy boolean",
+    );
   });
 
   it("scrubs the legacy field on the next write (accept-and-discard)", () => {

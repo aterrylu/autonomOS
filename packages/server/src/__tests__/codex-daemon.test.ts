@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { PermissionMode, ResolvedSpawnOptions } from "@autonomos/core";
+import {
+  PERMISSION_MODES,
+  type PermissionMode,
+  type ResolvedSpawnOptions,
+} from "@autonomos/core";
 import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
@@ -111,12 +115,7 @@ describe("codex daemon topology", () => {
     });
 
     it("ALWAYS disables the OS sandbox on the daemon (no bubblewrap), all modes", () => {
-      for (const permissionMode of [
-        "default",
-        "auto",
-        "plan",
-        "bypass",
-      ] as const) {
+      for (const permissionMode of PERMISSION_MODES) {
         const spec = codexProvider.buildSidecar?.(
           baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode }),
         );
@@ -126,9 +125,9 @@ describe("codex daemon topology", () => {
     });
 
     it("maps permissionMode → approval_policy on the daemon (always set)", () => {
-      // Codex has no plan mode — 'plan' clamps to the default (on-request).
+      // Codex has no plan mode — 'plan' clamps to ask's policy (on-request).
       const cases: Record<PermissionMode, string> = {
-        default: "on-request",
+        ask: "on-request",
         auto: "on-failure",
         plan: "on-request",
         bypass: "never",
@@ -173,7 +172,7 @@ describe("codex daemon topology", () => {
         warnings.push(String(msg));
       };
       try {
-        for (const mode of ["default", "auto", "bypass"] as const) {
+        for (const mode of ["ask", "auto", "bypass"] as const) {
           codexProvider.buildSidecar?.(
             baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: mode }),
           );
@@ -199,7 +198,7 @@ describe("codex daemon topology", () => {
 
     it("supervised TUI drops the sandbox but keeps approval prompts", () => {
       const args = codexProvider.buildArgs(
-        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "default" }),
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "ask" }),
       );
       assert.deepEqual(args, [
         "--remote",

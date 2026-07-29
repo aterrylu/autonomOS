@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DEFAULT_PERMISSION_MODE } from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -107,10 +107,10 @@ function createMcpServer(): McpServer {
           "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
         ),
       permissionMode: z
-        .enum(["default", "auto", "plan", "bypass"])
+        .enum(PERMISSION_MODES)
         .optional()
         .describe(
-          "Tool-use autonomy: 'default' (ask each time), 'auto' (auto-edit), 'plan' (read-only; Codex falls back to default), 'bypass' (skip prompts). Default: default — set 'bypass' for fully autonomous.",
+          "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit and the agent's template decides, or 'ask' if it has none — pass 'bypass' explicitly for full autonomy.",
         ),
       template: z
         .string()
@@ -449,10 +449,10 @@ function createMcpServer(): McpServer {
         .string()
         .describe("System prompt defining the agent's behavior"),
       permissionMode: z
-        .enum(["default", "auto", "plan", "bypass"])
+        .enum(PERMISSION_MODES)
         .optional()
         .describe(
-          "Default tool-use autonomy for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: default.",
+          "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'.",
         ),
       model: z
         .string()

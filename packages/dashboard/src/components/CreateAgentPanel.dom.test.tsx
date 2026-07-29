@@ -143,9 +143,9 @@ describe("CreateAgentPanel", () => {
       template: "dispatcher",
       appendSystemPrompt: dispatcherTemplate.systemPrompt,
       // Auto-defaulting the dispatcher adopts its systemPrompt but NOT its mode
-      // (only a manual template pick does), so the global default flows through —
-      // now "default" (fail-closed) after the ADR-045 default flip.
-      permissionMode: "default",
+      // (only a manual template pick does), so the browser-local default flows
+      // through — the fail-closed "ask" after the ADR-045 default flip.
+      permissionMode: "ask",
     });
   });
 

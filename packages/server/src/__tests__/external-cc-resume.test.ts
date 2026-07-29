@@ -54,7 +54,7 @@ function seedSplitIdAgent(id: string, providerSessionId: string) {
       workingDirectory: "/tmp/proj",
       provider: "claude-code",
       providerSessionId,
-      permissionMode: "default",
+      permissionMode: "ask",
     }),
   );
 }
@@ -68,7 +68,7 @@ function seedUnifiedAgent(id: string) {
       workingDirectory: "/tmp/proj",
       provider: "claude-code",
       providerSessionId: id,
-      permissionMode: "default",
+      permissionMode: "ask",
     }),
   );
 }

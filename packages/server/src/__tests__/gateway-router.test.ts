@@ -137,7 +137,7 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
         workingDirectory: "/tmp",
         provider,
         providerSessionId: id,
-        permissionMode: "default",
+        permissionMode: "ask",
       }),
     );
     if (exited) markExited(id as never, "user_killed");

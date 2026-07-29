@@ -521,6 +521,21 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   const provider = getProvider(providerName);
   const binary = provider.resolveBinary();
 
+  // The ONE place an unspecified permission mode becomes a concrete one.
+  //
+  // Placement is the point. Three consumers downstream need a mode — the
+  // persisted record (buildNewAgent), the provider argv (`resolved`), and the
+  // reattach write-back — and each used to default independently: buildNewAgent
+  // had its own `?? DEFAULT_PERMISSION_MODE`, and every provider's mapper still
+  // carries a `= DEFAULT_PERMISSION_MODE` parameter default. They agreed only
+  // because all of them happened to name the same constant. Resolving once here
+  // means the record and the running process cannot disagree about how much
+  // autonomy an agent has, which is exactly the defect this replaces.
+  //
+  // The provider-side parameter defaults stay as a boundary guard for any
+  // future caller that reaches buildArgs without coming through here.
+  const permissionMode = params.permissionMode ?? DEFAULT_PERMISSION_MODE;
+
   /**
    * Build a NEW managed record for `id`. Shared by the adopt and fresh/fork
    * branches — they differ only in where the id comes from (an external CC
@@ -538,7 +553,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       workingDirectory: cwd,
       provider: providerName,
       providerSessionId: id,
-      permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
+      permissionMode,
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
@@ -691,6 +706,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   const resolved = {
     ...params,
+    // Must come AFTER the spread: params.permissionMode may be undefined, and
+    // the provider argv has to reflect the same resolved mode the record holds.
+    permissionMode,
     sessionId: agent.id,
     agentName: agent.name,
     cwd,
@@ -868,12 +886,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   // Persist the agent record: reattaching an existing record → markRunning;
   // a freshly-built record (fresh spawn, fork, OR external adopt) → insertAgent.
+  //
+  // `permissionMode` is written on the reattach path too, because the PTY above
+  // was launched with `resolved.permissionMode` — which a caller may have set
+  // explicitly to something other than what the record holds. Omitting it here
+  // is what let a resume run one mode while its record advertised another, for
+  // the life of the process. The record now follows the process.
+  //
+  // Record-driven respawns (restart-all, /attach, startup resume, the crash
+  // net) pass the record's own mode in, so this write is a no-op for them —
+  // they cannot be elevated by it.
   const persisted =
     resolution === "reattach"
       ? markRunning(agent.id, {
           provider: providerName,
           providerSessionId,
           startedAt: Date.now(),
+          permissionMode,
         })
       : insertAgent(agent);
   if (!persisted) {

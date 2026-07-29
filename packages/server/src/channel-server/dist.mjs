@@ -42,9 +42,9 @@ var TOOL_CREATE_AGENT = {
       },
       permissionMode: {
         type: "string",
-        enum: ["default", "auto", "plan", "bypass"],
-        description: "How much autonomy the agent has over tool use: 'default' (ask before each action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to default), 'bypass' (skip all prompts). Default: default \u2014 set 'bypass' for fully autonomous.",
-        default: "default"
+        enum: ["ask", "auto", "plan", "bypass"],
+        description: "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit and the agent's template decides, or 'ask' if it has none \u2014 pass 'bypass' explicitly for full autonomy.",
+        default: "ask"
       },
       template: {
         type: "string",
@@ -176,8 +176,8 @@ var TOOL_CREATE_TEMPLATE = {
       },
       permissionMode: {
         type: "string",
-        enum: ["default", "auto", "plan", "bypass"],
-        description: "Default permission mode for agents spawned from this template: 'default' | 'auto' | 'plan' | 'bypass'. Default: default."
+        enum: ["ask", "auto", "plan", "bypass"],
+        description: "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'."
       },
       model: {
         type: "string",
@@ -632,7 +632,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ]
         };
       }
-      const lines = agents.map((a) => `${a.name} (${a.uri}) \u2014 ${a.status}`);
+      const lines = agents.map(
+        (a) => [
+          `${a.name} (${a.uri}) \u2014 ${a.status}`,
+          a.permissionMode ? ` \u2014 ${a.permissionMode}` : ""
+        ].join("")
+      );
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
     case "create_agent": {

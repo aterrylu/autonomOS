@@ -58,7 +58,7 @@ function codexApprovalPolicy(
     case "auto":
       return "on-failure";
     default:
-      // "default" and the clamped "plan" both ask before acting.
+      // "ask" and the clamped "plan" both prompt before acting.
       return "on-request";
   }
 }
