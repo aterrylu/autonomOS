@@ -25,11 +25,23 @@
  * buffering across genuine TRANSPORT failures (socket down, no thread yet,
  * a turn the daemon refuses) and retrying, never dropping.
  *
- * Delivery is still best-effort + async — the sender's send() is acknowledged
- * on ENQUEUE, before the turn lands — so every failure path stays logged. A
- * queue that says nothing is indistinguishable from a dropped message, which is
- * exactly how correctly-queued inbound once got reported as lost. Persistent
- * failures also reach the operator via the injected notifier.
+ * The sender is NOT ack'd on enqueue. `deliverToCodex` returns a promise that
+ * settles when THIS message reaches a terminal state: the `turn/start` reply
+ * landing (delivered) or the agent being torn down (dropped). A message still
+ * buffered for a transport retry settles at neither, deliberately — "still
+ * trying" is not a terminal state, so the CALLER bounds its own wait and tells
+ * the sender it has not landed yet.
+ *
+ * `turn/start` is acked by the daemon on ACCEPT, not on turn completion — an
+ * injection into a thread held busy for 90s replied well inside the 30s RPC
+ * deadline (the ADR-060 measurement). So awaiting the reply does not couple the
+ * sender to the recipient's turn length. The caller's bound is what makes that
+ * safe if a future Codex ever changes it.
+ *
+ * The queue still says everything out loud regardless. A queue that says nothing
+ * is indistinguishable from a dropped message, which is exactly how correctly-
+ * queued inbound once got reported as lost. Persistent failures also reach the
+ * operator via the injected notifier.
  *
  * Message TEXT is never logged — inbound can carry sensitive content, so the
  * logs carry ids, char counts and queue depth only.
@@ -152,10 +164,39 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * How an inbound message ended up, from the SENDER's point of view.
+ *
+ * There is deliberately no "queued" member. A message buffered for a transport
+ * retry has not reached a terminal state, so it produces no result at all — the
+ * caller's bounded wait expires and IT decides what to tell the sender. Adding
+ * a `queued` member here would invite a caller to treat it as an outcome and
+ * ack on it, which is the enqueue-is-delivery bug in a new costume.
+ */
+export type CodexDeliveryResult =
+  | { readonly delivered: true }
+  | { readonly delivered: false; readonly reason: string };
+
+/** One terminal outcome produced from two places — an enqueue onto an already-
+ *  disposed controller, and dispose() settling the survivors. It is the same
+ *  event either way, so the sender must not be able to tell which path produced
+ *  it; sharing the object is what keeps the two wordings from drifting apart.
+ *  Safe to share because the members are readonly. */
+const TERMINATED: CodexDeliveryResult = {
+  delivered: false,
+  reason: "the agent was terminated",
+};
+
 /** A queued inbound message. Message TEXT is never logged (inbound can carry
  *  sensitive content); only ids, char counts and queue depth are. */
 interface QueuedInbound {
   readonly text: string;
+  /** Settles this message's delivery promise. Called exactly once per message
+   *  in practice, and idempotent regardless — it is a `resolve`, so a second
+   *  call is a no-op rather than a crash. Invoked on the `turn/start` reply
+   *  (delivered) and on dispose (dropped); never on a retryable failure, which
+   *  by definition has not finished. */
+  readonly settle: (result: CodexDeliveryResult) => void;
 }
 
 class CodexController {
@@ -276,7 +317,7 @@ class CodexController {
     }
   }
 
-  enqueue(text: string): void {
+  enqueue(text: string): Promise<CodexDeliveryResult> {
     // getOrCreate treats a disposed controller as absent, but deliverToCodex
     // resolves it and enqueues in separate statements — a kill landing between
     // them would otherwise print "queued" and then never speak again, the worst
@@ -289,18 +330,20 @@ class CodexController {
         this.agentId,
         "An inbound message could not be delivered — this Codex agent was terminated.",
       );
-      return;
+      return Promise.resolve(TERMINATED);
     }
-    this.queue.push({ text });
-    // Log on ENQUEUE, not only on injection. Delivery is immediate now, so a
-    // message sitting here means a TRANSPORT failure is being retried; without
-    // this line the log
-    // is byte-identical to the message having been dropped, which is exactly
-    // how a correctly-queued message got reported as lost.
-    log(
-      `${this.agentId.slice(0, 8)} queued (${text.length} chars, queue=${this.queue.length})`,
-    );
-    void this.drain();
+    return new Promise<CodexDeliveryResult>((resolve) => {
+      this.queue.push({ text, settle: resolve });
+      // Log on ENQUEUE, not only on injection. Delivery is immediate now, so a
+      // message sitting here means a TRANSPORT failure is being retried; without
+      // this line the log
+      // is byte-identical to the message having been dropped, which is exactly
+      // how a correctly-queued message got reported as lost.
+      log(
+        `${this.agentId.slice(0, 8)} queued (${text.length} chars, queue=${this.queue.length})`,
+      );
+      void this.drain();
+    });
   }
 
   dispose(): void {
@@ -320,6 +363,14 @@ class CodexController {
         `${this.queue.length} inbound message(s) to this Codex agent were never delivered — ` +
           `the agent was terminated while they were queued.`,
       );
+    }
+    // Settle every survivor before clearing. A sender still inside its ack
+    // window learns the outcome immediately instead of waiting out the timeout
+    // for a message this line is about to destroy — and a caller that awaits
+    // without a bound (a future one; the router bounds its wait) cannot be
+    // parked forever by a teardown.
+    for (const item of this.queue) {
+      item.settle(TERMINATED);
     }
     this.queue.length = 0;
     if (this.retryTimer) {
@@ -651,7 +702,8 @@ class CodexController {
           // matches what this skip already does when the status is unknown, and
           // it is the safe direction — the untested risk of injecting during
           // compaction is bounded, whereas holding forever is a guaranteed
-          // silent drop of a message whose sender was already ack'd.
+          // silent drop of a message whose sender was told it would be
+          // retried automatically and must NOT re-send it.
           // Latch, rather than clearing the clock: the decision is about the
           // reported STATUS, so it holds until that status actually changes.
           // Clearing here would re-arm a full hold for the next queued message.
@@ -674,9 +726,16 @@ class CodexController {
           });
           // Dequeue on the turn/start REPLY, not on send and not on the daemon
           // accepting the turn. That ordering is deliberate, and it has a known
-          // cosmetic cost: a dispose() landing while a reply is in flight sees a
+          // cost: a dispose() landing while a reply is in flight sees a
           // non-empty queue and logs "DROPPING ... undelivered" for a message
-          // that did in fact arrive. Do NOT "fix" that by shifting earlier —
+          // that did in fact arrive. Since ADR-064 that cost is no longer only
+          // cosmetic — dispose() also SETTLES that message as "the agent was
+          // terminated", so the sender is told it did not land when it did.
+          // Still the right direction: the settle below is a no-op once dispose
+          // has resolved the promise (resolve is idempotent), the agent is being
+          // torn down and will never act on the turn anyway, and the alternative
+          // is claiming delivery into a process that is exiting.
+          // Do NOT "fix" it by shifting earlier —
           // then any turn/start that fails after the write (socket dropped,
           // daemon died mid-call) is dropped with the log claiming delivery,
           // which is the silent-drop class #287 exists to have removed. The
@@ -686,6 +745,12 @@ class CodexController {
           // a rejected turn is the one case where this ordering is observable,
           // and shifting earlier makes that test go red.
           this.queue.shift();
+          // Settle AFTER the shift, on the same reply that authorises it. The
+          // sender's ack and the dequeue therefore agree by construction: there
+          // is no ordering in which we tell the sender "delivered" for a message
+          // still sitting at the queue head, or shift one whose sender was told
+          // it failed.
+          next.settle({ delivered: true });
           this.consecutiveFailures = 0;
           this.nextFailureWarnAt = FAILURES_BEFORE_WARN;
           log(
@@ -694,6 +759,24 @@ class CodexController {
         } catch (err) {
           if (this.disposed) return; // teardown, not a delivery failure
           // Leave the message at the queue head and retry (e.g. socket dropped).
+          //
+          // KNOWN, UNFIXED: this retry can DUPLICATE. Two of the failures that
+          // land here mean "we never learned the outcome", not "it failed" — an
+          // RPC timeout (RPC_TIMEOUT_MS) and a teardownSocket rejecting pending
+          // requests mid-flight. In both, the daemon may already have accepted
+          // the turn, and the retry sends byte-identical text again, so the
+          // agent can execute the same instruction twice. `turn/start` carries
+          // no idempotency key and nothing daemon-side dedupes.
+          //
+          // Stated plainly because this PR tells SENDERS not to re-send in order
+          // to avoid exactly that outcome, in five places. That instruction is
+          // still right — a sender re-sending adds a second duplicate on top of
+          // this one — but it must not be read as a guarantee the transport
+          // provides. It does not. Reaching one needs either an idempotency
+          // token on turn/start (daemon support we do not have) or treating a
+          // TIMEOUT as terminal-unknown and giving up the retry, which trades
+          // this duplicate risk for a silent-loss risk. That is a real design
+          // call with its own measurement burden — deliberately not made here.
           log(
             `${this.agentId.slice(0, 8)} turn/start failed:`,
             err instanceof Error ? err.message : err,
@@ -716,8 +799,10 @@ class CodexController {
     }
   }
 
-  /** Count consecutive failures; once persistent, tell the operator (the sender
-   *  was already optimistically ack'd, so this is the only visible signal).
+  /** Count consecutive failures; once persistent, tell the operator. Since
+   *  ADR-064 the sender learns about ITS OWN message (the router's ack window
+   *  expires and reports "not delivered, still retrying"), but nothing else
+   *  reports an agent whose inbound is wedged across senders — this does.
    *
    *  Re-notifies on a doubling backoff rather than exactly once: a strict
    *  `=== FAILURES_BEFORE_WARN` meant one notification per controller LIFETIME,
@@ -765,19 +850,24 @@ export function startCodexStatusWatch(agentId: string, endpoint: string): void {
 
 /**
  * Deliver an inbound message to a Codex agent by injecting an attributed user
- * turn into its app-server daemon. Idempotent connection. Best-effort async:
- * returns immediately and the turn is injected right away, INCLUDING into a
- * busy thread — Codex delivers it at its own turn boundary (ADR-060). The queue
- * behind this is a retry buffer for transport failures, not a delivery gate.
+ * turn into its app-server daemon. Idempotent connection. The turn is injected
+ * right away, INCLUDING into a busy thread — Codex delivers it at its own turn
+ * boundary (ADR-060). The queue behind this is a retry buffer for transport
+ * failures, not a delivery gate.
+ *
+ * The returned promise settles only on a TERMINAL outcome — the daemon accepted
+ * the turn, or the agent was torn down. It stays pending while the message is
+ * buffered for a transport retry, so **every caller must bound its own wait**;
+ * awaiting it unconditionally will park until the transport recovers.
  */
 export function deliverToCodex(
   agentId: string,
   endpoint: string,
   attributedText: string,
-): void {
+): Promise<CodexDeliveryResult> {
   const ctrl = getOrCreate(agentId, endpoint);
   ctrl.watch(); // ensure status is tracked even if spawn didn't start it
-  ctrl.enqueue(attributedText);
+  return ctrl.enqueue(attributedText);
 }
 
 /** Tear down a Codex agent's control client (called when the agent is killed). */

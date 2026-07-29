@@ -46,7 +46,7 @@ Last updated: 2026-04-14
 - [x] Channel MCP server — standalone subprocess (server:autonomos) bridging MCP to gateway (#72, #86)
 - [x] HTTP MCP server — Streamable HTTP transport at `/mcp` for external clients (#82, #86)
 - [x] MCP tools — `send`, `list_agents`, `create_agent`, `kill_agent` with shared definitions (#82, #85, #86)
-- [x] Gateway WebSocket — URI-based message router (`agent://`, `broadcast://`) (#72, #82)
+- [x] Gateway WebSocket — URI-based message router (`agent://`) (#72, #82). ~~`broadcast://`~~ removed in ADR-064 — it ack'd success unconditionally and let any agent inject a turn into every running Codex agent.
 - [x] Auto-trust — auto-dismiss workspace trust + dev channels prompts on session start (#94)
 - [x] PWA — installable standalone app + desktop notifications (#71)
 - [x] Conversation view — structured chat transcript with TUI styling (#53)

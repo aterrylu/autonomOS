@@ -15,7 +15,7 @@ import {
   type FakeCodexDaemon,
   installFakeCodexDaemon,
 } from "./helpers/fake-codex-daemon.js";
-import { delay, waitUntil } from "./helpers/wait.js";
+import { delay, settlesWithin, waitUntil } from "./helpers/wait.js";
 
 /**
  * Codex inbound is injected as an attributed user turn into the agent's
@@ -407,5 +407,105 @@ describe("codex control escalation", () => {
       `expected re-notification, got ${notes.length}`,
     );
     for (const n of notes) assert.match(n, /aren't being delivered/);
+  });
+});
+
+/**
+ * The DELIVERY PROMISE contract (ADR-064). `deliverToCodex` settles only on a
+ * terminal outcome, and the router's ack is built directly on that — so a
+ * settle that never fires, or fires with the wrong verdict, is a sender told
+ * the opposite of the truth.
+ *
+ * The teardown path is the one most easily got wrong: `dispose()` clears the
+ * queue, and before ADR-064 that was the ONLY place a message left the queue
+ * without anyone being told. Its senders would have waited out the full ack
+ * window and been told "still retrying" about a message that was already gone.
+ */
+describe("codex inbound — the delivery promise settles on terminal outcomes", () => {
+  const AGENT = "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa";
+  const ENDPOINT = "ws://127.0.0.1:1/fake";
+
+  afterEach(() => {
+    _resetCodexControlForTesting();
+  });
+
+  it("settles a queued message as terminated when the agent is disposed", async () => {
+    // deliverToCodex enqueues SYNCHRONOUSLY (the Promise executor runs inline),
+    // so the message is provably on the queue when dispose lands — no race, and
+    // no sleep needed to make this deterministic.
+    let pending!: Promise<unknown>;
+    const logs = await captureLogs(async () => {
+      pending = deliverToCodex(AGENT, ENDPOINT, "you will never read this");
+      disposeCodexControl(AGENT);
+    });
+
+    assert.deepEqual(
+      await settlesWithin(pending, "the disposed agent's queued message"),
+      { delivered: false, reason: "the agent was terminated" },
+      "the sender must learn the outcome, not wait out its ack window",
+    );
+    // The operator-facing half of the same event. Both must fire: the log is
+    // the durable record (the notification lands in an in-memory store a
+    // shutdown destroys microseconds later — see runtime.ts).
+    assert.ok(
+      logs.some((l) => /DROPPING 1 undelivered/.test(l)),
+      `the drop must also be logged, got: ${JSON.stringify(logs)}`,
+    );
+  });
+
+  it("builds a live replacement controller after a dispose, and settles through it", async () => {
+    // NAMED FOR WHAT IT ACTUALLY COVERS. It was first written as "settles an
+    // enqueue onto an already-disposed controller" and mutation testing proved
+    // that false: removing the settle from `enqueue`'s disposed branch left this
+    // GREEN. `getOrCreate` treats a disposed controller as ABSENT and builds a
+    // fresh one, so a post-dispose deliverToCodex never reaches that branch —
+    // it is only reachable in the race `deliverToCodex` documents (a kill
+    // landing between resolving the controller and enqueueing onto it), which
+    // cannot be driven from outside the module.
+    //
+    // So that branch is NOT covered here, and this comment says so rather than
+    // letting the test name imply it. What IS covered is the property that
+    // makes a respawn work: after dispose, the next delivery reaches a LIVE
+    // controller instead of no-oping against the dead one — which is what stops
+    // a killed agent from poisoning its own replacement.
+    //
+    // That property is held by TWO redundant mechanisms — `disposeCodexControl`
+    // deletes the registry entry, and `getOrCreate` separately treats a disposed
+    // controller as absent — so NO SINGLE MUTATION turns this red; either
+    // mechanism alone still passes. Proving it non-vacuous took defeating both
+    // at once (it does go red then). Recorded because a future reader running a
+    // single mutation would otherwise conclude this test asserts nothing.
+    let first!: Promise<unknown>;
+    await captureLogs(async () => {
+      first = deliverToCodex(AGENT, ENDPOINT, "first");
+      disposeCodexControl(AGENT);
+    });
+    assert.equal(
+      (await settlesWithin(first, "the first message")) !== undefined,
+      true,
+    );
+
+    // A second delivery builds a FRESH controller (the disposed one is treated
+    // as absent) — so this asserts the replacement is live and independent,
+    // which is what stops a killed agent from poisoning its own respawn.
+    let second!: Promise<unknown>;
+    const logs = await captureLogs(async () => {
+      second = deliverToCodex(AGENT, ENDPOINT, "second");
+      disposeCodexControl(AGENT);
+    });
+    assert.deepEqual(await settlesWithin(second, "the second message"), {
+      delivered: false,
+      reason: "the agent was terminated",
+    });
+    // Anchor on the agent-id prefix, NOT a bare /queued \(6 chars/. The
+    // disposed branch logs "<id> NOT queued (6 chars) — agent was terminated",
+    // which CONTAINS "queued (6 chars" — so the loose form passed against a
+    // mutant that reused the dead controller, i.e. it asserted the opposite of
+    // its own intent. Mutation testing is the only reason this was caught.
+    const enqueued = `${AGENT.slice(0, 8)} queued (6 chars`;
+    assert.ok(
+      logs.some((l) => l.includes(enqueued)),
+      `the second message must reach a LIVE controller (expected "${enqueued}"), got: ${JSON.stringify(logs)}`,
+    );
   });
 });

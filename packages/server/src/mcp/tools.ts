@@ -142,13 +142,16 @@ export const TOOL_KILL_AGENT: ToolDef = {
 export const TOOL_SEND: ToolDef = {
   name: "send",
   description:
-    "Send a message to any destination — agents, platform channels, or broadcast. Use the from_uri from incoming messages to respond.",
+    "Send a message to another agent. Use the from_uri from incoming messages to respond. " +
+    "Succeeds only if the destination accepted the message; any other result explains why it did not, " +
+    "and a message reported as not-yet-delivered is retried automatically — do not re-send it.",
   inputSchema: {
     type: "object",
     properties: {
       to: {
         type: "string",
-        description: 'Destination URI (e.g. "agent://name", "broadcast://all")',
+        description:
+          'Destination URI — "agent://name" (use list_agents to find names)',
       },
       message: {
         type: "string",
@@ -489,7 +492,7 @@ export const MCP_INSTRUCTIONS = [
   "You are running inside autonomOS — an agent orchestration platform.",
   "",
   "Available tools:",
-  "- send(to, message): Send messages via URI (agent://name, broadcast://all)",
+  "- send(to, message): Send a message to one agent (agent://name). There is no broadcast — address each recipient.",
   "- list_agents(): Discover active agents and their URIs",
   "- create_agent(): Spawn a new dedicated agent",
   "- kill_agent(): Terminate an agent",

@@ -40,3 +40,41 @@ export async function waitUntil(
     }`,
   );
 }
+
+/**
+ * Await a promise, but FAIL rather than hang if it never settles.
+ *
+ * Use this for any promise whose contract is "settles on a terminal outcome" —
+ * the delivery promises from `deliverToCodex`, in particular. A bare `await` on
+ * one of those turns a broken settle into a HANG: `node:test` has no default
+ * per-test timeout, so the runner child sits silent until CI's wall clock kills
+ * the job, hours later, pointing at nothing. This was not hypothetical — a
+ * mutation that removed dispose()'s settle loop hung the local run instead of
+ * failing it, which is how it got noticed.
+ */
+export async function settlesWithin<T>(
+  promise: Promise<T>,
+  what: string,
+  timeoutMs = 2_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `${what} did not settle within ${timeoutMs}ms — a delivery promise ` +
+              `that never settles leaves its sender waiting out the ack window ` +
+              `and being told "still retrying" about a terminal outcome`,
+          ),
+        ),
+      timeoutMs,
+    );
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

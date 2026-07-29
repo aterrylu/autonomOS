@@ -1,24 +1,38 @@
 /**
- * Gateway Router — routes messages between platform adapters and CC sessions.
+ * Gateway Router — routes messages between agents.
  *
- * Uses URI-based addressing: agent://name, slack://workspace/channel, broadcast://all.
- * The router is stateless (no message persistence). If a session is down,
- * messages are dropped. CC owns its own conversation history.
+ * `agent://name` is the ONLY scheme. The router is stateless (no message
+ * persistence); each provider owns its own conversation history.
+ *
+ * A `null` return means the message was ACCEPTED BY THE DESTINATION, not merely
+ * addressed to one. Anything else is a string saying why it has not arrived.
+ * That distinction is the whole point of this module: `routeMessage` used to
+ * return `null` the moment it found a plausible recipient, so a sender was told
+ * "sent" for a message injected into a dead daemon, a threadless agent, or a
+ * Slack stub that only ever wrote to the console. See ADR-064.
+ *
+ * "Accepted by the destination" is as far as this goes, per provider:
+ *   - Claude Code — the write landed on an OPEN, registered, token-verified
+ *     channel-server socket. NOT a confirmation that the agent read or can
+ *     answer it; there is no application-level receipt from the far side.
+ *   - Codex — the agent's app-server daemon replied to `turn/start`.
  */
 
 import type {
   AgentInfo,
-  ChannelRoute,
   GatewayMessage,
   GatewayWsMessage,
-  Platform,
-  PlatformAdapter,
 } from "@autonomos/core";
-import type { WSContext } from "hono/ws";
+import type { WSContext, WSReadyState } from "hono/ws";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache.js";
-import { deliverToCodex, formatInbound } from "./codexControl.js";
+import {
+  type CodexDeliveryResult,
+  deliverToCodex,
+  formatInbound,
+} from "./codexControl.js";
+import { DELIVERY_ACK_MS } from "./deliveryTimings.js";
 
 // ── Registry ──────────────────────────────────────────────────────
 
@@ -28,11 +42,39 @@ const sessionClients = new Map<string, WSContext>();
 /** Connected dashboard WebSockets (for observability — all messages fanned out) */
 const dashboardClients = new Set<WSContext>();
 
-/** Platform adapters, keyed by platform name */
-const adapters = new Map<string, PlatformAdapter>();
+/** `WSContext.readyState` for OPEN. Hono types this as a numeric union rather
+ *  than exporting the constants, so name it once here — annotated so the
+ *  compiler checks the value against that union instead of trusting this
+ *  comment (a bare `= 4` would otherwise sail through). */
+const WS_OPEN: WSReadyState = 1;
 
-/** Routing table: (platform, chatId) → agent id */
-let routes: ChannelRoute[] = [];
+/**
+ * How long a `send()` may wait for a delivery to be CONFIRMED before it reports
+ * the message as not-yet-arrived.
+ *
+ * Needed because `deliverToCodex` settles only on a terminal outcome: a message
+ * buffered behind a transport failure never settles at all, and an unbounded
+ * await would hang the sender's tool call for as long as the daemon stays sick.
+ *
+ * Must stay comfortably under the channel server's `send_result` deadline —
+ * see `deliveryTimings.ts`, which holds both numbers and whose companion test
+ * enforces the ordering that used to live only in two prose comments.
+ *
+ * MEASURED against a loopback daemon (12 sends): the first costs 14.8ms — it
+ * pays connect + initialize + thread discovery — and steady-state sends run a
+ * 0.2ms median, 0.3ms max. So this window is ~135x the cold path, and it only
+ * elapses when the transport is genuinely sick, which is exactly when "not
+ * delivered" is the true answer. The number that could move it is a real
+ * daemon's own responsiveness under load, not our overhead.
+ */
+const DEFAULT_DELIVERY_ACK_MS = DELIVERY_ACK_MS;
+let deliveryAckMs = DEFAULT_DELIVERY_ACK_MS;
+
+/** For tests — shrink the ack window so the not-yet-delivered path is reachable
+ *  in ms. Called with no argument to restore the production value. */
+export function _setDeliveryAckWindowForTesting(ms?: number): void {
+  deliveryAckMs = ms ?? DEFAULT_DELIVERY_ACK_MS;
+}
 
 // ── Public API ────────────────────────────────────────────────────
 
@@ -67,23 +109,14 @@ export function unregisterDashboard(ws: WSContext): void {
   dashboardClients.delete(ws);
 }
 
-export function registerAdapter(adapter: PlatformAdapter): void {
-  adapters.set(adapter.platform, adapter);
-  adapter.onMessage((msg) => routeInbound(msg));
-}
-
-export function setRoutes(newRoutes: ChannelRoute[]): void {
-  routes = newRoutes;
-}
-
-export function getRoutes(): ChannelRoute[] {
-  return routes;
-}
-
 // ── URI-based message routing ─────────────────────────────────────
 
 /**
- * Route a message by URI. Returns an error string if routing fails, null on success.
+ * Route a message by URI.
+ *
+ * Returns `null` only if the destination ACCEPTED the message; otherwise a
+ * string explaining why it has not arrived — suitable for showing the sender
+ * verbatim.
  */
 export async function routeMessage(
   to: string,
@@ -98,52 +131,21 @@ export async function routeMessage(
   const scheme = to.slice(0, sepIndex);
   const path = to.slice(sepIndex + 3);
 
-  switch (scheme) {
-    case "agent":
-      return routeToAgent(fromSessionId, path, message);
+  if (scheme === "agent") return routeToAgent(fromSessionId, path, message);
 
-    case "slack":
-      return routeToPlatform(scheme, path, message);
-
-    case "broadcast":
-      broadcastToAllAgents(fromSessionId, message);
-      return null;
-
-    default:
-      return `Unknown URI scheme: "${scheme}" — supported: agent, slack, broadcast`;
-  }
-}
-
-// ── Inbound: platform → CC session ────────────────────────────────
-
-function routeInbound(msg: GatewayMessage): void {
-  fanOutToDashboard({ type: "message", payload: msg });
-
-  const route = routes.find(
-    (r) => r.platform === msg.platform && r.chatId === msg.chatId,
-  );
-
-  if (!route) {
-    console.log(
-      `[gateway] no route for ${msg.platform}:${msg.chatId} — dropping`,
+  // `broadcast://all` was removed (ADR-064), but every agent spawned before
+  // that ships still carries it in the tool list baked into its system prompt —
+  // that text is fixed at spawn and cannot be revised for a live agent. A bare
+  // "unknown scheme" would read as a bug in the URI rather than a removal, so
+  // name it and point at the replacement.
+  if (scheme === "broadcast") {
+    return (
+      'broadcast:// was removed. Send to each agent individually with "agent://<name>" — ' +
+      "use list_agents to enumerate them."
     );
-    return;
   }
 
-  const client = sessionClients.get(route.sessionId);
-  if (!client) {
-    console.log(
-      `[gateway] agent ${route.sessionId} not connected — dropping message from ${msg.platform}:${msg.chatId}`,
-    );
-    return;
-  }
-
-  const wsMsg: GatewayWsMessage = { type: "message", payload: msg };
-  try {
-    client.send(JSON.stringify(wsMsg));
-  } catch (err) {
-    console.error(`[gateway] failed to send to agent ${route.sessionId}:`, err);
-  }
+  return `Unknown URI scheme: "${scheme}" — supported: agent`;
 }
 
 // ── Agent routing ─────────────────────────────────────────────────
@@ -227,6 +229,45 @@ function buildAgentMessage(
   };
 }
 
+/** What the sender is told when the ack window expires. Deliberately NOT a
+ *  terminal outcome — the message is still queued and still being retried,
+ *  which is why the wording forbids a re-send rather than reporting a failure.
+ *  Kept next to the window that produces it. */
+const NOT_YET_DELIVERED: CodexDeliveryResult = {
+  delivered: false,
+  reason:
+    "it has not reached the agent's Codex daemon yet — it stays queued " +
+    "and is retried automatically, so do NOT re-send it",
+};
+
+/**
+ * Wait for a Codex delivery to reach a terminal outcome, but never longer than
+ * the ack window.
+ *
+ * A buffered message settles at no terminal state by design, so the expiry is
+ * not an error case — it is the honest answer for "we tried, it has not landed,
+ * it is still being retried". The wording matters: the sender must not re-send,
+ * because a duplicate makes a Codex agent execute the same instruction twice.
+ *
+ * `unref()` and `clearTimeout` do different jobs and both are needed: the first
+ * stops a pending window holding the process open, the second stops a 2s timer
+ * outliving a 0.2ms delivery.
+ */
+async function awaitDelivery(
+  pending: Promise<CodexDeliveryResult>,
+): Promise<CodexDeliveryResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<CodexDeliveryResult>((resolve) => {
+    timer = setTimeout(resolve, deliveryAckMs, NOT_YET_DELIVERED);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([pending, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function routeToAgent(
   fromSessionId: string,
   targetName: string,
@@ -244,15 +285,30 @@ async function routeToAgent(
       return `Codex agent "${targetName}" is not reachable — its app-server daemon isn't running.`;
     }
     const senderName = await resolveAgentName(fromSessionId);
+    const delivery = await awaitDelivery(
+      deliverToCodex(
+        codexTarget.id,
+        endpoint,
+        formatInbound(senderName, `agent://${senderName}`, content),
+      ),
+    );
+    if (!delivery.delivered) {
+      return `Message to Codex agent "${targetName}" was NOT delivered — ${delivery.reason}.`;
+    }
+    // Fan out only once the daemon has accepted the turn — a feed showing a
+    // message that never arrived is the same lie as a false ack. This also
+    // matches the Claude Code branch below, which has always fanned out after
+    // its write succeeded.
+    //
+    // NB: `dashboardClients` is empty in every deployment today — nothing in
+    // packages/dashboard opens a gateway socket, so no client ever sends
+    // `dashboard_connect`. Ordering it correctly now is cheap and means the
+    // feed is not born lying if a consumer is ever built; do not read this
+    // comment as evidence that one exists.
     fanOutToDashboard({
       type: "message",
       payload: buildAgentMessage(fromSessionId, senderName, content),
     });
-    deliverToCodex(
-      codexTarget.id,
-      endpoint,
-      formatInbound(senderName, `agent://${senderName}`, content),
-    );
     return null;
   }
 
@@ -280,6 +336,18 @@ async function routeToAgent(
     return `Codex agent "${targetName}" is not currently running — message not delivered.`;
   }
 
+  // A socket can be registered and already CLOSING — the registry is cleaned up
+  // on the close event, which lands after the socket stops carrying data.
+  // `WSContext.send()` does not reliably throw in that window (the underlying
+  // impl may just drop the frame), so "no exception" was never sufficient
+  // evidence of delivery. Check the state rather than infer it from silence.
+  if (target.readyState !== WS_OPEN) {
+    console.warn(
+      `[gateway] agent "${targetName}" socket is not open (readyState=${target.readyState}) — not delivered`,
+    );
+    return `Agent "${targetName}" is disconnecting — message not delivered.`;
+  }
+
   const senderName = await resolveAgentName(fromSessionId);
   const wsMsg: GatewayWsMessage = {
     type: "message",
@@ -303,110 +371,6 @@ function resolveRunningCodexAgent(idOrName: string): { id: string } | null {
   if (byName?.provider === "codex" && byName.status === "running")
     return byName;
   return null;
-}
-
-// ── Platform routing ──────────────────────────────────────────────
-
-function routeToPlatform(
-  platform: Platform,
-  path: string,
-  message: string,
-): string | null {
-  const adapter = adapters.get(platform);
-  if (!adapter) {
-    return `${platform} adapter not available`;
-  }
-  if (!adapter.isConnected()) {
-    return `${platform} adapter not connected`;
-  }
-
-  adapter.send({ platform, chatId: path, text: message }).catch((err) => {
-    console.error(`[gateway] ${platform} send failed:`, err);
-  });
-
-  return null;
-}
-
-// ── Broadcast ─────────────────────────────────────────────────────
-
-function broadcastToAllAgents(fromSessionId: string, content: string): void {
-  // routeMessage already ack'd the sender before any of this runs, so an
-  // unhandled rejection in here would take out EVERY recipient (channel-server,
-  // Codex and the dashboard fan-out) while the sender was told it succeeded —
-  // the same accepted-then-dropped shape this file logs against elsewhere.
-  // listAgents() can throw by design on a degraded store, so this is reachable.
-  resolveAgentName(fromSessionId)
-    .then((senderName) => {
-      const wsMsg: GatewayWsMessage = {
-        type: "message",
-        payload: buildAgentMessage(fromSessionId, senderName, content),
-      };
-      const json = JSON.stringify(wsMsg);
-
-      // Claude Code (and other channel-server) agents: deliver over their WS.
-      // Codex agents ALSO register a channel-server WS (for outbound send()),
-      // but they ignore inbound notifications/claude/channel — they receive via
-      // the daemon fan-out below. Skip them here so a broadcast isn't delivered
-      // twice (a wasted WS write today, and a user-visible duplicate if a future
-      // provider ever surfaces that MCP notification).
-      let delivered = 0;
-      for (const [sessionId, client] of sessionClients) {
-        if (sessionId === fromSessionId) continue;
-        if (getAgent(sessionId)?.provider === "codex") continue;
-        try {
-          client.send(json);
-          delivered++;
-        } catch (err) {
-          console.warn(
-            `[gateway] broadcast to agent ${sessionId} failed, removing:`,
-            err,
-          );
-          sessionClients.delete(sessionId);
-        }
-      }
-
-      // Codex agents receive via their app-server daemon, not the channel-server
-      // WS — fan out to every running Codex agent that has a live endpoint.
-      const attributed = formatInbound(
-        senderName,
-        `agent://${senderName}`,
-        content,
-      );
-      let undeliverable = 0;
-      for (const agent of listAgents()) {
-        if (agent.provider !== "codex" || agent.status !== "running") continue;
-        if (agent.id === fromSessionId) continue;
-        const endpoint = getAgentSidecarEndpoint(agent.id);
-        if (!endpoint) {
-          // Unlike the unicast path (which returns a reachability error to the
-          // sender), broadcast has no per-recipient ack — so a bare skip here
-          // was invisible from every angle. Say it out loud.
-          console.warn(
-            `[gateway] broadcast: Codex agent "${agent.name}" has no live app-server ` +
-              `daemon endpoint — not delivered`,
-          );
-          undeliverable++;
-          continue;
-        }
-        deliverToCodex(agent.id, endpoint, attributed);
-        delivered++;
-      }
-
-      // The denominator for the per-recipient warning above — and the only way
-      // to tell "broadcast to a fleet of zero" from "broadcast delivered".
-      console.log(
-        `[gateway] broadcast from ${senderName} reached ${delivered} agent(s)` +
-          (undeliverable > 0 ? `, ${undeliverable} unreachable` : ""),
-      );
-
-      fanOutToDashboard(wsMsg);
-    })
-    .catch((err) => {
-      console.error(
-        `[gateway] broadcast from ${fromSessionId.slice(0, 8)} failed — no recipient received it:`,
-        err,
-      );
-    });
 }
 
 // ── Agent discovery ───────────────────────────────────────────────

@@ -7,7 +7,7 @@
  * Bridges MCP (stdio, to Claude Code) and WebSocket (to autonomOS gateway).
  *
  * Tools (mirrored from server MCP + gateway-specific):
- *   send(to, message)   — send to any URI: agent://name, broadcast://all
+ *   send(to, message)   — send to one agent: agent://name
  *   list_agents()       — discover agents with their URIs
  *   create_agent(...)   — spawn a new dedicated agent
  *   kill_agent(agent)   — terminate an agent by name or ID
@@ -44,6 +44,7 @@ import WebSocket from "ws";
 // Tool definitions are shared with the HTTP MCP server.
 // Import paths use relative since this runs as a standalone subprocess.
 // At build time, esbuild resolves these from the same package.
+import { GATEWAY_REQUEST_TIMEOUT_MS } from "../gateway/deliveryTimings.js";
 import { ALL_TOOLS, MCP_INSTRUCTIONS, MCP_SERVER_INFO } from "../mcp/tools.js";
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
@@ -207,15 +208,28 @@ function handleServerMessage(msg: GatewayWsMessage): void {
   }
 }
 
-/** Send a WS message and wait for a correlated response */
+/**
+ * Send a WS message and wait for a correlated response.
+ *
+ * Two failure results, not one. A TIMEOUT means the request went out and the
+ * gateway never answered — the outcome is genuinely unknown, and a blind
+ * re-send risks a duplicate. NOT-SENT (socket closed, or `send()` threw) means
+ * nothing left this process, so re-sending is unambiguously safe and correct.
+ *
+ * They were the same value until ADR-064, which is only a wording bug while the
+ * ack is vague — but the timeout text now says "unknown whether this message
+ * was delivered, check before re-sending", and telling an agent that when
+ * nothing was transmitted discourages the exact action it should take.
+ */
 function requestGateway<T>(
   msg: GatewayWsMessage,
   requestId: string,
   timeoutMs: number,
   defaultOnTimeout: T,
+  defaultOnNotSent: T = defaultOnTimeout,
 ): Promise<T> {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return Promise.resolve(defaultOnTimeout);
+    return Promise.resolve(defaultOnNotSent);
   }
   return new Promise<T>((resolve) => {
     const timer = setTimeout(() => {
@@ -231,7 +245,7 @@ function requestGateway<T>(
     } catch {
       clearTimeout(timer);
       pendingRequests.delete(requestId);
-      resolve(defaultOnTimeout);
+      resolve(defaultOnNotSent);
     }
   });
 }
@@ -356,14 +370,33 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         requestId,
       };
 
-      // requestGateway sends the message and waits for a correlated response
+      // The gateway now confirms DELIVERY rather than routing, so this wait has
+      // to outlast the gateway's own ack window plus its name-resolution work.
+      // At the old 2s the two deadlines raced: a delivery the gateway confirmed
+      // just after the window would arrive to a request we had already given up
+      // on and deleted, and the agent was told "timeout" for a message that
+      // landed. Both numbers now live in deliveryTimings.ts with a test pinning
+      // the ordering, because a comment on each side enforced nothing.
       const result = await requestGateway<{
         success: boolean;
         error?: string;
-      }>(wsMsg, requestId, 2000, {
-        success: false,
-        error: "Gateway did not confirm delivery (timeout)",
-      });
+      }>(
+        wsMsg,
+        requestId,
+        GATEWAY_REQUEST_TIMEOUT_MS,
+        {
+          success: false,
+          error:
+            "The gateway did not answer in time, so it is unknown whether this " +
+            "message was delivered. Check the agent's state before re-sending.",
+        },
+        {
+          success: false,
+          error:
+            "NOT sent — this agent's gateway connection is down, so nothing " +
+            "was transmitted. Retrying is safe.",
+        },
+      );
 
       if (!result.success) {
         return {
@@ -371,7 +404,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      return { content: [{ type: "text", text: `Sent to ${to}` }] };
+      // "Accepted for delivery", not "Delivered" — the router's own vocabulary.
+      // For Codex this means the daemon took the turn; for Claude Code it means
+      // the frame reached its channel-server socket, which is NOT a receipt that
+      // the agent saw it. The sender cannot tell which provider the recipient
+      // is, so the word has to be true for the weaker of the two.
+      return {
+        content: [{ type: "text", text: `Accepted for delivery to ${to}` }],
+      };
     }
 
     case "list_agents": {

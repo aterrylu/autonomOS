@@ -19,31 +19,20 @@ export interface GatewayMessage {
   userId: string;
   userName: string;
   text: string;
-  /** URI the receiver uses to respond (e.g. "agent://name", "slack://workspace/channel") */
+  /** URI the receiver uses to respond — always `agent://name` since ADR-064
+   *  removed the platform schemes. BASE_CONTEXT tells agents to reply to this,
+   *  so a wrong or empty value strands the reply with nobody informed. */
   fromUri: string;
   replyTo?: string;
   threadId?: string;
   timestamp: number;
 }
 
-/** Outbound reply from a CC session back to a platform */
-export interface GatewayReply {
-  platform: Platform;
-  chatId: string;
-  text: string;
-  replyTo?: string;
-}
-
-// ── Platform Adapter ──────────────────────────────────────────────
-
-export interface PlatformAdapter {
-  readonly platform: Platform;
-  connect(): Promise<void>;
-  disconnect(): Promise<void>;
-  isConnected(): boolean;
-  send(reply: GatewayReply): Promise<string>;
-  onMessage(handler: (msg: GatewayMessage) => void): void;
-}
+// `GatewayReply` and `PlatformAdapter` lived here until ADR-064. The whole
+// framework had exactly one implementation — a StubAdapter whose send() was a
+// console.log returning a fabricated message id — so `slack://` reported
+// success for every message by construction. Removed with the adapters. An
+// unused EXPORT is never a compile error, so nothing would have caught these.
 
 // ── Agent Discovery ──────────────────────────────────────────────
 
@@ -77,13 +66,6 @@ export type GatewayWsMessage =
   | { type: "list_agents_request"; requestId: string }
   | { type: "list_agents_response"; requestId: string; agents: AgentInfo[] };
 
-// ── Routing ───────────────────────────────────────────────────────
-
-export interface ChannelRoute {
-  id: string;
-  platform: Platform;
-  chatId: string;
-  chatName?: string;
-  sessionId: string;
-  createdAt: number;
-}
+// `ChannelRoute` (the platform→session routing table) went with the adapters in
+// ADR-064. Its last reader was `setRoutes`, and the `settings.routes` field it
+// typed is now scrubbed on read as a removed key.

@@ -69,7 +69,12 @@ describe("getSettings", () => {
     assert.deepEqual(settings.channels, ["server:autonomos"]);
   });
 
-  it("scrubs removed keys (inboxAgent, gateway.telegram/discord) on read", () => {
+  it("scrubs removed keys (inboxAgent, and the whole gateway block) on read", () => {
+    // `gateway` used to be partially scrubbed — telegram/discord dropped, slack
+    // KEPT, because the slack adapter still had a connect-loop reading it. That
+    // loop went with the adapters in ADR-064, so the entire key is now dead and
+    // is scrubbed whole. A surviving `gateway.slack.enabled` would be a setting
+    // a user can toggle that does nothing at all.
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({
@@ -83,7 +88,11 @@ describe("getSettings", () => {
     );
     const settings = getSettings();
     assert.equal("inboxAgent" in settings, false);
-    assert.deepEqual(settings.gateway, { slack: { enabled: true } });
+    assert.equal(
+      "gateway" in settings,
+      false,
+      "the whole gateway block is dead, not just its removed platforms",
+    );
   });
 
   it("scrubs removed anthropic override keys on read", () => {
@@ -125,7 +134,11 @@ describe("getSettings", () => {
     assert.equal("gateway" in settings, false);
   });
 
-  it("drops routes for removed platforms, keeps slack routes", () => {
+  it("drops the whole routes table, including slack routes", () => {
+    // Previously this filtered per-platform and KEPT slack routes, because
+    // `setRoutes` still fed them to the router's inbound table. ADR-064 deleted
+    // setRoutes along with the adapters, so no route of any platform has a
+    // reader — a retained slack route would be a rule that silently never fires.
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({
@@ -137,8 +150,11 @@ describe("getSettings", () => {
       }),
     );
     const settings = getSettings();
-    assert.equal(settings.routes?.length, 1);
-    assert.equal(settings.routes?.[0].id, "r3");
+    assert.equal(
+      "routes" in settings,
+      false,
+      "no route has a reader any more — keeping the slack one would be a rule that never fires",
+    );
   });
 
   it("drops scrubbed keys from disk on the next persist", () => {

@@ -49,33 +49,37 @@ describe("routeMessage — URI routing", () => {
     assert.ok(err.includes("not found"));
   });
 
-  it("returns error for slack:// when adapter not connected", async () => {
-    const err = await routeMessage(
+  it("rejects removed platform schemes (slack, discord, telegram)", async () => {
+    // `slack://` is here rather than in a suite of its own because it was the
+    // most dangerous scheme in the router: its only adapter was a StubAdapter
+    // whose send() console.logged and returned a fabricated message id, so this
+    // call used to return null — SUCCESS — for a message that reached a log
+    // line and nothing else. Removed with the adapters (ADR-064).
+    for (const uri of [
       "slack://workspace/channel",
-      "hello",
-      "sender-123",
-    );
-    assert.ok(err);
-    assert.ok(err.includes("not available") || err.includes("not connected"));
-  });
-
-  it("rejects removed platform schemes (discord, telegram)", async () => {
-    // These adapters were removed — their URIs must fail as unknown
-    // schemes rather than silently dropping messages.
-    for (const uri of ["discord://guild/channel", "telegram://chat-id"]) {
+      "discord://guild/channel",
+      "telegram://chat-id",
+    ]) {
       const err = await routeMessage(uri, "hello", "sender-123");
-      assert.ok(err);
-      assert.ok(err.includes("Unknown URI scheme"));
+      assert.ok(err, `${uri} must not report success`);
+      assert.ok(err.includes("Unknown URI scheme"), `got: ${err}`);
     }
   });
 
-  it("broadcast:// succeeds even with no agents (no-op)", async () => {
+  it("broadcast:// is refused, and says what to use instead", async () => {
+    // It used to return null (success) unconditionally — including with a fleet
+    // of zero, and including when every recipient was unreachable. Removed in
+    // ADR-064. Agents spawned before the removal still carry `broadcast://all`
+    // in their baked-in system prompt, so the error has to be actionable rather
+    // than a bare "unknown scheme".
     const err = await routeMessage(
       "broadcast://all",
       "hello everyone",
       "sender-123",
     );
-    assert.equal(err, null);
+    assert.ok(err, "broadcast must NOT report success");
+    assert.match(err, /removed/);
+    assert.match(err, /agent:\/\//, "must name the replacement");
   });
 
   it("parses URI scheme correctly", async () => {
@@ -189,6 +193,7 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
     seedAgent(id, "LiveClaude", "claude-code", false);
     const writes: string[] = [];
     const ws = {
+      readyState: 1, // OPEN — delivery now requires it, not just a send() that returns
       send: (data: string) => writes.push(data),
     } as unknown as WSContext;
     registerSessionClient(id, ws);
@@ -198,6 +203,35 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
     assert.equal(err, null, `expected success, got: ${err}`);
     assert.equal(writes.length, 1, "the message must reach the socket");
     assert.match(writes[0], /ping/);
+    unregisterSessionClient(ws);
+  });
+
+  it("refuses delivery to a Claude Code socket that is already CLOSING", async () => {
+    // The registry is cleaned up on the socket's close EVENT, which lands after
+    // the socket stops carrying data — so there is a real window where a client
+    // is registered but cannot receive. `WSContext.send()` is not guaranteed to
+    // throw there (the underlying impl may drop the frame), so the old
+    // "no exception means delivered" inference reported success into the void.
+    const id = "c1ad0000-0000-4000-8000-00000000000b";
+    seedAgent(id, "ClosingClaude", "claude-code", false);
+    const writes: string[] = [];
+    const ws = {
+      readyState: 2, // CLOSING
+      // Deliberately does NOT throw — that is the whole point. A mock that threw
+      // would let the old catch-based code pass and prove nothing.
+      send: (data: string) => writes.push(data),
+    } as unknown as WSContext;
+    registerSessionClient(id, ws);
+
+    const err = await routeMessage("agent://ClosingClaude", "ping", SENDER);
+
+    assert.ok(err, "must return an error — null would claim delivery");
+    assert.match(err, /not delivered/);
+    assert.equal(
+      writes.length,
+      0,
+      "must not write into a socket that cannot carry it",
+    );
     unregisterSessionClient(ws);
   });
 });

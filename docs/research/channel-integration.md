@@ -113,7 +113,7 @@ OpenClaw@homelab described their actual OpenClaw (Peter Steinberger's framework)
 
 **What autonomOS already has (or could reach easily):**
 - ✅ Single settings source: `~/.autonomos/settings.json → channels[]`
-- ✅ URI-based routing: `agent://`, `telegram://`, `broadcast://` — declarative, channel-agnostic `send()`
+- ✅ URI-based routing: `agent://` — declarative, channel-agnostic `send()`. (`telegram://`/`broadcast://` were part of the original sketch; the platform adapters were never built beyond stubs and both schemes were removed in ADR-064.)
 - ❌ Hot-reload of channel config changes (currently requires session restart)
 - ❌ Schedule-level delivery routing (we have `target: "isolated"` or `agent:name` but no generic `delivery.channel`)
 - ❌ Separate failure alerting
@@ -149,7 +149,7 @@ Server boot
 
 **Option A (DIY adapters):**
 - autonomOS settings → adapter config → re-connects on boot via `initGateway()`
-- Per-session routes in `settings.routes` (already exists in type) → restored via `setRoutes()`
+- Per-session routes would need reintroducing — `settings.routes` and `setRoutes()` were removed in ADR-064 (nothing read them once the adapters went)
 - Works identically across restart ✅
 
 **Option B (CC plugins):**
@@ -273,7 +273,7 @@ This is possible but low-ROI unless Terry has a specific use case driving it. Re
 - Flesh out `packages/server/src/gateway/adapters/telegram.ts` with grammY (outbound-only, just `send()`)
 - Same for `discord.ts` with discord.js (REST `POST /channels/{id}/messages`, no WS intents needed for outbound-only)
 - Credentials in `settings.gateway.telegram.botToken` (new fields) — can reuse the same bot token as the CC plugin
-- Route `telegram://chat_id` and `discord://guild/channel` via existing `routeToPlatform()` (already in `router.ts:265`)
+- Route `telegram://chat_id` and `discord://guild/channel` — note `routeToPlatform()` no longer exists (removed with the adapter framework in ADR-064), so this needs rebuilding rather than reusing
 - No change to inbound — plugins continue to own it
 
 **Phase 3 (nice-to-haves, later):**
