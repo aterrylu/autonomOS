@@ -64,8 +64,13 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
 // escalation path — but a function reaching PERMISSION_MODE_INFO[mode] throws
 // on dashboard mount, and on the server it survives `??` and then vanishes at
 // JSON.stringify. A null-prototype map makes the lookup total.
-const LEGACY_PERMISSION_MODE_ALIASES: Readonly<Record<string, PermissionMode>> =
-  Object.assign(Object.create(null), { default: "ask" });
+// `Partial<>` is load-bearing, not decoration: without it the indexed access
+// below types as `PermissionMode`, so the compiler cannot enforce this
+// function's entire contract ("returns undefined for anything unrecognized")
+// on the one line that produces the undefined.
+const LEGACY_PERMISSION_MODE_ALIASES: Readonly<
+  Partial<Record<string, PermissionMode>>
+> = Object.assign(Object.create(null), { default: "ask" });
 
 /** Spellings this enum used to use, still accepted on input and in storage. */
 export const LEGACY_PERMISSION_MODE_SPELLINGS = ["default"] as const;

@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {
-  DEFAULT_PERMISSION_MODE,
-  LEGACY_PERMISSION_MODE_SPELLINGS,
-  PERMISSION_MODES,
-  permissionModeFromStored,
-} from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -111,15 +106,21 @@ function createMcpServer(): McpServer {
         .describe(
           "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
         ),
-      // The legacy spelling is accepted (and normalized) rather than rejected:
-      // every agent spawned before the rename still holds the OLD tool schema
-      // in its context and will keep sending "default". Rejecting it would turn
-      // a rename into a hard tool failure for the already-running fleet. It is
-      // deliberately absent from the description so nobody learns it as current.
+      // Deliberately the CURRENT values only, matching mcp/tools.ts exactly.
+      // Adding the legacy spelling here would publish it in the machine-readable
+      // `enum` — the field a model actually trusts — teaching "default" as
+      // current to every client reading this schema, and making the two MCP
+      // transports advertise different vocabularies. That divergence is the bug
+      // class this PR closes, not one to reintroduce.
+      //
+      // Backward compatibility lives where it is needed instead: autonomOS-
+      // spawned agents reach create_agent through the CHANNEL server, which
+      // forwards to POST /api/agents, and that route normalizes the legacy
+      // spelling. This schema is read by external clients, which see the
+      // current vocabulary and have no old one to hold onto.
       permissionMode: z
-        .enum([...PERMISSION_MODES, ...LEGACY_PERMISSION_MODE_SPELLINGS])
+        .enum(PERMISSION_MODES)
         .optional()
-        .transform(permissionModeFromStored)
         .describe(
           "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
         ),

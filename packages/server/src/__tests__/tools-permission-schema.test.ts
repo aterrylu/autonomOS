@@ -84,14 +84,54 @@ describe("MCP tool schemas mirror core's permission modes", () => {
     ]);
   });
 
-  it("create_agent's advertised default is the real DEFAULT_PERMISSION_MODE", () => {
+  it("advertises NO default — because omission does not mean the fallback", () => {
     // Advertising a default the server doesn't actually apply is worse than
     // advertising none: an agent reads this schema to decide whether it needs
-    // to pass a mode at all.
-    assert.equal(
-      permissionSchema(TOOL_CREATE_AGENT).default,
-      DEFAULT_PERMISSION_MODE,
+    // to pass a mode at all. `default: "ask"` claimed that omitting the field
+    // yields `ask`, which is false on every resume — omission PRESERVES the
+    // agent's current mode. A client materializing that advertised default
+    // would send `permissionMode: "ask"` explicitly on a resume and re-level a
+    // deliberately autonomous agent, reproducing the demotion this PR fixed.
+    //
+    // The fallback chain is explained in the description instead, where it can
+    // be stated conditionally.
+    for (const tool of [TOOL_CREATE_AGENT, TOOL_CREATE_TEMPLATE]) {
+      assert.equal(
+        permissionSchema(tool).default,
+        undefined,
+        `${tool.name} must not advertise a default permission mode`,
+      );
+    }
+  });
+
+  it("both MCP transports advertise the SAME permission vocabulary", () => {
+    // The channel server (tools.ts JSON Schema) and the HTTP server (mcp.ts
+    // zod) are hand-written copies for two transports. When they drifted on
+    // `list_agents`, agents could not see a peer's mode at all — the readback
+    // gap this PR closes. The same drift in the create_agent enum would teach
+    // different vocabularies to different clients, so pin them together.
+    //
+    // Notably this must FAIL if the legacy spelling is added to only one side:
+    // backward compatibility belongs at the REST boundary, not in a published
+    // enum, precisely because the enum is what a model treats as current.
+    const mcpSource = readFileSync(
+      new URL("../mcp.ts", import.meta.url),
+      "utf-8",
     );
+    const zodEnums = [
+      ...mcpSource.matchAll(/permissionMode:\s*z\s*\n?\s*\.enum\(([^)]*)\)/g),
+    ].map((m) => m[1].trim());
+    assert.ok(
+      zodEnums.length >= 2,
+      `expected both zod permissionMode enums in mcp.ts, found ${zodEnums.length}`,
+    );
+    for (const e of zodEnums) {
+      assert.equal(
+        e,
+        "PERMISSION_MODES",
+        `mcp.ts publishes a permissionMode enum of \`${e}\` instead of deriving it from PERMISSION_MODES — the two transports would advertise different vocabularies`,
+      );
+    }
   });
 
   it("no schema description names a mode that does not exist", () => {

@@ -190,6 +190,8 @@ Resolution at spawn: **explicit request → (on a resume) the agent's own record
 
 An agent's autonomy therefore changes only when a request explicitly says so — a resume that says nothing about permissions keeps the agent's mode, and `restart-all` / attach send no body at all, so they cannot re-level a fleet. A change that does happen is logged. Codex's OS sandbox is separately infra-locked to `danger-full-access` (autonomOS is the trust boundary), so it is not a user choice.
 
+A **fork** takes the fresh-spawn path, so it does not inherit its parent's mode — a fork of a `bypass` agent is `ask` unless asked otherwise. Fail-closed and consistent with a fork not inheriting `template`/`manager`/`project` either, but worth stating since inheritance is the natural expectation there.
+
 One gap worth knowing: Codex cannot represent `plan`, so it is clamped to `ask`-equivalent approvals at spawn (logged) while the record still shows `plan` — there, the record reflects what was requested, not what runs.
 
 The dashboard's Permission Mode setting is a **browser-local** preselection for spawns started from that dashboard, not a server-wide policy.

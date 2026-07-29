@@ -424,7 +424,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             // reattaches a managed record or adopts an external CC session.
             resumeSessionId,
             forkFromAgentId: forkFrom,
-            // Pass through; /api/agents applies DEFAULT_PERMISSION_MODE when omitted.
+            // Pass through, INCLUDING undefined. /api/agents owns the
+            // fallback so it can prefer a resumed agent's own record over it —
+            // do not substitute a default here.
             permissionMode,
             appendSystemPrompt: systemPrompt,
             template,

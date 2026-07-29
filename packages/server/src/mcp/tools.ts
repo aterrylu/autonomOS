@@ -75,9 +75,14 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       permissionMode: {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
+        // NO `default` key. It would say "omitting this yields ask", which is
+        // false on every resume — omission PRESERVES the agent's current mode.
+        // A client that materializes an advertised default would then send
+        // `permissionMode: "ask"` explicitly on a resume and re-level a
+        // deliberately autonomous agent: the exact demotion this schema's own
+        // description tells it to avoid.
         description:
           "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
-        default: "ask",
       },
       template: {
         type: "string",

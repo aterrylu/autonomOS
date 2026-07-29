@@ -1002,6 +1002,20 @@ export const useStore = create<AppState>()(
           // resume, which rewrites customTitle on the USER'S OWN external
           // session. Let the server mint `<dir> · <id>` instead; the user can
           // /rename afterwards.
+          // permissionMode is deliberately OMITTED, not set to this browser's
+          // default. `resumeSessionId` resolves polymorphically on the server:
+          // it adopts a genuinely external session (no record → the fallback
+          // chain applies, which is what we want), but it REATTACHES a managed
+          // record when the id matches one — and this panel can show a managed
+          // agent as external, because it matches on providerSessionId while
+          // the ADR-049 crash net regenerates exactly that field, orphaning the
+          // agent's original JSONL under its still-valid agent id.
+          //
+          // Sending an explicit mode here would count as "the caller asked for
+          // this" and permanently overwrite that agent's record with whatever
+          // this browser tab's dropdown last said. Omitting it lets the server
+          // preserve the record on a reattach and apply the default only where
+          // there is genuinely no record to preserve.
           await spawnSession(
             set,
             get,
@@ -1010,7 +1024,6 @@ export const useStore = create<AppState>()(
             {
               workingDirectory: cwd,
               resumeSessionId: claudeSessionId,
-              permissionMode: get().permissionMode,
             },
           );
         },

@@ -42,63 +42,93 @@ interface AgentRecord {
 }
 
 /**
- * The permission flags the server most recently LAUNCHED `agentId` with, read
- * from its own `[runtime] spawning:` log line.
+ * The permission flags the server LAUNCHED `agentId` with, from its own
+ * `[runtime] spawning:` lines, plus how many times it has spawned that agent.
  *
- * This — not the live process — is the reliable source in CI, and the reason is
- * specific: `--dangerously-skip-permissions` is refused by the real `claude`
- * binary under CI/root (the documented constraint behind ADR-045's default
- * flip). A `bypass` agent therefore starts, is rejected, and exits; the ADR-049
- * crash net then mints a FRESH providerSessionId and respawns, so nothing in
- * `ps` carries the original id any more and a live-process probe reads
- * "no-process" no matter how long it waits. Two CI runs proved that in turn:
- * a fixed wait failed, and so did polling to a 45s deadline.
+ * Reads the log rather than a live process, and the reason is specific:
+ * `--dangerously-skip-permissions` is refused by the real `claude` binary under
+ * CI/root (the constraint behind ADR-045's default flip), so a `bypass` agent
+ * starts, is rejected and exits. Nothing in `ps` survives to be inspected. The
+ * log line is the concrete argv handed to the OS, which is exactly the side of
+ * the comparison this suite needs, and it is stable either way.
  *
- * What this still checks is exactly the thing the bug was about — the argv the
- * server handed the OS versus the record it kept. It is strictly the concrete
- * launch arguments, not the server's opinion of a mode.
+ * Returns the FLAG STRING, not a bypass/other verdict: a two-value answer would
+ * report `ask` and `auto` identically, so an ask→auto re-levelling — a real
+ * autonomy change — would pass every argv assertion in this file.
  *
- * Reads the LAST matching spawn, so a respawn supersedes the original. The
- * permission flags are pushed first in claude's argv and the session id
- * immediately after, so a short window past the marker contains both without
- * risking a match against later, unrelated log output.
+ * `spawns` exists so a caller can prove a respawn actually happened. Without it
+ * a "mode unchanged" assertion is satisfied by the PREVIOUS spawn's line, which
+ * is how the restart-all check came to pass while testing nothing (an agent
+ * that had already exited was never in `live`, so restart-all skipped it).
  */
-function launchedMode(
+function launchedPermission(
   server: BootedServer,
   agentId: string,
-): "bypass" | "other" | "never-spawned" {
-  let result: "bypass" | "other" | "never-spawned" = "never-spawned";
+): { flags: string; spawns: number } {
+  let flags = "never-spawned";
+  let spawns = 0;
   for (const chunk of server.logs().split("[runtime] spawning:").slice(1)) {
+    // Permission flags are pushed first in claude's argv and the session id
+    // immediately after, so a short window holds both without risking a match
+    // against later, unrelated log output.
     const head = chunk.slice(0, 400);
     if (!head.includes(agentId)) continue;
-    result = head.includes("--dangerously-skip-permissions")
-      ? "bypass"
-      : "other";
+    spawns++;
+    if (head.includes("--dangerously-skip-permissions")) flags = "bypass";
+    else {
+      const m = head.match(/--permission-mode\s+(\S+)/);
+      flags = m ? `permission-mode:${m[1]}` : "none";
+    }
   }
-  return result;
+  return { flags, spawns };
 }
 
+/** Flags claude is launched with for each of our modes. `ask` emits none. */
+const EXPECTED_FLAGS: Record<string, string> = {
+  ask: "none",
+  auto: "permission-mode:acceptEdits",
+  plan: "permission-mode:plan",
+  bypass: "bypass",
+};
+
 /**
- * Assert what `agentId` was launched with, polling briefly because a respawn
- * (restart-all in particular) writes its spawn line only once it gets there.
+ * Assert the flags `agentId` was launched with, polling to a deadline because
+ * a spawn line is written asynchronously.
  *
- * On failure it reports what was actually observed, so a genuine wrong-mode
- * result can never be misread as a slow respawn.
+ * `minSpawns` guards against the vacuous pass described on `launchedPermission`:
+ * pass 2 after a restart to require that a NEW spawn line exists, so the
+ * assertion cannot be satisfied by the pre-restart one.
  */
-async function expectLaunchedMode(
+async function expectLaunchedWith(
   server: BootedServer,
   agentId: string,
-  expected: "bypass" | "other",
+  mode: keyof typeof EXPECTED_FLAGS,
   label: string,
-  timeoutMs = 30_000,
+  {
+    minSpawns = 1,
+    timeoutMs = 45_000,
+  }: { minSpawns?: number; timeoutMs?: number } = {},
 ): Promise<void> {
+  const want = EXPECTED_FLAGS[mode];
   const deadline = Date.now() + timeoutMs;
-  let seen = launchedMode(server, agentId);
-  while (seen !== expected && Date.now() < deadline) {
+  let seen = launchedPermission(server, agentId);
+  while (
+    (seen.flags !== want || seen.spawns < minSpawns) &&
+    Date.now() < deadline
+  ) {
     await sleep(500);
-    seen = launchedMode(server, agentId);
+    seen = launchedPermission(server, agentId);
   }
-  assert.equal(seen, expected, `${label} (observed "${seen}")`);
+  assert.equal(
+    seen.flags,
+    want,
+    `${label} — expected the flags for "${mode}" (observed "${seen.flags}")`,
+  );
+  assert.ok(
+    seen.spawns >= minSpawns,
+    `${label} — expected at least ${minSpawns} spawn(s) of this agent, saw ${seen.spawns}. ` +
+      `Fewer means the operation under test never relaunched it, so this assertion proved nothing.`,
+  );
 }
 
 describe("permission mode — process and record agree across a resume", {
@@ -162,11 +192,12 @@ describe("permission mode — process and record agree across a resume", {
       "bypass",
       "a resume that says nothing about permissions must not re-level the agent",
     );
-    await expectLaunchedMode(
+    await expectLaunchedWith(
       server,
       agent.id,
       "bypass",
       "the relaunch must match the record it kept",
+      { minSpawns: 2 }, // the resume must have actually relaunched it
     );
   });
 
@@ -188,11 +219,12 @@ describe("permission mode — process and record agree across a resume", {
     await sleep(5000);
 
     // Before the fix this was the divergence: process bypass, record ask.
-    await expectLaunchedMode(
+    await expectLaunchedWith(
       server,
       agent.id,
       "bypass",
       "the explicit mode must reach the argv",
+      { minSpawns: 2 },
     );
     assert.equal(
       await recordedMode(agent.id),
@@ -207,7 +239,7 @@ describe("permission mode — process and record agree across a resume", {
       permissionMode: "bypass",
     });
     await sleep(4000);
-    await expectLaunchedMode(
+    await expectLaunchedWith(
       server,
       agent.id,
       "bypass",
@@ -237,11 +269,11 @@ describe("permission mode — process and record agree across a resume", {
     });
     await sleep(4000);
     assert.equal(await recordedMode(agent.id), "ask");
-    await expectLaunchedMode(
+    await expectLaunchedWith(
       server,
       agent.id,
-      "other",
-      "ask must emit no skip-permissions flag",
+      "ask",
+      "the normalized legacy spelling must launch as ask (no permission flag)",
     );
   });
 });
@@ -278,10 +310,20 @@ describe("restart-all preserves per-agent permission modes", {
   });
 
   it("does not level a mixed fleet in either direction", async () => {
-    // The security question that prompted this work. It must exercise the
-    // REAL endpoint: a unit test that loops markRunning with each record's
-    // own mode reimplements the caller under test and stays green even if
-    // respawnAgent starts consulting a global.
+    // The security question that prompted this work. It must exercise the REAL
+    // endpoint: a unit test that loops markRunning with each record's own mode
+    // reimplements the caller under test and stays green even if respawnAgent
+    // starts consulting a global.
+    //
+    // The permissive member is `auto`, NOT `bypass`, and that matters. In CI the
+    // real claude refuses --dangerously-skip-permissions, so a bypass agent
+    // exits immediately; restart-all snapshots `Array.from(live.keys())` and an
+    // exited agent has already been live.delete()d, so it is never restarted at
+    // all. Both of this test's assertions then passed while touching nothing —
+    // the record nobody wrote to, and a spawn line from before the restart.
+    // `auto` emits --permission-mode acceptEdits, which claude accepts, so the
+    // agent survives to actually be restarted. `minSpawns: 2` below makes the
+    // vacuous version impossible to write again.
     const mk = async (name: string, permissionMode?: string) => {
       const { status, body } = await authedJson<AgentRecord>(
         server,
@@ -303,41 +345,45 @@ describe("restart-all preserves per-agent permission modes", {
         .permissionMode;
 
     const supervised = await mk("fleet-ask");
-    const autonomous = await mk("fleet-bypass", "bypass");
+    const permissive = await mk("fleet-auto", "auto");
     await sleep(6000);
     assert.equal(await modeOf(supervised.id), "ask");
-    assert.equal(await modeOf(autonomous.id), "bypass");
+    assert.equal(await modeOf(permissive.id), "auto");
 
     const { status } = await authedJson(server, "/api/agents/restart-all", {
       method: "POST",
     });
     assert.equal(status, 200);
-    await sleep(10_000);
 
+    // Records first — the guarantee itself.
+    await sleep(8000);
     assert.equal(
       await modeOf(supervised.id),
       "ask",
       "restart-all must not ELEVATE a supervised agent",
     );
     assert.equal(
-      await modeOf(autonomous.id),
-      "bypass",
-      "restart-all must not DEMOTE a deliberately autonomous agent",
+      await modeOf(permissive.id),
+      "auto",
+      "restart-all must not DEMOTE a more permissive agent",
     );
-    // Records agreeing with themselves is not enough — check the argv the
-    // respawned processes actually carry. Polled, because respawning a whole
-    // fleet is slower than any fixed wait worth hard-coding.
-    await expectLaunchedMode(
+
+    // Then the argv of the RESPAWNED processes. minSpawns: 2 is what makes this
+    // real: it fails if restart-all skipped the agent, rather than quietly
+    // re-reading the original spawn line.
+    await expectLaunchedWith(
       server,
-      autonomous.id,
-      "bypass",
-      "the respawned autonomous agent must still be launched with skip-permissions",
+      permissive.id,
+      "auto",
+      "the respawned permissive agent must still be launched with acceptEdits",
+      { minSpawns: 2 },
     );
-    await expectLaunchedMode(
+    await expectLaunchedWith(
       server,
       supervised.id,
-      "other",
+      "ask",
       "the respawned supervised agent must still be launched with no permission flag",
+      { minSpawns: 2 },
     );
   });
 });
