@@ -8,12 +8,18 @@ import { createAdaptorServer } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
+import type { WSContext } from "hono/ws";
 import WebSocket from "ws";
 import {
   _resetAgentCredentialsForTesting,
   mintAgentToken,
 } from "../agentCredentials.js";
-import { isSessionClientRegistered } from "../gateway/router.js";
+import {
+  isSessionClientRegistered,
+  registerSessionClient,
+  routeMessage,
+  unregisterSessionClient,
+} from "../gateway/router.js";
 import { gatewayRouter } from "../routes/gateway.js";
 
 /**
@@ -227,5 +233,100 @@ describe("gateway ws+unix preserves the ?token= query", () => {
 
   it("rejects the upgrade when ?token= is wrong", async () => {
     assert.equal(await openOutcome(url("wrong")), "closed");
+  });
+});
+
+/**
+ * The Claude Code delivery guard, against a REAL `WSContext` — not a literal.
+ *
+ * Raised in review (nox-0x on #299): the guard is the entire Claude Code half of
+ * the delivery ack, and its only coverage was `{ readyState: 2, send }`, which
+ * cannot distinguish a LIVE getter from a value captured at construction. If
+ * hono assigned `this.readyState = init.readyState` in the constructor, the
+ * check would read `1` forever, the CLOSING window would be exactly as
+ * unguarded as before this PR, and the object-literal test would stay green.
+ *
+ * Settled empirically first (hono 4.12.5 / @hono/node-ws 1.3.0: a real context
+ * reports 1 while open and 3 after close), then pinned here so a dependency bump
+ * that turns it into a snapshot fails instead of silently disarming the guard.
+ *
+ * Registering AFTER the close is deliberate: it is what makes this
+ * deterministic. A socket closed while registered races the server's own
+ * `onClose` → `unregisterSessionClient`, after which routing takes the
+ * "not found" branch and never reaches the guard at all — green for the wrong
+ * reason. Registering a known-closed context reproduces the exact state the
+ * guard exists for (present in the registry, incapable of carrying data)
+ * without depending on which callback wins.
+ */
+describe("Claude Code delivery guard — real WSContext, not a literal", () => {
+  let srv: Server;
+  let ctx: WSContext | null = null;
+  let client: WebSocket;
+
+  before(async () => {
+    const app = new Hono();
+    const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
+    app.get(
+      "/",
+      upgradeWebSocket(() => ({
+        onOpen(_e: Event, ws: WSContext) {
+          ctx = ws;
+        },
+      })),
+    );
+    srv = createAdaptorServer({ fetch: app.fetch }) as Server;
+    injectWebSocket(srv);
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const { port } = srv.address() as { port: number };
+    client = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => client.addEventListener("open", () => r()));
+  });
+
+  after(() => {
+    try {
+      client?.close();
+    } catch {
+      // already closing
+    }
+    srv?.close();
+  });
+
+  it("reports a real OPEN context as open — the guard must not false-negative", () => {
+    assert.ok(ctx, "the server must have captured a real WSContext");
+    assert.equal(
+      (ctx as WSContext).readyState,
+      1,
+      "a live socket must read OPEN, or the guard would refuse healthy delivery",
+    );
+  });
+
+  it("refuses delivery through a real context whose socket has closed", async () => {
+    const target = ctx as WSContext;
+    target.close();
+    // Wait for the real transition rather than guessing a sleep. If readyState
+    // were a construct-time snapshot this never leaves 1 and the test times
+    // out here — which is itself the finding.
+    const deadline = Date.now() + 3000;
+    while (target.readyState === 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.notEqual(
+      target.readyState,
+      1,
+      "readyState must be a LIVE delegate; a snapshot would leave the guard inert",
+    );
+
+    registerSessionClient("sess-closed-real", target);
+    try {
+      const err = await routeMessage(
+        "agent://sess-closed-real",
+        "does this get claimed as delivered?",
+        "sess-sender-real",
+      );
+      assert.ok(err, "must NOT report success through a dead socket");
+      assert.match(err, /not delivered/);
+    } finally {
+      unregisterSessionClient(target);
+    }
   });
 });

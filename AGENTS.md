@@ -60,12 +60,9 @@ Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enabl
 `attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Configurable via settings panel toggle (default: ON).
 
 ### Agent Communication (URI-based)
-Agents communicate via URI-based addressing through the gateway:
-- `agent://name` — send to a named agent
-- `broadcast://all` — send to all agents
-- `slack://...` — platform channels (when adapters ship)
+Agents communicate through the gateway using one scheme: **`agent://name`**. There is no broadcast and there are no platform schemes — both were removed in ADR-064 because both reported success for messages that never arrived (`broadcast://` ack'd unconditionally, even to a fleet of zero; `slack://`'s only adapter was a stub whose `send()` was a `console.log`).
 
-The gateway router parses the URI scheme and delivers to the right destination.
+**`send()` succeeds only if the destination ACCEPTED the message** — for Claude Code, the write landed on an open, registered channel-server socket; for Codex, the agent's `app-server` daemon replied to `turn/start`. It is NOT a receipt that the agent read it. Any other result explains why it did not arrive, and a message reported as not-yet-delivered is retried automatically — **do not re-send it** (a duplicate makes a Codex agent execute the same instruction twice).
 
 ### MCP Tool Architecture
 Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:

@@ -37,12 +37,6 @@ export interface AppSettings {
    * supported, e.g. "server:autonomos".
    */
   channels?: string[];
-  /** Gateway platform adapter config */
-  gateway?: {
-    slack?: { enabled: boolean };
-  };
-  /** Channel-to-session routing rules */
-  routes?: import("@autonomos/core").ChannelRoute[];
   /** Auto-answer Claude Code startup trust prompts (default: true) */
   autoTrust?: boolean;
   /** User-defined env vars injected into every spawned session */
@@ -81,7 +75,11 @@ const DEFAULT_CHANNELS = ["server:autonomos"];
  * — xterm.js is now the only backend, so the selector key is non-credential
  * dead weight; scrubbing it on read prevents it surviving forever (the
  * updateSettings merge spreads current settings, so an un-scrubbed unknown
- * key would re-persist on every save).
+ * key would re-persist on every save). `gateway` and `routes` died with the
+ * platform-adapter removal (ADR-064): the last reader of `gateway` was the
+ * adapter connect-loop in initGateway, and the last reader of `routes` was
+ * setRoutes — both deleted. Left in place they would be settings that silently
+ * do nothing, which is the same class of lie as an ack that isn't one.
  */
 const REMOVED_KEYS = [
   "inboxAgent",
@@ -89,8 +87,9 @@ const REMOVED_KEYS = [
   "anthropicAuthToken",
   "anthropicOverrideEnabled",
   "terminalRenderer",
+  "gateway",
+  "routes",
 ];
-const REMOVED_GATEWAY_KEYS = ["discord", "telegram"];
 
 function scrubRemovedKeys(data: AppSettings): void {
   const record = data as Record<string, unknown>;
@@ -106,27 +105,6 @@ function scrubRemovedKeys(data: AppSettings): void {
     console.warn(
       `[settings] Ignoring settings.json keys from removed features: ${dropped.join(", ")} (dropped from disk on next save)`,
     );
-  }
-  if (data.gateway) {
-    const gateway = data.gateway as Record<string, unknown>;
-    for (const key of REMOVED_GATEWAY_KEYS) {
-      delete gateway[key];
-    }
-    // Don't re-persist an empty residue object forever.
-    if (Object.keys(gateway).length === 0) {
-      delete record.gateway;
-    }
-  }
-  // Routing rules for removed platforms can never match inbound traffic
-  // (and the narrowed Platform type says they can't exist) — drop them.
-  if (Array.isArray(data.routes)) {
-    const valid = data.routes.filter((r) => r?.platform === "slack");
-    if (valid.length !== data.routes.length) {
-      console.warn(
-        `[settings] Dropped ${data.routes.length - valid.length} routes for removed platforms from settings.json`,
-      );
-      data.routes = valid;
-    }
   }
 }
 

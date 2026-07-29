@@ -644,9 +644,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       "Shutting down — killing PTYs (agents will resume on next start)...",
     );
     stopScheduler();
-    import("./gateway/index.js")
-      .then(({ shutdownGateway }) => shutdownGateway())
-      .catch(() => {});
     shutdownAllAttachments();
     // Release the pid file (claimed via acquireOwnership at startup),
     // per ADR-029.

@@ -21,7 +21,7 @@
 
 Running several coding-CLI agents today means a grid of terminal tabs you babysit — copy-pasting context between them, relaying every hand-off by hand. autonomOS turns them into a **team**: one shared message bus, one shared MCP toolbelt, and an org chart of who reports to whom, so agents coordinate *directly* across whichever CLI they run.
 
-- **A message bus for coding agents** — a URI gateway (`agent://reviewer`, `broadcast://all`) routes messages between running sessions; a Claude Code agent hands off to a Codex one with no human relay.
+- **A message bus for coding agents** — a URI gateway (`agent://reviewer`) routes messages between running sessions, and tells the sender whether the message actually landed; a Claude Code agent hands off to a Codex one with no human relay.
 - **Cross-CLI by design** — Claude Code, Codex, and Gemini share one MCP toolbelt and one address space, so orchestration is written once and works across every runtime.
 - **An org chart, like a company** — agents organize into managers and reports; work delegates *down* the tree and escalates *up* it, on a hierarchy you shape at runtime — not a flat pool of tabs.
 - **Coordination you can watch** — normalized hook telemetry streams every agent's live status as they work and message each other.
@@ -65,7 +65,7 @@ autonomOS is CLI-agnostic by design: every runtime plugs into the same message b
 | Usage / token tracking | ✅ | ✅ | ❌ not yet |
 | Resume across restarts | ✅ | ✅ | ⚠️ fresh session |
 
-**How it works.** Two pieces make cross-CLI coordination possible. The **message bus** is a URI router: address any agent as `agent://name` or the whole fleet as `broadcast://all`, and the gateway delivers to the right session — hiding a per-runtime delivery path (Claude Code and Gemini over a WebSocket channel; Codex injected into its `app-server` daemon so messages render *inline* in the live TUI) behind one uniform address space. The **shared MCP** is a single set of tools — `create_agent`, `send`, `set_manager`, `get_org_chart`, schedules — injected into every agent in its provider-native way, so a Claude Code agent and a Codex agent call the *same* `send()` with identical schemas. Adding a runtime is implementing one provider interface, not re-plumbing the bus.
+**How it works.** Two pieces make cross-CLI coordination possible. The **message bus** is a URI router: address any agent as `agent://name` and the gateway delivers to the right session, acknowledging the send only once the destination has accepted it — hiding a per-runtime delivery path (Claude Code and Gemini over a WebSocket channel; Codex injected into its `app-server` daemon so messages render *inline* in the live TUI) behind one uniform address space. The **shared MCP** is a single set of tools — `create_agent`, `send`, `set_manager`, `get_org_chart`, schedules — injected into every agent in its provider-native way, so a Claude Code agent and a Codex agent call the *same* `send()` with identical schemas. Adding a runtime is implementing one provider interface, not re-plumbing the bus.
 
 ## What's inside
 
@@ -74,7 +74,7 @@ autonomOS is CLI-agnostic by design: every runtime plugs into the same message b
 | **Split-pane terminals** | Multiple agent sessions side by side — drag-to-split, tabs, keyboard shortcuts. |
 | **Live agent status** | Working / idle / needs-input / error, derived from hook telemetry, with unread notification badges. |
 | **Org chart** | A hierarchy view of managers and reports — see who delegated what to whom. |
-| **Multi-agent messaging** | URI-based gateway (`agent://name`, `broadcast://all`) with MCP tools to spawn, message, and organize agents. |
+| **Multi-agent messaging** | URI-based gateway (`agent://name`) with delivery-confirmed sends, plus MCP tools to spawn, message, and organize agents. |
 | **Cron scheduler** | Native timer-based scheduling — agents create their own recurring or one-time jobs; the dashboard monitors them. |
 | **Session management** | Create, resume, kill, auto-reconnect, output replay, and auto-persist across server restarts. |
 | **PWA + themes** | Installable as a standalone app with notifications. Midnight, Daylight, and Void themes. |

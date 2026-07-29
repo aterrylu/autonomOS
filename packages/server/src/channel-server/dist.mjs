@@ -11,6 +11,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import WebSocket from "ws";
 
+// packages/server/src/gateway/deliveryTimings.ts
+var GATEWAY_REQUEST_TIMEOUT_MS = 5e3;
+
 // packages/server/src/mcp/tools.ts
 var TOOL_CREATE_AGENT = {
   name: "create_agent",
@@ -101,13 +104,13 @@ var TOOL_KILL_AGENT = {
 };
 var TOOL_SEND = {
   name: "send",
-  description: "Send a message to any destination \u2014 agents, platform channels, or broadcast. Use the from_uri from incoming messages to respond.",
+  description: "Send a message to another agent. Use the from_uri from incoming messages to respond. Succeeds only if the destination accepted the message; any other result explains why it did not, and a message reported as not-yet-delivered is retried automatically \u2014 do not re-send it.",
   inputSchema: {
     type: "object",
     properties: {
       to: {
         type: "string",
-        description: 'Destination URI (e.g. "agent://name", "broadcast://all")'
+        description: 'Destination URI \u2014 "agent://name" (use list_agents to find names)'
       },
       message: {
         type: "string",
@@ -394,7 +397,7 @@ var MCP_INSTRUCTIONS = [
   "You are running inside autonomOS \u2014 an agent orchestration platform.",
   "",
   "Available tools:",
-  "- send(to, message): Send messages via URI (agent://name, broadcast://all)",
+  "- send(to, message): Send a message to one agent (agent://name). There is no broadcast \u2014 address each recipient.",
   "- list_agents(): Discover active agents and their URIs",
   "- create_agent(): Spawn a new dedicated agent",
   "- kill_agent(): Terminate an agent",
@@ -530,9 +533,9 @@ function handleServerMessage(msg) {
     }
   }
 }
-function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout) {
+function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout, defaultOnNotSent = defaultOnTimeout) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return Promise.resolve(defaultOnTimeout);
+    return Promise.resolve(defaultOnNotSent);
   }
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -548,7 +551,7 @@ function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout) {
     } catch {
       clearTimeout(timer);
       pendingRequests.delete(requestId);
-      resolve(defaultOnTimeout);
+      resolve(defaultOnNotSent);
     }
   });
 }
@@ -631,17 +634,28 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         message,
         requestId
       };
-      const result = await requestGateway(wsMsg, requestId, 2e3, {
-        success: false,
-        error: "Gateway did not confirm delivery (timeout)"
-      });
+      const result = await requestGateway(
+        wsMsg,
+        requestId,
+        GATEWAY_REQUEST_TIMEOUT_MS,
+        {
+          success: false,
+          error: "The gateway did not answer in time, so it is unknown whether this message was delivered. Check the agent's state before re-sending."
+        },
+        {
+          success: false,
+          error: "NOT sent \u2014 this agent's gateway connection is down, so nothing was transmitted. Retrying is safe."
+        }
+      );
       if (!result.success) {
         return {
           content: [{ type: "text", text: result.error ?? "Send failed" }],
           isError: true
         };
       }
-      return { content: [{ type: "text", text: `Sent to ${to}` }] };
+      return {
+        content: [{ type: "text", text: `Accepted for delivery to ${to}` }]
+      };
     }
     case "list_agents": {
       if (!ws || ws.readyState !== WebSocket.OPEN) {

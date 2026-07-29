@@ -29,6 +29,15 @@
  * at the invariant level passes before and after, which is what makes it a
  * regression net for that change instead of a cast of it.
  *
+ * ADR-064 sharpened the second invariant. "Visible" used to mean an operator
+ * notification, because `routeMessage` ack'd the sender on enqueue and the
+ * transport-failure tests below asserted `err === null` with the comment
+ * "delivery is async — the send itself is ack'd". That ack was the bug: it is
+ * what let a dead daemon, a refused turn and a threadless agent all report
+ * success. Those assertions are now inverted — the SENDER is told, and the
+ * operator notification remains as the second signal. Each one was verified red
+ * against a `deliverToCodex(...); return null;` router (the pre-ADR-064 shape).
+ *
  * NOTE on `HOME`: the sender's display name resolves through `batchGetTitles`,
  * which stats `$HOME/.claude/projects/...`. It is a read-only, deterministic
  * miss (the sender id is minted per test and no transcript exists for it), so
@@ -62,7 +71,10 @@ import {
   _setCodexTimingsForTesting,
   setCodexInboundNotifier,
 } from "../gateway/codexControl.js";
-import { routeMessage } from "../gateway/router.js";
+import {
+  _setDeliveryAckWindowForTesting,
+  routeMessage,
+} from "../gateway/router.js";
 import { FakePty } from "../perf/fake-pty.js";
 import {
   type RealCodexDaemon,
@@ -147,6 +159,17 @@ beforeEach(async () => {
     retryBackoffMs: 20,
     statusPollMs: 50,
   });
+  // The sender's ack window. Shrunk for the same reason as the timings above:
+  // at the production 2s, every transport-failure test below would spend a full
+  // 2s waiting for a window whose EXPIRY is the thing under test.
+  //
+  // 1000ms, not the 300ms first written here. A happy-path delivery is FIVE
+  // round-trips plus a handshake (connect, initialize, thread/loaded/list,
+  // thread/read — `lastStatus` is null on a new connection — then turn/start),
+  // and 300ms of budget for that on a loaded CI runner makes `err === null` the
+  // flaky side. Still far under the failure tests' patience, so their expiry
+  // path stays fast.
+  _setDeliveryAckWindowForTesting(1_000);
   notifications = [];
   setCodexInboundNotifier((agentId, message) =>
     notifications.push({ agentId, message }),
@@ -168,6 +191,7 @@ afterEach(async () => {
   // Controllers first: each holds an open socket to a daemon and a status loop
   // that would otherwise keep re-dialing a listener we are about to close.
   _resetCodexControlForTesting();
+  _setDeliveryAckWindowForTesting(); // restore the production window
   // Read the AUTHORITATIVE list rather than a locally-kept array of what this
   // suite registered. Nothing here spawns, so every live attachment is
   // synthetic by construction — and a mirror of that list is one an added
@@ -204,7 +228,7 @@ describe("Codex inbound — a routed message reaches the agent's daemon", () => 
       senderId,
     );
 
-    assert.equal(err, null, `routing should succeed, got: ${err}`);
+    assert.equal(err, null, `must report DELIVERED (null), got: ${err}`);
     await waitUntil(
       () => daemon.turns.length === 1,
       () => `a turn/start to reach the daemon (saw ${daemon.turns.length})`,
@@ -262,7 +286,7 @@ describe("Codex inbound — a routed message reaches the agent's daemon", () => 
       "you have mail",
       senderId,
     );
-    assert.equal(err, null, `routing should succeed, got: ${err}`);
+    assert.equal(err, null, `must report DELIVERED (null), got: ${err}`);
 
     // Wait for the daemon to have actually SERVED its state to our client (a
     // real protocol event, not a guessed sleep) before flipping it. The
@@ -297,7 +321,7 @@ describe("Codex inbound — a routed message reaches the agent's daemon", () => 
 
     const err = await routeMessage("agent://CodexAlpha", "for alpha", senderId);
 
-    assert.equal(err, null, `routing should succeed, got: ${err}`);
+    assert.equal(err, null, `must report DELIVERED (null), got: ${err}`);
     await waitUntil(
       () => daemon.turns.length === 1,
       () => `the turn to reach Alpha's daemon (saw ${daemon.turns.length})`,
@@ -310,34 +334,29 @@ describe("Codex inbound — a routed message reaches the agent's daemon", () => 
     );
   });
 
-  it("broadcasts to every running Codex agent, and to neither the sender nor an exited one", async () => {
-    // Broadcast fans out over a different branch than unicast and once skipped
-    // Codex agents entirely (#287). Its per-recipient filters are only
-    // exercised by a fleet with something to filter OUT.
-    const other = await startDaemon();
+  it("does not deliver to an exited Codex agent, even with a live daemon at its endpoint", async () => {
+    // Replaces the broadcast fan-out test (broadcast:// removed in ADR-064).
+    // The filter it covered is still worth pinning on the unicast path: an
+    // exited agent's recorded endpoint can be a RECYCLED port now belonging to
+    // a DIFFERENT agent's daemon after a respawn, so delivering to it would put
+    // one agent's instructions into another agent's thread. `stale` is a real
+    // listening daemon precisely so a regression cannot pass by failing to
+    // connect — it has to be the exited-status check that stops us.
     const stale = await startDaemon();
-    seedCodexAgent("BroadcastAlpha");
-    seedCodexAgent("BroadcastBeta", other.endpoint);
-    const exitedId = seedCodexAgent("BroadcastGhost", stale.endpoint);
+    const exitedId = seedCodexAgent("GhostCodex", stale.endpoint);
     markExited(exitedId, "user_killed");
 
-    const err = await routeMessage("broadcast://all", "all hands", senderId);
+    const err = await routeMessage("agent://GhostCodex", "all hands", senderId);
 
-    assert.equal(err, null, `broadcast should succeed, got: ${err}`);
-    await waitUntil(
-      () => daemon.turns.length === 1 && other.turns.length === 1,
-      () =>
-        `both live daemons to receive the broadcast (saw ${daemon.turns.length} and ${other.turns.length})`,
-    );
-    assert.match(daemon.turns[0].text, /all hands/);
-    assert.match(other.turns[0].text, /all hands/);
-    // An exited agent's endpoint can be a RECYCLED port belonging to a
-    // different agent's daemon after a respawn, so this is not merely tidiness.
+    assert.ok(err, "must not report success for an exited agent");
+    assert.match(err, /not delivered|not found|not currently running/);
+    await delay(100); // give an async leak time to appear
     assert.equal(
       stale.turns.length,
       0,
       "an exited Codex agent must not be injected into",
     );
+    assert.equal(daemon.turns.length, 0, "and nothing may leak to another");
   });
 });
 
@@ -372,11 +391,11 @@ describe("Codex inbound — transport failures stay visible", () => {
     );
   });
 
-  it("notifies the operator, naming the agent, when the daemon endpoint is dead", async () => {
+  it("tells the SENDER, and the operator, when the daemon endpoint is dead", async () => {
     // The endpoint exists but nothing is listening — a daemon that died, or a
-    // stale port after a respawn. Delivery is asynchronous by contract, so the
-    // sender is ack'd; the operator notification is therefore the ONLY signal
-    // that the message did not land. Silence here is the #287 bug.
+    // stale port after a respawn. This used to ack the sender with success and
+    // rely on the operator notification as the only signal. Now the sender is
+    // told directly, and the notification remains as the second signal.
     const id = seedCodexAgent("DeadDaemonCodex", DEAD_ENDPOINT);
 
     const err = await routeMessage(
@@ -385,7 +404,12 @@ describe("Codex inbound — transport failures stay visible", () => {
       senderId,
     );
 
-    assert.equal(err, null, "delivery is async — the send itself is ack'd");
+    assert.ok(err, "the sender must be told — null would claim delivery");
+    assert.match(err, /NOT delivered/);
+    // The sender must not "fix" this by sending again: the message is still
+    // queued, and a duplicate makes a Codex agent execute the same instruction
+    // twice — worse than the original non-delivery.
+    assert.match(err, /do NOT re-send/);
     // ONE predicate over both fields. Two independent `some()` scans would let
     // the status-feed warning (same agent, different message) satisfy the id
     // half while an unrelated agent's warning satisfies the message half — so
@@ -407,8 +431,9 @@ describe("Codex inbound — transport failures stay visible", () => {
 
   it("keeps a rejected turn and delivers it once the daemon accepts again", async () => {
     // A daemon that is REACHABLE but refuses the turn — distinct from an
-    // unreachable socket, and the failure that most resembles #287: the sender
-    // was ack'd, so a message dropped here is dropped in silence.
+    // unreachable socket, and the failure that most resembles #287. Pre-ADR-064
+    // the sender was ack'd here, so a message dropped at this point was dropped
+    // in silence; now the sender is told, which is half of what this test pins.
     //
     // This is also the only condition under which the client's dequeue
     // ORDERING is observable from out here. `codexControl` shifts the queue on
@@ -424,7 +449,13 @@ describe("Codex inbound — transport failures stay visible", () => {
       "please take this",
       senderId,
     );
-    assert.equal(err, null, "delivery is async — the send itself is ack'd");
+    // This pair is the whole point of a non-delivery ack that is NOT a hard
+    // failure: the sender is told it did not land, AND it still lands later.
+    // Reporting it as delivered hides the first; reporting it as dropped would
+    // contradict the second and invite a duplicate.
+    assert.ok(err, "a refused turn is not a delivery — the sender must know");
+    assert.match(err, /NOT delivered/);
+    assert.match(err, /retried automatically/);
 
     await waitUntil(
       () =>
@@ -457,7 +488,11 @@ describe("Codex inbound — transport failures stay visible", () => {
       "are you there?",
       senderId,
     );
-    assert.equal(err, null, "delivery is async — the send itself is ack'd");
+    // The most deceptive shape of all: the agent record is healthy, the daemon
+    // answers, and the dashboard shows it running. Only the ack can tell the
+    // sender that a promptless agent with no thread swallowed the message.
+    assert.ok(err, "the sender must be told there is no thread to inject into");
+    assert.match(err, /NOT delivered/);
 
     await waitUntil(
       () =>

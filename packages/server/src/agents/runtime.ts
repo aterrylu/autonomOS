@@ -1334,8 +1334,9 @@ export function shutdownAllAttachments(): void {
       // best-effort during shutdown
     }
     // Dispose the Codex control client HERE, on the shutdown PATH, rather than
-    // leaving it to process exit. Its queue may hold inbound that was ack'd to
-    // the sender and never delivered, and dispose() is what LOGS that. (It also
+    // leaving it to process exit. Its queue may hold inbound that the sender was
+    // told would be retried automatically (ADR-064) — a promise this shutdown is
+    // about to break — and dispose() is what LOGS that. (It also
     // pushes a notification, but that lands in an in-memory store this process
     // is about to destroy — the durable half is the rotating log, which uses a
     // synchronous write. Do not read the notification as an operator signal on
