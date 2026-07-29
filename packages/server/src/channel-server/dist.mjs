@@ -278,7 +278,13 @@ var TOOL_CREATE_SCHEDULE = {
         default: true
       }
     },
-    required: ["name", "schedule", "target", "prompt", "workingDirectory"]
+    // workingDirectory is NOT required — it is deprecated and ignored. Leaving
+    // it here while the property description says DEPRECATED told a caller two
+    // contradictory things, and forced an agent to invent a value for a dead
+    // field (which the POST route then persisted verbatim). The channel server
+    // is the path autonomOS-spawned agents actually use, so this array is the
+    // contract they see.
+    required: ["name", "schedule", "target", "prompt"]
   }
 };
 var TOOL_LIST_SCHEDULES = {

@@ -45,6 +45,7 @@ const {
   _setExecutors,
   _onRunCompleted,
 } = await import("../scheduler.js");
+const { TOOL_CREATE_SCHEDULE } = await import("../mcp/tools.js");
 
 function setupTestDir(): void {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -257,5 +258,57 @@ describe("deprecated schedule fields are accepted and ignored", () => {
     assert.equal(validateScheduleInput(config), null);
     createSchedule(config);
     assert.ok(getSchedule("no-cwd"));
+  });
+});
+
+describe("the schedule tool schema does not contradict itself", () => {
+  // A property described as DEPRECATED while still listed in `required` tells
+  // a caller two opposite things, and forces an agent to invent a value for a
+  // dead field — which the POST route then persists verbatim. That is the
+  // "advertised field that does nothing" shape this removal exists to end, so
+  // it must not creep back in via the required array.
+  //
+  // This schema is what autonomOS-spawned agents see: the channel server
+  // bundles it, and both MCP transports share it.
+  const DEPRECATED_FIELDS = [
+    "autonomous",
+    "workingDirectory",
+    "template",
+    "onComplete",
+  ];
+
+  it("marks no deprecated field as required", () => {
+    const required = TOOL_CREATE_SCHEDULE.inputSchema.required ?? [];
+    for (const field of DEPRECATED_FIELDS) {
+      assert.ok(
+        !required.includes(field),
+        `"${field}" is deprecated-and-ignored but listed in create_schedule's required array`,
+      );
+    }
+  });
+
+  it("says DEPRECATED in the description of every field it ignores", () => {
+    // The description is the only thing telling a caller the field is inert.
+    // Silence there reads as "this works".
+    const props = TOOL_CREATE_SCHEDULE.inputSchema.properties as Record<
+      string,
+      { description?: string }
+    >;
+    for (const field of DEPRECATED_FIELDS) {
+      assert.match(
+        props[field]?.description ?? "",
+        /DEPRECATED/,
+        `create_schedule's "${field}" must announce that it is ignored`,
+      );
+    }
+  });
+
+  it("still requires the fields a schedule genuinely needs", () => {
+    // Guards the opposite failure: over-trimming the required array so a
+    // schedule can be created with no target or prompt.
+    const required = TOOL_CREATE_SCHEDULE.inputSchema.required ?? [];
+    for (const field of ["name", "schedule", "target", "prompt"]) {
+      assert.ok(required.includes(field), `"${field}" must stay required`);
+    }
   });
 });
