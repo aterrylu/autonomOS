@@ -23,6 +23,7 @@ import {
 } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
+import { writeAgentTokenFile } from "../agentCredentials.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
   disposeCodexControl,
@@ -862,6 +863,14 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   }
 
   const env = provider.buildEnv(agent.id, agent.name);
+
+  // Write the per-agent token to its 0600 file BEFORE anything that could launch
+  // the channel server (the sidecar daemon below, or the PTY). The channel server
+  // reads the token from this file (ADR-055 follow-up) rather than from env/argv,
+  // which is what lets Gemini authenticate (it strips `*TOKEN*` env) and keeps the
+  // Codex token off world-readable argv. Idempotent with the mint buildEnv already
+  // did — same token. Revoked (unlinked) on exit via markExited.
+  writeAgentTokenFile(agent.id);
 
   // Provider sidecar daemon (Codex's `codex app-server`): pick a free loopback
   // port, start the daemon, and wait until it is listening BEFORE spawning the

@@ -134,6 +134,16 @@ describe("Built-in mode URL + token forwarding", () => {
       );
       assert.equal(env.AUTONOMOS_AGENT_NAME, "TestAgent");
     });
+
+    it("injects CONFIG_DIR (token-file path) but NOT the per-agent token", () => {
+      // ADR-055 follow-up: the channel server reads its per-agent token from a
+      // file under CONFIG_DIR, not from env — so CONFIG_DIR must be present and
+      // AUTONOMOS_AGENT_TOKEN must NOT be (uniform across providers).
+      const args = claudeCodeProvider.buildArgs(baseOptions());
+      const env = readMcpEnv(args);
+      assert.equal(env.AUTONOMOS_CONFIG_DIR, tmpDir);
+      assert.equal(env.AUTONOMOS_AGENT_TOKEN, undefined);
+    });
   });
 
   describe("codexProvider.buildArgs with injectChannelServer", () => {
@@ -175,6 +185,26 @@ describe("Built-in mode URL + token forwarding", () => {
       } finally {
         if (prev !== undefined) process.env.AUTONOMOS_TOKEN = prev;
       }
+    });
+
+    it("injects CONFIG_DIR but NOT the per-agent token as a `-c` flag", () => {
+      // Codex writes argv to world-readable /proc/<pid>/cmdline, so the token
+      // must never be a `-c` flag; the channel server reads it from the 0600
+      // file at CONFIG_DIR/agent-tokens/<sessionId> instead (ADR-055 follow-up).
+      const args = codexProvider.buildArgs(baseOptions());
+      assert.equal(
+        readCfgValue(args, "mcp_servers.autonomos.env.AUTONOMOS_CONFIG_DIR"),
+        tmpDir,
+      );
+      assert.equal(
+        readCfgValue(args, "mcp_servers.autonomos.env.AUTONOMOS_AGENT_TOKEN"),
+        null,
+      );
+      // Belt-and-suspenders: the raw token must not appear anywhere in argv.
+      assert.ok(
+        !args.some((a) => a.includes("AUTONOMOS_AGENT_TOKEN")),
+        "no argv token flag",
+      );
     });
   });
 });

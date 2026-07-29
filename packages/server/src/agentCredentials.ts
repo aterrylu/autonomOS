@@ -7,24 +7,62 @@
  * a spoofed `register` (previously any client could claim any session id) and
  * lets hook ingest reject a POST forged for another agent's session.
  *
- * IN-MEMORY BY DESIGN. The token is minted at spawn and never persisted: the
- * server re-spawns every agent on restart (resumeActiveAgents), and each spawn
- * runs buildEnv again, so a fresh token is minted and injected into the fresh
- * process. There is never a live agent whose token this table doesn't hold, and
- * never a persisted secret to leak.
+ * MINTED IN-MEMORY, DELIVERED TWO WAYS. The token is minted at spawn and held
+ * in memory (the server re-spawns every agent on restart, re-minting fresh). It
+ * reaches the agent's two clients by different routes because they can't share
+ * one:
+ *   - HOOK curl → env var `AUTONOMOS_AGENT_TOKEN` (buildBaseEnv). The curl
+ *     references it unexpanded, so the value never hits argv.
+ *   - CHANNEL-SERVER → a per-session FILE, `$configDir/agent-tokens/<sessionId>`
+ *     (mode 0600, deleted on exit). This is the uniform delivery that works for
+ *     ALL providers: Gemini filters `*TOKEN*` env names out of its MCP
+ *     subprocess (so env can't reach its channel server), and Codex would
+ *     otherwise take the token as a world-readable `-c` argv flag. A file the
+ *     channel-server reads by a path derived from AUTONOMOS_CONFIG_DIR +
+ *     AUTONOMOS_SESSION_ID (both non-secret names every provider propagates)
+ *     sidesteps both. See ADR-055 follow-up.
  *
  * HONEST SCOPE. All agents run as the same Unix user, which can read any of its
- * own processes' /proc/<pid>/environ. So this is NOT a hard wall against a
- * malicious on-box agent scraping a sibling's token — it raises spoofing from
- * "assert any name in a JSON message" to "actively read another process's
- * memory", and makes every message attributable. Defense in depth + audit, not
- * a kernel boundary. See ADR-055.
+ * own processes' /proc/<pid>/environ AND any file it owns. So neither delivery
+ * is a hard wall against a malicious on-box sibling — this is defense-in-depth +
+ * attribution, not a kernel boundary. What the file DOES buy over the old Codex
+ * argv path: it is 0600 (other users can't read it, unlike world-readable
+ * /proc/<pid>/cmdline) and never lands in a process's argv or the server log.
+ * See ADR-055.
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { getConfigDir } from "./configDir.js";
 
 /** sessionId → per-agent token. Cleared on exit (revoke). */
 const credentials = new Map<string, string>();
+
+/** Directory holding per-session token files. */
+function agentTokensDir(): string {
+  return join(getConfigDir(), "agent-tokens");
+}
+
+/**
+ * Reject a sessionId that couldn't be a safe filename BEFORE it becomes one.
+ * Session ids are UUIDs in practice, but this value is attacker-influenceable on
+ * the resume/adopt path (a raw provider session id), and it lands as a path
+ * segment — so a `/` or `..` must never reach join(). Fail loud, not traverse.
+ */
+function assertSafeSessionId(sessionId: string): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId) || sessionId.includes("..")) {
+    throw new Error(
+      `Unsafe sessionId for token file: ${JSON.stringify(sessionId)}`,
+    );
+  }
+}
+
+/** Absolute path of a session's token file. */
+export function agentTokenFilePath(sessionId: string): string {
+  assertSafeSessionId(sessionId);
+  return join(agentTokensDir(), sessionId);
+}
 
 /**
  * Return the agent's token, minting one on first request for a session.
@@ -44,6 +82,20 @@ export function mintAgentToken(sessionId: string): string {
 /** The token for a session, or undefined if none has been minted. */
 export function getAgentToken(sessionId: string): string | undefined {
   return credentials.get(sessionId);
+}
+
+/**
+ * Mint (if needed) and write the token to its per-session file for the
+ * channel-server to read. Called once at spawn, before the agent process starts,
+ * so the file exists by the time the channel-server dials the gateway. 0600 so
+ * other users can't read it; dir 0700. Returns the file path.
+ */
+export function writeAgentTokenFile(sessionId: string): string {
+  const token = mintAgentToken(sessionId);
+  const path = agentTokenFilePath(sessionId);
+  mkdirSync(agentTokensDir(), { recursive: true, mode: 0o700 });
+  writeFileSync(path, token, { mode: 0o600 });
+  return path;
 }
 
 /**
@@ -67,9 +119,18 @@ export function verifyAgentToken(
   return timingSafeEqual(a, b);
 }
 
-/** Drop a session's token (on kill/exit) so a dead session's credential is gone. */
+/**
+ * Drop a session's token on kill/exit — from memory AND disk — so a dead
+ * session's credential can't be read or replayed. Best-effort unlink: a missing
+ * file (never had a channel server) is fine.
+ */
 export function revokeAgentToken(sessionId: string): void {
   credentials.delete(sessionId);
+  try {
+    rmSync(agentTokenFilePath(sessionId), { force: true });
+  } catch {
+    // sessionId failed the safe-name guard, or fs error — nothing to clean up.
+  }
 }
 
 /** Test-only — clear all credentials between tests. */

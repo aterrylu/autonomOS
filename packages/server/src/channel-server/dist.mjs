@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 // packages/server/src/channel-server/index.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -405,6 +407,19 @@ if (!SESSION_ID || !SERVER_URL) {
   );
   process.exit(1);
 }
+var AGENT_TOKEN = (() => {
+  const configDir = process.env.AUTONOMOS_CONFIG_DIR;
+  if (configDir) {
+    try {
+      return readFileSync(
+        join(configDir, "agent-tokens", SESSION_ID),
+        "utf8"
+      ).trim();
+    } catch {
+    }
+  }
+  return process.env.AUTONOMOS_AGENT_TOKEN;
+})();
 var ws = null;
 var reconnectDelay = 1e3;
 var MAX_RECONNECT_DELAY = 3e4;
@@ -429,7 +444,7 @@ function connectToServer() {
       // Per-agent identity (ADR-055 PR B): prove we are this session, not just
       // asserting its id. Undefined only for a pre-PR-B server that didn't set
       // it — the gateway then rejects, which is correct for a new server.
-      agentToken: process.env.AUTONOMOS_AGENT_TOKEN
+      agentToken: AGENT_TOKEN
     };
     ws?.send(JSON.stringify(msg));
     process.stderr.write("autonomos-channel: connected to gateway\n");
