@@ -33,7 +33,7 @@ function makeSchedule(overrides: Partial<ScheduleConfig> = {}): ScheduleConfig {
   return {
     name: `sched-${randomUUID().slice(0, 8)}`,
     schedule: "0 9 * * 1-5",
-    target: "isolated",
+    target: "agent:worker",
     prompt: "Run daily standup",
     workingDirectory: "~/workspace",
     enabled: true,
@@ -109,7 +109,7 @@ describe("scheduler engine", () => {
       let executorCalled = false;
       _setExecutors(() => {
         executorCalled = true;
-      }, null);
+      });
 
       initScheduler();
 
@@ -144,7 +144,7 @@ describe("scheduler engine", () => {
         executorCalled = true;
         // Simulate immediate completion
         _onRunCompleted(_name, { status: "success" });
-      }, null);
+      });
 
       initScheduler();
 
@@ -188,7 +188,7 @@ describe("scheduler engine", () => {
       }
 
       // Mock executor that never completes (simulates long-running)
-      _setExecutors(() => {}, null);
+      _setExecutors(() => {});
 
       initScheduler();
 
@@ -214,7 +214,7 @@ describe("scheduler engine", () => {
       const executorCalls: string[] = [];
       _setExecutors((name) => {
         executorCalls.push(name);
-      }, null);
+      });
 
       initScheduler();
 
@@ -239,11 +239,11 @@ describe("scheduler engine", () => {
 
   // ── Isolated execution dispatch ────────────────────────────
 
-  describe("isolated execution", () => {
-    it("dispatches to isolated executor with correct args", () => {
+  describe("agent dispatch", () => {
+    it("dispatches to the agent executor with correct args", () => {
       const config = makeSchedule({
-        name: "iso-test",
-        target: "isolated",
+        name: "agent-dispatch",
+        target: "agent:worker",
         prompt: "Run tests please",
       });
       createSchedule(config);
@@ -252,24 +252,24 @@ describe("scheduler engine", () => {
       _setExecutors((name, schedule) => {
         capturedArgs = { name, schedule };
         _onRunCompleted(name, { status: "success" });
-      }, null);
+      });
 
       initScheduler();
-      const result = runScheduleNow("iso-test");
+      const result = runScheduleNow("agent-dispatch");
 
       assert.equal(result.error, undefined);
       assert.ok(capturedArgs);
       const isoArgs = capturedArgs as { name: string; schedule: Schedule };
-      assert.equal(isoArgs.name, "iso-test");
+      assert.equal(isoArgs.name, "agent-dispatch");
       assert.equal(isoArgs.schedule.prompt, "Run tests please");
-      assert.equal(isoArgs.schedule.target, "isolated");
+      assert.equal(isoArgs.schedule.target, "agent:worker");
     });
 
     it("records success in run history", () => {
       createSchedule(makeSchedule({ name: "iso-success" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "success", output: "done" });
-      }, null);
+      });
 
       initScheduler();
       runScheduleNow("iso-success");
@@ -286,7 +286,7 @@ describe("scheduler engine", () => {
       createSchedule(makeSchedule({ name: "iso-fail" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "failure", error: "Exit code 1" });
-      }, null);
+      });
 
       initScheduler();
       runScheduleNow("iso-fail");
@@ -301,7 +301,7 @@ describe("scheduler engine", () => {
       createSchedule(makeSchedule({ name: "state-update" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "success" });
-      }, null);
+      });
 
       initScheduler();
       runScheduleNow("state-update");
@@ -318,7 +318,7 @@ describe("scheduler engine", () => {
       createSchedule(makeSchedule({ name: "fail-count" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "failure", error: "oops" });
-      }, null);
+      });
 
       initScheduler();
 
@@ -343,7 +343,7 @@ describe("scheduler engine", () => {
             ? { status: "failure", error: "oops" }
             : { status: "success" },
         );
-      }, null);
+      });
 
       initScheduler();
 
@@ -375,7 +375,7 @@ describe("scheduler engine", () => {
       createSchedule(config);
 
       let capturedArgs: { name: string; schedule: Schedule } | null = null;
-      _setExecutors(null, (name, schedule) => {
+      _setExecutors((name, schedule) => {
         capturedArgs = { name, schedule };
         _onRunCompleted(name, { status: "success" });
       });
@@ -395,7 +395,7 @@ describe("scheduler engine", () => {
       createSchedule(
         makeSchedule({ name: "agent-history", target: "agent:reporter" }),
       );
-      _setExecutors(null, (name) => {
+      _setExecutors((name) => {
         _onRunCompleted(name, { status: "success" });
       });
 
@@ -417,7 +417,7 @@ describe("scheduler engine", () => {
         makeSchedule({ name: "bad-target", target: "webhook:foo" }),
       );
       // No executors set — will hit the else branch
-      _setExecutors(null, null);
+      _setExecutors(null);
 
       initScheduler();
       runScheduleNow("bad-target");
@@ -446,7 +446,7 @@ describe("scheduler engine", () => {
         // Check state mid-execution
         midRunState = getSchedule(name);
         _onRunCompleted(name, { status: "success" });
-      }, null);
+      });
 
       initScheduler();
       runScheduleNow("current-run");
@@ -463,7 +463,7 @@ describe("scheduler engine", () => {
       createSchedule(makeSchedule({ name: "cleared-run" }));
       _setExecutors((name) => {
         _onRunCompleted(name, { status: "success" });
-      }, null);
+      });
 
       initScheduler();
       runScheduleNow("cleared-run");
@@ -505,7 +505,7 @@ describe("scheduler engine", () => {
       let executorCalled = false;
       _setExecutors(() => {
         executorCalled = true;
-      }, null);
+      });
 
       initScheduler();
       // Catch-up should have fired for the missed one-time
@@ -519,7 +519,7 @@ describe("scheduler engine", () => {
       let executorCalls = 0;
       _setExecutors(() => {
         executorCalls++;
-      }, null);
+      });
 
       createSchedule(
         makeSchedule({
@@ -601,7 +601,7 @@ describe("scheduler engine", () => {
       const badSchedule: Schedule = {
         name: "bad-cron",
         schedule: "not a cron",
-        target: "isolated",
+        target: "agent:worker",
         prompt: "test",
         workingDirectory: "~",
         enabled: true,
@@ -652,7 +652,7 @@ describe("scheduler engine", () => {
       let executorCalled = false;
       _setExecutors(() => {
         executorCalled = true;
-      }, null);
+      });
 
       runScheduleNow("crash-victim");
       assert.ok(
@@ -683,7 +683,7 @@ describe("scheduler engine", () => {
       // Never-completing executor so slots stay full
       _setExecutors(() => {
         /* never complete */
-      }, null);
+      });
 
       initScheduler();
       for (let i = 0; i < 3; i++) runScheduleNow(`busy-${i}`);
@@ -707,7 +707,7 @@ describe("scheduler engine", () => {
       let nextDispatched = false;
       _setExecutors((name) => {
         if (name === "next-in-line") nextDispatched = true;
-      }, null);
+      });
       _onRunCompleted("busy-0", { status: "success" });
       assert.ok(
         nextDispatched,

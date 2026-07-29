@@ -42,14 +42,9 @@ describe("MCP schedule tools (HTTP server)", () => {
   beforeEach(async () => {
     setupTestDir();
     _resetForTesting();
-    _setExecutors(
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-      (name) => {
-        _onRunCompleted(name, { status: "success" });
-      },
-    );
+    _setExecutors((name) => {
+      _onRunCompleted(name, { status: "success" });
+    });
     initScheduler();
     client = await createClient();
   });
@@ -68,7 +63,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "mcp-test",
           schedule: "0 9 * * 1-5",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "Run tests",
           workingDirectory: "~/workspace",
         },
@@ -86,7 +81,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "dup-sched",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
@@ -97,7 +92,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "dup-sched",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
@@ -114,7 +109,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "INVALID NAME",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
@@ -146,7 +141,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "list-a",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
@@ -173,7 +168,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "get-test",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
@@ -212,7 +207,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "update-me",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "old prompt",
           workingDirectory: "~",
         },
@@ -259,7 +254,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "delete-me",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
@@ -303,7 +298,7 @@ describe("MCP schedule tools (HTTP server)", () => {
         arguments: {
           name: "run-me",
           schedule: "0 9 * * *",
-          target: "isolated",
+          target: "agent:worker",
           prompt: "test",
           workingDirectory: "~",
         },
