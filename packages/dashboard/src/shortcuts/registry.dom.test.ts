@@ -84,6 +84,37 @@ describe("registry invariants", () => {
     }
   });
 
+  it("every mod+ chord documents its non-Mac (mod = Ctrl) terminal cost", () => {
+    // On Linux/Windows `mod` IS Ctrl, so a "mod+x" entry reserves Ctrl+x there
+    // — chords with real shell/xterm meanings (review catch on ADR-063: mod+3
+    // resolves to ctrl+3, whose xterm encoding is ESC). This table forces every
+    // such steal to be a CONSCIOUS, documented decision: registering a new
+    // mod+ chord without an entry here fails, so e.g. a future "mod+r" cannot
+    // silently eat readline reverse-search on Linux.
+    const NON_MAC_COST: Record<string, string> = {
+      "mod+1": "none — xterm sends nothing for ctrl+1",
+      "mod+2": "none — xterm sends nothing for ctrl+2",
+      "mod+3": "STEALS ctrl+3 (xterm encodes ESC) — accepted, ADR-063",
+      "mod+4": "STEALS ctrl+4 (FS) — accepted, ADR-063",
+      "mod+5": "STEALS ctrl+5 (GS) — accepted, ADR-063",
+      "mod+6": "STEALS ctrl+6 (RS; vim alternate-file) — accepted, ADR-063",
+      "mod+7": "STEALS ctrl+7 (US) — accepted, ADR-063",
+      "mod+8": "STEALS ctrl+8 (xterm encodes DEL) — accepted, ADR-063",
+      "mod+9": "none — xterm sends nothing for ctrl+9",
+      "mod+b":
+        "STEALS ctrl+b (readline back-char, tmux prefix) — grandfathered: xterm's handleKeyEvent declined it pre-registry",
+      "mod+/":
+        "minor — ctrl+/ is undo in some readline builds; standard app help chord",
+    };
+    for (const s of SHORTCUTS) {
+      if (!s.chord.startsWith("mod+")) continue;
+      expect(
+        NON_MAC_COST[s.chord],
+        `"${s.chord}" has no documented non-Mac cost — on Linux/Windows it reserves Ctrl+${s.chord.slice(4)}; add a NON_MAC_COST entry (a conscious decision), don't just register it`,
+      ).toBeDefined();
+    }
+  });
+
   it("covers mod+1..9 pane switching", () => {
     for (let n = 1; n <= 9; n++) {
       expect(SHORTCUTS.some((s) => s.chord === `mod+${n}`)).toBe(true);
