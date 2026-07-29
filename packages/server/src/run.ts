@@ -20,6 +20,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { sweepAgentTokenFiles } from "./agentCredentials.js";
 import { migrateIfNeeded } from "./agents/migrate.js";
 import {
   resumeActiveAgents,
@@ -495,6 +496,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         );
       }
     }
+
+    // Clear stale per-agent token files before any respawn re-writes them
+    // (ADR-055 follow-up). A crash skips the markExited revoke, so a 0600 token
+    // file can outlive its process; the resume just below re-mints + re-writes
+    // for every agent that actually comes back, so sweeping first makes the
+    // on-disk set match reality. Best-effort — never blocks boot.
+    sweepAgentTokenFiles();
 
     // Auto-resume agents whose persisted status is "running" — handles
     // all failure modes (cwd missing, provider gone, etc) by marking

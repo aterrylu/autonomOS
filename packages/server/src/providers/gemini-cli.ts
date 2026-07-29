@@ -234,25 +234,29 @@ export function writeGeminiSettings(channelServerScript: string): void {
       autonomos: {
         command: "node",
         args: [channelServerScript],
-        // Per-agent identity for Gemini (ADR-055 follow-up — the FIX for a
-        // previously-KNOWN GAP). Gemini filters the env it passes to an MCP
+        // Token-delivery PRECONDITION for Gemini (ADR-055 follow-up) — NOT a
+        // working-outbound fix. Gemini filters the env it passes to an MCP
         // subprocess down to a curated allowlist that EXCLUDES `*TOKEN*` names,
-        // so we cannot hand the channel server AUTONOMOS_AGENT_TOKEN directly —
-        // that was why Gemini's channel server couldn't authenticate and send()
-        // was dead. Instead the server writes each agent's token to a 0600 file
-        // (<configDir>/agent-tokens/<sessionId>) and the channel server reads it,
+        // so we cannot hand the channel server AUTONOMOS_AGENT_TOKEN directly.
+        // The server instead writes each agent's token to a 0600 file
+        // (<configDir>/agent-tokens/<sessionId>); the channel server reads it,
         // deriving the path from CONFIG_DIR + SESSION_ID, both NON-secret names
         // the filter lets through. Do NOT add AUTONOMOS_AGENT_TOKEN back here —
-        // Gemini strips it; the file is the delivery path.
+        // Gemini strips it; the file is the delivery path. CONFIG_DIR is
+        // agent-invariant so it is set explicitly in this SHARED (write-once)
+        // settings file; SESSION_ID is per-process and reaches the channel server
+        // via Gemini's env passthrough from the agent process (buildBaseEnv sets
+        // it; non-`*TOKEN*`, so the allowlist passes it).
         //
-        // This settings file is SHARED across all Gemini agents (written once),
-        // so it can carry only agent-invariant values: CONFIG_DIR is constant, so
-        // we set it explicitly here as a guaranteed delivery. SESSION_ID is
-        // per-process and CANNOT live in a shared file — it reaches the channel
-        // server via Gemini's env passthrough from the agent process (buildBaseEnv
-        // sets AUTONOMOS_SESSION_ID there; it is non-`*TOKEN*`, so the allowlist
-        // passes it). That passthrough is the load-bearing assumption — real-spawn
-        // QA must confirm the channel server registers. See agentCredentials.ts.
+        // KNOWN OPEN GAP (verified by real-spawn QA, 2026-07-28): Gemini in this
+        // `-i` PTY mode does NOT launch the autonomos MCP channel-server subprocess
+        // AT ALL (ps shows the gemini process has no `dist.mjs` child), so it never
+        // dials the gateway and outbound `send()`/org tools remain unavailable —
+        // the SAME pre-existing gap as before this change, for a DEEPER reason than
+        // token delivery. This wiring makes the token READABLE once that launch gap
+        // is fixed; it does not itself make Gemini outbound work. Tracked as a
+        // separate follow-up (MCP-launch in Gemini `-i` mode). Gemini HOOK identity
+        // is unaffected and works (inbound/status). See agentCredentials.ts.
         env: {
           AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
           AUTONOMOS_API_URL: apiUrl,

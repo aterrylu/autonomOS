@@ -69,7 +69,16 @@ if (!SESSION_ID || !SERVER_URL) {
  */
 const AGENT_TOKEN = ((): string | undefined => {
   const configDir = process.env.AUTONOMOS_CONFIG_DIR;
-  if (configDir) {
+  // Validate SESSION_ID inline before using it as a path segment. The server's
+  // write side already guards this (assertSafeSessionId in agentCredentials.ts),
+  // so today this is transitively safe — but this is a standalone bundled
+  // subprocess deriving a filesystem path from an env var it was handed, and it
+  // should not trust that the value is well-formed just because the current
+  // caller happens to be. A `/` or `..` here must never traverse out of the
+  // agent-tokens dir. Fail to the env fallback rather than read an escaped path.
+  const safeSession =
+    /^[A-Za-z0-9._-]+$/.test(SESSION_ID) && !SESSION_ID.includes("..");
+  if (configDir && safeSession) {
     try {
       return readFileSync(
         join(configDir, "agent-tokens", SESSION_ID),

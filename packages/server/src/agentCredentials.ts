@@ -133,6 +133,28 @@ export function revokeAgentToken(sessionId: string): void {
   }
 }
 
+/**
+ * Remove ALL per-session token files at boot, before any agent respawns.
+ *
+ * A crash (or SIGKILL) skips the `markExited` revoke, so a token file can
+ * outlive its process. On the next boot the in-memory `credentials` map starts
+ * empty and every still-"running" agent is re-spawned — which re-mints and
+ * re-writes its token file — so nothing in the dir is authoritative at boot: a
+ * leftover file is at best about to be overwritten, at worst a stale secret for
+ * an agent that won't come back. Clearing the whole dir first makes the on-disk
+ * set exactly match the agents that actually respawn.
+ *
+ * MUST run before resumeActiveAgents (which writes the fresh files). Best-effort:
+ * a missing dir (first boot) or fs error never blocks startup.
+ */
+export function sweepAgentTokenFiles(): void {
+  try {
+    rmSync(agentTokensDir(), { recursive: true, force: true });
+  } catch {
+    // Nothing to sweep, or fs error — not worth failing boot over.
+  }
+}
+
 /** Test-only — clear all credentials between tests. */
 export function _resetAgentCredentialsForTesting(): void {
   credentials.clear();

@@ -10,6 +10,7 @@ import {
   getAgentToken,
   mintAgentToken,
   revokeAgentToken,
+  sweepAgentTokenFiles,
   verifyAgentToken,
   writeAgentTokenFile,
 } from "../agentCredentials.js";
@@ -166,5 +167,22 @@ describe("agent token file", () => {
     assert.doesNotThrow(() =>
       agentTokenFilePath("6f1e2d3c-4b5a-6789-0abc-def012345678"),
     );
+  });
+
+  it("boot sweep removes stale files a crash left behind", () => {
+    isolate();
+    // Two agents wrote files; the server crashed (no revoke). On the next boot
+    // sweepAgentTokenFiles() clears the dir before respawn re-writes fresh ones.
+    const p1 = writeAgentTokenFile("sess-stale-1");
+    const p2 = writeAgentTokenFile("sess-stale-2");
+    assert.ok(existsSync(p1) && existsSync(p2));
+    sweepAgentTokenFiles();
+    assert.equal(existsSync(p1), false);
+    assert.equal(existsSync(p2), false);
+  });
+
+  it("boot sweep on a never-written dir does not throw (first boot)", () => {
+    isolate();
+    assert.doesNotThrow(() => sweepAgentTokenFiles());
   });
 });

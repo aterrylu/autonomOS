@@ -409,7 +409,8 @@ if (!SESSION_ID || !SERVER_URL) {
 }
 var AGENT_TOKEN = (() => {
   const configDir = process.env.AUTONOMOS_CONFIG_DIR;
-  if (configDir) {
+  const safeSession = /^[A-Za-z0-9._-]+$/.test(SESSION_ID) && !SESSION_ID.includes("..");
+  if (configDir && safeSession) {
     try {
       return readFileSync(
         join(configDir, "agent-tokens", SESSION_ID),
