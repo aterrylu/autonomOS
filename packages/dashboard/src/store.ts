@@ -452,6 +452,8 @@ interface AppState {
     string,
     { status: string; currentTool?: string; toolDetail?: string }
   >;
+  /** Whether the keyboard-shortcut cheatsheet overlay is open. Not persisted. */
+  shortcutHelpOpen: boolean;
 
   // Actions
   cycleTheme: () => void;
@@ -469,6 +471,8 @@ interface AppState {
    *  legacy tree. */
   setActivePane: (pane: ActivePane | null) => void;
   toggleSidebar: () => void;
+  toggleShortcutHelp: () => void;
+  closeShortcutHelp: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
   setPermissionMode: (mode: PermissionMode) => void;
@@ -652,6 +656,7 @@ export const useStore = create<AppState>()(
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
+        shortcutHelpOpen: false,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         permissionMode: DEFAULT_PERMISSION_MODE,
         pinnedOrder: [],
@@ -673,6 +678,9 @@ export const useStore = create<AppState>()(
           set({ dvWorkspaces: workspaces, dvPaneWorkspace: paneWorkspace }),
         setActivePane: (pane) => set({ activePane: pane }),
         toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
+        toggleShortcutHelp: () =>
+          set({ shortcutHelpOpen: !get().shortcutHelpOpen }),
+        closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
         setSidebarWidth: (width: number) => {
           if (!Number.isFinite(width)) return;
           set({

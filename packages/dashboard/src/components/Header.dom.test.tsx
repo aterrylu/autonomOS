@@ -27,7 +27,8 @@ describe("Header", () => {
     const user = userEvent.setup();
     render(<Header />);
     // The toggle's accessible name is the ☰ glyph; query by its title instead.
-    const toggle = screen.getByTitle("Toggle sidebar");
+    // Title carries the platform accelerator hint, e.g. "Toggle sidebar (⌘B)".
+    const toggle = screen.getByTitle(/^Toggle sidebar/);
 
     expect(useStore.getState().sidebarOpen).toBe(true);
     await user.click(toggle);

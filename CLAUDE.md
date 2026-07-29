@@ -29,7 +29,7 @@ Two paths that share a common core:
 autonomOS/
 ├── packages/
 │   ├── dashboard/          # Web UI — observability & control
-│   │   └── src/layout/         # Binary tree split-pane system
+│   │   └── src/layout/         # dockview tabs + split panes (ADR-047, the only layout engine)
 │   ├── server/             # Hono + node-pty — API, WebSocket, PTY management
 │   │   ├── src/gateway/        # URI-based message router + platform adapters
 │   │   ├── src/channel-server/ # Standalone MCP subprocess (server:autonomos)
@@ -127,6 +127,9 @@ Every autonomOS-spawned session gets `--append-system-prompt` with a `BASE_CONTE
 4. **Lifecycle** — some agents are long-lived, others exit after a task. Sessions persist across restarts until ended by human, self, or manager
 
 The tool list section interpolates `MCP_INSTRUCTIONS` from `mcp/tools.ts` (single source of truth). Use `--append-system-prompt` (preserves CC defaults + CLAUDE.md). Use `--system-prompt` only for full override.
+
+### Keyboard Shortcuts (dashboard)
+All app-level chords live in the registry at `packages/dashboard/src/shortcuts/registry.ts` (ADR-063) — one table consumed by the window capture-phase dispatcher (`useShortcuts`) AND xterm's key handler (`isReservedChord` consult). Never add an ad-hoc keydown listener for a global shortcut; add a registry entry (its unit test enforces chord uniqueness and the browser-reserved / terminal-sacred deny-lists). Pane-order enumeration must use `orderedPaneIds(api.toJSON())` (visual order), never `api.panels` (insertion order). v1 set: mod+1-8 focus pane N, mod+9 last pane, mod+B sidebar, mod+/ help overlay. The key-capture boundary (which chords the app steals from a focused terminal) is owned by Shortcuts@autonomOS.
 
 ## Key Conventions
 
