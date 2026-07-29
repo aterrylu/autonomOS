@@ -1,4 +1,10 @@
+import { displayChord } from "../shortcuts/chord";
+import { SHORTCUTS } from "../shortcuts/registry";
 import { THEMES, useStore } from "../store";
+
+// Read from the registry so the tooltip can never drift from the real binding.
+const sidebarChord =
+  SHORTCUTS.find((s) => s.id === "sidebar.toggle")?.chord ?? "mod+b";
 
 export function Header() {
   const theme = useStore((s) => s.theme);
@@ -16,7 +22,7 @@ export function Header() {
         onClick={toggleSidebar}
         className="cursor-pointer text-sm"
         style={{ color: sidebarOpen ? page.fg : page.statusFg }}
-        title="Toggle sidebar"
+        title={`Toggle sidebar (${displayChord(sidebarChord)})`}
       >
         ☰
       </button>

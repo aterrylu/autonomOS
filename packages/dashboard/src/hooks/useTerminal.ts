@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CopyToastState } from "../components/CopyToast";
+import { isReservedChord } from "../shortcuts/registry";
 import { THEMES, useStore } from "../store";
 import { isDegenerate, isPlausibleFit } from "../terminal/resize";
 import type {
@@ -706,6 +707,13 @@ function handleKeyEvent(
   wsRef: React.RefObject<WebSocket | null>,
 ): boolean {
   if (event.type !== "keydown") return true;
+
+  // App-reserved chords (mod+1..9 pane switching, mod+B, mod+/ — see
+  // src/shortcuts/registry.ts) are declined so xterm never encodes them for
+  // the PTY. In practice the global dispatcher's capture-phase stopPropagation
+  // already keeps them from reaching xterm; this consult is defense in depth
+  // that keeps the terminal's decline list synchronized with the registry.
+  if (isReservedChord(event)) return false;
 
   if (event.ctrlKey) {
     const k = event.key.toLowerCase();

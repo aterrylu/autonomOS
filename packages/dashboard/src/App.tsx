@@ -4,8 +4,9 @@ import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
+import { ShortcutHelpOverlay } from "./shortcuts/ShortcutHelpOverlay";
+import { useShortcuts } from "./shortcuts/useShortcuts";
 import { requestNotificationPermission, THEMES, useStore } from "./store";
-import { isMac } from "./utils/platform";
 
 type AuthState = "checking" | "authenticated" | "unauthenticated" | "error";
 
@@ -136,23 +137,9 @@ export function App() {
       });
   }, []);
 
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-
-      // Cmd/Ctrl+B — toggle sidebar
-      if (mod && e.key === "b") {
-        e.preventDefault();
-        useStore.getState().toggleSidebar();
-        return;
-      }
-    };
-    // Use capture phase so App shortcuts fire even when xterm.js has focus
-    // (xterm calls stopPropagation in the bubble phase, blocking window listeners)
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, []);
+  // Global keyboard shortcuts (see src/shortcuts/registry.ts). Gated on auth
+  // so no chord fires over the login page's password field.
+  useShortcuts(authState === "authenticated");
 
   if (authState === "checking") {
     return (
@@ -244,6 +231,7 @@ export function App() {
           <SessionViewManager />
         </div>
         <StatusBar />
+        <ShortcutHelpOverlay />
       </div>
     </>
   );
