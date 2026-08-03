@@ -60,7 +60,9 @@ export function createRotatingWriter(
   maxBytes: number = DEFAULT_MAX_BYTES,
   keep: number = DEFAULT_KEEP,
 ): RotatingWriter {
-  mkdirSync(dirname(filePath), { recursive: true });
+  // 0700: the log dir lives under the config root; server logs can carry agent
+  // names, paths and diagnostics. Owner-only, creation-time only.
+  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
 
   // Synchronous fd appends (not a WriteStream): writes are durable immediately
   // and rotation is atomic — no buffered-flush race between rename and write.

@@ -41,7 +41,11 @@ function validateName(name: string): void {
 
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    // 0700: schedule configs + run history hold prompts (and, historically,
+    // system-prompt-adjacent content) — owner-only, so another local user
+    // can't read them. Mode applies on creation only; existing dirs are left
+    // as-is to avoid surprising an install that deliberately loosened them.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -56,12 +60,49 @@ const DEFAULT_STATE: ScheduleState = {
 
 // ── Schedule CRUD ───────────────────────────────────────────────
 
+/**
+ * Reject a schedule file that isn't a well-formed Schedule BEFORE the scheduler
+ * acts on it. A bare `JSON.parse(...) as Schedule` accepts `[]`, `[{...}]`, or a
+ * truncated object — every one of which loads as a "valid" schedule whose
+ * missing `enabled`/`schedule`/`target` then drives cron construction or a
+ * gateway send off undefined values (a Cron parse throw, or a send to
+ * `agent:undefined`). Validate only the invariants: object shape + the five
+ * genuinely-required fields. Deprecated/accepted-and-ignored fields
+ * (`template`, `autonomous`, `onComplete`, …) are deliberately NOT checked, so
+ * a pre-removal file still loads. Mirrors the templates.ts shape guard.
+ */
+function assertScheduleShape(parsed: unknown, filePath: string): Schedule {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    let found: string;
+    if (Array.isArray(parsed)) found = "an array";
+    else if (parsed === null) found = "null";
+    else found = `a ${typeof parsed}`;
+    throw new Error(
+      `expected a JSON object, found ${found} — check ${filePath} for a truncated or list-wrapped write`,
+    );
+  }
+  const s = parsed as Record<string, unknown>;
+  for (const field of ["name", "schedule", "target", "prompt"] as const) {
+    if (typeof s[field] !== "string") {
+      throw new Error(
+        `schedule ${filePath} is missing a string "${field}" — refusing to load a malformed schedule`,
+      );
+    }
+  }
+  if (typeof s.enabled !== "boolean") {
+    throw new Error(
+      `schedule ${filePath} is missing a boolean "enabled" — refusing to load a malformed schedule`,
+    );
+  }
+  return parsed as Schedule;
+}
+
 export function getSchedule(name: string): Schedule | null {
   validateName(name);
   const filePath = join(SCHEDULES_DIR, `${name}.json`);
   try {
     const raw = readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as Schedule;
+    return assertScheduleShape(JSON.parse(raw), filePath);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
