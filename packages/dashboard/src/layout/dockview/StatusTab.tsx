@@ -3,6 +3,8 @@ import {
   type AgentStatus,
   AgentStatusIcon,
 } from "../../components/ui/agent-status-icon";
+import { orderedPaneIds } from "../../shortcuts/orderedPaneIds";
+import { digitForPane } from "../../shortcuts/paneDigits";
 import { THEMES, useStore } from "../../store";
 import type { PaneParams } from "./PaneContent";
 import { paneFromPanel } from "./paneId";
@@ -57,6 +59,16 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
       ? ((agentStatuses[pane.id]?.status as AgentStatus) ?? "unknown")
       : null;
 
+  // Hold-mod hint (useModKeyHold): the digit that focuses THIS pane, computed
+  // from the same visual-order walk the mod+digit shortcuts use — the badge is
+  // the chord, so it cannot disagree with what pressing the number does.
+  const modKeyHeld = useStore((s) => s.modKeyHeld);
+  const paneDigit = ((): number | null => {
+    if (!modKeyHeld) return null;
+    const ids = orderedPaneIds(props.containerApi.toJSON());
+    return digitForPane(ids.indexOf(props.api.id), ids.length);
+  })();
+
   function handleClose(e: React.MouseEvent) {
     e.stopPropagation();
     const api = props.containerApi;
@@ -98,6 +110,20 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
       className="group/tab flex items-center gap-1.5 px-2 h-full text-xs"
       style={{ color: page.fg }}
     >
+      {paneDigit !== null && (
+        <kbd
+          data-testid="pane-digit-badge"
+          className="shrink-0 rounded px-1 font-mono font-semibold"
+          style={{
+            fontSize: 10,
+            lineHeight: "14px",
+            background: page.fg,
+            color: page.bg,
+          }}
+        >
+          {paneDigit}
+        </kbd>
+      )}
       <span className="shrink-0" style={{ width: 12, height: 12 }}>
         {status && <AgentStatusIcon status={status} size={12} />}
       </span>

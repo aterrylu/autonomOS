@@ -5,6 +5,7 @@ import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
 import { ShortcutHelpOverlay } from "./shortcuts/ShortcutHelpOverlay";
+import { useModKeyHold } from "./shortcuts/useModKeyHold";
 import { useShortcuts } from "./shortcuts/useShortcuts";
 import { requestNotificationPermission, THEMES, useStore } from "./store";
 
@@ -140,6 +141,8 @@ export function App() {
   // Global keyboard shortcuts (see src/shortcuts/registry.ts). Gated on auth
   // so no chord fires over the login page's password field.
   useShortcuts(authState === "authenticated");
+  // Hold the primary modifier → pane-digit badges on the tabs (same gate).
+  useModKeyHold(authState === "authenticated");
 
   if (authState === "checking") {
     return (

@@ -454,6 +454,9 @@ interface AppState {
   >;
   /** Whether the keyboard-shortcut cheatsheet overlay is open. Not persisted. */
   shortcutHelpOpen: boolean;
+  /** True while the primary modifier is deliberately HELD (useModKeyHold) —
+   *  StatusTab shows pane-digit badges. Not persisted. */
+  modKeyHeld: boolean;
 
   // Actions
   cycleTheme: () => void;
@@ -473,6 +476,7 @@ interface AppState {
   toggleSidebar: () => void;
   toggleShortcutHelp: () => void;
   closeShortcutHelp: () => void;
+  setModKeyHeld: (held: boolean) => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
   setPermissionMode: (mode: PermissionMode) => void;
@@ -657,6 +661,7 @@ export const useStore = create<AppState>()(
         agentStatuses: {},
         sidebarOpen: true,
         shortcutHelpOpen: false,
+        modKeyHeld: false,
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         permissionMode: DEFAULT_PERMISSION_MODE,
         pinnedOrder: [],
@@ -681,6 +686,7 @@ export const useStore = create<AppState>()(
         toggleShortcutHelp: () =>
           set({ shortcutHelpOpen: !get().shortcutHelpOpen }),
         closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
+        setModKeyHeld: (held) => set({ modKeyHeld: held }),
         setSidebarWidth: (width: number) => {
           if (!Number.isFinite(width)) return;
           set({

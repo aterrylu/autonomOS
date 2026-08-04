@@ -352,3 +352,30 @@ test("Escape closes an open panel even with a terminal focused — and only then
     )
     .toContain("\x1b");
 });
+
+test("holding mod reveals pane-digit badges that match what the digits do", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await seedPersisted(page, twoPaneWorkspace());
+  await page.goto("/");
+  await expect(page.locator(".dv-tab")).toHaveCount(2);
+  const mod = await modKey(page);
+  const badges = page.getByTestId("pane-digit-badge");
+
+  // No badges at rest, none on a quick tap (the 350ms hold gate).
+  await expect(badges).toHaveCount(0);
+
+  await page.keyboard.down(mod);
+  await expect(badges).toHaveCount(2); // auto-waits past the hold delay
+  await expect(badges.nth(0)).toHaveText("1");
+  await expect(badges.nth(1)).toHaveText("2");
+
+  // The badge IS the chord: press 2 while still holding → pane 2 focuses.
+  await page.keyboard.press("2");
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+  await expect(badges).toHaveCount(2); // still holding — hints stay up
+
+  await page.keyboard.up(mod);
+  await expect(badges).toHaveCount(0);
+});
