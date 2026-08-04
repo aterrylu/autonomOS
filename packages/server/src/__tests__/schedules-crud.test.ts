@@ -196,6 +196,45 @@ describe("schedules CRUD", () => {
       writeFileSync(join(SCHEDULES_DIR, "corrupt.json"), "not json{{{");
       assert.throws(() => getSchedule("corrupt"), /Failed to load schedule/);
     });
+
+    it("rejects a list-wrapped or non-object file (shape guard)", () => {
+      // `[]` / `[{...}]` is valid JSON and an object, so a bare `as Schedule`
+      // cast would accept it — then the scheduler acts on a nameless,
+      // enabled-undefined "schedule". Reject the shape instead.
+      mkdirSync(SCHEDULES_DIR, { recursive: true });
+      writeFileSync(join(SCHEDULES_DIR, "arr.json"), "[]");
+      assert.throws(() => getSchedule("arr"), /found an array/);
+      writeFileSync(join(SCHEDULES_DIR, "str.json"), '"hi"');
+      assert.throws(() => getSchedule("str"), /found a string/);
+    });
+
+    it("rejects a schedule missing a required field", () => {
+      mkdirSync(SCHEDULES_DIR, { recursive: true });
+      // valid JSON object, but no `enabled` boolean and no `target` string
+      writeFileSync(
+        join(SCHEDULES_DIR, "partial.json"),
+        JSON.stringify({ name: "partial", schedule: "0 0 * * *" }),
+      );
+      assert.throws(() => getSchedule("partial"), /missing a string "target"/);
+    });
+
+    it("rejects a config-shaped file that is missing its state object", () => {
+      // A file with every ScheduleConfig field but no `state` used to pass the
+      // cast, then crash initScheduler (scheduler.ts derefs `s.state` OUTSIDE
+      // its per-schedule try). Reject here so listSchedules skips-with-warning.
+      mkdirSync(SCHEDULES_DIR, { recursive: true });
+      writeFileSync(
+        join(SCHEDULES_DIR, "stateless.json"),
+        JSON.stringify({
+          name: "stateless",
+          schedule: "0 0 * * *",
+          target: "agent:worker",
+          prompt: "do the thing",
+          enabled: true,
+        }),
+      );
+      assert.throws(() => getSchedule("stateless"), /missing its "state"/);
+    });
   });
 
   // ── updateSchedule ─────────────────────────────────────────
