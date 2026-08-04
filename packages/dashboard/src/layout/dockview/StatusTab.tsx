@@ -5,7 +5,7 @@ import {
 } from "../../components/ui/agent-status-icon";
 import { THEMES, useStore } from "../../store";
 import type { PaneParams } from "./PaneContent";
-import { paneFromPanel } from "./paneId";
+import { paneFromPanel, paneTitle } from "./paneId";
 
 /**
  * StatusTab — custom dockview tab renderer (registered as `"status"` and the
@@ -26,31 +26,8 @@ export function StatusTab(props: IDockviewPanelHeaderProps<PaneParams>) {
   const page = THEMES[theme].page;
 
   // `pane` is typed non-nullable but comes from persisted panel params, which
-  // are never validated (see PaneContent) — so every read here is nullish-safe.
-  // Read the raw discriminant up front: inside the exhausted `default` below,
-  // TS has narrowed `pane` to `never`, so it can't be inspected there.
-  const declaredType = (pane as { type?: unknown } | undefined)?.type;
-  const title = ((): string => {
-    switch (pane?.type) {
-      case "session":
-        return (
-          sessions.find((s) => s.id === pane.id)?.name || pane.id.slice(0, 8)
-        );
-      case "orgchart":
-        return "Org Chart";
-      case "templates":
-        return "Templates";
-      case "schedules":
-        return "Schedules";
-      case "create-agent":
-        return "New Agent";
-      default:
-        // Only reachable from a saved layout naming a since-removed (or absent)
-        // pane type; PaneContent closes such panels, but name the type so the
-        // brief moment it is on screen — or a screenshot of it — is diagnosable.
-        return `Unknown (${String(declaredType)})`;
-    }
-  })();
+  // are never validated (see PaneContent) — so paneTitle reads it nullish-safe.
+  const title = paneTitle(pane, sessions);
 
   const status: AgentStatus | null =
     pane?.type === "session"

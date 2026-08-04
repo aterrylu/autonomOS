@@ -1,4 +1,4 @@
-import type { ActivePane } from "../../store";
+import type { ActivePane, SessionInfo } from "../../store";
 
 /**
  * Pure dockview-panel-id ↔ ActivePane helpers (no React / dockview / xterm deps,
@@ -13,11 +13,44 @@ export const SINGLETON_PANES = {
   orgchart: { type: "orgchart", id: "orgchart" },
   templates: { type: "templates", id: "templates" },
   schedules: { type: "schedules", id: "schedules" },
+  presets: { type: "presets", id: "presets" },
   "create-agent": { type: "create-agent", id: "create-agent" },
 } as const satisfies Record<string, ActivePane>;
 
 /** Singleton pane ids, derived from SINGLETON_PANES (single source of truth). */
 export const SINGLETON_TYPES = new Set<string>(Object.keys(SINGLETON_PANES));
+
+/**
+ * Resolve a pane's tab title. Pure (no React/dockview) so a test can assert
+ * EVERY singleton pane type has a real title — the `Unknown (…)` fallback is
+ * only for a saved layout naming a since-removed type, never a live one. A new
+ * pane type that forgets its case here would otherwise ship an "Unknown (x)"
+ * tab (as the `presets` tab did before `paneTitle.test.ts` existed). `pane` is
+ * nullish-safe because it comes from persisted, unvalidated panel params.
+ */
+export function paneTitle(
+  pane: ActivePane | undefined,
+  sessions: SessionInfo[],
+): string {
+  switch (pane?.type) {
+    case "session":
+      return (
+        sessions.find((s) => s.id === pane.id)?.name || pane.id.slice(0, 8)
+      );
+    case "orgchart":
+      return "Org Chart";
+    case "templates":
+      return "Templates";
+    case "schedules":
+      return "Schedules";
+    case "presets":
+      return "Presets";
+    case "create-agent":
+      return "New Agent";
+    default:
+      return `Unknown (${String((pane as { type?: unknown } | undefined)?.type)})`;
+  }
+}
 
 /**
  * Reconstruct an ActivePane descriptor from a dockview panel id: singleton views

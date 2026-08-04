@@ -45,6 +45,7 @@ import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
+import { envPresetRouter } from "./routes/env-presets.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { hooksIngestRouter, hooksReadRouter } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
@@ -346,6 +347,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/settings", settingsRouter);
   app.route("/api/channels", channelsRouter);
   app.route("/api/templates", templateRouter);
+  app.route("/api/env-presets", envPresetRouter);
   app.route("/api/providers", providerRouter);
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);

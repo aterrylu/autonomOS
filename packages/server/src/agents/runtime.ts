@@ -24,6 +24,7 @@ import {
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { writeAgentTokenFile } from "../agentCredentials.js";
+import { applyPresetToEnv } from "../envPresets.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
   disposeCodexControl,
@@ -445,6 +446,15 @@ export interface SpawnParams extends SpawnOptions {
    * leave a resumed agent's mode alone.
    */
   templatePermissionMode?: PermissionMode;
+  /**
+   * Name of an env preset to apply (model override, ADR-067). Resolved once
+   * after the agent record is known, with the same "explicit param wins, else
+   * the record's value stands on a body-less resume" rule as permissionMode —
+   * so `restart-all` / `/attach` (which send no body) keep an agent's override.
+   * Callers forward `undefined` rather than a default. The resolved preset's
+   * env is injected into ONLY this agent's process; only the NAME persists.
+   */
+  envPreset?: string;
 }
 
 export interface SpawnResult {
@@ -576,6 +586,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
+      envPreset: params.envPreset,
       adoptedExternal,
     });
   }
@@ -754,6 +765,19 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
   }
 
+  // The effective env preset — same "explicit param wins, else the record's
+  // value stands on a body-less resume" resolution as permissionMode (ADR-067).
+  // On fresh/fork/adopt `agent.envPreset` is already `params.envPreset` (baked
+  // by buildNewAgent); on reattach it is the EXISTING record, so restart-all /
+  // /attach keep an agent's override.
+  const envPreset = params.envPreset ?? agent.envPreset;
+  if (resolution === "reattach" && envPreset !== agent.envPreset) {
+    console.warn(
+      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): env preset ` +
+        `${agent.envPreset ?? "(none)"} → ${envPreset ?? "(none)"} on resume (caller-specified)`,
+    );
+  }
+
   // Build provider args + env
   const { channels } = getSettings();
 
@@ -864,6 +888,15 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   const env = provider.buildEnv(agent.id, agent.name);
 
+  // Apply an env preset (model override, ADR-067): merge the resolved preset's
+  // env into ONLY this agent's process env, AFTER the provider built its base +
+  // customEnvVars (so a per-agent preset outranks a global customEnvVar). The
+  // resolve/merge/refuse logic lives in applyPresetToEnv (unit-tested there); a
+  // preset that is missing or whose API key is unset THROWS here — before the
+  // record is persisted or the PTY launched, so a rejected spawn leaves no
+  // half-started agent.
+  if (envPreset) applyPresetToEnv(env, envPreset);
+
   // Write the per-agent token to its 0600 file BEFORE anything that could launch
   // the channel server (the sidecar daemon below, or the PTY). The channel server
   // reads the token from this file (ADR-055 follow-up) rather than from env/argv,
@@ -964,6 +997,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           providerSessionId,
           startedAt: Date.now(),
           permissionMode,
+          // Written on reattach for the same reason as permissionMode: the PTY
+          // was launched with the resolved preset, so the record must follow.
+          // Record-driven respawns pass the record's own value → no-op.
+          envPreset,
         })
       : insertAgent(agent);
   if (!persisted) {
@@ -1386,6 +1423,9 @@ async function respawnAgent(a: Agent): Promise<void> {
     managerId: a.managerId,
     project: a.project,
     provider: a.provider,
+    // Re-apply the record's env preset so a model override survives a restart /
+    // crash-net respawn (ADR-067), same as permissionMode above.
+    envPreset: a.envPreset,
   });
 }
 
