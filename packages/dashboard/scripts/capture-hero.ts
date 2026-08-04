@@ -1176,7 +1176,7 @@ async function frameMacWindow(
   // V1 frame — matches the design Terry picked; edit with care.
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
-.mat{ padding:92px 100px 112px; background:radial-gradient(120% 130% at 50% 0%, #12161d 0%, #05070b 70%); display:inline-block; }
+.mat{ padding:92px 100px 112px; background:linear-gradient(155deg, #093a4d 0%, #12657a 34%, #1f9ca6 66%, #74dac9 100%); display:inline-block; }
 .win{ width:${w}px; border-radius:15px; overflow:hidden; border:1px solid rgba(255,255,255,.08);
   box-shadow:0 2px 0 rgba(255,255,255,.05) inset, 0 60px 120px rgba(0,0,0,.6), 0 24px 48px rgba(0,0,0,.45); }
 .bar{ height:40px; background:#0a0e14; display:flex; align-items:center; gap:9px; padding:0 17px; }
