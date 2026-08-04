@@ -454,6 +454,12 @@ interface AppState {
   >;
   /** Whether the keyboard-shortcut cheatsheet overlay is open. Not persisted. */
   shortcutHelpOpen: boolean;
+  /** True while the primary modifier is deliberately HELD (useModKeyHold) —
+   *  sidebar rows show their digit badges. Not persisted. */
+  modKeyHeld: boolean;
+  /** The sidebar's RENDERED agent-row order (published by Sidebar, consumed by
+   *  the mod+digit shortcuts and the hold-badges — ADR-066). Not persisted. */
+  sidebarRowOrder: string[];
 
   // Actions
   cycleTheme: () => void;
@@ -473,6 +479,8 @@ interface AppState {
   toggleSidebar: () => void;
   toggleShortcutHelp: () => void;
   closeShortcutHelp: () => void;
+  setModKeyHeld: (held: boolean) => void;
+  setSidebarRowOrder: (ids: string[]) => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
   setPermissionMode: (mode: PermissionMode) => void;
@@ -657,6 +665,8 @@ export const useStore = create<AppState>()(
         agentStatuses: {},
         sidebarOpen: true,
         shortcutHelpOpen: false,
+        modKeyHeld: false,
+        sidebarRowOrder: [],
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         permissionMode: DEFAULT_PERMISSION_MODE,
         pinnedOrder: [],
@@ -681,6 +691,18 @@ export const useStore = create<AppState>()(
         toggleShortcutHelp: () =>
           set({ shortcutHelpOpen: !get().shortcutHelpOpen }),
         closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
+        setModKeyHeld: (held) => set({ modKeyHeld: held }),
+        setSidebarRowOrder: (ids) => {
+          // Published on every Sidebar render commit — skip no-op updates so
+          // subscribers don't re-render on unchanged order.
+          const prev = get().sidebarRowOrder;
+          if (
+            prev.length === ids.length &&
+            prev.every((id, i) => id === ids[i])
+          )
+            return;
+          set({ sidebarRowOrder: ids });
+        },
         setSidebarWidth: (width: number) => {
           if (!Number.isFinite(width)) return;
           set({

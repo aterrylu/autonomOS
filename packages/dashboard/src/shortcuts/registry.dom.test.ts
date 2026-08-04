@@ -115,7 +115,7 @@ describe("registry invariants", () => {
     }
   });
 
-  it("covers mod+1..9 pane switching", () => {
+  it("covers mod+1..9 agent switching", () => {
     for (let n = 1; n <= 9; n++) {
       expect(SHORTCUTS.some((s) => s.chord === `mod+${n}`)).toBe(true);
     }
@@ -123,9 +123,9 @@ describe("registry invariants", () => {
 });
 
 describe("matchShortcut / isReservedChord", () => {
-  it("matches mod+digit to the pane shortcut", () => {
+  it("matches mod+digit to the agent shortcut", () => {
     const m = matchShortcut(modEvent({ key: "3", code: "Digit3" }));
-    expect(m?.id).toBe("pane.focus.3");
+    expect(m?.id).toBe("agent.focus.3");
   });
 
   it("does not match a bare digit", () => {
@@ -149,7 +149,7 @@ describe("matchShortcut / isReservedChord", () => {
     expect(isReservedChord(esc)).toBe(false);
   });
 
-  it("isReservedChord is true for pane chords (xterm must decline them)", () => {
+  it("isReservedChord is true for digit chords (xterm must decline them)", () => {
     expect(isReservedChord(modEvent({ key: "1", code: "Digit1" }))).toBe(true);
     expect(isReservedChord(modEvent({ key: "b", code: "KeyB" }))).toBe(true);
   });
