@@ -19,11 +19,21 @@ export function useShortcuts(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      // Mid-IME-composition keys belong to the IME — Escape cancels the
+      // composition, and must not also dismiss a panel. (Reachable since
+      // Escape became the registry's first bare chord, ADR-065.)
+      if (e.isComposing) return;
       const shortcut = matchShortcut(e);
       if (!shortcut) return;
       e.preventDefault();
       e.stopPropagation();
-      shortcut.run();
+      try {
+        shortcut.run();
+      } catch (err) {
+        // The event is already consumed; an uncaught throw here would vanish
+        // into the window listener with no React boundary. Surface it.
+        console.error(`[autonomOS] shortcut ${shortcut.id} failed:`, err);
+      }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);

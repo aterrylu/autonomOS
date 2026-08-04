@@ -207,6 +207,25 @@ test("reserved chords beat a focused terminal; passthrough keys still reach the 
     )
     .toContain("x");
 
+  // ADR-065: ctrl+d is FREED — EOF must reach the PTY (the legacy swallow ate
+  // it). In this non-mac-emulated browser ctrl IS mod, and mod+d is
+  // deliberately unregistered.
+  const eofBefore = await page.evaluate(
+    () => (window as unknown as { __wsSent: string[] }).__wsSent.length,
+  );
+  await page.keyboard.press("Control+d");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (n) =>
+          (window as unknown as { __wsSent: string[] }).__wsSent
+            .slice(n)
+            .join(""),
+        eofBefore,
+      ),
+    )
+    .toContain("\x04");
+
   // Reserved digit chord: switches panes, and no digit byte reaches the PTY.
   const sentBefore = await page.evaluate(
     () => (window as unknown as { __wsSent: string[] }).__wsSent.length,
@@ -251,4 +270,85 @@ test("mod+/ overlay takes focus and Escape returns it to the terminal", async ({
       ),
     )
     .toBe(true);
+});
+
+test("Escape closes an open panel even with a terminal focused — and only then reaches the shell", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.addInitScript(() => {
+    (window as unknown as { __wsSent: string[] }).__wsSent = [];
+    class RecordingWebSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readonly OPEN = 1;
+      url: string;
+      readyState = 1;
+      binaryType: BinaryType = "blob";
+      onopen: ((ev: Event) => void) | null = null;
+      onclose: ((ev: CloseEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      constructor(url: string | URL) {
+        super();
+        this.url = String(url);
+        setTimeout(() => {
+          this.onopen?.(new Event("open"));
+          this.dispatchEvent(new Event("open"));
+        }, 0);
+      }
+      send(data: unknown) {
+        if (typeof data === "string" && this.url.includes("/ws/terminal/")) {
+          (window as unknown as { __wsSent: string[] }).__wsSent.push(data);
+        }
+      }
+      close() {}
+    }
+    // @ts-expect-error overriding the global for the test environment
+    window.WebSocket = RecordingWebSocket;
+  });
+  await seedPersisted(page, twoPaneWorkspace());
+  await page.goto("/");
+  await expect(page.locator(".dv-tab")).toHaveCount(2);
+
+  // Open the notification panel from the status bar…
+  await page.getByTitle("Notifications").click();
+  const panelHeader = page.getByText("Notifications", { exact: true });
+  await expect(panelHeader).toBeVisible();
+
+  // …then move focus back into a terminal (the case the old bubble-phase
+  // listener silently failed on: xterm stopPropagation()s Escape).
+  await focusTerminal(page);
+
+  const before = await page.evaluate(
+    () => (window as unknown as { __wsSent: string[] }).__wsSent.length,
+  );
+  await page.keyboard.press("Escape");
+  await expect(panelHeader).toHaveCount(0); // panel closed
+  const afterClose = await page.evaluate(
+    (n) =>
+      (window as unknown as { __wsSent: string[] }).__wsSent.slice(n).join(""),
+    before,
+  );
+  expect(afterClose).not.toContain("\x1b"); // ESC consumed by the app, not the shell
+
+  // With nothing open, Escape belongs to the terminal again.
+  await focusTerminal(page);
+  const before2 = await page.evaluate(
+    () => (window as unknown as { __wsSent: string[] }).__wsSent.length,
+  );
+  await page.keyboard.press("Escape");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (n) =>
+          (window as unknown as { __wsSent: string[] }).__wsSent
+            .slice(n)
+            .join(""),
+        before2,
+      ),
+    )
+    .toContain("\x1b");
 });

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
 import { displayChord } from "./chord";
+import { pushEscapeCloser } from "./escapeStack";
 import { SHORTCUTS } from "./registry";
 
 /**
@@ -33,6 +34,10 @@ function HelpDialog() {
       if (prev instanceof HTMLElement && prev.isConnected) prev.focus();
     };
   }, []);
+
+  // Escape-to-close rides the registry's ui.dismiss entry via the escape
+  // stack (ADR-065) — mounted-open means dismissible.
+  useEffect(() => pushEscapeCloser(useStore.getState().closeShortcutHelp), []);
 
   const categories = [...new Set(SHORTCUTS.map((s) => s.category))];
 

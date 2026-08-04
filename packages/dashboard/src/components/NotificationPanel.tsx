@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { focusTerminal } from "../hooks/useTerminal";
+import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import { THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
 
@@ -71,22 +72,28 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
       .finally(() => setLoading(false));
   }, []);
 
+  // Latest-closer ref: the bell passes an inline arrow, and re-registering on
+  // identity churn (it re-renders on every notification) would move this panel
+  // to the top of the escape stack — see useClickOutside for the full note.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  // Escape rides the registry's ui.dismiss entry via the escape stack
+  // (ADR-065); the old document keydown listener was bubble-phase and thus
+  // dead whenever a terminal had focus.
+  useEffect(() => pushEscapeCloser(() => closeRef.current()), []);
+
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose();
+        closeRef.current();
       }
     }
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
     document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
     return () => {
       document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
     };
-  }, [onClose]);
+  }, []);
 
   async function handleMarkAllRead() {
     if (markingRead) return;
