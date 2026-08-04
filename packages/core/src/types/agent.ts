@@ -91,6 +91,13 @@ export interface Agent {
    *  would re-arm the net and erase the pointer on its first failure. */
   adoptedExternal?: boolean;
 
+  /** Name of the env preset applied to this agent at spawn, or undefined for a
+   *  default backend. Persists the preset NAME only — never its env/secret
+   *  values (those live in the preset file). Re-applied on resume so an
+   *  override survives a restart, following the same "the record is the source
+   *  on a body-less resume" rule as `permissionMode`. See ADR-067. */
+  envPreset?: string;
+
   /** Codex only: the app-server thread id (== Codex session id) of this agent's
    *  conversation, captured once the daemon-backed TUI creates its thread. Used
    *  to resume the conversation across a server/daemon restart via

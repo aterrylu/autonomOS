@@ -105,6 +105,11 @@ export const TOOL_CREATE_AGENT: ToolDef = {
         description:
           "Agent runtime/CLI to spawn (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. The chosen CLI must be installed on the host.",
       },
+      envPreset: {
+        type: "string",
+        description:
+          "Name of an env preset (see list_env_presets) to apply — e.g. run this Claude Code agent against a Kimi/Moonshot backend. Injects the preset's model-override env into ONLY this agent. The preset must have its API key set by a human in the dashboard first; spawning with a preset whose key is unset fails.",
+      },
     },
     required: ["workingDirectory"],
   },
@@ -453,6 +458,111 @@ export const TOOL_RUN_SCHEDULE: ToolDef = {
   },
 };
 
+// ── Env Preset Tools (model-override, ADR-067) ──────────────────
+//
+// The AGENT surface for env presets. These tools set everything EXCEPT the
+// secret VALUES: an agent declares which secret keys a preset needs but cannot
+// write them — a human pastes the API key in the dashboard. Reads are masked.
+// The tool descriptions tell agents not to solicit tokens in chat.
+
+const ENV_PRESET_SECRET_GUIDANCE =
+  "You CANNOT set the secret value (the API key/token) — that is entered by a human in the dashboard Presets tab. Do NOT ask the user to paste their API key in chat; tell them to open the Presets tab and fill it there. Declare the required key name(s) via `secretKeys`.";
+
+// The full happy path, stated once so an agent doesn't have to reconstruct it
+// from the individual tools (or learn it from a failed spawn).
+const ENV_PRESET_WORKFLOW =
+  'Full flow: (1) create_env_preset with its `env` + `secretKeys`; (2) tell the human to open the dashboard Presets tab and set the API key; (3) confirm it\'s set with list_env_presets (see its is-set rule); (4) THEN create_agent(envPreset: <name>). Spawning before the key is set fails with a clear message pointing at the Presets tab. For Kimi (Moonshot): ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic, ANTHROPIC_MODEL=kimi-k2.7-code (or kimi-k3), secretKeys=["ANTHROPIC_AUTH_TOKEN"] (note: AUTH_TOKEN, not API_KEY).';
+
+export const TOOL_LIST_ENV_PRESETS: ToolDef = {
+  name: "list_env_presets",
+  description:
+    "List env presets (model-override profiles, e.g. a Kimi/Moonshot backend). Secret values are always MASKED — never the values. IS-SET RULE: a secret key is SET when it appears in the returned `secrets` map (as a masked ••••value); a declared `secretKey` that is ABSENT from `secrets` is UNSET — a human still needs to fill it in the dashboard. Check this before spawning an agent with the preset.",
+  inputSchema: { type: "object", properties: {} },
+};
+
+export const TOOL_CREATE_ENV_PRESET: ToolDef = {
+  name: "create_env_preset",
+  description: `Create an env preset — a named set of environment variables applied to an agent at spawn to override its model backend (e.g. point Claude Code at Kimi via ANTHROPIC_BASE_URL/ANTHROPIC_MODEL). ${ENV_PRESET_SECRET_GUIDANCE} ${ENV_PRESET_WORKFLOW}`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description:
+          "Preset name (lowercase, digits, hyphens — used as the filename).",
+      },
+      description: {
+        type: "string",
+        description: "What this preset points at.",
+      },
+      provider: {
+        type: "string",
+        enum: ["claude-code", "codex", "gemini-cli"],
+        description:
+          "Base provider this override targets (default 'claude-code').",
+      },
+      label: {
+        type: "string",
+        description:
+          "Short label shown on the agent's row in the dashboard (e.g. 'Kimi K2.7-code').",
+      },
+      env: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Reserved autonomOS control-plane vars are rejected.',
+      },
+      secretKeys: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          'Names of the secret env vars this preset needs (e.g. ["ANTHROPIC_AUTH_TOKEN"]). You declare the names; the human fills the values in the dashboard.',
+      },
+    },
+    required: ["name"],
+  },
+};
+
+export const TOOL_UPDATE_ENV_PRESET: ToolDef = {
+  name: "update_env_preset",
+  description: `Update an env preset's non-secret fields. ${ENV_PRESET_SECRET_GUIDANCE}`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Name of the preset to update." },
+      description: { type: "string" },
+      provider: {
+        type: "string",
+        enum: ["claude-code", "codex", "gemini-cli"],
+      },
+      label: { type: "string" },
+      env: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Replaces the non-secret env map.",
+      },
+      secretKeys: {
+        type: "array",
+        items: { type: "string" },
+        description: "Replaces the declared secret-key names.",
+      },
+    },
+    required: ["name"],
+  },
+};
+
+export const TOOL_DELETE_ENV_PRESET: ToolDef = {
+  name: "delete_env_preset",
+  description: "Delete an env preset by name.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Name of the preset to delete." },
+    },
+    required: ["name"],
+  },
+};
+
 /** All tools — the channel MCP registers every one of these.
  *  Kept deliberately in sync with MCP_INSTRUCTIONS below: the instructions are
  *  injected verbatim into each agent's system prompt, so any tool advertised
@@ -467,6 +577,10 @@ export const ALL_TOOLS: ToolDef[] = [
   TOOL_GET_ORG_CHART,
   TOOL_LIST_TEMPLATES,
   TOOL_CREATE_TEMPLATE,
+  TOOL_LIST_ENV_PRESETS,
+  TOOL_CREATE_ENV_PRESET,
+  TOOL_UPDATE_ENV_PRESET,
+  TOOL_DELETE_ENV_PRESET,
   TOOL_SELF_EXIT,
   TOOL_CREATE_SCHEDULE,
   TOOL_LIST_SCHEDULES,
@@ -501,6 +615,14 @@ export const MCP_INSTRUCTIONS = [
   "- list_templates(): Browse available agent templates",
   "- create_template(): Create a reusable agent template",
   "- self_exit(): Terminate your own session when work is complete",
+  "",
+  "Env preset tools (model overrides — e.g. run an agent on Kimi):",
+  "  Flow: create_env_preset → the human keys the API key in the dashboard Presets tab (do NOT ask for tokens in chat) → verify with list_env_presets → create_agent(envPreset).",
+  "- list_env_presets(): List model-override presets. Secrets masked; a declared secretKey absent from `secrets` is UNSET.",
+  "- create_env_preset(): Create a preset (set env + declare secret key names; you cannot set the key value — the human does, in the dashboard)",
+  "- update_env_preset(): Update a preset's non-secret fields",
+  "- delete_env_preset(): Delete a preset",
+  "- create_agent(envPreset): spawn an agent with a preset applied (fails if its key is unset)",
   "",
   "Schedule tools:",
   "- create_schedule(): Create a recurring or one-time scheduled task",

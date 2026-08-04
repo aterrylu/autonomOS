@@ -196,6 +196,11 @@ export function spawnErrorStatus(message: string): 400 | 404 | 409 | 422 | 500 {
   ) {
     return 400;
   }
+  // Env preset problems (ADR-067): a referenced preset that doesn't exist, or one
+  // whose API key a human hasn't set yet. A client-config error, not a server
+  // fault — and it must beat the generic "not found" → 404 below, so a keyless
+  // preset reads as "fix your preset" (400) rather than "no such agent" (404).
+  if (message.includes("Env preset")) return 400;
   // Name collision with a live agent.
   if (message.includes("already running")) return 409;
   // Resuming a session whose agent is already live. `/attach` maps this exact
@@ -308,6 +313,11 @@ agentsRouter.post("/", async (c) => {
         typeof body.provider === "string"
           ? (body.provider as Provider)
           : undefined,
+      // Env preset (model override, ADR-067). Forwarded raw; spawnAgent resolves
+      // it against the record on a body-less resume. undefined = no override /
+      // keep the resumed agent's existing preset.
+      envPreset:
+        typeof body.envPreset === "string" ? body.envPreset : undefined,
     });
     return c.json(result.agent, 201);
   } catch (err) {
@@ -459,6 +469,9 @@ agentsRouter.post("/:id/attach", async (c) => {
       managerId: agent.managerId,
       project: agent.project,
       provider: agent.provider,
+      // Record-driven resume: re-apply the persisted preset (ADR-067). No body,
+      // so this is the record's own value — cannot re-level the agent.
+      envPreset: agent.envPreset,
     });
     return c.json(result.agent);
   } catch (err) {

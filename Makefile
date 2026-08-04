@@ -140,4 +140,4 @@ check:
 # RE-RUN THIS AFTER ANY DASHBOARD UI CHANGE so the README hero stays accurate.
 # See packages/dashboard/scripts/capture-hero.ts for prerequisites + details.
 hero:
-	bun --cwd packages/dashboard run capture-hero
+	cd packages/dashboard && $(BUN) run capture-hero

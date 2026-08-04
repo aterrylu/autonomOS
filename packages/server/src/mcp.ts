@@ -17,6 +17,12 @@ import {
   resolveAgentByName,
   setManager,
 } from "./agents/store.js";
+import {
+  createEnvPreset,
+  deleteEnvPreset,
+  listEnvPresets,
+  updateEnvPreset,
+} from "./envPresets.js";
 import { emitAgentDelta } from "./events/agents.js";
 import { MCP_INSTRUCTIONS_EXTERNAL, MCP_SERVER_INFO } from "./mcp/tools.js";
 import {
@@ -142,6 +148,12 @@ function createMcpServer(): McpServer {
         .describe(
           "Agent runtime/CLI (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. Must be installed on the host.",
         ),
+      envPreset: z
+        .string()
+        .optional()
+        .describe(
+          "Env preset name (see list_env_presets) — applies a model-override env (e.g. Kimi backend) to only this agent. The preset's API key must be set by a human in the dashboard first.",
+        ),
     },
     async (args) => {
       try {
@@ -199,6 +211,7 @@ function createMcpServer(): McpServer {
           managerId,
           project: args.project,
           provider: args.provider,
+          envPreset: args.envPreset,
         });
         return {
           content: [
@@ -517,6 +530,160 @@ function createMcpServer(): McpServer {
         return {
           content: [
             { type: "text", text: `Failed to create template: ${message}` },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── Env preset tools (model overrides, ADR-067) ─────────────────
+  // Agents set env + declare secret KEY NAMES but never write secret VALUES;
+  // reads are masked by the storage layer. See mcp/tools.ts for descriptions.
+
+  const KEY_IN_UI_NOTE =
+    "Now ask the human to open the dashboard Presets tab and paste the API key for the declared secret key(s). Do NOT request the token in chat.";
+
+  server.tool(
+    "list_env_presets",
+    "List env presets (model-override profiles). Secret values are masked. IS-SET RULE: a secret key is SET when it appears in the returned `secrets` map (masked ••••value); a declared `secretKey` absent from `secrets` is UNSET — a human must fill it in the dashboard. Check before spawning.",
+    {},
+    async () => {
+      try {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(listEnvPresets(), null, 2) },
+          ],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [
+            { type: "text", text: `Failed to list presets: ${message}` },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    "create_env_preset",
+    'Create a model-override env preset. Sets env + declares secret key names; you CANNOT set the secret value — a human enters it in the dashboard. Do not ask for tokens in chat. Flow: create → human keys it in the Presets tab → verify with list_env_presets → create_agent(envPreset). Kimi: ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic, ANTHROPIC_MODEL=kimi-k2.7-code, secretKeys=["ANTHROPIC_AUTH_TOKEN"].',
+    {
+      name: z.string().describe("Preset name (lowercase, digits, hyphens)"),
+      description: z.string().optional(),
+      provider: z.enum(["claude-code", "codex", "gemini-cli"]).optional(),
+      label: z.string().optional().describe("Short label for the agent's row"),
+      env: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe(
+          "Non-secret env vars (e.g. ANTHROPIC_BASE_URL, ANTHROPIC_MODEL)",
+        ),
+      secretKeys: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Names of required secret env vars (e.g. ['ANTHROPIC_AUTH_TOKEN'])",
+        ),
+    },
+    async (args) => {
+      try {
+        // NOTE: no `secrets` in the schema — the agent surface cannot set values.
+        const preset = createEnvPreset(
+          {
+            name: args.name,
+            description: args.description,
+            provider: args.provider,
+            label: args.label,
+            env: args.env,
+            secretKeys: args.secretKeys,
+          },
+          Date.now(),
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${JSON.stringify(preset, null, 2)}\n\n${KEY_IN_UI_NOTE}`,
+            },
+          ],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [
+            { type: "text", text: `Failed to create preset: ${message}` },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    "update_env_preset",
+    "Update a preset's non-secret fields. You cannot set secret values (human-only, in the dashboard).",
+    {
+      name: z.string().describe("Name of the preset to update"),
+      description: z.string().optional(),
+      provider: z.enum(["claude-code", "codex", "gemini-cli"]).optional(),
+      label: z.string().optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      secretKeys: z.array(z.string()).optional(),
+    },
+    async (args) => {
+      try {
+        const preset = updateEnvPreset(
+          args.name,
+          {
+            description: args.description,
+            provider: args.provider,
+            label: args.label,
+            env: args.env,
+            secretKeys: args.secretKeys,
+          },
+          Date.now(),
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(preset, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [
+            { type: "text", text: `Failed to update preset: ${message}` },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    "delete_env_preset",
+    "Delete an env preset by name.",
+    { name: z.string().describe("Name of the preset to delete") },
+    async (args) => {
+      try {
+        const removed = deleteEnvPreset(args.name);
+        return {
+          content: [
+            {
+              type: "text",
+              text: removed
+                ? `Preset "${args.name}" deleted`
+                : `Preset "${args.name}" not found`,
+            },
+          ],
+          isError: !removed,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        return {
+          content: [
+            { type: "text", text: `Failed to delete preset: ${message}` },
           ],
           isError: true,
         };

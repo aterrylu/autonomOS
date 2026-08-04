@@ -316,7 +316,12 @@ export function patchAgent(
   patch: Partial<
     Pick<
       Agent,
-      "name" | "template" | "project" | "permissionMode" | "providerThreadId"
+      | "name"
+      | "template"
+      | "project"
+      | "permissionMode"
+      | "providerThreadId"
+      | "envPreset"
     >
   >,
   expectedVersion?: number,
@@ -429,6 +434,7 @@ export function markRunning(
       | "startedAt"
       | "providerThreadId"
       | "permissionMode"
+      | "envPreset"
     >
   >,
 ): Agent | undefined {
@@ -549,6 +555,7 @@ export function buildAgent(params: {
   startedAt?: number;
   createdAt?: number;
   adoptedExternal?: boolean;
+  envPreset?: string;
 }): Agent {
   const now = Date.now();
   return {
@@ -563,6 +570,9 @@ export function buildAgent(params: {
     status: params.status ?? "running",
     provider: params.provider,
     providerSessionId: params.providerSessionId,
+    // Omitted entirely (not `false`/undefined) when unset so existing records
+    // round-trip unchanged — same idiom as adoptedExternal.
+    ...(params.envPreset ? { envPreset: params.envPreset } : {}),
     // Omitted entirely (not `false`) for non-adopted agents so existing records
     // round-trip unchanged.
     ...(params.adoptedExternal ? { adoptedExternal: true as const } : {}),

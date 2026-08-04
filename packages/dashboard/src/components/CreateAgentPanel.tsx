@@ -26,19 +26,23 @@ export function CreateAgentPanel() {
   const {
     templates,
     projects,
+    presets,
     createSession,
     status,
     fetchProjects,
     fetchTemplates,
+    fetchPresets,
     defaultPermissionMode,
   } = useStore(
     useShallow((s) => ({
       templates: s.templates,
       projects: s.projects,
+      presets: s.presets,
       createSession: s.createSession,
       status: s.status,
       fetchProjects: s.fetchProjects,
       fetchTemplates: s.fetchTemplates,
+      fetchPresets: s.fetchPresets,
       defaultPermissionMode: s.permissionMode,
     })),
   );
@@ -53,6 +57,8 @@ export function CreateAgentPanel() {
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [autoDefaulted, setAutoDefaulted] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("claude-code");
+  // Optional model-override env preset applied at spawn (empty = default backend).
+  const [selectedPreset, setSelectedPreset] = useState("");
   // Per-spawn permission mode, seeded from the global default. A template with
   // its own permissionMode overrides this when selected (see selectTemplate).
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
@@ -72,7 +78,8 @@ export function CreateAgentPanel() {
       .catch(() => {});
     fetchProjects();
     fetchTemplates();
-  }, [fetchProjects, fetchTemplates]);
+    fetchPresets();
+  }, [fetchProjects, fetchTemplates, fetchPresets]);
 
   // Auto-select Dispatcher on first render where templates include it AND
   // the user hasn't already chosen something. Only runs once thanks to
@@ -163,6 +170,7 @@ export function CreateAgentPanel() {
         template: selectedTemplate || undefined,
         appendSystemPrompt: tmpl?.systemPrompt,
         permissionMode,
+        envPreset: selectedPreset || undefined,
       });
       // spawnSession's onSuccess switchPanes to the new agent, which solo-
       // replaces this create-agent panel — no explicit close needed.
@@ -306,6 +314,33 @@ export function CreateAgentPanel() {
             page={page}
             provider={selectedProvider as Provider}
           />
+        </Section>
+
+        {/* Model Override Preset */}
+        <Section
+          title="Model Override"
+          subtitle="Optional env preset applied at spawn (e.g. an alternate model backend)"
+          page={page}
+        >
+          <select
+            value={selectedPreset}
+            onChange={(e) => setSelectedPreset(e.target.value)}
+            className="w-full max-w-md px-3 py-2 rounded text-sm cursor-pointer"
+            style={{
+              background: "rgba(255,255,255,0.06)",
+              border: `1px solid ${page.border}`,
+              color: page.fg,
+            }}
+          >
+            <option value="">None (default backend)</option>
+            {Object.values(presets).map((preset) => (
+              <option key={preset.name} value={preset.name}>
+                {preset.label
+                  ? `${preset.label} (${preset.name})`
+                  : preset.name}
+              </option>
+            ))}
+          </select>
         </Section>
 
         {/* Working Directory */}
