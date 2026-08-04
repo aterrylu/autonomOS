@@ -1,5 +1,5 @@
 import { useStore } from "../store";
-import { focusLastPane, focusPaneByIndex } from "./actions";
+import { focusAgentByIndex } from "./actions";
 import { type ChordEvent, eventChord } from "./chord";
 import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
 
@@ -25,10 +25,9 @@ import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
  *
  * IMPORT-CYCLE DISCIPLINE: useTerminal → this module → actions → useTerminal
  * is a real cycle, safe only because every cross-cycle binding is a hoisted
- * `function` declaration referenced at call time (the closest edge is
- * `run: focusLastPane` below, which reads the binding during module
- * evaluation — fine for a function declaration, a TDZ crash for a
- * `const` arrow). Keep exported cross-cycle functions as declarations.
+ * `function` declaration referenced at call time (every `run` closure below
+ * reads cross-cycle bindings at CALL time; a top-level read of one would be
+ * a TDZ crash for a `const` arrow). Keep exported cross-cycle functions as declarations.
  */
 
 /**
@@ -42,14 +41,14 @@ import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
 export type ShortcutBoundary = "app-reserved";
 
 export interface ShortcutDef {
-  /** Stable command id, e.g. "pane.focus.3". Never shown to users. */
+  /** Stable command id, e.g. "agent.focus.3". Never shown to users. */
   id: string;
   /** Normalized chord (see chord.ts): "mod+3", "mod+b", "escape". */
   chord: string;
   /** Help-overlay text. */
   description: string;
   /** Help-overlay grouping. */
-  category: "Panes" | "App";
+  category: "Agents" | "App";
   boundary: ShortcutBoundary;
   /** Extra gate (beyond auth) — e.g. "only while the help overlay is open".
    *  A false `when` makes the chord pass through untouched. */
@@ -57,25 +56,17 @@ export interface ShortcutDef {
   run: () => void;
 }
 
-const paneShortcuts: ShortcutDef[] = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({
-  id: `pane.focus.${n}`,
+const agentShortcuts: ShortcutDef[] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
+  id: `agent.focus.${n}`,
   chord: `mod+${n}`,
-  description: `Focus pane ${n}`,
-  category: "Panes",
+  description: `Switch to agent ${n}`,
+  category: "Agents",
   boundary: "app-reserved",
-  run: () => focusPaneByIndex(n - 1),
+  run: () => focusAgentByIndex(n - 1),
 }));
 
 export const SHORTCUTS: ShortcutDef[] = [
-  ...paneShortcuts,
-  {
-    id: "pane.focus.last",
-    chord: "mod+9",
-    description: "Focus last pane",
-    category: "Panes",
-    boundary: "app-reserved",
-    run: focusLastPane,
-  },
+  ...agentShortcuts,
   {
     id: "sidebar.toggle",
     chord: "mod+b",

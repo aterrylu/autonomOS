@@ -2,4 +2,4 @@
 "@autonomos/dashboard": minor
 ---
 
-Hold the primary modifier (⌘ on Mac, Ctrl elsewhere) for ~350ms and every open pane's tab shows the digit that focuses it — the tmux `display-panes` idea for the mod+digit shortcuts. Badges are computed from the same visual-order walk the shortcuts use, so the hint is the chord and cannot disagree with what pressing the number does. A quick ⌘C/⌘V never flashes them, and window blur / tab-switch clears them (a ⌘Tab away would otherwise eat the keyup and wedge the badges on).
+mod+1–9 now switches to the Nth AGENT in the sidebar (rendered order — pinned first in flat view; depth-first with collapsed subtrees skipped in hierarchy view), replacing the open-pane-position semantics: digits are agent navigation, like clicking the row. Hold the modifier ~350ms and each agent row shows the digit that switches to it; badges and shortcuts read the same published row order, so the hint cannot lie. Quick chords never flash badges; window blur/tab-switch clears them. See ADR-066.

@@ -8,10 +8,6 @@ import {
   type DockviewTheme,
 } from "dockview-react";
 import { useCallback, useEffect, useRef } from "react";
-import {
-  registerDockviewApi,
-  unregisterDockviewApi,
-} from "../../shortcuts/dockviewApi";
 import { type ActivePane, THEMES, type ThemeName, useStore } from "../../store";
 import { DRAG_TYPE, decodeDragData } from "../DragContext";
 import { PaneContent, type PaneParams } from "./PaneContent";
@@ -365,8 +361,6 @@ export function DockviewLayout() {
     (event: DockviewReadyEvent) => {
       const api = event.api;
       apiRef.current = api;
-      // Expose the live api to the shortcut layer (mod+1..9 pane switching).
-      registerDockviewApi(api);
 
       // Keep the store's visiblePaneIds in sync with whatever panels dockview is
       // showing — fires on add/remove/move so the sidebar's on-screen marks track
@@ -457,13 +451,8 @@ export function DockviewLayout() {
   // Clear visiblePaneIds when this component unmounts — SessionViewManager
   // unmounts DockviewLayout when activePane goes null (the empty state), and a
   // stale set would keep the sidebar highlighting rows for a dock that's gone.
-  // Also withdraw the shortcut layer's api handle so pane shortcuts become
-  // no-ops instead of driving a disposed dockview.
   useEffect(() => {
-    return () => {
-      useStore.getState().setVisiblePaneIds([]);
-      if (apiRef.current) unregisterDockviewApi(apiRef.current);
-    };
+    return () => useStore.getState().setVisiblePaneIds([]);
   }, []);
 
   // Track the in-flight sidebar drag's pane id (for the onWillShowOverlay

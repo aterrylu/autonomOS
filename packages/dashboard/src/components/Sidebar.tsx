@@ -16,6 +16,7 @@ import {
   type OrgNode,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
+import { digitForRow, flattenHierarchyRows } from "./sidebarRowOrder";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -267,6 +268,35 @@ export function Sidebar() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     new Set(),
   );
+
+  // Publish the RENDERED agent-row order (ADR-066): the mod+digit shortcuts
+  // switch to sidebarRowOrder[n-1] and the hold-badges number the same list,
+  // so what you see is exactly what the digits do. Mirrors the JSX: flat =
+  // pinned then unpinned; hierarchy = DFS skipping collapsed subtrees and
+  // non-clickable "stopped" rows; degraded hierarchy shows no rows → empty.
+  const renderedRowOrder = useMemo(
+    () =>
+      sidebarViewMode === "flat"
+        ? [...flatSections.pinned, ...flatSections.unpinned].map((s) => s.id)
+        : hierarchyDegraded
+          ? []
+          : flattenHierarchyRows(hierarchyTree, collapsedGroups),
+    [
+      sidebarViewMode,
+      flatSections,
+      hierarchyTree,
+      collapsedGroups,
+      hierarchyDegraded,
+    ],
+  );
+  const setSidebarRowOrder = useStore((s) => s.setSidebarRowOrder);
+  useEffect(() => {
+    setSidebarRowOrder(renderedRowOrder);
+  }, [renderedRowOrder, setSidebarRowOrder]);
+  // The sidebar can unmount/hide entirely — digits must go dead, not stale.
+  useEffect(() => {
+    return () => useStore.getState().setSidebarRowOrder([]);
+  }, []);
   const toggleCollapsed = (name: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -903,6 +933,14 @@ function SessionRow({
   const agentIconStyle = useStore((st) => st.agentIconStyle);
   const status = (agentState?.status as AgentStatus) ?? "unknown";
   const accent = THEMES[useStore((st) => st.theme)].terminal.yellow;
+
+  // Hold-mod hint (useModKeyHold): the digit that switches to THIS row,
+  // looked up in the same published order the shortcut executes against.
+  const modKeyHeld = useStore((st) => st.modKeyHeld);
+  const rowOrder = useStore((st) => st.sidebarRowOrder);
+  const rowDigit = modKeyHeld
+    ? digitForRow(rowOrder.indexOf(s.id), rowOrder.length)
+    : null;
   const highlight = isActive
     ? activeHighlight(accent)
     : isVisible
@@ -952,6 +990,20 @@ function SessionRow({
             onBorderClick();
           }}
         />
+      )}
+      {rowDigit !== null && (
+        <kbd
+          data-testid="agent-digit-badge"
+          className="shrink-0 rounded px-1 font-mono font-semibold"
+          style={{
+            fontSize: 10,
+            lineHeight: "14px",
+            background: page.fg,
+            color: page.bg,
+          }}
+        >
+          {rowDigit}
+        </kbd>
       )}
       {agentIconStyle === "provider" ? (
         <ProviderAgentIcon provider={s.provider} status={status} size={16} />

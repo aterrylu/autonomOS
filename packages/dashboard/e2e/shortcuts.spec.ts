@@ -120,27 +120,27 @@ async function focusTerminal(page: Page) {
     .toBe(true);
 }
 
-test("mod+digit switches panes through the real dockview wire-up", async ({
+test("mod+digit switches to the Nth SIDEBAR agent through the real published order", async ({
   page,
 }) => {
   await mockApi(page);
-  await seedPersisted(page, twoPaneWorkspace());
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
 
-  // Both tabs restored from the workspace blob (not a solo fallback).
-  await expect(page.locator(".dv-tab")).toHaveCount(2);
+  // Both mocked agents are listed in the sidebar (Dispatcher above Researcher).
+  const rows = page.locator("aside");
+  await expect(rows.getByText("Dispatcher")).toBeVisible();
+  await expect(rows.getByText("Researcher")).toBeVisible();
   const mod = await modKey(page);
 
+  // mod+2 switches to the SECOND sidebar row — even though no pane for it was
+  // open (this is agent navigation, not open-pane cycling). Crosses the real
+  // chain: Sidebar publishes sidebarRowOrder → registry action → switchPane.
   await page.keyboard.press(`${mod}+2`);
   await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
 
   await page.keyboard.press(`${mod}+1`);
   await expect.poll(() => activePaneId(page)).toBe(DISPATCHER);
-
-  // mod+9 = LAST pane.
-  await page.keyboard.press(`${mod}+9`);
-  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
 });
 
 test("reserved chords beat a focused terminal; passthrough keys still reach the PTY socket", async ({
@@ -353,25 +353,24 @@ test("Escape closes an open panel even with a terminal focused — and only then
     .toContain("\x1b");
 });
 
-test("holding mod reveals pane-digit badges that match what the digits do", async ({
+test("holding mod reveals digit badges on the sidebar agent rows", async ({
   page,
 }) => {
   await mockApi(page);
-  await seedPersisted(page, twoPaneWorkspace());
   await page.goto("/");
-  await expect(page.locator(".dv-tab")).toHaveCount(2);
+  await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
+  await expect(page.locator("aside").getByText("Researcher")).toBeVisible();
   const mod = await modKey(page);
-  const badges = page.getByTestId("pane-digit-badge");
+  const badges = page.getByTestId("agent-digit-badge");
 
-  // No badges at rest, none on a quick tap (the 350ms hold gate).
-  await expect(badges).toHaveCount(0);
+  await expect(badges).toHaveCount(0); // none at rest
 
   await page.keyboard.down(mod);
   await expect(badges).toHaveCount(2); // auto-waits past the hold delay
   await expect(badges.nth(0)).toHaveText("1");
   await expect(badges.nth(1)).toHaveText("2");
 
-  // The badge IS the chord: press 2 while still holding → pane 2 focuses.
+  // The badge IS the chord: press 2 while holding → that agent activates.
   await page.keyboard.press("2");
   await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
   await expect(badges).toHaveCount(2); // still holding — hints stay up
