@@ -2,6 +2,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateAgentPanel } from "../../components/CreateAgentPanel";
 import { HierarchyPanel } from "../../components/HierarchyPanel";
+import { PresetsPanel } from "../../components/PresetsPanel";
 import { SchedulesPanel } from "../../components/SchedulesPanel";
 import { SessionPane } from "../../components/SessionPane";
 import { TemplatesPanel } from "../../components/TemplatesPanel";
@@ -129,6 +130,8 @@ export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
         return <TemplatesPanel />;
       case "schedules":
         return <SchedulesPanel />;
+      case "presets":
+        return <PresetsPanel />;
       case "create-agent":
         return <CreateAgentPanel />;
       default:

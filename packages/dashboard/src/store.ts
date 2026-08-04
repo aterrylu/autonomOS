@@ -1,6 +1,7 @@
 import {
   type AgentTemplate,
   DEFAULT_PERMISSION_MODE,
+  type EnvPreset,
   type PermissionMode,
   permissionModeFromLegacy,
   permissionModeFromStored,
@@ -77,6 +78,10 @@ export interface SessionInfo {
   /** Why the session stopped — surfaced in the exited-row tooltip for triage.
    *  Missing on pre-schema records. */
   exitReason?: "user_killed" | "self_exited" | "crashed";
+  /** Name of the env preset applied to this agent at spawn (model-override
+   *  backend), or undefined for the default backend. Surfaced as a subtle pill
+   *  in the sidebar row. See ADR-067. */
+  envPreset?: string;
 }
 
 /** A Claude Code session from the SDK's listSessions() */
@@ -109,6 +114,7 @@ export type ActivePane =
   | { type: "orgchart"; id: "orgchart" }
   | { type: "templates"; id: "templates" }
   | { type: "schedules"; id: "schedules" }
+  | { type: "presets"; id: "presets" }
   | { type: "create-agent"; id: "create-agent" };
 
 export const THEMES: Record<ThemeName, AppTheme> = {
@@ -445,6 +451,10 @@ interface AppState {
   schedulesLoading: boolean;
   schedulesError: string | null;
   schedulerStatus: import("@autonomos/core").SchedulerStatus | null;
+  /** Loaded env presets keyed by name (secrets masked by the server). */
+  presets: Record<string, EnvPreset>;
+  presetsLoading: boolean;
+  presetsError: string | null;
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
   /** Agent status per session ID (from hook events) */
@@ -498,6 +508,7 @@ interface AppState {
       template?: string;
       appendSystemPrompt?: string;
       permissionMode?: PermissionMode;
+      envPreset?: string;
     },
   ) => Promise<void>;
   openCreateAgent: () => void;
@@ -511,6 +522,7 @@ interface AppState {
   openOrgChart: () => void;
   openTemplates: () => void;
   openSchedules: () => void;
+  openPresets: () => void;
   fetchTemplates: () => Promise<void>;
   saveTemplate: (name: string, template: AgentTemplate) => Promise<void>;
   deleteTemplate: (name: string) => Promise<void>;
@@ -523,6 +535,28 @@ interface AppState {
   ) => Promise<void>;
   fetchSchedulerStatus: () => Promise<void>;
   updateSchedulerSettings: (maxConcurrentRuns: number) => Promise<void>;
+  fetchPresets: () => Promise<void>;
+  createPreset: (input: {
+    name: string;
+    description?: string;
+    provider?: EnvPreset["provider"];
+    label?: string;
+    env?: Record<string, string>;
+    secretKeys?: string[];
+    secrets?: Record<string, string>;
+  }) => Promise<void>;
+  updatePreset: (
+    name: string,
+    partial: {
+      description?: string;
+      provider?: EnvPreset["provider"];
+      label?: string;
+      env?: Record<string, string>;
+      secretKeys?: string[];
+      secrets?: Record<string, string>;
+    },
+  ) => Promise<void>;
+  deletePreset: (name: string) => Promise<void>;
   toggleSidebarViewMode: () => void;
   reorderHierarchy: (
     groupKey: string,
@@ -586,17 +620,21 @@ async function spawnSession(
 
   if (!res) {
     set({ status: "server unreachable" });
-    return;
+    throw new Error("Server unreachable");
   }
   if (!res.ok) {
-    // Surface the server's reason (e.g. "nothing to resume", template not found)
-    // instead of a bare generic status — otherwise a failed resume reads as an
-    // unexplained dead-end. Falls back to the generic status if there's no body.
+    // Surface the server's reason (e.g. "nothing to resume", template not found,
+    // "Env preset ... is missing its API key") instead of a bare generic status.
+    // We set `status` (so isBusy resets) AND throw: the status string is only
+    // read for the isBusy boolean and is NOT rendered anywhere, so a caller with
+    // an error UI (CreateAgentPanel) must receive the throw to show the reason.
+    // Before this, a keyless-preset spawn was refused loudly server-side but died
+    // silently on screen (ADR-067 polish).
     const err = await res.json().catch(() => null);
     const detail =
       err && typeof err.error === "string" ? err.error : `HTTP ${res.status}`;
     set({ status: `${failureStatus}: ${detail}` });
-    return;
+    throw new Error(detail);
   }
 
   // Server returns an Agent; translate to SessionInfo for legacy code paths.
@@ -625,6 +663,7 @@ async function spawnSession(
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
     exitReason: agent.exitReason,
+    envPreset: agent.envPreset,
   };
   if (onSuccess) {
     onSuccess(session);
@@ -661,6 +700,9 @@ export const useStore = create<AppState>()(
         schedulesLoading: false,
         schedulesError: null,
         schedulerStatus: null,
+        presets: {},
+        presetsLoading: false,
+        presetsError: null,
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
@@ -748,6 +790,7 @@ export const useStore = create<AppState>()(
             updatedAt: number;
             exitedAt?: number;
             exitReason?: "user_killed" | "self_exited" | "crashed";
+            envPreset?: string;
           }>;
           // Resolve manager name client-side so the existing UI continues to
           // surface a human-readable label without an extra round-trip.
@@ -776,6 +819,7 @@ export const useStore = create<AppState>()(
             updatedAt: a.updatedAt,
             exitedAt: a.exitedAt,
             exitReason: a.exitReason,
+            envPreset: a.envPreset,
           }));
           // Filter out exited sessions — they have no PTY and would create
           // broken terminals with perpetual WebSocket reconnect loops.
@@ -944,6 +988,7 @@ export const useStore = create<AppState>()(
               provider: opts?.provider,
               template: opts?.template,
               appendSystemPrompt: opts?.appendSystemPrompt,
+              envPreset: opts?.envPreset,
             },
           );
         },
@@ -1168,6 +1213,10 @@ export const useStore = create<AppState>()(
           get().switchPane({ type: "schedules", id: "schedules" });
         },
 
+        openPresets: () => {
+          get().switchPane({ type: "presets", id: "presets" });
+        },
+
         fetchSchedules: async () => {
           const isInitialLoad = Object.keys(get().schedules).length === 0;
           if (isInitialLoad) set({ schedulesLoading: true });
@@ -1277,6 +1326,85 @@ export const useStore = create<AppState>()(
               ? { ...state.schedulerStatus, maxConcurrentRuns }
               : null,
           }));
+        },
+
+        fetchPresets: async () => {
+          const isInitialLoad = Object.keys(get().presets).length === 0;
+          if (isInitialLoad) set({ presetsLoading: true });
+          try {
+            const res = await fetch("/api/env-presets");
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(
+                (body as { error?: string }).error ??
+                  `Server error (${res.status})`,
+              );
+            }
+            const data = (await res.json()) as Record<string, EnvPreset>;
+            set({ presets: data, presetsLoading: false, presetsError: null });
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : "Failed to load presets";
+            console.warn("[presets] fetch failed:", message);
+            set({ presetsLoading: false, presetsError: message });
+          }
+        },
+
+        createPreset: async (input) => {
+          const res = await fetch("/api/env-presets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          const preset = (await res.json()) as EnvPreset;
+          set((state) => ({
+            presets: { ...state.presets, [preset.name]: preset },
+          }));
+        },
+
+        updatePreset: async (name, partial) => {
+          const res = await fetch(
+            `/api/env-presets/${encodeURIComponent(name)}`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(partial),
+            },
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          const preset = (await res.json()) as EnvPreset;
+          set((state) => ({
+            presets: { ...state.presets, [name]: preset },
+          }));
+        },
+
+        deletePreset: async (name) => {
+          const res = await fetch(
+            `/api/env-presets/${encodeURIComponent(name)}`,
+            { method: "DELETE" },
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(
+              (body as { error?: string }).error ?? `HTTP ${res.status}`,
+            );
+          }
+          set((state) => {
+            const next = { ...state.presets };
+            delete next[name];
+            return { presets: next };
+          });
         },
 
         toggleSidebarViewMode: () => {

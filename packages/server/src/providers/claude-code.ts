@@ -22,6 +22,7 @@ import {
   buildSystemPrompt,
   commonBinaryCandidates,
   HOOK_CMD,
+  RESERVED_ENV_KEYS,
   resolveBinaryFromCandidates,
 } from "./shared.js";
 
@@ -93,26 +94,9 @@ function claudePermissionArgs(
 // ── Binary resolution cache ───────────────────────────────────
 const binaryCache = { path: null as string | null };
 
-// ── Reserved env keys that buildEnv manages directly ──────────
-const RESERVED_ENV_KEYS = new Set([
-  "CLAUDECODE",
-  "PORT",
-  "PATH",
-  "HOME",
-  "AUTONOMOS_SERVER",
-  // Reserved for the same reason as the rest: user-supplied customEnvVars must
-  // not be able to repoint the hook relay's control-plane destination.
-  "AUTONOMOS_INTERNAL_SOCKET",
-  "AUTONOMOS_SESSION_ID",
-  "AUTONOMOS_AGENT_NAME",
-  // Per-agent identity credential — a user-supplied override would let an agent
-  // present a token for the wrong session (or a forged one).
-  "AUTONOMOS_AGENT_TOKEN",
-  // Config dir locates the channel-server's per-session token file
-  // (<configDir>/agent-tokens/<sessionId>). Gemini's channel server inherits it
-  // from the agent env, so an override would repoint it at a bogus token file.
-  "AUTONOMOS_CONFIG_DIR",
-]);
+// RESERVED_ENV_KEYS moved to shared.ts — it is now the single source of truth
+// for keys that neither customEnvVars nor an env preset may override (consumed
+// here for the customEnvVars merge and in runtime.ts for preset injection).
 
 export const claudeCodeProvider: AgentProvider = {
   name: "claude-code",

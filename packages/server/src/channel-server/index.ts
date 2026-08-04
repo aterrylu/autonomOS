@@ -469,6 +469,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         manager,
         project,
         provider,
+        envPreset,
       } = args as {
         workingDirectory: string;
         name?: string;
@@ -481,6 +482,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         manager?: string;
         project?: string;
         provider?: string;
+        envPreset?: string;
       };
 
       // Auto-default manager to calling agent's name (channel server only)
@@ -511,6 +513,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             manager: effectiveManager,
             project,
             provider,
+            envPreset,
           }),
         });
       } catch (err) {
@@ -610,6 +613,59 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case "list_templates": {
       return serverFetch("/api/templates");
+    }
+
+    // ── Env preset tools (model overrides, ADR-067) ─────────────
+    // SECURITY: we forward ONLY the non-secret fields. `secrets` is picked out
+    // and dropped even if an agent crafts it into args — the agent surface can
+    // never write a secret value. (The REST route does accept secrets, for the
+    // human dashboard path.)
+    case "create_env_preset": {
+      const { name, description, provider, label, env, secretKeys } = args as {
+        name?: string;
+        description?: string;
+        provider?: string;
+        label?: string;
+        env?: Record<string, string>;
+        secretKeys?: string[];
+      };
+      return serverFetch("/api/env-presets", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          description,
+          provider,
+          label,
+          env,
+          secretKeys,
+        }),
+      });
+    }
+
+    case "update_env_preset": {
+      const { name, description, provider, label, env, secretKeys } = args as {
+        name: string;
+        description?: string;
+        provider?: string;
+        label?: string;
+        env?: Record<string, string>;
+        secretKeys?: string[];
+      };
+      return serverFetch(`/api/env-presets/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        body: JSON.stringify({ description, provider, label, env, secretKeys }),
+      });
+    }
+
+    case "list_env_presets": {
+      return serverFetch("/api/env-presets");
+    }
+
+    case "delete_env_preset": {
+      const { name } = args as { name: string };
+      return serverFetch(`/api/env-presets/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
     }
 
     case "self_exit": {

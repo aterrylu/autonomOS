@@ -147,6 +147,27 @@ export function commonBinaryCandidates(binaryName: string): string[] {
 }
 
 /**
+ * Env keys the runtime manages directly and no user/agent-supplied source
+ * (customEnvVars OR an env preset) may override. Repointing any of these would
+ * either break the hook relay / control plane or let an agent forge its
+ * identity, so they are stripped from every merge. Single source of truth,
+ * consumed by claude-code's customEnvVars merge, the env-preset injection in
+ * runtime.ts, and env-preset validation in envPresets.ts.
+ */
+export const RESERVED_ENV_KEYS = new Set([
+  "CLAUDECODE",
+  "PORT",
+  "PATH",
+  "HOME",
+  "AUTONOMOS_SERVER",
+  "AUTONOMOS_INTERNAL_SOCKET",
+  "AUTONOMOS_SESSION_ID",
+  "AUTONOMOS_AGENT_NAME",
+  "AUTONOMOS_AGENT_TOKEN",
+  "AUTONOMOS_CONFIG_DIR",
+]);
+
+/**
  * Build the common base environment for any provider.
  * Prepends well-known binary directories to PATH and sets AUTONOMOS_* vars.
  * Providers can extend the returned env with provider-specific vars.

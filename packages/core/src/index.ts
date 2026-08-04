@@ -1,4 +1,5 @@
 export * from "./types/agent";
+export * from "./types/envPreset";
 export * from "./types/events";
 export * from "./types/gateway";
 export * from "./types/permissions";

@@ -410,6 +410,13 @@ describe("external-cc-resume — spawnErrorStatus mapping", () => {
     );
     assert.equal(spawnErrorStatus('Agent "x" (id) is already attached'), 409);
     assert.equal(spawnErrorStatus('resumeAgentId "x" not found'), 404);
+    // Env preset problems (ADR-067) are client-config errors → 400, and must
+    // beat the generic "not found" → 404 even though the message contains it.
+    assert.equal(spawnErrorStatus('Env preset "kimi" not found'), 400);
+    assert.equal(
+      spawnErrorStatus('Env preset "kimi" is missing its API key (X). Ask …'),
+      400,
+    );
     assert.equal(spawnErrorStatus("something nobody anticipated"), 500);
   });
 

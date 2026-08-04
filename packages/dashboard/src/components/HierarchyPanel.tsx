@@ -209,9 +209,8 @@ function AgentCard({ node, page, statusMap }: OrgNodeProps) {
       // The resume endpoint uses claudeSessionId as :id and restores full
       // config (template, manager, cwd, etc.) from persisted state — so the
       // `cwd` and `name` args passed here are unused for the isAutonomosAgent
-      // branch. `resumeSession` does not throw on failure; it sets a visible
-      // `resume failed: ...` in the global status bar (store.ts:798). The
-      // try/catch is defensive in case that contract changes.
+      // branch. `resumeSession` throws on failure (and records the reason in the
+      // store `status`), so the catch below is the one that resets `isResuming`.
       await resumeSession(node.claudeSessionId, "", node.name, {
         isAutonomosAgent: true,
       });

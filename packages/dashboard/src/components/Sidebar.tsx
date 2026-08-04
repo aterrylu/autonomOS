@@ -60,6 +60,7 @@ function useSidebarActions() {
       openOrgChart: s.openOrgChart,
       openTemplates: s.openTemplates,
       openSchedules: s.openSchedules,
+      openPresets: s.openPresets,
       openCreateAgent: s.openCreateAgent,
       toggleSidebarViewMode: s.toggleSidebarViewMode,
       reorderHierarchy: s.reorderHierarchy,
@@ -190,6 +191,7 @@ export function Sidebar() {
     openOrgChart,
     openTemplates,
     openSchedules,
+    openPresets,
     openCreateAgent,
     toggleSidebarViewMode,
     reorderHierarchy,
@@ -500,6 +502,13 @@ export function Sidebar() {
         page={page}
         onClick={openSchedules}
         dragPane={{ type: "schedules", id: "schedules" }}
+      />
+      <SidebarNavButton
+        label="Presets"
+        active={activePane?.type === "presets"}
+        page={page}
+        onClick={openPresets}
+        dragPane={{ type: "presets", id: "presets" }}
       />
 
       {/* Agents section header + toggle + New button */}
@@ -1027,6 +1036,19 @@ function SessionRow({
           className="flex items-center text-[10px]"
           style={{ color: page.statusFg }}
         >
+          {s.envPreset && (
+            <span
+              className="shrink-0 mr-1.5 px-1 rounded truncate max-w-[90px]"
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                border: `1px solid ${page.border}`,
+                opacity: 0.85,
+              }}
+              title={`Env preset: ${s.envPreset}`}
+            >
+              {s.envPreset}
+            </span>
+          )}
           <span className="flex-1 min-w-0 truncate">
             {meta?.projectName ?? s.workingDirectory.split("/").pop()}
             {meta?.gitBranch &&
@@ -1521,7 +1543,13 @@ const ProjectItem = React.memo(function ProjectItem({
           className="shrink-0 rounded px-1.5 mr-2 text-xs opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer disabled:opacity-50"
           style={{ color: "#238636" }}
           title={`New session in ${project.name}`}
-          onClick={() => createSession(project.path)}
+          // Fire-and-forget: spawnSession now throws on failure (so panels with
+          // an error UI can show the reason) and already records it in `status`.
+          // This quick-spawn button has no inline error surface, so swallow the
+          // rejection here only to keep it from becoming unhandled.
+          onClick={() => {
+            createSession(project.path).catch(() => {});
+          }}
         >
           +
         </button>
@@ -1553,11 +1581,14 @@ const ProjectItem = React.memo(function ProjectItem({
                   color: page.fg,
                   opacity: isExited ? 0.6 : 1,
                 }}
-                onClick={() =>
+                onClick={() => {
+                  // Fire-and-forget; spawnSession now throws on failure and
+                  // records it in `status`. Swallow here (no inline error UI on
+                  // this row) only to avoid an unhandled rejection.
                   resumeSession(s.sessionId, project.path, s.summary, {
                     isAutonomosAgent: s.isAutonomosAgent,
-                  })
-                }
+                  }).catch(() => {});
+                }}
                 title={tooltip}
               >
                 <span
