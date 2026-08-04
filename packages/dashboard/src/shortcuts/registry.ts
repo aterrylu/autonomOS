@@ -53,6 +53,12 @@ export interface ShortcutDef {
   /** Extra gate (beyond auth) — e.g. "only while the help overlay is open".
    *  A false `when` makes the chord pass through untouched. */
   when?: () => boolean;
+  /** Pass the chord through untouched while an EDITABLE field has focus
+   *  (input/textarea/contentEditable — but NOT xterm's helper textarea,
+   *  which is the terminal). For chords with native text-editing meanings:
+   *  mod+arrows are caret start/end on mac, paragraph-move elsewhere —
+   *  stealing them mid-edit would also yank focus out of the field. */
+  skipWhenEditing?: boolean;
   run: () => void;
 }
 
@@ -73,6 +79,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: "Previous agent",
     category: "Agents",
     boundary: "app-reserved",
+    skipWhenEditing: true,
     run: () => focusAgentDelta(-1),
   },
   {
@@ -81,6 +88,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: "Next agent",
     category: "Agents",
     boundary: "app-reserved",
+    skipWhenEditing: true,
     run: () => focusAgentDelta(1),
   },
   {
