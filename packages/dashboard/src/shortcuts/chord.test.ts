@@ -98,3 +98,13 @@ describe("displayChord", () => {
     expect(displayChord("escape")).toBe("Esc");
   });
 });
+
+describe("displayChord arrow glyphs", () => {
+  it("renders arrow chords as glyphs, not ARROWUP/ARROWDOWN", () => {
+    const up = displayChord("mod+arrowup");
+    const down = displayChord("mod+arrowdown");
+    expect(up.endsWith("\u2191")).toBe(true);
+    expect(down.endsWith("\u2193")).toBe(true);
+    expect(up.toUpperCase()).not.toContain("ARROW");
+  });
+});

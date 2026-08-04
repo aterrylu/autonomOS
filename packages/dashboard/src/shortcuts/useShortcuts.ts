@@ -1,6 +1,19 @@
 import { useEffect } from "react";
 import { matchShortcut } from "./registry";
 
+/** True when focus is in an editable TEXT field the user is typing in —
+ *  excluding xterm's hidden helper textarea, which is the terminal's input
+ *  proxy (shortcuts must still win there; that is the whole boundary). */
+function isEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.classList.contains("xterm-helper-textarea")) return false;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target.isContentEditable
+  );
+}
+
 /**
  * The global shortcut dispatcher — ONE window-level capture-phase listener
  * over the whole app (the generalization of the old inline Cmd/Ctrl+B
@@ -25,6 +38,10 @@ export function useShortcuts(enabled: boolean): void {
       if (e.isComposing) return;
       const shortcut = matchShortcut(e);
       if (!shortcut) return;
+      // Chords with native text-editing meanings pass through while the user
+      // is typing in a real field (mod+arrows = caret motion) — no consume,
+      // so the field keeps its native behavior.
+      if (shortcut.skipWhenEditing && isEditingTarget(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
       try {

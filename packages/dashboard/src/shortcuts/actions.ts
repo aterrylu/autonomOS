@@ -20,3 +20,27 @@ export function focusAgentByIndex(index: number): void {
   focusTerminal(id);
   if (st.notificationCounts[id]) st.markNotificationsRead(id);
 }
+
+/**
+ * Move to the previous (-1) / next (+1) agent row relative to the active one
+ * — mod+↑ / mod+↓, the complement to digits for >9-agent fleets. Clamps at
+ * the ends (no wrap). With no active session row as an anchor, ↓ enters the
+ * list at the top and ↑ at the bottom.
+ */
+export function focusAgentDelta(delta: -1 | 1): void {
+  const st = useStore.getState();
+  const order = st.sidebarRowOrder;
+  if (order.length === 0) return;
+  const activeId = st.activePane?.type === "session" ? st.activePane.id : null;
+  const activeIndex = activeId ? order.indexOf(activeId) : -1;
+  const target =
+    activeIndex === -1
+      ? delta > 0
+        ? order[0]
+        : order[order.length - 1]
+      : order[Math.max(0, Math.min(order.length - 1, activeIndex + delta))];
+  if (target === undefined || target === activeId) return;
+  st.switchPane({ type: "session", id: target });
+  focusTerminal(target);
+  if (st.notificationCounts[target]) st.markNotificationsRead(target);
+}

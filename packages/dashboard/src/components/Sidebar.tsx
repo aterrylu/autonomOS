@@ -16,7 +16,11 @@ import {
   type OrgNode,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
-import { digitForRow, flattenHierarchyRows } from "./sidebarRowOrder";
+import {
+  arrowForRow,
+  digitForRow,
+  flattenHierarchyRows,
+} from "./sidebarRowOrder";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -943,12 +947,22 @@ function SessionRow({
   const status = (agentState?.status as AgentStatus) ?? "unknown";
   const accent = THEMES[useStore((st) => st.theme)].terminal.yellow;
 
-  // Hold-mod hint (useModKeyHold): the digit that switches to THIS row,
-  // looked up in the same published order the shortcut executes against.
+  // Hold-mod hints (useModKeyHold): the digit that switches to THIS row, and
+  // the ↑/↓ arrow when this row is the mod+↑/mod+↓ target relative to the
+  // active agent — both looked up in the same published order the shortcuts
+  // execute against.
   const modKeyHeld = useStore((st) => st.modKeyHeld);
   const rowOrder = useStore((st) => st.sidebarRowOrder);
-  const rowDigit = modKeyHeld
-    ? digitForRow(rowOrder.indexOf(s.id), rowOrder.length)
+  const activeSessionId = useStore((st) =>
+    st.activePane?.type === "session" ? st.activePane.id : null,
+  );
+  const rowIndex = modKeyHeld ? rowOrder.indexOf(s.id) : -1;
+  const rowDigit = modKeyHeld ? digitForRow(rowIndex, rowOrder.length) : null;
+  const rowArrow = modKeyHeld
+    ? arrowForRow(
+        rowIndex,
+        activeSessionId ? rowOrder.indexOf(activeSessionId) : -1,
+      )
     : null;
   const highlight = isActive
     ? activeHighlight(accent)
@@ -1012,6 +1026,20 @@ function SessionRow({
           }}
         >
           {rowDigit}
+        </kbd>
+      )}
+      {rowArrow !== null && (
+        <kbd
+          data-testid="agent-arrow-badge"
+          className="shrink-0 rounded px-1 font-mono font-semibold"
+          style={{
+            fontSize: 10,
+            lineHeight: "14px",
+            background: page.statusFg,
+            color: page.bg,
+          }}
+        >
+          {rowArrow === "up" ? "↑" : "↓"}
         </kbd>
       )}
       {agentIconStyle === "provider" ? (

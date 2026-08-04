@@ -71,7 +71,14 @@ const PC_MODIFIERS: Record<string, string> = {
 export function displayChord(chord: string): string {
   const parts = chord.split("+");
   const key = parts[parts.length - 1] ?? "";
-  const keyLabel = key === "escape" ? "Esc" : key.toUpperCase();
+  const keyLabel =
+    key === "escape"
+      ? "Esc"
+      : key === "arrowup"
+        ? "\u2191"
+        : key === "arrowdown"
+          ? "\u2193"
+          : key.toUpperCase();
   const labels = isMac ? MAC_MODIFIERS : PC_MODIFIERS;
   const mods = parts.slice(0, -1).map((m) => labels[m] ?? m);
   return [...mods, keyLabel].join(isMac ? "" : "+");

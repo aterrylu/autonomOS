@@ -378,3 +378,30 @@ test("holding mod reveals digit badges on the sidebar agent rows", async ({
   await page.keyboard.up(mod);
   await expect(badges).toHaveCount(0);
 });
+
+test("mod+arrows walk the sidebar; hold shows \u2191/\u2193 on the active agent's neighbors", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.goto("/");
+  await expect(page.locator("aside").getByText("Researcher")).toBeVisible();
+  const mod = await modKey(page);
+
+  // Anchor on the FIRST agent, then walk down and clamp.
+  await page.keyboard.press(`${mod}+1`);
+  await expect.poll(() => activePaneId(page)).toBe(DISPATCHER);
+  await page.keyboard.press(`${mod}+ArrowDown`);
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+  await page.keyboard.press(`${mod}+ArrowDown`); // last row → clamp
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+  await page.keyboard.press(`${mod}+ArrowUp`);
+  await expect.poll(() => activePaneId(page)).toBe(DISPATCHER);
+
+  // Hold: active is row 1, so its down-neighbor (row 2) shows the ↓ arrow.
+  await page.keyboard.down(mod);
+  const arrows = page.getByTestId("agent-arrow-badge");
+  await expect(arrows).toHaveCount(1);
+  await expect(arrows.first()).toHaveText("\u2193");
+  await page.keyboard.up(mod);
+  await expect(arrows).toHaveCount(0);
+});

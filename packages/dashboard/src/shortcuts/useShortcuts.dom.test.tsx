@@ -88,6 +88,114 @@ describe("useShortcuts dispatcher", () => {
     useStore.setState({ sidebarRowOrder: [] });
   });
 
+  it("mod+arrows navigate relative to the active agent, clamped at the ends", () => {
+    useStore.setState({
+      sidebarRowOrder: ["a", "b", "c"],
+      activePane: { type: "session", id: "b" },
+    });
+    const { unmount } = renderHook(() => useShortcuts(true));
+
+    pressMod("ArrowDown", "ArrowDown");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "c",
+    });
+    pressMod("ArrowDown", "ArrowDown"); // already last → clamp, no wrap
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "c",
+    });
+    pressMod("ArrowUp", "ArrowUp");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "b",
+    });
+    unmount();
+    useStore.setState({ sidebarRowOrder: [], activePane: null });
+  });
+
+  it("mod+arrows with no active session enter the list at top (↓) / bottom (↑)", () => {
+    useStore.setState({
+      sidebarRowOrder: ["a", "b", "c"],
+      activePane: null,
+    });
+    const { unmount } = renderHook(() => useShortcuts(true));
+    pressMod("ArrowDown", "ArrowDown");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "a",
+    });
+    useStore.setState({ activePane: { type: "orgchart", id: "orgchart" } });
+    pressMod("ArrowUp", "ArrowUp");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "c",
+    });
+    unmount();
+    useStore.setState({ sidebarRowOrder: [], activePane: null });
+  });
+
+  it("mod+arrows pass through while typing in a real field, but win over the terminal's textarea", () => {
+    useStore.setState({
+      sidebarRowOrder: ["a", "b"],
+      activePane: { type: "session", id: "a" },
+    });
+    const { unmount } = renderHook(() => useShortcuts(true));
+
+    // Focus a REAL editable field: chord must pass through un-consumed
+    // (native caret motion keeps working, no agent switch, no focus yank).
+    const field = document.createElement("textarea");
+    document.body.appendChild(field);
+    field.focus();
+    const inField = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      code: "ArrowDown",
+      metaKey: isMac,
+      ctrlKey: !isMac,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(inField);
+    expect(inField.defaultPrevented).toBe(false);
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "a",
+    });
+
+    // xterm's helper textarea is the TERMINAL — the chord must still fire.
+    const helper = document.createElement("textarea");
+    helper.classList.add("xterm-helper-textarea");
+    document.body.appendChild(helper);
+    helper.focus();
+    const inTerminal = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      code: "ArrowDown",
+      metaKey: isMac,
+      ctrlKey: !isMac,
+      bubbles: true,
+      cancelable: true,
+    });
+    helper.dispatchEvent(inTerminal);
+    expect(inTerminal.defaultPrevented).toBe(true);
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "b",
+    });
+
+    // Digits have no caret semantics — they still fire inside fields.
+    field.focus();
+    pressMod("1", "Digit1");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "a",
+    });
+
+    field.remove();
+    helper.remove();
+    unmount();
+    useStore.setState({ sidebarRowOrder: [], activePane: null });
+  });
+
   it("mod+/ opens the help overlay; Escape closes it; Escape passes through when closed", () => {
     // The overlay must be MOUNTED: Escape dismissal rides the escape stack,
     // which the HelpDialog registers on while open (not the store flag).

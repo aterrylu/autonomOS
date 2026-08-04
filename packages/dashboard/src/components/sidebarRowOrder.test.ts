@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { SidebarHierarchyNode } from "./mergeOrgWithSessions";
-import { digitForRow, flattenHierarchyRows } from "./sidebarRowOrder";
+import {
+  arrowForRow,
+  digitForRow,
+  flattenHierarchyRows,
+} from "./sidebarRowOrder";
 
 function node(
   name: string,
@@ -66,5 +70,25 @@ describe("digitForRow", () => {
     expect(digitForRow(0, 1)).toBeNull();
     expect(digitForRow(-1, 3)).toBeNull();
     expect(digitForRow(3, 3)).toBeNull();
+  });
+});
+
+describe("arrowForRow", () => {
+  it("marks the rows directly above and below the active one", () => {
+    expect(arrowForRow(0, 1)).toBe("up");
+    expect(arrowForRow(2, 1)).toBe("down");
+    expect(arrowForRow(1, 1)).toBeNull(); // the active row itself
+    expect(arrowForRow(3, 1)).toBeNull(); // not adjacent
+  });
+
+  it("no anchor (active agent not in the list) → no arrows", () => {
+    expect(arrowForRow(0, -1)).toBeNull();
+    expect(arrowForRow(5, -1)).toBeNull();
+  });
+
+  it("edges: top row has no up-neighbor to mark, bottom no down", () => {
+    // active at 0 → nothing shows "up"; row 1 shows "down"
+    expect(arrowForRow(-1, 0)).toBeNull();
+    expect(arrowForRow(1, 0)).toBe("down");
   });
 });

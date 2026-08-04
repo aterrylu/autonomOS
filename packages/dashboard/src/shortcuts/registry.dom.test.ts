@@ -105,6 +105,10 @@ describe("registry invariants", () => {
         "STEALS ctrl+b (readline back-char, tmux prefix) — grandfathered: xterm's handleKeyEvent declined it pre-registry",
       "mod+/":
         "minor — ctrl+/ is undo in some readline builds; standard app help chord",
+      "mod+arrowup":
+        "STEALS ctrl+↑ (xterm CSI 1;5A — some TUIs scroll/navigate with it) — accepted, ADR-066 follow-up",
+      "mod+arrowdown":
+        "STEALS ctrl+↓ (xterm CSI 1;5B) — accepted, ADR-066 follow-up",
     };
     for (const s of SHORTCUTS) {
       if (!s.chord.startsWith("mod+")) continue;

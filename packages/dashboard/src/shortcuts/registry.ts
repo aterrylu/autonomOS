@@ -1,5 +1,5 @@
 import { useStore } from "../store";
-import { focusAgentByIndex } from "./actions";
+import { focusAgentByIndex, focusAgentDelta } from "./actions";
 import { type ChordEvent, eventChord } from "./chord";
 import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
 
@@ -53,6 +53,12 @@ export interface ShortcutDef {
   /** Extra gate (beyond auth) — e.g. "only while the help overlay is open".
    *  A false `when` makes the chord pass through untouched. */
   when?: () => boolean;
+  /** Pass the chord through untouched while an EDITABLE field has focus
+   *  (input/textarea/contentEditable — but NOT xterm's helper textarea,
+   *  which is the terminal). For chords with native text-editing meanings:
+   *  mod+arrows are caret start/end on mac, paragraph-move elsewhere —
+   *  stealing them mid-edit would also yank focus out of the field. */
+  skipWhenEditing?: boolean;
   run: () => void;
 }
 
@@ -67,6 +73,24 @@ const agentShortcuts: ShortcutDef[] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
 
 export const SHORTCUTS: ShortcutDef[] = [
   ...agentShortcuts,
+  {
+    id: "agent.prev",
+    chord: "mod+arrowup",
+    description: "Previous agent",
+    category: "Agents",
+    boundary: "app-reserved",
+    skipWhenEditing: true,
+    run: () => focusAgentDelta(-1),
+  },
+  {
+    id: "agent.next",
+    chord: "mod+arrowdown",
+    description: "Next agent",
+    category: "Agents",
+    boundary: "app-reserved",
+    skipWhenEditing: true,
+    run: () => focusAgentDelta(1),
+  },
   {
     id: "sidebar.toggle",
     chord: "mod+b",
