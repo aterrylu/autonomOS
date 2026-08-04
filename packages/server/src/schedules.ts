@@ -94,6 +94,20 @@ function assertScheduleShape(parsed: unknown, filePath: string): Schedule {
       `schedule ${filePath} is missing a boolean "enabled" — refusing to load a malformed schedule`,
     );
   }
+  // `state` is the field Schedule adds over ScheduleConfig, and the scheduler
+  // dereferences it (scheduler.ts, `s.state.currentRunId`) OUTSIDE its
+  // per-schedule try — so a state-less-but-otherwise-valid file (an external or
+  // partial write) would crash initScheduler() entirely rather than be skipped
+  // with a warning. Reject it here so listSchedules's per-file catch handles it.
+  if (
+    s.state === null ||
+    typeof s.state !== "object" ||
+    Array.isArray(s.state)
+  ) {
+    throw new Error(
+      `schedule ${filePath} is missing its "state" object — refusing to load a malformed schedule`,
+    );
+  }
   return parsed as Schedule;
 }
 

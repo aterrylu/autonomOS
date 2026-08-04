@@ -217,6 +217,24 @@ describe("schedules CRUD", () => {
       );
       assert.throws(() => getSchedule("partial"), /missing a string "target"/);
     });
+
+    it("rejects a config-shaped file that is missing its state object", () => {
+      // A file with every ScheduleConfig field but no `state` used to pass the
+      // cast, then crash initScheduler (scheduler.ts derefs `s.state` OUTSIDE
+      // its per-schedule try). Reject here so listSchedules skips-with-warning.
+      mkdirSync(SCHEDULES_DIR, { recursive: true });
+      writeFileSync(
+        join(SCHEDULES_DIR, "stateless.json"),
+        JSON.stringify({
+          name: "stateless",
+          schedule: "0 0 * * *",
+          target: "agent:worker",
+          prompt: "do the thing",
+          enabled: true,
+        }),
+      );
+      assert.throws(() => getSchedule("stateless"), /missing its "state"/);
+    });
   });
 
   // ── updateSchedule ─────────────────────────────────────────
