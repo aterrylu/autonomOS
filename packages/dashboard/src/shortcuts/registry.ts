@@ -1,5 +1,5 @@
 import { useStore } from "../store";
-import { focusAgentByIndex } from "./actions";
+import { focusAgentByIndex, focusAgentDelta } from "./actions";
 import { type ChordEvent, eventChord } from "./chord";
 import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
 
@@ -67,6 +67,22 @@ const agentShortcuts: ShortcutDef[] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
 
 export const SHORTCUTS: ShortcutDef[] = [
   ...agentShortcuts,
+  {
+    id: "agent.prev",
+    chord: "mod+arrowup",
+    description: "Previous agent",
+    category: "Agents",
+    boundary: "app-reserved",
+    run: () => focusAgentDelta(-1),
+  },
+  {
+    id: "agent.next",
+    chord: "mod+arrowdown",
+    description: "Next agent",
+    category: "Agents",
+    boundary: "app-reserved",
+    run: () => focusAgentDelta(1),
+  },
   {
     id: "sidebar.toggle",
     chord: "mod+b",

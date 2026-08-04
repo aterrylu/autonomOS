@@ -88,6 +88,53 @@ describe("useShortcuts dispatcher", () => {
     useStore.setState({ sidebarRowOrder: [] });
   });
 
+  it("mod+arrows navigate relative to the active agent, clamped at the ends", () => {
+    useStore.setState({
+      sidebarRowOrder: ["a", "b", "c"],
+      activePane: { type: "session", id: "b" },
+    });
+    const { unmount } = renderHook(() => useShortcuts(true));
+
+    pressMod("ArrowDown", "ArrowDown");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "c",
+    });
+    pressMod("ArrowDown", "ArrowDown"); // already last → clamp, no wrap
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "c",
+    });
+    pressMod("ArrowUp", "ArrowUp");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "b",
+    });
+    unmount();
+    useStore.setState({ sidebarRowOrder: [], activePane: null });
+  });
+
+  it("mod+arrows with no active session enter the list at top (↓) / bottom (↑)", () => {
+    useStore.setState({
+      sidebarRowOrder: ["a", "b", "c"],
+      activePane: null,
+    });
+    const { unmount } = renderHook(() => useShortcuts(true));
+    pressMod("ArrowDown", "ArrowDown");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "a",
+    });
+    useStore.setState({ activePane: { type: "orgchart", id: "orgchart" } });
+    pressMod("ArrowUp", "ArrowUp");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "c",
+    });
+    unmount();
+    useStore.setState({ sidebarRowOrder: [], activePane: null });
+  });
+
   it("mod+/ opens the help overlay; Escape closes it; Escape passes through when closed", () => {
     // The overlay must be MOUNTED: Escape dismissal rides the escape stack,
     // which the HelpDialog registers on while open (not the store flag).

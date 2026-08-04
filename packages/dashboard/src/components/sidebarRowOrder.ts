@@ -39,3 +39,23 @@ export function digitForRow(index: number, count: number): number | null {
   if (index < 0 || index >= count || index >= 9) return null;
   return index + 1;
 }
+
+/**
+ * Which arrow hint the row at `index` shows while the modifier is held:
+ * "up" for the row directly ABOVE the active agent (what mod+↑ jumps to),
+ * "down" for the row directly BELOW (mod+↓). Null when the active agent
+ * isn't in the list — with no anchor, the arrows' targets (first/last row)
+ * are better left unhinted than mislabeled mid-list.
+ */
+export function arrowForRow(
+  index: number,
+  activeIndex: number,
+): "up" | "down" | null {
+  // index < 0 = this row isn't in the published order (transient during an
+  // order update) — without this guard it would match activeIndex-1 when the
+  // active agent is the FIRST row (-1 === 0-1) and wrongly show "\u2191".
+  if (index < 0 || activeIndex < 0) return null;
+  if (index === activeIndex - 1) return "up";
+  if (index === activeIndex + 1) return "down";
+  return null;
+}
