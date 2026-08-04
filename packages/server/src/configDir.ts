@@ -28,7 +28,10 @@ export function getConfigDir(): string {
 export function ensureConfigDir(): void {
   const dir = getConfigDir();
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    // 0700: the config root holds the auth token, agent records, schedules and
+    // templates. Owner-only. Creation-time only (an existing dir keeps its
+    // mode — the token file inside is 0600 regardless).
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 

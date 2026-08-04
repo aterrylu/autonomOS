@@ -83,7 +83,9 @@ function validateName(name: string): void {
 /** Ensure the templates directory exists */
 function ensureTemplatesDir(): void {
   if (!existsSync(TEMPLATES_DIR)) {
-    mkdirSync(TEMPLATES_DIR, { recursive: true });
+    // 0700: templates carry systemPrompt content — owner-only so another local
+    // user can't read it. Creation-time only; existing dirs left as-is.
+    mkdirSync(TEMPLATES_DIR, { recursive: true, mode: 0o700 });
   }
 }
 

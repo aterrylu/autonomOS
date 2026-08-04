@@ -30,7 +30,9 @@ const PINNED_FILE = join(CONFIG_DIR, "pinned-sessions.json");
 
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+    // 0700 to match ensureConfigDir in configDir.ts — the config root is
+    // owner-only. Creation-time only.
+    mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
 }
 

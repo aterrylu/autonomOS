@@ -279,7 +279,10 @@ export function writeGeminiSettings(channelServerScript: string): void {
     },
   };
 
-  mkdirSync(AUTONOMOS_CONFIG_DIR, { recursive: true });
+  // 0700 to match ensureConfigDir (configDir.ts): this creates the SAME config
+  // root, and whichever site runs first on a fresh install sets the permanent
+  // mode — so this one must agree, or an early Gemini spawn leaves the root 0755.
+  mkdirSync(AUTONOMOS_CONFIG_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2), {
     mode: 0o600,
   });
