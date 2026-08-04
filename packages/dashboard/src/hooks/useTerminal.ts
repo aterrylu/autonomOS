@@ -701,7 +701,21 @@ class UrlLinkProvider implements ILinkProvider {
   }
 }
 
-function handleKeyEvent(
+/**
+ * xterm's custom key handler — the terminal-side half of the key-capture
+ * boundary (ADR-063). Returns false to DECLINE a key (xterm won't encode it
+ * for the PTY; the event still propagates to the browser un-cancelled).
+ *
+ * ADR-065 freed the legacy ctrl+d/w/b swallow (dead reservations from the
+ * pre-dockview split shortcuts): ctrl+d (EOF), ctrl+w-on-Mac (delete-word)
+ * and ctrl+b-on-Mac (tmux prefix, readline back-char) now reach the shell
+ * again. What still declines: registry-reserved chords (isReservedChord —
+ * covers ctrl+b on non-Mac, where ctrl IS `mod` and mod+b is the sidebar)
+ * and the mod-key cases below.
+ *
+ * Exported for the key-policy unit tests; only useTerminal wires it.
+ */
+export function handleKeyEvent(
   event: KeyboardEvent,
   terminal: TerminalInstance,
   wsRef: React.RefObject<WebSocket | null>,
@@ -714,11 +728,6 @@ function handleKeyEvent(
   // already keeps them from reaching xterm; this consult is defense in depth
   // that keeps the terminal's decline list synchronized with the registry.
   if (isReservedChord(event)) return false;
-
-  if (event.ctrlKey) {
-    const k = event.key.toLowerCase();
-    if (k === "d" || k === "w" || k === "b") return false;
-  }
 
   if (!hasPrimaryModifier(event)) return true;
 
@@ -748,11 +757,15 @@ function handleKeyEvent(
     case "a":
       terminal.selectAll();
       return false;
-    case "b":
-      return false;
-    case "d":
-      return false;
+    // mod+W: on non-Mac, Ctrl+W is Chromium's UNPREVENTABLE close-tab — the
+    // tab dies regardless, so declining here only stops xterm from invisibly
+    // deleting a word from the shell's line buffer as it goes. On Mac (⌘W,
+    // also unpreventable) xterm wouldn't encode a meta chord anyway.
+    // Deliberately NOT freed by ADR-065: unlike ctrl+d/b, the browser owns
+    // this chord, so "standard terminal behavior" is unreachable for it.
+    // "W" too: mod+shift+W is close-WINDOW, same unpreventable class.
     case "w":
+    case "W":
       return false;
     case "o":
       sendToWs("\x0f");

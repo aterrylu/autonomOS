@@ -1,13 +1,16 @@
 import { useEffect, useRef } from "react";
 import { THEMES, useStore } from "../store";
 import { displayChord } from "./chord";
+import { pushEscapeCloser } from "./escapeStack";
 import { SHORTCUTS } from "./registry";
 
 /**
  * The keyboard-shortcut cheatsheet (mod+/). Renders straight from the
  * registry, so it can never drift from the real bindings. Closes on backdrop
- * click, mod+/ again, or Escape (the registry's `help.close` entry — Escape
- * is only app-reserved while this overlay is open).
+ * click, mod+/ again, or Escape — via the registry's `ui.dismiss` entry and
+ * the escape stack (ADR-065): the dialog pushes its closer while mounted, and
+ * Escape is app-reserved whenever ANYTHING is on the stack (this overlay, a
+ * status-bar popover, the notification panel), never when the stack is empty.
  */
 export function ShortcutHelpOverlay() {
   const open = useStore((s) => s.shortcutHelpOpen);
@@ -34,11 +37,15 @@ function HelpDialog() {
     };
   }, []);
 
+  // Escape-to-close rides the registry's ui.dismiss entry via the escape
+  // stack (ADR-065) — mounted-open means dismissible.
+  useEffect(() => pushEscapeCloser(useStore.getState().closeShortcutHelp), []);
+
   const categories = [...new Set(SHORTCUTS.map((s) => s.category))];
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard close is the registry's help.close (Escape)
-    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close is the registry's help.close (Escape)
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard close is the registry's ui.dismiss (Escape via the escape stack)
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close is the registry's ui.dismiss (Escape via the escape stack)
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.5)" }}

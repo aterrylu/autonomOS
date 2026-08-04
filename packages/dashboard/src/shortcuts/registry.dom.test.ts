@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
-import { useStore } from "../store";
 import { isMac } from "../utils/platform";
 import type { ChordEvent } from "./chord";
+import { pushEscapeCloser } from "./escapeStack";
 import { isReservedChord, matchShortcut, SHORTCUTS } from "./registry";
 
 /**
@@ -132,16 +132,21 @@ describe("matchShortcut / isReservedChord", () => {
     expect(matchShortcut(event({ key: "3", code: "Digit3" }))).toBeNull();
   });
 
-  it("reserves Escape ONLY while the help overlay is open", () => {
+  it("reserves Escape ONLY while something is on the escape stack", () => {
     const esc = event({ key: "Escape", code: "Escape" });
-    useStore.setState({ shortcutHelpOpen: false });
     expect(matchShortcut(esc)).toBeNull();
     expect(isReservedChord(esc)).toBe(false);
 
-    useStore.setState({ shortcutHelpOpen: true });
-    expect(matchShortcut(esc)?.id).toBe("help.close");
+    const closer = vi.fn();
+    const pop = pushEscapeCloser(closer);
+    expect(matchShortcut(esc)?.id).toBe("ui.dismiss");
     expect(isReservedChord(esc)).toBe(true);
-    useStore.setState({ shortcutHelpOpen: false });
+    matchShortcut(esc)?.run();
+    expect(closer).toHaveBeenCalledTimes(1);
+
+    pop();
+    expect(matchShortcut(esc)).toBeNull();
+    expect(isReservedChord(esc)).toBe(false);
   });
 
   it("isReservedChord is true for pane chords (xterm must decline them)", () => {

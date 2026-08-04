@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import "../test/setup-dom";
 import { useStore } from "../store";
+import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
 import { SHORTCUTS } from "./registry";
 import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 
@@ -21,6 +22,17 @@ describe("ShortcutHelpOverlay", () => {
     useStore.setState({ shortcutHelpOpen: false });
     const { container } = render(<ShortcutHelpOverlay />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("registers on the escape stack while open, releases on close (ADR-065)", () => {
+    useStore.setState({ shortcutHelpOpen: true });
+    const { unmount } = render(<ShortcutHelpOverlay />);
+    expect(hasEscapeCloser()).toBe(true);
+
+    act(() => closeTopEscape());
+    expect(useStore.getState().shortcutHelpOpen).toBe(false);
+    expect(hasEscapeCloser()).toBe(false);
+    unmount();
   });
 
   it("lists every registry shortcut when open", () => {

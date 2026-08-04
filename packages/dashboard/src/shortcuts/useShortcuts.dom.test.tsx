@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { renderHook } from "@testing-library/react";
+import { act, render, renderHook } from "@testing-library/react";
 import type { DockviewApi } from "dockview-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import { useStore } from "../store";
 import { isMac } from "../utils/platform";
 import { registerDockviewApi, unregisterDockviewApi } from "./dockviewApi";
+import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { useShortcuts } from "./useShortcuts";
 
 // focusTerminal (called by pane actions) polls via requestAnimationFrame;
@@ -152,8 +153,15 @@ describe("useShortcuts dispatcher", () => {
   });
 
   it("mod+/ opens the help overlay; Escape closes it; Escape passes through when closed", () => {
+    // The overlay must be MOUNTED: Escape dismissal rides the escape stack,
+    // which the HelpDialog registers on while open (not the store flag).
+    const view = render(<ShortcutHelpOverlay />);
     const { unmount } = renderHook(() => useShortcuts(true));
-    pressMod("/", "Slash");
+    // act() flushes the store-driven render + the HelpDialog mount effect that
+    // registers the dialog on the escape stack, before Escape is dispatched.
+    act(() => {
+      pressMod("/", "Slash");
+    });
     expect(useStore.getState().shortcutHelpOpen).toBe(true);
 
     const escOpen = new KeyboardEvent("keydown", {
@@ -162,7 +170,9 @@ describe("useShortcuts dispatcher", () => {
       bubbles: true,
       cancelable: true,
     });
-    window.dispatchEvent(escOpen);
+    act(() => {
+      window.dispatchEvent(escOpen);
+    });
     expect(escOpen.defaultPrevented).toBe(true);
     expect(useStore.getState().shortcutHelpOpen).toBe(false);
 
@@ -175,6 +185,35 @@ describe("useShortcuts dispatcher", () => {
     });
     window.dispatchEvent(escClosed);
     expect(escClosed.defaultPrevented).toBe(false);
+    view.unmount();
+    unmount();
+  });
+
+  it("ignores keys during IME composition (Escape cancels the composition, not the panel)", () => {
+    const { unmount } = renderHook(() => useShortcuts(true));
+    const view = render(<ShortcutHelpOverlay />);
+    act(() => {
+      pressMod("/", "Slash");
+    });
+    expect(useStore.getState().shortcutHelpOpen).toBe(true);
+
+    const composingEsc = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      window.dispatchEvent(composingEsc);
+    });
+    expect(composingEsc.defaultPrevented).toBe(false);
+    expect(useStore.getState().shortcutHelpOpen).toBe(true); // panel untouched
+
+    act(() => {
+      useStore.getState().closeShortcutHelp();
+    });
+    view.unmount();
     unmount();
   });
 

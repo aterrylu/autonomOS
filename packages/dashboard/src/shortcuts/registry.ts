@@ -1,6 +1,7 @@
 import { useStore } from "../store";
 import { focusLastPane, focusPaneByIndex } from "./actions";
 import { type ChordEvent, eventChord } from "./chord";
+import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
 
 /**
  * The keyboard shortcut registry — the single source of truth for every
@@ -92,15 +93,17 @@ export const SHORTCUTS: ShortcutDef[] = [
     run: () => useStore.getState().toggleShortcutHelp(),
   },
   {
-    id: "help.close",
+    id: "ui.dismiss",
     chord: "escape",
-    description: "Close the shortcuts overlay",
+    description: "Close the topmost overlay or panel",
     category: "App",
     boundary: "app-reserved",
-    // Escape is reserved ONLY while the overlay is open — otherwise it passes
-    // through to the terminal (TUIs depend on it) and to other Escape handlers.
-    when: () => useStore.getState().shortcutHelpOpen,
-    run: () => useStore.getState().closeShortcutHelp(),
+    // Escape is reserved ONLY while something dismissible is open (help
+    // overlay, status-bar popovers, notification panel — they register on the
+    // escape stack while mounted). Otherwise it passes through untouched:
+    // terminal TUIs depend on receiving Escape.
+    when: hasEscapeCloser,
+    run: closeTopEscape,
   },
 ];
 
