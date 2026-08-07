@@ -148,8 +148,8 @@ export const TOOL_SEND: ToolDef = {
   name: "send",
   description:
     "Send a message to another agent. Use the from_uri from incoming messages to respond. " +
-    "Succeeds only if the destination accepted the message; any other result explains why it did not, " +
-    "and a message reported as not-yet-delivered is retried automatically — do not re-send it.",
+    "Succeeds only if the destination accepted the message; any other result explains why it did not. " +
+    "Do not re-send a message reported as not-yet-delivered — a duplicate can make an agent act twice.",
   inputSchema: {
     type: "object",
     properties: {
@@ -602,39 +602,40 @@ export const MCP_SERVER_INFO = {
   version: "0.3.0",
 } as const;
 
+// The single source of truth for the tool prose injected into every agent's
+// system prompt (via BASE_CONTEXT) AND advertised as the channel MCP server's
+// `instructions`. EVERY tool in ALL_TOOLS must be named here and nothing else —
+// `mcp-instructions-sync.test.ts` enforces that correspondence, so this can't
+// silently drift as tools are added or removed (which it had: env-preset tools
+// were only added by hand, and a stale "platforms" line outlived ADR-064).
 export const MCP_INSTRUCTIONS = [
   "You are running inside autonomOS — an agent orchestration platform.",
   "",
-  "Available tools:",
-  "- send(to, message): Send a message to one agent (agent://name). There is no broadcast — address each recipient.",
-  "- list_agents(): Discover active agents and their URIs",
-  "- create_agent(): Spawn a new dedicated agent",
-  "- kill_agent(): Terminate an agent",
-  "- set_manager(): Configure org chart relationships",
-  "- get_org_chart(): View the organization hierarchy",
-  "- list_templates(): Browse available agent templates",
-  "- create_template(): Create a reusable agent template",
-  "- self_exit(): Terminate your own session when work is complete",
+  "### Finding & messaging other agents",
+  "- list_agents(): the LIVE fleet — every active agent with its name, agent:// URI, status, and permission mode. This is the ONLY authoritative list of your peers. Do NOT rely on any provider-native or built-in agent list (e.g. a per-thread/collaboration list): those do not see autonomOS peers, and reading one will make you conclude you are alone when you are not. When in doubt, call list_agents().",
+  "- send(to, message): message ONE agent by its agent://<name> URI (from list_agents, or an incoming message's from_uri). There is no broadcast — address each recipient. A send succeeds only when the destination ACCEPTED the message; any other result explains why. Do NOT re-send a message reported as not-yet-delivered — a duplicate can make an agent act twice (a not-delivered message on the Codex path is auto-retried; re-sending stacks a second copy).",
   "",
-  "Env preset tools (model overrides — e.g. run an agent on Kimi):",
-  "  Flow: create_env_preset → the human keys the API key in the dashboard Presets tab (do NOT ask for tokens in chat) → verify with list_env_presets → create_agent(envPreset).",
-  "- list_env_presets(): List model-override presets. Secrets masked; a declared secretKey absent from `secrets` is UNSET.",
-  "- create_env_preset(): Create a preset (set env + declare secret key names; you cannot set the key value — the human does, in the dashboard)",
-  "- update_env_preset(): Update a preset's non-secret fields",
-  "- delete_env_preset(): Delete a preset",
-  "- create_agent(envPreset): spawn an agent with a preset applied (fails if its key is unset)",
+  "### Managing the fleet & org chart",
+  "- create_agent(): spawn a new dedicated agent (optionally from a template, or with an env preset — see below)",
+  "- kill_agent(): terminate an agent",
+  "- set_manager(): set an agent's manager in the org chart",
+  "- get_org_chart(): view the agent hierarchy",
+  "- list_templates() / create_template(): browse and create reusable agent blueprints (role, system prompt, permission mode)",
+  "- self_exit(): end your own session when your work is complete",
   "",
-  "Schedule tools:",
-  "- create_schedule(): Create a recurring or one-time scheduled task",
-  "- list_schedules(): List all schedules with their state",
-  "- get_schedule(): Get schedule details and recent run history",
-  "- update_schedule(): Update a schedule's configuration",
-  "- delete_schedule(): Remove a schedule",
-  "- run_schedule(): Trigger a schedule immediately",
+  "### Env presets — model overrides (e.g. run an agent on Kimi)",
+  "Flow: create_env_preset (set env + declare the secret key NAMES) → a human sets the API key in the dashboard Presets tab (do NOT ask for tokens in chat) → verify it's set with list_env_presets → create_agent(envPreset: <name>). Spawning with an unset key fails.",
+  "- list_env_presets(): list presets; secret values are masked, and a declared secretKey absent from `secrets` is UNSET",
+  "- create_env_preset() / update_env_preset(): configure a preset — you set env + secretKeys but CANNOT set the secret value (the human does)",
+  "- delete_env_preset(): remove a preset",
   "",
-  "Messages from other agents and platforms arrive as <channel> events.",
-  "Each has from (sender name) and from_uri (address to respond to).",
-  'To respond: send(to: "<from_uri>", message: "your reply")',
+  "### Schedules",
+  "- create_schedule(): a recurring (cron) or one-time task delivered to a running agent, which does the work under its own permission mode",
+  "- list_schedules() / get_schedule() / update_schedule() / delete_schedule() / run_schedule(): inspect and manage schedules",
+  "",
+  "### Receiving messages",
+  "Messages from other agents arrive as <channel> events, each with `from` (sender name) and `from_uri` (the address to reply to).",
+  'To reply: send(to: "<from_uri>", message: "your reply").',
 ].join("\n");
 
 /** Instructions for external MCP clients (no channel/send capability) */
