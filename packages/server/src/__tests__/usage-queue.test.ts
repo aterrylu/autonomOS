@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
-import { createUsageQueue, type UsageQueue } from "../usageQueue.js";
+import type { CodexUsageData } from "../plugins/codex-usage/types.js";
+import {
+  createUsageQueue,
+  evaluateCap,
+  type NormalizedUsage,
+  normalizeClaudeUsage,
+  normalizeCodexUsage,
+  type UsageQueue,
+} from "../usageQueue.js";
 
 /**
  * Unit tests for the usage-queue edge detector — the timing-sensitive core.
@@ -46,7 +54,11 @@ function makeHarness(): Harness {
   const notes: Array<{ sessionId: string; message: string }> = [];
   const dead = new Set<string>();
   const queue = createUsageQueue({
-    getUsage: () => Promise.resolve(usage),
+    // The fixtures build Claude RateLimitData; the probe runs the REAL adapter
+    // so these tests also cover normalizeClaudeUsage. Panes arm as "claude-code".
+    probes: {
+      "claude-code": () => Promise.resolve(normalizeClaudeUsage(usage)),
+    },
     sendSubmit: (sessionId) => {
       if (dead.has(sessionId)) return false;
       sent.push(sessionId);
@@ -81,10 +93,10 @@ describe("usageQueue edge detector", () => {
   it("arming while capped fires Enter once the limit clears", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100)); // currently capped
-    h.queue.arm("pane-a");
+    h.queue.arm("pane-a", "claude-code");
     await h.queue.tick(); // still capped → no fire
     assert.deepEqual(h.sent, []);
-    assert.equal(h.queue.status().blocked, true);
+    assert.equal(h.queue.status().caps["claude-code"]?.capped ?? false, true);
 
     h.setUsage(usageAt(2)); // limit cleared
     await h.queue.tick();
@@ -95,7 +107,7 @@ describe("usageQueue edge detector", () => {
   it("arming before capped waits, then fires on the next block→clear", async () => {
     h = makeHarness();
     h.setUsage(usageAt(30)); // not blocked yet
-    h.queue.arm("pane-b");
+    h.queue.arm("pane-b", "claude-code");
     await h.queue.tick();
     assert.deepEqual(h.sent, [], "no block seen yet → must not fire");
 
@@ -111,7 +123,7 @@ describe("usageQueue edge detector", () => {
   it("a pane that was never blocked never auto-fires", async () => {
     h = makeHarness();
     h.setUsage(usageAt(40));
-    h.queue.arm("pane-c");
+    h.queue.arm("pane-c", "claude-code");
     for (let i = 0; i < 5; i++) await h.queue.tick();
     assert.deepEqual(
       h.sent,
@@ -123,7 +135,7 @@ describe("usageQueue edge detector", () => {
   it("hysteresis: a dip between exit and enter thresholds does not fire", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("pane-d");
+    h.queue.arm("pane-d", "claude-code");
     await h.queue.tick(); // blocked
     h.setUsage(usageAt(85)); // 80 ≤ 85 < 90 → still blocked (no flap)
     await h.queue.tick();
@@ -132,7 +144,7 @@ describe("usageQueue edge detector", () => {
       [],
       "still considered blocked in the hysteresis band",
     );
-    assert.equal(h.queue.status().blocked, true);
+    assert.equal(h.queue.status().caps["claude-code"]?.capped ?? false, true);
 
     h.setUsage(usageAt(70)); // below exit → cleared
     await h.queue.tick();
@@ -142,9 +154,9 @@ describe("usageQueue edge detector", () => {
   it("fires all armed panes at once on a shared clear", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("p1");
-    h.queue.arm("p2");
-    h.queue.arm("p3");
+    h.queue.arm("p1", "claude-code");
+    h.queue.arm("p2", "claude-code");
+    h.queue.arm("p3", "claude-code");
     await h.queue.tick();
     h.setUsage(usageAt(0));
     await h.queue.tick();
@@ -154,7 +166,7 @@ describe("usageQueue edge detector", () => {
   it("a gone PTY is dropped without throwing, and disarmed", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("ghost");
+    h.queue.arm("ghost", "claude-code");
     await h.queue.tick();
     h.killPty("ghost");
     h.setUsage(usageAt(0));
@@ -172,7 +184,7 @@ describe("usageQueue edge detector", () => {
   it("disarm cancels a pending auto-send", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("pane-e");
+    h.queue.arm("pane-e", "claude-code");
     await h.queue.tick();
     h.queue.disarm("pane-e");
     h.setUsage(usageAt(0));
@@ -183,13 +195,13 @@ describe("usageQueue edge detector", () => {
   it("holds state when usage is unreadable (no creds / error)", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("pane-f");
+    h.queue.arm("pane-f", "claude-code");
     await h.queue.tick();
     h.setUsage(EMPTY); // all windows null → no signal
     await h.queue.tick();
     assert.deepEqual(h.sent, [], "must not treat 'no data' as a clear");
     assert.equal(
-      h.queue.status().blocked,
+      h.queue.status().caps["claude-code"]?.capped ?? false,
       true,
       "blocked state held across the gap",
     );
@@ -198,16 +210,19 @@ describe("usageQueue edge detector", () => {
   it("status exposes the nearest blocking reset as an ETA hint", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100, "2026-06-20T05:00:00Z"));
-    h.queue.arm("pane-g");
+    h.queue.arm("pane-g", "claude-code");
     await h.queue.tick();
-    assert.equal(h.queue.status().resetsAt, "2026-06-20T05:00:00Z");
+    assert.equal(
+      h.queue.status().caps["claude-code"]?.resetsAt ?? null,
+      "2026-06-20T05:00:00Z",
+    );
   });
 
   it("warns each armed pane once on a permanent credential failure", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("p1");
-    h.queue.arm("p2");
+    h.queue.arm("p1", "claude-code");
+    h.queue.arm("p2", "claude-code");
     await h.queue.tick(); // blocked
 
     h.setUsage(errorUsage("unauthorized")); // creds expired → queue can't fire
@@ -229,14 +244,14 @@ describe("usageQueue edge detector", () => {
     // its queued send can never fire — otherwise it fails silently.
     h = makeHarness();
     h.setUsage(errorUsage("unauthorized"));
-    h.queue.arm("early");
+    h.queue.arm("early", "claude-code");
     await h.queue.tick(); // warns "early"
     assert.deepEqual(
       h.notes.map((n) => n.sessionId),
       ["early"],
     );
 
-    h.queue.arm("late"); // armed while creds are STILL broken
+    h.queue.arm("late", "claude-code"); // armed while creds are STILL broken
     await h.queue.tick();
     assert.equal(
       h.notes.filter((n) => n.sessionId === "late").length,
@@ -253,12 +268,16 @@ describe("usageQueue edge detector", () => {
   it("does not warn on a transient usage failure", async () => {
     h = makeHarness();
     h.setUsage(usageAt(100));
-    h.queue.arm("pane-h");
+    h.queue.arm("pane-h", "claude-code");
     await h.queue.tick();
     h.setUsage(errorUsage("rate_limited")); // transient — hold quietly
     await h.queue.tick();
     assert.deepEqual(h.notes, [], "transient failures are not user-facing");
-    assert.equal(h.queue.status().blocked, true, "blocked state held");
+    assert.equal(
+      h.queue.status().caps["claude-code"]?.capped ?? false,
+      true,
+      "blocked state held",
+    );
   });
 
   it("does not double-fire when two ticks overlap (re-entrancy guard)", async () => {
@@ -268,9 +287,11 @@ describe("usageQueue edge detector", () => {
     let gate: Promise<void> | null = null;
     const sent: string[] = [];
     const queue = createUsageQueue({
-      getUsage: async () => {
-        if (gate) await gate;
-        return usage;
+      probes: {
+        "claude-code": async () => {
+          if (gate) await gate;
+          return normalizeClaudeUsage(usage);
+        },
       },
       sendSubmit: (id) => {
         sent.push(id);
@@ -279,9 +300,9 @@ describe("usageQueue edge detector", () => {
       evaluateOnArm: false,
       intervalMs: 1_000_000_000,
     });
-    queue.arm("pane");
+    queue.arm("pane", "claude-code");
     await queue.tick(); // observe blocked (gate open) → seenBlocked latches
-    assert.equal(queue.status().blocked, true);
+    assert.equal(queue.status().caps["claude-code"]?.capped ?? false, true);
 
     usage = usageAt(0); // limit cleared
     let release!: () => void;
@@ -295,5 +316,142 @@ describe("usageQueue edge detector", () => {
 
     assert.deepEqual(sent, ["pane"], "exactly one Enter despite overlap");
     queue.stop();
+  });
+});
+
+// ── Per-runtime isolation (ADR-068) ────────────────────────────
+
+/** A queue with independent Claude + Codex usage controls. */
+function makeMultiHarness() {
+  let claude: RateLimitData = EMPTY;
+  let codex: NormalizedUsage = { windows: [] };
+  const sent: string[] = [];
+  const queue = createUsageQueue({
+    probes: {
+      "claude-code": () => Promise.resolve(normalizeClaudeUsage(claude)),
+      codex: () => Promise.resolve(codex),
+    },
+    sendSubmit: (id) => {
+      sent.push(id);
+      return true;
+    },
+    evaluateOnArm: false,
+    intervalMs: 1_000_000_000,
+  });
+  return {
+    queue,
+    sent,
+    setClaude: (u: RateLimitData) => {
+      claude = u;
+    },
+    setCodex: (utilization: number) => {
+      codex = { windows: [{ utilization, resetsAt: null }] };
+    },
+  };
+}
+
+describe("usageQueue per-runtime isolation", () => {
+  it("a CLAUDE cap does not block or fire a Codex pane (the reported bug)", async () => {
+    const h = makeMultiHarness();
+    h.setClaude(usageAt(100)); // Claude account maxed…
+    h.setCodex(30); // …but Codex is fine
+    h.queue.arm("codex-pane", "codex");
+    await h.queue.tick();
+    await h.queue.tick();
+    assert.deepEqual(h.sent, [], "a Codex pane must ignore the Claude limit");
+    assert.notEqual(
+      h.queue.status().caps.codex?.capped,
+      true,
+      "the Codex pane's own runtime is not capped",
+    );
+    h.queue.stop();
+  });
+
+  it("a Codex pane fires on the CODEX clear edge", async () => {
+    const h = makeMultiHarness();
+    h.setCodex(100);
+    h.queue.arm("codex-pane", "codex");
+    await h.queue.tick(); // codex blocked
+    assert.deepEqual(h.sent, []);
+    h.setCodex(0); // codex clears
+    await h.queue.tick();
+    assert.deepEqual(h.sent, ["codex-pane"]);
+    h.queue.stop();
+  });
+
+  it("Claude and Codex panes fire independently, each on its own limit", async () => {
+    const h = makeMultiHarness();
+    h.setClaude(usageAt(100));
+    h.setCodex(100);
+    h.queue.arm("cc", "claude-code");
+    h.queue.arm("cx", "codex");
+    await h.queue.tick(); // both blocked
+
+    h.setClaude(usageAt(0)); // only Claude clears
+    await h.queue.tick();
+    assert.deepEqual(h.sent, ["cc"], "only the Claude pane fires");
+
+    h.setCodex(0); // now Codex clears
+    await h.queue.tick();
+    assert.deepEqual(h.sent, ["cc", "cx"], "then the Codex pane fires");
+    h.queue.stop();
+  });
+
+  it("arming a runtime with no usage source (gemini) is a no-op", async () => {
+    const h = makeMultiHarness();
+    h.queue.arm("g", "gemini-cli");
+    assert.equal(h.queue.isArmed("g"), false, "no probe → nothing to wait on");
+    h.queue.stop();
+  });
+});
+
+describe("usage adapters + evaluateCap", () => {
+  it("normalizeCodexUsage maps usedPercent→utilization across all windows", () => {
+    const data = {
+      primary: { usedPercent: 92, windowMinutes: 10080, resetsAt: "R1" },
+      secondary: { usedPercent: 40, windowMinutes: 300, resetsAt: "R2" },
+      additionalLimits: [
+        {
+          name: "Spark",
+          primary: { usedPercent: 5, windowMinutes: 300, resetsAt: "R3" },
+          secondary: null,
+        },
+      ],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "live",
+      fetchedAt: "now",
+    } as unknown as CodexUsageData;
+    const n = normalizeCodexUsage(data);
+    assert.deepEqual(
+      n.windows.map((w) => w.utilization).sort((a, b) => a - b),
+      [5, 40, 92],
+    );
+    assert.equal(evaluateCap(n).capped, true, "92% ≥ 90 → capped");
+  });
+
+  it("normalizeCodexUsage flags a credential failure as authError", () => {
+    const data = {
+      primary: null,
+      secondary: null,
+      additionalLimits: [],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "rollout",
+      fetchedAt: "now",
+      errorKind: "unauthorized",
+    } as unknown as CodexUsageData;
+    const n = normalizeCodexUsage(data);
+    assert.deepEqual(n.windows, []);
+    assert.equal(n.authError, true);
+  });
+
+  it("evaluateCap: below the cap is not capped", () => {
+    assert.equal(
+      evaluateCap({ windows: [{ utilization: 89, resetsAt: null }] }).capped,
+      false,
+    );
   });
 });

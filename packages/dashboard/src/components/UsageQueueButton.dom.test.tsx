@@ -27,13 +27,15 @@ beforeEach(() => mockHook.mockReset());
 describe("UsageQueueButton", () => {
   it("renders nothing when the account is not capped", () => {
     setHook({ capped: false });
-    const { container } = render(<UsageQueueButton sessionId="s1" />);
+    const { container } = render(
+      <UsageQueueButton sessionId="s1" provider="claude-code" />,
+    );
     expect(container).toBeEmptyDOMElement();
   });
 
   it("renders an off switch when capped and disarmed", () => {
     setHook({ capped: true, isArmed: false });
-    render(<UsageQueueButton sessionId="s1" />);
+    render(<UsageQueueButton sessionId="s1" provider="claude-code" />);
     const sw = screen.getByRole("switch");
     expect(sw).toHaveAttribute("aria-checked", "false");
     expect(sw).toHaveTextContent("Auto-Enter when limit resets");
@@ -45,7 +47,7 @@ describe("UsageQueueButton", () => {
       Date.now() + 2 * 3_600_000 + 13 * 60_000,
     ).toISOString();
     setHook({ capped: true, isArmed: true, resetsAt });
-    render(<UsageQueueButton sessionId="s1" />);
+    render(<UsageQueueButton sessionId="s1" provider="claude-code" />);
     const sw = screen.getByRole("switch");
     expect(sw).toHaveAttribute("aria-checked", "true");
     // timeUntilReset → "2h 13m"; the subtitle reads "Sends in ~2h 13m".
@@ -54,13 +56,13 @@ describe("UsageQueueButton", () => {
 
   it("falls back to 'Sends at reset' when armed without a known reset", () => {
     setHook({ capped: true, isArmed: true, resetsAt: null });
-    render(<UsageQueueButton sessionId="s1" />);
+    render(<UsageQueueButton sessionId="s1" provider="claude-code" />);
     expect(screen.getByRole("switch")).toHaveTextContent("Sends at reset");
   });
 
   it("toggles when clicked", () => {
     const toggle = setHook({ capped: true, isArmed: false });
-    render(<UsageQueueButton sessionId="s1" />);
+    render(<UsageQueueButton sessionId="s1" provider="claude-code" />);
     fireEvent.click(screen.getByRole("switch"));
     expect(toggle).toHaveBeenCalledTimes(1);
   });

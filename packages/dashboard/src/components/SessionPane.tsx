@@ -1,5 +1,6 @@
 import { memo, useRef } from "react";
 import { useTerminal } from "../hooks/useTerminal";
+import { useStore } from "../store";
 import { CopyToast } from "./CopyToast";
 import { UsageQueueButton } from "./UsageQueueButton";
 
@@ -18,6 +19,11 @@ export const SessionPane = memo(function SessionPane({
 }: SessionPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { copyToast } = useTerminal(containerRef, sessionId);
+  // This pane's agent runtime — gates the usage-queue button to THIS provider's
+  // cap (ADR-068). "" when not found → the button stays hidden.
+  const provider = useStore(
+    (s) => s.sessions.find((x) => x.id === sessionId)?.provider ?? "",
+  );
 
   return (
     <div
@@ -30,7 +36,7 @@ export const SessionPane = memo(function SessionPane({
         style={{ touchAction: "none" }}
       />
       <CopyToast toast={copyToast} />
-      <UsageQueueButton sessionId={sessionId} />
+      <UsageQueueButton sessionId={sessionId} provider={provider} />
     </div>
   );
 });
