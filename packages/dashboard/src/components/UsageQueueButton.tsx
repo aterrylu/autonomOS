@@ -79,12 +79,23 @@ function Switch({ on }: { on: boolean }) {
 
 interface UsageQueueButtonProps {
   sessionId: string;
+  /** The pane's agent runtime — the button reads THIS provider's cap, so it
+   *  only appears when this agent's own limit is hit (Claude vs Codex), never a
+   *  sibling runtime's. Gemini has no cap → never shows. */
+  provider: string;
 }
 
-export function UsageQueueButton({ sessionId }: UsageQueueButtonProps) {
-  const { isArmed, capped, resetsAt, toggle } = useUsageQueue(sessionId);
+export function UsageQueueButton({
+  sessionId,
+  provider,
+}: UsageQueueButtonProps) {
+  const { isArmed, capped, resetsAt, toggle } = useUsageQueue(
+    sessionId,
+    provider,
+  );
 
-  // Only surfaces at the usage limit — the moment queueing is actually useful.
+  // Only surfaces when THIS pane's runtime is at its limit — the moment queueing
+  // is actually useful, and only for the agent whose usage is actually capped.
   if (!capped) return null;
 
   const eta = resetsAt ? timeUntilReset(resetsAt) : "";

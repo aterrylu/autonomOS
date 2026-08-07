@@ -2,33 +2,35 @@
  * Client view of the server-side usage queue (see server `usageQueue.ts`).
  *
  * One shared poll of `GET /api/usage-queue` backs every pane's button via
- * `useSyncExternalStore` — the armed set + cap status are account-wide, so a
- * single 15s poll is reused across all mounted panes (ref-counted: it starts
- * with the first subscriber and stops with the last). The server is the source
- * of truth — when it auto-fires and disarms a pane, the next poll clears that
+ * `useSyncExternalStore` — the armed set + per-provider caps are account-wide,
+ * so a single 15s poll is reused across all mounted panes (ref-counted: starts
+ * with the first subscriber, stops with the last). The server is the source of
+ * truth — when it auto-fires and disarms a pane, the next poll clears that
  * pane's button with no client coordination needed.
  *
- * `capped` (is the account at the usage limit) is the load-bearing signal for
- * the button: it only renders when capped, so the control appears exactly when
- * it's useful — when you've run out and need to queue your next prompt.
+ * PER-RUNTIME (ADR-068): `caps` is keyed by provider. A pane reads ONLY its own
+ * agent's provider cap, so the button renders exactly when THAT runtime is at
+ * its limit — a Claude cap never lights a Codex pane, and Gemini (no cap entry)
+ * never shows it. With split panes each pane resolves independently.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
 
-interface QueueSnapshot {
-  armed: Set<string>;
-  /** Whether the account is currently at the usage cap. */
+interface CapStatus {
   capped: boolean;
   resetsAt: string | null;
 }
 
+interface QueueSnapshot {
+  armed: Set<string>;
+  /** Per-provider cap state (e.g. "claude-code", "codex"). A provider absent
+   * here is not capped / has no usage source. */
+  caps: Record<string, CapStatus>;
+}
+
 const POLL_MS = 15_000;
 
-let snapshot: QueueSnapshot = {
-  armed: new Set(),
-  capped: false,
-  resetsAt: null,
-};
+let snapshot: QueueSnapshot = { armed: new Set(), caps: {} };
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let refCount = 0;
@@ -43,13 +45,27 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
-/** Replace the snapshot only on a real change, so `useSyncExternalStore`
- * keeps a stable reference and avoids spurious re-renders. */
+function sameCaps(
+  a: Record<string, CapStatus>,
+  b: Record<string, CapStatus>,
+): boolean {
+  const ak = Object.keys(a);
+  const bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) {
+    if (!b[k]) return false;
+    if (a[k].capped !== b[k].capped || a[k].resetsAt !== b[k].resetsAt)
+      return false;
+  }
+  return true;
+}
+
+/** Replace the snapshot only on a real change, so `useSyncExternalStore` keeps a
+ * stable reference and avoids spurious re-renders. */
 function commit(next: QueueSnapshot): void {
   if (
     sameSet(next.armed, snapshot.armed) &&
-    next.capped === snapshot.capped &&
-    next.resetsAt === snapshot.resetsAt
+    sameCaps(next.caps, snapshot.caps)
   ) {
     return;
   }
@@ -60,7 +76,7 @@ function commit(next: QueueSnapshot): void {
 async function refresh(): Promise<void> {
   const res = await fetch("/api/usage-queue").catch(() => null);
   if (!res?.ok) return;
-  let data: { armed?: string[]; capped?: boolean; resetsAt?: string | null };
+  let data: { armed?: string[]; caps?: Record<string, CapStatus> };
   try {
     data = await res.json();
   } catch {
@@ -68,8 +84,7 @@ async function refresh(): Promise<void> {
   }
   commit({
     armed: new Set(data.armed ?? []),
-    capped: !!data.capped,
-    resetsAt: data.resetsAt ?? null,
+    caps: data.caps ?? {},
   });
 }
 
@@ -98,16 +113,25 @@ function getSnapshot(): QueueSnapshot {
 export interface UsageQueuePane {
   /** Whether this pane has an armed auto-send. */
   isArmed: boolean;
-  /** Whether the account is at the usage cap — the button only shows when true. */
+  /** Whether THIS pane's runtime is at its usage cap — the button only shows
+   * when true. */
   capped: boolean;
-  /** Nearest reset timestamp, for an ETA hint (not the trigger). */
+  /** Nearest reset timestamp for this runtime, for an ETA hint (not the trigger). */
   resetsAt: string | null;
   /** Toggle this pane's armed state (optimistic, then reconciled). */
   toggle: () => Promise<void>;
 }
 
-export function useUsageQueue(sessionId: string): UsageQueuePane {
+/**
+ * @param sessionId the pane's agent id
+ * @param provider the pane's agent runtime — selects which cap gates the button
+ */
+export function useUsageQueue(
+  sessionId: string,
+  provider: string,
+): UsageQueuePane {
   const s = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const cap = s.caps[provider];
 
   const toggle = useCallback(async () => {
     const arming = !snapshot.armed.has(sessionId);
@@ -123,9 +147,7 @@ export function useUsageQueue(sessionId: string): UsageQueuePane {
 
     if (!res?.ok) {
       // The server never confirmed — undo the optimistic flip. Don't leave the
-      // button claiming a state the server doesn't hold: if this failed because
-      // the server is down, the 15s poll can't correct it either, so the lie
-      // would persist for the whole outage.
+      // button claiming a state the server doesn't hold.
       const reverted = new Set(snapshot.armed);
       if (arming) reverted.delete(sessionId);
       else reverted.add(sessionId);
@@ -138,8 +160,8 @@ export function useUsageQueue(sessionId: string): UsageQueuePane {
 
   return {
     isArmed: s.armed.has(sessionId),
-    capped: s.capped,
-    resetsAt: s.resetsAt,
+    capped: cap?.capped ?? false,
+    resetsAt: cap?.resetsAt ?? null,
     toggle,
   };
 }
