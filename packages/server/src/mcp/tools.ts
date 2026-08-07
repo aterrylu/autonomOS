@@ -148,8 +148,8 @@ export const TOOL_SEND: ToolDef = {
   name: "send",
   description:
     "Send a message to another agent. Use the from_uri from incoming messages to respond. " +
-    "Succeeds only if the destination accepted the message; any other result explains why it did not, " +
-    "and a message reported as not-yet-delivered is retried automatically — do not re-send it.",
+    "Succeeds only if the destination accepted the message; any other result explains why it did not. " +
+    "Do not re-send a message reported as not-yet-delivered — a duplicate can make an agent act twice.",
   inputSchema: {
     type: "object",
     properties: {
@@ -611,11 +611,11 @@ export const MCP_SERVER_INFO = {
 export const MCP_INSTRUCTIONS = [
   "You are running inside autonomOS — an agent orchestration platform.",
   "",
-  "## Finding & messaging other agents",
+  "### Finding & messaging other agents",
   "- list_agents(): the LIVE fleet — every active agent with its name, agent:// URI, status, and permission mode. This is the ONLY authoritative list of your peers. Do NOT rely on any provider-native or built-in agent list (e.g. a per-thread/collaboration list): those do not see autonomOS peers, and reading one will make you conclude you are alone when you are not. When in doubt, call list_agents().",
-  "- send(to, message): message ONE agent by its agent://<name> URI (from list_agents, or an incoming message's from_uri). There is no broadcast — address each recipient. A send succeeds only when the destination ACCEPTED the message; any other result explains why. A message reported as not-yet-delivered is retried automatically — do NOT re-send it (a duplicate can make an agent act twice).",
+  "- send(to, message): message ONE agent by its agent://<name> URI (from list_agents, or an incoming message's from_uri). There is no broadcast — address each recipient. A send succeeds only when the destination ACCEPTED the message; any other result explains why. Do NOT re-send a message reported as not-yet-delivered — a duplicate can make an agent act twice (a not-delivered message on the Codex path is auto-retried; re-sending stacks a second copy).",
   "",
-  "## Managing the fleet & org chart",
+  "### Managing the fleet & org chart",
   "- create_agent(): spawn a new dedicated agent (optionally from a template, or with an env preset — see below)",
   "- kill_agent(): terminate an agent",
   "- set_manager(): set an agent's manager in the org chart",
@@ -623,17 +623,17 @@ export const MCP_INSTRUCTIONS = [
   "- list_templates() / create_template(): browse and create reusable agent blueprints (role, system prompt, permission mode)",
   "- self_exit(): end your own session when your work is complete",
   "",
-  "## Env presets — model overrides (e.g. run an agent on Kimi)",
+  "### Env presets — model overrides (e.g. run an agent on Kimi)",
   "Flow: create_env_preset (set env + declare the secret key NAMES) → a human sets the API key in the dashboard Presets tab (do NOT ask for tokens in chat) → verify it's set with list_env_presets → create_agent(envPreset: <name>). Spawning with an unset key fails.",
   "- list_env_presets(): list presets; secret values are masked, and a declared secretKey absent from `secrets` is UNSET",
   "- create_env_preset() / update_env_preset(): configure a preset — you set env + secretKeys but CANNOT set the secret value (the human does)",
   "- delete_env_preset(): remove a preset",
   "",
-  "## Schedules",
+  "### Schedules",
   "- create_schedule(): a recurring (cron) or one-time task delivered to a running agent, which does the work under its own permission mode",
   "- list_schedules() / get_schedule() / update_schedule() / delete_schedule() / run_schedule(): inspect and manage schedules",
   "",
-  "## Receiving messages",
+  "### Receiving messages",
   "Messages from other agents arrive as <channel> events, each with `from` (sender name) and `from_uri` (the address to reply to).",
   'To reply: send(to: "<from_uri>", message: "your reply").',
 ].join("\n");
