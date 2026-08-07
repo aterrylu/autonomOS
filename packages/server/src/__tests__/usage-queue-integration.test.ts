@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
-import { createUsageQueue } from "../usageQueue.js";
+import { createUsageQueue, normalizeClaudeUsage } from "../usageQueue.js";
 import {
   type MockAnthropic,
   startMockAnthropic,
@@ -152,7 +152,10 @@ describe("usage-queue auto-fire — real spawn", {
     // the carriage return over the same PTY path the server uses.
     let cleared = false;
     const queue = createUsageQueue({
-      getUsage: async () => usageAt(cleared ? 0 : 100),
+      probes: {
+        "claude-code": async () =>
+          normalizeClaudeUsage(usageAt(cleared ? 0 : 100)),
+      },
       sendSubmit: () => {
         ws.send("\r");
         return true;
@@ -160,7 +163,7 @@ describe("usage-queue auto-fire — real spawn", {
       evaluateOnArm: false,
       intervalMs: 1_000_000_000,
     });
-    queue.arm(agent.id);
+    queue.arm(agent.id, "claude-code");
 
     await queue.tick(); // still capped → must NOT fire
     assert.ok(!sawMarker(), "must not submit while the limit is still capped");

@@ -7,14 +7,15 @@
  * server-side); these routes are a thin shell over it.
  */
 
+import type { Provider, UUID } from "@autonomos/core";
 import { Hono } from "hono";
+import { getAgent, listAgents } from "../agents/store.js";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
 import {
-  getRateLimits,
   invalidateCache,
   setUsageOverride,
 } from "../plugins/claude-usage/scanner.js";
-import { evaluateCap, usageQueue } from "../usageQueue.js";
+import { evaluateCap, REAL_PROBES, usageQueue } from "../usageQueue.js";
 
 export const usageQueueRouter = new Hono();
 
@@ -79,8 +80,22 @@ export async function applySimulatedClear(): Promise<void> {
  */
 usageQueueRouter.get("/", async (c) => {
   const { armed } = usageQueue().status();
-  const { capped, resetsAt } = evaluateCap(await getRateLimits());
-  return c.json({ armed, capped, resetsAt });
+  // Fresh per-provider caps (each scanner is cached ~60s). A pane's button reads
+  // ONLY its own provider's cap, so a Claude limit never lights a Codex pane.
+  // Gemini has no probe → no entry → its panes never show the button.
+  // Probe ONLY providers that actually have an agent in the fleet. A pane can
+  // only exist for a provider that has an agent, so this still covers every
+  // pane's button — but a Claude-only user never triggers the Codex probe,
+  // whose no-auth/expired-token path does an uncached recursive rollout scan
+  // (~/.codex/sessions/**). Without this gate that ran 4×/min per open tab (Nox).
+  const activeProviders = new Set(listAgents().map((a) => a.provider));
+  const caps: Record<string, { capped: boolean; resetsAt: string | null }> = {};
+  for (const [provider, probe] of Object.entries(REAL_PROBES)) {
+    if (probe && activeProviders.has(provider as Provider)) {
+      caps[provider] = evaluateCap(await probe());
+    }
+  }
+  return c.json({ armed, caps });
 });
 
 /**
@@ -129,12 +144,23 @@ usageQueueRouter.post("/_simulate", async (c) => {
   });
 });
 
-/** Arm auto-send for a pane: press Enter when the usage limit next clears. */
+/** Arm auto-send for a pane: press Enter when THAT AGENT'S runtime usage limit
+ *  next clears. The provider is resolved server-side from the agent record so
+ *  the pane waits on the right limit (Claude vs Codex); a runtime with no usage
+ *  source (Gemini) arms as a no-op. */
 usageQueueRouter.post("/:sessionId", (c) => {
   const sessionId = c.req.param("sessionId");
   if (!sessionId) return c.json({ error: "sessionId is required" }, 400);
-  usageQueue().arm(sessionId);
-  return c.json({ armed: true });
+  const agent = getAgent(sessionId as UUID);
+  if (!agent) return c.json({ error: `Agent "${sessionId}" not found` }, 404);
+  usageQueue().arm(sessionId, agent.provider);
+  // Report the ACTUAL armed state, not an assumed one: arm() is a no-op for a
+  // provider with no usage source (gemini), so a truthful response lets the
+  // client's optimistic flip reconcile instead of showing a phantom armed (Nox).
+  return c.json({
+    armed: usageQueue().isArmed(sessionId),
+    provider: agent.provider,
+  });
 });
 
 /** Disarm auto-send for a pane. */
