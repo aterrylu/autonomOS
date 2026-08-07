@@ -7,9 +7,9 @@
  * server-side); these routes are a thin shell over it.
  */
 
-import type { UUID } from "@autonomos/core";
+import type { Provider, UUID } from "@autonomos/core";
 import { Hono } from "hono";
-import { getAgent } from "../agents/store.js";
+import { getAgent, listAgents } from "../agents/store.js";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
 import {
   invalidateCache,
@@ -83,9 +83,17 @@ usageQueueRouter.get("/", async (c) => {
   // Fresh per-provider caps (each scanner is cached ~60s). A pane's button reads
   // ONLY its own provider's cap, so a Claude limit never lights a Codex pane.
   // Gemini has no probe → no entry → its panes never show the button.
+  // Probe ONLY providers that actually have an agent in the fleet. A pane can
+  // only exist for a provider that has an agent, so this still covers every
+  // pane's button — but a Claude-only user never triggers the Codex probe,
+  // whose no-auth/expired-token path does an uncached recursive rollout scan
+  // (~/.codex/sessions/**). Without this gate that ran 4×/min per open tab (Nox).
+  const activeProviders = new Set(listAgents().map((a) => a.provider));
   const caps: Record<string, { capped: boolean; resetsAt: string | null }> = {};
   for (const [provider, probe] of Object.entries(REAL_PROBES)) {
-    if (probe) caps[provider] = evaluateCap(await probe());
+    if (probe && activeProviders.has(provider as Provider)) {
+      caps[provider] = evaluateCap(await probe());
+    }
   }
   return c.json({ armed, caps });
 });
@@ -146,7 +154,13 @@ usageQueueRouter.post("/:sessionId", (c) => {
   const agent = getAgent(sessionId as UUID);
   if (!agent) return c.json({ error: `Agent "${sessionId}" not found` }, 404);
   usageQueue().arm(sessionId, agent.provider);
-  return c.json({ armed: true, provider: agent.provider });
+  // Report the ACTUAL armed state, not an assumed one: arm() is a no-op for a
+  // provider with no usage source (gemini), so a truthful response lets the
+  // client's optimistic flip reconcile instead of showing a phantom armed (Nox).
+  return c.json({
+    armed: usageQueue().isArmed(sessionId),
+    provider: agent.provider,
+  });
 });
 
 /** Disarm auto-send for a pane. */

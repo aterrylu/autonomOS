@@ -5,9 +5,9 @@ import "../test/setup-dom";
 import { useUsageQueue } from "./useUsageQueue";
 
 /**
- * Focused tests for the optimistic toggle + rollback (the F4 fix): a failed
- * arm must NOT leave the button claiming "armed," because during a server
- * outage the background poll can't correct the lie either.
+ * Focused tests for the hook: the optimistic toggle + rollback, and the
+ * PER-RUNTIME cap read (ADR-068) — a pane reads ONLY its own provider's cap, so
+ * a Claude cap never lights a Codex pane.
  *
  * The hook is backed by a module singleton; tests use distinct sessionIds and
  * deterministic fetch responses so the shared snapshot converges regardless of
@@ -24,10 +24,7 @@ function fakeResponse(ok: boolean, body: unknown) {
 const flush = () => act(async () => await new Promise((r) => setTimeout(r, 0)));
 
 beforeEach(() => {
-  respond = () => ({
-    ok: true,
-    body: { armed: [], capped: false, resetsAt: null },
-  });
+  respond = () => ({ ok: true, body: { armed: [], caps: {} } });
   vi.stubGlobal("fetch", (url: string, init: FetchInit) => {
     const { ok, body } = respond(url, init);
     return Promise.resolve(fakeResponse(ok, body));
@@ -37,15 +34,34 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("useUsageQueue", () => {
+  it("reads ONLY its own provider's cap (a Claude cap does not light a Codex pane)", async () => {
+    respond = () => ({
+      ok: true,
+      body: {
+        armed: [],
+        caps: { "claude-code": { capped: true, resetsAt: null } },
+      },
+    });
+    const claude = renderHook(() => useUsageQueue("c", "claude-code"));
+    const codex = renderHook(() => useUsageQueue("x", "codex"));
+    await flush();
+    expect(claude.result.current.capped).toBe(true);
+    expect(codex.result.current.capped).toBe(false); // no codex cap entry
+    claude.unmount();
+    codex.unmount();
+  });
+
   it("rolls back the optimistic flip when the server rejects the arm", async () => {
     respond = (_url, init) => {
       // The arm POST fails; the GET poll stays empty.
       if (init?.method === "POST" || init?.method === "DELETE") {
         return { ok: false, body: {} };
       }
-      return { ok: true, body: { armed: [], capped: false, resetsAt: null } };
+      return { ok: true, body: { armed: [], caps: {} } };
     };
-    const { result, unmount } = renderHook(() => useUsageQueue("roll-1"));
+    const { result, unmount } = renderHook(() =>
+      useUsageQueue("roll-1", "claude-code"),
+    );
     await flush();
     expect(result.current.isArmed).toBe(false);
 
@@ -64,9 +80,17 @@ describe("useUsageQueue", () => {
         armed = ["ok-1"];
         return { ok: true, body: { armed: true } };
       }
-      return { ok: true, body: { armed, capped: true, resetsAt: null } };
+      return {
+        ok: true,
+        body: {
+          armed,
+          caps: { "claude-code": { capped: true, resetsAt: null } },
+        },
+      };
     };
-    const { result, unmount } = renderHook(() => useUsageQueue("ok-1"));
+    const { result, unmount } = renderHook(() =>
+      useUsageQueue("ok-1", "claude-code"),
+    );
     await flush();
     expect(result.current.isArmed).toBe(false);
 

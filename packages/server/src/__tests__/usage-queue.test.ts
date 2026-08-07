@@ -431,6 +431,28 @@ describe("usage adapters + evaluateCap", () => {
     assert.equal(evaluateCap(n).capped, true, "92% ≥ 90 → capped");
   });
 
+  it("normalizeCodexUsage IGNORES a stale rollout snapshot (no live signal → no cap)", () => {
+    // A frozen on-disk rollout at 100% must not read as a live cap — else an
+    // armed Codex pane latches capped forever with no clear edge (Nox).
+    const data = {
+      primary: { usedPercent: 100, windowMinutes: 10080, resetsAt: "R" },
+      secondary: null,
+      additionalLimits: [],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "rollout",
+      fetchedAt: "now",
+    } as unknown as CodexUsageData;
+    const n = normalizeCodexUsage(data);
+    assert.deepEqual(n.windows, [], "a non-live snapshot yields no windows");
+    assert.equal(
+      evaluateCap(n).capped,
+      false,
+      "so it is never treated as capped",
+    );
+  });
+
   it("normalizeCodexUsage flags a credential failure as authError", () => {
     const data = {
       primary: null,

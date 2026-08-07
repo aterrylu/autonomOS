@@ -365,16 +365,22 @@ export function normalizeClaudeUsage(d: RateLimitData): NormalizedUsage {
 
 /** Codex: primary/secondary + any named limits → normalized (usedPercent → util). */
 export function normalizeCodexUsage(d: CodexUsageData): NormalizedUsage {
+  const authError =
+    d.errorKind === "unauthorized" || d.errorKind === "stale_token";
+  // Only a LIVE /wham/usage reading drives the queue's high→low edge. The
+  // on-disk rollout is a FROZEN snapshot that only advances when the Codex CLI
+  // runs a turn — which a capped or logged-out agent won't do — so trusting its
+  // number would latch an armed pane at "capped" forever with no clear to fire
+  // on (Nox). Treat non-live as "no signal": the queue holds (exactly like the
+  // Claude no-data case), and still warns if it's a credential failure.
+  if (d.source !== "live") return { windows: [], authError };
   const raw: Array<CodexUsageWindow | null> = [d.primary, d.secondary];
   for (const limit of d.additionalLimits)
     raw.push(limit.primary, limit.secondary);
   const windows = raw
     .filter((w): w is CodexUsageWindow => w != null)
     .map((w) => ({ utilization: w.usedPercent, resetsAt: w.resetsAt }));
-  return {
-    windows,
-    authError: d.errorKind === "unauthorized" || d.errorKind === "stale_token",
-  };
+  return { windows, authError };
 }
 
 /** The real per-provider probes (cached upstream by each scanner). Exported so
