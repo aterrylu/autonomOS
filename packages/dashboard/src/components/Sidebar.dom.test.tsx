@@ -2,7 +2,7 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
-import { useStore } from "../store";
+import { THEMES, useStore } from "../store";
 import { Sidebar } from "./Sidebar";
 
 /**
@@ -44,6 +44,7 @@ beforeEach(() => {
     agentStatuses: {},
     sidebarViewMode: "hierarchy",
     sidebarViewModeExplicit: false,
+    theme: "void",
   });
 });
 
@@ -93,5 +94,70 @@ describe("Sidebar — exited agents removed", () => {
     expect(screen.queryByTitle(/stopped/i)).not.toBeInTheDocument();
     // The exited agent's name must not appear anywhere in the sidebar.
     expect(screen.queryByText("Ghost")).not.toBeInTheDocument();
+  });
+});
+
+describe("Sidebar — env preset pill", () => {
+  const running = {
+    id: "a-1",
+    name: "Kimi",
+    status: "running" as const,
+    workingDirectory: "/tmp/proj",
+    provider: "claude" as const,
+    claudeSessionId: "a-1",
+    createdAt: 1,
+    updatedAt: 2,
+  };
+
+  it("renders the pill highlighted at the far right of the bottom line", () => {
+    useStore.setState({
+      sessions: [{ ...running, envPreset: "kimi-k3" }],
+      sidebarViewMode: "flat",
+      sidebarViewModeExplicit: true,
+      // Pin the theme: the store singleton may carry another test's (or a
+      // persisted) theme, and the accent assertion below is per-theme.
+      theme: "midnight",
+      // Seed the transient status label the pill must sit AFTER — without it
+      // the row renders no label and "last child" can't tell the two apart.
+      agentStatuses: { "a-1": { status: "working" } },
+    });
+    renderSidebar();
+    const pill = screen.getByTitle("Env preset: kimi-k3");
+    expect(pill).toHaveTextContent("kimi-k3");
+    // Highlight: the theme accent (midnight #e6b450), not the old faint grey.
+    // Assert all three properties — background and border are built by hex
+    // concatenation (`${accent}1f`), which CSS silently DROPS if the accent
+    // ever stops being 6-digit hex; color alone would stay green through that.
+    expect(pill).toHaveStyle({
+      color: "rgb(230, 180, 80)",
+      background: "rgba(230, 180, 80, 0.12)",
+      border: "1px solid #e6b450",
+    });
+    // Placement: LAST child of the bottom line, to the right of BOTH the
+    // repo/branch text and the transient status label — the position, not
+    // just the styling, is the feature.
+    expect(pill.nextElementSibling).toBeNull();
+    expect(pill.previousElementSibling).toHaveTextContent("Working");
+    expect(pill.parentElement?.textContent).toContain("proj");
+  });
+
+  it("renders no pill on rows without a preset", () => {
+    useStore.setState({
+      sessions: [running],
+      sidebarViewMode: "flat",
+      sidebarViewModeExplicit: true,
+    });
+    renderSidebar();
+    expect(screen.getByText("Kimi")).toBeInTheDocument();
+    expect(screen.queryByTitle(/^Env preset:/)).not.toBeInTheDocument();
+  });
+
+  it("every theme's accent is 6-digit hex (the pill and active-row ring append hex alpha bytes to it)", () => {
+    // `${accent}1f` / `${accent}14` produce an invalid color — which CSS
+    // silently ignores — for any other format. Red here beats a pill that
+    // quietly loses its fill in one theme.
+    for (const theme of Object.values(THEMES)) {
+      expect(theme.terminal.yellow).toMatch(/^#[0-9a-f]{6}$/i);
+    }
   });
 });

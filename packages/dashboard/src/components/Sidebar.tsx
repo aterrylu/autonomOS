@@ -1064,19 +1064,6 @@ function SessionRow({
           className="flex items-center text-[10px]"
           style={{ color: page.statusFg }}
         >
-          {s.envPreset && (
-            <span
-              className="shrink-0 mr-1.5 px-1 rounded truncate max-w-[90px]"
-              style={{
-                background: "rgba(255,255,255,0.06)",
-                border: `1px solid ${page.border}`,
-                opacity: 0.85,
-              }}
-              title={`Env preset: ${s.envPreset}`}
-            >
-              {s.envPreset}
-            </span>
-          )}
           <span className="flex-1 min-w-0 truncate">
             {meta?.projectName ?? s.workingDirectory.split("/").pop()}
             {meta?.gitBranch &&
@@ -1089,6 +1076,22 @@ function SessionRow({
                 agentState.status as AgentStatus,
                 agentState.currentTool,
               )}
+            </span>
+          )}
+          {/* Last child on purpose: the pill is persistent, the status label
+              transient — anchoring the pill at the corner keeps the row's
+              right edge stable when status toggles. */}
+          {s.envPreset && (
+            <span
+              className="shrink-0 ml-1.5 px-1 rounded truncate max-w-[90px]"
+              style={{
+                color: accent,
+                background: `${accent}1f`,
+                border: `1px solid ${accent}`,
+              }}
+              title={`Env preset: ${s.envPreset}`}
+            >
+              {s.envPreset}
             </span>
           )}
         </div>
