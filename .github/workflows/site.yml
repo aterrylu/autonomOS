@@ -1,0 +1,45 @@
+# Deploys website/ to Cloudflare Pages (project: autonomos-site) →
+# https://autonomos.terrylu.cloud
+#
+# One-time setup (owner's lane, in Cloudflare + GitHub):
+#   1. Create the Pages project:  wrangler pages project create autonomos-site
+#      (or Cloudflare dashboard → Workers & Pages → Create → Pages → Direct Upload)
+#   2. Repo secrets: CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN — create the
+#      token least-privilege: scoped to "Cloudflare Pages: Edit" for this ONE
+#      project, not account-wide (a leak then means "can redeploy this site",
+#      not "can touch DNS or other projects").
+#   3. Point the custom domain: Pages project → Custom domains → autonomos.terrylu.cloud
+#      (Cloudflare handles the CNAME + TLS automatically for a same-account zone).
+#
+# The hero image is single-sourced from docs/assets/hero.png (the `make hero`
+# output) — copied over the committed website/assets/hero.png at deploy time so
+# the site can never drift from the README's screenshot. That's also why this
+# workflow triggers on hero.png changes, not just website/ ones.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "docs/assets/hero.png"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync hero from docs (single source of truth)
+        run: cp docs/assets/hero.png website/assets/hero.png
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy website --project-name=autonomos-site --commit-dirty=true
