@@ -1070,8 +1070,13 @@ function SessionRow({
               meta.gitBranch !== "HEAD" &&
               ` · ${meta.gitBranch}`}
           </span>
+          {/* min-w-0 + truncate (NOT shrink-0): currentTool is a raw hook
+              tool_name ("Running mcp__autonomos__create_schedule"), and the
+              sidebar clips on x — a non-shrinking label would push the pill
+              (the last child) out of view on narrow rows. The transient label
+              gives way; the persistent pill doesn't. */}
           {agentState?.status && agentState.status !== "unknown" && (
-            <span className="shrink-0 ml-1.5 opacity-75">
+            <span className="min-w-0 truncate ml-1.5 opacity-75">
               {agentStatusLabel(
                 agentState.status as AgentStatus,
                 agentState.currentTool,
