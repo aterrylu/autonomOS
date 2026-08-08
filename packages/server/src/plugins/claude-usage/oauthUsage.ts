@@ -309,21 +309,28 @@ export async function fetchOAuthUsage(
   if (!token) return { status: "unavailable" };
   if (token.expiresAt <= Date.now()) return { status: "stale" };
 
+  // Edge semantics mirror scanner.ts fetchUsageData: ANY completed HTTP
+  // exchange counts as transport-healthy (401/429/!ok surface through their
+  // own status channel), success() fires exactly on non-throw completion, a
+  // body-parse failure is a failure.
   try {
-    const version = await claudeCliVersion();
-    const res = await fetcher(OAUTH_USAGE_URL, {
-      headers: {
-        Authorization: `Bearer ${token.accessToken}`,
-        "anthropic-beta": OAUTH_BETA,
-        "User-Agent": `claude-code/${version}`,
-      },
-    });
-    if (res.status === 401) return { status: "unauthorized" };
-    if (res.status === 429) return { status: "rate_limited" };
-    if (!res.ok) return { status: "unavailable" };
-    const data = (await res.json()) as OAuthUsageRaw;
+    const result = await (async (): Promise<OAuthUsageResult> => {
+      const version = await claudeCliVersion();
+      const res = await fetcher(OAUTH_USAGE_URL, {
+        headers: {
+          Authorization: `Bearer ${token.accessToken}`,
+          "anthropic-beta": OAUTH_BETA,
+          "User-Agent": `claude-code/${version}`,
+        },
+      });
+      if (res.status === 401) return { status: "unauthorized" };
+      if (res.status === 429) return { status: "rate_limited" };
+      if (!res.ok) return { status: "unavailable" };
+      const data = (await res.json()) as OAuthUsageRaw;
+      return { status: "ok", data };
+    })();
     oauthFetchLog.success();
-    return { status: "ok", data };
+    return result;
   } catch (err) {
     // Network / parse failure — the message never contains the token.
     // Edge-triggered: one line on the first failure, one on recovery.

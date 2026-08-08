@@ -123,17 +123,22 @@ export function initScheduler(): void {
   // target text, so the panel alone still cannot distinguish dormant from
   // broken. Surfacing it there is a separate change.
   //
-  // One carve-out: a one-time schedule that already FIRED and self-disabled is
-  // a completed historical artifact, not dormant intent — there is nothing to
-  // repoint or re-enable, so nagging about it every boot is pure noise
-  // (2026-08-08 audit: the only live instance was exactly this).
+  // One carve-out: a one-time schedule that already fired SUCCESSFULLY and
+  // self-disabled is a completed historical artifact, not dormant intent —
+  // there is nothing to repoint or re-enable, so nagging about it every boot
+  // is pure noise (2026-08-08 audit: the only live instance was exactly
+  // this). lastRunStatus matters, not just runCount: runCount increments at
+  // DISPATCH, so a one-time isolated schedule consumed by the immediate
+  // "target removed" failure has runCount=1 while its work never ran — that
+  // one must stay warned.
   const orphaned = names.filter((n) => {
     const s = schedules[n];
     if (s.target !== "isolated") return false;
     const completedOneTime =
       !s.enabled &&
       s.schedule.startsWith("once:") &&
-      (s.state.runCount ?? 0) > 0;
+      (s.state.runCount ?? 0) > 0 &&
+      s.state.lastRunStatus === "success";
     return !completedOneTime;
   });
   if (orphaned.length > 0) {
@@ -300,13 +305,14 @@ function addOneTimeJob(name: string, schedule: Schedule): void {
   schedule.state.nextRunAt = target.toISOString();
   saveSchedule(name, schedule);
 
-  if (target.getTime() <= Date.now()) {
+  const targetMs = target.getTime();
+  if (targetMs <= Date.now()) {
     // Past date at arm time — no timer. catchUpIfNeeded handles server-restart
     // catch-up separately. Newly created schedules with past dates won't fire.
     return;
   }
 
-  armOneTimeTimer(name, target.getTime());
+  armOneTimeTimer(name, targetMs);
 }
 
 /** Arm (or re-arm) the fire timer for a one-time schedule, chaining through

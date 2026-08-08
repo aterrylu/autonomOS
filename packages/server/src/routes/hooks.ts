@@ -199,14 +199,19 @@ export function pushSystemNotification(
 }
 
 /** Withdraw a previously pushed SystemWarning. No-op if it already scrolled
- *  out of the 50-item cap, was cleared, or the id is unknown. */
+ *  out of the 50-item cap, was cleared, or the id is unknown. The event guard
+ *  makes the "retractable = SystemWarning" contract self-enforcing — if a
+ *  second notification type ever mints ids, this must not become a
+ *  cross-type delete. */
 export function retractSystemNotification(
   sessionId: string,
   notificationId: string,
 ): boolean {
   const items = notifications.get(sessionId);
   if (!items) return false;
-  const idx = items.findIndex((n) => n.id === notificationId);
+  const idx = items.findIndex(
+    (n) => n.id === notificationId && n.event === "SystemWarning",
+  );
   if (idx === -1) return false;
   items.splice(idx, 1);
   if (items.length === 0) notifications.delete(sessionId);

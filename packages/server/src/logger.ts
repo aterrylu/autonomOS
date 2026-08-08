@@ -136,28 +136,36 @@ export function createTimestampingWriter(
   return {
     path: writer.path,
     write(chunk: string | Uint8Array): void {
-      const text =
-        typeof chunk === "string"
-          ? chunk
-          : Buffer.from(chunk).toString("utf-8");
-      if (text.length === 0) return;
-      let out = "";
-      let i = 0;
-      while (i < text.length) {
-        if (atLineStart) {
-          out += `${now().toISOString()} `;
-          atLineStart = false;
+      // This wrapper is the outermost layer of the patched stdout/stderr
+      // write path — it must uphold the same "logging never throws into the
+      // caller" contract the rotating writer guarantees. On any stamping
+      // error, fall back to writing the chunk unstamped rather than losing it.
+      try {
+        const text =
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk).toString("utf-8");
+        if (text.length === 0) return;
+        let out = "";
+        let i = 0;
+        while (i < text.length) {
+          if (atLineStart) {
+            out += `${now().toISOString()} `;
+            atLineStart = false;
+          }
+          const nl = text.indexOf("\n", i);
+          if (nl === -1) {
+            out += text.slice(i);
+            break;
+          }
+          out += text.slice(i, nl + 1);
+          atLineStart = true;
+          i = nl + 1;
         }
-        const nl = text.indexOf("\n", i);
-        if (nl === -1) {
-          out += text.slice(i);
-          break;
-        }
-        out += text.slice(i, nl + 1);
-        atLineStart = true;
-        i = nl + 1;
+        writer.write(out);
+      } catch {
+        writer.write(chunk);
       }
-      writer.write(out);
     },
   };
 }

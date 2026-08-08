@@ -346,21 +346,32 @@ async function fetchUsageData(
   orgId: string,
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<UsageResult> {
+  // Edge semantics: the logger tracks TRANSPORT health, so ANY completed
+  // HTTP exchange counts as healthy — including 429/401/!ok, which surface
+  // through their own UsageStatus channel. Two traps this shape avoids:
+  //  - success() only on the fully-ok path wedges the edge at `failing`
+  //    through e.g. an expired-credential period, silencing a later DISTINCT
+  //    outage forever;
+  //  - success() BEFORE the body parse flips the edge every poll on a
+  //    persistent malformed-200 (captive portal), re-logging each cycle.
+  // So: success() fires exactly when the try block completes without
+  // throwing; a body-parse failure is a failure.
   try {
-    const res = await fetcher(`${USAGE_URL}/${orgId}/usage`, {
-      headers: { Cookie: buildCookieHeader(cookie) },
-    });
-    if (res.status === 429) return { data: null, status: "rate_limited" };
-    if (res.status === 401 || res.status === 403) {
-      cachedOrgId = null;
-      return { data: null, status: "unauthorized" };
-    }
-    if (!res.ok) return { data: null, status: "error" };
+    const result = await (async (): Promise<UsageResult> => {
+      const res = await fetcher(`${USAGE_URL}/${orgId}/usage`, {
+        headers: { Cookie: buildCookieHeader(cookie) },
+      });
+      if (res.status === 429) return { data: null, status: "rate_limited" };
+      if (res.status === 401 || res.status === 403) {
+        cachedOrgId = null;
+        return { data: null, status: "unauthorized" };
+      }
+      if (!res.ok) return { data: null, status: "error" };
+      const data = (await res.json()) as Record<string, unknown>;
+      return { data, status: "ok" };
+    })();
     usageFetchLog.success();
-    return {
-      data: (await res.json()) as Record<string, unknown>,
-      status: "ok",
-    };
+    return result;
   } catch (err) {
     // Edge-triggered: an offline host polls right through — one line on the
     // first failure, one on recovery, no per-poll transport stacks.

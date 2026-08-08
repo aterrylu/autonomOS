@@ -189,6 +189,31 @@ describe("the isolated target is removed", () => {
     assert.equal(named.length, 0, "completed one-time must not be nagged");
   });
 
+  it("still warns about a one-time consumed by a FAILED dispatch", () => {
+    // runCount increments at dispatch, so a one-time isolated schedule that
+    // fired post-removal and hit the immediate target-removed failure looks
+    // "completed" by count alone — but its work never ran. Only a successful
+    // run earns the silence.
+    writeLegacyScheduleFile("legacy-failed-once", {
+      target: "isolated",
+      schedule: "once:2026-07-01T09:00",
+      enabled: false,
+      state: {
+        lastRunAt: "2026-07-01T16:00:00.000Z",
+        lastRunStatus: "failure",
+        nextRunAt: null,
+        runCount: 1,
+        consecutiveFailures: 1,
+        currentRunId: null,
+      },
+    });
+    const warnings = captureWarnings(() => {
+      initScheduler();
+    });
+    const named = warnings.filter((w) => w.includes("legacy-failed-once"));
+    assert.equal(named.length, 1, "failed-dispatch one-time must stay warned");
+  });
+
   it("still warns about a completed-run one-time that was RE-ENABLED", () => {
     // Re-enabling is a statement of intent — the operator wants it to run
     // again, and it can't. That must stay visible.
