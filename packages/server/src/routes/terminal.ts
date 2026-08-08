@@ -132,6 +132,58 @@ export function makeStreamForwarder(
   };
 }
 
+// ── Replay coalescing (agent-switch fix, flag-gated) ───────────────────
+// On connect the server replays the session's scrollback so a reconnecting
+// client catches up. Historically that was one `ws.send()` PER STORED PTY
+// CHUNK — a 1MB buffer of Ink-sized chunks fanned into ~19k frames, which is
+// the multi-second "text rushing in" on every agent switch. The live-stream
+// coalescer above never covered this path (it batches by TIME, and a replay
+// is an already-complete sequence where time plays no role). Instead the
+// buffered chunks are joined into a few large frames up front. Zero added
+// latency: the join is synchronous and the replay is a one-shot burst.
+export interface ReplayOptions {
+  /** When false, behavior is byte-identical to the historical per-chunk send. */
+  coalesce: boolean;
+  /** Target frame size — chunks are packed until a frame reaches this. */
+  maxBytes: number;
+}
+
+/** Defaults read from env. ON by default (measured: 18,829 replay frames → 18
+ *  for a full 1MB buffer, byte-identical content). Set
+ *  `AUTONOMOS_WS_REPLAY_COALESCE=0` to fall back to per-chunk replay. */
+export const DEFAULT_REPLAY: ReplayOptions = {
+  coalesce: process.env.AUTONOMOS_WS_REPLAY_COALESCE !== "0",
+  maxBytes: intEnv("AUTONOMOS_WS_REPLAY_BYTES", 64 * 1024),
+};
+
+/**
+ * Pack the buffered scrollback chunks into replay frames. Pure — order and
+ * bytes are preserved exactly; only the frame boundaries change. A frame
+ * closes once it reaches `maxBytes`, so a 1MB buffer becomes ~16 frames
+ * (instead of one frame per chunk) while never building one giant string
+ * before the first byte can go out.
+ */
+export function buildReplayFrames(
+  chunks: readonly string[],
+  opts: ReplayOptions = DEFAULT_REPLAY,
+): string[] {
+  if (!opts.coalesce) return [...chunks];
+  const frames: string[] = [];
+  let pending: string[] = [];
+  let pendingBytes = 0;
+  for (const chunk of chunks) {
+    pending.push(chunk);
+    pendingBytes += chunk.length;
+    if (pendingBytes >= opts.maxBytes) {
+      frames.push(pending.join(""));
+      pending = [];
+      pendingBytes = 0;
+    }
+  }
+  if (pending.length > 0) frames.push(pending.join(""));
+  return frames;
+}
+
 /** Track all WebSocket clients per session so we can notify on PTY exit */
 const sessionClients = new Map<string, Set<WSContext>>();
 
@@ -168,10 +220,12 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           return;
         }
 
-        // Replay buffered output so reconnecting clients see scrollback
-        for (const chunk of managed.outputBuffer) {
+        // Replay buffered output so reconnecting clients see scrollback —
+        // packed into large frames (see buildReplayFrames) so an agent switch
+        // doesn't fan a 1MB buffer into ~19k tiny WS frames.
+        for (const frame of buildReplayFrames(managed.outputBuffer)) {
           try {
-            ws.send(chunk);
+            ws.send(frame);
           } catch {
             // Client disconnected during replay
             return;

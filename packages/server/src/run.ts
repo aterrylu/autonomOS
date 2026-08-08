@@ -48,6 +48,7 @@ import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
 import { gatewayRouter } from "./routes/gateway.js";
 import { hooksIngestRouter, hooksReadRouter } from "./routes/hooks.js";
+import { perfRouter } from "./routes/perf.js";
 import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
@@ -302,6 +303,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
 
   const requireAuth: MiddlewareHandler = async (c, next) => {
+    // DEV/PERF ONLY — the L2 benchmark rig runs on loopback against an
+    // isolated config dir; skip auth so Playwright needn't carry tokens
+    // through the vite proxy. Inert unless the harness sets this env flag.
+    if (process.env.AUTONOMOS_PERF_NOAUTH === "1") return next();
     // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
     // moved to the internal socket, so nothing on the public listener needs to
     // accept an unauthenticated write any more. The exemption was also wider
@@ -355,6 +360,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/plugins/codex-usage", codexUsageRouter);
   app.route("/api/usage-queue", usageQueueRouter);
   app.route("/api/system", systemRouter);
+
+  // DEV/PERF ONLY — synthetic session register + burst trigger for the L2
+  // browser benchmark. Mounted only when the harness sets this env flag.
+  if (process.env.AUTONOMOS_PERF_ROUTES === "1") {
+    app.route("/api/perf", perfRouter);
+  }
 
   // MCP — Streamable HTTP transport, served on the internal socket only.
   internalApp.post("/mcp", async (c) => {
