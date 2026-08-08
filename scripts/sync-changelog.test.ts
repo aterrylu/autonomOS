@@ -150,34 +150,6 @@ describe("parseEntries", () => {
     assert.deepEqual(parseEntries(block), []);
   });
 
-  it("prefers a <!-- pr: NNN --> override over the attributed PR, and drops the sha", () => {
-    // A retroactive changeset: changelog-github attributed it to #275 (the PR
-    // that ADDED the file), but the body names the PR it documents.
-    const block = `
-### Minor Changes
-
-- [#275](https://github.com/aterrylu/autonomOS/pull/275) [\`e23e60a\`](https://github.com/aterrylu/autonomOS/commit/e23e60a) Thanks [@aterrylu](https://github.com/aterrylu)! - <!-- pr: 284 --> Remove the desktop app.
-`;
-    const [e] = parseEntries(block);
-    assert.equal(e.pr, 284);
-    // The sha points at the ADDING commit, whose subject would title this entry
-    // with #275's title — it must not survive the override.
-    assert.equal(e.sha, null);
-    // The marker itself must not leak into the rendered body.
-    assert.equal(e.body, "Remove the desktop app.");
-  });
-
-  it("renders an overridden entry with the documented PR's link and its body as title", () => {
-    const block = `
-### Minor Changes
-
-- [#275](https://github.com/aterrylu/autonomOS/pull/275) [\`e23e60a\`](https://github.com/aterrylu/autonomOS/commit/e23e60a) Thanks [@aterrylu](https://github.com/aterrylu)! - <!-- pr: 284 --> Remove the desktop app.
-`;
-    const out = renderSection(parseEntries(block), () => "WRONG TITLE FROM GIT");
-    assert.match(out, /- \[#284\]\(https:\/\/github\.com\/aterrylu\/autonomOS\/pull\/284\) — Remove the desktop app\./);
-    assert.doesNotMatch(out, /WRONG TITLE FROM GIT/);
-    assert.doesNotMatch(out, /#275/);
-  });
 });
 
 describe("isNonEmptyChangeset", () => {

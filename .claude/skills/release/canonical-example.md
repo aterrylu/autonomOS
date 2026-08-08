@@ -65,8 +65,9 @@ Note the moves that turn the floor into the ceiling:
    friendly, concrete explanation of what it does and why it matters.
 4. **PRs reordered by theme**, not by number. Breaking changes are called out in
    prose (see #220).
-5. **A `---` then the fixed footer** (install / desktop / auto-update / sign-off).
-   This footer is stable boilerplate — reproduce it verbatim every release.
+5. **A `---` then the fixed footer** (install / manual download / sign-off — take
+   the current footer from SKILL.md step 5; the v0.3.0 footer below, with its
+   desktop/auto-update lines, is historical).
 
 ```markdown
 A big release — Codex agents are now a first-class citizen alongside Claude Code, the dashboard handles Claude usage limits gracefully, copy-to-clipboard finally works on remote deployments, and a bunch of polish landed throughout.

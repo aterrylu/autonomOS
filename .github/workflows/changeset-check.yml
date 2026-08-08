@@ -1,14 +1,19 @@
 name: Changeset Check
 
-# BLOCKS substantive PRs that ship without a changeset (ADR in docs/DECISIONS.md:
-# "Changeset check is blocking for production-source PRs"). v0.5.0 shipped with 5
-# substantive PRs missing from the changelog because this check was advisory-only.
+# FAILS (exit 1) on substantive PRs that ship without a changeset (ADR-069 in
+# docs/DECISIONS.md). v0.5.0 shipped with 5 substantive PRs missing from the
+# changelog because this check was advisory-only (::warning, always green).
+# NOTE: a red run hard-blocks the merge only once this job is added to main's
+# ruleset required checks (currently only "check" is required — see the ADR's
+# enforcement note); until then it fails loudly on the PR page.
 #
 # The gate: a PR that touches production source under packages/*/src (test files
-# excluded) must carry a changeset. `bun run changeset --empty` is the explicit
-# opt-out for source changes with no version impact — an empty changeset makes
-# `changeset status` pass. Docs/CI/test/script-only PRs never trigger the gate.
-# The bot's own "Version Packages" PR is skipped entirely.
+# excluded) must add or modify a .changeset/*.md file. `bun run changeset --empty`
+# is the explicit opt-out for source changes with no version impact — an empty
+# changeset is still a file. Docs/CI/test/script-only PRs never trigger the gate.
+# The bot's own "Version Packages" PR is skipped entirely. Pure git — no bun
+# install, and no `changeset status` (its changed-package detection has a
+# measured fail-open on C-quoted non-ASCII paths; see ADR-069).
 
 on:
   pull_request:
@@ -26,41 +31,60 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install deps
-        run: bun install --frozen-lockfile
-
       - name: Require a changeset for production-source changes
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
 
-          git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed-files.txt
+          # Two-step on purpose (do NOT collapse into one pipeline): running
+          # `git diff` as its own command keeps it under `set -e`, so a git
+          # failure aborts the step — fail CLOSED. Piped into the greps below,
+          # its failure would be forgiven with grep's no-match and the gate
+          # would pass on infrastructure error. quotePath=off so non-ASCII
+          # filenames aren't C-quoted ("caf\303\251.ts"), which would break
+          # the ^packages/ anchor and let those files evade the filter.
+          git -c core.quotePath=off diff --name-only "origin/${BASE_REF}...HEAD" \
+            > "${RUNNER_TEMP}/changed-files.txt"
 
           # Substantive = production source under packages/*/src. Test files are
           # excluded (this repo keeps them inside src/ as __tests__/ and *.test.*)
           # so test-only PRs stay frictionless, per the gate's design.
-          grep -E '^packages/[^/]+/src/' /tmp/changed-files.txt \
-            | grep -vE '(^|/)__tests__/|\.test\.[a-z]+$' \
-            > /tmp/substantive.txt || true
+          # `|| [ $? -eq 1 ]` forgives ONLY grep's benign no-match exit; a real
+          # grep/redirect error (exit 2, ENOSPC) still aborts — never fail open.
+          { grep -E '^packages/[^/]+/src/' "${RUNNER_TEMP}/changed-files.txt" || [ $? -eq 1 ]; } \
+            | { grep -vE '(^|/)__tests__/|\.test\.[a-z]+$' || [ $? -eq 1 ]; } \
+            > "${RUNNER_TEMP}/substantive.txt"
 
-          if [ ! -s /tmp/substantive.txt ]; then
+          if [ ! -s "${RUNNER_TEMP}/substantive.txt" ]; then
             echo "✓ No production-source changes under packages/*/src — changeset not required."
             exit 0
           fi
 
           echo "Production source changed on this PR:"
-          sed 's/^/  /' /tmp/substantive.txt
+          sed 's/^/  /' "${RUNNER_TEMP}/substantive.txt"
 
-          # `changeset status` exits 0 when every changed package is covered by a
-          # changeset, and an --empty changeset counts as coverage (verified
-          # empirically) — so the escape hatch works without extra logic here.
-          if bun changeset status --since="origin/${BASE_REF}"; then
-            echo "✓ A changeset covers this PR's changes."
+          # Changeset presence = a .changeset/*.md file added or modified on
+          # the PR (--diff-filter=d: deleting one doesn't count). This is the
+          # SAME invariant `bun changeset status` enforces (verified against
+          # @changesets/cli 2.31.0: it exits 1 iff packages changed and zero
+          # changeset files exist since the ref — it does NOT check which
+          # packages a changeset names), minus a measured fail-open: changesets'
+          # own changed-package detection misses C-quoted non-ASCII paths and
+          # then exits 0 with no changeset at all. An --empty changeset is
+          # still a file, so the sanctioned opt-out passes. File presence is
+          # sufficient coverage here: every package is in the fixed version
+          # group and sync-changelog merges ALL package CHANGELOGs, so any
+          # non-empty changeset produces a changelog line.
+          git -c core.quotePath=off diff --name-only --diff-filter=d \
+            "origin/${BASE_REF}...HEAD" > "${RUNNER_TEMP}/added-or-modified.txt"
+          { grep -E '^\.changeset/[^/]+\.md$' "${RUNNER_TEMP}/added-or-modified.txt" || [ $? -eq 1 ]; } \
+            | { grep -vE '^\.changeset/README\.md$' || [ $? -eq 1 ]; } \
+            > "${RUNNER_TEMP}/changesets.txt"
+
+          if [ -s "${RUNNER_TEMP}/changesets.txt" ]; then
+            echo "✓ Changeset present:"
+            sed 's/^/  /' "${RUNNER_TEMP}/changesets.txt"
           else
             echo "::error title=Missing changeset::This PR changes production source under packages/*/src but has no changeset, so it would be MISSING from the release changelog. Run 'bun run changeset' and describe the change. If it truly has no version impact, run 'bun run changeset --empty' to opt out explicitly."
             exit 1

@@ -77,15 +77,16 @@ export function extractVersionBlock(
  * body is captured as a fallback title. We never drop a bullet — dropping is the
  * exact bug this script fixes.
  *
- * PR-override marker: a changeset body may carry `<!-- pr: NNN -->` to name the
- * PR it documents. changelog-github attributes an entry to the commit that ADDED
- * the changeset file, so a RETROACTIVE changeset (written after the fact, in a
+ * Retroactive changesets: changelog-github attributes an entry to the commit
+ * that ADDED the changeset file, so a changeset written after the fact (in a
  * different PR) gets the wrong PR number — and N of them added together all get
- * the SAME number, which dedupeEntries() then collapses to one line. The marker
- * overrides the attributed PR; the sha is dropped with it (it points at the
- * adding commit, so its git subject would title the entry with the WRONG PR's
- * title — the changeset body, which the author wrote to describe the documented
- * PR, is the correct title source).
+ * the SAME number, which dedupeEntries() then collapses to one line. The remedy
+ * is changelog-github's own NATIVE override, no custom parsing here: a line
+ * `pr: NNN` anywhere in the changeset summary makes it resolve the named PR's
+ * real link/sha/author and strip the line (verified in
+ * @changesets/changelog-github 0.5.2) — so by the time this parser reads the
+ * CHANGELOG, a correctly-marked retroactive entry is indistinguishable from a
+ * native one. findCollapses() below is the detector for the UNMARKED case.
  */
 export function parseEntries(block: string): ReleaseEntry[] {
   const entries: ReleaseEntry[] = [];
@@ -107,21 +108,17 @@ export function parseEntries(block: string): ReleaseEntry[] {
 
     const pr = line.match(/\[#(\d+)\]/);
     const sha = line.match(/\[`([0-9a-f]{7,40})`\]/i);
-    const override = line.match(/<!--\s*pr:\s*(\d+)\s*-->/i);
     // Body = text after the changelog-github "...! - " marker, else the bullet
     // text itself. Only used when no sha is available to query git.
     const afterMarker = line.split(/!\s+-\s+/);
-    const rawBody =
+    const body =
       afterMarker.length > 1
         ? afterMarker.slice(1).join("! - ").trim()
         : line.replace(/^-\s+/, "").trim();
-    const body = rawBody.replace(/<!--\s*pr:\s*\d+\s*-->\s*/i, "").trim();
 
     entries.push({
-      pr: override ? Number(override[1]) : pr ? Number(pr[1]) : null,
-      // Override drops the sha: it identifies the commit that ADDED the
-      // changeset, not the PR the marker names, and would mis-title the entry.
-      sha: override ? null : sha ? sha[1].slice(0, 7) : null,
+      pr: pr ? Number(pr[1]) : null,
+      sha: sha ? sha[1].slice(0, 7) : null,
       body,
       severity: current,
     });
@@ -276,6 +273,22 @@ export function guardDecision(
 
 // ── impure shell (only runs as a script, never on import) ───────────────────
 
+/**
+ * console.warn + a GitHub Actions `::warning` annotation when running in CI.
+ * This script runs inside the Version Packages action, where plain stderr
+ * scrolls by unread — the v0.5.0 5→1 collapse shipped past exactly that. An
+ * annotation surfaces on the run's summary page. Newlines are %0A-escaped per
+ * the annotation format (the full multi-line text still goes to stderr).
+ */
+function warn(message: string): void {
+  console.warn(message);
+  if (process.env.GITHUB_ACTIONS) {
+    console.log(
+      `::warning title=sync-changelog::${message.replace(/\n/g, "%0A")}`,
+    );
+  }
+}
+
 /** PR title from the squash-merge commit subject: `<title> (#NNN)` → `<title>`. */
 function gitTitle(repoRoot: string, sha: string): string {
   try {
@@ -392,7 +405,7 @@ function main(): void {
   // because consumption detection is heuristic (git-dependent).
   const consumed = consumedChangesetCount(repoRoot);
   if (consumed > 0 && entries.length < consumed) {
-    console.warn(
+    warn(
       `[sync-changelog] v${version}: parsed ${entries.length} entr${entries.length === 1 ? "y" : "ies"} ` +
         `but ${consumed} non-empty changeset(s) were consumed — some changes may be ` +
         `MISSING from the release. Check packages/*/CHANGELOG.md.`,
@@ -404,19 +417,21 @@ function main(): void {
   // is usually a PR that did two things (note it); >=3 is the retroactive-
   // changeset signature (changelog-github attributes every changeset to the
   // commit that ADDED it — v0.5.0's catch-up PR collapsed 5 changesets into 1
-  // line this way). Fix by adding `<!-- pr: NNN -->` to each changeset body.
+  // line this way). The remedy in the message is changelog-github's NATIVE
+  // summary override (`pr: NNN` on its own line), not anything parsed here.
   for (const { key, bodies } of findCollapses(entries)) {
     const detail = bodies.map((b) => `    - ${b}`).join("\n");
     if (bodies.length >= 3) {
-      console.warn(
+      warn(
         `[sync-changelog] v${version}: ${bodies.length} DISTINCT changesets all resolve to ` +
           `${key} and will collapse to ONE changelog line — this is the retroactive-changeset ` +
           `signature (all attributed to the PR that added them). ${bodies.length - 1} documented ` +
-          `change(s) will be DROPPED from the release. Add '<!-- pr: NNN -->' to each ` +
-          `changeset body to attribute it to the PR it documents:\n${detail}`,
+          `change(s) will be DROPPED from the release. Fix: put a 'pr: NNN' line in each ` +
+          `retroactive changeset's summary (changelog-github's native override) naming the PR ` +
+          `it documents:\n${detail}`,
       );
     } else {
-      console.warn(
+      warn(
         `[sync-changelog] v${version}: ${bodies.length} distinct changesets collapse onto ` +
           `${key} (normal for a PR that did several things — verify none document a ` +
           `DIFFERENT PR):\n${detail}`,
@@ -430,7 +445,7 @@ function main(): void {
   // will actually RENDER against what was consumed.
   const dedupedCount = dedupeEntries(entries).length;
   if (consumed > 0 && dedupedCount < consumed) {
-    console.warn(
+    warn(
       `[sync-changelog] v${version}: ${consumed} non-empty changeset(s) were consumed but ` +
         `only ${dedupedCount} unique changelog line(s) will render — entries collapsed ` +
         `during dedup. If any collapsed changeset documents a different PR, its change is ` +
@@ -448,19 +463,19 @@ function main(): void {
     process.exit(1);
   }
   if (decision === "warn") {
-    console.warn(
+    warn(
       `[sync-changelog] v${version}: merged section is empty and changeset ` +
         `consumption couldn't be verified (git unavailable). Writing an empty ` +
         `section — verify this release was meant to have no entries.`,
     );
   } else if (merged.trim().length === 0) {
-    console.warn(
+    warn(
       `[sync-changelog] v${version}: writing an EMPTY section — no entries found ` +
         `across any package. Correct only if this release intentionally has none.`,
     );
   }
   if (merged.includes("(no description)")) {
-    console.warn(
+    warn(
       `[sync-changelog] v${version}: an entry has no resolvable title (rendered ` +
         `"(no description)") — check the corresponding changeset/commit.`,
     );
@@ -481,7 +496,7 @@ function main(): void {
   writeFileSync(rootChangelog, updated);
   console.log(
     `[sync-changelog] promoted v${version} into root CHANGELOG.md ` +
-      `(${dedupeEntries(entries).length} PR(s) across all packages).`,
+      `(${dedupedCount} PR(s) across all packages).`,
   );
 }
 
