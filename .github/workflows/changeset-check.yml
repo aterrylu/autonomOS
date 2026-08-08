@@ -1,9 +1,14 @@
 name: Changeset Check
 
-# Nudges PRs to include a changeset so the changelog stays complete. This is
-# informational (never blocks): trivial/internal PRs legitimately have no
-# version impact and can run `bun run changeset --empty`. The bot's own
-# "Version Packages" PR is skipped.
+# BLOCKS substantive PRs that ship without a changeset (ADR in docs/DECISIONS.md:
+# "Changeset check is blocking for production-source PRs"). v0.5.0 shipped with 5
+# substantive PRs missing from the changelog because this check was advisory-only.
+#
+# The gate: a PR that touches production source under packages/*/src (test files
+# excluded) must carry a changeset. `bun run changeset --empty` is the explicit
+# opt-out for source changes with no version impact — an empty changeset makes
+# `changeset status` pass. Docs/CI/test/script-only PRs never trigger the gate.
+# The bot's own "Version Packages" PR is skipped entirely.
 
 on:
   pull_request:
@@ -28,12 +33,35 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
-      - name: Check for a changeset
+      - name: Require a changeset for production-source changes
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          if bun changeset status --since="origin/${BASE_REF}" >/dev/null 2>&1; then
-            echo "✓ A changeset is present on this PR."
+          set -euo pipefail
+
+          git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed-files.txt
+
+          # Substantive = production source under packages/*/src. Test files are
+          # excluded (this repo keeps them inside src/ as __tests__/ and *.test.*)
+          # so test-only PRs stay frictionless, per the gate's design.
+          grep -E '^packages/[^/]+/src/' /tmp/changed-files.txt \
+            | grep -vE '(^|/)__tests__/|\.test\.[a-z]+$' \
+            > /tmp/substantive.txt || true
+
+          if [ ! -s /tmp/substantive.txt ]; then
+            echo "✓ No production-source changes under packages/*/src — changeset not required."
+            exit 0
+          fi
+
+          echo "Production source changed on this PR:"
+          sed 's/^/  /' /tmp/substantive.txt
+
+          # `changeset status` exits 0 when every changed package is covered by a
+          # changeset, and an --empty changeset counts as coverage (verified
+          # empirically) — so the escape hatch works without extra logic here.
+          if bun changeset status --since="origin/${BASE_REF}"; then
+            echo "✓ A changeset covers this PR's changes."
           else
-            echo "::warning title=No changeset::This PR has no changeset. If it's user-facing, run 'bun run changeset'. For trivial/internal changes, run 'bun run changeset --empty'."
+            echo "::error title=Missing changeset::This PR changes production source under packages/*/src but has no changeset, so it would be MISSING from the release changelog. Run 'bun run changeset' and describe the change. If it truly has no version impact, run 'bun run changeset --empty' to opt out explicitly."
+            exit 1
           fi

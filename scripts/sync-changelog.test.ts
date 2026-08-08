@@ -12,6 +12,7 @@ import { describe, it } from "node:test";
 import {
   dedupeEntries,
   extractVersionBlock,
+  findCollapses,
   guardDecision,
   isNonEmptyChangeset,
   parseEntries,
@@ -148,6 +149,35 @@ describe("parseEntries", () => {
 `;
     assert.deepEqual(parseEntries(block), []);
   });
+
+  it("prefers a <!-- pr: NNN --> override over the attributed PR, and drops the sha", () => {
+    // A retroactive changeset: changelog-github attributed it to #275 (the PR
+    // that ADDED the file), but the body names the PR it documents.
+    const block = `
+### Minor Changes
+
+- [#275](https://github.com/aterrylu/autonomOS/pull/275) [\`e23e60a\`](https://github.com/aterrylu/autonomOS/commit/e23e60a) Thanks [@aterrylu](https://github.com/aterrylu)! - <!-- pr: 284 --> Remove the desktop app.
+`;
+    const [e] = parseEntries(block);
+    assert.equal(e.pr, 284);
+    // The sha points at the ADDING commit, whose subject would title this entry
+    // with #275's title — it must not survive the override.
+    assert.equal(e.sha, null);
+    // The marker itself must not leak into the rendered body.
+    assert.equal(e.body, "Remove the desktop app.");
+  });
+
+  it("renders an overridden entry with the documented PR's link and its body as title", () => {
+    const block = `
+### Minor Changes
+
+- [#275](https://github.com/aterrylu/autonomOS/pull/275) [\`e23e60a\`](https://github.com/aterrylu/autonomOS/commit/e23e60a) Thanks [@aterrylu](https://github.com/aterrylu)! - <!-- pr: 284 --> Remove the desktop app.
+`;
+    const out = renderSection(parseEntries(block), () => "WRONG TITLE FROM GIT");
+    assert.match(out, /- \[#284\]\(https:\/\/github\.com\/aterrylu\/autonomOS\/pull\/284\) — Remove the desktop app\./);
+    assert.doesNotMatch(out, /WRONG TITLE FROM GIT/);
+    assert.doesNotMatch(out, /#275/);
+  });
 });
 
 describe("isNonEmptyChangeset", () => {
@@ -171,6 +201,46 @@ describe("dedupeEntries", () => {
     const deduped = dedupeEntries(entries);
     assert.equal(deduped.length, 1);
     assert.equal(deduped[0].severity, "Minor");
+  });
+});
+
+describe("findCollapses (the retroactive-changeset guard)", () => {
+  it("stays silent for the same changeset seen across packages (same body)", () => {
+    // One changeset listing app + dashboard → one entry per package CHANGELOG,
+    // identical body. Dedup collapsing these loses nothing.
+    const entries = [
+      { pr: 242, sha: "01531b8", body: "icons", severity: "Patch" as const },
+      { pr: 242, sha: "01531b8", body: "icons", severity: "Minor" as const },
+    ];
+    assert.deepEqual(findCollapses(entries), []);
+  });
+
+  it("reports distinct changeset bodies collapsing onto one PR key", () => {
+    // The v0.5.0 bug shape: 5 retroactive changesets added in PR #275 all get
+    // #275 as their PR — 5 documented changes would render as ONE line.
+    const bodies = ["change A", "change B", "change C", "change D", "change E"];
+    const entries = bodies.map((body) => ({
+      pr: 275,
+      sha: "e23e60a",
+      body,
+      severity: "Minor" as const,
+    }));
+    const collapses = findCollapses(entries);
+    assert.equal(collapses.length, 1);
+    assert.equal(collapses[0].key, "pr:275");
+    assert.deepEqual([...collapses[0].bodies].sort(), bodies);
+    // And dedup really would have dropped 4 of the 5 — the loss being reported.
+    assert.equal(dedupeEntries(entries).length, 1);
+  });
+
+  it("keys on sha, then body, when no PR resolved", () => {
+    const entries = [
+      { pr: null, sha: "deadbee", body: "x", severity: "Patch" as const },
+      { pr: null, sha: "deadbee", body: "y", severity: "Patch" as const },
+    ];
+    const collapses = findCollapses(entries);
+    assert.equal(collapses.length, 1);
+    assert.equal(collapses[0].key, "sha:deadbee");
   });
 });
 

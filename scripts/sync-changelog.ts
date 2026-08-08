@@ -76,6 +76,16 @@ export function extractVersionBlock(
  * PR and sha are optional (a manual/unresolved changeset may omit either); the
  * body is captured as a fallback title. We never drop a bullet — dropping is the
  * exact bug this script fixes.
+ *
+ * PR-override marker: a changeset body may carry `<!-- pr: NNN -->` to name the
+ * PR it documents. changelog-github attributes an entry to the commit that ADDED
+ * the changeset file, so a RETROACTIVE changeset (written after the fact, in a
+ * different PR) gets the wrong PR number — and N of them added together all get
+ * the SAME number, which dedupeEntries() then collapses to one line. The marker
+ * overrides the attributed PR; the sha is dropped with it (it points at the
+ * adding commit, so its git subject would title the entry with the WRONG PR's
+ * title — the changeset body, which the author wrote to describe the documented
+ * PR, is the correct title source).
  */
 export function parseEntries(block: string): ReleaseEntry[] {
   const entries: ReleaseEntry[] = [];
@@ -97,17 +107,21 @@ export function parseEntries(block: string): ReleaseEntry[] {
 
     const pr = line.match(/\[#(\d+)\]/);
     const sha = line.match(/\[`([0-9a-f]{7,40})`\]/i);
+    const override = line.match(/<!--\s*pr:\s*(\d+)\s*-->/i);
     // Body = text after the changelog-github "...! - " marker, else the bullet
     // text itself. Only used when no sha is available to query git.
     const afterMarker = line.split(/!\s+-\s+/);
-    const body =
+    const rawBody =
       afterMarker.length > 1
         ? afterMarker.slice(1).join("! - ").trim()
         : line.replace(/^-\s+/, "").trim();
+    const body = rawBody.replace(/<!--\s*pr:\s*\d+\s*-->\s*/i, "").trim();
 
     entries.push({
-      pr: pr ? Number(pr[1]) : null,
-      sha: sha ? sha[1].slice(0, 7) : null,
+      pr: override ? Number(override[1]) : pr ? Number(pr[1]) : null,
+      // Override drops the sha: it identifies the commit that ADDED the
+      // changeset, not the PR the marker names, and would mis-title the entry.
+      sha: override ? null : sha ? sha[1].slice(0, 7) : null,
       body,
       severity: current,
     });
@@ -115,21 +129,53 @@ export function parseEntries(block: string): ReleaseEntry[] {
   return entries;
 }
 
+// Dedup key cascades PR → sha → body so the same change collapses regardless
+// of which identifier survived parsing. Shared by dedupeEntries (which keeps
+// one entry per key) and findCollapses (which reports when that loses info).
+function dedupeKey(e: ReleaseEntry): string {
+  if (e.pr != null) return `pr:${e.pr}`;
+  if (e.sha != null) return `sha:${e.sha}`;
+  return `body:${e.body}`;
+}
+
+/** A dedupe key under which >1 DISTINCT changeset body will collapse to one line. */
+export interface Collapse {
+  key: string;
+  /** Distinct changeset bodies sharing this key — each documents a change. */
+  bodies: string[];
+}
+
+/**
+ * Detect lossy collapses BEFORE dedupeEntries throws the information away.
+ * The same changeset appearing in several package CHANGELOGs has the SAME body
+ * every time — collapsing those is the point of dedup and is not reported.
+ * DISTINCT bodies under one key mean distinct documented changes rendering as
+ * one changelog line. 2 distinct bodies is usually a PR that legitimately did
+ * two things; MANY (the caller warns loudly at >=3) is the signature of
+ * retroactive changesets: changelog-github attributes every changeset to the
+ * commit that ADDED it, so N changesets documenting N old PRs, added together,
+ * all get the adding PR's number (how v0.5.0's catch-up PR collapsed 5→1).
+ */
+export function findCollapses(entries: ReleaseEntry[]): Collapse[] {
+  const byKey = new Map<string, Set<string>>();
+  for (const e of entries) {
+    const key = dedupeKey(e);
+    const bodies = byKey.get(key) ?? new Set<string>();
+    bodies.add(e.body);
+    byKey.set(key, bodies);
+  }
+  return [...byKey.entries()]
+    .filter(([, bodies]) => bodies.size > 1)
+    .map(([key, bodies]) => ({ key, bodies: [...bodies] }));
+}
+
 /**
  * Collapse entries that refer to the same PR (a PR with multiple changesets, or
  * a changeset listing several packages, appears once per package CHANGELOG).
- * Dedup key cascades PR → sha → body. On collision, keep the HIGHEST severity
- * (a change that's minor for any consumer is at least minor for the release).
+ * On collision, keep the HIGHEST severity (a change that's minor for any
+ * consumer is at least minor for the release).
  */
 export function dedupeEntries(entries: ReleaseEntry[]): ReleaseEntry[] {
-  // Dedup key cascades PR → sha → body so the same change collapses regardless
-  // of which identifier survived parsing.
-  function dedupeKey(e: ReleaseEntry): string {
-    if (e.pr != null) return `pr:${e.pr}`;
-    if (e.sha != null) return `sha:${e.sha}`;
-    return `body:${e.body}`;
-  }
-
   const byKey = new Map<string, ReleaseEntry>();
   for (const e of entries) {
     const key = dedupeKey(e);
@@ -350,6 +396,45 @@ function main(): void {
       `[sync-changelog] v${version}: parsed ${entries.length} entr${entries.length === 1 ? "y" : "ies"} ` +
         `but ${consumed} non-empty changeset(s) were consumed — some changes may be ` +
         `MISSING from the release. Check packages/*/CHANGELOG.md.`,
+    );
+  }
+
+  // Collapse detection: distinct changeset bodies sharing one dedupe key render
+  // as ONE line — documented changes vanish from the release. 2 distinct bodies
+  // is usually a PR that did two things (note it); >=3 is the retroactive-
+  // changeset signature (changelog-github attributes every changeset to the
+  // commit that ADDED it — v0.5.0's catch-up PR collapsed 5 changesets into 1
+  // line this way). Fix by adding `<!-- pr: NNN -->` to each changeset body.
+  for (const { key, bodies } of findCollapses(entries)) {
+    const detail = bodies.map((b) => `    - ${b}`).join("\n");
+    if (bodies.length >= 3) {
+      console.warn(
+        `[sync-changelog] v${version}: ${bodies.length} DISTINCT changesets all resolve to ` +
+          `${key} and will collapse to ONE changelog line — this is the retroactive-changeset ` +
+          `signature (all attributed to the PR that added them). ${bodies.length - 1} documented ` +
+          `change(s) will be DROPPED from the release. Add '<!-- pr: NNN -->' to each ` +
+          `changeset body to attribute it to the PR it documents:\n${detail}`,
+      );
+    } else {
+      console.warn(
+        `[sync-changelog] v${version}: ${bodies.length} distinct changesets collapse onto ` +
+          `${key} (normal for a PR that did several things — verify none document a ` +
+          `DIFFERENT PR):\n${detail}`,
+      );
+    }
+  }
+
+  // Post-dedup reconciliation: N consumed changesets should yield ~N changelog
+  // lines. The pre-dedup check above can't see collapse (5 parsed entries from 5
+  // consumed changesets passes it, then dedup renders 1 line) — compare what
+  // will actually RENDER against what was consumed.
+  const dedupedCount = dedupeEntries(entries).length;
+  if (consumed > 0 && dedupedCount < consumed) {
+    console.warn(
+      `[sync-changelog] v${version}: ${consumed} non-empty changeset(s) were consumed but ` +
+        `only ${dedupedCount} unique changelog line(s) will render — entries collapsed ` +
+        `during dedup. If any collapsed changeset documents a different PR, its change is ` +
+        `now MISSING from the release notes.`,
     );
   }
 

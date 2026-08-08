@@ -129,6 +129,8 @@ Thanks for using autonomOS! 💛
 
 ## The fixed footer (reproduce verbatim every release)
 
+> **Historical:** this footer (DMG download + auto-update) was accurate for v0.3.0, when the desktop app existed — it was cut in #273/ADR-051, and **SKILL.md step 5 is the authoritative current footer**; only the *transformation style* of this example remains the spec.
+
 Only the parenthetical version in the auto-update line changes — it names the
 **previous** released version (here `v0.2.0`, since this is the `v0.3.0` body), so
 existing desktop users know their build will self-update. Everything else is
