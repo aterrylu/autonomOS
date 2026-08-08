@@ -203,6 +203,10 @@ interface CastMember {
   /** Hook events to pose a status badge. Claude uses CC-native names; Gemini
    *  uses Gemini-native names (normalizeEvent maps them). */
   pose?: Record<string, unknown>[];
+  /** Env preset name to spawn with (ADR-067) — shows the gold preset pill on
+   *  this agent's sidebar row. The preset is created (env-only, no secrets)
+   *  in the demo instance before spawning. */
+  envPreset?: string;
 }
 
 const DISPATCHER_PROMPT =
@@ -279,6 +283,9 @@ function buildCast(caps: Caps): CastMember[] {
       provider: "claude-code",
       manager: "FrontendLead",
       pose: [{ hook_event_name: "UserPromptSubmit", prompt: "working" }],
+      // Org-only agent (no turn runs), so the model-override env is inert —
+      // this exists to show the env-preset pill in the hero.
+      envPreset: "kimi-k3",
     },
   ];
 
@@ -842,6 +849,31 @@ async function stageScene(
   await warmUsage(server, "boot");
   if (caps.codex) await warmCodexUsage(server, "boot");
 
+  // Create any env presets the cast references (env-only, no secrets — a
+  // declared-but-unset secret would refuse the spawn). Must exist BEFORE the
+  // spawn that names them.
+  const presetNames = [...new Set(cast.flatMap((m) => m.envPreset ?? []))];
+  for (const name of presetNames) {
+    const { status, body } = await api<{ error?: string }>(
+      server,
+      "/api/env-presets",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          description: "Demo model-override preset (hero scene)",
+          provider: "claude-code",
+          env: { ANTHROPIC_MODEL: name },
+        }),
+      },
+    );
+    if (status !== 201) {
+      throw new Error(
+        `create preset ${name} failed (${status}): ${JSON.stringify(body)}`,
+      );
+    }
+  }
+
   console.log(`Spawning ${cast.length} agents…`);
   await Promise.all(
     cast.map(async (m) => {
@@ -857,6 +889,7 @@ async function stageScene(
             permissionMode: "bypass",
             ...(m.prompt ? { prompt: m.prompt } : {}),
             ...(m.cols ? { cols: m.cols, rows: m.rows ?? 40 } : {}),
+            ...(m.envPreset ? { envPreset: m.envPreset } : {}),
           }),
         },
       );
