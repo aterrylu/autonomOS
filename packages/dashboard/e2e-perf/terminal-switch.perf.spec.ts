@@ -216,6 +216,14 @@ test("agent-switch re-stream cost through real dashboard", async ({
       `settled in ${settledMs}ms (${settledVia}), render-block ${m.longtaskMs}ms\n`,
   );
 
-  // Integrity: the terminal must be visibly present either way.
-  expect(visibleMs).toBeGreaterThan(0);
+  // Integrity: the switched-to terminal must actually SHOW content — a
+  // keep-alive bug could produce perfect zeros above while rendering a blank
+  // pane. Screenshot the terminal and require pixel variance.
+  const shot = await page.locator(".xterm").first().screenshot();
+  const pixels = new Set<string>();
+  // PNG bytes aren't raw pixels, but a blank canvas compresses to a tiny,
+  // low-entropy file — use size + byte diversity as a cheap non-blank proxy.
+  for (const b of shot.subarray(0, 4096)) pixels.add(String(b));
+  expect(shot.length).toBeGreaterThan(2_000);
+  expect(pixels.size).toBeGreaterThan(30);
 });
