@@ -41,28 +41,34 @@ jobs:
           # `git diff` as its own command keeps it under `set -e`, so a git
           # failure aborts the step — fail CLOSED. Piped into the greps below,
           # its failure would be forgiven with grep's no-match and the gate
-          # would pass on infrastructure error. quotePath=off so non-ASCII
-          # filenames aren't C-quoted ("caf\303\251.ts"), which would break
-          # the ^packages/ anchor and let those files evade the filter.
-          git -c core.quotePath=off diff --name-only "origin/${BASE_REF}...HEAD" \
-            > "${RUNNER_TEMP}/changed-files.txt"
+          # would pass on infrastructure error.
+          #
+          # NUL-delimited (-z) end to end: with newline-delimited output git
+          # C-quotes "unusual" paths (non-ASCII, quotes, backslashes, embedded
+          # newlines), and the leading quote breaks the ^packages/ anchor —
+          # those files would silently evade the filter (fail open). -z emits
+          # raw bytes, and grep -z anchors ^/$ per NUL record, so every
+          # committable filename is matched correctly, embedded newlines
+          # included. tr to newlines ONLY for display.
+          git diff -z --name-only "origin/${BASE_REF}...HEAD" \
+            > "${RUNNER_TEMP}/changed-files.zlist"
 
           # Substantive = production source under packages/*/src. Test files are
           # excluded (this repo keeps them inside src/ as __tests__/ and *.test.*)
           # so test-only PRs stay frictionless, per the gate's design.
           # `|| [ $? -eq 1 ]` forgives ONLY grep's benign no-match exit; a real
           # grep/redirect error (exit 2, ENOSPC) still aborts — never fail open.
-          { grep -E '^packages/[^/]+/src/' "${RUNNER_TEMP}/changed-files.txt" || [ $? -eq 1 ]; } \
-            | { grep -vE '(^|/)__tests__/|\.test\.[a-z]+$' || [ $? -eq 1 ]; } \
-            > "${RUNNER_TEMP}/substantive.txt"
+          { grep -zE '^packages/[^/]+/src/' "${RUNNER_TEMP}/changed-files.zlist" || [ $? -eq 1 ]; } \
+            | { grep -zvE '(^|/)__tests__/|\.test\.[a-z]+$' || [ $? -eq 1 ]; } \
+            > "${RUNNER_TEMP}/substantive.zlist"
 
-          if [ ! -s "${RUNNER_TEMP}/substantive.txt" ]; then
+          if [ ! -s "${RUNNER_TEMP}/substantive.zlist" ]; then
             echo "✓ No production-source changes under packages/*/src — changeset not required."
             exit 0
           fi
 
           echo "Production source changed on this PR:"
-          sed 's/^/  /' "${RUNNER_TEMP}/substantive.txt"
+          tr '\0' '\n' < "${RUNNER_TEMP}/substantive.zlist" | sed 's/^/  /'
 
           # Changeset presence = a .changeset/*.md file added or modified on
           # the PR (--diff-filter=d: deleting one doesn't count). This is the
@@ -76,15 +82,15 @@ jobs:
           # sufficient coverage here: every package is in the fixed version
           # group and sync-changelog merges ALL package CHANGELOGs, so any
           # non-empty changeset produces a changelog line.
-          git -c core.quotePath=off diff --name-only --diff-filter=d \
-            "origin/${BASE_REF}...HEAD" > "${RUNNER_TEMP}/added-or-modified.txt"
-          { grep -E '^\.changeset/[^/]+\.md$' "${RUNNER_TEMP}/added-or-modified.txt" || [ $? -eq 1 ]; } \
-            | { grep -vE '^\.changeset/README\.md$' || [ $? -eq 1 ]; } \
-            > "${RUNNER_TEMP}/changesets.txt"
+          git diff -z --name-only --diff-filter=d \
+            "origin/${BASE_REF}...HEAD" > "${RUNNER_TEMP}/added-or-modified.zlist"
+          { grep -zE '^\.changeset/[^/]+\.md$' "${RUNNER_TEMP}/added-or-modified.zlist" || [ $? -eq 1 ]; } \
+            | { grep -zvE '^\.changeset/README\.md$' || [ $? -eq 1 ]; } \
+            > "${RUNNER_TEMP}/changesets.zlist"
 
-          if [ -s "${RUNNER_TEMP}/changesets.txt" ]; then
+          if [ -s "${RUNNER_TEMP}/changesets.zlist" ]; then
             echo "✓ Changeset present:"
-            sed 's/^/  /' "${RUNNER_TEMP}/changesets.txt"
+            tr '\0' '\n' < "${RUNNER_TEMP}/changesets.zlist" | sed 's/^/  /'
           else
             echo "::error title=Missing changeset::This PR changes production source under packages/*/src but has no changeset, so it would be MISSING from the release changelog. Run 'bun run changeset' and describe the change. If it truly has no version impact, run 'bun run changeset --empty' to opt out explicitly."
             exit 1

@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  collapseDecision,
   dedupeEntries,
   extractVersionBlock,
   findCollapses,
@@ -213,6 +214,19 @@ describe("findCollapses (the retroactive-changeset guard)", () => {
     const collapses = findCollapses(entries);
     assert.equal(collapses.length, 1);
     assert.equal(collapses[0].key, "sha:deadbee");
+  });
+});
+
+describe("collapseDecision", () => {
+  it("fails on the retroactive signature (>=3 distinct bodies)", () => {
+    assert.equal(collapseDecision(3, false), "fail");
+    assert.equal(collapseDecision(5, false), "fail");
+  });
+  it("warns, not fails, on 2 bodies (a PR that did two things)", () => {
+    assert.equal(collapseDecision(2, false), "warn");
+  });
+  it("the explicit accept override downgrades fail to warn", () => {
+    assert.equal(collapseDecision(5, true), "warn");
   });
 });
 

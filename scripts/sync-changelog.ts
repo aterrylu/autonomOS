@@ -167,6 +167,27 @@ export function findCollapses(entries: ReleaseEntry[]): Collapse[] {
 }
 
 /**
+ * How hard to react to a collapse (pure; thresholds are the decision record —
+ * see the collapse-guard ADR in docs/DECISIONS.md).
+ *   - 2 distinct bodies  → "warn": usually a PR that legitimately did two
+ *     things; blocking a release on that shape would be a false positive.
+ *   - >=3 distinct bodies → "fail": exactly one known cause (retroactive
+ *     changesets mis-attributed to the PR that added them), and this project's
+ *     v0.5.0 evidence is that a warning demonstrably does not stop it. High
+ *     confidence: unlike the consumed-count reconciliation this does not
+ *     depend on the git-status heuristic, only on parsed CHANGELOG content.
+ *   - `accept` (SYNC_CHANGELOG_ACCEPT_COLLAPSE=1) downgrades "fail" to "warn"
+ *     for the rare legitimate 3+-changeset PR — an explicit, logged override,
+ *     never a silent default.
+ */
+export function collapseDecision(
+  distinctBodies: number,
+  accept: boolean,
+): "warn" | "fail" {
+  return distinctBodies >= 3 && !accept ? "fail" : "warn";
+}
+
+/**
  * Collapse entries that refer to the same PR (a PR with multiple changesets, or
  * a changeset listing several packages, appears once per package CHANGELOG).
  * On collision, keep the HIGHEST severity (a change that's minor for any
@@ -413,23 +434,37 @@ function main(): void {
   }
 
   // Collapse detection: distinct changeset bodies sharing one dedupe key render
-  // as ONE line — documented changes vanish from the release. 2 distinct bodies
-  // is usually a PR that did two things (note it); >=3 is the retroactive-
-  // changeset signature (changelog-github attributes every changeset to the
-  // commit that ADDED it — v0.5.0's catch-up PR collapsed 5 changesets into 1
-  // line this way). The remedy in the message is changelog-github's NATIVE
-  // summary override (`pr: NNN` on its own line), not anything parsed here.
+  // as ONE line — documented changes vanish from the release. The >=3 shape
+  // (the retroactive-changeset signature: changelog-github attributes every
+  // changeset to the commit that ADDED it — v0.5.0's catch-up PR collapsed 5
+  // changesets into 1 line this way) FAILS the version run: this PR's own
+  // thesis is that a warning demonstrably doesn't prevent it. The remedy in
+  // the message is changelog-github's NATIVE summary override (`pr: NNN` on
+  // its own line), not anything parsed here. Thresholds + override rationale
+  // live in collapseDecision's docblock and the collapse-guard ADR.
+  const acceptCollapse = process.env.SYNC_CHANGELOG_ACCEPT_COLLAPSE === "1";
+  let fatalCollapse = false;
   for (const { key, bodies } of findCollapses(entries)) {
     const detail = bodies.map((b) => `    - ${b}`).join("\n");
     if (bodies.length >= 3) {
-      warn(
+      const decision = collapseDecision(bodies.length, acceptCollapse);
+      const msg =
         `[sync-changelog] v${version}: ${bodies.length} DISTINCT changesets all resolve to ` +
-          `${key} and will collapse to ONE changelog line — this is the retroactive-changeset ` +
-          `signature (all attributed to the PR that added them). ${bodies.length - 1} documented ` +
-          `change(s) will be DROPPED from the release. Fix: put a 'pr: NNN' line in each ` +
-          `retroactive changeset's summary (changelog-github's native override) naming the PR ` +
-          `it documents:\n${detail}`,
-      );
+        `${key} and will collapse to ONE changelog line — this is the retroactive-changeset ` +
+        `signature (all attributed to the PR that added them). ${bodies.length - 1} documented ` +
+        `change(s) would be DROPPED from the release. Fix: put a 'pr: NNN' line in each ` +
+        `retroactive changeset's summary (changelog-github's native override) naming the PR ` +
+        `it documents:\n${detail}`;
+      if (decision === "fail") {
+        fatalCollapse = true;
+        console.error(
+          `${msg}\n[sync-changelog] Refusing to write a release that drops documented ` +
+            `changes. If this PR genuinely ships ${bodies.length} changesets for one PR, ` +
+            `re-run with SYNC_CHANGELOG_ACCEPT_COLLAPSE=1 to accept the collapse.`,
+        );
+      } else {
+        warn(`${msg}\n[sync-changelog] Collapse ACCEPTED via SYNC_CHANGELOG_ACCEPT_COLLAPSE=1.`);
+      }
     } else {
       warn(
         `[sync-changelog] v${version}: ${bodies.length} distinct changesets collapse onto ` +
@@ -438,6 +473,7 @@ function main(): void {
       );
     }
   }
+  if (fatalCollapse) process.exit(1);
 
   // Post-dedup reconciliation: N consumed changesets should yield ~N changelog
   // lines. The pre-dedup check above can't see collapse (5 parsed entries from 5
