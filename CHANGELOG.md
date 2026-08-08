@@ -20,14 +20,17 @@ that predates the changesets pipeline.
 - [#273](https://github.com/aterrylu/autonomOS/pull/273) `ea57b14` — refactor: cut the Electron desktop app — remote always-on server is canonical (ADR-051)
 - [#276](https://github.com/aterrylu/autonomOS/pull/276) `509ed54` — feat(dashboard): Codex usage tracking plugin (live /wham/usage + rollout fallback)
 - [#283](https://github.com/aterrylu/autonomOS/pull/283) `4f1e5c6` — fix(server): resume external Claude Code sessions — adopt-into-managed (ADR-056)
+- [#284](https://github.com/aterrylu/autonomOS/pull/284) `7bbb876` — feat(security): move /mcp + agent hook relay onto a Unix socket (ADR-055 PR A) — **breaking transport change**
+- [#288](https://github.com/aterrylu/autonomOS/pull/288) `4b6c758` — refactor(mcp): deprecate agent capabilities — bypassable + misleading (ADR-058)
 - [#289](https://github.com/aterrylu/autonomOS/pull/289) `2777645` — refactor(dashboard): remove the broken markdown file preview (ADR-059)
 - [#293](https://github.com/aterrylu/autonomOS/pull/293) `b45043d` — feat(security): gateway onto the control socket + per-agent identity (ADR-055 PR B)
 - [#299](https://github.com/aterrylu/autonomOS/pull/299) `28b0adc` — fix(gateway): send() acks DELIVERY, not routing — remove broadcast:// and slack:// (ADR-064)
 - [#300](https://github.com/aterrylu/autonomOS/pull/300) `b7222e1` — feat(dashboard): keyboard shortcut registry + mod+digit pane switching (ADR-063)
-- [#302](https://github.com/aterrylu/autonomOS/pull/302) `c8262cd` — feat(providers): model-override env presets — agent-configured, human-keyed (ADR-065)
+- [#302](https://github.com/aterrylu/autonomOS/pull/302) `c8262cd` — feat(providers): model-override env presets — agent-configured, human-keyed (ADR-067)
 - [#304](https://github.com/aterrylu/autonomOS/pull/304) `b230d72` — fix(shortcuts): free the dead ctrl+d/w/b swallow + registry Escape dismissal (ADR-065)
 - [#305](https://github.com/aterrylu/autonomOS/pull/305) `d2e1e2e` — feat(shortcuts): mod+digit switches sidebar agents + hold-mod row badges (ADR-066)
 - [#306](https://github.com/aterrylu/autonomOS/pull/306) `e79aa84` — feat(shortcuts): mod+↑/↓ relative agent navigation + neighbor hint chips
+- [#308](https://github.com/aterrylu/autonomOS/pull/308) `b64326f` — feat(usage-queue): per-tab + per-runtime auto-Enter (ADR-068)
 - [#309](https://github.com/aterrylu/autonomOS/pull/309) `470b045` — docs(changeset): complete the v0.5.0 changelog — retroactive changesets for 5 undocumented PRs
 
 ### Patch Changes
@@ -35,6 +38,7 @@ that predates the changesets pipeline.
 - [#269](https://github.com/aterrylu/autonomOS/pull/269) `e6b8290` — feat(dashboard): distinct highlight for co-visible sidebar rows
 - [#270](https://github.com/aterrylu/autonomOS/pull/270) `f5c4939` — fix(server): keep Claude Code agents on restart via provider-parity resume fallback
 - [#274](https://github.com/aterrylu/autonomOS/pull/274) `788d3df` — fix(security): stop leaking the auth token in a URL (post-install panel)
+- [#278](https://github.com/aterrylu/autonomOS/pull/278) `f7a1f60` — fix(server): recover agent status after compaction — order-independent hooks (ADR-053)
 - [#281](https://github.com/aterrylu/autonomOS/pull/281) `df6806e` — fix(security): require auth on /mcp — closes an unauthenticated RCE (ADR-054)
 - [#282](https://github.com/aterrylu/autonomOS/pull/282) `d973992` — fix(dashboard): eliminate layout/terminal/store stuck-states (audit sweep)
 - [#287](https://github.com/aterrylu/autonomOS/pull/287) `84a8bbd` — fix(codex): stop losing inbound messages in silence + kill the prompt-delivery false alarm
@@ -43,6 +47,7 @@ that predates the changesets pipeline.
 - [#297](https://github.com/aterrylu/autonomOS/pull/297) `7edfc47` — fix(security): consolidate per-agent token delivery to a 0600 file (ADR-055 follow-up)
 - [#298](https://github.com/aterrylu/autonomOS/pull/298) `fa1370c` — refactor(scheduler): remove the isolated target — the last spawn outside PermissionMode (ADR-062)
 - [#301](https://github.com/aterrylu/autonomOS/pull/301) `bed3654` — refactor(security): hygiene bundle — dir-modes, config validation, link-scheme filter, dep bumps
+- [#307](https://github.com/aterrylu/autonomOS/pull/307) `2319e96` — refactor(mcp): rewrite MCP_INSTRUCTIONS + drift-guard test + peer-discovery note
 
 
 ## [0.4.0] — 2026-06-28
