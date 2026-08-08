@@ -359,7 +359,7 @@ test("holding mod reveals digit badges on the sidebar agent rows", async ({
   await mockApi(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "autonomOS" })).toBeVisible();
-  await expect(page.locator("aside").getByText("Researcher")).toBeVisible();
+  await expect(page.locator("aside").getByText("Researcher", { exact: true })).toBeVisible();
   const mod = await modKey(page);
   const badges = page.getByTestId("agent-digit-badge");
 
@@ -384,7 +384,7 @@ test("mod+arrows walk the sidebar; hold shows \u2191/\u2193 on the active agent'
 }) => {
   await mockApi(page);
   await page.goto("/");
-  await expect(page.locator("aside").getByText("Researcher")).toBeVisible();
+  await expect(page.locator("aside").getByText("Researcher", { exact: true })).toBeVisible();
   const mod = await modKey(page);
 
   // Anchor on the FIRST agent, then walk down and clamp.

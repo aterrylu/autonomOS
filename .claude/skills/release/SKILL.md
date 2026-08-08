@@ -154,23 +154,21 @@ an automatic failure.
 
 ### 5. The fixed footer (reproduce verbatim)
 
-Stable boilerplate every release. Only the parenthetical version in the
-auto-update line changes — it names the **previous** released version, so existing
-desktop users know their build self-updates:
+Stable boilerplate every release — fully fixed, nothing in it varies per release:
 
 ```markdown
 ---
 
-📦 **Install:** `curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh | sh && autonomos start`
-🖥️ **Desktop app:** download the universal DMG from the assets below
-🔄 **Auto-update users (v<PREV>):** the desktop app will update itself on next launch
+📦 **Install / upgrade:** `curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh | sh && autonomos start`
+💾 **Manual download:** grab `autonomos-<os>-<arch>.tar.gz` for your platform from the assets below (verify against `SHA256SUMS`)
 
 Thanks for using autonomOS! 💛
 ```
 
-`<PREV>` = the release immediately before this one. Derive it from
-`gh release list --limit 5` (it lists newest-first; `<PREV>` is the entry below
-`v<version>`). For the `v0.3.0` example the value was `v0.2.0`.
+> **Note:** `canonical-example.md`'s v0.3.0 footer still shows the old desktop-app
+> lines (DMG download + auto-update) — those were accurate for v0.3.0 but the
+> Electron desktop app was cut in #273/ADR-051. **This step, not the example, is
+> the authoritative footer.** Do not reproduce the DMG or auto-update lines.
 
 ### 6. Apply
 
