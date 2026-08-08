@@ -26,6 +26,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { createEdgeLogger } from "./edgeLog.js";
 import type { ExtraUsage, RateLimitWindow } from "./scanner.js";
 
 const execFileAsync = promisify(execFile);
@@ -293,6 +294,8 @@ export type OAuthUsageResult =
   | { status: "rate_limited" }
   | { status: "unavailable" };
 
+const oauthFetchLog = createEdgeLogger("[claude-usage] OAuth usage fetch");
+
 /**
  * Call the OAuth usage endpoint with the resolved token. Read-only: never
  * refreshes the token. Both the HTTP fetcher and the token reader are injectable
@@ -319,10 +322,12 @@ export async function fetchOAuthUsage(
     if (res.status === 429) return { status: "rate_limited" };
     if (!res.ok) return { status: "unavailable" };
     const data = (await res.json()) as OAuthUsageRaw;
+    oauthFetchLog.success();
     return { status: "ok", data };
   } catch (err) {
     // Network / parse failure — the message never contains the token.
-    console.error("[claude-usage] OAuth usage fetch failed:", err);
+    // Edge-triggered: one line on the first failure, one on recovery.
+    oauthFetchLog.failure(err);
     return { status: "unavailable" };
   }
 }

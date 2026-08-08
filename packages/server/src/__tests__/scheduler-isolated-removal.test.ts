@@ -163,6 +163,54 @@ describe("the isolated target is removed", () => {
     assert.match(named[0], /isolated/);
     assert.match(named[0], /agent:<name>/);
   });
+
+  it("does NOT warn about a completed one-time isolated schedule", () => {
+    // A once: schedule that already fired and self-disabled is a finished
+    // historical artifact — there is nothing to repoint or re-enable, so a
+    // per-boot warning about it is pure noise (2026-08-08 audit: the only
+    // live instance of this warning was exactly such a schedule).
+    writeLegacyScheduleFile("legacy-completed-once", {
+      target: "isolated",
+      schedule: "once:2026-06-01T09:00",
+      enabled: false,
+      state: {
+        lastRunAt: "2026-06-01T16:00:02.765Z",
+        lastRunStatus: "success",
+        nextRunAt: null,
+        runCount: 1,
+        consecutiveFailures: 0,
+        currentRunId: null,
+      },
+    });
+    const warnings = captureWarnings(() => {
+      initScheduler();
+    });
+    const named = warnings.filter((w) => w.includes("legacy-completed-once"));
+    assert.equal(named.length, 0, "completed one-time must not be nagged");
+  });
+
+  it("still warns about a completed-run one-time that was RE-ENABLED", () => {
+    // Re-enabling is a statement of intent — the operator wants it to run
+    // again, and it can't. That must stay visible.
+    writeLegacyScheduleFile("legacy-reenabled-once", {
+      target: "isolated",
+      schedule: "once:2027-06-01T09:00",
+      enabled: true,
+      state: {
+        lastRunAt: "2026-06-01T16:00:02.765Z",
+        lastRunStatus: "success",
+        nextRunAt: null,
+        runCount: 1,
+        consecutiveFailures: 0,
+        currentRunId: null,
+      },
+    });
+    const warnings = captureWarnings(() => {
+      initScheduler();
+    });
+    const named = warnings.filter((w) => w.includes("legacy-reenabled-once"));
+    assert.equal(named.length, 1, "re-enabled broken schedule must warn");
+  });
 });
 
 describe("deprecated schedule fields are accepted and ignored", () => {

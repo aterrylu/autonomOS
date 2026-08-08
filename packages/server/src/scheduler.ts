@@ -122,7 +122,20 @@ export function initScheduler(): void {
   // rather than the UI. SchedulesPanel still renders `isolated` as ordinary
   // target text, so the panel alone still cannot distinguish dormant from
   // broken. Surfacing it there is a separate change.
-  const orphaned = names.filter((n) => schedules[n].target === "isolated");
+  //
+  // One carve-out: a one-time schedule that already FIRED and self-disabled is
+  // a completed historical artifact, not dormant intent — there is nothing to
+  // repoint or re-enable, so nagging about it every boot is pure noise
+  // (2026-08-08 audit: the only live instance was exactly this).
+  const orphaned = names.filter((n) => {
+    const s = schedules[n];
+    if (s.target !== "isolated") return false;
+    const completedOneTime =
+      !s.enabled &&
+      s.schedule.startsWith("once:") &&
+      (s.state.runCount ?? 0) > 0;
+    return !completedOneTime;
+  });
   if (orphaned.length > 0) {
     console.warn(
       `[scheduler] ${orphaned.length} schedule(s) target the removed "isolated" mode ` +
@@ -271,6 +284,14 @@ function fireAndDisableOneTime(name: string): void {
   }
 }
 
+/** setTimeout's delay is a 32-bit signed int (~24.86 days). Node CLAMPS an
+ *  overflowing delay to 1ms, so before this guard a one-time schedule more
+ *  than ~25 days out fired IMMEDIATELY and then disabled itself — the
+ *  scheduled intent was silently consumed months early (observed live: two
+ *  far-future relay schedules ran instantly at creation, with matching
+ *  TimeoutOverflowWarnings in the log). */
+const MAX_TIMEOUT_DELAY_MS = 2 ** 31 - 1;
+
 function addOneTimeJob(name: string, schedule: Schedule): void {
   const target = parseOneTimeDate(schedule);
   if (!target) return;
@@ -279,19 +300,39 @@ function addOneTimeJob(name: string, schedule: Schedule): void {
   schedule.state.nextRunAt = target.toISOString();
   saveSchedule(name, schedule);
 
-  const delayMs = target.getTime() - Date.now();
-
-  if (delayMs <= 0) {
-    // Past date — no timer needed. catchUpIfNeeded handles server-restart
+  if (target.getTime() <= Date.now()) {
+    // Past date at arm time — no timer. catchUpIfNeeded handles server-restart
     // catch-up separately. Newly created schedules with past dates won't fire.
     return;
   }
 
-  const timer = setTimeout(() => {
-    oneTimeTimers.delete(name);
-    fireAndDisableOneTime(name);
-  }, delayMs);
+  armOneTimeTimer(name, target.getTime());
+}
 
+/** Arm (or re-arm) the fire timer for a one-time schedule, chaining through
+ *  int32-sized hops for far-future targets. Recomputes the remaining delay at
+ *  every hop; a target the clock has already passed at a hop (e.g. the host
+ *  slept through it) fires immediately — same behavior a single overflow-free
+ *  setTimeout would have had. */
+function armOneTimeTimer(name: string, targetMs: number): void {
+  const delayMs = targetMs - Date.now();
+
+  if (delayMs > MAX_TIMEOUT_DELAY_MS) {
+    const timer = setTimeout(
+      () => armOneTimeTimer(name, targetMs),
+      MAX_TIMEOUT_DELAY_MS,
+    );
+    oneTimeTimers.set(name, timer);
+    return;
+  }
+
+  const timer = setTimeout(
+    () => {
+      oneTimeTimers.delete(name);
+      fireAndDisableOneTime(name);
+    },
+    Math.max(delayMs, 0),
+  );
   oneTimeTimers.set(name, timer);
 }
 

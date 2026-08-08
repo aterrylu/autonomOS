@@ -114,6 +114,54 @@ export function createRotatingWriter(
   };
 }
 
+/**
+ * Wrap a writer so every LINE in the file gets an ISO-8601 timestamp prefix.
+ *
+ * The file copy only — the terminal echo in patch() forwards the original
+ * chunk, so dev/foreground output stays clean. Line-start state carries across
+ * chunks: a partial write (no trailing newline) must not re-stamp when the
+ * rest of the line arrives. Both stdout and stderr tee through ONE stamper
+ * into one file, so the shared state matches the file's actual line structure.
+ *
+ * WHY: the rotating log had no timestamps at all, so correlating a warning
+ * with the event that caused it came down to line-adjacency guesswork
+ * (2026-08-08 notifications audit — every finding needed manual sequence
+ * reconstruction).
+ */
+export function createTimestampingWriter(
+  writer: RotatingWriter,
+  now: () => Date = () => new Date(),
+): RotatingWriter {
+  let atLineStart = true;
+  return {
+    path: writer.path,
+    write(chunk: string | Uint8Array): void {
+      const text =
+        typeof chunk === "string"
+          ? chunk
+          : Buffer.from(chunk).toString("utf-8");
+      if (text.length === 0) return;
+      let out = "";
+      let i = 0;
+      while (i < text.length) {
+        if (atLineStart) {
+          out += `${now().toISOString()} `;
+          atLineStart = false;
+        }
+        const nl = text.indexOf("\n", i);
+        if (nl === -1) {
+          out += text.slice(i);
+          break;
+        }
+        out += text.slice(i, nl + 1);
+        atLineStart = true;
+        i = nl + 1;
+      }
+      writer.write(out);
+    },
+  };
+}
+
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -165,7 +213,11 @@ export function initFileLogging(): void {
     const maxBytes = envInt("AUTONOMOS_LOG_MAX_BYTES", DEFAULT_MAX_BYTES);
     const keep = envInt("AUTONOMOS_LOG_KEEP", DEFAULT_KEEP);
     logFilePath = join(getConfigDir(), "logs", "autonomos.log");
-    const writer = createRotatingWriter(logFilePath, maxBytes, keep);
+    // One stamper over one rotating writer, shared by both streams — its
+    // line-start state then matches the file's actual line structure.
+    const writer = createTimestampingWriter(
+      createRotatingWriter(logFilePath, maxBytes, keep),
+    );
     patch(process.stdout, writer);
     patch(process.stderr, writer, /* echoOnlyOnTty */ true);
   } catch (err) {

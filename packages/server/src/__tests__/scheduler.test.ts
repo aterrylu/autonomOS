@@ -572,6 +572,76 @@ describe("scheduler engine", () => {
       assert.ok(schedule);
       assert.equal(schedule!.state.nextRunAt, null);
     });
+
+    it("does NOT fire immediately for a once: date beyond the int32 setTimeout limit", async () => {
+      // Regression: setTimeout's delay is int32 (~24.86 days); Node clamps an
+      // overflowing delay to 1ms, so a far-future once: schedule fired
+      // IMMEDIATELY and then disabled itself (observed live: two relay
+      // schedules months out ran at creation, TimeoutOverflowWarning in log).
+      const farFuture = new Date(
+        Date.now() + 60 * 24 * 60 * 60 * 1000, // 60 days ≫ 2^31-1 ms
+      ).toISOString();
+
+      let executorCalls = 0;
+      _setExecutors(() => {
+        executorCalls++;
+      });
+
+      createSchedule(
+        makeSchedule({
+          name: "once-far-future",
+          schedule: `once:${farFuture}`,
+        }),
+      );
+      addScheduleJob("once-far-future");
+
+      // The clamped timer fired within ~1ms; give it far longer than that.
+      await new Promise((r) => setTimeout(r, 50));
+
+      assert.equal(
+        executorCalls,
+        0,
+        "far-future once: must not fire at arm time",
+      );
+      const schedule = getSchedule("once-far-future");
+      assert.ok(schedule);
+      assert.equal(schedule!.enabled, true, "must not self-disable");
+      assert.equal(schedule!.state.nextRunAt, farFuture);
+    });
+
+    it("chains through int32-sized hops and still fires at the target", (t) => {
+      const MAX_INT32 = 2 ** 31 - 1;
+      t.mock.timers.enable({
+        apis: ["setTimeout", "Date"],
+        now: Date.now(),
+      });
+
+      const targetMs = Date.now() + MAX_INT32 + 60_000; // one hop + a minute
+      let executorCalls = 0;
+      _setExecutors(() => {
+        executorCalls++;
+      });
+
+      createSchedule(
+        makeSchedule({
+          name: "once-chained",
+          schedule: `once:${new Date(targetMs).toISOString()}`,
+        }),
+      );
+      addScheduleJob("once-chained");
+
+      // First hop elapses: must re-arm, not fire.
+      t.mock.timers.tick(MAX_INT32);
+      assert.equal(executorCalls, 0, "must not fire at the hop boundary");
+
+      // Remaining minute elapses: now it fires, exactly once.
+      t.mock.timers.tick(60_000);
+      assert.equal(executorCalls, 1, "must fire once at the target");
+
+      const schedule = getSchedule("once-chained");
+      assert.ok(schedule);
+      assert.equal(schedule!.enabled, false, "one-time fires then disables");
+    });
   });
 
   // ── addScheduleJob / removeScheduleJob ─────────────────────

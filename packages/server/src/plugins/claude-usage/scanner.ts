@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings, isAutoDetectAccountEnabled } from "../../settings.js";
+import { createEdgeLogger } from "./edgeLog.js";
 import {
   getOAuthToken,
   getOAuthUsage,
@@ -338,6 +339,8 @@ interface UsageResult {
   status: UsageStatus;
 }
 
+const usageFetchLog = createEdgeLogger("[claude-usage] usage fetch");
+
 async function fetchUsageData(
   cookie: string,
   orgId: string,
@@ -353,12 +356,15 @@ async function fetchUsageData(
       return { data: null, status: "unauthorized" };
     }
     if (!res.ok) return { data: null, status: "error" };
+    usageFetchLog.success();
     return {
       data: (await res.json()) as Record<string, unknown>,
       status: "ok",
     };
   } catch (err) {
-    console.error("[claude-usage] usage fetch failed:", err);
+    // Edge-triggered: an offline host polls right through — one line on the
+    // first failure, one on recovery, no per-poll transport stacks.
+    usageFetchLog.failure(err);
     return { data: null, status: "error" };
   }
 }
