@@ -1,5 +1,6 @@
 ---
+"@autonomos/server": minor
 "@autonomos/dashboard": minor
 ---
 
-Per-tab and per-runtime auto-Enter for the usage queue (ADR-068). When a Claude Code session is waiting on the usage limit, the dashboard now submits the queued prompt automatically the moment the window resets, scoped correctly per terminal tab and per provider runtime rather than firing globally — so a queued agent resumes on its own without a manual nudge, and one tab's reset doesn't trip another's.
+Usage-queue auto-Enter now works per provider and is scoped per terminal tab and per runtime (ADR-068). The auto-submit that resumes a waiting session the moment its usage window resets was previously Claude-scoped; it now covers each provider through a `NormalizedUsage` core with `normalizeClaude`/`normalizeCodex` adapters and server-side per-provider resolution, so a Codex session queued on its own limit resumes the same way a Claude Code one does. Scoping the reset per tab and per runtime means one tab's window reset no longer fires another tab's queued prompt.
