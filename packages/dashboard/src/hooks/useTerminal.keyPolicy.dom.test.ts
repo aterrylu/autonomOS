@@ -88,12 +88,42 @@ describe("handleKeyEvent — non-mac (mod = Ctrl)", () => {
     expect(esc()).toBe(true);
   });
 
-  it("mod+K clears the terminal locally", () => {
+  it("plain mod+K is the quick-switcher (registry declines it); SHIFT+K clears", () => {
     const term = fakeTerminal();
+    // mod+k → app-reserved (agent.quickswitch) → declined, clear NOT called.
     expect(
       handleKeyEvent(key({ key: "k", ctrlKey: true }), term, wsRef()),
     ).toBe(false);
+    expect(term.clear).not.toHaveBeenCalled();
+    // mod+shift+K → terminal clear (moved by the quick-switcher ADR).
+    // Matched on the PRINTED letter, lowercased: plain Shift gives "K",
+    // CapsLock+Shift gives "k" — both clear. On Dvorak the physical KeyK
+    // prints "t": that chord must NOT clear (a code-based match would have
+    // silently stolen mod+shift+T there).
+    expect(
+      handleKeyEvent(
+        key({ key: "K", code: "KeyK", ctrlKey: true, shiftKey: true }),
+        term,
+        wsRef(),
+      ),
+    ).toBe(false);
     expect(term.clear).toHaveBeenCalledTimes(1);
+    expect(
+      handleKeyEvent(
+        key({ key: "k", code: "KeyK", ctrlKey: true, shiftKey: true }), // CapsLock
+        term,
+        wsRef(),
+      ),
+    ).toBe(false);
+    expect(term.clear).toHaveBeenCalledTimes(2);
+    expect(
+      handleKeyEvent(
+        key({ key: "t", code: "KeyK", ctrlKey: true, shiftKey: true }), // Dvorak
+        term,
+        wsRef(),
+      ),
+    ).toBe(true); // passes to xterm — we did not steal mod+shift+T
+    expect(term.clear).toHaveBeenCalledTimes(2);
   });
 
   it("non-keydown events are never intercepted", () => {

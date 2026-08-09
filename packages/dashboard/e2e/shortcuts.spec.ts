@@ -405,3 +405,63 @@ test("mod+arrows walk the sidebar; hold shows \u2191/\u2193 on the active agent'
   await page.keyboard.up(mod);
   await expect(arrows).toHaveCount(0);
 });
+
+test("mod+K quick-switcher: fuzzy-find an agent and switch, even from a focused terminal", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await seedPersisted(page, twoPaneWorkspace());
+  await page.goto("/");
+  await expect(page.locator(".dv-tab")).toHaveCount(2);
+  const mod = await modKey(page);
+
+  // From a FOCUSED TERMINAL: mod+K must open the switcher (it used to clear
+  // the terminal — that moved to mod+Shift+K — see the quick-switcher ADR).
+  await focusTerminal(page);
+  await page.keyboard.press(`${mod}+k`);
+  const dialog = page.getByRole("dialog", { name: "Switch to agent" });
+  await expect(dialog).toBeVisible();
+  const input = page.getByTestId("quick-switcher-input");
+  await expect(input).toBeFocused();
+
+  // Type-ahead: filter to Researcher, Enter switches and closes.
+  await input.fill("resear");
+  await expect(page.getByTestId("quick-switcher-item")).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+
+  // Escape closes a reopened switcher without switching.
+  await page.keyboard.press(`${mod}+k`);
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+});
+
+test("quick-switcher reaches a NEVER-mounted pane and focus lands in its terminal", async ({
+  page,
+}) => {
+  await mockApi(page);
+  // No seeded workspace: panes mount solo, on demand. Open ONLY Dispatcher…
+  await page.goto("/");
+  await expect(page.locator("aside").getByText("Dispatcher")).toBeVisible();
+  await page.locator("aside").getByText("Dispatcher").click();
+  await expect.poll(() => activePaneId(page)).toBe(DISPATCHER);
+  const mod = await modKey(page);
+
+  // …then ⌘K to an agent whose pane has NEVER mounted. focusTerminal must
+  // wait out registration (independent budget) and land focus in the new
+  // pane's xterm textarea — not on document.body.
+  await page.keyboard.press(`${mod}+k`);
+  await page.getByTestId("quick-switcher-input").fill("resear");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement?.classList.contains("xterm-helper-textarea"),
+      ),
+    )
+    .toBe(true);
+});

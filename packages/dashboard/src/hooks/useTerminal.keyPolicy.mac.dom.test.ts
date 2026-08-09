@@ -72,10 +72,18 @@ describe("handleKeyEvent — mac (mod = ⌘, plain Ctrl belongs to the shell)", 
     ).toBe(false);
   });
 
-  it("⌘K clears the terminal locally", () => {
+  it("plain ⌘K is the quick-switcher (declined); ⌘⇧K clears", () => {
     const term = fakeTerminal();
     expect(
       handleKeyEvent(key({ key: "k", metaKey: true }), term, wsRef()),
+    ).toBe(false);
+    expect(term.clear).not.toHaveBeenCalled();
+    expect(
+      handleKeyEvent(
+        key({ key: "K", code: "KeyK", metaKey: true, shiftKey: true }),
+        term,
+        wsRef(),
+      ),
     ).toBe(false);
     expect(term.clear).toHaveBeenCalledTimes(1);
   });
