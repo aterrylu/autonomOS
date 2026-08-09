@@ -32,6 +32,8 @@ import {
 } from "../gateway/codexControl.js";
 import { getProvider } from "../providers/index.js";
 import {
+  clearAgentState,
+  clearNotifications,
   pushSystemNotification,
   retractSystemNotification,
 } from "../routes/hooks.js";
@@ -1341,6 +1343,13 @@ export function deleteAgent(agentId: UUID): boolean {
   cancelChannelServerCheck(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
+    // Reclaim the in-memory hook state with the record: DELETE means the
+    // agent ceases to exist, so its status entry and notifications go too —
+    // otherwise GET /api/hooks keeps returning ids no store lookup can
+    // resolve, forever. (KILL deliberately keeps both: the record survives
+    // and the history is part of it.)
+    clearAgentState(agentId);
+    clearNotifications(agentId);
     emitAgentDelta({ type: "agent.deleted", id: agentId });
   }
   return removed || wasLive;

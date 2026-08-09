@@ -9,7 +9,6 @@
 import {
   type ExitReason,
   isExitReason,
-  isPermissionMode,
   type PermissionMode,
   type Provider,
   permissionModeFromStored,
@@ -31,7 +30,6 @@ import {
   getAgent,
   getAgentByProviderSessionId,
   listAgents,
-  patchAgent,
   resolveAgent,
   resolveAgentByName,
   setManager,
@@ -39,6 +37,7 @@ import {
 import { emitAgentDelta } from "../events/agents.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
+import { clearAgentState, clearNotifications } from "./hooks.js";
 
 export const agentsRouter = new Hono();
 
@@ -335,57 +334,14 @@ agentsRouter.post("/", async (c) => {
   }
 });
 
-// ── Patch (rename / template / project) ────────────────────────────
-
-agentsRouter.patch("/:id", async (c) => {
-  const param = c.req.param("id");
-  const agent = resolveAgent(param);
-  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
-
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-
-  const expectedVersion = c.req.header("If-Match");
-  const versionNumber = expectedVersion
-    ? Number.parseInt(expectedVersion, 10)
-    : undefined;
-
-  const patch: Parameters<typeof patchAgent>[1] = {};
-  if (typeof body.name === "string") patch.name = body.name;
-  if (typeof body.template === "string") patch.template = body.template;
-  if (typeof body.project === "string") patch.project = body.project;
-  if (isPermissionMode(body.permissionMode))
-    patch.permissionMode = body.permissionMode;
-  else if (body.permissionMode !== undefined)
-    console.warn(
-      `[api/agents] PATCH ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}`,
-    );
-
-  const result = patchAgent(agent.id, patch, versionNumber);
-  if (result === undefined) {
-    return c.json({ error: `Agent "${param}" not found` }, 404);
-  }
-  if (result === "stale") {
-    return c.json(
-      {
-        error: "Version mismatch — refresh and retry",
-        currentVersion: getAgent(agent.id)?.version,
-      },
-      409,
-    );
-  }
-  emitAgentDelta({
-    type: "agent.updated",
-    id: result.id,
-    patch,
-    version: result.version,
-  });
-  return c.json(result);
-});
+// `PATCH /:id` (rename / template / project) was removed in the API-
+// consolidation dead-surface pass: it had zero callers and zero tests, and it
+// carried the surface's only header-based optimistic-concurrency mechanism
+// (`If-Match`, vs. the body `version` everything else uses). Record edits
+// happen through the internal `patchAgent` (rename via titleCache/MCP paths).
+// Re-add deliberately — with the body `version` convention and a real consumer
+// — if a dashboard rename/reparent UI is built (tracked in the consolidation
+// audit as a possible future feature, not consolidation work).
 
 // ── Set manager ────────────────────────────────────────────────────
 
@@ -913,7 +869,14 @@ agentsRouter.delete("/:id", (c) => {
     }
     // Else: agent is genuinely gone (race resolved itself) — fall through to 200.
   }
-  // Delete confirmed — flush the deferred reparent deltas now. Emit AFTER
+  // Delete confirmed — reclaim hook state (status entry + notifications) with
+  // the record. runtimeDeleteAgent already did this on the live path; calling
+  // again here is an idempotent no-op that also covers the raw-fallback and
+  // benign-race paths. Without it, GET /api/hooks returns ids nothing can
+  // resolve, forever (the clear fns previously had no production caller).
+  clearAgentState(id);
+  clearNotifications(id);
+  // Flush the deferred reparent deltas now. Emit AFTER
   // the runtime's own agent.deleted event (which fired inside
   // runtimeDeleteAgent) so clients see deletion before reparents land,
   // which matches the operator's mental model: parent gone → children

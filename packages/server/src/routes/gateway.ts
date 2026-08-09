@@ -1,15 +1,12 @@
 /**
  * WebSocket endpoint for gateway communication.
  *
- * Two client types MAY connect here:
- *   1. Channel MCP servers (per CC session) — send { type: "register", sessionId }
- *   2. Dashboard browser — would send { type: "dashboard_connect" }
- *
- * Only (1) exists today. Nothing in packages/dashboard opens a gateway socket
- * (its single WebSocket is /ws/terminal), so the dashboard registry is empty in
- * every deployment and the message fan-out reaches nobody. The handler is kept
- * because it is the built half of a feed that has never been wired up — stated
- * here so it is not mistaken for a live observability path.
+ * One client type connects here: channel MCP servers (per agent session),
+ * which send { type: "register", sessionId }. The endpoint lives on the
+ * internal Unix socket (ADR-055), so nothing browser-side can reach it —
+ * the former `dashboard_connect` client type was removed as unreachable by
+ * construction (a browser cannot dial ws+unix://; a dashboard message feed,
+ * if ever built, belongs on the public /ws surface).
  *
  * Messages from channel servers are routed by the gateway URI router.
  */
@@ -19,16 +16,14 @@ import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import { verifyAgentToken } from "../agentCredentials.js";
 import {
   getAgentList,
-  registerDashboard,
   registerSessionClient,
   routeMessage,
-  unregisterDashboard,
   unregisterSessionClient,
 } from "../gateway/router.js";
 
 export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((_c) => {
-    let clientType: "session" | "dashboard" | null = null;
+    let clientType: "session" | null = null;
     let sessionId: string | null = null;
 
     return {
@@ -156,12 +151,6 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
             ws.send(JSON.stringify(response));
             break;
           }
-
-          case "dashboard_connect": {
-            clientType = "dashboard";
-            registerDashboard(ws);
-            break;
-          }
         }
       },
 
@@ -177,13 +166,8 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
   });
 }
 
-function cleanup(
-  ws: WSContext,
-  clientType: "session" | "dashboard" | null,
-): void {
+function cleanup(ws: WSContext, clientType: "session" | null): void {
   if (clientType === "session") {
     unregisterSessionClient(ws);
-  } else if (clientType === "dashboard") {
-    unregisterDashboard(ws);
   }
 }

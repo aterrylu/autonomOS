@@ -555,14 +555,16 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
 });
 
 // ── Read surface (public listener, token-gated) ──────────────────────
+//
+// Deliberately BULK-only for reads: the dashboard consumes `GET /` (statuses)
+// and `GET /notifications` (feed). The former per-session GETs
+// (`/:sessionId/status`, `/:sessionId/notifications`) had no first-party
+// caller and were removed in the API-consolidation dead-surface pass —
+// `/:sessionId/status` also never 404'd (an unknown id returned the
+// `DEFAULT_AGENT_STATE` sentinel, indistinguishable from a real idle agent),
+// which is the shape the consolidation's error conventions exist to prevent.
 
 export const hooksReadRouter = new Hono();
-
-// Get agent status for a session
-hooksReadRouter.get("/:sessionId/status", (c) => {
-  const sessionId = c.req.param("sessionId");
-  return c.json(getAgentState(sessionId));
-});
 
 // Bulk notifications across all sessions (for notification panel)
 hooksReadRouter.get("/notifications", (c) => {
@@ -591,15 +593,6 @@ hooksReadRouter.get("/notifications", (c) => {
   all.sort((a, b) => b.timestamp - a.timestamp);
 
   return c.json({ notifications: all.slice(0, 100), totalUnread });
-});
-
-// Get notifications for a session
-hooksReadRouter.get("/:sessionId/notifications", (c) => {
-  const sessionId = c.req.param("sessionId");
-  return c.json({
-    notifications: getNotifications(sessionId),
-    unread: getUnreadCount(sessionId),
-  });
 });
 
 // Mark all notifications as read for a session
