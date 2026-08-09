@@ -44,7 +44,7 @@ interface HookStatus {
 }
 
 // Generous: covers trust-dialog retries AND the worst-case settle-gated
-// fallback re-delivery (settle + 90s submit window per ADR-072), plus CI
+// fallback re-delivery (settle + 90s submit window per ADR-073), plus CI
 // scheduling noise. A waitFor cap, not a sleep — costs nothing when green.
 const TURN_TIMEOUT_MS = 180_000;
 

@@ -342,7 +342,7 @@ export interface StartupWatcherConfig {
  *  promptDelivery's SETTLE_FALLBACK_MS must stay ABOVE it — the fallback
  *  self-settles the receipt windows, and if it fired before the watcher's
  *  terminal state, windows would arm while dialogs are genuinely still being
- *  fought, reintroducing the false-warning + double-paste classes ADR-072
+ *  fought, reintroducing the false-warning + double-paste classes ADR-073
  *  removed. A test pins the relationship; raise both together. */
 export const DEFAULT_STARTUP_WATCHER_TIMEOUT_MS = 30_000;
 

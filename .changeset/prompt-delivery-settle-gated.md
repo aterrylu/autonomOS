@@ -3,7 +3,7 @@
 "@autonomos/core": patch
 ---
 
-fix(prompt-delivery): settle-gated receipt windows — no more false "stuck" warnings or double-delivered briefs (ADR-072)
+fix(prompt-delivery): settle-gated receipt windows — no more false "stuck" warnings or double-delivered briefs (ADR-073)
 
 The prompt-delivery receipt's fixed 15s/20s windows measured Claude Code's TUI
 boot latency, not delivery: under a multi-agent boot sweep every prompted spawn
