@@ -39,6 +39,14 @@ export interface AppSettings {
   channels?: string[];
   /** Auto-answer Claude Code startup trust prompts (default: true) */
   autoTrust?: boolean;
+  /**
+   * Check GitHub Releases (server-side, ~daily, cached) for a newer version
+   * and surface a passive badge in the dashboard (default: true — matching
+   * this documented default is part of the ADR-072 contract). The dashboard
+   * itself never contacts GitHub. Set false to disable the check entirely;
+   * offline boxes need no setting (a failed check is silent).
+   */
+  updateCheck?: boolean;
   /** User-defined env vars injected into every spawned session */
   customEnvVars?: Record<string, string>;
   /** Scheduler settings */
@@ -118,7 +126,7 @@ export function __resetUsageToggleMigrationForTests(): void {
 }
 
 /**
- * Pre-ADR-075, a saved session key ALWAYS won over the auto-detect (OAuth)
+ * Pre-ADR-077, a saved session key ALWAYS won over the auto-detect (OAuth)
  * path, and the toggle only gated the fallback. Now the toggle SELECTS the
  * source, defaulting ON — which would silently switch every existing
  * key-with-untouched-toggle config onto the Claude Code login's account on

@@ -22,18 +22,26 @@
 
 import { Hono } from "hono";
 import { type ResolvedInstall, resolveInstall } from "../installInfo.js";
+import { getUpdateCheckState } from "../updateCheck.js";
 import { detectPlatform, performUpgrade } from "../upgrade.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();
 
-systemRouter.get("/version", (c) =>
-  c.json({
+systemRouter.get("/version", (c) => {
+  // {version, platform, arch} are frozen (contract above). The update-check
+  // fields are ADDITIVE and read from an in-memory cache — this handler must
+  // never wait on anything remote.
+  const update = getUpdateCheckState();
+  return c.json({
     version: getServerVersion(),
     platform: process.platform,
     arch: process.arch,
-  }),
-);
+    latest: update.latest,
+    updateAvailable: update.updateAvailable,
+    checkedAt: update.checkedAt,
+  });
+});
 
 // At most one in-process upgrade at a time: concurrent runs share a staging
 // dir keyed by pid (the second's cleanup clobbers the first's download) and

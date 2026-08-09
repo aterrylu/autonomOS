@@ -4,6 +4,7 @@ import { connectionStatusPlugin } from "./connection-status";
 import { notificationsPlugin } from "./notifications";
 import { settingsPlugin } from "./settings";
 import type { DashboardPlugin } from "./types";
+import { updateBadgePlugin } from "./update-badge";
 
 export const plugins: DashboardPlugin[] = [
   claudeUsagePlugin,
@@ -11,4 +12,5 @@ export const plugins: DashboardPlugin[] = [
   connectionStatusPlugin,
   notificationsPlugin,
   settingsPlugin,
+  updateBadgePlugin,
 ];
