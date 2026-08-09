@@ -146,12 +146,16 @@ describe("codex scanner — getCodexUsage (two-tier, read-only)", () => {
     assert.equal(data.primary, null);
   });
 
-  it("no auth + rollout present → shows the last-known snapshot", async () => {
+  it("no auth + rollout present → last-known snapshot WITH the missing-login stamp", async () => {
     writeRollout(20);
     const data = await getCodexUsage();
     assert.equal(data.source, "rollout");
     assert.equal(data.primary?.usedPercent, 20);
     assert.equal(data.needsData, undefined);
+    // A rollout only exists for someone who has used Codex — a missing login
+    // here is a logout to surface, or an armed queue pane holds forever.
+    assert.equal(data.errorKind, "unauthorized");
+    assert.match(data.error ?? "", /No Codex login found/);
   });
 
   it("no auth + no rollout → needsData (UI hides the item)", async () => {

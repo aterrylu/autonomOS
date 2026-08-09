@@ -140,11 +140,21 @@ export async function getCodexUsage(
     planType: identity?.planType,
   };
 
-  // No usable credential: still show the last-known rollout if one exists;
-  // otherwise there's genuinely no Codex signal → hide the UI (needsData).
+  // No usable credential: still show the last-known rollout if one exists —
+  // STAMPED, because rollouts only exist for someone who has actually used
+  // Codex, so a missing login there is a logout/moved-config to surface (and
+  // an armed usage-queue pane can never fire without it). No rollout either →
+  // genuinely no Codex signal → hide the UI (needsData).
   if (!auth) {
     const snap = readFreshestRollout();
-    return snap ? fromRollout(snap, account) : needsDataResult(account);
+    if (snap) {
+      return fromRollout(snap, account, {
+        error:
+          "No Codex login found — showing last-known usage. Run `codex` to log in.",
+        errorKind: "unauthorized",
+      });
+    }
+    return needsDataResult(account);
   }
 
   const fp = fingerprint(auth.accessToken);
@@ -244,14 +254,16 @@ async function fetchCodexUsageSnapshot(
     );
   }
   if (result.status === "rate_limited") {
-    // Serve the last good LIVE snapshot if we have one — but mark it stale
-    // (source: rollout + snapshotAt) so the UI shows its age honestly instead
-    // of presenting old numbers as current "live" data.
+    // Serve the last good LIVE snapshot if we have one — marked stale
+    // (source: rollout + snapshotAt for age) AND carrying the cause, like
+    // every other fallback in this file: an unmarked re-serve was the last
+    // silent-stale path left after the ADR-071 pass.
     if (lastGood && lastGood.fp === fp) {
       const stale: CodexUsageData = {
         ...lastGood.data,
         source: "rollout",
         snapshotAt: lastGood.data.fetchedAt,
+        ...liveFailure,
       };
       cached = { data: stale, expiresAt: now + CACHE_TTL_429, fp };
       return stale;

@@ -27,6 +27,7 @@ const {
   selectUsageOrg,
   resolveSessionKey,
   getCredentialSource,
+  __expireCacheForTests,
 } = await import("../plugins/claude-usage/scanner.js");
 const { __setOAuthTokenReaderForTests, __setOAuthFetcherForTests } =
   await import("../plugins/claude-usage/oauthUsage.js");
@@ -674,10 +675,6 @@ describe("claude-usage credential resolution (manual override vs OAuth)", () => 
   });
 });
 
-const { __expireCacheForTests } = await import(
-  "../plugins/claude-usage/scanner.js"
-);
-
 describe("claude-usage credential selection — the auto-detect toggle governs", () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true });
@@ -899,7 +896,7 @@ describe("claude-usage — fallback marker + org-id fingerprint", () => {
     assert.equal(data.errorKind, "stale_token");
   });
 
-  it("a MISSING login (needsSetup) falls back silently — key-only setups aren't nagged", async () => {
+  it("a MISSING login on a fresh state falls back to the key immediately (key-only setups aren't nagged)", async () => {
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify({
@@ -907,11 +904,70 @@ describe("claude-usage — fallback marker + org-id fingerprint", () => {
         autoDetectClaudeAccount: true,
       }),
     );
-    // Token reader finds nothing at all (the stubbed default).
+    // Token reader finds nothing at all (the stubbed default). Nothing has
+    // been served yet, so there is no source to flap from — the first poll
+    // already shows the key's numbers, no "setup needed" flash at boot.
     const data = await getRateLimits(makeFetcher().fetcher);
     assert.equal(data.credentialSource, "settings");
     assert.equal(data.fiveHour?.utilization, 42);
     assert.equal(data.error, undefined);
+  });
+
+  it("while OAuth is the ACTIVE source, one unreadable-token poll must not flap to the key", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeAccount: true,
+      }),
+    );
+    let readable = true;
+    __setOAuthTokenReaderForTests(() =>
+      readable
+        ? {
+            accessToken: "working-oauth-token",
+            expiresAt: Date.now() + 3_600_000,
+            source: "keychain" as const,
+            subscriptionType: "max",
+          }
+        : null,
+    );
+    __setOAuthFetcherForTests(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        five_hour: { utilization: 12, resets_at: "2026-08-08T10:00:00Z" },
+      }),
+    }));
+    const ok = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(ok.credentialSource, "oauth"); // OAuth is now the active source
+
+    // A single miss is indistinguishable from a locked keychain / `security`
+    // timeout / credentials-file rewrite — it must NOT show the key account's
+    // numbers for one poll and flap back.
+    readable = false;
+    __expireCacheForTests();
+    const miss1 = await getRateLimits(makeFetcher().fetcher);
+    assert.notEqual(
+      miss1.credentialSource,
+      "settings",
+      "first miss while OAuth active must not switch sources",
+    );
+
+    // A second consecutive miss confirms the login is really gone → fall back.
+    const miss2 = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(miss2.credentialSource, "settings");
+    assert.equal(miss2.fiveHour?.utilization, 42);
+
+    // And a successful read resets the streak: after recovery, a fresh single
+    // miss holds again instead of falling straight back.
+    readable = true;
+    const recovered = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(recovered.credentialSource, "oauth");
+    readable = false;
+    __expireCacheForTests();
+    const missAfterRecovery = await getRateLimits(makeFetcher().fetcher);
+    assert.notEqual(missAfterRecovery.credentialSource, "settings");
   });
 
   it("cachedOrgId is fingerprint-tagged — a new key never reuses the old key's org", async () => {

@@ -270,6 +270,10 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
     if (!isBlocked && maxUtil >= CAP_ENTER) isBlocked = true;
     else if (isBlocked && maxUtil < CAP_EXIT) isBlocked = false;
     blocked.set(provider, isBlocked);
+    // While blocked — INCLUDING the hysteresis band — name the current top
+    // window: it is the one holding the block even if it has dipped below
+    // CAP_ENTER. This deliberately differs from evaluateCap, which is a
+    // stateless read and only ever names a window at/over the threshold.
     capWindow.set(provider, isBlocked ? top.label : null);
     resetsAt.set(provider, nearestBlockingReset(usage.windows));
 

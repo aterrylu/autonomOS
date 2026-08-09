@@ -81,10 +81,10 @@ export async function saveAndValidate(
   const settingsRes = await fetch("/api/settings").catch(() => null);
   if (settingsRes?.ok) {
     try {
-      const settings = await settingsRes.json();
-      previousAutoDetect =
-        (settings.autoDetectClaudeAccount ??
-          settings.autoDetectClaudeSession) !== false;
+      const settings = (await settingsRes.json()) as {
+        autoDetectClaudeAccount?: boolean;
+      };
+      previousAutoDetect = settings.autoDetectClaudeAccount !== false;
     } catch {}
   }
 
@@ -113,8 +113,9 @@ export async function saveAndValidate(
   const result = await validate();
   if (result.kind !== "ok" && previousAutoDetect) {
     // Best-effort restore. If even this write fails the validation error
-    // below is still the actionable message; the toggle re-syncs from the
-    // server the next time the panel loads settings.
+    // below is still the actionable message; the toggle then shows a stale
+    // value until the panel remounts (its settings fetch is latched per
+    // mount), which a page reload also fixes.
     await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

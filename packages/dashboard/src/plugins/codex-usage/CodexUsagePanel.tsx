@@ -1,10 +1,11 @@
 import { useRef } from "react";
 import { THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
-import type {
-  CodexNamedLimit,
-  CodexUsageData,
-  CodexUsageWindow,
+import {
+  type CodexNamedLimit,
+  type CodexUsageData,
+  type CodexUsageWindow,
+  isCodexCredentialError,
 } from "./types";
 import {
   timeAgo,
@@ -185,11 +186,18 @@ export function CodexUsagePanel({
         <SourceLine data={data} />
       </div>
 
-      {/* Error state (only when there's nothing to show) */}
+      {/* Error/stale banner — `data.error` now also rides WITH numbers on
+          every marked fallback (expired token / rate limit / outage serving
+          the last-known snapshot). Red only for credential failures; a
+          transient marker renders amber, matching the status bar's split. */}
       {data.error && (
         <div
           className="mb-3 rounded px-2 py-1.5"
-          style={{ background: "#ea6c7315", color: "#ea6c73" }}
+          style={
+            isCodexCredentialError(data.errorKind)
+              ? { background: "#ea6c7315", color: "#ea6c73" }
+              : { background: "#e6b45015", color: "#e6b450" }
+          }
         >
           {data.error}
         </div>

@@ -8,6 +8,7 @@ import {
   type DisplayMode,
   type ErrorKind,
   isAutoDetected,
+  isCredentialError,
   type RateLimitData,
   type RateLimitWindow,
 } from "./types";
@@ -514,11 +515,17 @@ export function UsagePanel({
         </div>
       )}
 
-      {/* Error state */}
+      {/* Error/stale banner — red only for credential failures the user must
+          fix; a transient marker riding on last-known numbers renders amber,
+          matching the status bar's severity split. */}
       {data.error && (
         <div
           className="mb-3 rounded px-2 py-1.5"
-          style={{ background: "#ea6c7315", color: "#ea6c73" }}
+          style={
+            isCredentialError(data.errorKind)
+              ? { background: "#ea6c7315", color: "#ea6c73" }
+              : { background: "#e6b45015", color: "#e6b450" }
+          }
         >
           {data.error}
         </div>

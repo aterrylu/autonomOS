@@ -467,7 +467,13 @@ export function UsageStatusBarItem() {
         {staleMsg && (
           <span
             title={staleMsg}
-            style={{ color: "#e6b450", display: "inline-flex" }}
+            style={{
+              // Red for credential failures (the fallback note lands here:
+              // numbers from the saved key + a broken login); amber for
+              // transient staleness. Mirrors the Codex glyph.
+              color: isCredentialError(data.errorKind) ? "#ea6c73" : "#e6b450",
+              display: "inline-flex",
+            }}
           >
             <Codicon name="warning" size={12} />
           </span>

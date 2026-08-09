@@ -523,7 +523,8 @@ describe("window normalization — labels + credential errors", () => {
   });
 
   it("normalizeCodexUsage labels headline windows by length and named limits by name", () => {
-    const data = {
+    // Fully typed literal (no cast) so a renamed field breaks HERE, not silently.
+    const data: CodexUsageData = {
       primary: { usedPercent: 30, windowMinutes: 300, resetsAt: null },
       secondary: { usedPercent: 40, windowMinutes: 10080, resetsAt: null },
       additionalLimits: [
@@ -538,12 +539,36 @@ describe("window normalization — labels + credential errors", () => {
       account: {},
       source: "live",
       fetchedAt: "now",
-    } as unknown as CodexUsageData;
+    };
     const n = normalizeCodexUsage(data);
     assert.deepEqual(
       n.windows.map((w) => w.label),
       ["5h", "7d", "gpt-5 5h"],
     );
     assert.equal(evaluateCap(n).window, "gpt-5 5h");
+  });
+});
+
+describe("watcher capWindow (status() caps)", () => {
+  let h: Harness | null = null;
+  afterEach(() => h?.queue.stop());
+
+  it("names the blocking window while blocked — including the hysteresis band — and clears with it", async () => {
+    h = makeHarness();
+    h.setUsage(usageAt(100));
+    h.queue.arm("pane-w", "claude-code");
+    await h.queue.tick();
+    assert.equal(h.queue.status().caps["claude-code"]?.window, "5h");
+
+    // Dip into the 80–90 band: still blocked, still named — the window is
+    // what's HOLDING the block even though it's now below CAP_ENTER.
+    h.setUsage(usageAt(85));
+    await h.queue.tick();
+    assert.equal(h.queue.status().caps["claude-code"]?.capped, true);
+    assert.equal(h.queue.status().caps["claude-code"]?.window, "5h");
+
+    h.setUsage(usageAt(10));
+    await h.queue.tick();
+    assert.equal(h.queue.status().caps["claude-code"]?.window ?? null, null);
   });
 });

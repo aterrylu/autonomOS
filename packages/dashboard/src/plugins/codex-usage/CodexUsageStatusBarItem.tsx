@@ -56,8 +56,11 @@ export function CodexUsageStatusBarItem() {
   const [open, setOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
-  // Loading, unreachable, or no Codex signal → render nothing (no flash/nag).
-  if (!data || error || data.needsData) return null;
+  // Loading or no Codex signal → render nothing (no flash/nag). A client-side
+  // poll failure (`error`) only hides the item when there's no prior data —
+  // with data, the numbers keep rendering and the glyph below marks the
+  // failure, same as the Claude bar.
+  if (!data || data.needsData) return null;
 
   const windows = [data.secondary, data.primary]
     .filter((w): w is CodexUsageWindow => w != null)
@@ -126,9 +129,11 @@ export function CodexUsageStatusBarItem() {
           <WindowLabel key={w.windowMinutes} window={w} />
         ))}
         {showNamed && <WindowLabel window={named.window} name={named.name} />}
-        {data.error && (
+        {(data.error || error) && (
           <span
-            title={data.error}
+            title={
+              data.error ?? (error ? `Usage refresh failing: ${error}` : "")
+            }
             style={{
               color: isCodexCredentialError(data.errorKind)
                 ? "#ea6c73"

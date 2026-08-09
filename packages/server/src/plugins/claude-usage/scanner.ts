@@ -144,6 +144,16 @@ let cachedOrgId: { orgId: string; fp: string } | null = null;
  */
 let usageOverride: RateLimitData | null = null;
 
+/** Consecutive polls on which the OAuth token was unreadable/absent — see the
+ * debounce in {@link getRateLimits}. Reset on any successful token read. */
+let oauthMissingStreak = 0;
+
+/** Which source the last getRateLimits answer actually came from. The
+ * missing-login debounce only applies while this is "oauth": that is the only
+ * state an account-flap can start from. A fresh boot or a key-only setup
+ * (nothing served yet, or already on the key) falls back immediately. */
+let lastServedSource: "oauth" | "manual" | null = null;
+
 /** Force a scripted usage snapshot (or null to clear). Dev/QA only — see
  * {@link usageOverride}. */
 export function setUsageOverride(data: RateLimitData | null): void {
@@ -219,6 +229,8 @@ export function invalidateCache(): void {
   cached = null;
   cachedOrgId = null;
   lastGood = null;
+  oauthMissingStreak = 0;
+  lastServedSource = null;
 }
 
 /** Test hook: expire the cached entry while KEEPING lastGood, so tests can
@@ -454,15 +466,32 @@ export async function getRateLimits(
   let fallbackNote: { error: string; errorKind: ErrorKind } | undefined;
   if (isAutoDetectAccountEnabled(getSettings())) {
     const oauth = await computeOAuthRateLimits();
+    // needsSetup cannot distinguish "no Claude Code login" from "couldn't READ
+    // the login this instant" — the token readers return null on a locked
+    // keychain, the 1s `security` timeout, or a read racing `claude`'s own
+    // rewrite of .credentials.json. While OAuth is the ACTIVE source, a single
+    // miss must therefore not switch to the key (it would flash a different
+    // account's numbers and flap back on the next poll) — absence has to be
+    // observed twice in a row. When OAuth was NOT serving (fresh boot,
+    // key-only setup), there is nothing to flap from and the fallback is
+    // immediate, as before.
+    if (oauth.needsSetup === true) oauthMissingStreak += 1;
+    else oauthMissingStreak = 0;
+    const missingConfirmed =
+      oauth.needsSetup === true &&
+      (lastServedSource !== "oauth" || oauthMissingStreak >= 2);
     const credentialFailure =
-      oauth.needsSetup === true ||
+      missingConfirmed ||
       oauth.errorKind === "stale_token" ||
       oauth.errorKind === "unauthorized";
     // Falling through means the OAuth credential is unusable AND a manual key
     // exists — use it so usage keeps tracking. Transient failures (429/outage)
     // deliberately do NOT fall back: flapping between two accounts' numbers is
     // worse than a short delay.
-    if (!credentialFailure || !resolved) return oauth;
+    if (!credentialFailure || !resolved) {
+      if (oauth.needsSetup !== true) lastServedSource = "oauth";
+      return oauth;
+    }
     // A BROKEN login (stale/rejected) must ride along as a marker, or the user
     // never learns it while the manual key keeps the numbers green. A machine
     // with NO login at all (needsSetup) falls back silently — that is the
@@ -492,6 +521,7 @@ export async function getRateLimits(
   // the key ITSELF failed, its own error is the actionable one — don't
   // overwrite it with the fallback note.
   const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
+  lastServedSource = "manual";
   if (fallbackNote && !data.error) {
     return { ...data, credentialSource: resolved.source, ...fallbackNote };
   }
