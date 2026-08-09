@@ -38,6 +38,9 @@ export interface SessionNotification {
   read: boolean;
   /** True when SendUserMessage was sent with status: "proactive" */
   proactive?: boolean;
+  /** Present on retractable notifications (SystemWarning) so the emitter can
+   *  withdraw one that turned out to be premature. */
+  id?: string;
 }
 
 export type AgentStatus =
@@ -168,21 +171,51 @@ function appendNotification(
   notifications.set(sessionId, items);
 }
 
+let nextNotificationId = 0;
+
 /**
  * Record a server-originated warning against a session (e.g. prompt
  * re-delivery). Surfaces in the bulk notification panel alongside
  * SendUserMessage — these warnings exist precisely for the operator to see.
+ *
+ * Returns an id the emitter can pass to retractSystemNotification if the
+ * warned condition later proves transient (e.g. a channel server that
+ * registers after the grace window) — a stale warning the operator acts on
+ * is worse than no warning.
  */
 export function pushSystemNotification(
   sessionId: string,
   message: string,
-): void {
+): string {
+  const id = `sw-${++nextNotificationId}`;
   appendNotification(sessionId, {
     event: "SystemWarning",
     message,
     timestamp: Date.now(),
     read: false,
+    id,
   });
+  return id;
+}
+
+/** Withdraw a previously pushed SystemWarning. No-op if it already scrolled
+ *  out of the 50-item cap, was cleared, or the id is unknown. The event guard
+ *  makes the "retractable = SystemWarning" contract self-enforcing — if a
+ *  second notification type ever mints ids, this must not become a
+ *  cross-type delete. */
+export function retractSystemNotification(
+  sessionId: string,
+  notificationId: string,
+): boolean {
+  const items = notifications.get(sessionId);
+  if (!items) return false;
+  const idx = items.findIndex(
+    (n) => n.id === notificationId && n.event === "SystemWarning",
+  );
+  if (idx === -1) return false;
+  items.splice(idx, 1);
+  if (items.length === 0) notifications.delete(sessionId);
+  return true;
 }
 
 // ── Agent status helpers ─────────────────────────────────────────────

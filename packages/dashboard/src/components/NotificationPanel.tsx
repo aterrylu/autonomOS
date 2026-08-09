@@ -29,6 +29,8 @@ export interface PanelNotification {
   proactive?: boolean;
   sessionId: string;
   sessionName: string;
+  /** Server-minted id on retractable notifications (SystemWarning). */
+  id?: string;
 }
 
 function relativeTime(ts: number): string {
@@ -230,8 +232,9 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
 
         {shown.map((n, i) => (
           <NotificationRow
-            // biome-ignore lint/suspicious/noArrayIndexKey: notifications lack unique IDs
-            key={`${n.sessionId}-${n.timestamp}-${i}`}
+            // Server-minted id when present (stable across retraction splices,
+            // which remove middle rows); index fallback for id-less events.
+            key={n.id ?? `${n.sessionId}-${n.timestamp}-${i}`}
             notification={n}
             page={page}
             onClick={() => handleClickNotification(n)}

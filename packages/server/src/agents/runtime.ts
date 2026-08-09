@@ -31,7 +31,10 @@ import {
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
 import { getProvider } from "../providers/index.js";
-import { pushSystemNotification } from "../routes/hooks.js";
+import {
+  pushSystemNotification,
+  retractSystemNotification,
+} from "../routes/hooks.js";
 import { CHANNEL_SERVER_SCRIPT } from "../scriptPaths.js";
 import {
   assertControlPlaneReady,
@@ -41,6 +44,11 @@ import {
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import {
+  cancelAllChannelServerChecks,
+  cancelChannelServerCheck,
+  trackChannelServerRegistration,
+} from "./channelServerCheck.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -107,13 +115,6 @@ function appendToOutputBuffer(
   }
 }
 
-/** How long after a Codex spawn to wait for its channel-server MCP subprocess to
- *  register before warning that the agent has no outbound path. The daemon
- *  launches it on thread creation (TUI connect), so this must cover daemon boot +
- *  TUI attach + MCP startup + ws connect — generous to avoid false alarms on a
- *  loaded host (a missed warning is cheaper than a spurious one). */
-const CHANNEL_SERVER_REGISTER_GRACE_MS = 30_000;
-
 /**
  * Probe (wired to the gateway's session-client registry at startup): has THIS
  * agent's channel-server MCP subprocess connected + registered? Lets the runtime
@@ -126,62 +127,26 @@ export function setChannelServerProbe(fn: (agentId: string) => boolean): void {
   channelServerProbe = fn;
 }
 
-/** Pending channel-server liveness checks, keyed by agent id, so the kill/exit
- *  paths can dispose them (honoring the disposal contract onExit documents)
- *  instead of leaving an unref'd timer to wake and no-op 30s later. */
-const channelCheckTimers = new Map<UUID, ReturnType<typeof setTimeout>>();
-
-/** One-shot post-spawn check that a Codex agent's outbound channel server came
- *  up. Uses the gateway's registration signal (positive — the channel server
- *  registers on a successful connect) rather than parsing daemon logs, so a
- *  missed notification can't make it lie. Gated on the `pty` still being the live
- *  attachment so a kill/respawn within the grace window doesn't warn on a corpse
- *  (mirrors the prompt-delivery write guard). Best-effort: a null probe (gateway
- *  not yet wired) or a registered agent is a silent no-op.
- *
- *  SCOPE: this catches a channel server that never LAUNCHES. It does NOT cover a
- *  server that registers then later DROPS — but the channel-server subprocess is
- *  a child of the app-server daemon, so the common cause (daemon death) already
- *  surfaces via the A3 status watcher's "daemon unreachable" warning. A standalone
- *  MCP-subprocess crash while the daemon survives is a known, narrow follow-up gap
- *  (would need an edge-triggered warn on unexpected unregister). */
+/** Arm the channel-server registration check for a spawn. Logic lives in the
+ *  channelServerCheck leaf module (escalating probes, warn on final miss only,
+ *  retract on late registration — see its header for the why); this wires in
+ *  the runtime-owned pieces: the gateway probe, the live-attachment guard, and
+ *  the notification store. */
 function scheduleChannelServerCheck(
   agentId: UUID,
   name: string,
   pty: IPty,
 ): void {
-  cancelChannelServerCheck(agentId); // never double-schedule for one agent
-  const timer = setTimeout(() => {
-    channelCheckTimers.delete(agentId);
-    if (live.get(agentId)?.pty !== pty) return; // killed/replaced — not our spawn
-    if (channelServerProbe?.(agentId) !== false) return; // registered or unknown
-    // Server-log breadcrumb (with the id) for cold debugging — the user-facing
-    // SystemWarning deliberately omits the raw id.
-    console.warn(
-      `[runtime] ${agentId.slice(0, 8)} channel server never registered within ${CHANNEL_SERVER_REGISTER_GRACE_MS}ms — outbound (send + org tools) unavailable`,
-    );
-    pushSystemNotification(
-      agentId,
-      `${name} can't send messages — its autonomos channel server never registered on the gateway (it either failed to launch or couldn't connect/authenticate), so send() and the org tools are unavailable. It can still receive inbound.`,
-    );
-  }, CHANNEL_SERVER_REGISTER_GRACE_MS);
-  timer.unref?.();
-  channelCheckTimers.set(agentId, timer);
-}
-
-/** Dispose a single agent's pending channel-server check (kill/exit/delete). */
-function cancelChannelServerCheck(agentId: UUID): void {
-  const timer = channelCheckTimers.get(agentId);
-  if (timer) {
-    clearTimeout(timer);
-    channelCheckTimers.delete(agentId);
-  }
-}
-
-/** Dispose all pending channel-server checks (restart-all / shutdown). */
-function cancelAllChannelServerChecks(): void {
-  for (const timer of channelCheckTimers.values()) clearTimeout(timer);
-  channelCheckTimers.clear();
+  trackChannelServerRegistration(agentId, name, {
+    // Gated on the `pty` still being the live attachment so a kill/respawn
+    // within the grace window doesn't warn on a corpse (mirrors the
+    // prompt-delivery write guard).
+    isLive: () => live.get(agentId)?.pty === pty,
+    probe: () => channelServerProbe?.(agentId),
+    notify: (message) => pushSystemNotification(agentId, message),
+    retract: (notificationId) =>
+      retractSystemNotification(agentId, notificationId),
+  });
 }
 
 /** Resolve claude binary — delegates to the claude-code provider. */

@@ -598,4 +598,78 @@ describe("claude-usage credential resolution (manual override vs OAuth)", () => 
     assert.equal(data.credentialSource, "settings");
     assert.equal(data.fiveHour?.utilization, 42);
   });
+
+  it("a persistent body-parse failure logs ONCE, not once per poll (edge stays failing)", async (t) => {
+    // Regression for the success()-before-parse ordering: an ok response whose
+    // json() rejects (captive-portal HTML, truncated body) must not flip the
+    // edge logger healthy first — that made every poll log the same failure,
+    // the exact spam class edge-triggering exists to kill.
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEYP" }));
+    const errors: string[] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    });
+
+    const fetcher: UsageFetcher = async (url) => {
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error("Unexpected token < in JSON");
+        },
+      };
+    };
+
+    for (let i = 0; i < 3; i++) {
+      invalidateCache();
+      await getRateLimits(fetcher);
+    }
+
+    const parseFailures = errors.filter((e) =>
+      e.includes("usage fetch failed"),
+    );
+    assert.equal(
+      parseFailures.length,
+      1,
+      `persistent parse failure must log once, got: ${parseFailures.length}`,
+    );
+  });
+
+  it("a persistently-offline bootstrap (manual-key path) logs ONCE, not once per poll", async (t) => {
+    // Same spam class as the usage fetch, on the OTHER credential path: with a
+    // manual session key and no network, cachedOrgId never populates, so
+    // bootstrap is retried — and used to stack-log — every poll cycle.
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEYB" }));
+    const errors: string[] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    });
+
+    const fetcher: UsageFetcher = async () => {
+      throw new Error("impit error: Failed to connect to the server.");
+    };
+
+    for (let i = 0; i < 3; i++) {
+      invalidateCache();
+      await getRateLimits(fetcher);
+    }
+
+    const bootFailures = errors.filter((e) => e.includes("bootstrap"));
+    assert.equal(
+      bootFailures.length,
+      1,
+      `offline bootstrap must log once, got: ${bootFailures.length}`,
+    );
+  });
 });

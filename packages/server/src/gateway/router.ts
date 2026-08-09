@@ -24,6 +24,7 @@ import type {
   GatewayWsMessage,
 } from "@autonomos/core";
 import type { WSContext, WSReadyState } from "hono/ws";
+import { noteChannelServerRegistered } from "../agents/channelServerCheck.js";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache.js";
@@ -81,6 +82,10 @@ export function _setDeliveryAckWindowForTesting(ms?: number): void {
 export function registerSessionClient(sessionId: string, ws: WSContext): void {
   sessionClients.set(sessionId, ws);
   console.log(`[gateway] agent ${sessionId} connected`);
+  // Registration edge: stands down any pending post-spawn probe for this agent
+  // and retracts a premature "can't send messages" warning (the probes gave up
+  // but the channel server showed up after all).
+  noteChannelServerRegistered(sessionId);
 }
 
 export function unregisterSessionClient(ws: WSContext): void {

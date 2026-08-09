@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings, isAutoDetectAccountEnabled } from "../../settings.js";
+import { createEdgeLogger } from "./edgeLog.js";
 import {
   getOAuthToken,
   getOAuthUsage,
@@ -263,6 +264,8 @@ export function selectUsageOrg(memberships: Membership[]): string | null {
   return null;
 }
 
+const bootstrapFetchLog = createEdgeLogger("[claude-usage] bootstrap");
+
 /**
  * Resolve the organization UUID for the given cookie.
  *
@@ -289,44 +292,52 @@ export async function fetchOrgId(
     return { orgId: cachedOrgId, status: "ok" };
   }
 
-  // Resolve from the bootstrap API using the session key alone.
+  // Resolve from the bootstrap API using the session key alone. Same edge
+  // semantics as fetchUsageData below: success() on any completed exchange,
+  // failure() only on a throw — an offline host with a manual session key
+  // retries bootstrap every poll (cachedOrgId never populates), which was the
+  // audit's per-poll stack spam on the credential path it didn't exercise.
   try {
-    const res = await fetcher(BOOTSTRAP_URL, {
-      headers: { Cookie: buildCookieHeader(cookie) },
-    });
-    if (res.status === 401 || res.status === 403) {
-      return { orgId: null, status: "unauthorized" };
-    }
-    if (!res.ok) return { orgId: null, status: "error" };
-    const data = (await res.json()) as {
-      account?: {
-        memberships?: Array<{
-          organization?: { uuid?: string; capabilities?: string[] };
-        }>;
+    const result = await (async (): Promise<OrgIdResult> => {
+      const res = await fetcher(BOOTSTRAP_URL, {
+        headers: { Cookie: buildCookieHeader(cookie) },
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { orgId: null, status: "unauthorized" };
+      }
+      if (!res.ok) return { orgId: null, status: "error" };
+      const data = (await res.json()) as {
+        account?: {
+          memberships?: Array<{
+            organization?: { uuid?: string; capabilities?: string[] };
+          }>;
+        };
       };
-    };
-    const memberships = data?.account?.memberships ?? [];
-    const orgId = selectUsageOrg(memberships);
-    if (!orgId) {
-      // No usable org. Two shapes land here: an expired cookie (bootstrap
-      // treats it as logged-out → empty memberships) vs. a valid key whose
-      // only orgs lack claude.ai access (e.g. an API-only account). Log the
-      // shape (never the cookie) so they're tellable apart from server logs.
-      console.warn(
-        `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
-          Array.isArray(data?.account?.memberships)
-            ? `[${memberships.length}; caps=${memberships
-                .map((m) => (m.organization?.capabilities ?? []).join("|"))
-                .join(",")}]`
-            : typeof data?.account?.memberships
-        })`,
-      );
-      return { orgId: null, status: "no_org" };
-    }
-    cachedOrgId = orgId;
-    return { orgId, status: "ok" };
+      const memberships = data?.account?.memberships ?? [];
+      const orgId = selectUsageOrg(memberships);
+      if (!orgId) {
+        // No usable org. Two shapes land here: an expired cookie (bootstrap
+        // treats it as logged-out → empty memberships) vs. a valid key whose
+        // only orgs lack claude.ai access (e.g. an API-only account). Log the
+        // shape (never the cookie) so they're tellable apart from server logs.
+        console.warn(
+          `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
+            Array.isArray(data?.account?.memberships)
+              ? `[${memberships.length}; caps=${memberships
+                  .map((m) => (m.organization?.capabilities ?? []).join("|"))
+                  .join(",")}]`
+              : typeof data?.account?.memberships
+          })`,
+        );
+        return { orgId: null, status: "no_org" };
+      }
+      cachedOrgId = orgId;
+      return { orgId, status: "ok" };
+    })();
+    bootstrapFetchLog.success();
+    return result;
   } catch (err) {
-    console.error("[claude-usage] bootstrap org resolution failed:", err);
+    bootstrapFetchLog.failure(err);
     return { orgId: null, status: "error" };
   }
 }
@@ -338,27 +349,43 @@ interface UsageResult {
   status: UsageStatus;
 }
 
+const usageFetchLog = createEdgeLogger("[claude-usage] usage fetch");
+
 async function fetchUsageData(
   cookie: string,
   orgId: string,
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<UsageResult> {
+  // Edge semantics: the logger tracks TRANSPORT health, so ANY completed
+  // HTTP exchange counts as healthy — including 429/401/!ok, which surface
+  // through their own UsageStatus channel. Two traps this shape avoids:
+  //  - success() only on the fully-ok path wedges the edge at `failing`
+  //    through e.g. an expired-credential period, silencing a later DISTINCT
+  //    outage forever;
+  //  - success() BEFORE the body parse flips the edge every poll on a
+  //    persistent malformed-200 (captive portal), re-logging each cycle.
+  // So: success() fires exactly when the try block completes without
+  // throwing; a body-parse failure is a failure.
   try {
-    const res = await fetcher(`${USAGE_URL}/${orgId}/usage`, {
-      headers: { Cookie: buildCookieHeader(cookie) },
-    });
-    if (res.status === 429) return { data: null, status: "rate_limited" };
-    if (res.status === 401 || res.status === 403) {
-      cachedOrgId = null;
-      return { data: null, status: "unauthorized" };
-    }
-    if (!res.ok) return { data: null, status: "error" };
-    return {
-      data: (await res.json()) as Record<string, unknown>,
-      status: "ok",
-    };
+    const result = await (async (): Promise<UsageResult> => {
+      const res = await fetcher(`${USAGE_URL}/${orgId}/usage`, {
+        headers: { Cookie: buildCookieHeader(cookie) },
+      });
+      if (res.status === 429) return { data: null, status: "rate_limited" };
+      if (res.status === 401 || res.status === 403) {
+        cachedOrgId = null;
+        return { data: null, status: "unauthorized" };
+      }
+      if (!res.ok) return { data: null, status: "error" };
+      const data = (await res.json()) as Record<string, unknown>;
+      return { data, status: "ok" };
+    })();
+    usageFetchLog.success();
+    return result;
   } catch (err) {
-    console.error("[claude-usage] usage fetch failed:", err);
+    // Edge-triggered: an offline host polls right through — one line on the
+    // first failure, one on recovery, no per-poll transport stacks.
+    usageFetchLog.failure(err);
     return { data: null, status: "error" };
   }
 }
