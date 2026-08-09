@@ -446,7 +446,7 @@ describe("prompt-delivery receipt applies only to providers with a hook relay", 
  * modules with a load-bearing ordering: the fallback must fire only AFTER any
  * default-configured watcher has reached its terminal state, or windows would
  * arm while startup dialogs are genuinely still being fought — the exact
- * false-warning class ADR-073 removed. Pin the relation so "raise the watcher
+ * false-warning class ADR-074 removed. Pin the relation so "raise the watcher
  * deadline for slow hosts" cannot silently flip it.
  */
 describe("settle fallback stays above the watcher deadline", () => {

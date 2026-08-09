@@ -44,7 +44,7 @@ interface HookStatus {
 }
 
 // Generous: covers trust-dialog retries AND the worst-case settle-gated
-// fallback re-delivery (settle + 90s submit window per ADR-073), plus CI
+// fallback re-delivery (settle + 90s submit window per ADR-074), plus CI
 // scheduling noise. A waitFor cap, not a sleep — costs nothing when green.
 const TURN_TIMEOUT_MS = 180_000;
 
@@ -53,7 +53,11 @@ const PROMPT_MARKER = "PROMPT_DELIVERY_RECEIPT_7f3a";
 
 describe("starting prompt delivery — no manual keystrokes", {
   skip: !RUN_INTEGRATION,
-  timeout: 120_000,
+  // Must stay ABOVE TURN_TIMEOUT_MS: node:test propagates this to subtests,
+  // so a lower value would kill the it() before waitFor's own cap and CI
+  // would report a bare suite timeout instead of this file's diagnostics
+  // (last hook event / status + server logs).
+  timeout: 200_000,
 }, () => {
   let mock: MockAnthropic;
   let server: BootedServer;
@@ -138,8 +142,8 @@ describe("starting prompt delivery — no manual keystrokes", {
     // The fallback must NOT have been needed: re-delivery pushes a
     // SystemWarning notification, so its absence proves the PRIMARY path
     // (argv + auto-trust watcher) delivered. Without this, a watcher
-    // regression would hide behind the 20s re-delivery crutch and CI would
-    // stay green while every real spawn got slower and double-pasted.
+    // regression would hide behind the (settle + 90s) re-delivery crutch and
+    // CI would stay green while every real spawn got slower and double-pasted.
     const { body: notif } = await authedJson<{
       notifications: Array<{ event: string; message?: string }>;
     }>(server, `/api/hooks/${agent.id}/notifications`);
