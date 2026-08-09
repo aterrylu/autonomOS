@@ -193,17 +193,18 @@ describe("trackChannelServerRegistration", () => {
     );
   });
 
-  it("a stale fired-but-queued probe cannot evict a replacement's fresh check", () => {
-    // Timer-identity guard: probes for spawn 1 that run after spawn 2 replaced
-    // it must not delete spawn 2's map entry (that would orphan it from the
-    // registration edge and cancel).
+  it("re-tracking after a kill keeps the replacement addressable by the registration edge", () => {
+    // Honest scope (review): spawn 1's probe timer is cleared the moment
+    // spawn 2 re-tracks, so its callback never runs here — the standDown /
+    // resolveRegistered identity guards are unreachable defence-in-depth
+    // through this public API. What this pins is the outcome that matters:
+    // after a kill+replace, the REPLACEMENT check runs to completion and the
+    // registration edge still reaches it (warn → retract works end to end).
     const h = makeHarness();
     trackChannelServerRegistration("agent-1", "A@x", h.io);
     h.live = false; // spawn 1 was killed…
     const h2 = makeHarness();
     trackChannelServerRegistration("agent-1", "A@x", h2.io); // …and replaced
-    // Advance past both first probes: spawn 1's callback (isLive false) must
-    // stand down WITHOUT touching spawn 2's entry, whose probes continue.
     tickThroughAllProbes();
     assert.equal(h2.notified.length, 1, "replacement check still completes");
     noteChannelServerRegistered("agent-1");

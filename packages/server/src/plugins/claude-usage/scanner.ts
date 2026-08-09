@@ -264,6 +264,8 @@ export function selectUsageOrg(memberships: Membership[]): string | null {
   return null;
 }
 
+const bootstrapFetchLog = createEdgeLogger("[claude-usage] bootstrap");
+
 /**
  * Resolve the organization UUID for the given cookie.
  *
@@ -277,8 +279,6 @@ export function selectUsageOrg(memberships: Membership[]): string | null {
  * {@link selectUsageOrg}, `error` for network/parse problems) so the caller
  * can surface an actionable message.
  */
-const bootstrapFetchLog = createEdgeLogger("[claude-usage] bootstrap");
-
 export async function fetchOrgId(
   cookie: string,
   fetcher: UsageFetcher = defaultFetcher,
