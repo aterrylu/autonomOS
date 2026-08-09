@@ -16,7 +16,9 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned (was `latest`): a floating bun drifted mid-day and
+          # deterministically broke this e2e spec once. Bump deliberately.
+          bun-version: 1.3.10
 
       - uses: actions/setup-node@v4
         with:
