@@ -75,12 +75,24 @@ DIST="$ROOT/packages/server/dist"
 REAL_HOME="$HOME"
 REAL_UID=$(id -u)
 REAL_JOB_LOADED=0
+REAL_PID=""
+# The PID matters, not just "loaded": the upgrade path's destructive verb is
+# `launchctl kickstart -k` / `systemctl restart` — a RESTART of the real
+# daemon (killing every agent PTY) leaves the job loaded, so a loaded-only
+# check would pass silently. An unchanged PID proves neither bootout NOR
+# restart happened.
 case "$(uname -s)" in
   Darwin)
-    launchctl print "gui/$REAL_UID/com.autonomos.daemon" >/dev/null 2>&1 && REAL_JOB_LOADED=1
+    if launchctl print "gui/$REAL_UID/com.autonomos.daemon" >/dev/null 2>&1; then
+      REAL_JOB_LOADED=1
+      REAL_PID=$(launchctl print "gui/$REAL_UID/com.autonomos.daemon" 2>/dev/null | awk '/^[[:space:]]*pid = /{print $3; exit}')
+    fi
     ;;
   Linux)
-    systemctl --user is-active autonomos.service >/dev/null 2>&1 && REAL_JOB_LOADED=1
+    if systemctl --user is-active autonomos.service >/dev/null 2>&1; then
+      REAL_JOB_LOADED=1
+      REAL_PID=$(systemctl --user show -p MainPID --value autonomos.service 2>/dev/null)
+    fi
     ;;
 esac
 
@@ -96,8 +108,15 @@ export AUTONOMOS_CONFIG_DIR="$TEST_CFG"
 assert_real_daemon_untouched() {
   local label="$1"
   [[ "$REAL_JOB_LOADED" == "1" ]] || return 0
+  local now_pid=""
   case "$(uname -s)" in
     Darwin)
+      now_pid=$(launchctl print "gui/$REAL_UID/com.autonomos.daemon" 2>/dev/null | awk '/^[[:space:]]*pid = /{print $3; exit}')
+      if [[ -n "$REAL_PID" && -n "$now_pid" && "$now_pid" != "$REAL_PID" ]]; then
+        echo "✗ HERMETIC VIOLATION after '$label': the real daemon was RESTARTED (pid $REAL_PID → $now_pid)!" >&2
+        echo "  A restart kills every agent PTY. The job is loaded, so nothing to restore — but this test step reached the real supervisor." >&2
+        exit 1
+      fi
       if ! launchctl print "gui/$REAL_UID/com.autonomos.daemon" >/dev/null 2>&1; then
         echo "✗ HERMETIC VIOLATION after '$label': the real com.autonomos.daemon was unloaded!" >&2
         echo "  Attempting restore: launchctl bootstrap gui/$REAL_UID ..." >&2
@@ -111,6 +130,12 @@ assert_real_daemon_untouched() {
       fi
       ;;
     Linux)
+      now_pid=$(systemctl --user show -p MainPID --value autonomos.service 2>/dev/null)
+      if [[ -n "$REAL_PID" && -n "$now_pid" && "$now_pid" != "0" && "$now_pid" != "$REAL_PID" ]]; then
+        echo "✗ HERMETIC VIOLATION after '$label': the real daemon was RESTARTED (pid $REAL_PID → $now_pid)!" >&2
+        echo "  A restart kills every agent PTY. The service is active, so nothing to restore — but this test step reached the real supervisor." >&2
+        exit 1
+      fi
       if ! systemctl --user is-active autonomos.service >/dev/null 2>&1; then
         echo "✗ HERMETIC VIOLATION after '$label': the real autonomos.service was stopped!" >&2
         echo "  Attempting restore: systemctl --user start autonomos.service" >&2
@@ -335,6 +360,7 @@ grep -q '"installedBy": "upgrade"' "$TEST_PREFIX/share/autonomos/install.json" |
   echo "✗ upgrade did not rewrite the install.json marker"; exit 1;
 }
 echo "==> ✓ Upgraded $INSTALLED_VERSION → 9.9.9 (marker rewritten, .previous kept)"
+assert_real_daemon_untouched "autonomos upgrade"
 
 echo "==> Re-running upgrade (should be up-to-date, no-op)"
 UP_TO_DATE_OUT=$(AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
@@ -344,6 +370,7 @@ echo "$UP_TO_DATE_OUT" | grep -q "Already on the latest" || {
   echo "✗ Second upgrade wasn't a no-op"; echo "$UP_TO_DATE_OUT"; exit 1;
 }
 echo "==> ✓ Up-to-date no-op OK"
+assert_real_daemon_untouched "up-to-date upgrade no-op"
 
 echo "==> Running 'autonomos rollback'"
 "$WRAPPER" rollback
@@ -352,6 +379,7 @@ ROLLED_BACK_VERSION=$("$WRAPPER" --version)
   echo "✗ Expected $INSTALLED_VERSION after rollback, got: $ROLLED_BACK_VERSION"; exit 1;
 }
 echo "==> ✓ Rolled back to $INSTALLED_VERSION"
+assert_real_daemon_untouched "autonomos rollback"
 
 assert_real_daemon_untouched "full run"
 echo ""

@@ -24,7 +24,24 @@ import {
   isPortResponsive,
   readPidFile,
 } from "@autonomos/server/pid-file.js";
+import { readBundleVersion } from "@autonomos/server/upgrade.js";
 import { findInstalledService, restartService } from "./service-control.js";
+
+/**
+ * The version to health-gate on after a swap: what the swapped-in bundle
+ * ACTUALLY carries (its package.json), falling back to the release tag only
+ * when the bundle's version is unreadable. Gating on the tag directly would
+ * make a release whose package.json disagrees with its tag fail the gate
+ * every time — auto-rolling back a healthy daemon with a misleading
+ * "did not become healthy".
+ */
+export function expectedVersionAfterSwap(
+  bundleDir: string,
+  tagVersion: string,
+): string {
+  const bundleVersion = readBundleVersion(bundleDir);
+  return bundleVersion === "unknown" ? tagVersion : bundleVersion;
+}
 
 export type RestartOutcome =
   | { kind: "verified" } // supervisor cycled it; new version confirmed up

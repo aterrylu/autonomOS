@@ -33,12 +33,63 @@ import {
   detectPlatform,
   performRollback,
   performUpgrade,
-  readBundleVersion,
 } from "@autonomos/server/upgrade.js";
 import { getServerVersion } from "@autonomos/server/version.js";
-import { restartDaemonAfterSwap } from "../lib/apply-bundle.js";
+import {
+  expectedVersionAfterSwap,
+  restartDaemonAfterSwap,
+} from "../lib/apply-bundle.js";
 
 type UpgradeFlags = { targetVersion: string | undefined };
+
+type ReleaseOverrides =
+  | { releaseApiBase: string | undefined; releaseRepo: string | undefined }
+  | { error: string };
+
+/**
+ * The release-source env overrides exist for the hermetic test harness, but
+ * they are production-reachable — and whoever controls the API base controls
+ * BOTH the tarball and its SHA256SUMS, so the checksum cannot protect
+ * against a redirected source (nothing is signed). A var planted in a shell
+ * rc converts the user's own later `autonomos upgrade` into running
+ * attacker code. So: warn loudly whenever one is set, and refuse a
+ * non-HTTPS base unless it points at loopback (the fixture case).
+ */
+function resolveReleaseOverrides(): ReleaseOverrides {
+  const releaseApiBase = process.env.AUTONOMOS_RELEASE_API_URL;
+  const releaseRepo = process.env.AUTONOMOS_RELEASE_REPO;
+  if (releaseApiBase || releaseRepo) {
+    console.warn("⚠️  Release source is overridden by environment variables:");
+    if (releaseApiBase) {
+      console.warn(`   AUTONOMOS_RELEASE_API_URL=${releaseApiBase}`);
+    }
+    if (releaseRepo) {
+      console.warn(`   AUTONOMOS_RELEASE_REPO=${releaseRepo}`);
+    }
+    console.warn("   (unset these unless you set them yourself, on purpose)");
+  }
+  if (releaseApiBase) {
+    let url: URL;
+    try {
+      url = new URL(releaseApiBase);
+    } catch {
+      return {
+        error: `AUTONOMOS_RELEASE_API_URL is not a valid URL: ${releaseApiBase}`,
+      };
+    }
+    const loopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(
+      url.hostname,
+    );
+    if (url.protocol !== "https:" && !loopback) {
+      return {
+        error:
+          `AUTONOMOS_RELEASE_API_URL must be https:// (or loopback, for the ` +
+          `test harness): ${releaseApiBase}`,
+      };
+    }
+  }
+  return { releaseApiBase, releaseRepo };
+}
 
 function parseFlags(argv: readonly string[]): UpgradeFlags {
   let targetVersion: string | undefined;
@@ -86,6 +137,12 @@ export async function runUpgradeCommand(
     return 2;
   }
 
+  const overrides = resolveReleaseOverrides();
+  if ("error" in overrides) {
+    console.error(`✗ ${overrides.error}`);
+    return 1;
+  }
+
   const platform = detectPlatform();
   const currentVersion = getServerVersion();
   console.log(`Current version: ${currentVersion}`);
@@ -101,8 +158,8 @@ export async function runUpgradeCommand(
     platform,
     installInfo: install.info,
     targetVersion: flags.targetVersion,
-    releaseApiBase: process.env.AUTONOMOS_RELEASE_API_URL,
-    releaseRepo: process.env.AUTONOMOS_RELEASE_REPO,
+    releaseApiBase: overrides.releaseApiBase,
+    releaseRepo: overrides.releaseRepo,
   });
 
   if (result.status === "up-to-date") {
@@ -122,15 +179,9 @@ export async function runUpgradeCommand(
   console.log(`  Previous version kept at: ${install.bundleDir}.previous`);
   console.log("  Roll back anytime with: autonomos rollback");
 
-  // Gate on the version the swapped-in bundle ACTUALLY carries, not the
-  // release tag: a release whose package.json disagrees with its tag would
-  // otherwise fail the health gate every time and auto-roll back a healthy
-  // daemon with a misleading "did not become healthy".
-  const bundleVersion = readBundleVersion(install.bundleDir);
-  const expectedVersion =
-    bundleVersion === "unknown" ? result.to : bundleVersion;
-
-  const outcome = await restartDaemonAfterSwap(expectedVersion);
+  const outcome = await restartDaemonAfterSwap(
+    expectedVersionAfterSwap(install.bundleDir, result.to),
+  );
   if (outcome.kind !== "not-verified") return 0;
 
   // Supervised restart didn't produce a healthy daemon on the new version.

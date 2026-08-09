@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -171,9 +172,11 @@ export async function performUpgrade(
   }
 
   // ── download both into a staging dir
-  const staging = join(tmpdir(), `autonomos-upgrade-${process.pid}`);
-  rmSync(staging, { recursive: true, force: true });
-  mkdirSync(staging, { recursive: true });
+  // mkdtemp, not a pid-derived name: a predictable path in world-writable
+  // /tmp lets a local attacker pre-plant a symlink or win the window between
+  // checksum and extraction — the tarball staged here becomes the running
+  // server.
+  const staging = mkdtempSync(join(tmpdir(), "autonomos-upgrade-"));
 
   try {
     const tarballPath = join(staging, tarballName);

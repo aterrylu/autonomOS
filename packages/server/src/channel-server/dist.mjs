@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // packages/server/src/channel-server/index.ts
-import { readFileSync } from "node:fs";
+import { readFileSync as readFileSync2 } from "node:fs";
 import { join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -13,6 +13,29 @@ import WebSocket from "ws";
 
 // packages/server/src/gateway/deliveryTimings.ts
 var GATEWAY_REQUEST_TIMEOUT_MS = 5e3;
+
+// packages/server/src/version.ts
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+function getServerVersion() {
+  const candidates = [
+    // Bundled layout: bundle dir contains the JS + its package.json
+    resolve(import.meta.dirname, "package.json"),
+    // Source layout: src/ → packages/server/package.json
+    resolve(import.meta.dirname, "../package.json"),
+    // Source channel-server layout: src/channel-server/ → packages/server/
+    resolve(import.meta.dirname, "../../package.json")
+  ];
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      const pkg = JSON.parse(readFileSync(p, "utf-8"));
+      if (typeof pkg.version === "string") return pkg.version;
+    } catch {
+    }
+  }
+  return "unknown";
+}
 
 // packages/server/src/mcp/tools.ts
 var TOOL_CREATE_AGENT = {
@@ -72,6 +95,10 @@ var TOOL_CREATE_AGENT = {
         type: "string",
         enum: ["claude-code", "codex", "gemini-cli"],
         description: "Agent runtime/CLI to spawn (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. The chosen CLI must be installed on the host."
+      },
+      envPreset: {
+        type: "string",
+        description: "Name of an env preset (see list_env_presets) to apply \u2014 e.g. run this Claude Code agent against a Kimi/Moonshot backend. Injects the preset's model-override env into ONLY this agent. The preset must have its API key set by a human in the dashboard first; spawning with a preset whose key is unset fails."
       }
     },
     required: ["workingDirectory"]
@@ -104,7 +131,7 @@ var TOOL_KILL_AGENT = {
 };
 var TOOL_SEND = {
   name: "send",
-  description: "Send a message to another agent. Use the from_uri from incoming messages to respond. Succeeds only if the destination accepted the message; any other result explains why it did not, and a message reported as not-yet-delivered is retried automatically \u2014 do not re-send it.",
+  description: "Send a message to another agent. Use the from_uri from incoming messages to respond. Succeeds only if the destination accepted the message; any other result explains why it did not. Do not re-send a message reported as not-yet-delivered \u2014 a duplicate can make an agent act twice.",
   inputSchema: {
     type: "object",
     properties: {
@@ -372,6 +399,88 @@ var TOOL_RUN_SCHEDULE = {
     required: ["name"]
   }
 };
+var ENV_PRESET_SECRET_GUIDANCE = "You CANNOT set the secret value (the API key/token) \u2014 that is entered by a human in the dashboard Presets tab. Do NOT ask the user to paste their API key in chat; tell them to open the Presets tab and fill it there. Declare the required key name(s) via `secretKeys`.";
+var ENV_PRESET_WORKFLOW = 'Full flow: (1) create_env_preset with its `env` + `secretKeys`; (2) tell the human to open the dashboard Presets tab and set the API key; (3) confirm it\'s set with list_env_presets (see its is-set rule); (4) THEN create_agent(envPreset: <name>). Spawning before the key is set fails with a clear message pointing at the Presets tab. For Kimi (Moonshot): ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic, ANTHROPIC_MODEL=kimi-k2.7-code (or kimi-k3), secretKeys=["ANTHROPIC_AUTH_TOKEN"] (note: AUTH_TOKEN, not API_KEY).';
+var TOOL_LIST_ENV_PRESETS = {
+  name: "list_env_presets",
+  description: "List env presets (model-override profiles, e.g. a Kimi/Moonshot backend). Secret values are always MASKED \u2014 never the values. IS-SET RULE: a secret key is SET when it appears in the returned `secrets` map (as a masked \u2022\u2022\u2022\u2022value); a declared `secretKey` that is ABSENT from `secrets` is UNSET \u2014 a human still needs to fill it in the dashboard. Check this before spawning an agent with the preset.",
+  inputSchema: { type: "object", properties: {} }
+};
+var TOOL_CREATE_ENV_PRESET = {
+  name: "create_env_preset",
+  description: `Create an env preset \u2014 a named set of environment variables applied to an agent at spawn to override its model backend (e.g. point Claude Code at Kimi via ANTHROPIC_BASE_URL/ANTHROPIC_MODEL). ${ENV_PRESET_SECRET_GUIDANCE} ${ENV_PRESET_WORKFLOW}`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Preset name (lowercase, digits, hyphens \u2014 used as the filename)."
+      },
+      description: {
+        type: "string",
+        description: "What this preset points at."
+      },
+      provider: {
+        type: "string",
+        enum: ["claude-code", "codex", "gemini-cli"],
+        description: "Base provider this override targets (default 'claude-code')."
+      },
+      label: {
+        type: "string",
+        description: "Short label shown on the agent's row in the dashboard (e.g. 'Kimi K2.7-code')."
+      },
+      env: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: 'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Reserved autonomOS control-plane vars are rejected.'
+      },
+      secretKeys: {
+        type: "array",
+        items: { type: "string" },
+        description: 'Names of the secret env vars this preset needs (e.g. ["ANTHROPIC_AUTH_TOKEN"]). You declare the names; the human fills the values in the dashboard.'
+      }
+    },
+    required: ["name"]
+  }
+};
+var TOOL_UPDATE_ENV_PRESET = {
+  name: "update_env_preset",
+  description: `Update an env preset's non-secret fields. ${ENV_PRESET_SECRET_GUIDANCE}`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Name of the preset to update." },
+      description: { type: "string" },
+      provider: {
+        type: "string",
+        enum: ["claude-code", "codex", "gemini-cli"]
+      },
+      label: { type: "string" },
+      env: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Replaces the non-secret env map."
+      },
+      secretKeys: {
+        type: "array",
+        items: { type: "string" },
+        description: "Replaces the declared secret-key names."
+      }
+    },
+    required: ["name"]
+  }
+};
+var TOOL_DELETE_ENV_PRESET = {
+  name: "delete_env_preset",
+  description: "Delete an env preset by name.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Name of the preset to delete." }
+    },
+    required: ["name"]
+  }
+};
 var ALL_TOOLS = [
   TOOL_CREATE_AGENT,
   TOOL_LIST_AGENTS,
@@ -381,6 +490,10 @@ var ALL_TOOLS = [
   TOOL_GET_ORG_CHART,
   TOOL_LIST_TEMPLATES,
   TOOL_CREATE_TEMPLATE,
+  TOOL_LIST_ENV_PRESETS,
+  TOOL_CREATE_ENV_PRESET,
+  TOOL_UPDATE_ENV_PRESET,
+  TOOL_DELETE_ENV_PRESET,
   TOOL_SELF_EXIT,
   TOOL_CREATE_SCHEDULE,
   TOOL_LIST_SCHEDULES,
@@ -391,33 +504,36 @@ var ALL_TOOLS = [
 ];
 var MCP_SERVER_INFO = {
   name: "autonomos",
-  version: "0.3.0"
+  version: getServerVersion()
 };
 var MCP_INSTRUCTIONS = [
   "You are running inside autonomOS \u2014 an agent orchestration platform.",
   "",
-  "Available tools:",
-  "- send(to, message): Send a message to one agent (agent://name). There is no broadcast \u2014 address each recipient.",
-  "- list_agents(): Discover active agents and their URIs",
-  "- create_agent(): Spawn a new dedicated agent",
-  "- kill_agent(): Terminate an agent",
-  "- set_manager(): Configure org chart relationships",
-  "- get_org_chart(): View the organization hierarchy",
-  "- list_templates(): Browse available agent templates",
-  "- create_template(): Create a reusable agent template",
-  "- self_exit(): Terminate your own session when work is complete",
+  "### Finding & messaging other agents",
+  "- list_agents(): the LIVE fleet \u2014 every active agent with its name, agent:// URI, status, and permission mode. This is the ONLY authoritative list of your peers. Do NOT rely on any provider-native or built-in agent list (e.g. a per-thread/collaboration list): those do not see autonomOS peers, and reading one will make you conclude you are alone when you are not. When in doubt, call list_agents().",
+  "- send(to, message): message ONE agent by its agent://<name> URI (from list_agents, or an incoming message's from_uri). There is no broadcast \u2014 address each recipient. A send succeeds only when the destination ACCEPTED the message; any other result explains why. Do NOT re-send a message reported as not-yet-delivered \u2014 a duplicate can make an agent act twice (a not-delivered message on the Codex path is auto-retried; re-sending stacks a second copy).",
   "",
-  "Schedule tools:",
-  "- create_schedule(): Create a recurring or one-time scheduled task",
-  "- list_schedules(): List all schedules with their state",
-  "- get_schedule(): Get schedule details and recent run history",
-  "- update_schedule(): Update a schedule's configuration",
-  "- delete_schedule(): Remove a schedule",
-  "- run_schedule(): Trigger a schedule immediately",
+  "### Managing the fleet & org chart",
+  "- create_agent(): spawn a new dedicated agent (optionally from a template, or with an env preset \u2014 see below)",
+  "- kill_agent(): terminate an agent",
+  "- set_manager(): set an agent's manager in the org chart",
+  "- get_org_chart(): view the agent hierarchy",
+  "- list_templates() / create_template(): browse and create reusable agent blueprints (role, system prompt, permission mode)",
+  "- self_exit(): end your own session when your work is complete",
   "",
-  "Messages from other agents and platforms arrive as <channel> events.",
-  "Each has from (sender name) and from_uri (address to respond to).",
-  'To respond: send(to: "<from_uri>", message: "your reply")'
+  "### Env presets \u2014 model overrides (e.g. run an agent on Kimi)",
+  "Flow: create_env_preset (set env + declare the secret key NAMES) \u2192 a human sets the API key in the dashboard Presets tab (do NOT ask for tokens in chat) \u2192 verify it's set with list_env_presets \u2192 create_agent(envPreset: <name>). Spawning with an unset key fails.",
+  "- list_env_presets(): list presets; secret values are masked, and a declared secretKey absent from `secrets` is UNSET",
+  "- create_env_preset() / update_env_preset(): configure a preset \u2014 you set env + secretKeys but CANNOT set the secret value (the human does)",
+  "- delete_env_preset(): remove a preset",
+  "",
+  "### Schedules",
+  "- create_schedule(): a recurring (cron) or one-time task delivered to a running agent, which does the work under its own permission mode",
+  "- list_schedules() / get_schedule() / update_schedule() / delete_schedule() / run_schedule(): inspect and manage schedules",
+  "",
+  "### Receiving messages",
+  "Messages from other agents arrive as <channel> events, each with `from` (sender name) and `from_uri` (the address to reply to).",
+  'To reply: send(to: "<from_uri>", message: "your reply").'
 ].join("\n");
 
 // packages/server/src/channel-server/index.ts
@@ -435,7 +551,7 @@ var AGENT_TOKEN = (() => {
   const safeSession = /^[A-Za-z0-9._-]+$/.test(SESSION_ID) && !SESSION_ID.includes("..");
   if (configDir && safeSession) {
     try {
-      return readFileSync(
+      return readFileSync2(
         join(configDir, "agent-tokens", SESSION_ID),
         "utf8"
       ).trim();
@@ -537,13 +653,13 @@ function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout, defaultOnNo
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return Promise.resolve(defaultOnNotSent);
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
-      resolve(defaultOnTimeout);
+      resolve2(defaultOnTimeout);
     }, timeoutMs);
     pendingRequests.set(requestId, {
-      resolve,
+      resolve: resolve2,
       timer
     });
     try {
@@ -551,7 +667,7 @@ function requestGateway(msg, requestId, timeoutMs, defaultOnTimeout, defaultOnNo
     } catch {
       clearTimeout(timer);
       pendingRequests.delete(requestId);
-      resolve(defaultOnNotSent);
+      resolve2(defaultOnNotSent);
     }
   });
 }
@@ -702,7 +818,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         template,
         manager,
         project,
-        provider
+        provider,
+        envPreset
       } = args;
       const effectiveManager = manager ?? process.env.AUTONOMOS_AGENT_NAME;
       if (!manager && effectiveManager) {
@@ -730,7 +847,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             template,
             manager: effectiveManager,
             project,
-            provider
+            provider,
+            envPreset
           })
         });
       } catch (err) {
@@ -819,6 +937,41 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     case "list_templates": {
       return serverFetch("/api/templates");
+    }
+    // ── Env preset tools (model overrides, ADR-067) ─────────────
+    // SECURITY: we forward ONLY the non-secret fields. `secrets` is picked out
+    // and dropped even if an agent crafts it into args — the agent surface can
+    // never write a secret value. (The REST route does accept secrets, for the
+    // human dashboard path.)
+    case "create_env_preset": {
+      const { name: name2, description, provider, label, env, secretKeys } = args;
+      return serverFetch("/api/env-presets", {
+        method: "POST",
+        body: JSON.stringify({
+          name: name2,
+          description,
+          provider,
+          label,
+          env,
+          secretKeys
+        })
+      });
+    }
+    case "update_env_preset": {
+      const { name: name2, description, provider, label, env, secretKeys } = args;
+      return serverFetch(`/api/env-presets/${encodeURIComponent(name2)}`, {
+        method: "PUT",
+        body: JSON.stringify({ description, provider, label, env, secretKeys })
+      });
+    }
+    case "list_env_presets": {
+      return serverFetch("/api/env-presets");
+    }
+    case "delete_env_preset": {
+      const { name: name2 } = args;
+      return serverFetch(`/api/env-presets/${encodeURIComponent(name2)}`, {
+        method: "DELETE"
+      });
     }
     case "self_exit": {
       serverFetch(`/api/agents/${encodeURIComponent(SESSION_ID)}/kill`, {

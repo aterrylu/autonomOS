@@ -85,7 +85,9 @@ curl -fsSL -o "$TMP/SHA256SUMS" "${BUNDLE_URL}/SHA256SUMS"
 
 # ── checksum verification ─────────────────────────────────────────────────
 echo "[install] Verifying SHA256..."
-EXPECTED=$(grep " ${TARBALL}\$" "$TMP/SHA256SUMS" | awk '{print $1}')
+# `|| true`: under set -o pipefail a no-match grep would kill the script
+# before the explanatory error below can print.
+EXPECTED=$(grep " ${TARBALL}\$" "$TMP/SHA256SUMS" | awk '{print $1}' || true)
 if [[ -z "$EXPECTED" ]]; then
   echo "Error: ${TARBALL} not found in SHA256SUMS" >&2
   exit 1
