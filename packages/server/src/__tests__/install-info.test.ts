@@ -1,4 +1,4 @@
-// install.json resolution (ADR-075): the marker decides, the legacy layout is
+// install.json resolution (ADR-076): the marker decides, the legacy layout is
 // the explicit fallback arm, and everything else refuses — never guesses.
 
 import assert from "node:assert/strict";

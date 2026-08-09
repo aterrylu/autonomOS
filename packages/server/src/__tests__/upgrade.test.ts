@@ -1,4 +1,4 @@
-// performUpgrade / performRollback / compareSemver (ADR-075).
+// performUpgrade / performRollback / compareSemver (ADR-076).
 //
 // performUpgrade had ZERO tests when it shipped in #170 — network + checksum +
 // tar + double-rename with a finally-cleanup is exactly the shape where an

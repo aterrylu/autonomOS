@@ -1,4 +1,4 @@
-// install.json — the recorded install-shape marker (ADR-075).
+// install.json — the recorded install-shape marker (ADR-076).
 //
 // The updater must never GUESS its install shape: path-sniffing is the failure
 // class behind Claude Code #28625 (native install misdetected as npm-global →

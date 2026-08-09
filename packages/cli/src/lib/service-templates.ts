@@ -103,7 +103,7 @@ After=default.target
 # No start-limit: with the default StartLimitBurst, a bundle that crashes on
 # boot (e.g. right after an upgrade) exhausts the burst and systemd STOPS
 # restarting — Restart=always silently becomes permanent downtime. The upgrade
-# flow's health gate + auto-rollback (ADR-075) is the safety net; the
+# flow's health gate + auto-rollback (ADR-076) is the safety net; the
 # supervisor's job is to never give up.
 StartLimitIntervalSec=0
 

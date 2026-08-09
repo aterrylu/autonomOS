@@ -273,7 +273,7 @@ esac
 echo "==> ✓ Service file removed"
 assert_real_daemon_untouched "uninstall-service"
 
-# ── upgrade → rollback cycle (ADR-075) ───────────────────────────────────
+# ── upgrade → rollback cycle (ADR-076) ───────────────────────────────────
 # A fake v9.9.9 release (the real built tarball with a bumped version) served
 # by a local HTTP stand-in for the GitHub releases API. Exercises the REAL
 # `autonomos upgrade` end-to-end: fetch → SHA256 verify → atomic swap →
