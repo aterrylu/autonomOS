@@ -8,8 +8,14 @@
  * Matching: printed key, lowercased (CapsLock-safe, layout-consistent with
  * chord.ts — deliberately NOT event.code, which would remap on Dvorak).
  * `shift`: "required" | "forbidden" | "any" — the old switch matched raw
- * event.key, so e.g. mod+A(shift) fell through to xterm; that behavior is
+ * event.key, so e.g. mod+Shift+A fell through to xterm; that behavior is
  * preserved explicitly.
+ *
+ * ONE intentional divergence from the old switch (review catch): under
+ * CapsLock-on + no-Shift, the old `switch (event.key)` saw "A"/"O" and fell to
+ * default (passed to xterm); lowercasing first makes CapsLock+a fire the
+ * `forbidden` select-all / send, which is the MORE consistent behavior and is
+ * pinned in terminalKeymap.test.ts as a decision, not a side effect.
  */
 
 export type TerminalKeyActionSpec =

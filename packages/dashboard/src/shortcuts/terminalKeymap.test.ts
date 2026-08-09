@@ -44,6 +44,22 @@ describe("terminal keymap table", () => {
     ).toEqual({ type: "send", bytes: "\x15" });
   });
 
+  it("CapsLock: printed-letter matching fires forbidden-shift letters (intended divergence)", () => {
+    // Old switch(event.key) saw "A"/"O" under CapsLock and fell through to
+    // xterm; lowercasing first makes CapsLock+a fire select-all. Pinned as a
+    // deliberate decision (the more consistent behavior), NOT a side effect.
+    expect(matchTerminalKey({ key: "A", shiftKey: false })?.action.type).toBe(
+      "selectAll",
+    );
+    expect(matchTerminalKey({ key: "O", shiftKey: false })?.action).toEqual({
+      type: "send",
+      bytes: "\x0f",
+    });
+    // But CapsLock + Shift on a letter still cancels to lowercase-with-shift,
+    // and a `forbidden` entry declines it (matches old fall-through).
+    expect(matchTerminalKey({ key: "a", shiftKey: true })).toBeNull();
+  });
+
   it("unbound keys return null (xterm handles them)", () => {
     expect(matchTerminalKey({ key: "r", shiftKey: false })).toBeNull();
     expect(matchTerminalKey({ key: "Enter", shiftKey: false })).toBeNull();

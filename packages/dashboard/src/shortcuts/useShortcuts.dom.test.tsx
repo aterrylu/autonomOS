@@ -339,6 +339,34 @@ describe("useShortcuts dispatcher", () => {
     unmount();
   });
 
+  it("Escape in a MODAL DIALOG's input closes it (⌘K palette) — no draft-blur", () => {
+    const closer = vi.fn();
+    const pop = pushEscapeCloser(closer);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const field = document.createElement("input"); // e.g. the palette search
+    dialog.appendChild(field);
+    document.body.appendChild(dialog);
+    field.focus();
+
+    const { unmount } = renderHook(() => useShortcuts(true));
+    const esc = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(esc);
+    // Closes immediately (the search query is not a draft to protect, and the
+    // palette's key handlers live on this input — blurring would strand it).
+    expect(closer).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(field); // NOT blurred
+
+    pop();
+    dialog.remove();
+    unmount();
+  });
+
   it("Escape in xterm's helper textarea still closes immediately (it is the terminal, not a draft)", () => {
     const closer = vi.fn();
     const pop = pushEscapeCloser(closer);
