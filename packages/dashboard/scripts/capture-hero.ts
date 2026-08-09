@@ -951,7 +951,7 @@ async function stageScene(
 }
 
 // ── Web capture ──────────────────────────────────────────────────────────────
-const THEME = "midnight"; // dark navy theme (#0a0e14 bg) — see store.ts THEMES
+const THEME = "void"; // pure-black theme (#000000 bg) — see store.ts THEMES
 const VIEWPORT = { width: HERO_W, height: HERO_H };
 
 type PaneObj =
@@ -1179,7 +1179,7 @@ async function frameMacWindow(
 .mat{ padding:92px 100px 112px; background:linear-gradient(155deg, #093a4d 0%, #12657a 34%, #1f9ca6 66%, #74dac9 100%); display:inline-block; }
 .win{ width:${w}px; border-radius:15px; overflow:hidden; border:1px solid rgba(255,255,255,.08);
   box-shadow:0 2px 0 rgba(255,255,255,.05) inset, 0 60px 120px rgba(0,0,0,.6), 0 24px 48px rgba(0,0,0,.45); }
-.bar{ height:40px; background:#0a0e14; display:flex; align-items:center; gap:9px; padding:0 17px; }
+.bar{ height:40px; background:#000000; display:flex; align-items:center; gap:9px; padding:0 17px; }
 .dot{ width:13px; height:13px; border-radius:50% }
 .r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
 .shot{ display:block; width:${w}px; height:${h}px }
