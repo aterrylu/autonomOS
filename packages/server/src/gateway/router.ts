@@ -221,7 +221,7 @@ function buildAgentMessage(
 ): GatewayMessage {
   return {
     id: crypto.randomUUID(),
-    chatId: senderId,
+    chatId: "",
     userId: senderId,
     userName: senderName,
     text,

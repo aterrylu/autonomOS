@@ -23,7 +23,7 @@ import {
 } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { revokeAgentToken, writeAgentTokenFile } from "../agentCredentials.js";
+import { writeAgentTokenFile } from "../agentCredentials.js";
 import { applyPresetToEnv } from "../envPresets.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
@@ -1214,10 +1214,16 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         providerSessionId: crypto.randomUUID(),
         providerThreadId: undefined,
       });
-      pushSystemNotification(
-        persisted.id,
-        `Couldn't resume ${persisted.name}'s prior ${provider.displayName} session (its history may have been pruned) — starting fresh.`,
-      );
+      // Existence-guarded: this exit handler runs async, so the record may
+      // have been DELETED since (which also reclaimed its notifications) — an
+      // unguarded push would re-create a notifications entry under an id
+      // nothing can resolve, the exact leak the reclamation closes.
+      if (getAgent(persisted.id)) {
+        pushSystemNotification(
+          persisted.id,
+          `Couldn't resume ${persisted.name}'s prior ${provider.displayName} session (its history may have been pruned) — starting fresh.`,
+        );
+      }
       console.warn(
         `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — reset session id + cleared thread id, respawning fresh`,
       );
@@ -1255,7 +1261,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       //     that surfaces an error and lingers exits well past a tight bound.
       // The record keeps its external session id, so retrying resume reattaches
       // THIS record rather than adopting a duplicate.
-      if (isAdoptedRecord && lifetime < 60_000) {
+      // Existence-guarded like the resume-crash push above: deleting a
+      // just-adopted agent inside this 60s window would otherwise re-create
+      // its just-reclaimed notifications entry under a deleted id.
+      if (isAdoptedRecord && lifetime < 60_000 && getAgent(persisted.id)) {
         pushSystemNotification(
           persisted.id,
           exitCode === 0
@@ -1343,17 +1352,11 @@ export function deleteAgent(agentId: UUID): boolean {
   cancelChannelServerCheck(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
-    // Reclaim the hook state with the record, or GET /api/hooks keeps
-    // returning ids no store lookup can resolve. KILL deliberately keeps
-    // both — the record survives, and the history is part of it.
-    //
-    // The token revoke is part of the same invariant, not just hygiene: the
-    // dying process fires its final hook curls (SessionEnd, Stop) AFTER the
-    // record is gone, and markExited's not-found early-return means ITS revoke
-    // never runs on this path — so with the token still valid, a straggler
-    // ingest would re-create the status entry we just cleared, permanently.
-    // Revoked, stragglers fail token verification and cannot resurrect it.
-    revokeAgentToken(agentId);
+    // deleteAgentRaw revoked the token at the store chokepoint; reclaim the
+    // hook state here (the store can't — routes/hooks would be a layering
+    // inversion). Without this, GET /api/hooks keeps returning ids no store
+    // lookup can resolve. KILL deliberately keeps both — the record survives,
+    // and the history is part of it.
     clearAgentState(agentId);
     clearNotifications(agentId);
     emitAgentDelta({ type: "agent.deleted", id: agentId });

@@ -473,6 +473,13 @@ export function deleteAgentRaw(id: UUID): boolean {
     return false;
   }
   cache.delete(id);
+  // Revoke here — the single chokepoint every delete path funnels through
+  // (mirrors markExited's revoke for the exit paths). A record that ceases to
+  // exist must take its credential with it, or the dying process's final hook
+  // curls still verify and re-create the hook state the delete just reclaimed.
+  // markExited cannot cover this: its not-found early-return fires when the
+  // record is already gone.
+  revokeAgentToken(id);
   return true;
 }
 

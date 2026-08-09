@@ -12,7 +12,10 @@ import type { PermissionMode } from "./permissions";
 /** An agent-to-agent message routed through the gateway. */
 export interface GatewayMessage {
   id: string;
-  /** Routing key (sender's session id for agent messages) */
+  /** Set to the sender's session id, which makes it identical to `userId` —
+   *  and read by nothing. Kept only because dropping it changes the
+   *  channel-server wire payload; slated for removal with the other unread
+   *  fields. */
   chatId: string;
   userId: string;
   userName: string;

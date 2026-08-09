@@ -15,7 +15,6 @@ import {
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
-import { revokeAgentToken } from "../agentCredentials.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -865,11 +864,16 @@ agentsRouter.delete("/:id", (c) => {
     }
     // Else: agent is genuinely gone (race resolved itself) — fall through to 200.
   }
-  // Delete confirmed — reclaim the hook state with the record. Idempotent, and
-  // reached on the paths runtimeDeleteAgent's own clear misses: it clears only
-  // when the store removal returned true, so a live-PTY-only agent and the
-  // raw-fallback delete both land here still holding state.
-  revokeAgentToken(id);
+  // Delete confirmed — reclaim the hook state with the record. Idempotent: a
+  // no-op on the common path, where runtimeDeleteAgent already cleared. It is
+  // here for the paths where it did not — that clear sits inside `if (removed)`,
+  // so a delete that succeeded only via `wasLive`, or via the raw fallback
+  // below, arrives still holding state.
+  //
+  // Those two paths are UNTESTED — both need a live PTY or a mid-delete store
+  // failure to reach, and the suites drive runtime.deleteAgent directly, which
+  // exercises only the common path. Stated so the next reader can re-judge the
+  // call rather than trust a claim nothing enforces.
   clearAgentState(id);
   clearNotifications(id);
   // Flush the deferred reparent deltas now. Emit AFTER
