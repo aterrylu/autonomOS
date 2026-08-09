@@ -196,6 +196,48 @@ describe("useShortcuts dispatcher", () => {
     useStore.setState({ sidebarRowOrder: [], activePane: null });
   });
 
+  it("mod+k toggles the quick-switcher", () => {
+    const { unmount } = renderHook(() => useShortcuts(true));
+    const e = pressMod("k", "KeyK");
+    expect(e.defaultPrevented).toBe(true);
+    expect(useStore.getState().quickSwitchOpen).toBe(true);
+    pressMod("k", "KeyK");
+    expect(useStore.getState().quickSwitchOpen).toBe(false);
+    unmount();
+  });
+
+  it("agent-switching chords stand down while the palette is open", () => {
+    useStore.setState({
+      sidebarRowOrder: ["a", "b", "c"],
+      activePane: { type: "session", id: "a" },
+      quickSwitchOpen: true,
+    });
+    const { unmount } = renderHook(() => useShortcuts(true));
+
+    const digit = pressMod("2", "Digit2");
+    expect(digit.defaultPrevented).toBe(false); // passes through, no match
+    const arrow = pressMod("ArrowDown", "ArrowDown");
+    expect(arrow.defaultPrevented).toBe(false);
+    const sidebar = pressMod("b", "KeyB");
+    expect(sidebar.defaultPrevented).toBe(false);
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "a", // nothing switched behind the modal
+    });
+
+    // mod+K still toggles (that's how you close it from the keyboard)…
+    pressMod("k", "KeyK");
+    expect(useStore.getState().quickSwitchOpen).toBe(false);
+    // …and the chords come back once closed.
+    pressMod("2", "Digit2");
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "b",
+    });
+    unmount();
+    useStore.setState({ sidebarRowOrder: [], activePane: null });
+  });
+
   it("mod+/ opens the help overlay; Escape closes it; Escape passes through when closed", () => {
     // The overlay must be MOUNTED: Escape dismissal rides the escape stack,
     // which the HelpDialog registers on while open (not the store flag).

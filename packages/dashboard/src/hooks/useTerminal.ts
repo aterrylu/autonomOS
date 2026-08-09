@@ -37,17 +37,27 @@ export function focusTerminal(sessionId: string) {
   }
   // Poll until the terminal's container is visible, then focus.
   // dockview may take 1-3 frames to mount the panel and make it visible.
-  let attempts = 0;
+  // INDEPENDENT budgets: a never-mounted pane (the ⌘K switcher can target
+  // agents hidden in a collapsed hierarchy group) first has to register at
+  // all (~30 frames — mount + xterm creation), and only then starts the
+  // visibility wait (10 frames). Sharing one counter starved the visibility
+  // poll when registration used most of it — focus silently landed on body
+  // for exactly the case the registration retry was added for.
+  let regAttempts = 0;
+  let visAttempts = 0;
   function tryFocus() {
     pendingFocusRaf = null;
     const term = terminalRegistry.get(sessionId);
-    if (!term) return;
+    if (!term) {
+      if (++regAttempts < 30) pendingFocusRaf = requestAnimationFrame(tryFocus);
+      return;
+    }
     const textarea = term.textarea;
     if (textarea && textarea.offsetParent !== null) {
       term.focus();
       return;
     }
-    if (++attempts < 10) {
+    if (++visAttempts < 10) {
       pendingFocusRaf = requestAnimationFrame(tryFocus);
     }
   }
@@ -741,10 +751,22 @@ export function handleKeyEvent(
     }
   };
 
+  // Terminal-clear moved to mod+SHIFT+K (quick-switcher ADR): plain mod+K is
+  // the agent quick-switcher (registry). Matched on the PRINTED letter,
+  // lowercased — "K" plain-shift and "k" CapsLock+Shift both normalize, and
+  // the match stays consistent with how the registry's chord.ts matches
+  // letters (physical-code matching is deliberately digits-only there; a
+  // code-based match here would steal mod+shift+T on Dvorak, where KeyK
+  // prints "t"). preventDefault is best-effort for browser chords sharing
+  // this combo (Firefox non-Mac Ctrl+Shift+K is its devtools console and may
+  // be browser-reserved; the console can open alongside the clear — accepted).
+  if (event.key.toLowerCase() === "k" && event.shiftKey) {
+    terminal.clear();
+    event.preventDefault();
+    return false;
+  }
+
   switch (event.key) {
-    case "k":
-      terminal.clear();
-      return false;
     case "Backspace":
       sendToWs("\x15");
       return false;
