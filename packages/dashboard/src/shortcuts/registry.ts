@@ -13,7 +13,7 @@ import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
  *      bubble phase, so bubble listeners are dead while a terminal is focused.
  *      On an app-reserved match it preventDefault+stopPropagation+runs, so a
  *      focused terminal never sees the chord at all.
- *   2. handleKeyEvent (useTerminal.ts) — xterm's attachCustomKeyEventHandler
+ *   2. handleKeyEvent (terminal/liveTerminals.ts) — xterm's attachCustomKeyEventHandler
  *      consults isReservedChord() and declines reserved chords (returns
  *      false). In practice the dispatcher's stopPropagation already keeps
  *      them from xterm; the consult is defense in depth that keeps the
@@ -23,7 +23,8 @@ import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
  * invariants (no duplicate chords, nothing browser-unreservable, terminal-
  * sacred ctrl-chords need an explicit rationale).
  *
- * IMPORT-CYCLE DISCIPLINE: useTerminal → this module → actions → useTerminal
+ * IMPORT-CYCLE DISCIPLINE: liveTerminals → this module → actions →
+ * useTerminal → liveTerminals
  * is a real cycle, safe only because every cross-cycle binding is a hoisted
  * `function` declaration referenced at call time (every `run` closure below
  * reads cross-cycle bindings at CALL time; a top-level read of one would be

@@ -42,9 +42,59 @@ Flag-off is exactly 18,829 frames → the gate is byte-identical to `main`.
 > multiplier is smaller but still large. L1 proves the mechanism; the browser
 > layer (L2) + a real-session capture calibrate the absolute number.
 
-## L2/L3 — perceived render + responsiveness (Playwright)
+## L1-replay — reconnect replay (agent-switch cost)
 
-_(in progress)_ Real dashboard + real server, headed for WebGL numbers:
-time-to-sentinel in the xterm buffer, total-blocking-time via
-`PerformanceObserver('longtask')`, dropped frames, keystroke echo latency under
-sustained flood.
+Same rig, but the burst is emitted BEFORE the client connects, so it lands only
+in the server-side scrollback buffer — the measurement is the replay a
+(re)connecting client receives, i.e. what every agent switch used to pay.
+
+```bash
+# from packages/server/
+bun run perf:l1-replay                                  # replay coalescing ON (default)
+AUTONOMOS_WS_REPLAY_COALESCE=0 bun run perf:l1-replay   # per-chunk replay (== old main)
+```
+
+### Measured ablation (1.09 MB buffered scrollback)
+
+| Config | Replay frames | Drain (loopback) |
+|---|---|---|
+| per-chunk (old main) | 18,829 | 78 ms |
+| **replay coalescing** | **9-16** | **18 ms** |
+
+## L2 — real-dashboard render + agent-switch (Playwright)
+
+Real dashboard + real (isolated) server, headed so the WebGL path is genuine.
+`run-l2.sh` boots both on their own ports + config dir and runs the specs:
+
+```bash
+# from packages/server/
+./perf/run-l2.sh                    # all specs
+./perf/run-l2.sh terminal-switch    # the agent-switch benchmark
+AUTONOMOS_WS_REPLAY_COALESCE=0 ./perf/run-l2.sh terminal-switch   # ablate replay fix
+```
+
+Specs: `terminal-burst` (live-burst render cost: frames, long-task blocking,
+dropped rAF frames), `terminal-profile` (CDP CPU profile bucketed by source),
+`terminal-switch` (THE user complaint: open a 1MB-scrollback agent, switch
+away, switch back — WS reconnects, frames/bytes re-streamed, click→settled,
+plus a non-blank pixel integrity guard).
+
+### Measured agent-switch matrix (1MB scrollback, loopback)
+
+| Config | WS reconnects | frames | KB re-streamed | settled |
+|---|---|---|---|---|
+| old main | 1 | 37,075 | 1024 | 965 ms |
+| replay coalescing only | 1 | 16 | 1024 | 412 ms |
+| **+ keep-alive cache (ADR-069)** | **0** | **0** | **0** | **44 ms** |
+
+Loopback understates the baseline pain: 37k frames over a real network is the
+multi-second "text rushing in" the fix removes. The keep-alive row has no
+network component at all, so throttling cannot degrade it.
+
+`PERF_THROTTLE=1` re-runs the switch spec on a CDP-throttled link (Slow-3G-ish,
+150ms RTT / 750kbps, applied after the app loads). Measured: a COLD open of the
+1MB-scrollback agent takes **85s** to fully drain even with coalescing — while
+the keep-alive **switch-back on the same throttled link settles in ~320ms with
+0 frames re-streamed**. That 267× gap is the whole point: no amount of replay
+optimization makes re-streaming acceptable on a slow network; only not
+re-streaming does.

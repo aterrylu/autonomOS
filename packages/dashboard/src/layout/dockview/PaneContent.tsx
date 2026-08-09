@@ -24,7 +24,8 @@ export interface PaneParams {
  * so they retain full layout dimensions. We forward dockview's authoritative
  * `props.api.isVisible` into `SessionPane` as `visible`, which
  * toggles `display:none` on the hidden panel. That is load-bearing for the
- * terminal: `useTerminal` infers "is this pane showing?" from a nonzero offset
+ * terminal: `LiveTerminal`'s ResizeObserver infers "is this pane showing?"
+ * from its host div's nonzero offset
  * box (`offsetWidth > 0 && offsetHeight > 0`) to dispose the WebGL context +
  * skip fit() when hidden. Without a real `display:none`, hidden panels keep a
  * full-size offset box →

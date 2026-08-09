@@ -82,6 +82,9 @@ type NodeEnv = {
  * resolveBindHost), so it is NOT loopback. This drives an informational startup
  * line, not any auth decision: auth is required on every route regardless of
  * bind, and per ADR-041 no route should be auth-exempt "because loopback".
+ * ONE deliberate exception (ADR-072): perf-harness mode (`AUTONOMOS_PERF=1`)
+ * consults this to REFUSE engaging on a non-loopback bind — loopback as a
+ * precondition for weakening auth, never as a substitute for it.
  */
 export function isLoopbackBind(bindHost: string | undefined): boolean {
   return (
@@ -320,8 +323,32 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     );
   };
 
-  app.use("/api/*", requireAuth);
-  app.use("/ws/*", requireAuth);
+  // DEV/PERF ONLY — perf harness mode (set by perf/run-l2.sh). Mounts
+  // /api/perf AND drops auth on the PUBLIC listener so Playwright needn't
+  // thread tokens through the vite proxy. One flag, decided once at boot, and
+  // it engages ONLY on a loopback bind: an all-interfaces server ignores it
+  // (an unauthenticated POST /api/agents is LAN-reachable code execution, not
+  // a benchmark convenience). The internal socket (/mcp, gateway) keeps its
+  // token check either way — the bypass below is publicAuth, never requireAuth.
+  const perfMode =
+    process.env.AUTONOMOS_PERF === "1" &&
+    isLoopbackBind(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST));
+  if (process.env.AUTONOMOS_PERF === "1" && !perfMode) {
+    console.warn(
+      "[perf] AUTONOMOS_PERF=1 ignored — bind host is not loopback; auth stays ON and /api/perf is not mounted",
+    );
+  }
+  if (perfMode) {
+    console.warn(
+      "[perf] PERF HARNESS MODE — public-listener auth DISABLED (loopback bind, /api/perf mounted)",
+    );
+  }
+  const publicAuth: MiddlewareHandler = perfMode
+    ? (_c, next) => next()
+    : requireAuth;
+
+  app.use("/api/*", publicAuth);
+  app.use("/ws/*", publicAuth);
   // /mcp exposes the same orchestration tools as the dashboard API —
   // create_agent, kill_agent, set_manager. It is NOT a public transport.
   //
@@ -355,6 +382,14 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/plugins/codex-usage", codexUsageRouter);
   app.route("/api/usage-queue", usageQueueRouter);
   app.route("/api/system", systemRouter);
+
+  // DEV/PERF ONLY — synthetic session register + burst trigger for the L2
+  // browser benchmark. Dynamic import so the perf modules (FakePty, ink-burst)
+  // stay out of the production server's eager import graph.
+  if (perfMode) {
+    const { perfRouter } = await import("./routes/perf.js");
+    app.route("/api/perf", perfRouter);
+  }
 
   // MCP — Streamable HTTP transport, served on the internal socket only.
   internalApp.post("/mcp", async (c) => {

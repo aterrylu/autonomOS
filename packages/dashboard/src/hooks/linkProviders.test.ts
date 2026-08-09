@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 // Extract the URL regex pattern used by UrlLinkProvider for direct testing.
-// This is the same regex from useTerminal.ts — kept in sync manually.
+// This is the same regex from terminal/liveTerminals.ts — kept in sync manually.
 const URL_PATTERN = /https?:\/\/[^\s"'`<>)\]},;]+[^\s"'`<>)\]},;.:!?]/g;
 
 /** Helper: extract all URL matches from a string */
