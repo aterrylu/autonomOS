@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import { useStore } from "../store";
 import { isMac } from "../utils/platform";
+import { pushEscapeCloser } from "./escapeStack";
 import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { useShortcuts } from "./useShortcuts";
 
@@ -300,6 +301,92 @@ describe("useShortcuts dispatcher", () => {
       useStore.getState().closeShortcutHelp();
     });
     view.unmount();
+    unmount();
+  });
+
+  it("Escape in a popover's text field blurs the field (draft kept); second Escape closes", () => {
+    const closer = vi.fn();
+    const pop = pushEscapeCloser(closer); // an open popover
+    const field = document.createElement("input");
+    document.body.appendChild(field);
+    field.value = "half-typed session key";
+    field.focus();
+
+    const { unmount } = renderHook(() => useShortcuts(true));
+    const first = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(first);
+    expect(first.defaultPrevented).toBe(true); // consumed by ui.dismiss…
+    expect(closer).not.toHaveBeenCalled(); // …but the popover did NOT close
+    expect(document.activeElement).not.toBe(field); // the field was blurred
+    expect(field.value).toBe("half-typed session key"); // draft intact
+
+    const second = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(second);
+    expect(closer).toHaveBeenCalledTimes(1); // now it closes
+
+    pop();
+    field.remove();
+    unmount();
+  });
+
+  it("Escape in a MODAL DIALOG's input closes it (⌘K palette) — no draft-blur", () => {
+    const closer = vi.fn();
+    const pop = pushEscapeCloser(closer);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const field = document.createElement("input"); // e.g. the palette search
+    dialog.appendChild(field);
+    document.body.appendChild(dialog);
+    field.focus();
+
+    const { unmount } = renderHook(() => useShortcuts(true));
+    const esc = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(esc);
+    // Closes immediately (the search query is not a draft to protect, and the
+    // palette's key handlers live on this input — blurring would strand it).
+    expect(closer).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(field); // NOT blurred
+
+    pop();
+    dialog.remove();
+    unmount();
+  });
+
+  it("Escape in xterm's helper textarea still closes immediately (it is the terminal, not a draft)", () => {
+    const closer = vi.fn();
+    const pop = pushEscapeCloser(closer);
+    const helper = document.createElement("textarea");
+    helper.classList.add("xterm-helper-textarea");
+    document.body.appendChild(helper);
+    helper.focus();
+
+    const { unmount } = renderHook(() => useShortcuts(true));
+    const esc = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    helper.dispatchEvent(esc);
+    expect(closer).toHaveBeenCalledTimes(1);
+
+    pop();
+    helper.remove();
     unmount();
   });
 
