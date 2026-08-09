@@ -4,6 +4,7 @@ import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
+import { QuickSwitcher } from "./shortcuts/QuickSwitcher";
 import { ShortcutHelpOverlay } from "./shortcuts/ShortcutHelpOverlay";
 import { useModKeyHold } from "./shortcuts/useModKeyHold";
 import { useShortcuts } from "./shortcuts/useShortcuts";
@@ -235,6 +236,7 @@ export function App() {
         </div>
         <StatusBar />
         <ShortcutHelpOverlay />
+        <QuickSwitcher />
       </div>
     </>
   );

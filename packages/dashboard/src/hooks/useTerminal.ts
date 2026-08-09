@@ -41,7 +41,14 @@ export function focusTerminal(sessionId: string) {
   function tryFocus() {
     pendingFocusRaf = null;
     const term = terminalRegistry.get(sessionId);
-    if (!term) return;
+    if (!term) {
+      // Not registered YET — a pane that has never mounted (the ⌘K switcher
+      // can target agents hidden in a collapsed hierarchy group) registers a
+      // few frames after switchPane. Retry within the same budget instead of
+      // silently giving up on the first frame.
+      if (++attempts < 10) pendingFocusRaf = requestAnimationFrame(tryFocus);
+      return;
+    }
     const textarea = term.textarea;
     if (textarea && textarea.offsetParent !== null) {
       term.focus();
@@ -741,10 +748,22 @@ export function handleKeyEvent(
     }
   };
 
+  // Terminal-clear moved to mod+SHIFT+K (quick-switcher ADR): plain mod+K is
+  // the agent quick-switcher (registry). Matched on the PRINTED letter,
+  // lowercased — "K" plain-shift and "k" CapsLock+Shift both normalize, and
+  // the match stays consistent with how the registry's chord.ts matches
+  // letters (physical-code matching is deliberately digits-only there; a
+  // code-based match here would steal mod+shift+T on Dvorak, where KeyK
+  // prints "t"). preventDefault is best-effort for browser chords sharing
+  // this combo (Firefox non-Mac Ctrl+Shift+K is its devtools console and may
+  // be browser-reserved; the console can open alongside the clear — accepted).
+  if (event.key.toLowerCase() === "k" && event.shiftKey) {
+    terminal.clear();
+    event.preventDefault();
+    return false;
+  }
+
   switch (event.key) {
-    case "k":
-      terminal.clear();
-      return false;
     case "Backspace":
       sendToWs("\x15");
       return false;

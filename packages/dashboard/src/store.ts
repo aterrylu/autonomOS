@@ -467,6 +467,8 @@ interface AppState {
   /** True while the primary modifier is deliberately HELD (useModKeyHold) —
    *  sidebar rows show their digit badges. Not persisted. */
   modKeyHeld: boolean;
+  /** Whether the ⌘K agent quick-switcher is open. Not persisted. */
+  quickSwitchOpen: boolean;
   /** The sidebar's RENDERED agent-row order (published by Sidebar, consumed by
    *  the mod+digit shortcuts and the hold-badges — ADR-066). Not persisted. */
   sidebarRowOrder: string[];
@@ -491,6 +493,8 @@ interface AppState {
   closeShortcutHelp: () => void;
   setModKeyHeld: (held: boolean) => void;
   setSidebarRowOrder: (ids: string[]) => void;
+  toggleQuickSwitch: () => void;
+  closeQuickSwitch: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
   setPermissionMode: (mode: PermissionMode) => void;
@@ -708,6 +712,7 @@ export const useStore = create<AppState>()(
         sidebarOpen: true,
         shortcutHelpOpen: false,
         modKeyHeld: false,
+        quickSwitchOpen: false,
         sidebarRowOrder: [],
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
         permissionMode: DEFAULT_PERMISSION_MODE,
@@ -731,9 +736,21 @@ export const useStore = create<AppState>()(
         setActivePane: (pane) => set({ activePane: pane }),
         toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
         toggleShortcutHelp: () =>
-          set({ shortcutHelpOpen: !get().shortcutHelpOpen }),
+          // Mutually exclusive with the quick-switcher: stacking two modal
+          // overlays leaves one dimmed behind the other's backdrop and makes
+          // the first Escape appear dead (it closes the hidden one).
+          set({
+            shortcutHelpOpen: !get().shortcutHelpOpen,
+            quickSwitchOpen: false,
+          }),
         closeShortcutHelp: () => set({ shortcutHelpOpen: false }),
         setModKeyHeld: (held) => set({ modKeyHeld: held }),
+        toggleQuickSwitch: () =>
+          set({
+            quickSwitchOpen: !get().quickSwitchOpen,
+            shortcutHelpOpen: false,
+          }),
+        closeQuickSwitch: () => set({ quickSwitchOpen: false }),
         setSidebarRowOrder: (ids) => {
           // Published on every Sidebar render commit — skip no-op updates so
           // subscribers don't re-render on unchanged order.

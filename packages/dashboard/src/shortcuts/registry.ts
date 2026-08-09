@@ -62,12 +62,19 @@ export interface ShortcutDef {
   run: () => void;
 }
 
+/** Direct agent-switching chords stand down while the ⌘K palette is open:
+ *  switching the pane behind a modal backdrop and yanking focus out of its
+ *  input is never what the user meant (same class as the overlay mutual
+ *  exclusion in the store). The palette itself owns navigation while open. */
+const paletteClosed = () => !useStore.getState().quickSwitchOpen;
+
 const agentShortcuts: ShortcutDef[] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
   id: `agent.focus.${n}`,
   chord: `mod+${n}`,
   description: `Switch to agent ${n}`,
   category: "Agents",
   boundary: "app-reserved",
+  when: paletteClosed,
   run: () => focusAgentByIndex(n - 1),
 }));
 
@@ -80,6 +87,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     category: "Agents",
     boundary: "app-reserved",
     skipWhenEditing: true,
+    when: paletteClosed,
     run: () => focusAgentDelta(-1),
   },
   {
@@ -89,7 +97,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     category: "Agents",
     boundary: "app-reserved",
     skipWhenEditing: true,
+    when: paletteClosed,
     run: () => focusAgentDelta(1),
+  },
+  {
+    id: "agent.quickswitch",
+    chord: "mod+k",
+    description: "Switch to agent by name",
+    category: "Agents",
+    boundary: "app-reserved",
+    run: () => useStore.getState().toggleQuickSwitch(),
   },
   {
     id: "sidebar.toggle",
@@ -97,6 +114,9 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: "Toggle sidebar",
     category: "App",
     boundary: "app-reserved",
+    // Sidebar unmount would publish an empty row order mid-interaction,
+    // silently collapsing the palette's empty-query ordering.
+    when: paletteClosed,
     run: () => useStore.getState().toggleSidebar(),
   },
   {

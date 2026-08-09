@@ -105,6 +105,8 @@ describe("registry invariants", () => {
         "STEALS ctrl+b (readline back-char, tmux prefix) — grandfathered: xterm's handleKeyEvent declined it pre-registry",
       "mod+/":
         "minor — ctrl+/ is undo in some readline builds; standard app help chord",
+      "mod+k":
+        "STEALS ctrl+k (readline kill-line) — accepted for the palette idiom; NO readline equivalent exists (ctrl+e/ctrl+u compose to whole-line kill, not point-to-end) — quick-switcher ADR",
       "mod+arrowup":
         "STEALS ctrl+↑ (xterm CSI 1;5A — some TUIs scroll/navigate with it) — accepted, ADR-066 follow-up",
       "mod+arrowdown":
