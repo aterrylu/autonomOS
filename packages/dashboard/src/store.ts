@@ -79,8 +79,9 @@ export interface SessionInfo {
    *  Missing on pre-schema records. */
   exitReason?: "user_killed" | "self_exited" | "crashed";
   /** Name of the env preset applied to this agent at spawn (model-override
-   *  backend), or undefined for the default backend. Surfaced as a subtle pill
-   *  in the sidebar row. See ADR-067. */
+   *  backend), or undefined for the default backend. Surfaced as a gold
+   *  accent-highlighted pill right after the repo·branch text on the sidebar
+   *  row's bottom line. See ADR-067. */
   envPreset?: string;
 }
 
