@@ -28,6 +28,10 @@ export const INSTALL_JSON = "install.json";
 export const INSTALL_MODES = ["bundle", "source"] as const;
 export type InstallMode = (typeof INSTALL_MODES)[number];
 
+function isInstallMode(value: unknown): value is InstallMode {
+  return INSTALL_MODES.includes(value as InstallMode);
+}
+
 export type InstallInfo = {
   /** How this install is laid out — decides which upgrade backend applies. */
   mode: InstallMode;
@@ -52,15 +56,18 @@ export function readInstallJson(bundleDir: string): InstallInfo | null {
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<InstallInfo>;
-    if (
-      typeof raw.mode !== "string" ||
-      !INSTALL_MODES.includes(raw.mode as InstallMode) ||
-      typeof raw.prefix !== "string"
-    ) {
-      return null; // malformed marker — caller falls through to legacy/refuse
+    if (!isInstallMode(raw.mode) || typeof raw.prefix !== "string") {
+      // Present-but-invalid must not be silently conflated with absent: the
+      // caller falls through to legacy inference (papering over corruption)
+      // or to an error that says "No install.json found" — false, and it
+      // sends the operator down the wrong path.
+      console.warn(
+        `[install] ${path} exists but is not a valid install marker — ignoring it`,
+      );
+      return null;
     }
     return {
-      mode: raw.mode as InstallMode,
+      mode: raw.mode,
       prefix: raw.prefix,
       installedBy:
         typeof raw.installedBy === "string" ? raw.installedBy : undefined,
@@ -68,6 +75,9 @@ export function readInstallJson(bundleDir: string): InstallInfo | null {
         typeof raw.installedAt === "string" ? raw.installedAt : undefined,
     };
   } catch {
+    console.warn(
+      `[install] ${path} exists but is not parseable JSON — ignoring it`,
+    );
     return null;
   }
 }

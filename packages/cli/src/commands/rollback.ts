@@ -10,12 +10,15 @@
 //   1  failure (no .previous, filesystem error)
 //   2  unsupported install shape (source mode / dev checkout / unknown)
 
-import { resolveInstall } from "@autonomos/server/installInfo.js";
+import {
+  type ResolvedInstall,
+  resolveInstall,
+} from "@autonomos/server/installInfo.js";
 import { performRollback } from "@autonomos/server/upgrade.js";
 import { restartDaemonAfterSwap } from "../lib/apply-bundle.js";
 
 export async function runRollbackCommand(): Promise<number> {
-  let install: ReturnType<typeof resolveInstall>;
+  let install: ResolvedInstall;
   try {
     install = resolveInstall();
   } catch (err) {

@@ -21,7 +21,7 @@
 // gets no Update button in v1.
 
 import { Hono } from "hono";
-import { resolveInstall } from "../installInfo.js";
+import { type ResolvedInstall, resolveInstall } from "../installInfo.js";
 import { detectPlatform, performUpgrade } from "../upgrade.js";
 import { getServerVersion } from "../version.js";
 
@@ -35,8 +35,21 @@ systemRouter.get("/version", (c) =>
   }),
 );
 
+// At most one in-process upgrade at a time: concurrent runs share a staging
+// dir keyed by pid (the second's cleanup clobbers the first's download) and
+// would race the same renames — a race can strand the install with no live
+// bundle. In-process latch suffices for same-process requests; a CLI upgrade
+// racing the route is out of scope (single-operator boxes).
+let upgradeInFlight = false;
+
 systemRouter.post("/upgrade", async (c) => {
-  let install: ReturnType<typeof resolveInstall>;
+  if (upgradeInFlight) {
+    return c.json(
+      { status: "error", message: "An upgrade is already in progress." },
+      409,
+    );
+  }
+  let install: ResolvedInstall;
   try {
     install = resolveInstall();
   } catch (err) {
@@ -74,20 +87,39 @@ systemRouter.post("/upgrade", async (c) => {
     );
   }
 
-  const result = await performUpgrade({
-    bundleDir: install.bundleDir,
-    currentVersion: getServerVersion(),
-    platform,
-    installInfo: install.info,
-  });
+  upgradeInFlight = true;
+  let result: Awaited<ReturnType<typeof performUpgrade>>;
+  try {
+    result = await performUpgrade({
+      bundleDir: install.bundleDir,
+      currentVersion: getServerVersion(),
+      platform,
+      installInfo: install.info,
+    });
+  } finally {
+    // Released even on "upgraded": the exit below is scheduled, not certain
+    // (an unsupervised daemon keeps living until then), and a stuck latch
+    // would block retries forever.
+    upgradeInFlight = false;
+  }
 
   if (result.status === "upgraded") {
-    // Send response first, then exit. The supervisor will restart us with
-    // the new bundle. Give the response a moment to flush.
+    // Send response first, then exit. Under launchd KeepAlive / systemd
+    // Restart=always the supervisor revives us on the new bundle. A daemon
+    // started FOREGROUND (no service installed) stays down after this exit —
+    // the server cannot see its own supervisor from in here, so say so in
+    // the response instead of promising a restart.
     setTimeout(() => {
       console.log("[upgrade] Restarting to apply new bundle...");
       process.exit(0);
     }, 500);
+    return c.json({
+      ...result,
+      note:
+        "Daemon exits in ~500ms. A supervised install (launchd/systemd) " +
+        "restarts automatically; a foreground daemon must be started again " +
+        "with `autonomos start`.",
+    });
   }
 
   return c.json(result);

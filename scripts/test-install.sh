@@ -27,12 +27,14 @@ SERVER_LOG=/tmp/autonomos-test-server.log
 STUB_DIR=""
 FIXTURE_DIR=""
 FIXTURE_PID=""
+SVR=""
 
 cleanup() {
   rm -rf "$TEST_PREFIX" "$TEST_CFG" "$ROOT/packages/server/dist/SHA256SUMS" 2>/dev/null || true
   [[ -n "$STUB_DIR" ]] && rm -rf "$STUB_DIR"
   [[ -n "$FIXTURE_DIR" ]] && rm -rf "$FIXTURE_DIR"
   [[ -n "$FIXTURE_PID" ]] && kill "$FIXTURE_PID" 2>/dev/null || true
+  [[ -n "$SVR" ]] && kill -9 "$SVR" 2>/dev/null || true
 }
 trap 'rc=$?; if [[ $rc -ne 0 ]] && [[ -f "$SERVER_LOG" ]]; then echo ""; echo "=== server log (failure dump) ==="; tail -50 "$SERVER_LOG"; echo "================================="; fi; cleanup; exit $rc' EXIT
 
@@ -100,6 +102,11 @@ assert_real_daemon_untouched() {
         echo "✗ HERMETIC VIOLATION after '$label': the real com.autonomos.daemon was unloaded!" >&2
         echo "  Attempting restore: launchctl bootstrap gui/$REAL_UID ..." >&2
         launchctl bootstrap "gui/$REAL_UID" "$REAL_HOME/Library/LaunchAgents/com.autonomos.daemon.plist" || true
+        if launchctl print "gui/$REAL_UID/com.autonomos.daemon" >/dev/null 2>&1; then
+          echo "  ✓ Restore succeeded — real daemon is loaded again." >&2
+        else
+          echo "  ✗ RESTORE FAILED — reload manually: launchctl bootstrap gui/$REAL_UID $REAL_HOME/Library/LaunchAgents/com.autonomos.daemon.plist" >&2
+        fi
         exit 1
       fi
       ;;
@@ -108,6 +115,11 @@ assert_real_daemon_untouched() {
         echo "✗ HERMETIC VIOLATION after '$label': the real autonomos.service was stopped!" >&2
         echo "  Attempting restore: systemctl --user start autonomos.service" >&2
         systemctl --user start autonomos.service || true
+        if systemctl --user is-active autonomos.service >/dev/null 2>&1; then
+          echo "  ✓ Restore succeeded — real service is active again." >&2
+        else
+          echo "  ✗ RESTORE FAILED — start manually: systemctl --user start autonomos.service" >&2
+        fi
         exit 1
       fi
       ;;
@@ -142,7 +154,8 @@ echo "==> Starting daemon on port $TEST_PORT"
 AUTONOMOS_CONFIG_DIR="$TEST_CFG" AUTONOMOS_TOKEN="$TEST_TOKEN" \
   "$WRAPPER" start --port="$TEST_PORT" >"$SERVER_LOG" 2>&1 &
 SVR=$!
-trap "cleanup; kill -9 $SVR 2>/dev/null || true" EXIT
+# No re-trap: cleanup() kills $SVR, and replacing the line-37 trap here would
+# silently drop its failure-time server-log dump for everything below.
 
 # Wait for the daemon to start
 for i in $(seq 1 30); do
@@ -292,7 +305,7 @@ http
 FIXTURE
 node "$FIXTURE_DIR/release-server.cjs" "$FIXTURE_DIR" "$FIXTURE_PORT" "$REAL_TARBALL" &
 FIXTURE_PID=$!
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
   curl -sf "http://127.0.0.1:$FIXTURE_PORT/repos/test-rel/autonomos/releases/latest" >/dev/null 2>&1 && break
   sleep 0.5
 done

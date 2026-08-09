@@ -1,10 +1,11 @@
 // install.json resolution (ADR-071): the marker decides, the legacy layout is
 // the explicit fallback arm, and everything else refuses — never guesses.
 
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   readInstallJson,
   resolveInstall,
@@ -24,14 +25,13 @@ afterEach(() => {
 describe("readInstallJson / writeInstallJson", () => {
   it("round-trips a marker", () => {
     writeInstallJson(root, { mode: "bundle", prefix: "/x/.local" });
-    expect(readInstallJson(root)).toMatchObject({
-      mode: "bundle",
-      prefix: "/x/.local",
-    });
+    const read = readInstallJson(root);
+    assert.equal(read?.mode, "bundle");
+    assert.equal(read?.prefix, "/x/.local");
   });
 
   it("returns null when absent", () => {
-    expect(readInstallJson(root)).toBeNull();
+    assert.equal(readInstallJson(root), null);
   });
 
   it("returns null on a malformed marker (unknown mode)", () => {
@@ -39,12 +39,12 @@ describe("readInstallJson / writeInstallJson", () => {
       join(root, "install.json"),
       JSON.stringify({ mode: "docker", prefix: "/x" }),
     );
-    expect(readInstallJson(root)).toBeNull();
+    assert.equal(readInstallJson(root), null);
   });
 
   it("returns null on unparseable JSON", () => {
     writeFileSync(join(root, "install.json"), "not json {");
-    expect(readInstallJson(root)).toBeNull();
+    assert.equal(readInstallJson(root), null);
   });
 });
 
@@ -54,22 +54,20 @@ describe("resolveInstall", () => {
     mkdirSync(bundleDir, { recursive: true });
     writeInstallJson(bundleDir, { mode: "source", prefix: root });
     const resolved = resolveInstall(join(bundleDir, "index.js"));
-    expect(resolved).toMatchObject({
-      bundleDir,
-      source: "marker",
-      info: { mode: "source", prefix: root },
-    });
+    assert.equal(resolved.bundleDir, bundleDir);
+    assert.equal(resolved.source, "marker");
+    assert.equal(resolved.info.mode, "source");
+    assert.equal(resolved.info.prefix, root);
   });
 
   it("legacy arm: marker-less <prefix>/share/autonomos resolves as bundle", () => {
     const bundleDir = join(root, "share", "autonomos");
     mkdirSync(bundleDir, { recursive: true });
     const resolved = resolveInstall(join(bundleDir, "index.js"));
-    expect(resolved).toMatchObject({
-      bundleDir,
-      source: "legacy-layout",
-      info: { mode: "bundle", prefix: root },
-    });
+    assert.equal(resolved.bundleDir, bundleDir);
+    assert.equal(resolved.source, "legacy-layout");
+    assert.equal(resolved.info.mode, "bundle");
+    assert.equal(resolved.info.prefix, root);
   });
 
   it("marker wins over the legacy layout when both apply", () => {
@@ -77,17 +75,19 @@ describe("resolveInstall", () => {
     mkdirSync(bundleDir, { recursive: true });
     writeInstallJson(bundleDir, { mode: "source", prefix: "/elsewhere" });
     const resolved = resolveInstall(join(bundleDir, "index.js"));
-    expect(resolved.source).toBe("marker");
-    expect(resolved.info.mode).toBe("source");
+    assert.equal(resolved.source, "marker");
+    assert.equal(resolved.info.mode, "source");
   });
 
   it("refuses an unrecognized layout with instructions, never guesses", () => {
     const devDir = join(root, "packages", "cli", "src");
     mkdirSync(devDir, { recursive: true });
-    expect(() => resolveInstall(join(devDir, "index.ts"))).toThrow(
+    assert.throws(
+      () => resolveInstall(join(devDir, "index.ts")),
       /Cannot determine install shape/,
     );
-    expect(() => resolveInstall(join(devDir, "index.ts"))).toThrow(
+    assert.throws(
+      () => resolveInstall(join(devDir, "index.ts")),
       /git pull && make prod/,
     );
   });
@@ -98,7 +98,7 @@ describe("resolveInstall", () => {
     const saved = process.argv;
     process.argv = [saved[0] ?? "node"];
     try {
-      expect(() => resolveInstall()).toThrow(/argv\[1\]/);
+      assert.throws(() => resolveInstall(), /argv\[1\]/);
     } finally {
       process.argv = saved;
     }

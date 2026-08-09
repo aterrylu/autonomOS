@@ -70,16 +70,19 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const first = argv[0];
 
+  // The two informational commands answer to both a bare word and a flag —
+  // handled before the implicit-start branch so each has one implementation.
+  if (first === "help" || first === "--help" || first === "-h") {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  if (first === "version" || first === "--version" || first === "-v") {
+    process.stdout.write(`${getServerVersion()}\n`);
+    return 0;
+  }
+
   // No args, or first arg is a flag → implicit start
   if (first === undefined || first.startsWith("-")) {
-    if (first === "--help" || first === "-h") {
-      process.stdout.write(USAGE);
-      return 0;
-    }
-    if (first === "--version" || first === "-v") {
-      process.stdout.write(`${getServerVersion()}\n`);
-      return 0;
-    }
     await runStartCommand(argv);
     return 0;
   }
@@ -107,12 +110,6 @@ async function main(): Promise<number> {
       return await runRollbackCommand();
     case "migrate-from-pm2":
       return await runMigrateFromPm2Command(argv.slice(1));
-    case "version":
-      process.stdout.write(`${getServerVersion()}\n`);
-      return 0;
-    case "help":
-      process.stdout.write(USAGE);
-      return 0;
     default:
       process.stderr.write(`Unknown command: ${first}\n\n${USAGE}`);
       return 64; // EX_USAGE

@@ -131,7 +131,20 @@ if [[ -d "$INSTALL_DIR" ]]; then
   rm -rf "$INSTALL_DIR.previous"
   mv "$INSTALL_DIR" "$INSTALL_DIR.previous"
 fi
-mv "$STAGE_DIR" "$INSTALL_DIR"
+# If this mv fails after the live dir was renamed away, nothing is at the
+# live path and the wrapper is dead — restore the displaced install rather
+# than exiting with only mv's terse error.
+if ! mv "$STAGE_DIR" "$INSTALL_DIR"; then
+  echo "Error: could not move the new bundle into place." >&2
+  if [[ "$WAS_INSTALLED" == "1" ]]; then
+    if mv "$INSTALL_DIR.previous" "$INSTALL_DIR" 2>/dev/null; then
+      echo "  The previous install was restored and is still usable." >&2
+    else
+      echo "  Restore the previous install manually: mv $INSTALL_DIR.previous $INSTALL_DIR" >&2
+    fi
+  fi
+  exit 1
+fi
 echo "[install] ✓ Installed to $INSTALL_DIR"
 [[ "$WAS_INSTALLED" == "1" ]] && echo "[install]   (previous version kept at $INSTALL_DIR.previous — 'autonomos rollback' swaps back)"
 
@@ -215,11 +228,12 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     echo "[install] Existing service detected. Restarting into the new bundle..."
     "$WRAPPER" restart || RC=$?
     if [[ "$RC" == "0" ]]; then
-      for i in $(seq 1 15); do
-        if "$WRAPPER" status >/dev/null 2>&1; then break; fi
+      HEALTHY=0
+      for _ in $(seq 1 15); do
+        if "$WRAPPER" status >/dev/null 2>&1; then HEALTHY=1; break; fi
         sleep 1
       done
-      if "$WRAPPER" status >/dev/null 2>&1; then
+      if [[ "$HEALTHY" == "1" ]]; then
         echo "[install] ✓ Daemon restarted on the new version."
       else
         echo "[install] ⚠️  Daemon not responding after restart — check 'autonomos status' / 'autonomos logs'." >&2

@@ -76,6 +76,18 @@ export async function restartDaemonAfterSwap(
   return { kind: "not-running" };
 }
 
+// Progress output must never influence the verdict: a closed stdout pipe
+// (`autonomos upgrade | head`) raises EPIPE on write, and if that reached the
+// polling loop's catch it would read as "unhealthy" and roll back a healthy
+// daemon. Cosmetics fail silently; only the actual probes decide.
+function progress(text: string): void {
+  try {
+    process.stdout.write(text);
+  } catch {
+    // stdout gone — keep polling regardless.
+  }
+}
+
 /**
  * Poll until the daemon's pid file reports `expectedVersion` and its port
  * answers HTTP. True = the new version is genuinely serving.
@@ -85,7 +97,7 @@ export async function verifyDaemonVersion(
   timeoutMs: number,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  process.stdout.write(`Waiting for version ${expectedVersion} to come up`);
+  progress(`Waiting for version ${expectedVersion} to come up`);
   try {
     while (Date.now() < deadline) {
       const pidInfo = readPidFile();
@@ -95,16 +107,16 @@ export async function verifyDaemonVersion(
         isPidAlive(pidInfo.pid) &&
         (await isPortResponsive(pidInfo.port))
       ) {
-        process.stdout.write(" ✓\n");
+        progress(" ✓\n");
         return true;
       }
-      process.stdout.write(".");
+      progress(".");
       await new Promise((r) => setTimeout(r, 1000));
     }
-    process.stdout.write(" ✗ (timed out)\n");
+    progress(" ✗ (timed out)\n");
     return false;
   } catch {
-    process.stdout.write(" ✗\n");
+    progress(" ✗\n");
     return false;
   }
 }

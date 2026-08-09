@@ -25,11 +25,15 @@
 //   1  failure (network, checksum, filesystem, or health-gate rollback)
 //   2  unsupported install shape (source mode / dev checkout / unknown)
 
-import { resolveInstall } from "@autonomos/server/installInfo.js";
+import {
+  type ResolvedInstall,
+  resolveInstall,
+} from "@autonomos/server/installInfo.js";
 import {
   detectPlatform,
   performRollback,
   performUpgrade,
+  readBundleVersion,
 } from "@autonomos/server/upgrade.js";
 import { getServerVersion } from "@autonomos/server/version.js";
 import { restartDaemonAfterSwap } from "../lib/apply-bundle.js";
@@ -65,7 +69,7 @@ export async function runUpgradeCommand(
     return 64;
   }
 
-  let install: ReturnType<typeof resolveInstall>;
+  let install: ResolvedInstall;
   try {
     install = resolveInstall();
   } catch (err) {
@@ -118,7 +122,15 @@ export async function runUpgradeCommand(
   console.log(`  Previous version kept at: ${install.bundleDir}.previous`);
   console.log("  Roll back anytime with: autonomos rollback");
 
-  const outcome = await restartDaemonAfterSwap(result.to);
+  // Gate on the version the swapped-in bundle ACTUALLY carries, not the
+  // release tag: a release whose package.json disagrees with its tag would
+  // otherwise fail the health gate every time and auto-roll back a healthy
+  // daemon with a misleading "did not become healthy".
+  const bundleVersion = readBundleVersion(install.bundleDir);
+  const expectedVersion =
+    bundleVersion === "unknown" ? result.to : bundleVersion;
+
+  const outcome = await restartDaemonAfterSwap(expectedVersion);
   if (outcome.kind !== "not-verified") return 0;
 
   // Supervised restart didn't produce a healthy daemon on the new version.

@@ -149,15 +149,13 @@ export async function performUpgrade(
   }
 
   const releaseVersion = release.tag_name.replace(/^v/, "");
+  // Same version is always a no-op. So is being AHEAD of the release (manual
+  // install / dev build / beta newer than `latest`) — refusing only on
+  // equality would silently downgrade those. A pin overrides the ahead-guard:
+  // naming a version IS the intent, downgrades included, and the caller is
+  // responsible for saying so out loud.
   const cmp = compareSemver(opts.currentVersion, releaseVersion);
-  if (cmp === 0) {
-    return { status: "up-to-date", version: releaseVersion };
-  }
-  // Without an explicit pin, refuse to move when current is already ahead
-  // (manual install / dev build / beta newer than `latest`) — equality alone
-  // would silently downgrade. With a pin, the named version IS the intent,
-  // downgrades included; the caller is responsible for saying so out loud.
-  if (!opts.targetVersion && cmp > 0) {
+  if (cmp === 0 || (cmp > 0 && !opts.targetVersion)) {
     return { status: "up-to-date", version: releaseVersion };
   }
 
@@ -215,7 +213,13 @@ export async function performUpgrade(
     if (tarResult.status !== 0) {
       return {
         status: "error",
-        message: `tar extraction failed: ${tarResult.stderr}`,
+        // tar missing from PATH surfaces as status:null + error set, stderr
+        // empty — don't report that as "failed: null".
+        message: `tar extraction failed: ${
+          tarResult.stderr?.trim() ||
+          tarResult.error?.message ||
+          `exit status ${tarResult.status}`
+        }`,
       };
     }
 
@@ -228,16 +232,54 @@ export async function performUpgrade(
 
     // ── atomic swap (current → previous, new → current)
     rmSync(previousDir, { recursive: true, force: true });
-    if (existsSync(opts.bundleDir)) {
+    const liveDisplaced = existsSync(opts.bundleDir);
+    if (liveDisplaced) {
       renameSync(opts.bundleDir, previousDir);
     }
-    renameSync(newDir, opts.bundleDir);
+    try {
+      renameSync(newDir, opts.bundleDir);
+    } catch (err) {
+      // The one state that must never persist: live renamed away, new not in
+      // place — NOTHING at the live path, which bricks the wrapper (it execs
+      // a file inside that dir) and with it every recovery command. Put the
+      // displaced bundle back before reporting.
+      let restored = false;
+      if (liveDisplaced) {
+        try {
+          renameSync(previousDir, opts.bundleDir);
+          restored = true;
+        } catch {
+          // fall through to the honest message below
+        }
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        status: "error",
+        message: restored
+          ? `Failed to move the new bundle into place (${detail}). ` +
+            `The previous version was restored and is still live.`
+          : `Failed to move the new bundle into place (${detail}) AND the ` +
+            `previous version could not be restored. Recover manually:\n` +
+            `  mv ${previousDir} ${opts.bundleDir}\n` +
+            `(the downloaded new version is at ${newDir})`,
+      };
+    }
 
     return {
       status: "upgraded",
       from: opts.currentVersion,
       to: releaseVersion,
       direction: cmp > 0 ? "downgrade" : "upgrade",
+    };
+  } catch (err) {
+    // Anything thrown above (asset download, fs errors) must honor the
+    // UpgradeResult contract — a raw throw reaches the CLI as a stack trace
+    // and the REST route as a bare 500. Every throwing step precedes the
+    // swap (whose own failure is handled inline above), so the live bundle
+    // is untouched here.
+    return {
+      status: "error",
+      message: `Upgrade failed: ${err instanceof Error ? err.message : err}`,
     };
   } finally {
     rmSync(staging, { recursive: true, force: true });
@@ -269,12 +311,38 @@ export function performRollback(bundleDir: string): RollbackResult {
   // Three-rename swap through a temp name so a crash at any point leaves
   // both bundles on disk under recoverable names.
   const tempDir = `${bundleDir}.rollback-tmp`;
-  rmSync(tempDir, { recursive: true, force: true });
-  if (existsSync(bundleDir)) {
-    renameSync(bundleDir, tempDir);
+  try {
+    if (existsSync(bundleDir)) {
+      // Clear a leftover tempDir only when a live dir is about to replace it.
+      // After a crash mid-rollback the tempDir IS the displaced live copy
+      // (and bundleDir is absent) — deleting it then would destroy one of the
+      // two bundles this function exists to preserve.
+      rmSync(tempDir, { recursive: true, force: true });
+      renameSync(bundleDir, tempDir);
+    }
+    renameSync(previousDir, bundleDir);
+    if (existsSync(tempDir)) {
+      renameSync(tempDir, previousDir);
+    }
+  } catch (err) {
+    // A throw here must not escape: the caller prints recovery guidance off
+    // this message, and an unhandled throw would skip it (leaving a possibly
+    // bundle-less install with only a stack trace).
+    const state = [
+      existsSync(bundleDir) ? `live: ${bundleDir}` : "live: MISSING",
+      existsSync(previousDir) ? `previous: ${previousDir}` : null,
+      existsSync(tempDir) ? `displaced copy: ${tempDir}` : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    return {
+      status: "error",
+      message:
+        `Rollback failed mid-swap (${err instanceof Error ? err.message : err}). ` +
+        `Current state — ${state}. If live is missing, restore it with ` +
+        `\`mv ${existsSync(previousDir) ? previousDir : tempDir} ${bundleDir}\`.`,
+    };
   }
-  renameSync(previousDir, bundleDir);
-  renameSync(tempDir, previousDir);
 
   return { status: "rolled-back", from, to };
 }
