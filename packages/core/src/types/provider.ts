@@ -59,8 +59,20 @@ export interface AgentProvider {
    * Optional: attach a watcher to the PTY that handles provider-specific
    * startup prompts (e.g. CC's trust/channels prompts, Codex's sandbox warnings).
    * Called immediately after PTY spawn. The watcher should self-dispose.
+   *
+   * `onSettled`, when given, MUST be called exactly once when the watcher
+   * reaches ANY terminal state — all dialogs handled, gave up, hard timeout,
+   * or a PTY write failure (a silently dead PTY settles via the hard
+   * timeout). The runtime uses it to start the prompt-delivery receipt
+   * windows (which are meaningless while a startup dialog may still be
+   * blocking the TUI); a watcher that never settles would leave that receipt
+   * on its fallback timer.
    */
-  attachStartupWatcher?(pty: PtyHandle, options: ResolvedSpawnOptions): void;
+  attachStartupWatcher?(
+    pty: PtyHandle,
+    options: ResolvedSpawnOptions,
+    onSettled?: () => void,
+  ): void;
 
   /**
    * Optional: does a RESUMABLE session actually exist on disk for these options?

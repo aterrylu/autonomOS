@@ -8,7 +8,27 @@
  *
  * This module watches the hook-event stream for a delivery receipt:
  *
- *   spawn(prompt) → SessionStart → UserPromptSubmit  ✓ delivered, done
+ *   spawn(prompt) → [startup settles] → SessionStart → UserPromptSubmit  ✓
+ *
+ * TIMING IS SETTLE-GATED (2026-08-08 audit). The original fixed 15s/20s
+ * windows measured from spawn/SessionStart raced Claude Code's TUI startup —
+ * under a multi-agent boot sweep the argv-queued prompt routinely takes >40s
+ * to submit, so EVERY worker spawn produced "prompt was likely dropped" +
+ * "agent may be stuck" warnings for agents that were fine, and the paste
+ * fallback DOUBLE-DELIVERED the prompt (the audit agent received its own
+ * brief twice: once from the CLI arg, once from the paste that had queued in
+ * the PTY buffer behind the booting TUI). Now:
+ *
+ *   - No window starts until the provider's startup watcher reports the
+ *     startup dialogs settled (auto-trust done/given up — runtime wires
+ *     {@link noteStartupSettled}); a fallback timer self-settles in case no
+ *     watcher is attached, so the detector can never be silently disabled.
+ *   - The submit window is minutes-scale (settle → submit latency is TUI +
+ *     plugin boot, not model latency), so a slow boot confirms instead of
+ *     pasting a duplicate into a TUI that still holds the original.
+ *   - Giving up is RETRACTABLE: the tracker lingers after a failure warning,
+ *     and a late receipt retracts the warning and logs the correction — a
+ *     stale "needs a manual nudge" the operator acts on is worse than none.
  *
  * If SessionStart arrives but UserPromptSubmit never follows, the prompt is
  * re-delivered ONCE via PTY bracketed paste + Enter. Any sign of activity
@@ -48,32 +68,54 @@ export function supportsPromptDeliveryReceipt(
   return capabilities.hooks.eventCount > 0;
 }
 
-/** No SessionStart within this window of spawn → warn (broken boot), give up. */
-export const SESSION_START_TIMEOUT_MS = 15_000;
+/** No SessionStart within this window OF STARTUP SETTLING → warn, hold for
+ *  retraction. Measured from settle, not spawn: the trust dialog gates session
+ *  creation itself, so a spawn-anchored clock just measures auto-trust. */
+export const SESSION_START_TIMEOUT_MS = 30_000;
 /**
- * No UserPromptSubmit within this window of SessionStart → re-deliver.
- * Generous on purpose: the signal is prompt SUBMISSION (UserPromptSubmit
- * fires when the prompt enters the conversation), not model latency.
+ * No UserPromptSubmit within this window of BOTH SessionStart and settle →
+ * re-deliver. Minutes-scale on purpose: what this window really measures is
+ * TUI + plugin boot latency (the argv prompt submits the moment the input
+ * attaches), and a boot-sweep host routinely needs >40s. A premature paste is
+ * a guaranteed duplicate; a late one only delays recovery of a genuinely
+ * dropped prompt.
  */
-export const PROMPT_SUBMIT_TIMEOUT_MS = 20_000;
+export const PROMPT_SUBMIT_TIMEOUT_MS = 90_000;
 /** Gap between writing the bracketed paste and the submitting Enter. */
 const REDELIVER_ENTER_DELAY_MS = 150;
+/** If no startup watcher ever reports settle (none attached, or a wiring
+ *  regression), self-settle after this long so tracking always progresses.
+ *  MUST stay above the watcher's hard deadline
+ *  (DEFAULT_STARTUP_WATCHER_TIMEOUT_MS, claude-code.ts) — if the fallback
+ *  fired first, windows would arm while dialogs are genuinely still being
+ *  fought, reintroducing the false-warning class. A test pins the relation. */
+export const SETTLE_FALLBACK_MS = 45_000;
+/** How long a given-up tracker lingers so a late receipt can retract the
+ *  failure warning before the tracker is finally dropped. */
+const GIVEN_UP_RETENTION_MS = 10 * 60_000;
 
 export interface PromptDeliveryIO {
   /** Write raw data to the agent's PTY. Return false if the PTY is gone. */
   write(data: string): boolean;
-  /** Surface an operator-visible note (e.g. dashboard notification). */
-  notify?(message: string): void;
+  /** Surface an operator-visible note (e.g. dashboard notification). May
+   *  return a retraction id (see retract). */
+  notify?(message: string): string | undefined;
+  /** Withdraw a previously pushed notification by the id notify returned —
+   *  used when a late receipt proves a failure warning premature. */
+  retract?(notificationId: string): boolean;
   /** Test overrides for the timing constants. */
   sessionStartTimeoutMs?: number;
   promptSubmitTimeoutMs?: number;
   redeliverEnterDelayMs?: number;
+  settleFallbackMs?: number;
+  givenUpRetentionMs?: number;
 }
 
 type Phase =
   | "awaiting_session_start"
   | "awaiting_prompt_submit"
   | "awaiting_redelivery_confirm"
+  | "given_up"
   | "done";
 
 interface Tracker {
@@ -81,8 +123,24 @@ interface Tracker {
   prompt: string;
   io: PromptDeliveryIO;
   phase: Phase;
+  /** Startup dialogs settled (or the fallback elapsed) — windows may arm. */
+  settled: boolean;
   timer: NodeJS.Timeout | null;
   enterTimer: NodeJS.Timeout | null;
+  /** The self-settle fallback. Its OWN slot on purpose: it must survive every
+   *  phase transition until settle actually happens — an earlier version
+   *  armed it into `timer`, which the SessionStart branch clears, so the
+   *  ordering spawn → SessionStart → (settle never arrives) left the tracker
+   *  timerless forever: no re-delivery, no warning, exactly the silently
+   *  disabled detector the fallback exists to prevent. */
+  settleTimer: NodeJS.Timeout | null;
+  /** The one-shot paste fallback has been used. Distinguishes the two give-up
+   *  flavors: a no-SessionStart give-up still has its re-delivery unspent, so
+   *  a late SessionStart RESUMES tracking instead of finishing. */
+  redelivered: boolean;
+  /** Retraction ids of failure-claim notifications, so a late receipt can
+   *  withdraw them. The factual "was re-delivered" note is never retracted. */
+  failureNotificationIds: string[];
 }
 
 /**
@@ -106,30 +164,49 @@ const trackers = new Map<string, Tracker>();
 
 /** notify is an injected callback firing inside timer callbacks — a throw
  *  there would be an uncaught exception at timer level. Never let it. */
-function safeNotify(t: Tracker, message: string): void {
+function safeNotify(t: Tracker, message: string): string | undefined {
   try {
-    t.io.notify?.(message);
+    const id = t.io.notify?.(message);
+    return typeof id === "string" ? id : undefined;
   } catch (err) {
     console.warn(
       `[prompt-delivery] ${t.label} notify callback threw:`,
       err instanceof Error ? err.message : err,
     );
+    return undefined;
   }
+}
+
+function clearTimers(t: Tracker): void {
+  if (t.timer) clearTimeout(t.timer);
+  if (t.enterTimer) clearTimeout(t.enterTimer);
+  if (t.settleTimer) clearTimeout(t.settleTimer);
+  t.timer = null;
+  t.enterTimer = null;
+  t.settleTimer = null;
 }
 
 function finish(sessionId: string): void {
   const t = trackers.get(sessionId);
   if (!t) return;
-  if (t.timer) clearTimeout(t.timer);
-  if (t.enterTimer) clearTimeout(t.enterTimer);
+  clearTimers(t);
   t.phase = "done";
   trackers.delete(sessionId);
+}
+
+function armTimer(t: Tracker, ms: number, fn: () => void): void {
+  if (t.timer) clearTimeout(t.timer);
+  t.timer = setTimeout(fn, ms);
 }
 
 /**
  * Begin tracking delivery for a session spawned with a starting prompt.
  * Call immediately after the PTY spawn. Idempotency: re-tracking the same
  * session replaces the previous tracker.
+ *
+ * No warning window is armed yet — windows start at {@link noteStartupSettled}
+ * (or the settle fallback), because every receipt signal is downstream of the
+ * startup dialogs being out of the way.
  */
 export function trackPromptDelivery(
   sessionId: string,
@@ -143,26 +220,107 @@ export function trackPromptDelivery(
     prompt,
     io,
     phase: "awaiting_session_start",
+    settled: false,
     timer: null,
     enterTimer: null,
+    settleTimer: null,
+    redelivered: false,
+    failureNotificationIds: [],
   };
   trackers.set(sessionId, tracker);
 
-  tracker.timer = setTimeout(() => {
-    // Broken boot: the hook relay never reported SessionStart. Don't kill the
-    // agent and don't paste into a process that may not even be a TUI yet —
-    // just make the failure visible.
-    console.warn(
-      `[prompt-delivery] ${label} no SessionStart within ` +
-        `${io.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS}ms of spawn — ` +
-        `cannot confirm prompt delivery; skipping fallback (agent may have failed to boot)`,
+  // Fallback self-settle: if no watcher is attached (or its callback is lost
+  // to a wiring regression), the detector must still run rather than silently
+  // never warning again. Dedicated slot — see Tracker.settleTimer.
+  tracker.settleTimer = setTimeout(
+    () => noteStartupSettled(sessionId),
+    io.settleFallbackMs ?? SETTLE_FALLBACK_MS,
+  );
+}
+
+/**
+ * Startup dialogs are out of the way (auto-trust finished, gave up, or was
+ * never needed) — the receipt windows may start. Wired by runtime.ts from the
+ * provider's startup watcher; called directly at spawn when no watcher runs.
+ * No-op for untracked sessions and on repeats.
+ */
+export function noteStartupSettled(sessionId: string): void {
+  const t = trackers.get(sessionId);
+  if (!t || t.settled) return;
+  t.settled = true;
+  if (t.settleTimer) clearTimeout(t.settleTimer);
+  t.settleTimer = null;
+  if (t.phase === "awaiting_session_start") {
+    armTimer(t, t.io.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS, () =>
+      giveUpNoSessionStart(sessionId),
     );
-    safeNotify(
-      tracker,
-      "Agent never reported SessionStart — it may be stuck on a startup dialog. Open its terminal and check.",
+  } else if (t.phase === "awaiting_prompt_submit") {
+    // SessionStart already arrived while dialogs were still being dismissed.
+    armTimer(t, t.io.promptSubmitTimeoutMs ?? PROMPT_SUBMIT_TIMEOUT_MS, () =>
+      redeliver(sessionId),
     );
-    finish(sessionId);
-  }, io.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS);
+  }
+}
+
+function giveUpNoSessionStart(sessionId: string): void {
+  const t = trackers.get(sessionId);
+  if (!t || t.phase !== "awaiting_session_start") return;
+  console.warn(
+    `[prompt-delivery] ${t.label} no SessionStart within ` +
+      `${t.io.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS}ms of startup settling — ` +
+      `cannot confirm prompt delivery; skipping fallback (agent may have failed to boot)`,
+  );
+  const id = safeNotify(
+    t,
+    "Agent never reported SessionStart — it may be stuck on a startup dialog. Open its terminal and check.",
+  );
+  if (id) t.failureNotificationIds.push(id);
+  enterGivenUp(sessionId, t);
+}
+
+/** Park the tracker so a late receipt can retract the failure warning. */
+function enterGivenUp(sessionId: string, t: Tracker): void {
+  t.phase = "given_up";
+  armTimer(t, t.io.givenUpRetentionMs ?? GIVEN_UP_RETENTION_MS, () =>
+    finish(sessionId),
+  );
+}
+
+/** Withdraw the failure-claim notifications. Returns how many retracted; a
+ *  failed retraction is warned about (a stale "needs a manual nudge" the
+ *  operator acts on is worse than none — if we can't withdraw it, at least
+ *  the log says so). */
+function retractFailureWarnings(t: Tracker): number {
+  let retracted = 0;
+  for (const id of t.failureNotificationIds) {
+    try {
+      if (t.io.retract?.(id)) {
+        retracted++;
+      } else {
+        console.warn(
+          `[prompt-delivery] ${t.label} could not retract stale warning ${id} — it may still show in the panel`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[prompt-delivery] ${t.label} retract callback threw:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  t.failureNotificationIds = [];
+  return retracted;
+}
+
+/** A CONFIRMING event arrived for a tracker that had already given up — the
+ *  prompt demonstrably ran, so the warning was premature. Withdraw and stop. */
+function retractGiveUp(sessionId: string, t: Tracker, eventName: string): void {
+  const retracted = retractFailureWarnings(t);
+  console.log(
+    `[prompt-delivery] ${t.label} ${eventName} arrived after give-up — the ` +
+      `prompt was delivered after all${retracted > 0 ? "; earlier warning retracted" : ""}`,
+  );
+  finish(sessionId);
 }
 
 /**
@@ -180,18 +338,50 @@ export function notePromptHookEvent(
   if (eventName === "SessionStart") {
     // Compact-triggered SessionStarts are mid-conversation, not a boot.
     if (source === "compact") return;
+    if (t.phase === "given_up") {
+      // SessionStart is NOT a delivery receipt — it only proves the session
+      // booted. The no-SessionStart boot warning was premature (retract it),
+      // but the prompt may still be genuinely dropped, so tracking RESUMES:
+      // the submit window arms and the one-shot re-delivery (unspent on this
+      // give-up flavor) is available again. Finishing here would have logged
+      // "delivered after all" on evidence that proves no such thing, leaving
+      // a genuinely dropped prompt undetected AND affirmatively denied.
+      if (!t.redelivered) {
+        const retracted = retractFailureWarnings(t);
+        console.log(
+          `[prompt-delivery] ${t.label} SessionStart arrived after give-up — ` +
+            `boot warning ${retracted > 0 ? "retracted" : "already gone"}; now watching for prompt submission`,
+        );
+        t.phase = "awaiting_prompt_submit";
+        // settled is necessarily true here (give-up only fires post-settle).
+        armTimer(
+          t,
+          t.io.promptSubmitTimeoutMs ?? PROMPT_SUBMIT_TIMEOUT_MS,
+          () => redeliver(sessionId),
+        );
+        return;
+      }
+      // Post-re-delivery give-up: the paste is spent; a bare SessionStart in
+      // that state is anomalous (a restart?) — retract and stop quietly.
+      retractGiveUp(sessionId, t, eventName);
+      return;
+    }
     if (t.phase !== "awaiting_session_start") return;
-    if (t.timer) clearTimeout(t.timer);
     t.phase = "awaiting_prompt_submit";
-    t.timer = setTimeout(
-      () => redeliver(sessionId),
-      t.io.promptSubmitTimeoutMs ?? PROMPT_SUBMIT_TIMEOUT_MS,
-    );
+    if (t.timer) clearTimeout(t.timer);
+    t.timer = null;
+    // The submit window is only meaningful once dialogs are out of the way —
+    // if they aren't yet, noteStartupSettled arms it.
+    if (t.settled) {
+      armTimer(t, t.io.promptSubmitTimeoutMs ?? PROMPT_SUBMIT_TIMEOUT_MS, () =>
+        redeliver(sessionId),
+      );
+    }
     return;
   }
 
   if (eventName === "SessionEnd") {
-    if (t.phase !== "awaiting_session_start") {
+    if (t.phase !== "awaiting_session_start" && t.phase !== "given_up") {
       console.log(
         `[prompt-delivery] ${t.label} session ended before prompt delivery was confirmed`,
       );
@@ -201,11 +391,15 @@ export function notePromptHookEvent(
   }
 
   if (DELIVERY_CONFIRMING_EVENTS.has(eventName)) {
+    if (t.phase === "given_up") {
+      retractGiveUp(sessionId, t, eventName);
+      return;
+    }
     if (t.enterTimer !== null) {
-      // The original delivery confirmed in the 150ms gap between our paste
-      // and its Enter — the pasted duplicate is sitting in the input box as a
-      // draft. Clear it (Ctrl-U kills the input line; harmless if the TUI
-      // ignores it) so a later stray keystroke can't double-submit.
+      // The original delivery confirmed in the gap between our paste and its
+      // Enter — the pasted duplicate is sitting in the input box as a draft.
+      // Clear it (Ctrl-U kills the input line; harmless if the TUI ignores
+      // it) so a later stray keystroke can't double-submit.
       console.warn(
         `[prompt-delivery] ${t.label} ${eventName} arrived mid-re-delivery — ` +
           `abandoning the paste and clearing the input draft`,
@@ -230,7 +424,7 @@ function redeliver(sessionId: string): void {
   const waitedMs = t.io.promptSubmitTimeoutMs ?? PROMPT_SUBMIT_TIMEOUT_MS;
   console.warn(
     `[prompt-delivery] ${t.label} SessionStart arrived but no UserPromptSubmit ` +
-      `within ${waitedMs}ms — starting prompt was likely dropped. ` +
+      `within ${waitedMs}ms of startup settling — starting prompt was likely dropped. ` +
       `Re-delivering via PTY paste (one retry only).`,
   );
 
@@ -245,7 +439,8 @@ function redeliver(sessionId: string): void {
     return;
   }
   // Notify only after the paste actually landed — a dashboard claim of
-  // re-delivery must not precede (or survive) a failed write.
+  // re-delivery must not precede (or survive) a failed write. Factual, so
+  // never retracted.
   safeNotify(
     t,
     "Starting prompt was not submitted — autonomOS re-delivered it via the terminal.",
@@ -262,18 +457,22 @@ function redeliver(sessionId: string): void {
 
   // Watch for the receipt one more time — purely for observability; there is
   // never a second re-delivery.
+  t.redelivered = true;
   t.phase = "awaiting_redelivery_confirm";
-  t.timer = setTimeout(() => {
+  armTimer(t, waitedMs, () => {
+    const tr = trackers.get(sessionId);
+    if (!tr || tr.phase !== "awaiting_redelivery_confirm") return;
     console.error(
-      `[prompt-delivery] ${t.label} re-delivery also produced no ` +
+      `[prompt-delivery] ${tr.label} re-delivery also produced no ` +
         `UserPromptSubmit — giving up. The agent needs a manual nudge.`,
     );
-    safeNotify(
-      t,
+    const id = safeNotify(
+      tr,
       "Prompt re-delivery failed — the agent may be stuck and needs a manual nudge.",
     );
-    finish(sessionId);
-  }, waitedMs);
+    if (id) tr.failureNotificationIds.push(id);
+    enterGivenUp(sessionId, tr);
+  });
 }
 
 /** Stop tracking (PTY exited, agent killed/deleted). Safe on untracked ids. */

@@ -260,12 +260,16 @@ export const claudeCodeProvider: AgentProvider = {
     return env;
   },
 
-  attachStartupWatcher(pty: PtyHandle, options: ResolvedSpawnOptions): void {
+  attachStartupWatcher(
+    pty: PtyHandle,
+    options: ResolvedSpawnOptions,
+    onSettled?: () => void,
+  ): void {
     // Expect the channels warning prompt if any dev channels are configured
     const { channels } = getSettings();
     const expectChannels =
       channels?.some((c) => c.startsWith("server:")) ?? false;
-    attachStartupWatcherCore(pty, options, { expectChannels });
+    attachStartupWatcherCore(pty, options, { expectChannels, onSettled });
   },
 
   hasResumableSession(options: ResolvedSpawnOptions): boolean {
@@ -311,6 +315,12 @@ export interface StartupWatcherConfig {
   maxAttempts?: number;
   /** Hard deadline for the whole watcher. */
   timeoutMs?: number;
+  /** Fired exactly once when the watcher reaches ANY terminal state (all
+   *  dialogs handled, gave up, hard timeout, or a PTY write failure — a PTY
+   *  that dies without a write settles via the hard timeout; the watcher has
+   *  no exit listener). Guarded: a throw must not escape into the watcher's
+   *  timer callbacks. */
+  onSettled?: () => void;
 }
 
 /**
@@ -328,6 +338,14 @@ export interface StartupWatcherConfig {
  * Exported separately from the provider so tests can drive it with a fake PTY
  * and fast timings.
  */
+/** Default hard deadline for the whole watcher. Exported because
+ *  promptDelivery's SETTLE_FALLBACK_MS must stay ABOVE it — the fallback
+ *  self-settles the receipt windows, and if it fired before the watcher's
+ *  terminal state, windows would arm while dialogs are genuinely still being
+ *  fought, reintroducing the false-warning + double-paste classes ADR-074
+ *  removed. A test pins the relationship; raise both together. */
+export const DEFAULT_STARTUP_WATCHER_TIMEOUT_MS = 30_000;
+
 export function attachStartupWatcherCore(
   pty: PtyHandle,
   options: ResolvedSpawnOptions,
@@ -335,7 +353,7 @@ export function attachStartupWatcherCore(
 ): void {
   const retryDelayMs = config.retryDelayMs ?? 500;
   const maxAttempts = config.maxAttempts ?? 5;
-  const timeoutMs = config.timeoutMs ?? 30_000;
+  const timeoutMs = config.timeoutMs ?? DEFAULT_STARTUP_WATCHER_TIMEOUT_MS;
   const label = `${options.agentName} (${options.sessionId.slice(0, 8)})`;
 
   const needles: Record<string, string[]> = {
@@ -482,6 +500,16 @@ export function attachStartupWatcherCore(
       if (d.checkTimer) clearTimeout(d.checkTimer);
     }
     disposable.dispose();
+    // cleanup() is the watcher's single terminal point (all-settled, hard
+    // timeout, PTY death), so the once-guarantee rides the `disposed` flag.
+    try {
+      config.onSettled?.();
+    } catch (err) {
+      console.warn(
+        `[auto-trust] ${label} onSettled callback threw:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 }
 
