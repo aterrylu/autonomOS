@@ -90,3 +90,11 @@ plus a non-blank pixel integrity guard).
 Loopback understates the baseline pain: 37k frames over a real network is the
 multi-second "text rushing in" the fix removes. The keep-alive row has no
 network component at all, so throttling cannot degrade it.
+
+`PERF_THROTTLE=1` re-runs the switch spec on a CDP-throttled link (Slow-3G-ish,
+150ms RTT / 750kbps, applied after the app loads). Measured: a COLD open of the
+1MB-scrollback agent takes **85s** to fully drain even with coalescing — while
+the keep-alive **switch-back on the same throttled link settles in ~320ms with
+0 frames re-streamed**. That 267× gap is the whole point: no amount of replay
+optimization makes re-streaming acceptable on a slow network; only not
+re-streaming does.

@@ -22,6 +22,8 @@ import { expect, test } from "@playwright/test";
 const HEAVY_ID = "00000000-0000-4000-8000-0000000000aa";
 const LIGHT_ID = "00000000-0000-4000-8000-0000000000bb";
 const SENTINEL = "__AUTONOMOS_PERF_SENTINEL__";
+// Cold-open replay over a throttled link legitimately takes tens of seconds.
+const SETTLE_TIMEOUT = process.env.PERF_THROTTLE === "1" ? 120_000 : 30_000;
 
 interface SessStat {
   frames: number;
@@ -125,6 +127,27 @@ test("agent-switch re-stream cost through real dashboard", async ({
   await page.addInitScript(INSTRUMENT);
   await page.goto("/");
 
+  // PERF_THROTTLE=1 → Slow-3G-ish network via CDP (150ms RTT, ~750kbps down),
+  // applied AFTER the app itself loads (the vite dev bundle over Slow 3G
+  // would otherwise eat the whole timeout before a terminal ever mounts).
+  // This is the condition under which the old per-chunk replay was "seconds
+  // of text rushing in": per-frame overhead × ~19k frames. NOTE: whether
+  // Chrome applies these conditions to WebSocket traffic varies by version —
+  // the keep-alive switch-back is network-free either way, so its number is
+  // throttle-proof by construction; treat the cold-open number as indicative.
+  if (process.env.PERF_THROTTLE === "1") {
+    test.setTimeout(240_000);
+    await page.waitForLoadState("networkidle");
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 150,
+      downloadThroughput: (750 * 1024) / 8,
+      uploadThroughput: (250 * 1024) / 8,
+    });
+  }
+
   // ── Cold open of heavy (context number, not the headline) ────────────
   await page.evaluate(() => window.__perf.mark());
   const coldT0 = Date.now();
@@ -133,7 +156,7 @@ test("agent-switch re-stream cost through real dashboard", async ({
   await expect
     .poll(
       () => page.evaluate((id) => !!window.__perf.sess[id]?.sawSentinel, HEAVY_ID),
-      { timeout: 30_000 },
+      { timeout: SETTLE_TIMEOUT },
     )
     .toBe(true);
   const coldMs = Date.now() - coldT0;
@@ -143,7 +166,7 @@ test("agent-switch re-stream cost through real dashboard", async ({
   await expect
     .poll(
       () => page.evaluate((id) => !!window.__perf.sess[id]?.sawSentinel, LIGHT_ID),
-      { timeout: 30_000 },
+      { timeout: SETTLE_TIMEOUT },
     )
     .toBe(true);
   await page.waitForTimeout(500);
