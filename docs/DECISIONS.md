@@ -1857,7 +1857,7 @@ baseline and removes the "TBD" ambiguity.
   - *Fail on 2 as well.* A PR shipping two changesets is a normal authoring pattern here; the cost of wrongly blocking a release exceeds the marginal coverage.
 - **Source:** PR #310 review thread (nox), building on the #275 finding; see ADR-069 for the sibling changeset-gate decision.
 
-## ADR-073: ⌘K agent quick-switcher — and terminal-clear moves to ⌘⇧K
+## ADR-071: ⌘K agent quick-switcher — and terminal-clear moves to ⌘⇧K
 
 - **Date:** 2026-08-09
 - **Who decided:** Terry (picked from the domain backlog: "2, yes get it done"), chord-conflict resolution by Shortcuts@autonomOS
