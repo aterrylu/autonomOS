@@ -1,5 +1,5 @@
 // `autonomos upgrade` (alias: `update`) — fetch a release, verify, atomic
-// swap, restart, health-gate, auto-rollback (ADR-071).
+// swap, restart, health-gate, auto-rollback (ADR-072).
 //
 // Usage:
 //   autonomos upgrade                 # upgrade to the latest release
