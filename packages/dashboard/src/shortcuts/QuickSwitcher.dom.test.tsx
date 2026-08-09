@@ -154,6 +154,51 @@ describe("QuickSwitcher", () => {
     unmount();
   });
 
+  it("cancel restores focus to the previous element; choosing does NOT", () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+
+    // Cancel path: Escape hands focus back to where the user was.
+    outside.focus();
+    const a = render(<QuickSwitcher />);
+    act(() => {
+      useStore.setState({ quickSwitchOpen: true });
+    });
+    expect(document.activeElement).toBe(
+      screen.getByTestId("quick-switcher-input"),
+    );
+    act(() => closeTopEscape());
+    a.unmount();
+    expect(document.activeElement).toBe(outside);
+
+    // Choose path: the restore is SKIPPED (focusTerminal is claiming focus
+    // for the chosen agent's terminal — restoring would race it and send
+    // keystrokes to the previous agent).
+    outside.focus();
+    const b = render(<QuickSwitcher />);
+    act(() => {
+      useStore.setState({ quickSwitchOpen: true });
+    });
+    const input = screen.getByTestId("quick-switcher-input");
+    fireEvent.change(input, { target: { value: "resear" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    b.unmount();
+    expect(document.activeElement).not.toBe(outside);
+    outside.remove();
+  });
+
+  it("Tab is trapped: the input is the only tabbable element in the modal", () => {
+    const { unmount } = render(<QuickSwitcher />);
+    act(() => {
+      useStore.setState({ quickSwitchOpen: true });
+    });
+    const input = screen.getByTestId("quick-switcher-input");
+    const tab = fireEvent.keyDown(input, { key: "Tab" });
+    // fireEvent returns false when preventDefault was called.
+    expect(tab).toBe(false);
+    unmount();
+  });
+
   it("no-match query shows the empty state and Enter is a no-op", () => {
     const { unmount } = render(<QuickSwitcher />);
     act(() => {

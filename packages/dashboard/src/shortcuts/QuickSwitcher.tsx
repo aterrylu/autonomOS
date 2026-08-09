@@ -45,6 +45,11 @@ function SwitcherDialog() {
   // to the previously-focused element — focusTerminal is about to claim it
   // for the chosen agent's terminal.
   const choseRef = useRef(false);
+  // Hover only changes the selection after REAL pointer movement: arrowing
+  // past the fold scrolls the list, which fires synthetic mouseenter on
+  // whatever row drifts under a stationary cursor — without this guard that
+  // would silently reset a keyboard-driven selection.
+  const pointerMovedRef = useRef(false);
 
   // Escape rides the registry's ui.dismiss via the stack, like every overlay.
   useEffect(
@@ -108,13 +113,21 @@ function SwitcherDialog() {
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      pointerMovedRef.current = false;
       moveSelection(1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      pointerMovedRef.current = false;
       moveSelection(-1);
     } else if (e.key === "Enter") {
       e.preventDefault();
       choose(matches[selectedIndex]?.id);
+    } else if (e.key === "Tab") {
+      // Minimal focus trap: the input is the dialog's only tabbable element
+      // (options are tabIndex -1), so an unhandled Tab would walk focus out
+      // into the sidebar/terminals behind the still-open modal backdrop —
+      // contradicting aria-modal.
+      e.preventDefault();
     }
   }
 
@@ -202,7 +215,13 @@ function SwitcherDialog() {
                 color: page.fg,
                 border: "none",
               }}
-              onMouseEnter={() => setSelectedId(m.id)}
+              onMouseMove={() => {
+                pointerMovedRef.current = true;
+                setSelectedId(m.id);
+              }}
+              onMouseEnter={() => {
+                if (pointerMovedRef.current) setSelectedId(m.id);
+              }}
               onClick={() => choose(m.id)}
             >
               {agentIconStyle === "provider" ? (

@@ -438,3 +438,30 @@ test("mod+K quick-switcher: fuzzy-find an agent and switch, even from a focused 
   await expect(dialog).toHaveCount(0);
   await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
 });
+
+test("quick-switcher reaches a NEVER-mounted pane and focus lands in its terminal", async ({
+  page,
+}) => {
+  await mockApi(page);
+  // No seeded workspace: panes mount solo, on demand. Open ONLY Dispatcher…
+  await page.goto("/");
+  await expect(page.locator("aside").getByText("Dispatcher")).toBeVisible();
+  await page.locator("aside").getByText("Dispatcher").click();
+  await expect.poll(() => activePaneId(page)).toBe(DISPATCHER);
+  const mod = await modKey(page);
+
+  // …then ⌘K to an agent whose pane has NEVER mounted. focusTerminal must
+  // wait out registration (independent budget) and land focus in the new
+  // pane's xterm textarea — not on document.body.
+  await page.keyboard.press(`${mod}+k`);
+  await page.getByTestId("quick-switcher-input").fill("resear");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => activePaneId(page)).toBe(RESEARCHER);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement?.classList.contains("xterm-helper-textarea"),
+      ),
+    )
+    .toBe(true);
+});

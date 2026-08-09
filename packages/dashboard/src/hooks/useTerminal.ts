@@ -37,16 +37,19 @@ export function focusTerminal(sessionId: string) {
   }
   // Poll until the terminal's container is visible, then focus.
   // dockview may take 1-3 frames to mount the panel and make it visible.
-  let attempts = 0;
+  // INDEPENDENT budgets: a never-mounted pane (the ⌘K switcher can target
+  // agents hidden in a collapsed hierarchy group) first has to register at
+  // all (~30 frames — mount + xterm creation), and only then starts the
+  // visibility wait (10 frames). Sharing one counter starved the visibility
+  // poll when registration used most of it — focus silently landed on body
+  // for exactly the case the registration retry was added for.
+  let regAttempts = 0;
+  let visAttempts = 0;
   function tryFocus() {
     pendingFocusRaf = null;
     const term = terminalRegistry.get(sessionId);
     if (!term) {
-      // Not registered YET — a pane that has never mounted (the ⌘K switcher
-      // can target agents hidden in a collapsed hierarchy group) registers a
-      // few frames after switchPane. Retry within the same budget instead of
-      // silently giving up on the first frame.
-      if (++attempts < 10) pendingFocusRaf = requestAnimationFrame(tryFocus);
+      if (++regAttempts < 30) pendingFocusRaf = requestAnimationFrame(tryFocus);
       return;
     }
     const textarea = term.textarea;
@@ -54,7 +57,7 @@ export function focusTerminal(sessionId: string) {
       term.focus();
       return;
     }
-    if (++attempts < 10) {
+    if (++visAttempts < 10) {
       pendingFocusRaf = requestAnimationFrame(tryFocus);
     }
   }
