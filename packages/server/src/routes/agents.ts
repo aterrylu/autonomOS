@@ -15,6 +15,7 @@ import {
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
+import { revokeAgentToken } from "../agentCredentials.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -37,6 +38,7 @@ import {
 import { emitAgentDelta } from "../events/agents.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
+import { usageQueue } from "../usageQueue.js";
 import { clearAgentState, clearNotifications } from "./hooks.js";
 
 export const agentsRouter = new Hono();
@@ -874,8 +876,21 @@ agentsRouter.delete("/:id", (c) => {
   // failure to reach, and the suites drive runtime.deleteAgent directly, which
   // exercises only the common path. Stated so the next reader can re-judge the
   // call rather than trust a claim nothing enforces.
+  // Revoke here TOO, not only in deleteAgentRaw: on the wasLive-only path
+  // (live PTY, record already absent from the store cache) deleteAgentRaw
+  // returns false at its not-found guard BEFORE its revoke, yet deleteAgent
+  // still reports true via wasLive — leaving the dying PTY's token valid to
+  // resurrect the state cleared below. Idempotent on every other path.
+  revokeAgentToken(id);
   clearAgentState(id);
   clearNotifications(id);
+  // Disarm any queued auto-Enter: an armed pane for a DELETED agent would
+  // otherwise fire hours later against a gone PTY and push a notification
+  // under an id nothing can resolve (same invariant as the clears). Lives in
+  // the route, not runtime.deleteAgent — usageQueue imports from runtime, so
+  // the reverse edge would close a cycle. UNTESTED via the route for the same
+  // reason as the clears below; the queue's own disarm behavior is unit-tested.
+  usageQueue().disarm(id);
   // Flush the deferred reparent deltas now. Emit AFTER
   // the runtime's own agent.deleted event (which fired inside
   // runtimeDeleteAgent) so clients see deletion before reparents land,

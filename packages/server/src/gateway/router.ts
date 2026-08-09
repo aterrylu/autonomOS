@@ -187,7 +187,7 @@ async function resolveConnectedAgent(
 
 /** Display names for system (non-agent) senders. These arrive as literal
  *  sender ids, not UUIDs, so without this map they hit the unknown-id branch
- *  below and render as a sliced pseudo-UUID ("Agent schedul"). */
+ *  below and render as a sliced pseudo-UUID ("Agent schedule"). */
 const SYSTEM_SENDER_NAMES: Record<string, string> = {
   scheduler: "Scheduler",
 };

@@ -108,6 +108,17 @@ describe("delete revokes the agent token — stragglers cannot resurrect state",
     // re-grows an entry no store lookup can resolve — the exact leak the
     // reclamation exists to close, reintroduced on the most common path.
     const token = mintAgentToken(AGENT_ID);
+    // Assert the precondition rather than just setting it: the token must be
+    // ACCEPTED while the agent lives, or the 401 below could have any cause.
+    const liveIngest = await hooksIngestRouter.request(`/${AGENT_ID}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Agent-Token": token,
+      },
+      body: JSON.stringify({ hook_event_name: "UserPromptSubmit" }),
+    });
+    assert.equal(liveIngest.status, 200, "token must verify pre-delete");
     setAgentStatus(AGENT_ID, "working");
     assert.equal(deleteAgent(AGENT_ID), true);
     assert.deepEqual(await statusIds(), []);
