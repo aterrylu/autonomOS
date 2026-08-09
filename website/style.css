@@ -154,19 +154,30 @@ a:focus-visible, button:focus-visible {
 
 .install {
   font-family: var(--mono);
-  font-size: 0.92rem;
+  font-size: 0.85rem;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 11px 16px;
+  padding: 11px 14px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   transition: border-color 0.15s;
+  max-width: 100%;
+  min-width: 0;
 }
 .install:hover { border-color: var(--gold-dim); }
+.install .cmd {
+  /* The full, runnable command — shown verbatim so the curl|bash origin is
+     visible before copying. On narrow screens it scrolls inside the button
+     rather than overflowing the page. */
+  white-space: nowrap;
+  overflow-x: auto;
+  min-width: 0;
+  padding-bottom: 2px;
+}
 .install .prompt { color: var(--teal); }
 .install .pipe { color: var(--muted); }
 .install .copy-hint {
@@ -329,6 +340,10 @@ td small { color: var(--muted); font-size: 0.8rem; display: block; margin-top: 2
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* grid items default to min-width:auto, which lets a long unbreakable code
+     line force the column wide (page-level overflow) instead of engaging the
+     pre's own overflow-x scroll. */
+  min-width: 0;
 }
 .panel h3 { font-size: 1.02rem; }
 .panel p { color: var(--muted); font-size: 0.9rem; }
@@ -363,7 +378,7 @@ td small { color: var(--muted); font-size: 0.8rem; display: block; margin-top: 2
   font-size: 0.9rem;
 }
 .footer .dim { color: var(--muted); margin-left: 10px; }
-.foot-links { display: flex; gap: 20px; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 12px 20px; }
 .foot-links a { color: var(--muted); }
 .foot-links a:hover { color: var(--text); }
 
@@ -374,5 +389,5 @@ td small { color: var(--muted); font-size: 0.8rem; display: block; margin-top: 2
   .nav-links { gap: 14px; }
   .nav-links a:not(.btn) { display: none; }
   main section { padding-top: 64px; }
-  .install { font-size: 0.8rem; white-space: nowrap; padding: 11px 12px; }
+  .install { font-size: 0.78rem; padding: 10px 12px; }
 }

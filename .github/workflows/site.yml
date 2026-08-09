@@ -14,7 +14,13 @@
 # The hero image is single-sourced from docs/assets/hero.png (the `make hero`
 # output) — copied over the committed website/assets/hero.png at deploy time so
 # the site can never drift from the README's screenshot. That's also why this
-# workflow triggers on hero.png changes, not just website/ ones.
+# workflow triggers on hero.png changes, not just website/ ones. A guard step
+# fails the deploy if the PNG's real dimensions stop matching the width/height
+# attributes in index.html (a re-shoot at a new viewport must touch both).
+#
+# Actions are pinned to full commit SHAs (tags are mutable; this is the one job
+# that sees the Cloudflare secrets). To upgrade: bump the SHA and the trailing
+# version comment together.
 name: site
 
 on:
@@ -26,19 +32,37 @@ on:
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
+# Two quick pushes must not race: whichever upload finishes last would win,
+# which is not necessarily the newer commit. Cancel the older run instead.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Sync hero from docs (single source of truth)
         run: cp docs/assets/hero.png website/assets/hero.png
 
+      - name: Guard — index.html width/height must match the real hero PNG
+        run: |
+          set -euo pipefail
+          w=$(od -An -tu4 -j16 -N4 --endian=big website/assets/hero.png | tr -d ' ')
+          h=$(od -An -tu4 -j20 -N4 --endian=big website/assets/hero.png | tr -d ' ')
+          echo "hero.png is ${w}x${h}"
+          if ! grep -q "width=\"${w}\" height=\"${h}\"" website/index.html; then
+            echo "::error::website/index.html hero <img> attrs don't match hero.png (${w}x${h})."
+            echo "::error::A hero re-shoot changed the viewport — update width/height in website/index.html."
+            exit 1
+          fi
+
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.9.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
