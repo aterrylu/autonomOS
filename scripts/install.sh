@@ -232,8 +232,10 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     # through a rewrite, and this re-run path is the upgrade story. --force
     # skips the running-daemon refusal and its activation step cycles the
     # daemon onto the new bundle (launchd unload/load; systemd daemon-reload
-    # + enable --now). A custom --port/--host baked into the existing file
-    # must survive the rewrite — a plain re-render would silently reset them.
+    # + enable + an explicit restart — restart, not `--now`, because start
+    # on an already-active unit is a no-op that would leave the old process
+    # serving). A custom --port/--host baked into the existing file must
+    # survive the rewrite — a plain re-render would silently reset them.
     case "$(uname -s)" in
       Darwin) SERVICE_FILE="$HOME/Library/LaunchAgents/com.autonomos.daemon.plist" ;;
       *)      SERVICE_FILE="$HOME/.config/systemd/user/autonomos.service" ;;
