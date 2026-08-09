@@ -52,6 +52,7 @@ import {
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
+  noteStartupSettled,
   supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
@@ -939,8 +940,19 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw err;
   }
 
-  if (getSettings().autoTrust !== false && provider.attachStartupWatcher) {
-    provider.attachStartupWatcher(pty, resolved);
+  // The watcher's settle signal gates the prompt-delivery receipt windows —
+  // they measure nothing meaningful while a startup dialog may still be
+  // blocking the TUI. resolved.sessionId IS the agent id (pre-generated,
+  // passed as --session-id), and noteStartupSettled no-ops for sessions that
+  // are never tracked (promptless spawns) or not yet tracked — though the
+  // latter can't happen: trackPromptDelivery below runs in this same
+  // synchronous block, before any watcher timer can fire.
+  const startupWatcherAttached =
+    getSettings().autoTrust !== false && provider.attachStartupWatcher != null;
+  if (startupWatcherAttached) {
+    provider.attachStartupWatcher?.(pty, resolved, () =>
+      noteStartupSettled(resolved.sessionId),
+    );
   }
 
   // Persist the agent record: reattaching an existing record → markRunning;
@@ -1069,8 +1081,16 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           }
         },
         notify: (message) => pushSystemNotification(persisted.id, message),
+        retract: (notificationId) =>
+          retractSystemNotification(persisted.id, notificationId),
       },
     );
+    // No startup watcher (auto-trust off, or a provider without one): there
+    // are no dialogs to wait out — the receipt windows may start now. With a
+    // watcher, its terminal callback above delivers this signal instead.
+    if (!startupWatcherAttached) {
+      noteStartupSettled(persisted.id);
+    }
   }
 
   // Emit the appropriate event. Adopt emits `agent.created` alongside fresh/fork

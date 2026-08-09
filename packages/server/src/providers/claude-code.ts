@@ -260,12 +260,16 @@ export const claudeCodeProvider: AgentProvider = {
     return env;
   },
 
-  attachStartupWatcher(pty: PtyHandle, options: ResolvedSpawnOptions): void {
+  attachStartupWatcher(
+    pty: PtyHandle,
+    options: ResolvedSpawnOptions,
+    onSettled?: () => void,
+  ): void {
     // Expect the channels warning prompt if any dev channels are configured
     const { channels } = getSettings();
     const expectChannels =
       channels?.some((c) => c.startsWith("server:")) ?? false;
-    attachStartupWatcherCore(pty, options, { expectChannels });
+    attachStartupWatcherCore(pty, options, { expectChannels, onSettled });
   },
 
   hasResumableSession(options: ResolvedSpawnOptions): boolean {
@@ -311,6 +315,11 @@ export interface StartupWatcherConfig {
   maxAttempts?: number;
   /** Hard deadline for the whole watcher. */
   timeoutMs?: number;
+  /** Fired exactly once when the watcher reaches ANY terminal state (all
+   *  dialogs handled, gave up, hard timeout, PTY death) — see the provider
+   *  interface contract. Guarded: a throw must not escape into the watcher's
+   *  timer callbacks. */
+  onSettled?: () => void;
 }
 
 /**
@@ -482,6 +491,16 @@ export function attachStartupWatcherCore(
       if (d.checkTimer) clearTimeout(d.checkTimer);
     }
     disposable.dispose();
+    // cleanup() is the watcher's single terminal point (all-settled, hard
+    // timeout, PTY death), so the once-guarantee rides the `disposed` flag.
+    try {
+      config.onSettled?.();
+    } catch (err) {
+      console.warn(
+        `[auto-trust] ${label} onSettled callback threw:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 }
 

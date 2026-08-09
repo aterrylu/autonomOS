@@ -259,3 +259,69 @@ describe("startup watcher — needle-driven retry", () => {
     assert.deepEqual(pty.written, []);
   });
 });
+
+/**
+ * The onSettled contract: fired exactly ONCE at any terminal state. The
+ * prompt-delivery receipt gates its warning windows on this signal, so a
+ * watcher that settles twice would double-arm timers and one that never
+ * settles would push the receipt onto its (much later) fallback.
+ */
+describe("startup watcher — onSettled contract", () => {
+  it("fires once on the all-dialogs-dismissed path", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    pty.onWrite = () => setTimeout(() => pty.emit("\x1b[2J> _ welcome"), 5);
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      ...FAST,
+      onSettled: () => settled++,
+    });
+    pty.emit(TRUST_DIALOG);
+    await waitFor(() => pty.watcherCount === 0, "watcher disposed");
+    assert.equal(settled, 1);
+    // Nothing later re-fires it.
+    await sleep(80);
+    assert.equal(settled, 1);
+  });
+
+  it("fires once on the hard-timeout path", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      ...FAST,
+      timeoutMs: 60,
+      onSettled: () => settled++,
+    });
+    await waitFor(() => settled === 1, "settled via hard timeout");
+    await sleep(80);
+    assert.equal(settled, 1);
+  });
+
+  it("fires once on the dead-PTY path", async () => {
+    const pty = new FakePty();
+    pty.throwOnWrite = true;
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      ...FAST,
+      onSettled: () => settled++,
+    });
+    pty.emit(TRUST_DIALOG); // engage → write throws → cleanup
+    await waitFor(() => settled === 1, "settled via dead PTY");
+    assert.equal(pty.watcherCount, 0);
+  });
+
+  it("a throwing onSettled is contained (never escapes into timer callbacks)", async () => {
+    const pty = new FakePty();
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      ...FAST,
+      timeoutMs: 40,
+      onSettled: () => {
+        throw new Error("listener bug");
+      },
+    });
+    await waitFor(() => pty.watcherCount === 0, "disposed despite the throw");
+  });
+});
