@@ -34,7 +34,7 @@ Running several coding-CLI agents today means a grid of terminal tabs you babysi
 One line — installs the server as an OS-native daemon and prints your dashboard URL:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh | bash
+curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 ```
 
 This detects your OS, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and hands you a `http://localhost:3100/?token=…` link. Requires **Node 20+**.

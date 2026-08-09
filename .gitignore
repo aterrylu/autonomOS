@@ -33,3 +33,5 @@ packages/*/CHANGELOG.md
 /*.png
 /*.gif
 
+# deploy-time copy of scripts/install.sh (site.yml) — never commit
+website/install.sh
