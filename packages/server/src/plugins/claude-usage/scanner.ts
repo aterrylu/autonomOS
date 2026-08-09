@@ -277,6 +277,8 @@ export function selectUsageOrg(memberships: Membership[]): string | null {
  * {@link selectUsageOrg}, `error` for network/parse problems) so the caller
  * can surface an actionable message.
  */
+const bootstrapFetchLog = createEdgeLogger("[claude-usage] bootstrap");
+
 export async function fetchOrgId(
   cookie: string,
   fetcher: UsageFetcher = defaultFetcher,
@@ -290,44 +292,52 @@ export async function fetchOrgId(
     return { orgId: cachedOrgId, status: "ok" };
   }
 
-  // Resolve from the bootstrap API using the session key alone.
+  // Resolve from the bootstrap API using the session key alone. Same edge
+  // semantics as fetchUsageData below: success() on any completed exchange,
+  // failure() only on a throw — an offline host with a manual session key
+  // retries bootstrap every poll (cachedOrgId never populates), which was the
+  // audit's per-poll stack spam on the credential path it didn't exercise.
   try {
-    const res = await fetcher(BOOTSTRAP_URL, {
-      headers: { Cookie: buildCookieHeader(cookie) },
-    });
-    if (res.status === 401 || res.status === 403) {
-      return { orgId: null, status: "unauthorized" };
-    }
-    if (!res.ok) return { orgId: null, status: "error" };
-    const data = (await res.json()) as {
-      account?: {
-        memberships?: Array<{
-          organization?: { uuid?: string; capabilities?: string[] };
-        }>;
+    const result = await (async (): Promise<OrgIdResult> => {
+      const res = await fetcher(BOOTSTRAP_URL, {
+        headers: { Cookie: buildCookieHeader(cookie) },
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { orgId: null, status: "unauthorized" };
+      }
+      if (!res.ok) return { orgId: null, status: "error" };
+      const data = (await res.json()) as {
+        account?: {
+          memberships?: Array<{
+            organization?: { uuid?: string; capabilities?: string[] };
+          }>;
+        };
       };
-    };
-    const memberships = data?.account?.memberships ?? [];
-    const orgId = selectUsageOrg(memberships);
-    if (!orgId) {
-      // No usable org. Two shapes land here: an expired cookie (bootstrap
-      // treats it as logged-out → empty memberships) vs. a valid key whose
-      // only orgs lack claude.ai access (e.g. an API-only account). Log the
-      // shape (never the cookie) so they're tellable apart from server logs.
-      console.warn(
-        `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
-          Array.isArray(data?.account?.memberships)
-            ? `[${memberships.length}; caps=${memberships
-                .map((m) => (m.organization?.capabilities ?? []).join("|"))
-                .join(",")}]`
-            : typeof data?.account?.memberships
-        })`,
-      );
-      return { orgId: null, status: "no_org" };
-    }
-    cachedOrgId = orgId;
-    return { orgId, status: "ok" };
+      const memberships = data?.account?.memberships ?? [];
+      const orgId = selectUsageOrg(memberships);
+      if (!orgId) {
+        // No usable org. Two shapes land here: an expired cookie (bootstrap
+        // treats it as logged-out → empty memberships) vs. a valid key whose
+        // only orgs lack claude.ai access (e.g. an API-only account). Log the
+        // shape (never the cookie) so they're tellable apart from server logs.
+        console.warn(
+          `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
+            Array.isArray(data?.account?.memberships)
+              ? `[${memberships.length}; caps=${memberships
+                  .map((m) => (m.organization?.capabilities ?? []).join("|"))
+                  .join(",")}]`
+              : typeof data?.account?.memberships
+          })`,
+        );
+        return { orgId: null, status: "no_org" };
+      }
+      cachedOrgId = orgId;
+      return { orgId, status: "ok" };
+    })();
+    bootstrapFetchLog.success();
+    return result;
   } catch (err) {
-    console.error("[claude-usage] bootstrap org resolution failed:", err);
+    bootstrapFetchLog.failure(err);
     return { orgId: null, status: "error" };
   }
 }

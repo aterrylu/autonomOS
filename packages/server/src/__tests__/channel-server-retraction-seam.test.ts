@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { WSContext } from "hono/ws";
 import {
-  cancelAllChannelServerChecks,
+  _resetChannelServerChecksForTesting,
   trackChannelServerRegistration,
 } from "../agents/channelServerCheck.js";
 import {
@@ -91,7 +91,7 @@ describe("registration edge stands checks down (gateway/router.ts wiring)", () =
   const sid = "seam-edge-session";
 
   afterEach(() => {
-    cancelAllChannelServerChecks();
+    _resetChannelServerChecksForTesting();
     clearNotifications(sid);
   });
 

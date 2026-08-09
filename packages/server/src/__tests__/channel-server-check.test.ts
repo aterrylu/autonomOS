@@ -10,9 +10,9 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import {
+  _resetChannelServerChecksForTesting,
   CHANNEL_SERVER_PROBE_DELAYS_MS,
   type ChannelServerCheckIO,
-  cancelAllChannelServerChecks,
   cancelChannelServerCheck,
   noteChannelServerRegistered,
   trackChannelServerRegistration,
@@ -77,7 +77,7 @@ describe("trackChannelServerRegistration", () => {
   });
 
   afterEach(() => {
-    cancelAllChannelServerChecks();
+    _resetChannelServerChecksForTesting();
     mock.timers.reset();
     mock.restoreAll();
   });
@@ -169,6 +169,45 @@ describe("trackChannelServerRegistration", () => {
 
   it("noteChannelServerRegistered is a no-op for untracked agents", () => {
     assert.doesNotThrow(() => noteChannelServerRegistered("nobody"));
+  });
+
+  it("RESPAWN CARRY — a warning survives cancel (kill) + re-track and is retracted by the new spawn's registration", () => {
+    // The exact gap found in review: every real respawn path cancels before
+    // re-tracking, so warning memory dropped at cancel made the carry dead
+    // code — the operator's respawn (the likeliest response to the warning)
+    // left the stale warning up forever.
+    const h = makeHarness();
+    trackChannelServerRegistration("agent-1", "A@x", h.io);
+    tickThroughAllProbes();
+    assert.equal(h.notified.length, 1, "first spawn warned");
+
+    cancelChannelServerCheck("agent-1"); // kill path
+    const h2 = makeHarness();
+    trackChannelServerRegistration("agent-1", "A@x", h2.io); // respawn
+    h2.registered = true;
+    mock.timers.tick(DELAYS[0]); // first probe sees it registered
+    assert.deepEqual(
+      h2.retracted,
+      ["n-1"],
+      "the replacement spawn's success retracts the carried warning",
+    );
+  });
+
+  it("a stale fired-but-queued probe cannot evict a replacement's fresh check", () => {
+    // Timer-identity guard: probes for spawn 1 that run after spawn 2 replaced
+    // it must not delete spawn 2's map entry (that would orphan it from the
+    // registration edge and cancel).
+    const h = makeHarness();
+    trackChannelServerRegistration("agent-1", "A@x", h.io);
+    h.live = false; // spawn 1 was killed…
+    const h2 = makeHarness();
+    trackChannelServerRegistration("agent-1", "A@x", h2.io); // …and replaced
+    // Advance past both first probes: spawn 1's callback (isLive false) must
+    // stand down WITHOUT touching spawn 2's entry, whose probes continue.
+    tickThroughAllProbes();
+    assert.equal(h2.notified.length, 1, "replacement check still completes");
+    noteChannelServerRegistered("agent-1");
+    assert.deepEqual(h2.retracted, ["n-1"], "replacement is still addressable");
   });
 
   it("default schedule keeps multiple probes over at least two minutes", () => {

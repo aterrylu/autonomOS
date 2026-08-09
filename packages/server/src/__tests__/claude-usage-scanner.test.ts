@@ -645,4 +645,31 @@ describe("claude-usage credential resolution (manual override vs OAuth)", () => 
       `persistent parse failure must log once, got: ${parseFailures.length}`,
     );
   });
+
+  it("a persistently-offline bootstrap (manual-key path) logs ONCE, not once per poll", async (t) => {
+    // Same spam class as the usage fetch, on the OTHER credential path: with a
+    // manual session key and no network, cachedOrgId never populates, so
+    // bootstrap is retried — and used to stack-log — every poll cycle.
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ claudeSessionKey: "KEYB" }));
+    const errors: string[] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    });
+
+    const fetcher: UsageFetcher = async () => {
+      throw new Error("impit error: Failed to connect to the server.");
+    };
+
+    for (let i = 0; i < 3; i++) {
+      invalidateCache();
+      await getRateLimits(fetcher);
+    }
+
+    const bootFailures = errors.filter((e) => e.includes("bootstrap"));
+    assert.equal(
+      bootFailures.length,
+      1,
+      `offline bootstrap must log once, got: ${bootFailures.length}`,
+    );
+  });
 });

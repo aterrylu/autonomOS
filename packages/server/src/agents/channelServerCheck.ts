@@ -33,11 +33,14 @@
  * surfaces via the A3 status watcher's "daemon unreachable" warning; for
  * Claude Code and Gemini the subprocess is a child of the CLI and a
  * post-registration drop is currently UNWARNED — a known, narrow follow-up
- * gap (would need an edge-triggered warn on unexpected unregister). Also:
- * cancelAllChannelServerChecks (restart-all/shutdown) drops unretracted
- * warnings with the checks, so a warning emitted just before a sweep is not
- * retractable by the respawned agent — accepted, since the sweep itself
- * re-arms fresh checks that warn again if the condition is real.
+ * gap (would need an edge-triggered warn on unexpected unregister).
+ *
+ * Warning memory outlives probes: the cancel paths (kill/exit/restart-all)
+ * stop the timers but keep a timerless entry for any unretracted warning,
+ * because the agent id survives respawns — the replacement spawn carries the
+ * ids and its registration retracts them. Entries for permanently-deleted
+ * agents linger until process end (small, accepted; their notifications
+ * linger in the panel the same way).
  */
 
 /** Cumulative looks at ~30s, ~90s, ~180s after spawn. */
@@ -75,23 +78,43 @@ const checks = new Map<string, Check>();
 
 /** Arm the post-spawn registration check for one agent. Re-arming replaces any
  *  prior check for the same id but CARRIES its unretracted warning, so the
- *  replacement spawn's success can clear it (kill/exit paths cancel instead). */
+ *  replacement spawn's success can clear it. This is reachable because
+ *  cancelChannelServerCheck (the kill/exit/respawn paths) PRESERVES warning
+ *  memory — an earlier version dropped it on cancel, which made the carry
+ *  dead code on every real respawn path (every one cancels before
+ *  re-tracking) and left a false 180s warning to outlive the respawn the
+ *  operator performed to fix it. */
 export function trackChannelServerRegistration(
   agentId: string,
   name: string,
   io: ChannelServerCheckIO,
 ): void {
-  const carried = checks.get(agentId)?.warnedNotificationIds ?? [];
-  cancelChannelServerCheck(agentId);
+  const prior = checks.get(agentId);
+  if (prior?.timer) clearTimeout(prior.timer);
   const check: Check = {
     io,
     name,
     spawnedAt: Date.now(),
     timer: null,
-    warnedNotificationIds: carried,
+    warnedNotificationIds: prior?.warnedNotificationIds ?? [],
   };
   checks.set(agentId, check);
   armProbe(agentId, check, 0);
+}
+
+/** Delete this agent's entry ONLY if it is still `check` — a fired-but-not-
+ *  yet-run timer callback must never evict a replacement spawn's fresh check
+ *  (the closure holds its own `check`, so a stale callback acting on the map
+ *  unguarded would orphan the new entry from registration/cancel). Entries
+ *  holding unretracted warnings are kept (timerless) instead: the warning
+ *  memory is what lets a later registration retract. */
+function standDown(agentId: string, check: Check): void {
+  if (checks.get(agentId) !== check) return;
+  if (check.warnedNotificationIds.length > 0) {
+    check.timer = null; // stop probing, keep the warning memory
+  } else {
+    checks.delete(agentId);
+  }
 }
 
 function armProbe(agentId: string, check: Check, attempt: number): void {
@@ -103,7 +126,7 @@ function armProbe(agentId: string, check: Check, attempt: number): void {
     // the last-resort detector, so it fails loudly instead.
     try {
       if (!check.io.isLive()) {
-        checks.delete(agentId); // killed/replaced — not our spawn
+        standDown(agentId, check); // killed/replaced — not our spawn
         return;
       }
       const registered = check.io.probe();
@@ -117,9 +140,9 @@ function armProbe(agentId: string, check: Check, attempt: number): void {
       }
       if (registered !== false) {
         // Unknown at the final probe (gateway never wired): can't prove
-        // failure, so no warning — but keep any carried warning entry so a
-        // late registration edge can still retract it.
-        if (check.warnedNotificationIds.length === 0) checks.delete(agentId);
+        // failure, so no warning — but any carried warning memory is kept so
+        // a late registration edge can still retract it.
+        standDown(agentId, check);
         return;
       }
       // Final miss. Server-log breadcrumb (with the id) for cold debugging —
@@ -134,7 +157,7 @@ function armProbe(agentId: string, check: Check, attempt: number): void {
       // Keep the (timerless) entry so a late registration can retract.
       check.warnedNotificationIds.push(notificationId);
     } catch (err) {
-      checks.delete(agentId);
+      standDown(agentId, check);
       console.warn(
         `[runtime] ${agentId.slice(0, 8)} channel-server check threw — check abandoned:`,
         err instanceof Error ? err.message : err,
@@ -151,7 +174,8 @@ function resolveRegistered(
   check: Check,
   via: "probe" | "edge",
 ): void {
-  checks.delete(agentId);
+  // Identity-guarded like standDown: never evict a replacement's fresh entry.
+  if (checks.get(agentId) === check) checks.delete(agentId);
   if (check.timer) clearTimeout(check.timer);
   if (check.warnedNotificationIds.length === 0) return;
   let retracted = 0;
@@ -189,19 +213,32 @@ export function noteChannelServerRegistered(agentId: string): void {
   if (check.timer) clearTimeout(check.timer);
 }
 
-/** Dispose one agent's check (kill/exit/delete). Safe on untracked ids. An
- *  unretracted warning is dropped with the check — the agent is going away,
- *  so there is no future registration to prove it wrong. */
+/** Stand down one agent's probes (kill/exit/delete). Safe on untracked ids.
+ *  Unretracted warning memory is PRESERVED (timerless entry): the agent id
+ *  survives kills and respawns, so a later spawn's registration must still be
+ *  able to retract a warning this spawn earned. The entry for a
+ *  permanently-deleted agent lingers until process end — one small object,
+ *  accepted (its notifications linger in the panel the same way). */
 export function cancelChannelServerCheck(agentId: string): void {
   const check = checks.get(agentId);
   if (check) {
     if (check.timer) clearTimeout(check.timer);
-    checks.delete(agentId);
+    standDown(agentId, check);
   }
 }
 
-/** Dispose all checks (restart-all / shutdown). */
+/** Stand down all probes (restart-all / shutdown). Warning memory is kept for
+ *  the same reason as cancelChannelServerCheck — the post-sweep respawn of a
+ *  warned agent retracts its stale warning on registration. */
 export function cancelAllChannelServerChecks(): void {
+  for (const [agentId, check] of checks) {
+    if (check.timer) clearTimeout(check.timer);
+    standDown(agentId, check);
+  }
+}
+
+/** For testing — drop ALL state including warning memory. */
+export function _resetChannelServerChecksForTesting(): void {
   for (const check of checks.values()) {
     if (check.timer) clearTimeout(check.timer);
   }
