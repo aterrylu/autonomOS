@@ -1,15 +1,13 @@
-# Deploys website/ to Cloudflare Pages (project: autonomos-site) →
-# https://autonomos.terrylu.cloud
+# Deploys website/ to GitHub Pages → https://autonomos.terrylu.cloud
 #
-# One-time setup (owner's lane, in Cloudflare + GitHub):
-#   1. Create the Pages project:  wrangler pages project create autonomos-site
-#      (or Cloudflare dashboard → Workers & Pages → Create → Pages → Direct Upload)
-#   2. Repo secrets: CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN — create the
-#      token least-privilege: scoped to "Cloudflare Pages: Edit" for this ONE
-#      project, not account-wide (a leak then means "can redeploy this site",
-#      not "can touch DNS or other projects").
-#   3. Point the custom domain: Pages project → Custom domains → autonomos.terrylu.cloud
-#      (Cloudflare handles the CNAME + TLS automatically for a same-account zone).
+# One-time setup (owner's lane — 2 steps, no tokens, no secrets):
+#   1. Repo Settings → Pages → Source: "GitHub Actions", then set the custom
+#      domain to autonomos.terrylu.cloud (GitHub provisions TLS automatically).
+#   2. Cloudflare DNS (terrylu.cloud zone): add CNAME  autonomos → aterrylu.github.io
+#      (DNS-only / grey cloud, so GitHub's Let's Encrypt cert issuance can verify).
+#
+# Until the DNS lands, the same deploy serves at aterrylu.github.io/autonomOS/
+# — every asset path in the page is relative, so both roots work.
 #
 # The hero image is single-sourced from docs/assets/hero.png (the `make hero`
 # output) — copied over the committed website/assets/hero.png at deploy time so
@@ -18,9 +16,8 @@
 # fails the deploy if the PNG's real dimensions stop matching the width/height
 # attributes in index.html (a re-shoot at a new viewport must touch both).
 #
-# Actions are pinned to full commit SHAs (tags are mutable; this is the one job
-# that sees the Cloudflare secrets). To upgrade: bump the SHA and the trailing
-# version comment together.
+# Actions are pinned to full commit SHAs (tags are mutable). To upgrade: bump
+# the SHA and the trailing version comment together.
 name: site
 
 on:
@@ -32,17 +29,23 @@ on:
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
-# Two quick pushes must not race: whichever upload finishes last would win,
+# Two quick pushes must not race: whichever deploy finishes last would win,
 # which is not necessarily the newer commit. Cancel the older run instead.
 concurrency:
   group: pages-deploy
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -61,9 +64,11 @@ jobs:
             exit 1
           fi
 
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.9.0
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy website --project-name=autonomos-site --commit-dirty=true
+          path: website
+
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
