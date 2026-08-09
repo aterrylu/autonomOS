@@ -58,7 +58,16 @@ dev:
 #   Runs synchronously and verifies the daemon came up. (Don't run `make prod`
 #   from inside an agent session the daemon spawned — the supervisor restart
 #   would kill that PTY mid-run. Use a plain shell or `make deploy`.)
-prod:
+prod: build
+	@echo "Handing off to OS-native supervisor (launchd/systemd-user)..."
+	@PORT=$(PROD_PORT) NO_MIGRATE=$(NO_MIGRATE) HOST='$(BIND_HOST)' bash scripts/install-prod-service.sh
+
+# ── build: deps + channel server + dashboard, NO service operations ──
+#   Factored out of `prod` so the source-mode updater (ADR-071) can rebuild a
+#   managed clone after a tag checkout without touching the supervisor — the
+#   updater owns the restart (out-of-process, health-gated). Everything here
+#   must stay side-effect-free with respect to the running daemon.
+build:
 	@$(BUN) install
 	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
@@ -67,8 +76,6 @@ prod:
 	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
 	@cd packages/dashboard && $(BUN) vite build
-	@echo "Handing off to OS-native supervisor (launchd/systemd-user)..."
-	@PORT=$(PROD_PORT) NO_MIGRATE=$(NO_MIGRATE) HOST='$(BIND_HOST)' bash scripts/install-prod-service.sh
 
 # ── doctor: preflight checks (node-pty ABI vs runtime node) ──
 #   Run standalone to diagnose/repair a crash-loop after a node upgrade.
@@ -104,6 +111,10 @@ down:
 #
 deploy:
 	@[ -n "$(DEPLOY_HOST)" ] || { echo "Error: Set DEPLOY_HOST in .env or pass it: make deploy DEPLOY_HOST=forge"; exit 1; }
+	@echo "⚠️  make deploy is a private dev tool, NOT a supported install shape (ADR-071)."
+	@echo "   It rsyncs a mutable working tree with no git history — no provenance, no"
+	@echo "   'autonomos upgrade', no rollback. For a managed deployment use:"
+	@echo "   scripts/install-source.sh on the target (clone-at-tag, upgradeable)."
 	@echo "Deploying to $(DEPLOY_HOST):$(DEPLOY_PATH)..."
 	rsync -avz --delete \
 		--exclude node_modules \

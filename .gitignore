@@ -35,3 +35,8 @@ packages/*/CHANGELOG.md
 
 # deploy-time copy of scripts/install.sh (site.yml) — never commit
 website/install.sh
+
+# Managed-clone install marker (ADR-077 source mode) — written at the repo
+# root by scripts/install-source.sh and rewritten by `autonomos upgrade`.
+# Never tracked: the updater's dirty-tree refusal must not trip over it.
+/install.json

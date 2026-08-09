@@ -92,6 +92,31 @@ describe("resolveInstall", () => {
     );
   });
 
+  it("finds a SOURCE marker at the repo root via the upward walk", () => {
+    // Managed clone layout: marker at <root>, entry script three levels down.
+    const repoRoot = join(root, "clone");
+    const scriptDir = join(repoRoot, "packages", "cli", "src");
+    mkdirSync(scriptDir, { recursive: true });
+    writeInstallJson(repoRoot, { mode: "source", prefix: repoRoot });
+    const resolved = resolveInstall(join(scriptDir, "index.ts"));
+    assert.equal(resolved.source, "marker");
+    assert.equal(resolved.info.mode, "source");
+    assert.equal(resolved.bundleDir, repoRoot);
+  });
+
+  it("does NOT accept a BUNDLE marker from a parent directory", () => {
+    // A bundle marker above the entry script is a misconfiguration, not an
+    // install — bundle markers are only valid next to the script they describe.
+    const repoRoot = join(root, "clone");
+    const scriptDir = join(repoRoot, "packages", "cli", "src");
+    mkdirSync(scriptDir, { recursive: true });
+    writeInstallJson(repoRoot, { mode: "bundle", prefix: repoRoot });
+    assert.throws(
+      () => resolveInstall(join(scriptDir, "index.ts")),
+      /Cannot determine install shape/,
+    );
+  });
+
   it("refuses when argv[1] is missing", () => {
     // Passing undefined explicitly would just trigger the default parameter —
     // the branch is only reachable when process.argv itself lacks a script.
