@@ -6,7 +6,7 @@
 //      must stay cheap and never block on anything remote.
 // POST /api/system/upgrade    → trigger an in-process upgrade
 //
-// The in-process path follows the stage-then-exit(0) discipline (ADR-072):
+// The in-process path follows the stage-then-exit(0) discipline (ADR-075):
 // the swap is pure filesystem work (safe in-process), the response is sent,
 // and then the process EXITS — it never calls launchctl/systemctl on itself
 // (an in-band supervisor restart kills the process mid-call; see the OpenClaw

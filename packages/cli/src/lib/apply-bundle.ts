@@ -1,5 +1,5 @@
 // Post-swap restart + health gate, shared by `autonomos upgrade` and
-// `autonomos rollback` (ADR-072).
+// `autonomos rollback` (ADR-075).
 //
 // The swap itself is an atomic rename done by the caller. What happens next
 // depends on who supervises the daemon:

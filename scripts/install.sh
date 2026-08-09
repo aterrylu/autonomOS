@@ -19,7 +19,7 @@
 #   3. Download autonomos-<platform>.tar.gz from the release
 #   4. Verify SHA256 against SHA256SUMS in the same release
 #   5. Extract to a staging dir, write install.json (the install-shape marker,
-#      ADR-072), then atomically swap it in at $INSTALL_PREFIX/share/autonomos/
+#      ADR-075), then atomically swap it in at $INSTALL_PREFIX/share/autonomos/
 #      (an existing install is kept at share/autonomos.previous — `autonomos
 #      rollback` swaps back)
 #   6. Write a wrapper at $INSTALL_PREFIX/bin/autonomos that execs node + the bundle
@@ -101,7 +101,7 @@ if [[ "$EXPECTED" != "$ACTUAL" ]]; then
 fi
 echo "[install] ✓ Checksum OK"
 
-# ── extract (stage-and-swap, ADR-072) ─────────────────────────────────────
+# ── extract (stage-and-swap, ADR-075) ─────────────────────────────────────
 # Never extract over a live bundle: an overlay leaves files deleted between
 # versions on disk forever (stale native addons, every old dashboard asset),
 # and a half-written overlay under a running daemon serves mixed versions.
