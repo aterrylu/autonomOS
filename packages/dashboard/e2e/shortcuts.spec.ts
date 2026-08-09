@@ -129,8 +129,11 @@ test("mod+digit switches to the Nth SIDEBAR agent through the real published ord
 
   // Both mocked agents are listed in the sidebar (Dispatcher above Researcher).
   const rows = page.locator("aside");
-  await expect(rows.getByText("Dispatcher")).toBeVisible();
-  await expect(rows.getByText("Researcher")).toBeVisible();
+  // exact:true — case-insensitive substring would also match the lowercase
+  // template subtitle ("dispatcher"), which async-populates → flaky strict
+  // mode violation (2 elements) — same class ReleaseTooling fixed in #310.
+  await expect(rows.getByText("Dispatcher", { exact: true })).toBeVisible();
+  await expect(rows.getByText("Researcher", { exact: true })).toBeVisible();
   const mod = await modKey(page);
 
   // mod+2 switches to the SECOND sidebar row — even though no pane for it was
@@ -445,8 +448,12 @@ test("quick-switcher reaches a NEVER-mounted pane and focus lands in its termina
   await mockApi(page);
   // No seeded workspace: panes mount solo, on demand. Open ONLY Dispatcher…
   await page.goto("/");
-  await expect(page.locator("aside").getByText("Dispatcher")).toBeVisible();
-  await page.locator("aside").getByText("Dispatcher").click();
+  // exact:true — see the note on the two-agent test above (avoids matching
+  // the lowercase "dispatcher" template subtitle).
+  await expect(
+    page.locator("aside").getByText("Dispatcher", { exact: true }),
+  ).toBeVisible();
+  await page.locator("aside").getByText("Dispatcher", { exact: true }).click();
   await expect.poll(() => activePaneId(page)).toBe(DISPATCHER);
   const mod = await modKey(page);
 
