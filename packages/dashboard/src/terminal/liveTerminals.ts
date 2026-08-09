@@ -438,7 +438,12 @@ export class LiveTerminal {
   }
 
   private connect(): void {
-    if (this.disposed) return;
+    // `ended` too, not just `disposed`: after a deferred session-end the
+    // instance is intentionally alive (final output on screen) — a
+    // visibilitychange-driven reconnect to the dead session would reach
+    // onopen before the server's 4004 close, and its reset() would blank
+    // exactly the output the deferral preserves.
+    if (this.disposed || this.ended) return;
     this.userScrolledUp = false;
 
     if (this.reconnectTimer) {

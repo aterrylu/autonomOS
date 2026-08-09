@@ -23,7 +23,13 @@ import type { TerminalBackend } from "./types";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
+  // All four readyState constants — production code compares against
+  // WebSocket.CONNECTING too; leaving it undefined makes `x !== CONNECTING`
+  // vacuously false for undefined x and silently skips code under test.
+  static CONNECTING = 0;
   static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
   url: string;
   readyState = 1; // OPEN
   closed = false;
@@ -215,6 +221,25 @@ describe("liveTerminals keep-alive cache", () => {
     entry.detach(container);
     expect(backends[0].disposed).toBe(true);
     expect(entry.host.parentElement).toBeNull();
+  });
+
+  it("after a deferred session-end, a visibility-driven reconnect is inert (final output survives)", () => {
+    // jsdom's default visibilityState is "prerender", which would make the
+    // visibility handler bail before ever reaching the code under test —
+    // force "visible" so the reconnect path is genuinely armed.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    const { entry, container } = mount("s1");
+    FakeWebSocket.instances[0].onclose?.({ code: 4010 }); // ended, pane still up
+    expect(entry.host.parentElement).toBe(container);
+    // Tab becomes visible again → handleVisibility sees no OPEN socket and
+    // calls connect(). Without the `ended` guard this reconnects to the dead
+    // session and its onopen reset() blanks the preserved final output.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(FakeWebSocket.instances).toHaveLength(1); // no reconnect attempt
+    expect(backends[0].disposed).toBe(false); // still showing final output
   });
 
   it("session-end while DETACHED disposes immediately", () => {

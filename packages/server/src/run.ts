@@ -82,6 +82,9 @@ type NodeEnv = {
  * resolveBindHost), so it is NOT loopback. This drives an informational startup
  * line, not any auth decision: auth is required on every route regardless of
  * bind, and per ADR-041 no route should be auth-exempt "because loopback".
+ * ONE deliberate exception (ADR-072): perf-harness mode (`AUTONOMOS_PERF=1`)
+ * consults this to REFUSE engaging on a non-loopback bind — loopback as a
+ * precondition for weakening auth, never as a substitute for it.
  */
 export function isLoopbackBind(bindHost: string | undefined): boolean {
   return (
