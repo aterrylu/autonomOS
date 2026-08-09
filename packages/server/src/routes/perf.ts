@@ -1,4 +1,5 @@
-// DEV/PERF ONLY route — mounted by run.ts only when AUTONOMOS_PERF_ROUTES=1.
+// DEV/PERF ONLY route — mounted by run.ts only in perf-harness mode
+// (AUTONOMOS_PERF=1 AND a loopback bind; see run.ts's perfMode).
 // Lets the L2 Playwright harness register synthetic terminal sessions (so the
 // REAL dashboard lists + opens them) and fire deterministic Ink-style bursts
 // through the REAL terminal WS path, so in-browser render cost can be measured.
@@ -94,8 +95,8 @@ perfRouter.post("/emit/:id", (c) => {
   const pty = ptys.get(id);
   if (!pty) return c.json({ error: "session not registered" }, 404);
 
-  const mb = Number(c.req.query("mb"));
-  const burst = scaledBurst(Number.isFinite(mb) ? mb : undefined);
+  // Number(undefined) is NaN, which scaledBurst already rejects.
+  const burst = scaledBurst(Number(c.req.query("mb")));
   pty.emitBurst(burst);
   return c.json({ chunks: burst.length, bytes: burstBytes(burst) });
 });

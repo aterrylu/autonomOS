@@ -48,13 +48,17 @@ class FakeWebSocket {
 
 function makeFakeBackend(): TerminalBackend & {
   disposed: boolean;
+  resets: number;
 } {
-  const state = { disposed: false };
+  const state = { disposed: false, resets: 0 };
   const element = document.createElement("div");
   const terminal = {
     open: (parent: HTMLElement) => parent.appendChild(element),
     dispose: () => {
       state.disposed = true;
+    },
+    reset: () => {
+      state.resets++;
     },
     attachCustomKeyEventHandler: () => {},
     registerLinkProvider: () => {},
@@ -80,8 +84,11 @@ function makeFakeBackend(): TerminalBackend & {
     get disposed() {
       return state.disposed;
     },
+    get resets() {
+      return state.resets;
+    },
   };
-  return backend as TerminalBackend & { disposed: boolean };
+  return backend as TerminalBackend & { disposed: boolean; resets: number };
 }
 
 describe("liveTerminals keep-alive cache", () => {
@@ -121,7 +128,7 @@ describe("liveTerminals keep-alive cache", () => {
     document.body.appendChild(container);
     const entry = acquireTerminal(id);
     if (!entry) throw new Error("acquire returned null");
-    entry.attach(container, { onClipboardCopy: null });
+    entry.attach(container, null);
     return { entry, container };
   }
 
@@ -150,7 +157,7 @@ describe("liveTerminals keep-alive cache", () => {
     entry.detach();
     const second = document.createElement("div");
     document.body.appendChild(second);
-    entry.attach(second, { onClipboardCopy: null });
+    entry.attach(second, null);
     expect(entry.host.parentElement).toBe(second);
     expect(FakeWebSocket.instances).toHaveLength(1); // still no reconnect
   });
@@ -186,8 +193,8 @@ describe("liveTerminals keep-alive cache", () => {
     for (let i = 0; i < 9; i++) expect(getLiveTerminal(`s${i}`)).toBeDefined();
   });
 
-  it("session-end close code disposes the cache entry and routes the UI away", () => {
-    const { entry } = mount("s1");
+  it("session-end while ATTACHED frees the cache slot but keeps the final output until detach", () => {
+    const { entry, container } = mount("s1");
     useStore.setState({
       activePane: { type: "session", id: "s1" },
     } as never);
@@ -195,11 +202,72 @@ describe("liveTerminals keep-alive cache", () => {
     useStore.setState({ switchPane: switchPane as never });
     const ws = FakeWebSocket.instances[0];
     ws.onclose?.({ code: 4010 });
+    // Slot freed immediately (the invariant) + UI routed away…
     expect(getLiveTerminal("s1")).toBeUndefined();
-    expect(backends[0].disposed).toBe(true);
     expect(switchPane).toHaveBeenCalledWith(null);
+    // …but the terminal DOM survives until the pane actually goes: the user
+    // keeps seeing the final output while dockview prunes the dead panel.
+    expect(backends[0].disposed).toBe(false);
+    expect(entry.host.parentElement).toBe(container);
     // No reconnect loop for a dead session.
     expect(FakeWebSocket.instances).toHaveLength(1);
+    // The pane unmounts → deferred disposal completes.
+    entry.detach(container);
+    expect(backends[0].disposed).toBe(true);
+    expect(entry.host.parentElement).toBeNull();
+  });
+
+  it("session-end while DETACHED disposes immediately", () => {
+    const { entry, container } = mount("s1");
+    entry.detach(container);
+    FakeWebSocket.instances[0].onclose?.({ code: 4004 });
+    expect(getLiveTerminal("s1")).toBeUndefined();
+    expect(backends[0].disposed).toBe(true);
+  });
+
+  it("reconnect resets the terminal before the server's full replay (no duplicate history)", () => {
+    vi.useFakeTimers();
+    try {
+      mount("s1");
+      const ws1 = FakeWebSocket.instances[0];
+      ws1.onopen?.(); // first connect: no reset — nothing to duplicate
+      expect(backends[0].resets).toBe(0);
+      ws1.onclose?.({ code: 1006 });
+      vi.advanceTimersByTime(1100);
+      const ws2 = FakeWebSocket.instances[1];
+      ws2.onopen?.(); // REconnect: buffer must be cleared before the replay
+      expect(backends[0].resets).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a superseded socket's late onclose cannot start reconnect churn", () => {
+    vi.useFakeTimers();
+    try {
+      mount("s1");
+      const ws1 = FakeWebSocket.instances[0];
+      ws1.onclose?.({ code: 1006 });
+      vi.advanceTimersByTime(1100);
+      expect(FakeWebSocket.instances).toHaveLength(2); // healthy replacement
+      // The old socket's close event lands LATE (it was mid-CLOSING when the
+      // replacement connected). It must not arm another reconnect.
+      ws1.onclose?.({ code: 1006 });
+      vi.advanceTimersByTime(60_000);
+      expect(FakeWebSocket.instances).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a stale mount's cleanup cannot detach a newer mount of the same session", () => {
+    const { entry, container: oldContainer } = mount("s1");
+    const newContainer = document.createElement("div");
+    document.body.appendChild(newContainer);
+    entry.attach(newContainer, null); // newer mount attached first
+    entry.detach(oldContainer); // stale cleanup — must be a no-op
+    expect(entry.host.parentElement).toBe(newContainer);
+    entry.detach(newContainer); // the real owner detaches fine
     expect(entry.host.parentElement).toBeNull();
   });
 

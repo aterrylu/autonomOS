@@ -109,10 +109,12 @@ export function useTerminal(
       return;
     }
 
-    entry.attach(container, { onClipboardCopy: handleClipboardCopy });
+    entry.attach(container, handleClipboardCopy);
 
     return () => {
-      entry.detach();
+      // Pass the container so a stale cleanup (dockview created the new
+      // panel's mount before removing ours) can't detach the newer mount.
+      entry.detach(container);
     };
   }, [sessionId, setStatus, containerRef, handleClipboardCopy]);
 

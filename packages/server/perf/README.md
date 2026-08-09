@@ -42,7 +42,7 @@ Flag-off is exactly 18,829 frames → the gate is byte-identical to `main`.
 > multiplier is smaller but still large. L1 proves the mechanism; the browser
 > layer (L2) + a real-session capture calibrate the absolute number.
 
-## L1 — reconnect replay (agent-switch cost)
+## L1-replay — reconnect replay (agent-switch cost)
 
 Same rig, but the burst is emitted BEFORE the client connects, so it lands only
 in the server-side scrollback buffer — the measurement is the replay a

@@ -17,6 +17,7 @@
 //       AUTONOMOS_WS_REPLAY_COALESCE=0 tsx perf/l1-replay-harness.ts (off == old main)
 //       MB=2 tsx perf/l1-replay-harness.ts                           (bigger scrollback)
 
+import type { UUID } from "@autonomos/core";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
@@ -40,10 +41,7 @@ async function main() {
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
   app.get("/ws/terminal/:sessionId", terminalRouter(upgradeWebSocket));
 
-  _registerSyntheticAttachment(
-    sessionId as `${string}-${string}-${string}-${string}-${string}`,
-    pty.asIPty(),
-  );
+  _registerSyntheticAttachment(sessionId as UUID, pty.asIPty());
 
   // Seed the scrollback BEFORE any client exists — replay-only measurement.
   const burst = buildBurst(

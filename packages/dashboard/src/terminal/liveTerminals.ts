@@ -37,11 +37,11 @@ const MAX_RETRY_DELAY = 10000;
  *  ~16 frames, not ~19k). Attached terminals are never evicted. */
 const MAX_LIVE_TERMINALS = 8;
 
-/** Per-mount callbacks a live terminal reports into. Re-pointed on every
- *  attach; reset to null on detach (the owning UI is gone). */
-export interface MountHooks {
-  onClipboardCopy: ((info: { text: string; ok: boolean }) => void) | null;
-}
+/** Per-mount copy-toast sink. Re-pointed on every attach; nulled on detach
+ *  (the owning UI is gone). */
+export type ClipboardCopySink =
+  | ((info: { text: string; ok: boolean }) => void)
+  | null;
 
 const cache = new Map<string, LiveTerminal>();
 
@@ -116,10 +116,13 @@ export function acquireTerminal(sessionId: string): LiveTerminal | null {
 /** Fully tear down a session's cached terminal (LRU eviction / session end /
  *  explicit cleanup). Safe to call for unknown ids. */
 export function disposeTerminal(sessionId: string): void {
-  const entry = cache.get(sessionId);
-  if (!entry) return;
-  cache.delete(sessionId);
-  entry.disposeInternal();
+  cache.get(sessionId)?.dispose();
+}
+
+/** Module-private: dispose() self-removes via this (the `=== entry` guard
+ *  keeps a stale instance from deleting a re-acquired id's fresh entry). */
+function uncache(entry: LiveTerminal): void {
+  if (cache.get(entry.sessionId) === entry) cache.delete(entry.sessionId);
 }
 
 /** Peek at a session's cached terminal WITHOUT creating one. For effects
@@ -153,10 +156,10 @@ export class LiveTerminal {
   /** xterm renders into this; attach() reparents it into the pane. */
   readonly host: HTMLDivElement;
   readonly terminal: TerminalInstance;
-  readonly hooks: MountHooks = { onClipboardCopy: null };
   /** When this entry last went off-screen — the LRU eviction key. */
   detachedAt = 0;
 
+  private onClipboardCopy: ClipboardCopySink = null;
   private readonly fitAddon: IFitAddon;
   private readonly createWebglAddon: () => IWebglAddon | null;
   private webglAddon: IWebglAddon | null = null;
@@ -164,6 +167,14 @@ export class LiveTerminal {
   private readonly wsRef: { current: WebSocket | null } = { current: null };
   private disposed = false;
   private attachedTo: HTMLElement | null = null;
+  /** Session ended (4010/4004) while attached — full disposal is deferred to
+   *  detach() so the final output stays visible until the pane goes away. */
+  private ended = false;
+  /** Whether a socket ever reached onopen — a later onopen is a REconnect,
+   *  whose full-buffer replay must not append a duplicate history. */
+  private everConnected = false;
+  /** Consecutive closes without a successful open — breadcrumb counter. */
+  private consecutiveDrops = 0;
 
   private userScrolledUp = false;
   private programmaticScroll = false;
@@ -172,9 +183,11 @@ export class LiveTerminal {
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
   private nudgeTimer: ReturnType<typeof setTimeout> | null = null;
   private inertiaRaf: number | null = null;
-  private readonly resizeObserver: ResizeObserver;
-  private readonly handleVisibility: () => void;
-  private readonly handleFocus: () => void;
+  // Assigned in installLifecycle() (the constructor tail); left undefined
+  // only when construction failed partway — the rollback catch guards reads.
+  private resizeObserver?: ResizeObserver;
+  private handleVisibility?: () => void;
+  private handleFocus?: () => void;
 
   // Last host box we actually fit to — lets us skip redundant fits (a
   // ResizeObserver can fire without a real dimension change), which is what
@@ -199,7 +212,7 @@ export class LiveTerminal {
         theme: THEMES[useStore.getState().theme].terminal,
         scrollback: 10000,
       },
-      (info) => this.hooks.onClipboardCopy?.(info),
+      (info) => this.onClipboardCopy?.(info),
     );
     this.terminal = backend.terminal;
     this.fitAddon = backend.fitAddon;
@@ -212,6 +225,29 @@ export class LiveTerminal {
       throw err;
     }
 
+    // Everything below installs per-SESSION resources (document/window
+    // listeners, a ResizeObserver, the WebSocket). A throw partway through
+    // must roll them back here — the entry never enters the cache, so
+    // dispose() would be unreachable and the listeners would leak forever
+    // (and the leaked visibility handler could even reconnect the orphan).
+    try {
+      this.installLifecycle();
+    } catch (err) {
+      if (this.handleVisibility)
+        document.removeEventListener("visibilitychange", this.handleVisibility);
+      if (this.handleFocus)
+        window.removeEventListener("focus", this.handleFocus);
+      this.resizeObserver?.disconnect();
+      this.wsRef.current?.close();
+      this.wsRef.current = null;
+      this.terminal.dispose();
+      throw err;
+    }
+  }
+
+  /** Constructor tail — split out solely so the rollback catch above can
+   *  wrap it without indenting 100 lines. Runs exactly once. */
+  private installLifecycle(): void {
     this.terminal.attachCustomKeyEventHandler((event) =>
       handleKeyEvent(event, this.terminal, this.wsRef),
     );
@@ -305,10 +341,10 @@ export class LiveTerminal {
   }
 
   /** Reparent the live terminal into a mounted pane. */
-  attach(container: HTMLElement, hooks: MountHooks): void {
+  attach(container: HTMLElement, onClipboardCopy: ClipboardCopySink): void {
     if (this.disposed) return;
     this.attachedTo = container;
-    this.hooks.onClipboardCopy = hooks.onClipboardCopy;
+    this.onClipboardCopy = onClipboardCopy;
     container.appendChild(this.host);
     // Theme may have changed while this terminal sat detached.
     this.terminal.options.theme = THEMES[useStore.getState().theme].terminal;
@@ -324,12 +360,19 @@ export class LiveTerminal {
   }
 
   /** Take the terminal off-screen but KEEP it alive (buffer, WS, parser).
-   *  The host element is removed from the pane; WebGL is released. */
-  detach(): void {
+   *  The host element is removed from the pane; WebGL is released.
+   *
+   *  `container` is the mount asking to detach: dockview can create the NEW
+   *  panel's mount before the old panel's React cleanup runs, and a stale
+   *  cleanup must not rip the host out of the newer pane. Pass the mount's
+   *  own container; a mismatch is a no-op. Omit only from dispose(), which
+   *  detaches unconditionally. */
+  detach(container?: HTMLElement): void {
     if (this.attachedTo === null) return;
+    if (container !== undefined && this.attachedTo !== container) return;
     this.attachedTo = null;
     this.detachedAt = Date.now();
-    this.hooks.onClipboardCopy = null;
+    this.onClipboardCopy = null;
     if (this.nudgeTimer) {
       clearTimeout(this.nudgeTimer);
       this.nudgeTimer = null;
@@ -339,23 +382,48 @@ export class LiveTerminal {
       this.webglAddon = null;
     }
     this.host.remove();
+    // Deferred session-end: the PTY died while this pane was showing the
+    // final output; teardown waited so the user kept seeing it. Finish now.
+    if (this.ended && !this.disposed) this.dispose();
   }
 
-  /** Full teardown. Only disposeTerminal() calls this (keeps the cache map
-   *  and the instance lifecycle in one place). */
-  disposeInternal(): void {
+  /** Full teardown — removes itself from the cache, so it is safe to call
+   *  from anywhere (LRU eviction, session-end close code, tests). */
+  dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    uncache(this);
     this.detach();
     if (this.inertiaRaf !== null) cancelAnimationFrame(this.inertiaRaf);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
     if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
-    document.removeEventListener("visibilitychange", this.handleVisibility);
-    window.removeEventListener("focus", this.handleFocus);
-    this.resizeObserver.disconnect();
+    if (this.handleVisibility)
+      document.removeEventListener("visibilitychange", this.handleVisibility);
+    if (this.handleFocus) window.removeEventListener("focus", this.handleFocus);
+    this.resizeObserver?.disconnect();
     this.wsRef.current?.close();
+    this.wsRef.current = null;
     this.terminal.dispose();
+  }
+
+  /** The session is gone server-side (4010/4004). Free the cache slot and
+   *  stop all retry machinery immediately — but if a pane is still showing
+   *  this terminal, keep the DOM (and the instance) alive until that pane's
+   *  detach(), so the final output (last prompt, build summary) stays visible
+   *  until dockview prunes the dead panel. */
+  private endSession(): void {
+    this.wsRef.current = null; // already closed; never reconnect
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.isAttached()) {
+      this.ended = true;
+      uncache(this);
+    } else {
+      this.dispose();
+    }
   }
 
   private isHostVisible(): boolean {
@@ -390,7 +458,18 @@ export class LiveTerminal {
     const ws = new WebSocket(`${WS_URL}/ws/terminal/${this.sessionId}`);
 
     ws.onopen = () => {
+      // Superseded-socket guard: connect() may replace this socket before its
+      // events land; a stale socket must never act on the live state.
+      if (this.wsRef.current !== ws || this.disposed) return;
       this.retryDelay = 1000;
+      this.consecutiveDrops = 0;
+      // The server replays the FULL scrollback on every connect. On a
+      // REconnect (sleep/wake, network blip, server restart) the terminal
+      // still holds that history — without a reset the replay would append a
+      // duplicate copy, and since this instance now outlives mounts the
+      // duplication would be permanent and cumulative.
+      if (this.everConnected) this.terminal.reset();
+      this.everConnected = true;
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
       // Nudge only when attached — a detached terminal has nothing to
       // repaint, and the fresh fit on attach() supersedes any stale size.
@@ -400,7 +479,7 @@ export class LiveTerminal {
     };
 
     ws.onmessage = (event) => {
-      if (this.disposed) return;
+      if (this.wsRef.current !== ws || this.disposed) return;
       try {
         this.terminal.write(event.data);
       } catch (err) {
@@ -421,11 +500,16 @@ export class LiveTerminal {
     };
 
     ws.onclose = (event) => {
-      if (this.disposed) return;
+      // A superseded socket's close must not schedule a reconnect — that was
+      // the churn loop: stale onclose arms a timer that closes the healthy
+      // replacement, whose onclose arms the next, forever.
+      if (this.wsRef.current !== ws || this.disposed) return;
       if (event.code === 4010 || event.code === 4004) {
-        // Session ended / not found — this terminal has no future. Route the
-        // UI away, refresh the list, and drop the cache entry (a dead session
-        // must not hold a keep-alive slot or a reconnect loop).
+        // Session ended / not found — this terminal has no future. Drop the
+        // cache entry FIRST (the invariant: a dead session must not hold a
+        // keep-alive slot or a reconnect loop — a throw in the store calls
+        // below must not leave a zombie), then route the UI away.
+        this.endSession();
         const store = useStore.getState();
         const { activePane } = store;
         if (
@@ -435,8 +519,16 @@ export class LiveTerminal {
           store.switchPane(null);
         }
         store.fetchSessions();
-        disposeTerminal(this.sessionId);
         return;
+      }
+      this.consecutiveDrops++;
+      if (this.consecutiveDrops > 0 && this.consecutiveDrops % 10 === 0) {
+        // A detached cached terminal retries invisibly — leave a breadcrumb
+        // so sustained failure (bad proxy, expired upgrade) is diagnosable.
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: ` +
+            `${this.consecutiveDrops} consecutive WS drops, still retrying (delay ${this.retryDelay}ms)`,
+        );
       }
       this.setStatusIfActive("reconnecting...");
       this.reconnectTimer = setTimeout(() => {

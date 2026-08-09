@@ -144,12 +144,15 @@ export function makeStreamForwarder(
 export interface ReplayOptions {
   /** When false, behavior is byte-identical to the historical per-chunk send. */
   coalesce: boolean;
-  /** Target frame size — chunks are packed until a frame reaches this. */
+  /** Target frame size in UTF-16 code units (≈ bytes for ASCII/ANSI terminal
+   *  output; multibyte glyphs make wire frames larger) — chunks are packed
+   *  until a frame reaches this. Same counting convention as the live
+   *  coalescer's maxBytes above. */
   maxBytes: number;
 }
 
-/** Defaults read from env. ON by default (measured: 18,829 replay frames → 18
- *  for a full 1MB buffer, byte-identical content). Set
+/** Defaults read from env. ON by default (measured: 18,829 replay frames →
+ *  9-16 for a full 1MB buffer, byte-identical content). Set
  *  `AUTONOMOS_WS_REPLAY_COALESCE=0` to fall back to per-chunk replay. */
 export const DEFAULT_REPLAY: ReplayOptions = {
   coalesce: process.env.AUTONOMOS_WS_REPLAY_COALESCE !== "0",
