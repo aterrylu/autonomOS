@@ -254,3 +254,57 @@ describe("updateSettings", () => {
     assert.deepEqual(settings.channels, []);
   });
 });
+
+const { __resetUsageToggleMigrationForTests, isAutoDetectAccountEnabled } =
+  await import("../settings.js");
+
+describe("usage credential toggle migration (pre-source-selection configs)", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    __resetUsageToggleMigrationForTests();
+  });
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    __resetUsageToggleMigrationForTests();
+  });
+
+  it("a saved key with an untouched toggle persists autoDetectClaudeAccount:false (pre-upgrade behavior kept)", () => {
+    // Pre-ADR-075 the key always won; the toggle now selects the source and
+    // defaults ON — without this migration, upgrading silently switches these
+    // users onto the Claude Code login's account.
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ claudeSessionKey: "OLDKEY" }),
+    );
+    const settings = getSettings();
+    assert.equal(settings.autoDetectClaudeAccount, false);
+    assert.equal(isAutoDetectAccountEnabled(settings), false);
+    // Persisted, not just in-memory:
+    const onDisk = JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    assert.equal(onDisk.autoDetectClaudeAccount, false);
+  });
+
+  it("does NOT migrate when the user ever touched the toggle (either key)", () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ claudeSessionKey: "K", autoDetectClaudeAccount: true }),
+    );
+    assert.equal(getSettings().autoDetectClaudeAccount, true);
+
+    __resetUsageToggleMigrationForTests();
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ claudeSessionKey: "K", autoDetectClaudeSession: true }),
+    );
+    const s = getSettings();
+    assert.notEqual(s.autoDetectClaudeAccount, false);
+    assert.equal(isAutoDetectAccountEnabled(s), true);
+  });
+
+  it("does NOT migrate when no key is saved", () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ autoTrust: true }));
+    const s = getSettings();
+    assert.equal(s.autoDetectClaudeAccount, undefined);
+    assert.equal(isAutoDetectAccountEnabled(s), true);
+  });
+});

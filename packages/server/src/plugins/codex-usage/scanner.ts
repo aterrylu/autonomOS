@@ -42,6 +42,10 @@ let cached: { data: CodexUsageData; expiresAt: number; fp: string } | null =
   null;
 let lastGood: { data: CodexUsageData; fp: string } | null = null;
 
+/** Consecutive polls on which auth.json was unreadable/absent — see the
+ * confirm-before-stamping debounce in {@link getCodexUsage}. */
+let authMissingStreak = 0;
+
 /** Short, non-reversible fingerprint keying the cache to a specific token, so an
  *  account switch (new token) never serves the previous account's numbers. */
 function fingerprint(token: string): string {
@@ -141,21 +145,35 @@ export async function getCodexUsage(
   };
 
   // No usable credential: still show the last-known rollout if one exists —
-  // STAMPED, because rollouts only exist for someone who has actually used
-  // Codex, so a missing login there is a logout/moved-config to surface (and
-  // an armed usage-queue pane can never fire without it). No rollout either →
+  // STAMPED once absence is CONFIRMED, because rollouts only exist for someone
+  // who has actually used Codex, so a missing login there is a logout/moved-
+  // config to surface (an armed usage-queue pane can never fire without it).
+  // Confirmation requires two consecutive misses: readCodexAuth returns null
+  // on ANY read failure (EACCES, a torn read while the Codex CLI rewrites
+  // auth.json during its own refresh), and a one-poll stamp would flash a red
+  // "logged out" banner AND emit a queue notification that is never retracted
+  // — the same transient-read class the Claude side debounces. A real logout
+  // is permanent, so it still surfaces one poll later. No rollout either →
   // genuinely no Codex signal → hide the UI (needsData).
   if (!auth) {
+    authMissingStreak += 1;
     const snap = readFreshestRollout();
     if (snap) {
-      return fromRollout(snap, account, {
-        error:
-          "No Codex login found — showing last-known usage. Run `codex` to log in.",
-        errorKind: "unauthorized",
-      });
+      return fromRollout(
+        snap,
+        account,
+        authMissingStreak >= 2
+          ? {
+              error:
+                "No Codex login found — showing last-known usage. Run `codex` to log in.",
+              errorKind: "unauthorized",
+            }
+          : undefined,
+      );
     }
     return needsDataResult(account);
   }
+  authMissingStreak = 0;
 
   const fp = fingerprint(auth.accessToken);
   return (
@@ -293,4 +311,5 @@ async function fetchCodexUsageSnapshot(
 export function invalidateCodexUsageCache(): void {
   cached = null;
   lastGood = null;
+  authMissingStreak = 0;
 }

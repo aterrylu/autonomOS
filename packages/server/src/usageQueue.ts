@@ -134,9 +134,14 @@ export function evaluateCap(usage: NormalizedUsage): CapStatus {
   const top = topWindow(usage.windows);
   if (!top) return { capped: false, resetsAt: null, window: null };
   const capped = top.utilization >= CAP_ENTER;
+  // When capped, the ETA must be the CAPPING window's own reset — the clear
+  // the queue actually waits for is the top window dropping, so pairing the
+  // named window with another window's (possibly much earlier) reset would
+  // promise "Sends in ~30m" on a limit that lifts in days. Uncapped, the
+  // nearest near-cap reset stays as a generic approach hint.
   return {
     capped,
-    resetsAt: nearestBlockingReset(usage.windows),
+    resetsAt: capped ? top.resetsAt : nearestBlockingReset(usage.windows),
     window: capped ? top.label : null,
   };
 }
@@ -275,7 +280,13 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
     // CAP_ENTER. This deliberately differs from evaluateCap, which is a
     // stateless read and only ever names a window at/over the threshold.
     capWindow.set(provider, isBlocked ? top.label : null);
-    resetsAt.set(provider, nearestBlockingReset(usage.windows));
+    // Blocked → the named (top) window's own reset, matching evaluateCap: the
+    // fire happens when THAT window clears, so any other window's earlier
+    // reset would be a false ETA. Unblocked → generic approach hint.
+    resetsAt.set(
+      provider,
+      isBlocked ? top.resetsAt : nearestBlockingReset(usage.windows),
+    );
 
     if (isBlocked) {
       for (const [, entry] of entries) entry.seenBlocked = true;
@@ -412,11 +423,17 @@ export function normalizeClaudeUsage(d: RateLimitData): NormalizedUsage {
   };
 }
 
-/** Codex window label from its advertised length ("5h", "7d", "90m"). */
-function codexWindowLabel(minutes: number): string {
-  if (minutes >= 1440) return `${Math.round(minutes / 1440)}d`;
-  if (minutes >= 60) return `${Math.round(minutes / 60)}h`;
-  return `${minutes}m`;
+/** Codex window label from its advertised length ("5h", "7d", "90m").
+ * MIRRORS `packages/dashboard/src/plugins/codex-usage/utils.ts` `windowLabel`
+ * verbatim (exact divisibility, not rounding) — the server can't import the
+ * dashboard module, and the two MUST print the same string or the queue
+ * button names a limit under a label that appears nowhere in the status bar
+ * (e.g. 90min: rounding says "2h", the bar says "90m"). */
+function codexWindowLabel(windowMinutes: number): string {
+  if (!windowMinutes || windowMinutes <= 0) return "";
+  if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
+  if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
+  return `${windowMinutes}m`;
 }
 
 /** Codex: primary/secondary + any named limits → normalized (usedPercent → util). */

@@ -28,6 +28,7 @@ const {
   resolveSessionKey,
   getCredentialSource,
   __expireCacheForTests,
+  __setOAuthMissConfirmMsForTests,
 } = await import("../plugins/claude-usage/scanner.js");
 const { __setOAuthTokenReaderForTests, __setOAuthFetcherForTests } =
   await import("../plugins/claude-usage/oauthUsage.js");
@@ -944,22 +945,31 @@ describe("claude-usage — fallback marker + org-id fingerprint", () => {
 
     // A single miss is indistinguishable from a locked keychain / `security`
     // timeout / credentials-file rewrite — it must NOT show the key account's
-    // numbers for one poll and flap back.
+    // numbers for one poll and flap back, and it must NOT nag "setup needed":
+    // the HOLD serves the previous answer, so real numbers stay on screen.
     readable = false;
     __expireCacheForTests();
     const miss1 = await getRateLimits(makeFetcher().fetcher);
-    assert.notEqual(
+    assert.equal(
       miss1.credentialSource,
-      "settings",
-      "first miss while OAuth active must not switch sources",
+      "oauth",
+      "hold must re-serve the previous OAuth answer",
     );
+    assert.equal(miss1.fiveHour?.utilization, 12);
+    assert.equal(miss1.needsSetup, undefined, "no setup nag during the hold");
 
-    // A second consecutive miss confirms the login is really gone → fall back.
+    // Misses are confirmed by TIME, not call count — two calls in the same
+    // transient must still hold. Only once the confirmation window elapses
+    // does absence count, and the fallback switches to the key.
     const miss2 = await getRateLimits(makeFetcher().fetcher);
-    assert.equal(miss2.credentialSource, "settings");
-    assert.equal(miss2.fiveHour?.utilization, 42);
+    assert.equal(miss2.credentialSource, "oauth", "still holding (same run)");
+    __setOAuthMissConfirmMsForTests(0); // window elapses
+    const confirmed = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(confirmed.credentialSource, "settings");
+    assert.equal(confirmed.fiveHour?.utilization, 42);
+    __setOAuthMissConfirmMsForTests(null);
 
-    // And a successful read resets the streak: after recovery, a fresh single
+    // And a successful read resets the run: after recovery, a fresh single
     // miss holds again instead of falling straight back.
     readable = true;
     const recovered = await getRateLimits(makeFetcher().fetcher);
@@ -967,7 +977,8 @@ describe("claude-usage — fallback marker + org-id fingerprint", () => {
     readable = false;
     __expireCacheForTests();
     const missAfterRecovery = await getRateLimits(makeFetcher().fetcher);
-    assert.notEqual(missAfterRecovery.credentialSource, "settings");
+    assert.equal(missAfterRecovery.credentialSource, "oauth");
+    assert.equal(missAfterRecovery.fiveHour?.utilization, 12);
   });
 
   it("cachedOrgId is fingerprint-tagged — a new key never reuses the old key's org", async () => {

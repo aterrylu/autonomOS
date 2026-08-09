@@ -572,3 +572,61 @@ describe("watcher capWindow (status() caps)", () => {
     assert.equal(h.queue.status().caps["claude-code"]?.window ?? null, null);
   });
 });
+
+describe("cap ETA attribution (review: ETA must belong to the NAMED window)", () => {
+  it("evaluateCap: when capped, resetsAt is the capping window's own reset", () => {
+    // 5h is near-cap with an EARLY reset; Sonnet 7d is the capping window
+    // with a LATE reset. The fire happens when the TOP window clears, so
+    // pairing "Sonnet 7d" with the 5h reset would promise ~30m on a limit
+    // that lifts in days.
+    const cap = evaluateCap({
+      windows: [
+        { utilization: 85, resetsAt: "2026-08-09T01:00:00Z", label: "5h" },
+        {
+          utilization: 95,
+          resetsAt: "2026-08-12T00:00:00Z",
+          label: "Sonnet 7d",
+        },
+      ],
+    });
+    assert.equal(cap.window, "Sonnet 7d");
+    assert.equal(cap.resetsAt, "2026-08-12T00:00:00Z");
+  });
+
+  it("watcher caps pair the named window with ITS reset too", async () => {
+    const h = makeHarness();
+    h.setUsage({
+      ...EMPTY,
+      fiveHour: { utilization: 85, resetsAt: "2026-08-09T01:00:00Z" },
+      sevenDaySonnet: { utilization: 95, resetsAt: "2026-08-12T00:00:00Z" },
+    });
+    h.queue.arm("pane-eta", "claude-code");
+    await h.queue.tick();
+    const cap = h.queue.status().caps["claude-code"];
+    assert.equal(cap?.window, "Sonnet 7d");
+    assert.equal(cap?.resetsAt, "2026-08-12T00:00:00Z");
+    h.queue.stop();
+  });
+
+  it("codex window labels mirror the dashboard's exact-divisibility algorithm", () => {
+    const data: CodexUsageData = {
+      primary: { usedPercent: 91, windowMinutes: 90, resetsAt: null },
+      secondary: { usedPercent: 10, windowMinutes: 1500, resetsAt: null },
+      additionalLimits: [],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "live",
+      fetchedAt: "now",
+    };
+    const n = normalizeCodexUsage(data);
+    // The bar renders 90 → "90m" and 1500 → "25h" (windowLabel in
+    // dashboard/plugins/codex-usage/utils.ts); rounding would say "2h"/"1d"
+    // and the button would name a limit that appears nowhere in the bar.
+    assert.deepEqual(
+      n.windows.map((w) => w.label),
+      ["90m", "25h"],
+    );
+    assert.equal(evaluateCap(n).window, "90m");
+  });
+});

@@ -145,6 +145,26 @@ let usageOverride: RateLimitData | null = null;
  * debounce in {@link getRateLimits}. Reset on any successful token read. */
 let oauthMissingStreak = 0;
 
+/** When the current run of consecutive token-read misses started (null = no
+ * active run). Confirmation is TIME-gated, not call-counted: getRateLimits
+ * has several independent callers (one per open dashboard tab, the usage-queue
+ * probe, refetch clicks) and two calls landing inside the same short transient
+ * (a `security` timeout, a mid-rewrite credentials file) must not count as two
+ * observations. Absence is confirmed only when a miss occurs at least
+ * {@link OAUTH_MISS_CONFIRM_MS} after the run began. */
+let oauthMissingSince: number | null = null;
+let OAUTH_MISS_CONFIRM_MS = 30_000;
+
+/** Test hook: shrink the miss-confirmation window (null restores default). */
+export function __setOAuthMissConfirmMsForTests(ms: number | null): void {
+  OAUTH_MISS_CONFIRM_MS = ms ?? 30_000;
+}
+
+/** The last answer getRateLimits actually returned — re-served during a
+ * miss-confirmation hold so the bar keeps showing real numbers instead of a
+ * false "setup needed" nag while we wait to confirm the login is really gone. */
+let lastAnswer: RateLimitData | null = null;
+
 /** Which source the last getRateLimits answer actually came from. The
  * missing-login debounce only applies while this is "oauth": that is the only
  * state an account-flap can start from. A fresh boot or a key-only setup
@@ -227,6 +247,8 @@ export function invalidateCache(): void {
   cachedOrgId = null;
   lastGood = null;
   oauthMissingStreak = 0;
+  oauthMissingSince = null;
+  lastAnswer = null;
   lastServedSource = null;
 }
 
@@ -448,11 +470,19 @@ export async function getRateLimits(
     // observed twice in a row. When OAuth was NOT serving (fresh boot,
     // key-only setup), there is nothing to flap from and the fallback is
     // immediate, as before.
-    if (oauth.needsSetup === true) oauthMissingStreak += 1;
-    else oauthMissingStreak = 0;
-    const missingConfirmed =
-      oauth.needsSetup === true &&
-      (lastServedSource !== "oauth" || oauthMissingStreak >= 2);
+    let missingConfirmed = false;
+    if (oauth.needsSetup === true) {
+      oauthMissingStreak += 1;
+      const now = Date.now();
+      if (oauthMissingSince === null) oauthMissingSince = now;
+      missingConfirmed =
+        lastServedSource !== "oauth" ||
+        (oauthMissingStreak >= 2 &&
+          now - oauthMissingSince >= OAUTH_MISS_CONFIRM_MS);
+    } else {
+      oauthMissingStreak = 0;
+      oauthMissingSince = null;
+    }
     const credentialFailure =
       missingConfirmed ||
       oauth.errorKind === "stale_token" ||
@@ -462,7 +492,16 @@ export async function getRateLimits(
     // deliberately do NOT fall back: flapping between two accounts' numbers is
     // worse than a short delay.
     if (!credentialFailure || !resolved) {
-      if (oauth.needsSetup !== true) lastServedSource = "oauth";
+      if (oauth.needsSetup !== true) {
+        lastServedSource = "oauth";
+        lastAnswer = oauth;
+      } else if (resolved && lastServedSource === "oauth" && lastAnswer) {
+        // HOLDING: OAuth was serving, the token just became unreadable, and
+        // absence isn't confirmed yet. Re-serve the previous answer — real
+        // numbers — rather than a false "setup needed" nag on a machine that
+        // has a working saved key and (probably) a working login.
+        return lastAnswer;
+      }
       return oauth;
     }
     // A BROKEN login (stale/rejected) must ride along as a marker, or the user
@@ -495,10 +534,12 @@ export async function getRateLimits(
   // overwrite it with the fallback note.
   const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
   lastServedSource = "manual";
-  if (fallbackNote && !data.error) {
-    return { ...data, credentialSource: resolved.source, ...fallbackNote };
-  }
-  return { ...data, credentialSource: resolved.source };
+  const answer: RateLimitData =
+    fallbackNote && !data.error
+      ? { ...data, credentialSource: resolved.source, ...fallbackNote }
+      : { ...data, credentialSource: resolved.source };
+  lastAnswer = answer;
+  return answer;
 }
 
 /** De-dupe concurrent cache-missing reads (see {@link createSingleFlight}).

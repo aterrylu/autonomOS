@@ -146,16 +146,37 @@ describe("codex scanner — getCodexUsage (two-tier, read-only)", () => {
     assert.equal(data.primary, null);
   });
 
-  it("no auth + rollout present → last-known snapshot WITH the missing-login stamp", async () => {
+  it("no auth + rollout: first miss serves UNSTAMPED (torn-read tolerance), second confirms the logout", async () => {
     writeRollout(20);
-    const data = await getCodexUsage();
-    assert.equal(data.source, "rollout");
-    assert.equal(data.primary?.usedPercent, 20);
-    assert.equal(data.needsData, undefined);
-    // A rollout only exists for someone who has used Codex — a missing login
-    // here is a logout to surface, or an armed queue pane holds forever.
-    assert.equal(data.errorKind, "unauthorized");
-    assert.match(data.error ?? "", /No Codex login found/);
+    // readCodexAuth returns null on ANY read failure (EACCES, a torn read
+    // while the Codex CLI rewrites auth.json) — one miss must not flash a red
+    // "logged out" banner + an unretractable queue notification.
+    const first = await getCodexUsage();
+    assert.equal(first.source, "rollout");
+    assert.equal(first.primary?.usedPercent, 20);
+    assert.equal(first.error, undefined, "first miss must not stamp");
+    // A rollout only exists for someone who has used Codex — a CONFIRMED
+    // missing login is a logout to surface, or an armed queue pane holds
+    // forever.
+    const second = await getCodexUsage();
+    assert.equal(second.errorKind, "unauthorized");
+    assert.match(second.error ?? "", /No Codex login found/);
+  });
+
+  it("a successful auth read resets the missing-auth streak", async () => {
+    writeRollout(20);
+    await getCodexUsage(); // miss 1
+    writeAuth(futureExp());
+    invalidateCodexUsageCache(); // drop the 60s cache, keep exercising reads
+    const live = await getCodexUsage(liveOk(31));
+    assert.equal(live.source, "live"); // auth readable again → streak reset
+    rmSync(join(TEST_DIR, "auth.json"));
+    const miss = await getCodexUsage();
+    assert.equal(
+      miss.error,
+      undefined,
+      "fresh single miss after a good read must hold again",
+    );
   });
 
   it("no auth + no rollout → needsData (UI hides the item)", async () => {

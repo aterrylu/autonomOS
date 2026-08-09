@@ -108,6 +108,49 @@ function scrubRemovedKeys(data: AppSettings): void {
   }
 }
 
+/** One-time guard for {@link migrateUsageCredentialToggle} (idempotent across
+ * restarts — after the first write the key exists, so it never fires again). */
+let usageToggleMigrated = false;
+
+/** Test hook: re-arm the once-per-process migration guard. */
+export function __resetUsageToggleMigrationForTests(): void {
+  usageToggleMigrated = false;
+}
+
+/**
+ * Pre-ADR-075, a saved session key ALWAYS won over the auto-detect (OAuth)
+ * path, and the toggle only gated the fallback. Now the toggle SELECTS the
+ * source, defaulting ON — which would silently switch every existing
+ * key-with-untouched-toggle config onto the Claude Code login's account on
+ * upgrade (the inverse of the account-switch defect the change fixes, hitting
+ * the users who pasted a key precisely because the accounts differ). Persist
+ * their pre-upgrade effective behavior: a saved key with BOTH toggle keys
+ * absent means "the key was the source" → write `autoDetectClaudeAccount:
+ * false` once. Users who ever touched the toggle are untouched.
+ */
+function migrateUsageCredentialToggle(data: AppSettings, file: string): void {
+  if (usageToggleMigrated) return;
+  usageToggleMigrated = true;
+  if (
+    !data.claudeSessionKey?.trim() ||
+    typeof data.autoDetectClaudeAccount === "boolean" ||
+    typeof data.autoDetectClaudeSession === "boolean"
+  ) {
+    return;
+  }
+  data.autoDetectClaudeAccount = false;
+  try {
+    // Direct write (not updateSettings — that re-enters getSettings).
+    ensureConfigDir();
+    writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+    console.log(
+      "[settings] migrated: saved session key predates the source-selecting auto-detect toggle — persisted autoDetectClaudeAccount:false to keep the key authoritative (flip the toggle in the usage panel to switch to the Claude Code login)",
+    );
+  } catch (err) {
+    console.warn(`[settings] usage-toggle migration write failed: ${err}`);
+  }
+}
+
 export function getSettings(): AppSettings {
   let data: AppSettings;
   const file = settingsFile();
@@ -136,6 +179,7 @@ export function getSettings(): AppSettings {
   }
 
   scrubRemovedKeys(data);
+  migrateUsageCredentialToggle(data, file);
 
   // Default channels so MCP tools work out of the box.
   // An explicit empty array means "user disabled all channels" — don't override.
