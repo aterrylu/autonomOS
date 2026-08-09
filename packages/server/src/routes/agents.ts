@@ -15,6 +15,7 @@ import {
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
+import { revokeAgentToken } from "../agentCredentials.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -43,7 +44,7 @@ export const agentsRouter = new Hono();
 
 // Map cache-poisoned writes to a stable 503 across the whole agents
 // surface. Without this, every patchAgent / setManager / insertAgent
-// caller (PATCH /api/agents/:id, PUT /:id/manager, POST /, MCP tools
+// caller (POST /:id/manager, POST /, MCP tools
 // reaching the same store, etc.) would bubble a generic 500 with only
 // a stack in logs — clients can't distinguish "transient miss, retry"
 // from "server's view of disk is broken, retrying is pointless until
@@ -334,14 +335,10 @@ agentsRouter.post("/", async (c) => {
   }
 });
 
-// `PATCH /:id` (rename / template / project) was removed in the API-
-// consolidation dead-surface pass: it had zero callers and zero tests, and it
-// carried the surface's only header-based optimistic-concurrency mechanism
-// (`If-Match`, vs. the body `version` everything else uses). Record edits
-// happen through the internal `patchAgent` (rename via titleCache/MCP paths).
-// Re-add deliberately — with the body `version` convention and a real consumer
-// — if a dashboard rename/reparent UI is built (tracked in the consolidation
-// audit as a possible future feature, not consolidation work).
+// `PATCH /:id` (rename / template / project) was removed: zero callers, zero
+// tests, and it carried the surface's only header-based optimistic concurrency
+// (`If-Match`, vs. the body `version` everything else uses). A future rename /
+// reparent UI re-adds it on the body-`version` convention.
 
 // ── Set manager ────────────────────────────────────────────────────
 
@@ -787,9 +784,8 @@ agentsRouter.delete("/:id", (c) => {
     // CachePoisonedError → return 503 directly (NOT bare-throw to onError)
     // so the response body still carries the `reparented` info the global
     // handler doesn't know about. The router-level onError keeps the
-    // simpler routes (POST, PATCH, PUT) covered with a stable 503 +
-    // CACHE_POISONED code; here we mirror that shape but add the
-    // in-flight state.
+    // simpler POST routes covered with a stable 503 + CACHE_POISONED
+    // code; here we mirror that shape but add the in-flight state.
     if (deleteErr instanceof CachePoisonedError) {
       return c.json(
         {
@@ -869,11 +865,11 @@ agentsRouter.delete("/:id", (c) => {
     }
     // Else: agent is genuinely gone (race resolved itself) — fall through to 200.
   }
-  // Delete confirmed — reclaim hook state (status entry + notifications) with
-  // the record. runtimeDeleteAgent already did this on the live path; calling
-  // again here is an idempotent no-op that also covers the raw-fallback and
-  // benign-race paths. Without it, GET /api/hooks returns ids nothing can
-  // resolve, forever (the clear fns previously had no production caller).
+  // Delete confirmed — reclaim the hook state with the record. Idempotent, and
+  // reached on the paths runtimeDeleteAgent's own clear misses: it clears only
+  // when the store removal returned true, so a live-PTY-only agent and the
+  // raw-fallback delete both land here still holding state.
+  revokeAgentToken(id);
   clearAgentState(id);
   clearNotifications(id);
   // Flush the deferred reparent deltas now. Emit AFTER

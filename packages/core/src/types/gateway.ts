@@ -6,10 +6,8 @@
 import type { PermissionMode } from "./permissions";
 
 // ── Agent Messages ────────────────────────────────────────────────
-// (`Platform`, `GatewayMessage.platform`, and `platformMessageId` were removed
-// with the last of the ADR-064 adapter vestiges: `platform: "slack"` was
-// hardcoded on every agent-to-agent message and read by nothing — receivers
-// consume userName/fromUri/text/timestamp only.)
+// `Platform`, `GatewayMessage.platform`, and `platformMessageId` went with the
+// last ADR-064 adapter vestiges — hardcoded `"slack"`, read by nothing.
 
 /** An agent-to-agent message routed through the gateway. */
 export interface GatewayMessage {
@@ -59,10 +57,9 @@ export type GatewayWsMessage =
   // maps to sessionId before trusting the registration; a register without a
   // valid token is rejected, closing the "assert any name" spoof.
   | { type: "register"; sessionId: string; agentToken?: string }
-  // `dashboard_connect` was removed: unreachable by construction once
-  // /ws/gateway moved to the internal Unix socket (ADR-055) — no browser can
-  // dial ws+unix://. A dashboard message feed, if built, gets a public /ws
-  // endpoint and its own contract.
+  // `dashboard_connect` was removed: ADR-055 put /ws/gateway on the internal
+  // Unix socket, which no browser can dial. A dashboard feed needs a public
+  // /ws endpoint and its own contract.
   | { type: "message"; payload: GatewayMessage }
   | { type: "send"; to: string; message: string; requestId: string }
   | { type: "send_result"; requestId: string; success: boolean; error?: string }

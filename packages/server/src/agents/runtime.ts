@@ -23,7 +23,7 @@ import {
 } from "@autonomos/core";
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
-import { writeAgentTokenFile } from "../agentCredentials.js";
+import { revokeAgentToken, writeAgentTokenFile } from "../agentCredentials.js";
 import { applyPresetToEnv } from "../envPresets.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
@@ -1343,11 +1343,17 @@ export function deleteAgent(agentId: UUID): boolean {
   cancelChannelServerCheck(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
-    // Reclaim the in-memory hook state with the record: DELETE means the
-    // agent ceases to exist, so its status entry and notifications go too —
-    // otherwise GET /api/hooks keeps returning ids no store lookup can
-    // resolve, forever. (KILL deliberately keeps both: the record survives
-    // and the history is part of it.)
+    // Reclaim the hook state with the record, or GET /api/hooks keeps
+    // returning ids no store lookup can resolve. KILL deliberately keeps
+    // both — the record survives, and the history is part of it.
+    //
+    // The token revoke is part of the same invariant, not just hygiene: the
+    // dying process fires its final hook curls (SessionEnd, Stop) AFTER the
+    // record is gone, and markExited's not-found early-return means ITS revoke
+    // never runs on this path — so with the token still valid, a straggler
+    // ingest would re-create the status entry we just cleared, permanently.
+    // Revoked, stragglers fail token verification and cannot resurrect it.
+    revokeAgentToken(agentId);
     clearAgentState(agentId);
     clearNotifications(agentId);
     emitAgentDelta({ type: "agent.deleted", id: agentId });

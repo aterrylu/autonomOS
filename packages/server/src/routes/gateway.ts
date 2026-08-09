@@ -3,16 +3,14 @@
  *
  * One client type connects here: channel MCP servers (per agent session),
  * which send { type: "register", sessionId }. The endpoint lives on the
- * internal Unix socket (ADR-055), so nothing browser-side can reach it —
- * the former `dashboard_connect` client type was removed as unreachable by
- * construction (a browser cannot dial ws+unix://; a dashboard message feed,
- * if ever built, belongs on the public /ws surface).
+ * internal Unix socket (ADR-055), so nothing browser-side can reach it — a
+ * dashboard message feed would need a public /ws endpoint of its own.
  *
  * Messages from channel servers are routed by the gateway URI router.
  */
 
 import type { GatewayWsMessage } from "@autonomos/core";
-import type { UpgradeWebSocket, WSContext } from "hono/ws";
+import type { UpgradeWebSocket } from "hono/ws";
 import { verifyAgentToken } from "../agentCredentials.js";
 import {
   getAgentList,
@@ -23,7 +21,8 @@ import {
 
 export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((_c) => {
-    let clientType: "session" | null = null;
+    // Non-null only after a token-verified register — which is also exactly
+    // the condition for unregistering on the way out.
     let sessionId: string | null = null;
 
     return {
@@ -38,7 +37,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           msg = JSON.parse(raw);
         } catch (_err) {
           console.error(
-            `[gateway-ws] invalid JSON from client (type=${clientType}):`,
+            `[gateway-ws] invalid JSON from client (session=${sessionId}):`,
             raw.slice(0, 200),
           );
           return;
@@ -66,7 +65,6 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
               }
               break;
             }
-            clientType = "session";
             sessionId = msg.sessionId;
             registerSessionClient(msg.sessionId, ws);
             break;
@@ -151,23 +149,25 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
             ws.send(JSON.stringify(response));
             break;
           }
+
+          default:
+            // A version-skewed client (e.g. a channel server from a build
+            // whose protocol has since changed) — drop, but say so, or the
+            // drift is invisible until someone wonders why nothing happens.
+            console.warn(
+              `[gateway-ws] ignoring unknown message type ${JSON.stringify((msg as { type?: unknown }).type)} (session=${sessionId})`,
+            );
         }
       },
 
       onClose(_event, ws) {
-        cleanup(ws, clientType);
+        if (sessionId) unregisterSessionClient(ws);
       },
 
       onError(event, ws) {
-        console.error(`[gateway-ws] error (type=${clientType}):`, event);
-        cleanup(ws, clientType);
+        console.error(`[gateway-ws] error (session=${sessionId}):`, event);
+        if (sessionId) unregisterSessionClient(ws);
       },
     };
   });
-}
-
-function cleanup(ws: WSContext, clientType: "session" | null): void {
-  if (clientType === "session") {
-    unregisterSessionClient(ws);
-  }
 }

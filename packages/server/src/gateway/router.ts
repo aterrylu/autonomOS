@@ -185,14 +185,14 @@ async function resolveConnectedAgent(
   return null;
 }
 
-/** Resolve the display name for an agent id (enriched via titleCache) */
 /** Display names for system (non-agent) senders. These arrive as literal
- * sender ids, not UUIDs — without this map they fell through the not-found
- * branch below and rendered as a sliced pseudo-UUID ("Agent schedul"). */
+ *  sender ids, not UUIDs, so without this map they hit the unknown-id branch
+ *  below and render as a sliced pseudo-UUID ("Agent schedul"). */
 const SYSTEM_SENDER_NAMES: Record<string, string> = {
   scheduler: "Scheduler",
 };
 
+/** Resolve the display name for an agent id (enriched via titleCache) */
 async function resolveAgentName(agentId: string): Promise<string> {
   const systemName = SYSTEM_SENDER_NAMES[agentId];
   if (systemName) return systemName;
