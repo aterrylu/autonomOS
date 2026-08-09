@@ -1,0 +1,110 @@
+// Post-swap restart + health gate, shared by `autonomos upgrade` and
+// `autonomos rollback` (ADR-071).
+//
+// The swap itself is an atomic rename done by the caller. What happens next
+// depends on who supervises the daemon:
+//
+//   - Installed service (launchd/systemd): we ask the SUPERVISOR to cycle it
+//     (restartService). Safe here because this CLI runs out-of-process — the
+//     in-process REST path must never do this (it stages and exits instead).
+//     Then we gate on the pid file: the NEW server writes its version into
+//     $configDir/autonomos.pid on listen, so "pid file shows the expected
+//     version AND the port answers" is a real boot-success signal, not a
+//     guess — and it needs no auth token.
+//   - No service, daemon running: SIGTERM stops it and nothing brings it
+//     back. Say exactly that — the old code claimed "supervisor will restart"
+//     unconditionally, which was a lie for foreground daemons.
+//   - Nothing running: nothing to restart; the next start picks up the swap.
+//
+// verifyDaemonVersion polls rather than sleeping: startup takes 2-10s
+// normally, but a cold Node boot on a busy box can take longer.
+
+import {
+  isPidAlive,
+  isPortResponsive,
+  readPidFile,
+} from "@autonomos/server/pid-file.js";
+import { findInstalledService, restartService } from "./service-control.js";
+
+export type RestartOutcome =
+  | { kind: "verified" } // supervisor cycled it; new version confirmed up
+  | { kind: "not-verified" } // supervisor cycled it; gate timed out
+  | { kind: "stopped-no-supervisor" } // daemon stopped; user must start it
+  | { kind: "not-running" }; // no daemon; nothing restarted
+
+/**
+ * Restart the daemon after a bundle swap and (when supervised) verify the
+ * expected version actually came up. Returns what happened — the CALLER
+ * decides whether "not-verified" means roll back.
+ */
+export async function restartDaemonAfterSwap(
+  expectedVersion: string,
+  timeoutMs = 45_000,
+): Promise<RestartOutcome> {
+  const svc = findInstalledService();
+  if (svc) {
+    console.log("Restarting the installed service...");
+    const result = restartService(svc);
+    if (!result.ok) {
+      console.warn(`  Supervisor restart failed: ${result.stderr.trim()}`);
+      console.warn("  Restart manually: autonomos restart");
+      return { kind: "not-verified" };
+    }
+    const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs);
+    return healthy ? { kind: "verified" } : { kind: "not-verified" };
+  }
+
+  const pidInfo = readPidFile();
+  if (pidInfo && isPidAlive(pidInfo.pid)) {
+    console.log(`Stopping running daemon (pid ${pidInfo.pid})...`);
+    try {
+      process.kill(pidInfo.pid, "SIGTERM");
+      console.log(
+        "  No supervisor is installed, so nothing restarts it automatically.",
+      );
+      console.log("  Start the new version with: autonomos start");
+    } catch (err) {
+      console.warn(
+        `  Could not signal daemon: ${err instanceof Error ? err.message : err}`,
+      );
+      console.warn("  Restart it manually: autonomos stop && autonomos start");
+    }
+    return { kind: "stopped-no-supervisor" };
+  }
+
+  console.log("No daemon running. Start the new version with: autonomos start");
+  return { kind: "not-running" };
+}
+
+/**
+ * Poll until the daemon's pid file reports `expectedVersion` and its port
+ * answers HTTP. True = the new version is genuinely serving.
+ */
+export async function verifyDaemonVersion(
+  expectedVersion: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  process.stdout.write(`Waiting for version ${expectedVersion} to come up`);
+  try {
+    while (Date.now() < deadline) {
+      const pidInfo = readPidFile();
+      if (
+        pidInfo &&
+        pidInfo.version === expectedVersion &&
+        isPidAlive(pidInfo.pid) &&
+        (await isPortResponsive(pidInfo.port))
+      ) {
+        process.stdout.write(" ✓\n");
+        return true;
+      }
+      process.stdout.write(".");
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    process.stdout.write(" ✗ (timed out)\n");
+    return false;
+  } catch {
+    process.stdout.write(" ✗\n");
+    return false;
+  }
+}

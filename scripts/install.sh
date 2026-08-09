@@ -4,10 +4,12 @@
 # Usage:
 #   curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 #
-# Environment variables (for advanced / hermetic-test invocation):
+# Environment variables:
+#   VERSION               Install a specific release (e.g. VERSION=0.5.0) instead
+#                         of the latest. Also the manual-downgrade path.
 #   INSTALL_PREFIX        Install root (default: $HOME/.local)
-#   BUNDLE_URL            Where to fetch release artifacts from
-#                         (default: https://github.com/aterrylu/autonomOS/releases/latest/download)
+#   BUNDLE_URL            Where to fetch release artifacts from (overrides VERSION;
+#                         default: https://github.com/aterrylu/autonomOS/releases/latest/download)
 #   SKIP_INSTALL_SERVICE  Skip running `autonomos install-service` post-install (test/CI)
 #   SKIP_NODE_CHECK       Skip the node-version check (test/CI; the bundle still needs node)
 #
@@ -16,14 +18,24 @@
 #   2. Require node >= 20 (the bundle is a Node-runtime JS bundle, not a static binary)
 #   3. Download autonomos-<platform>.tar.gz from the release
 #   4. Verify SHA256 against SHA256SUMS in the same release
-#   5. Extract to $INSTALL_PREFIX/share/autonomos/
+#   5. Extract to a staging dir, write install.json (the install-shape marker,
+#      ADR-071), then atomically swap it in at $INSTALL_PREFIX/share/autonomos/
+#      (an existing install is kept at share/autonomos.previous — `autonomos
+#      rollback` swaps back)
 #   6. Write a wrapper at $INSTALL_PREFIX/bin/autonomos that execs node + the bundle
-#   7. Optionally run `autonomos install-service` to set up the OS-native daemon
+#   7. First install: run `autonomos install-service` to set up the OS-native
+#      daemon. Re-run on an existing install: restart the service into the new
+#      bundle instead (re-running this script IS the supported upgrade fallback).
 
 set -euo pipefail
 
 INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/.local}"
-BUNDLE_URL="${BUNDLE_URL:-https://github.com/aterrylu/autonomOS/releases/latest/download}"
+if [[ -n "${VERSION:-}" ]]; then
+  DEFAULT_BUNDLE_URL="https://github.com/aterrylu/autonomOS/releases/download/v${VERSION#v}"
+else
+  DEFAULT_BUNDLE_URL="https://github.com/aterrylu/autonomOS/releases/latest/download"
+fi
+BUNDLE_URL="${BUNDLE_URL:-$DEFAULT_BUNDLE_URL}"
 
 # ── platform detection ────────────────────────────────────────────────────
 case "$(uname -s)/$(uname -m)" in
@@ -87,11 +99,41 @@ if [[ "$EXPECTED" != "$ACTUAL" ]]; then
 fi
 echo "[install] ✓ Checksum OK"
 
-# ── extract ───────────────────────────────────────────────────────────────
+# ── extract (stage-and-swap, ADR-071) ─────────────────────────────────────
+# Never extract over a live bundle: an overlay leaves files deleted between
+# versions on disk forever (stale native addons, every old dashboard asset),
+# and a half-written overlay under a running daemon serves mixed versions.
+# Extract to a sibling staging dir, then swap with atomic renames — the same
+# discipline `autonomos upgrade` uses. The displaced install stays at
+# .previous for `autonomos rollback`.
 INSTALL_DIR="$INSTALL_PREFIX/share/autonomos"
-mkdir -p "$INSTALL_DIR"
-echo "[install] Extracting to $INSTALL_DIR..."
-tar -xzf "$TMP/$TARBALL" -C "$INSTALL_DIR"
+STAGE_DIR="$INSTALL_DIR.new"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR"
+echo "[install] Extracting..."
+tar -xzf "$TMP/$TARBALL" -C "$STAGE_DIR"
+
+# The install-shape marker: the updater trusts this record instead of
+# guessing from paths. Must be written BEFORE the swap so the bundle always
+# describes itself.
+cat > "$STAGE_DIR/install.json" <<EOF
+{
+  "mode": "bundle",
+  "prefix": "$INSTALL_PREFIX",
+  "installedBy": "install.sh",
+  "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+WAS_INSTALLED=0
+if [[ -d "$INSTALL_DIR" ]]; then
+  WAS_INSTALLED=1
+  rm -rf "$INSTALL_DIR.previous"
+  mv "$INSTALL_DIR" "$INSTALL_DIR.previous"
+fi
+mv "$STAGE_DIR" "$INSTALL_DIR"
+echo "[install] ✓ Installed to $INSTALL_DIR"
+[[ "$WAS_INSTALLED" == "1" ]] && echo "[install]   (previous version kept at $INSTALL_DIR.previous — 'autonomos rollback' swaps back)"
 
 # ── wrapper ───────────────────────────────────────────────────────────────
 BIN_DIR="$INSTALL_PREFIX/bin"
@@ -150,6 +192,16 @@ fi
 OPEN_FLAG=""
 if [[ -t 1 && "${AUTONOMOS_NO_OPEN:-0}" != "1" ]]; then OPEN_FLAG="--open"; fi
 
+# A service file from a prior install means this run is an UPGRADE — restart
+# the supervised daemon into the freshly swapped bundle instead of re-running
+# install-service (which would refuse on the live daemon). This is what makes
+# re-running the curl|sh one-liner a supported upgrade path.
+SERVICE_INSTALLED=0
+case "$(uname -s)" in
+  Darwin) [[ -f "$HOME/Library/LaunchAgents/com.autonomos.daemon.plist" ]] && SERVICE_INSTALLED=1 ;;
+  Linux)  [[ -f "$HOME/.config/systemd/user/autonomos.service" ]] && SERVICE_INSTALLED=1 ;;
+esac
+
 # Capture the install-service exit code (`|| RC=$?` keeps `set -e` from aborting
 # here). Exit 3 = activated but the daemon isn't responding yet — we report that
 # honestly rather than printing a "URL shown above" banner over a down daemon.
@@ -159,6 +211,21 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     echo "[install] Detected existing pm2-managed autonomos. Migrating..."
     "$WRAPPER" migrate-from-pm2 $OPEN_FLAG || RC=$?
     [[ "$RC" == "0" ]] && echo "[install] ✓ Migration complete."
+  elif [[ "$SERVICE_INSTALLED" == "1" ]]; then
+    echo "[install] Existing service detected. Restarting into the new bundle..."
+    "$WRAPPER" restart || RC=$?
+    if [[ "$RC" == "0" ]]; then
+      for i in $(seq 1 15); do
+        if "$WRAPPER" status >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+      if "$WRAPPER" status >/dev/null 2>&1; then
+        echo "[install] ✓ Daemon restarted on the new version."
+      else
+        echo "[install] ⚠️  Daemon not responding after restart — check 'autonomos status' / 'autonomos logs'." >&2
+        RC=3
+      fi
+    fi
   else
     echo "[install] Running 'autonomos install-service'..."
     "$WRAPPER" install-service $OPEN_FLAG || RC=$?

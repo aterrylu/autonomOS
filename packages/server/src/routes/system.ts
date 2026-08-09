@@ -1,16 +1,28 @@
 // /api/system/* — version + upgrade endpoints.
 //
-// GET  /api/system/version    → { version, platform }
+// GET  /api/system/version    → { version, platform, arch }
+//      Contract (agreed with the API-conventions pass): path and these three
+//      fields are stable; the pid-file liveness probe hits this route, so it
+//      must stay cheap and never block on anything remote.
 // POST /api/system/upgrade    → trigger an in-process upgrade
 //
-// On a successful upgrade the daemon exits AFTER the response is sent, on the
-// assumption that it's running under a supervisor (launchd KeepAlive=true /
-// systemd Restart=always) that will restart it with the new bundle. If the
-// daemon is running in the foreground without a supervisor, the upgrade still
-// succeeds but the user has to start the daemon themselves.
+// The in-process path follows the stage-then-exit(0) discipline (ADR-071):
+// the swap is pure filesystem work (safe in-process), the response is sent,
+// and then the process EXITS — it never calls launchctl/systemctl on itself
+// (an in-band supervisor restart kills the process mid-call; see the OpenClaw
+// postmortems cited in the ADR). The supervisor (launchd KeepAlive / systemd
+// Restart=always) revives it on the new bundle. Exit happens ONLY on status
+// "upgraded" — an up-to-date no-op must not bounce the daemon.
+//
+// What this path deliberately lacks (vs the CLI): the post-restart health
+// gate + auto-rollback — the process that would run them is gone. The
+// backstops are StartLimitIntervalSec=0 (supervisor never stops retrying)
+// and `autonomos rollback` from a shell. That asymmetry is why the dashboard
+// gets no Update button in v1.
 
 import { Hono } from "hono";
-import { deriveBundleDir, detectPlatform, performUpgrade } from "../upgrade.js";
+import { resolveInstall } from "../installInfo.js";
+import { detectPlatform, performUpgrade } from "../upgrade.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();
@@ -24,14 +36,26 @@ systemRouter.get("/version", (c) =>
 );
 
 systemRouter.post("/upgrade", async (c) => {
-  let bundleDir: string;
+  let install: ReturnType<typeof resolveInstall>;
   try {
-    bundleDir = deriveBundleDir();
+    install = resolveInstall();
   } catch (err) {
     return c.json(
       {
         status: "error",
         message: err instanceof Error ? err.message : String(err),
+      },
+      400,
+    );
+  }
+  if (install.info.mode === "source") {
+    return c.json(
+      {
+        status: "error",
+        message:
+          "This is a source (git clone) install — upgrade it from a shell " +
+          "with `git pull && make prod` (source-mode upgrade backend ships " +
+          "in a later release).",
       },
       400,
     );
@@ -51,9 +75,10 @@ systemRouter.post("/upgrade", async (c) => {
   }
 
   const result = await performUpgrade({
-    bundleDir,
+    bundleDir: install.bundleDir,
     currentVersion: getServerVersion(),
     platform,
+    installInfo: install.info,
   });
 
   if (result.status === "upgraded") {
