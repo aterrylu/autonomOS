@@ -1064,28 +1064,15 @@ function SessionRow({
           className="flex items-center text-[10px]"
           style={{ color: page.statusFg }}
         >
-          <span className="flex-1 min-w-0 truncate">
+          {/* NOT flex-1: shrink to content so the pill sits immediately right
+              of the repo·branch text (Terry's spec), rather than being pushed
+              to the far corner. min-w-0 keeps long branch names truncatable. */}
+          <span className="min-w-0 truncate">
             {meta?.projectName ?? s.workingDirectory.split("/").pop()}
             {meta?.gitBranch &&
               meta.gitBranch !== "HEAD" &&
               ` · ${meta.gitBranch}`}
           </span>
-          {/* min-w-0 + truncate (NOT shrink-0): currentTool is a raw hook
-              tool_name ("Running mcp__autonomos__create_schedule"), and the
-              sidebar clips on x — a non-shrinking label would push the pill
-              (the last child) out of view on narrow rows. The transient label
-              gives way; the persistent pill doesn't. */}
-          {agentState?.status && agentState.status !== "unknown" && (
-            <span className="min-w-0 truncate ml-1.5 opacity-75">
-              {agentStatusLabel(
-                agentState.status as AgentStatus,
-                agentState.currentTool,
-              )}
-            </span>
-          )}
-          {/* Last child on purpose: the pill is persistent, the status label
-              transient — anchoring the pill at the corner keeps the row's
-              right edge stable when status toggles. */}
           {s.envPreset && (
             <span
               className="shrink-0 ml-1.5 px-1 rounded truncate max-w-[90px]"
@@ -1097,6 +1084,19 @@ function SessionRow({
               title={`Env preset: ${s.envPreset}`}
             >
               {s.envPreset}
+            </span>
+          )}
+          {/* ml-auto keeps the transient label right-aligned; min-w-0 +
+              truncate (NOT shrink-0) because currentTool is a raw hook
+              tool_name ("Running mcp__autonomos__create_schedule") and the
+              sidebar clips on x — a non-shrinking label would crowd out the
+              repo text and the pill on narrow rows. */}
+          {agentState?.status && agentState.status !== "unknown" && (
+            <span className="ml-auto min-w-0 truncate pl-1.5 opacity-75">
+              {agentStatusLabel(
+                agentState.status as AgentStatus,
+                agentState.currentTool,
+              )}
             </span>
           )}
         </div>

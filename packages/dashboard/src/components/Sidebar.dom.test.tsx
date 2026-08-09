@@ -109,7 +109,7 @@ describe("Sidebar — env preset pill", () => {
     updatedAt: 2,
   };
 
-  it("renders the pill highlighted at the far right of the bottom line", () => {
+  it("renders the pill highlighted immediately right of the repo·branch text", () => {
     useStore.setState({
       sessions: [{ ...running, envPreset: "kimi-k3" }],
       sidebarViewMode: "flat",
@@ -133,12 +133,11 @@ describe("Sidebar — env preset pill", () => {
       background: "rgba(230, 180, 80, 0.12)",
       border: "1px solid #e6b450",
     });
-    // Placement: LAST child of the bottom line, to the right of BOTH the
-    // repo/branch text and the transient status label — the position, not
-    // just the styling, is the feature.
-    expect(pill.nextElementSibling).toBeNull();
-    expect(pill.previousElementSibling).toHaveTextContent("Working");
-    expect(pill.parentElement?.textContent).toContain("proj");
+    // Placement: IMMEDIATELY right of the repo·branch span (Terry's spec) —
+    // repo text before it, the transient status label after it. The position,
+    // not just the styling, is the feature.
+    expect(pill.previousElementSibling).toHaveTextContent("proj");
+    expect(pill.nextElementSibling).toHaveTextContent("Working");
   });
 
   it("renders no pill on rows without a preset", () => {
