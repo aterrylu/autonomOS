@@ -33,6 +33,7 @@ on:
     paths:
       - "website/**"
       - "docs/assets/hero.png"
+      - "scripts/install.sh"
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
@@ -60,6 +61,13 @@ jobs:
 
       - name: Sync hero from docs (single source of truth)
         run: cp docs/assets/hero.png website/assets/hero.png
+
+      - name: Serve the installer from the domain (single source of truth)
+        # https://autonomos.terrylu.cloud/install.sh — copied from scripts/
+        # at deploy time (never committed under website/, so it can't drift);
+        # the paths trigger above includes scripts/install.sh for the same
+        # reason it includes the hero.
+        run: cp scripts/install.sh website/install.sh
 
       - name: Guard — index.html width/height must match the real hero PNG
         run: |
