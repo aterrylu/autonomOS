@@ -41,7 +41,10 @@
 
 import type { Provider, UUID } from "@autonomos/core";
 import { getAttachment } from "./agents/runtime.js";
-import type { RateLimitData } from "./plugins/claude-usage/scanner.js";
+import type {
+  RateLimitData,
+  RateLimitWindow,
+} from "./plugins/claude-usage/scanner.js";
 import { getRateLimits } from "./plugins/claude-usage/scanner.js";
 import { getCodexUsage } from "./plugins/codex-usage/scanner.js";
 import type {
@@ -56,8 +59,10 @@ const CAP_ENTER = 90;
  * {@link CAP_ENTER} is hysteresis — a real reset drops to ~0, so this margin
  * only suppresses noise, never delays a genuine clear. */
 const CAP_EXIT = 80;
-/** How often the shared watcher polls usage while any pane is armed. Matches the
- * scanners' own 60s cache, so polling faster would just re-read cache. */
+/** How often the shared watcher polls usage while any pane is armed. The
+ * scanners cache upstream (Claude 180s, Codex 60s), so polling faster than the
+ * shortest TTL would just re-read cache; 60s keeps the Codex edge prompt while
+ * Claude advances every third tick. */
 const DEFAULT_INTERVAL_MS = 60_000;
 /** The submit keystroke. xterm.js sends Enter as a carriage return, and the
  * server writes client bytes straight to the PTY, so this is byte-identical to
@@ -72,6 +77,11 @@ const SUBMIT_KEY = "\r";
 export interface NormalizedWindow {
   utilization: number;
   resetsAt: string | null;
+  /** Human label for WHICH limit this is ("5h", "Sonnet 7d", a Codex named
+   * limit…). Carried so cap reads can tell the user which window is capping —
+   * the status bar shows only the headline windows, so a cap on a window it
+   * doesn't render (e.g. a per-model weekly) is otherwise invisible. */
+  label: string;
 }
 export interface NormalizedUsage {
   windows: NormalizedWindow[];
@@ -87,6 +97,30 @@ export type UsageProbe = () => Promise<NormalizedUsage>;
 export interface CapStatus {
   capped: boolean;
   resetsAt: string | null;
+  /** Label of the highest-utilization blocking window when capped (null when
+   * not capped) — so the button can say WHICH limit was hit. */
+  window: string | null;
+}
+
+/** The window driving the cap — highest utilization, first one on a tie. Null
+ * only for an empty snapshot (no readable signal). */
+function topWindow(windows: NormalizedWindow[]): NormalizedWindow | null {
+  return windows.reduce<NormalizedWindow | null>(
+    (best, w) => (best && best.utilization >= w.utilization ? best : w),
+    null,
+  );
+}
+
+/** Earliest reset among the windows at/near the cap — an ETA hint only; the
+ * queue fires on the observed high→low edge, never on this timestamp. */
+function nearestBlockingReset(windows: NormalizedWindow[]): string | null {
+  return (
+    windows
+      .filter((w) => w.utilization >= CAP_EXIT)
+      .map((w) => w.resetsAt)
+      .filter((r): r is string => !!r)
+      .sort()[0] ?? null
+  );
 }
 
 /**
@@ -97,16 +131,19 @@ export interface CapStatus {
  * per provider before anything is armed.
  */
 export function evaluateCap(usage: NormalizedUsage): CapStatus {
-  const w = usage.windows;
-  if (w.length === 0) return { capped: false, resetsAt: null };
-  const capped = w.some((x) => x.utilization >= CAP_ENTER);
-  const resetsAt =
-    w
-      .filter((x) => x.utilization >= CAP_EXIT)
-      .map((x) => x.resetsAt)
-      .filter((r): r is string => !!r)
-      .sort()[0] ?? null;
-  return { capped, resetsAt };
+  const top = topWindow(usage.windows);
+  if (!top) return { capped: false, resetsAt: null, window: null };
+  const capped = top.utilization >= CAP_ENTER;
+  // When capped, the ETA must be the CAPPING window's own reset — the clear
+  // the queue actually waits for is the top window dropping, so pairing the
+  // named window with another window's (possibly much earlier) reset would
+  // promise "Sends in ~30m" on a limit that lifts in days. Uncapped, the
+  // nearest near-cap reset stays as a generic approach hint.
+  return {
+    capped,
+    resetsAt: capped ? top.resetsAt : nearestBlockingReset(usage.windows),
+    window: capped ? top.label : null,
+  };
 }
 
 export interface UsageQueueDeps {
@@ -182,6 +219,7 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
   // is armed (the watcher polls a provider only when it has armed panes).
   const blocked = new Map<Provider, boolean>();
   const resetsAt = new Map<Provider, string | null>();
+  const capWindow = new Map<Provider, string | null>();
 
   let timer: ReturnType<typeof setInterval> | null = null;
   /** Re-entrancy guard — two ticks resuming on the same just-cleared account
@@ -211,7 +249,8 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
       return;
     }
 
-    if (usage.windows.length === 0) {
+    const top = topWindow(usage.windows);
+    if (!top) {
       if (usage.authError) {
         // Permanent credential failure → this provider's queue can NEVER fire.
         // Warn each of its armed panes once so a multi-hour wait isn't silent.
@@ -231,18 +270,22 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
     // Real signal again — re-arm each pane's one-shot credential warning.
     for (const [, entry] of entries) entry.authWarned = false;
 
-    const maxUtil = Math.max(...usage.windows.map((w) => w.utilization));
+    const maxUtil = top.utilization;
     let isBlocked = blocked.get(provider) ?? false;
     if (!isBlocked && maxUtil >= CAP_ENTER) isBlocked = true;
     else if (isBlocked && maxUtil < CAP_EXIT) isBlocked = false;
     blocked.set(provider, isBlocked);
+    // While blocked — INCLUDING the hysteresis band — name the current top
+    // window: it is the one holding the block even if it has dipped below
+    // CAP_ENTER. This deliberately differs from evaluateCap, which is a
+    // stateless read and only ever names a window at/over the threshold.
+    capWindow.set(provider, isBlocked ? top.label : null);
+    // Blocked → the named (top) window's own reset, matching evaluateCap: the
+    // fire happens when THAT window clears, so any other window's earlier
+    // reset would be a false ETA. Unblocked → generic approach hint.
     resetsAt.set(
       provider,
-      usage.windows
-        .filter((w) => w.utilization >= CAP_EXIT)
-        .map((w) => w.resetsAt)
-        .filter((r): r is string => !!r)
-        .sort()[0] ?? null,
+      isBlocked ? top.resetsAt : nearestBlockingReset(usage.windows),
     );
 
     if (isBlocked) {
@@ -338,6 +381,7 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
         caps[provider] = {
           capped: isBlocked,
           resetsAt: resetsAt.get(provider) ?? null,
+          window: capWindow.get(provider) ?? null,
         };
       }
       return { armed: [...armed.keys()], caps };
@@ -352,15 +396,44 @@ export function createUsageQueue(deps: UsageQueueDeps): UsageQueue {
 // compute FRESH per-provider caps (pre-arm button visibility) with the same
 // mapping the watcher uses.
 
-/** Claude: the four rolling windows → normalized. */
+/** Claude: the four rolling windows → normalized, labeled as the UI names them. */
 export function normalizeClaudeUsage(d: RateLimitData): NormalizedUsage {
-  const windows = [d.fiveHour, d.sevenDay, d.sevenDaySonnet, d.sevenDayOpus]
-    .filter((w): w is NonNullable<typeof w> => w != null)
-    .map((w) => ({ utilization: w.utilization, resetsAt: w.resetsAt }));
+  const entries: Array<[RateLimitWindow | null, string]> = [
+    [d.fiveHour, "5h"],
+    [d.sevenDay, "7d"],
+    [d.sevenDaySonnet, "Sonnet 7d"],
+    [d.sevenDayOpus, "Opus 7d"],
+  ];
+  const windows = entries
+    .filter((e): e is [RateLimitWindow, string] => e[0] != null)
+    .map(([w, label]) => ({
+      utilization: w.utilization,
+      resetsAt: w.resetsAt,
+      label,
+    }));
   return {
     windows,
-    authError: d.errorKind === "unauthorized" || d.errorKind === "no_org",
+    // stale_token included: an expired Claude Code OAuth token can never clear
+    // on its own (ADR-048 forbids refreshing it), so an armed pane must be
+    // WARNED, not left holding silently. Codex has always treated it this way.
+    authError:
+      d.errorKind === "unauthorized" ||
+      d.errorKind === "no_org" ||
+      d.errorKind === "stale_token",
   };
+}
+
+/** Codex window label from its advertised length ("5h", "7d", "90m").
+ * MIRRORS `packages/dashboard/src/plugins/codex-usage/utils.ts` `windowLabel`
+ * verbatim (exact divisibility, not rounding) — the server can't import the
+ * dashboard module, and the two MUST print the same string or the queue
+ * button names a limit under a label that appears nowhere in the status bar
+ * (e.g. 90min: rounding says "2h", the bar says "90m"). */
+function codexWindowLabel(windowMinutes: number): string {
+  if (!windowMinutes || windowMinutes <= 0) return "";
+  if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
+  if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
+  return `${windowMinutes}m`;
 }
 
 /** Codex: primary/secondary + any named limits → normalized (usedPercent → util). */
@@ -374,12 +447,24 @@ export function normalizeCodexUsage(d: CodexUsageData): NormalizedUsage {
   // on (Nox). Treat non-live as "no signal": the queue holds (exactly like the
   // Claude no-data case), and still warns if it's a credential failure.
   if (d.source !== "live") return { windows: [], authError };
-  const raw: Array<CodexUsageWindow | null> = [d.primary, d.secondary];
-  for (const limit of d.additionalLimits)
-    raw.push(limit.primary, limit.secondary);
+  // Headline windows first, then every named limit's primary, then every named
+  // limit's secondary. Order is the tie-break when two windows read equal, so a
+  // primary wins the cap label over an equally-loaded secondary.
+  const raw: Array<{ w: CodexUsageWindow | null; name?: string }> = [
+    { w: d.primary },
+    { w: d.secondary },
+    ...d.additionalLimits.map((l) => ({ w: l.primary, name: l.name })),
+    ...d.additionalLimits.map((l) => ({ w: l.secondary, name: l.name })),
+  ];
   const windows = raw
-    .filter((w): w is CodexUsageWindow => w != null)
-    .map((w) => ({ utilization: w.usedPercent, resetsAt: w.resetsAt }));
+    .filter((x): x is { w: CodexUsageWindow; name?: string } => x.w != null)
+    .map(({ w, name }) => ({
+      utilization: w.usedPercent,
+      resetsAt: w.resetsAt,
+      label: name
+        ? `${name} ${codexWindowLabel(w.windowMinutes)}`
+        : codexWindowLabel(w.windowMinutes),
+    }));
   return { windows, authError };
 }
 

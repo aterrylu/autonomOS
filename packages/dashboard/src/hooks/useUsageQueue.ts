@@ -19,6 +19,9 @@ import { useCallback, useSyncExternalStore } from "react";
 interface CapStatus {
   capped: boolean;
   resetsAt: string | null;
+  /** Label of the limit that's capping (e.g. "5h", "Sonnet 7d") — may name a
+   * window the status bar doesn't render, which is exactly why it's shown. */
+  window: string | null;
 }
 
 interface QueueSnapshot {
@@ -54,7 +57,11 @@ function sameCaps(
   if (ak.length !== bk.length) return false;
   for (const k of ak) {
     if (!b[k]) return false;
-    if (a[k].capped !== b[k].capped || a[k].resetsAt !== b[k].resetsAt)
+    if (
+      a[k].capped !== b[k].capped ||
+      a[k].resetsAt !== b[k].resetsAt ||
+      a[k].window !== b[k].window
+    )
       return false;
   }
   return true;
@@ -118,6 +125,8 @@ export interface UsageQueuePane {
   capped: boolean;
   /** Nearest reset timestamp for this runtime, for an ETA hint (not the trigger). */
   resetsAt: string | null;
+  /** Which limit is capping (server-labeled), for the button's hint. */
+  capWindow: string | null;
   /** Toggle this pane's armed state (optimistic, then reconciled). */
   toggle: () => Promise<void>;
 }
@@ -162,6 +171,7 @@ export function useUsageQueue(
     isArmed: s.armed.has(sessionId),
     capped: cap?.capped ?? false,
     resetsAt: cap?.resetsAt ?? null,
+    capWindow: cap?.window ?? null,
     toggle,
   };
 }

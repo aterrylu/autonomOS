@@ -17,11 +17,13 @@
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings, isAutoDetectAccountEnabled } from "../../settings.js";
+import { createSingleFlight } from "../singleFlight.js";
 import { createEdgeLogger } from "./edgeLog.js";
 import {
   getOAuthToken,
   getOAuthUsage,
   mapOAuthUsage,
+  type OAuthToken,
   type OAuthUsageRaw,
   readAccountIdentity,
 } from "./oauthUsage.js";
@@ -121,8 +123,13 @@ let lastGood: { data: RateLimitData; fp: string } | null = null;
 const CACHE_TTL = 180_000;
 const CACHE_TTL_429 = 5 * 60_000;
 
-/** Cached org ID — rarely changes */
-let cachedOrgId: string | null = null;
+/** Cached org ID, tagged with the fingerprint of the cookie that resolved it.
+ * The tag matters on a key change: an in-flight bootstrap from the OLD key can
+ * land after invalidateCache() and would otherwise repopulate this with the
+ * old account's org — making the NEW key's very first read query the wrong
+ * org, 403, and report a valid key as "expired" (in the one read the user is
+ * watching after a paste). */
+let cachedOrgId: { orgId: string; fp: string } | null = null;
 
 /**
  * Dev/QA usage override. When set, {@link getRateLimits} returns this snapshot
@@ -133,6 +140,36 @@ let cachedOrgId: string | null = null;
  * null to clear and resume real usage reads.
  */
 let usageOverride: RateLimitData | null = null;
+
+/** Consecutive polls on which the OAuth token was unreadable/absent — see the
+ * debounce in {@link getRateLimits}. Reset on any successful token read. */
+let oauthMissingStreak = 0;
+
+/** When the current run of consecutive token-read misses started (null = no
+ * active run). Confirmation is TIME-gated, not call-counted: getRateLimits
+ * has several independent callers (one per open dashboard tab, the usage-queue
+ * probe, refetch clicks) and two calls landing inside the same short transient
+ * (a `security` timeout, a mid-rewrite credentials file) must not count as two
+ * observations. Absence is confirmed only when a miss occurs at least
+ * {@link OAUTH_MISS_CONFIRM_MS} after the run began. */
+let oauthMissingSince: number | null = null;
+let OAUTH_MISS_CONFIRM_MS = 30_000;
+
+/** Test hook: shrink the miss-confirmation window (null restores default). */
+export function __setOAuthMissConfirmMsForTests(ms: number | null): void {
+  OAUTH_MISS_CONFIRM_MS = ms ?? 30_000;
+}
+
+/** The last answer getRateLimits actually returned — re-served during a
+ * miss-confirmation hold so the bar keeps showing real numbers instead of a
+ * false "setup needed" nag while we wait to confirm the login is really gone. */
+let lastAnswer: RateLimitData | null = null;
+
+/** Which source the last getRateLimits answer actually came from. The
+ * missing-login debounce only applies while this is "oauth": that is the only
+ * state an account-flap can start from. A fresh boot or a key-only setup
+ * (nothing served yet, or already on the key) falls back immediately. */
+let lastServedSource: "oauth" | "manual" | null = null;
 
 /** Force a scripted usage snapshot (or null to clear). Dev/QA only — see
  * {@link usageOverride}. */
@@ -209,6 +246,16 @@ export function invalidateCache(): void {
   cached = null;
   cachedOrgId = null;
   lastGood = null;
+  oauthMissingStreak = 0;
+  oauthMissingSince = null;
+  lastAnswer = null;
+  lastServedSource = null;
+}
+
+/** Test hook: expire the cached entry while KEEPING lastGood, so tests can
+ * exercise the serve-stale-marked path without mocking the clock. */
+export function __expireCacheForTests(): void {
+  if (cached) cached.expiresAt = 0;
 }
 
 function buildCookieHeader(cookie: string): string {
@@ -283,13 +330,16 @@ export async function fetchOrgId(
   cookie: string,
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<OrgIdResult> {
-  if (cachedOrgId) return { orgId: cachedOrgId, status: "ok" };
+  const fp = fingerprint(cookie);
+  if (cachedOrgId && cachedOrgId.fp === fp) {
+    return { orgId: cachedOrgId.orgId, status: "ok" };
+  }
 
   // Honor an explicit lastActiveOrg if present (manual full-cookie paste).
   const orgMatch = cookie.match(/lastActiveOrg=([^;]+)/);
   if (orgMatch) {
-    cachedOrgId = orgMatch[1];
-    return { orgId: cachedOrgId, status: "ok" };
+    cachedOrgId = { orgId: orgMatch[1], fp };
+    return { orgId: orgMatch[1], status: "ok" };
   }
 
   // Resolve from the bootstrap API using the session key alone. Same edge
@@ -331,7 +381,7 @@ export async function fetchOrgId(
         );
         return { orgId: null, status: "no_org" };
       }
-      cachedOrgId = orgId;
+      cachedOrgId = { orgId, fp };
       return { orgId, status: "ok" };
     })();
     bootstrapFetchLog.success();
@@ -398,25 +448,112 @@ export async function getRateLimits(
   // demoable without burning a real limit.
   if (usageOverride) return usageOverride;
 
-  // (b) A manual claude.ai session key (settings paste or `CLAUDE_SESSION_KEY`)
-  // is an explicit override and always wins. It uses the claude.ai cookie flow
-  // (bootstrap → /usage). The `credentialSource` label is stamped from the same
-  // resolution that produced the numbers.
   const resolved = resolveSessionKey();
-  if (resolved) {
-    const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
-    return { ...data, credentialSource: resolved.source };
-  }
 
-  // (c) Zero-touch default: read Claude Code's OAuth token (read-only) and call
-  // Anthropic's OAuth usage endpoint. Opt-out via the auto-detect toggle.
-  if (!isAutoDetectAccountEnabled(getSettings())) {
+  // The auto-detect toggle SELECTS the credential source — it is not just a
+  // gate on the OAuth fallback. ON → Claude Code's login (OAuth) is
+  // authoritative, and a saved manual key serves only as a fallback when the
+  // OAuth credential itself is broken. OFF → the manual key is authoritative.
+  // (Previously a saved key always won, which made turning auto-detect ON a
+  // silent no-op forever after a key had been pasted — exactly the trap hit
+  // when switching Claude accounts. Pasting a key now turns auto-detect OFF
+  // client-side, so each action states its intent.)
+  let fallbackNote: { error: string; errorKind: ErrorKind } | undefined;
+  if (isAutoDetectAccountEnabled(getSettings())) {
+    const oauth = await computeOAuthRateLimits();
+    // needsSetup cannot distinguish "no Claude Code login" from "couldn't READ
+    // the login this instant" — the token readers return null on a locked
+    // keychain, the 1s `security` timeout, or a read racing `claude`'s own
+    // rewrite of .credentials.json. While OAuth is the ACTIVE source, a single
+    // miss must therefore not switch to the key (it would flash a different
+    // account's numbers and flap back on the next poll) — absence has to be
+    // observed twice in a row. When OAuth was NOT serving (fresh boot,
+    // key-only setup), there is nothing to flap from and the fallback is
+    // immediate, as before.
+    let missingConfirmed = false;
+    if (oauth.needsSetup === true) {
+      oauthMissingStreak += 1;
+      const now = Date.now();
+      if (oauthMissingSince === null) oauthMissingSince = now;
+      missingConfirmed =
+        lastServedSource !== "oauth" ||
+        (oauthMissingStreak >= 2 &&
+          now - oauthMissingSince >= OAUTH_MISS_CONFIRM_MS);
+    } else {
+      oauthMissingStreak = 0;
+      oauthMissingSince = null;
+    }
+    const credentialFailure =
+      missingConfirmed ||
+      oauth.errorKind === "stale_token" ||
+      oauth.errorKind === "unauthorized";
+    // Falling through means the OAuth credential is unusable AND a manual key
+    // exists — use it so usage keeps tracking. Transient failures (429/outage)
+    // deliberately do NOT fall back: flapping between two accounts' numbers is
+    // worse than a short delay.
+    if (!credentialFailure || !resolved) {
+      if (oauth.needsSetup !== true) {
+        lastServedSource = "oauth";
+        lastAnswer = oauth;
+      } else if (resolved && lastServedSource === "oauth" && lastAnswer) {
+        // HOLDING: OAuth was serving, the token just became unreadable, and
+        // absence isn't confirmed yet. Re-serve the previous answer — real
+        // numbers — rather than a false "setup needed" nag on a machine that
+        // has a working saved key and (probably) a working login.
+        return lastAnswer;
+      }
+      return oauth;
+    }
+    // A BROKEN login (stale/rejected) must ride along as a marker, or the user
+    // never learns it while the manual key keeps the numbers green. A machine
+    // with NO login at all (needsSetup) falls back silently — that is the
+    // normal key-only setup, not a fault to nag about.
+    if (
+      oauth.errorKind === "stale_token" ||
+      oauth.errorKind === "unauthorized"
+    ) {
+      fallbackNote = {
+        error:
+          oauth.errorKind === "stale_token"
+            ? "Claude Code login expired — showing usage from your saved session key."
+            : "Claude Code login was rejected — showing usage from your saved session key.",
+        errorKind: oauth.errorKind,
+      };
+    }
+  } else if (!resolved) {
     return {
-      ...errorResult("No Claude usage credential configured"),
+      ...errorResult(
+        "Auto-detect is off and no session key is saved. Turn auto-detect on, or paste a claude.ai session key.",
+      ),
       needsSetup: true,
     };
   }
-  return computeOAuthRateLimits();
+
+  // Manual key: authoritative with auto-detect off, fallback with it on. When
+  // the key ITSELF failed, its own error is the actionable one — don't
+  // overwrite it with the fallback note.
+  const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
+  lastServedSource = "manual";
+  const answer: RateLimitData =
+    fallbackNote && !data.error
+      ? { ...data, credentialSource: resolved.source, ...fallbackNote }
+      : { ...data, credentialSource: resolved.source };
+  lastAnswer = answer;
+  return answer;
+}
+
+/** De-dupe concurrent cache-missing reads (see {@link createSingleFlight}).
+ * Keyed by credential fingerprint AND flow, so the OAuth and cookie paths never
+ * share a flight even for an identically-fingerprinted credential. */
+const singleFlight = createSingleFlight<RateLimitData>();
+
+/** The cache entry for this credential, if it exists and is still fresh. The
+ * fingerprint match is what stops a just-replaced key from reading the previous
+ * account's numbers. */
+function cachedFor(fp: string): RateLimitData | null {
+  if (cached && cached.expiresAt > Date.now() && cached.fp === fp)
+    return cached.data;
+  return null;
 }
 
 /**
@@ -435,9 +572,22 @@ async function computeOAuthRateLimits(): Promise<RateLimitData> {
     };
   }
 
-  const now = Date.now();
   const fp = fingerprint(token.accessToken);
-  if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
+  return (
+    cachedFor(fp) ??
+    singleFlight(`oauth:${fp}`, () => fetchOAuthRateLimits(token, fp))
+  );
+}
+
+async function fetchOAuthRateLimits(
+  token: OAuthToken,
+  fp: string,
+): Promise<RateLimitData> {
+  const now = Date.now();
+  // Re-check under the flight: a caller that queued behind a completed flight
+  // (promise settled between its cache miss and joining) reads the fresh cache.
+  const hit = cachedFor(fp);
+  if (hit) return hit;
 
   // Reuse the token already read above — getOAuthUsage must not re-read the
   // keychain/file (double blocking sync read) nor risk fetching with a token
@@ -468,8 +618,9 @@ async function computeOAuthRateLimits(): Promise<RateLimitData> {
     // for CACHE_TTL_429 so subsequent reads short-circuit. Serve last-good for
     // this token if we have it; otherwise cache the error result itself.
     if (lastGood && lastGood.fp === fp) {
-      cached = { data: lastGood.data, expiresAt: now + CACHE_TTL_429, fp };
-      return lastGood.data;
+      const stale = staleServed(lastGood.data, "rate_limited");
+      cached = { data: stale, expiresAt: now + CACHE_TTL_429, fp };
+      return stale;
     }
     const errored: RateLimitData = {
       ...errorResult(
@@ -485,8 +636,9 @@ async function computeOAuthRateLimits(): Promise<RateLimitData> {
     // Serve last-good for the SAME token if we have it, so a transient blip
     // doesn't blank the panel; otherwise report the transient failure.
     if (lastGood && lastGood.fp === fp) {
-      cached = { data: lastGood.data, expiresAt: now + CACHE_TTL, fp };
-      return lastGood.data;
+      const stale = staleServed(lastGood.data, "unavailable");
+      cached = { data: stale, expiresAt: now + CACHE_TTL, fp };
+      return stale;
     }
     return {
       ...errorResult(
@@ -519,12 +671,26 @@ async function computeRateLimits(
   cookie: string,
   fetcher: UsageFetcher = defaultFetcher,
 ): Promise<RateLimitData> {
-  const now = Date.now();
-
   // The cookie is matched to the cache by fingerprint — a cache entry built
   // under a different (e.g. just-replaced) key is ignored.
   const fp = fingerprint(cookie);
-  if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
+  return (
+    cachedFor(fp) ??
+    singleFlight(`cookie:${fp}`, () =>
+      fetchCookieRateLimits(cookie, fp, fetcher),
+    )
+  );
+}
+
+async function fetchCookieRateLimits(
+  cookie: string,
+  fp: string,
+  fetcher: UsageFetcher,
+): Promise<RateLimitData> {
+  const now = Date.now();
+  // Re-check under the flight (see fetchOAuthRateLimits).
+  const hit = cachedFor(fp);
+  if (hit) return hit;
 
   const org = await fetchOrgId(cookie, fetcher);
   if (org.status === "unauthorized") {
@@ -572,8 +738,12 @@ async function computeRateLimits(
     // fingerprint check, a transient failure right after a key change would
     // serve the previous key's numbers as if the new key worked.
     if (lastGood && lastGood.fp === fp) {
-      cached = { data: lastGood.data, expiresAt: now + ttl, fp };
-      return lastGood.data;
+      const stale = staleServed(
+        lastGood.data,
+        status === "rate_limited" ? "rate_limited" : "unavailable",
+      );
+      cached = { data: stale, expiresAt: now + ttl, fp };
+      return stale;
     }
     return status === "rate_limited"
       ? errorResult(
@@ -598,6 +768,29 @@ async function computeRateLimits(
   lastGood = { data, fp };
   cached = { data, expiresAt: now + CACHE_TTL, fp };
   return data;
+}
+
+/**
+ * A last-good snapshot re-served during a transient upstream failure, MARKED as
+ * such. Previously the stale copy was served verbatim — indistinguishable from
+ * live data, indefinitely (each failing cycle re-cached it with no maximum
+ * age). The numbers stay (better than blanking the bar) but `error`/`errorKind`
+ * now ride along so the UI can render them with an honest "delayed" marker.
+ * `fetchedAt` is NOT restamped — it keeps reporting when the numbers were
+ * actually fetched.
+ */
+function staleServed(
+  data: RateLimitData,
+  kind: "rate_limited" | "unavailable",
+): RateLimitData {
+  return {
+    ...data,
+    error:
+      kind === "rate_limited"
+        ? "Usage requests are being rate-limited — showing the last successful reading."
+        : "The usage API is unreachable — showing the last successful reading.",
+    errorKind: kind,
+  };
 }
 
 function errorResult(error: string, errorKind?: ErrorKind): RateLimitData {

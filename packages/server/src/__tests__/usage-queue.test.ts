@@ -345,7 +345,7 @@ function makeMultiHarness() {
       claude = u;
     },
     setCodex: (utilization: number) => {
-      codex = { windows: [{ utilization, resetsAt: null }] };
+      codex = { windows: [{ utilization, resetsAt: null, label: "5h" }] };
     },
   };
 }
@@ -472,8 +472,161 @@ describe("usage adapters + evaluateCap", () => {
 
   it("evaluateCap: below the cap is not capped", () => {
     assert.equal(
-      evaluateCap({ windows: [{ utilization: 89, resetsAt: null }] }).capped,
+      evaluateCap({
+        windows: [{ utilization: 89, resetsAt: null, label: "5h" }],
+      }).capped,
       false,
     );
+  });
+
+  it("evaluateCap names the capping window (highest utilization wins)", () => {
+    const cap = evaluateCap({
+      windows: [
+        { utilization: 87, resetsAt: null, label: "5h" },
+        { utilization: 91, resetsAt: null, label: "Sonnet 7d" },
+      ],
+    });
+    assert.equal(cap.capped, true);
+    assert.equal(cap.window, "Sonnet 7d");
+  });
+
+  it("evaluateCap: window is null when not capped", () => {
+    const cap = evaluateCap({
+      windows: [{ utilization: 50, resetsAt: null, label: "5h" }],
+    });
+    assert.equal(cap.capped, false);
+    assert.equal(cap.window, null);
+  });
+});
+
+describe("window normalization — labels + credential errors", () => {
+  it("normalizeClaudeUsage labels all four windows as the UI names them", () => {
+    const n = normalizeClaudeUsage({
+      ...EMPTY,
+      fiveHour: { utilization: 10, resetsAt: "r1" },
+      sevenDay: { utilization: 20, resetsAt: "r2" },
+      sevenDaySonnet: { utilization: 91, resetsAt: "r3" },
+      sevenDayOpus: { utilization: 5, resetsAt: "r4" },
+    });
+    assert.deepEqual(
+      n.windows.map((w) => w.label),
+      ["5h", "7d", "Sonnet 7d", "Opus 7d"],
+    );
+    // The queue caps on the per-model weekly here — evaluateCap must name it.
+    assert.equal(evaluateCap(n).window, "Sonnet 7d");
+  });
+
+  it("normalizeClaudeUsage treats stale_token as a credential error (armed panes get warned)", () => {
+    const n = normalizeClaudeUsage({ ...EMPTY, errorKind: "stale_token" });
+    assert.deepEqual(n.windows, []);
+    assert.equal(n.authError, true);
+  });
+
+  it("normalizeCodexUsage labels headline windows by length and named limits by name", () => {
+    // Fully typed literal (no cast) so a renamed field breaks HERE, not silently.
+    const data: CodexUsageData = {
+      primary: { usedPercent: 30, windowMinutes: 300, resetsAt: null },
+      secondary: { usedPercent: 40, windowMinutes: 10080, resetsAt: null },
+      additionalLimits: [
+        {
+          name: "gpt-5",
+          primary: { usedPercent: 95, windowMinutes: 300, resetsAt: null },
+          secondary: null,
+        },
+      ],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "live",
+      fetchedAt: "now",
+    };
+    const n = normalizeCodexUsage(data);
+    assert.deepEqual(
+      n.windows.map((w) => w.label),
+      ["5h", "7d", "gpt-5 5h"],
+    );
+    assert.equal(evaluateCap(n).window, "gpt-5 5h");
+  });
+});
+
+describe("watcher capWindow (status() caps)", () => {
+  let h: Harness | null = null;
+  afterEach(() => h?.queue.stop());
+
+  it("names the blocking window while blocked — including the hysteresis band — and clears with it", async () => {
+    h = makeHarness();
+    h.setUsage(usageAt(100));
+    h.queue.arm("pane-w", "claude-code");
+    await h.queue.tick();
+    assert.equal(h.queue.status().caps["claude-code"]?.window, "5h");
+
+    // Dip into the 80–90 band: still blocked, still named — the window is
+    // what's HOLDING the block even though it's now below CAP_ENTER.
+    h.setUsage(usageAt(85));
+    await h.queue.tick();
+    assert.equal(h.queue.status().caps["claude-code"]?.capped, true);
+    assert.equal(h.queue.status().caps["claude-code"]?.window, "5h");
+
+    h.setUsage(usageAt(10));
+    await h.queue.tick();
+    assert.equal(h.queue.status().caps["claude-code"]?.window ?? null, null);
+  });
+});
+
+describe("cap ETA attribution (review: ETA must belong to the NAMED window)", () => {
+  it("evaluateCap: when capped, resetsAt is the capping window's own reset", () => {
+    // 5h is near-cap with an EARLY reset; Sonnet 7d is the capping window
+    // with a LATE reset. The fire happens when the TOP window clears, so
+    // pairing "Sonnet 7d" with the 5h reset would promise ~30m on a limit
+    // that lifts in days.
+    const cap = evaluateCap({
+      windows: [
+        { utilization: 85, resetsAt: "2026-08-09T01:00:00Z", label: "5h" },
+        {
+          utilization: 95,
+          resetsAt: "2026-08-12T00:00:00Z",
+          label: "Sonnet 7d",
+        },
+      ],
+    });
+    assert.equal(cap.window, "Sonnet 7d");
+    assert.equal(cap.resetsAt, "2026-08-12T00:00:00Z");
+  });
+
+  it("watcher caps pair the named window with ITS reset too", async () => {
+    const h = makeHarness();
+    h.setUsage({
+      ...EMPTY,
+      fiveHour: { utilization: 85, resetsAt: "2026-08-09T01:00:00Z" },
+      sevenDaySonnet: { utilization: 95, resetsAt: "2026-08-12T00:00:00Z" },
+    });
+    h.queue.arm("pane-eta", "claude-code");
+    await h.queue.tick();
+    const cap = h.queue.status().caps["claude-code"];
+    assert.equal(cap?.window, "Sonnet 7d");
+    assert.equal(cap?.resetsAt, "2026-08-12T00:00:00Z");
+    h.queue.stop();
+  });
+
+  it("codex window labels mirror the dashboard's exact-divisibility algorithm", () => {
+    const data: CodexUsageData = {
+      primary: { usedPercent: 91, windowMinutes: 90, resetsAt: null },
+      secondary: { usedPercent: 10, windowMinutes: 1500, resetsAt: null },
+      additionalLimits: [],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "live",
+      fetchedAt: "now",
+    };
+    const n = normalizeCodexUsage(data);
+    // The bar renders 90 → "90m" and 1500 → "25h" (windowLabel in
+    // dashboard/plugins/codex-usage/utils.ts); rounding would say "2h"/"1d"
+    // and the button would name a limit that appears nowhere in the bar.
+    assert.deepEqual(
+      n.windows.map((w) => w.label),
+      ["90m", "25h"],
+    );
+    assert.equal(evaluateCap(n).window, "90m");
   });
 });

@@ -16,6 +16,7 @@ function setHook(partial: Partial<ReturnType<typeof useUsageQueue>>) {
     isArmed: false,
     capped: true,
     resetsAt: null,
+    capWindow: null,
     toggle,
     ...partial,
   });
@@ -40,6 +41,16 @@ describe("UsageQueueButton", () => {
     expect(sw).toHaveAttribute("aria-checked", "false");
     expect(sw).toHaveTextContent("Auto-Enter when limit resets");
     expect(sw).toHaveTextContent("Type in the terminal to queue");
+  });
+
+  it("names the capping window so the button never contradicts the status bar", () => {
+    // The bar shows only 5h/7d; when a per-model weekly caps, this label is
+    // the user's only clue why the button appeared at "87%".
+    setHook({ capped: true, isArmed: false, capWindow: "Sonnet 7d" });
+    render(<UsageQueueButton sessionId="s1" provider="claude-code" />);
+    const sw = screen.getByRole("switch");
+    expect(sw).toHaveTextContent("Sonnet 7d at limit — type to queue");
+    expect(sw.title).toMatch(/Sonnet 7d limit/);
   });
 
   it("shows the reset ETA when armed with a future reset", () => {

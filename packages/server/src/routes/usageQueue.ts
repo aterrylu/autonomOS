@@ -15,7 +15,12 @@ import {
   invalidateCache,
   setUsageOverride,
 } from "../plugins/claude-usage/scanner.js";
-import { evaluateCap, REAL_PROBES, usageQueue } from "../usageQueue.js";
+import {
+  type CapStatus,
+  evaluateCap,
+  REAL_PROBES,
+  usageQueue,
+} from "../usageQueue.js";
 
 export const usageQueueRouter = new Hono();
 
@@ -89,7 +94,7 @@ usageQueueRouter.get("/", async (c) => {
   // whose no-auth/expired-token path does an uncached recursive rollout scan
   // (~/.codex/sessions/**). Without this gate that ran 4×/min per open tab (Nox).
   const activeProviders = new Set(listAgents().map((a) => a.provider));
-  const caps: Record<string, { capped: boolean; resetsAt: string | null }> = {};
+  const caps: Record<string, CapStatus> = {};
   for (const [provider, probe] of Object.entries(REAL_PROBES)) {
     if (probe && activeProviders.has(provider as Provider)) {
       caps[provider] = evaluateCap(await probe());

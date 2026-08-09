@@ -89,7 +89,7 @@ export function UsageQueueButton({
   sessionId,
   provider,
 }: UsageQueueButtonProps) {
-  const { isArmed, capped, resetsAt, toggle } = useUsageQueue(
+  const { isArmed, capped, resetsAt, capWindow, toggle } = useUsageQueue(
     sessionId,
     provider,
   );
@@ -100,11 +100,15 @@ export function UsageQueueButton({
 
   const eta = resetsAt ? timeUntilReset(resetsAt) : "";
   const accent = isArmed ? GREEN : YELLOW;
+  // Name WHICH limit is capping. The status bar shows only the headline
+  // windows (5h/7d), so when a per-model weekly is what hit 90% this label is
+  // the user's only clue why the button appeared while the bar reads lower.
+  const limitName = capWindow ? `${capWindow} limit` : "usage limit";
   const title = isArmed
-    ? `On — will auto-press Enter when your usage limit resets${
+    ? `On — will auto-press Enter when your ${limitName} resets${
         eta ? ` (~${eta})` : ""
       }. Click to turn off.`
-    : "Off — turn on, then type your next prompt into the terminal and it auto-presses Enter when your usage limit resets.";
+    : `Off — your ${limitName} is at its cap. Turn on, then type your next prompt into the terminal and it auto-presses Enter when the limit resets.`;
 
   return (
     <button
@@ -142,7 +146,9 @@ export function UsageQueueButton({
             ? eta
               ? `Sends in ~${eta}`
               : "Sends at reset"
-            : "Type in the terminal to queue"}
+            : capWindow
+              ? `${capWindow} at limit — type to queue`
+              : "Type in the terminal to queue"}
         </span>
       </span>
       <Switch on={isArmed} />

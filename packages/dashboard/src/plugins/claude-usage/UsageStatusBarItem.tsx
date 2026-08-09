@@ -337,25 +337,17 @@ export function UsageStatusBarItem() {
   );
   const toggleRef = useRef<HTMLButtonElement>(null);
 
-  if (error) {
-    return (
-      <span
-        className="inline-flex items-center gap-1"
-        style={{ color: page.statusFg }}
-        title={`Usage error: ${error}`}
-      >
-        <Codicon name="claude" size={14} /> –
-      </span>
-    );
-  }
-
   if (!data) {
+    // No data at all: a fetch error shows "–", otherwise still loading. When
+    // we DO have data, a failed poll no longer blanks the numbers — the last
+    // successful reading renders with a stale marker instead (below).
     return (
       <span
         className="inline-flex items-center gap-1"
         style={{ color: page.statusFg }}
+        title={error ? `Usage error: ${error}` : undefined}
       >
-        <Codicon name="claude" size={14} /> …
+        <Codicon name="claude" size={14} /> {error ? "–" : "…"}
       </span>
     );
   }
@@ -379,9 +371,14 @@ export function UsageStatusBarItem() {
     );
   }
 
-  if (data.error) {
+  const hasData =
+    data.fiveHour || data.sevenDay || data.sevenDaySonnet || data.sevenDayOpus;
+
+  if (data.error && !hasData) {
     // A bad credential is the user's to fix (red, "err"); a transient outage
-    // is not (amber, "delayed") — the label shouldn't imply user error.
+    // is not (amber, "delayed") — the label shouldn't imply user error. With
+    // windows present, `data.error` is a served-stale marker and the numbers
+    // render below with a warning glyph instead of being replaced by a pill.
     const credential = isCredentialError(data.errorKind);
     return (
       <div className="relative">
@@ -410,7 +407,6 @@ export function UsageStatusBarItem() {
     );
   }
 
-  const hasData = data.fiveHour || data.sevenDay;
   if (!hasData) {
     return (
       <span
@@ -422,6 +418,27 @@ export function UsageStatusBarItem() {
       </span>
     );
   }
+
+  // The bar's headline windows are 5h + overall 7d. But the usage-queue caps
+  // on the MAX across all four windows (incl. the per-model weeklies), so when
+  // a per-model window exceeds both headline numbers, show it too — otherwise
+  // the bar reads e.g. "87%" while the queue truthfully arms on a Sonnet
+  // weekly at 91%, and the two look contradictory.
+  const headlineMax = Math.max(
+    data.fiveHour?.utilization ?? 0,
+    data.sevenDay?.utilization ?? 0,
+  );
+  const topModel = [
+    { window: data.sevenDaySonnet, label: "Sonnet 7d" },
+    { window: data.sevenDayOpus, label: "Opus 7d" },
+  ]
+    .flatMap(({ window, label }) => (window ? [{ window, label }] : []))
+    .sort((a, b) => b.window.utilization - a.window.utilization)[0];
+  const showModel = topModel && topModel.window.utilization > headlineMax;
+
+  // Stale marker: a poll failed (`error`) or the server is re-serving the last
+  // successful reading (`data.error` with windows). Numbers stay visible.
+  const staleMsg = error ? `Usage refresh failing: ${error}` : data.error;
 
   return (
     <div className="relative">
@@ -439,6 +456,27 @@ export function UsageStatusBarItem() {
         )}
         {data.sevenDay && (
           <WindowLabel label="7d" window={data.sevenDay} mode={displayMode} />
+        )}
+        {showModel && (
+          <WindowLabel
+            label={topModel.label}
+            window={topModel.window}
+            mode={displayMode}
+          />
+        )}
+        {staleMsg && (
+          <span
+            title={staleMsg}
+            style={{
+              // Red for credential failures (the fallback note lands here:
+              // numbers from the saved key + a broken login); amber for
+              // transient staleness. Mirrors the Codex glyph.
+              color: isCredentialError(data.errorKind) ? "#ea6c73" : "#e6b450",
+              display: "inline-flex",
+            }}
+          >
+            <Codicon name="warning" size={12} />
+          </span>
         )}
       </button>
       {panel === "usage" && (

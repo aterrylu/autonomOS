@@ -63,14 +63,38 @@ async function validate(): Promise<SaveValidateResult> {
  * key to disk (it returns 200 for any well-formed string), so a successful
  * save proves nothing about the key. The follow-up `validate()` is what tells
  * the user whether the credential actually works.
+ *
+ * Pasting a key also turns auto-detect OFF in the same write: the toggle now
+ * SELECTS the credential source (auto-detect ON = Claude Code's login wins),
+ * so a paste must switch the source or the validate() below would read the
+ * OTHER credential's numbers and report them as this key's.
  */
 export async function saveAndValidate(
   sessionKey: string,
 ): Promise<SaveValidateResult> {
+  // Remember the auto-detect state we're about to flip, so a FAILED validation
+  // can put it back. Without the restore, a bad paste persisted
+  // `autoDetectClaudeAccount: false` while the UI toggle still showed On — the
+  // user walks away believing they stayed on auto-detect, with a broken key
+  // silently selected. Default true mirrors the server's default.
+  let previousAutoDetect = true;
+  const settingsRes = await fetch("/api/settings").catch(() => null);
+  if (settingsRes?.ok) {
+    try {
+      const settings = (await settingsRes.json()) as {
+        autoDetectClaudeAccount?: boolean;
+      };
+      previousAutoDetect = settings.autoDetectClaudeAccount !== false;
+    } catch {}
+  }
+
   const res = await fetch("/api/settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ claudeSessionKey: sessionKey }),
+    body: JSON.stringify({
+      claudeSessionKey: sessionKey,
+      autoDetectClaudeAccount: false,
+    }),
   }).catch(() => null);
 
   if (!res?.ok) {
@@ -86,5 +110,17 @@ export async function saveAndValidate(
     return { kind: "unreachable", message };
   }
 
-  return validate();
+  const result = await validate();
+  if (result.kind !== "ok" && previousAutoDetect) {
+    // Best-effort restore. If even this write fails the validation error
+    // below is still the actionable message; the toggle then shows a stale
+    // value until the panel remounts (its settings fetch is latched per
+    // mount), which a page reload also fixes.
+    await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoDetectClaudeAccount: true }),
+    }).catch(() => null);
+  }
+  return result;
 }

@@ -20,6 +20,7 @@ import radioTowerSvg from "@vscode/codicons/src/icons/radio-tower.svg?raw";
 import sendSvg from "@vscode/codicons/src/icons/send.svg?raw";
 import trashSvg from "@vscode/codicons/src/icons/trash.svg?raw";
 import typeHierarchySvg from "@vscode/codicons/src/icons/type-hierarchy.svg?raw";
+import warningSvg from "@vscode/codicons/src/icons/warning.svg?raw";
 
 function extractPaths(raw: string): string[] {
   return [...raw.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]);
@@ -48,6 +49,7 @@ const ICONS = {
   send: extractPaths(sendSvg),
   trash: extractPaths(trashSvg),
   "type-hierarchy": extractPaths(typeHierarchySvg),
+  warning: extractPaths(warningSvg),
 } as const;
 
 export type CodiconName = keyof typeof ICONS;
