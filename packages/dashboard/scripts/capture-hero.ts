@@ -808,14 +808,28 @@ function controlSocketPath(server: DemoServer): string {
 }
 
 /** POST a synthetic hook event to the internal control socket to pose an
- *  agent's status badge. The socket is the auth boundary (no token needed — same
- *  as the agents' own `curl --unix-socket` hook relay). Resolves the HTTP
- *  status; the caller treats non-200 as non-fatal. */
+ *  agent's status badge. Since ADR-055 PR B the socket alone is NOT the auth
+ *  boundary: ingest also demands the per-agent token minted at spawn
+ *  (X-Agent-Token), so one agent can't forge another's status. The harness
+ *  owns the isolated config dir, so it reads the same 0600 token file the
+ *  channel-server uses (`$configDir/agent-tokens/<sessionId>`). Resolves the
+ *  HTTP status; the caller treats non-200 as non-fatal. */
 function poseHook(
+  server: DemoServer,
   socketPath: string,
   sessionId: string,
   event: Record<string, unknown>,
 ): Promise<number> {
+  let agentToken = "";
+  try {
+    agentToken = readFileSync(
+      join(server.configDir, "agent-tokens", sessionId),
+      "utf8",
+    ).trim();
+  } catch {
+    // fall through with an empty header — the 401 warn at the call site names
+    // the agent, which beats throwing here mid-pose-loop
+  }
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({ ...event, session_id: sessionId });
     const req = httpRequest(
@@ -826,6 +840,7 @@ function poseHook(
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
+          "X-Agent-Token": agentToken,
         },
       },
       (res) => {
@@ -968,7 +983,7 @@ async function stageScene(
     if (!m.pose) continue;
     for (const ev of m.pose) {
       try {
-        const status = await poseHook(socketPath, idOf(m.name), ev);
+        const status = await poseHook(server, socketPath, idOf(m.name), ev);
         if (status !== 200) console.warn(`pose ${m.name} → ${status} (non-fatal)`);
       } catch (err) {
         console.warn(`pose ${m.name} failed (non-fatal): ${err}`);
