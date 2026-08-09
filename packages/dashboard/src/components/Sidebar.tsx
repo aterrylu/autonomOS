@@ -1073,9 +1073,12 @@ function SessionRow({
               meta.gitBranch !== "HEAD" &&
               ` · ${meta.gitBranch}`}
           </span>
+          {/* shrink-0 with NO width cap — the preset name always renders in
+              full (Terry's spec); the repo text and status label are the
+              members that give way on narrow rows. */}
           {s.envPreset && (
             <span
-              className="shrink-0 ml-1.5 px-1 rounded truncate max-w-[90px]"
+              className="shrink-0 ml-1.5 px-1 rounded"
               style={{
                 color: accent,
                 background: `${accent}1f`,
