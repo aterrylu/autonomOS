@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>autonomOS — Multi-agent harness for CLI coding agents</title>
+<meta name="description" content="Orchestrate Claude Code, Codex, and more — one message bus, one shared MCP toolbelt, and an org chart of agents you can watch work from any browser.">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="canonical" href="https://autonomos.terrylu.cloud/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="autonomOS — Multi-agent harness for CLI coding agents">
+<meta property="og:description" content="Orchestrate Claude Code, Codex, and more — one message bus, one shared MCP toolbelt, and an org chart of agents you can watch work from any browser.">
+<meta property="og:url" content="https://autonomos.terrylu.cloud/">
+<meta property="og:image" content="https://autonomos.terrylu.cloud/assets/hero.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="#top"><span class="mark">a</span>autonomOS</a>
+  <div class="nav-links">
+    <a href="#why">Why</a>
+    <a href="#support">Support</a>
+    <a href="#developers">Developers</a>
+    <a class="btn btn-ghost" href="https://github.com/aterrylu/autonomOS">GitHub&nbsp;↗</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <p class="eyebrow">self-hosted · open source · MIT</p>
+  <h1>Multi-agent harness for<br>CLI coding agents.</h1>
+  <p class="sub">
+    Orchestrate <strong>Claude Code</strong>, <strong>Codex</strong>, and more —
+    one message bus, one shared MCP toolbelt, and an org chart of agents
+    you can watch work from any browser.
+  </p>
+  <div class="cta-row">
+    <button class="install" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh | bash" title="Copy install command">
+      <span class="cmd"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh <span class="pipe">|</span> bash</span>
+      <span class="copy-hint">copy</span>
+    </button>
+    <a class="btn btn-gold" href="https://github.com/aterrylu/autonomOS">View on GitHub</a>
+  </div>
+  <figure class="shot">
+    <img src="assets/hero.png" alt="The autonomOS dashboard in a macOS window: an org chart of agents across Claude Code and Codex, two live terminal sessions, and usage bars." width="1880" height="1166">
+  </figure>
+</header>
+
+<main>
+<section class="why" id="why">
+  <h2><span class="hash">##</span> Why autonomOS</h2>
+  <p class="lede">
+    Running several coding-CLI agents today means a grid of terminal tabs you babysit —
+    copy-pasting context, relaying every hand-off by hand. autonomOS turns them into a
+    <strong>team</strong> that coordinates directly, across whichever CLI each agent runs.
+  </p>
+  <div class="cards">
+    <article class="card">
+      <h3><code>agent://</code> A message bus for coding agents</h3>
+      <p>A URI gateway routes messages between running sessions — a Claude Code agent
+      hands off to a Codex one with no human relay, and delivery is confirmed, not assumed.</p>
+    </article>
+    <article class="card">
+      <h3><code>mcp</code> Cross-CLI by design</h3>
+      <p>Claude Code, Codex, and Gemini share one MCP toolbelt and one address space.
+      Orchestration is written once and works across every runtime.</p>
+    </article>
+    <article class="card">
+      <h3><code>org</code> An org chart, like a company</h3>
+      <p>Agents organize into managers and reports — work delegates <em>down</em> the tree
+      and escalates <em>up</em> it, on a hierarchy you shape at runtime. Not a flat pool of tabs.</p>
+    </article>
+    <article class="card">
+      <h3><code>live</code> Coordination you can watch</h3>
+      <p>Hook telemetry streams every agent's status as they work and message each other —
+      split-pane terminals, schedules, notifications. Browser-native and always-on: close
+      your laptop, the fleet keeps working.</p>
+    </article>
+  </div>
+</section>
+
+<section class="support" id="support">
+  <h2><span class="hash">##</span> Coding-CLI support</h2>
+  <p class="lede">
+    CLI-agnostic by design: every runtime plugs into the same bus and the same toolbelt.
+    <strong>Claude Code and Codex are fully supported; Gemini is partial.</strong>
+  </p>
+  <!-- Keep this table in sync with README.md "Coding-CLI support" — README is the source of truth. -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Capability</th><th>Claude Code</th><th>Codex</th><th>Gemini</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Spawn as a managed session</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span> <small>daemon + remote TUI</small></td><td><span class="ok">✓</span></td></tr>
+        <tr><td>Live status telemetry</td><td><span class="ok">✓</span> <small>hooks</small></td><td><span class="ok">✓</span> <small>event stream</small></td><td><span class="ok">✓</span> <small>hooks, translated</small></td></tr>
+        <tr><td>Shared MCP toolbelt</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
+        <tr><td><strong>Send</strong> to other agents</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
+        <tr><td><strong>Receive</strong> from other agents</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span> <small>native, inline</small></td><td><span class="no">✗</span> <small>not yet</small></td></tr>
+        <tr><td>Permission modes</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
+        <tr><td>Usage / token tracking</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="no">✗</span> <small>not yet</small></td></tr>
+        <tr><td>Resume across restarts</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="warn">!</span> <small>fresh session</small></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="developers" id="developers">
+  <h2><span class="hash">##</span> For developers</h2>
+  <p class="lede">
+    The <a href="https://github.com/aterrylu/autonomOS">GitHub repo</a> is the front door for
+    building on autonomOS — full docs, decision records, and contribution guides live there.
+  </p>
+  <div class="dev-grid">
+    <div class="panel">
+      <h3>Install the daemon</h3>
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/aterrylu/autonomOS/main/scripts/install.sh | bash
+
+autonomos status   <span class="c"># is the daemon healthy?</span>
+autonomos logs -f  <span class="c"># follow the server log</span></code></pre>
+      <p>Installs an OS-native service (launchd / systemd-user) and prints your dashboard URL. Requires Node 20+.</p>
+    </div>
+    <div class="panel">
+      <h3>Run from source</h3>
+      <pre><code>git clone https://github.com/aterrylu/autonomOS
+cd autonomOS &amp;&amp; bun install
+make dev           <span class="c"># API :3101 + Vite HMR :5173</span>
+make check         <span class="c"># lint + typecheck + tests</span></code></pre>
+      <p>Fork-friendly: MIT-licensed, with <a href="https://github.com/aterrylu/autonomOS/blob/main/CONTRIBUTING.md">CONTRIBUTING</a> and issue templates in the repo.</p>
+    </div>
+    <div class="panel">
+      <h3>Self-host on your own box</h3>
+      <pre><code>make deploy DEPLOY_HOST=your-host</code></pre>
+      <p>Rsyncs to a homelab server or VPS and supervises it there — your agents live on
+      hardware that's <em>always</em> on. Auth is always on; every route requires the token.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div>
+    <span class="wordmark small"><span class="mark">a</span>autonomOS</span>
+    <span class="dim">· MIT license</span>
+  </div>
+  <div class="foot-links">
+    <a href="https://github.com/aterrylu/autonomOS">GitHub</a>
+    <a href="https://github.com/aterrylu/autonomOS/releases">Releases</a>
+    <a href="https://github.com/aterrylu/autonomOS/blob/main/CONTRIBUTING.md">Contributing</a>
+    <a href="https://terrylu.cloud">terrylu.cloud</a>
+  </div>
+</footer>
+
+<script>
+  for (const btn of document.querySelectorAll("[data-copy]")) {
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        const hint = btn.querySelector(".copy-hint");
+        if (hint) { hint.textContent = "copied"; setTimeout(() => { hint.textContent = "copy"; }, 1600); }
+      } catch { /* clipboard unavailable — leave the hint as-is */ }
+    });
+  }
+</script>
+
+</body>
+</html>

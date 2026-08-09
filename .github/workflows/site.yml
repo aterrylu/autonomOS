@@ -1,0 +1,69 @@
+# Deploys website/ to Cloudflare Pages (project: autonomos-site) →
+# https://autonomos.terrylu.cloud
+#
+# One-time setup (owner's lane, in Cloudflare + GitHub):
+#   1. Create the Pages project:  wrangler pages project create autonomos-site
+#      (or Cloudflare dashboard → Workers & Pages → Create → Pages → Direct Upload)
+#   2. Repo secrets: CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN — create the
+#      token least-privilege: scoped to "Cloudflare Pages: Edit" for this ONE
+#      project, not account-wide (a leak then means "can redeploy this site",
+#      not "can touch DNS or other projects").
+#   3. Point the custom domain: Pages project → Custom domains → autonomos.terrylu.cloud
+#      (Cloudflare handles the CNAME + TLS automatically for a same-account zone).
+#
+# The hero image is single-sourced from docs/assets/hero.png (the `make hero`
+# output) — copied over the committed website/assets/hero.png at deploy time so
+# the site can never drift from the README's screenshot. That's also why this
+# workflow triggers on hero.png changes, not just website/ ones. A guard step
+# fails the deploy if the PNG's real dimensions stop matching the width/height
+# attributes in index.html (a re-shoot at a new viewport must touch both).
+#
+# Actions are pinned to full commit SHAs (tags are mutable; this is the one job
+# that sees the Cloudflare secrets). To upgrade: bump the SHA and the trailing
+# version comment together.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "docs/assets/hero.png"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+# Two quick pushes must not race: whichever upload finishes last would win,
+# which is not necessarily the newer commit. Cancel the older run instead.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Sync hero from docs (single source of truth)
+        run: cp docs/assets/hero.png website/assets/hero.png
+
+      - name: Guard — index.html width/height must match the real hero PNG
+        run: |
+          set -euo pipefail
+          w=$(od -An -tu4 -j16 -N4 --endian=big website/assets/hero.png | tr -d ' ')
+          h=$(od -An -tu4 -j20 -N4 --endian=big website/assets/hero.png | tr -d ' ')
+          echo "hero.png is ${w}x${h}"
+          if ! grep -q "width=\"${w}\" height=\"${h}\"" website/index.html; then
+            echo "::error::website/index.html hero <img> attrs don't match hero.png (${w}x${h})."
+            echo "::error::A hero re-shoot changed the viewport — update width/height in website/index.html."
+            exit 1
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.9.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy website --project-name=autonomos-site --commit-dirty=true
