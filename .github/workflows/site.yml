@@ -1,11 +1,17 @@
 # Deploys website/ to GitHub Pages → https://autonomos.terrylu.cloud
 #
-# One-time setup (owner's lane — 2 steps, no tokens, no secrets; the workflow
-# self-enables Pages on its first run via configure-pages `enablement`):
-#   1. Repo Settings → Pages → set the custom domain to autonomos.terrylu.cloud
-#      (GitHub provisions TLS automatically).
-#   2. Cloudflare DNS (terrylu.cloud zone): add CNAME  autonomos → aterrylu.github.io
-#      (DNS-only / grey cloud, so GitHub's Let's Encrypt cert issuance can verify).
+# One-time setup (owner's lane — 2 steps, no tokens, no secrets):
+#   1. Repo Settings → Pages → Source: "GitHub Actions" (this ENABLES Pages —
+#      the first workflow run before this step fails with "Get Pages site
+#      failed"; that error means do this step, nothing else), then set the
+#      custom domain to autonomos.terrylu.cloud (GitHub provisions TLS).
+#      Self-enabling from the workflow is NOT possible: configure-pages
+#      `enablement` needs administration:write, which workflow tokens can't
+#      be granted.
+#   2. Cloudflare DNS (terrylu.cloud zone — Squarespace is only the registrar;
+#      the nameservers are Cloudflare's, so records go in the CF dashboard):
+#      add CNAME  autonomos → aterrylu.github.io  (DNS-only / grey cloud, so
+#      GitHub's Let's Encrypt cert issuance can verify).
 #
 # Until the DNS lands, the same deploy serves at aterrylu.github.io/autonomOS/
 # — every asset path in the page is relative, so both roots work.
@@ -30,11 +36,13 @@ on:
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
-# Two quick pushes must not race: whichever deploy finishes last would win,
-# which is not necessarily the newer commit. Cancel the older run instead.
+# One deployment at a time; queued runs collapse to the newest. Do NOT cancel
+# in-progress: deploy-pages has no post: cleanup, so a cancelled run abandons
+# an in-flight github-pages deployment mid-poll. Deployments are serialized
+# per environment, so newest-commit-wins holds without cancellation.
 concurrency:
   group: pages-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -66,11 +74,6 @@ jobs:
           fi
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-        with:
-          # self-provision Pages on first run — without this, the merge that
-          # introduces this workflow red-runs until Pages is enabled by hand
-          # (the exact chicken-and-egg the CF version hit with its secrets)
-          enablement: true
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
