@@ -1,4 +1,4 @@
-// Shared upgrade logic (ADR-076). Used by both:
+// Shared upgrade logic (ADR-077). Used by both:
 //   - The CLI `autonomos upgrade` command (runs out-of-process, can upgrade
 //     even when the daemon is stopped, owns the post-restart health gate)
 //   - The server POST /api/system/upgrade endpoint (runs in-process; performs

@@ -1,5 +1,5 @@
 // `autonomos rollback` — swap the live bundle with `.previous` and restart
-// (ADR-076).
+// (ADR-077).
 //
 // `.previous` is the version displaced by the most recent upgrade (kept for
 // exactly one cycle). The swap is symmetric: rolling back twice returns to
