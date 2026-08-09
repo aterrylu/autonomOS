@@ -1,4 +1,5 @@
 import { isReservedChord } from "../shortcuts/registry";
+import { matchTerminalKey } from "../shortcuts/terminalKeymap";
 import { THEMES, useStore } from "../store";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
@@ -865,48 +866,33 @@ export function handleKeyEvent(
     }
   };
 
-  // Terminal-clear moved to mod+SHIFT+K (quick-switcher ADR): plain mod+K is
-  // the agent quick-switcher (registry). Matched on the PRINTED letter,
-  // lowercased — "K" plain-shift and "k" CapsLock+Shift both normalize, and
-  // the match stays consistent with how the registry's chord.ts matches
-  // letters (physical-code matching is deliberately digits-only there; a
-  // code-based match here would steal mod+shift+T on Dvorak, where KeyK
-  // prints "t"). preventDefault is best-effort for browser chords sharing
-  // this combo (Firefox non-Mac Ctrl+Shift+K is its devtools console and may
-  // be browser-reserved; the console can open alongside the clear — accepted).
-  if (event.key.toLowerCase() === "k" && event.shiftKey) {
-    terminal.clear();
-    event.preventDefault();
-    return false;
-  }
-
-  switch (event.key) {
-    case "Backspace":
-      sendToWs("\x15");
+  // Terminal-scoped mod bindings live in ONE documented table
+  // (shortcuts/terminalKeymap.ts) — clear (moved to mod+shift+K by the
+  // quick-switcher ADR), select-all, readline sends, and the deliberate mod+W
+  // decline. Printed-letter matching keeps CapsLock working and Dvorak
+  // un-stolen; see each entry's `why`.
+  const binding = matchTerminalKey(event);
+  if (!binding) return true;
+  switch (binding.action.type) {
+    case "clear":
+      terminal.clear();
+      // Best-effort for browser chords sharing the combo (Firefox non-Mac
+      // Ctrl+Shift+K is its devtools console and may be browser-reserved;
+      // the console can open alongside the clear — accepted).
+      event.preventDefault();
       return false;
-    case "ArrowLeft":
-      sendToWs("\x01");
-      return false;
-    case "ArrowRight":
-      sendToWs("\x05");
-      return false;
-    case "a":
+    case "selectAll":
       terminal.selectAll();
       return false;
-    // mod+W: on non-Mac, Ctrl+W is Chromium's UNPREVENTABLE close-tab — the
-    // tab dies regardless, so declining here only stops xterm from invisibly
-    // deleting a word from the shell's line buffer as it goes. On Mac (⌘W,
-    // also unpreventable) xterm wouldn't encode a meta chord anyway.
-    // Deliberately NOT freed by ADR-065: unlike ctrl+d/b, the browser owns
-    // this chord, so "standard terminal behavior" is unreachable for it.
-    // "W" too: mod+shift+W is close-WINDOW, same unpreventable class.
-    case "w":
-    case "W":
+    case "send":
+      sendToWs(binding.action.bytes);
       return false;
-    case "o":
-      sendToWs("\x0f");
+    case "decline":
       return false;
-    default:
+    default: {
+      // Exhaustiveness: a new action type must be handled here to compile.
+      const _unhandled: never = binding.action;
       return true;
+    }
   }
 }

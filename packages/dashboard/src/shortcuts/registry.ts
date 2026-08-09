@@ -2,6 +2,7 @@ import { useStore } from "../store";
 import { focusAgentByIndex, focusAgentDelta } from "./actions";
 import { type ChordEvent, eventChord } from "./chord";
 import { closeTopEscape, hasEscapeCloser } from "./escapeStack";
+import { isEditingTarget } from "./isEditingTarget";
 
 /**
  * The keyboard shortcut registry — the single source of truth for every
@@ -60,7 +61,10 @@ export interface ShortcutDef {
    *  mod+arrows are caret start/end on mac, paragraph-move elsewhere —
    *  stealing them mid-edit would also yank focus out of the field. */
   skipWhenEditing?: boolean;
-  run: () => void;
+  /** The action. Receives the triggering event when dispatched from the
+   *  keyboard (absent for programmatic runs) — ui.dismiss uses it to protect
+   *  in-popover drafts. */
+  run: (e?: KeyboardEvent) => void;
 }
 
 /** Direct agent-switching chords stand down while the ⌘K palette is open:
@@ -139,7 +143,20 @@ export const SHORTCUTS: ShortcutDef[] = [
     // escape stack while mounted). Otherwise it passes through untouched:
     // terminal TUIs depend on receiving Escape.
     when: hasEscapeCloser,
-    run: closeTopEscape,
+    // DRAFT PROTECTION: Escape typed inside an editable field WITHIN an open
+    // popover blurs the field instead of closing — closing would unmount the
+    // panel and silently discard whatever was typed (session keys, env vars).
+    // A second Escape (focus now outside the field) closes as usual. xterm's
+    // helper textarea is excluded by isEditingTarget: in a terminal, Escape
+    // dismissal stays single-press.
+    run: (e) => {
+      const target = e?.target;
+      if (target && isEditingTarget(target) && target instanceof HTMLElement) {
+        target.blur();
+        return;
+      }
+      closeTopEscape();
+    },
   },
 ];
 

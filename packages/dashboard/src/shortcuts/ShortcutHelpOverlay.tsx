@@ -61,6 +61,12 @@ function HelpDialog() {
         aria-modal="true"
         aria-label="Keyboard shortcuts"
         tabIndex={-1}
+        // Minimal focus trap: the dialog wrapper is the only focusable
+        // element, so an unhandled Tab would walk focus out under the open
+        // backdrop — contradicting aria-modal (same fix as the ⌘K palette).
+        onKeyDown={(e) => {
+          if (e.key === "Tab") e.preventDefault();
+        }}
         className="w-96 max-w-[90vw] max-h-[80vh] overflow-y-auto rounded-lg p-5 shadow-xl outline-none"
         style={{
           background: page.bg,

@@ -1,18 +1,6 @@
 import { useEffect } from "react";
+import { isEditingTarget } from "./isEditingTarget";
 import { matchShortcut } from "./registry";
-
-/** True when focus is in an editable TEXT field the user is typing in —
- *  excluding xterm's hidden helper textarea, which is the terminal's input
- *  proxy (shortcuts must still win there; that is the whole boundary). */
-function isEditingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.classList.contains("xterm-helper-textarea")) return false;
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target.isContentEditable
-  );
-}
 
 /**
  * The global shortcut dispatcher — ONE window-level capture-phase listener
@@ -45,7 +33,7 @@ export function useShortcuts(enabled: boolean): void {
       e.preventDefault();
       e.stopPropagation();
       try {
-        shortcut.run();
+        shortcut.run(e);
       } catch (err) {
         // The event is already consumed; an uncaught throw here would vanish
         // into the window listener with no React boundary. Surface it.
