@@ -182,6 +182,17 @@ export async function runUpgradeCommand(
   const outcome = await restartDaemonAfterSwap(
     expectedVersionAfterSwap(install.bundleDir, result.to),
   );
+  if (outcome.kind === "restart-failed") {
+    // The supervisor COMMAND failed — the bundle was never judged, and the
+    // daemon is likely still serving the old version. Rolling back here
+    // would act on evidence about the supervisor, not the bundle.
+    console.error(
+      `✗ Upgrade is on disk, but the supervisor restart could not be issued. ` +
+        `Not rolling back. Fix the supervisor, then run: autonomos restart ` +
+        `(or undo with: autonomos rollback)`,
+    );
+    return 1;
+  }
   if (outcome.kind !== "not-verified") return 0;
 
   // Supervised restart didn't produce a healthy daemon on the new version.

@@ -227,8 +227,24 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     "$WRAPPER" migrate-from-pm2 $OPEN_FLAG || RC=$?
     [[ "$RC" == "0" ]] && echo "[install] ✓ Migration complete."
   elif [[ "$SERVICE_INSTALLED" == "1" ]]; then
-    echo "[install] Existing service detected. Restarting into the new bundle..."
-    "$WRAPPER" restart || RC=$?
+    # Re-RENDER the service file, don't just restart: unit-template changes
+    # (e.g. systemd StartLimitIntervalSec=0) only reach existing installs
+    # through a rewrite, and this re-run path is the upgrade story. --force
+    # skips the running-daemon refusal and its activation step cycles the
+    # daemon onto the new bundle (launchd unload/load; systemd daemon-reload
+    # + enable --now). A custom --port/--host baked into the existing file
+    # must survive the rewrite — a plain re-render would silently reset them.
+    case "$(uname -s)" in
+      Darwin) SERVICE_FILE="$HOME/Library/LaunchAgents/com.autonomos.daemon.plist" ;;
+      *)      SERVICE_FILE="$HOME/.config/systemd/user/autonomos.service" ;;
+    esac
+    KEEP_FLAGS=()
+    KEPT_PORT=$(grep -oE -- '--port=[0-9]+' "$SERVICE_FILE" | head -1 || true)
+    KEPT_HOST=$(grep -oE -- '--host=[^ <"]+' "$SERVICE_FILE" | head -1 || true)
+    [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
+    [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")
+    echo "[install] Existing service detected. Re-rendering service + restarting into the new bundle..."
+    "$WRAPPER" install-service --force ${KEEP_FLAGS[@]+"${KEEP_FLAGS[@]}"} || RC=$?
     if [[ "$RC" == "0" ]]; then
       HEALTHY=0
       for _ in $(seq 1 15); do

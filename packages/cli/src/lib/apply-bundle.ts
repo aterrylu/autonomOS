@@ -46,6 +46,7 @@ export function expectedVersionAfterSwap(
 export type RestartOutcome =
   | { kind: "verified" } // supervisor cycled it; new version confirmed up
   | { kind: "not-verified" } // supervisor cycled it; gate timed out
+  | { kind: "restart-failed" } // the supervisor COMMAND failed; bundle unjudged
   | { kind: "stopped-no-supervisor" } // daemon stopped; user must start it
   | { kind: "not-running" }; // no daemon; nothing restarted
 
@@ -53,6 +54,13 @@ export type RestartOutcome =
  * Restart the daemon after a bundle swap and (when supervised) verify the
  * expected version actually came up. Returns what happened — the CALLER
  * decides whether "not-verified" means roll back.
+ *
+ * "restart-failed" is deliberately distinct from "not-verified": a failed
+ * `launchctl kickstart` / `systemctl restart` INVOCATION (no user bus over a
+ * non-login ssh session, launchd permission error) says nothing about the
+ * just-verified bundle — the daemon most likely never restarted and is still
+ * serving the OLD version. Auto-rolling back on that verdict would swap
+ * files based on evidence about the supervisor, not the bundle.
  */
 export async function restartDaemonAfterSwap(
   expectedVersion: string,
@@ -64,8 +72,12 @@ export async function restartDaemonAfterSwap(
     const result = restartService(svc);
     if (!result.ok) {
       console.warn(`  Supervisor restart failed: ${result.stderr.trim()}`);
+      console.warn(
+        "  The swapped-in version is on disk but was NOT judged — the daemon " +
+          "is likely still running the previous version.",
+      );
       console.warn("  Restart manually: autonomos restart");
-      return { kind: "not-verified" };
+      return { kind: "restart-failed" };
     }
     const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs);
     return healthy ? { kind: "verified" } : { kind: "not-verified" };

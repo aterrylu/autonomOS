@@ -47,6 +47,14 @@ export async function runRollbackCommand(): Promise<number> {
   );
 
   const outcome = await restartDaemonAfterSwap(result.to);
+  if (outcome.kind === "restart-failed") {
+    console.error(
+      `✗ Rollback is on disk, but the supervisor restart could not be ` +
+        `issued — the daemon is likely still on the previous version. ` +
+        `Fix the supervisor, then run: autonomos restart`,
+    );
+    return 1;
+  }
   if (outcome.kind === "not-verified") {
     console.error(
       `⚠️  Could not verify ${result.to} came up after the restart. ` +

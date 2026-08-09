@@ -111,7 +111,11 @@ assert_real_daemon_untouched() {
   local now_pid=""
   case "$(uname -s)" in
     Darwin)
-      now_pid=$(launchctl print "gui/$REAL_UID/com.autonomos.daemon" 2>/dev/null | awk '/^[[:space:]]*pid = /{print $3; exit}')
+      # `|| true`: when the job is UNLOADED — the exact violation the branch
+      # below reports and restores — launchctl exits nonzero, and under
+      # set -e a plain (non-`local`) assignment inherits that status and
+      # would kill the script BEFORE the restore path could run.
+      now_pid=$(launchctl print "gui/$REAL_UID/com.autonomos.daemon" 2>/dev/null | awk '/^[[:space:]]*pid = /{print $3; exit}' || true)
       if [[ -n "$REAL_PID" && -n "$now_pid" && "$now_pid" != "$REAL_PID" ]]; then
         echo "✗ HERMETIC VIOLATION after '$label': the real daemon was RESTARTED (pid $REAL_PID → $now_pid)!" >&2
         echo "  A restart kills every agent PTY. The job is loaded, so nothing to restore — but this test step reached the real supervisor." >&2
@@ -130,7 +134,7 @@ assert_real_daemon_untouched() {
       fi
       ;;
     Linux)
-      now_pid=$(systemctl --user show -p MainPID --value autonomos.service 2>/dev/null)
+      now_pid=$(systemctl --user show -p MainPID --value autonomos.service 2>/dev/null || true)
       if [[ -n "$REAL_PID" && -n "$now_pid" && "$now_pid" != "0" && "$now_pid" != "$REAL_PID" ]]; then
         echo "✗ HERMETIC VIOLATION after '$label': the real daemon was RESTARTED (pid $REAL_PID → $now_pid)!" >&2
         echo "  A restart kills every agent PTY. The service is active, so nothing to restore — but this test step reached the real supervisor." >&2
