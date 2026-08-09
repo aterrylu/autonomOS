@@ -241,7 +241,7 @@ describe("prompt delivery receipt tracking", () => {
     assert.equal(_getPhaseForTesting(sid), undefined, "tracker done");
   });
 
-  it("no SessionStart at all → warns, parks as given_up, retractable by a late SessionStart", async () => {
+  it("no SessionStart at all → warns, parks as given_up; a late SessionStart RESUMES tracking", async () => {
     const f = makeIO();
     trackPromptDelivery(sid, "test", "p", f.io);
     noteStartupSettled(sid);
@@ -252,12 +252,48 @@ describe("prompt delivery receipt tracking", () => {
     assert.deepEqual(f.writes, [], "no paste into a session that never booted");
     assert.equal(_getPhaseForTesting(sid), "given_up");
 
-    // The session shows up after all — the warning was premature.
+    // The session boots after all: the BOOT warning was premature (retract it)
+    // — but SessionStart is not a delivery receipt, so tracking RESUMES with
+    // the one-shot re-delivery still available. Finishing here would deny a
+    // genuinely dropped prompt on evidence that proves only "it booted".
     notePromptHookEvent(sid, "SessionStart");
-    assert.deepEqual(f.retracted, ["pd-1"]);
+    assert.deepEqual(f.retracted, ["pd-1"], "boot warning retracted");
+    assert.equal(_getPhaseForTesting(sid), "awaiting_prompt_submit");
+    await waitFor(
+      () => f.writes.length === 2,
+      "re-delivery still fires if the prompt never submits",
+    );
+  });
+
+  it("resumed tracking after a boot warning still confirms cleanly on a prompt submit", async () => {
+    const f = makeIO();
+    trackPromptDelivery(sid, "test", "p", f.io);
+    noteStartupSettled(sid);
+    await waitFor(
+      () => _getPhaseForTesting(sid) === "given_up",
+      "boot give-up",
+    );
+    notePromptHookEvent(sid, "SessionStart");
+    notePromptHookEvent(sid, "UserPromptSubmit"); // prompt was fine, just slow
     assert.equal(_getPhaseForTesting(sid), undefined);
     await sleep(120);
-    assert.deepEqual(f.writes, [], "no late re-delivery after retraction");
+    assert.deepEqual(f.writes, [], "no paste for a slow-but-delivered prompt");
+  });
+
+  it("C1 REGRESSION — SessionStart before settle must not destroy the settle fallback", async () => {
+    // spawn → SessionStart → settle NEVER arrives (wiring regression). The
+    // fallback used to share the timer slot the SessionStart branch clears,
+    // leaving the tracker timerless forever: no re-delivery, no warning — a
+    // silently disabled detector in its most common ordering (hooks fire
+    // within seconds; settle waits on the watcher's terminal state).
+    const f = makeIO();
+    f.io.settleFallbackMs = 30;
+    trackPromptDelivery(sid, "test", "p", f.io);
+    notePromptHookEvent(sid, "SessionStart");
+    await waitFor(
+      () => f.writes.length === 2,
+      "fallback self-settles and the re-delivery still fires",
+    );
   });
 
   it("given_up tracker is dropped after the retention window", async () => {
@@ -402,5 +438,23 @@ describe("prompt-delivery receipt applies only to providers with a hook relay", 
       }),
       true,
     );
+  });
+});
+
+/**
+ * The settle fallback and the watcher's hard deadline are defined in different
+ * modules with a load-bearing ordering: the fallback must fire only AFTER any
+ * default-configured watcher has reached its terminal state, or windows would
+ * arm while startup dialogs are genuinely still being fought — the exact
+ * false-warning class ADR-072 removed. Pin the relation so "raise the watcher
+ * deadline for slow hosts" cannot silently flip it.
+ */
+describe("settle fallback stays above the watcher deadline", () => {
+  it("SETTLE_FALLBACK_MS > DEFAULT_STARTUP_WATCHER_TIMEOUT_MS", async () => {
+    const { SETTLE_FALLBACK_MS } = await import("../agents/promptDelivery.js");
+    const { DEFAULT_STARTUP_WATCHER_TIMEOUT_MS } = await import(
+      "../providers/claude-code.js"
+    );
+    assert.ok(SETTLE_FALLBACK_MS > DEFAULT_STARTUP_WATCHER_TIMEOUT_MS);
   });
 });

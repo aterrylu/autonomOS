@@ -62,7 +62,8 @@ export interface AgentProvider {
    *
    * `onSettled`, when given, MUST be called exactly once when the watcher
    * reaches ANY terminal state — all dialogs handled, gave up, hard timeout,
-   * or PTY death. The runtime uses it to start the prompt-delivery receipt
+   * or a PTY write failure (a silently dead PTY settles via the hard
+   * timeout). The runtime uses it to start the prompt-delivery receipt
    * windows (which are meaningless while a startup dialog may still be
    * blocking the TUI); a watcher that never settles would leave that receipt
    * on its fallback timer.

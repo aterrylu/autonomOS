@@ -85,8 +85,11 @@ export const PROMPT_SUBMIT_TIMEOUT_MS = 90_000;
 const REDELIVER_ENTER_DELAY_MS = 150;
 /** If no startup watcher ever reports settle (none attached, or a wiring
  *  regression), self-settle after this long so tracking always progresses.
- *  Comfortably past the watcher's own 30s hard deadline. */
-const SETTLE_FALLBACK_MS = 45_000;
+ *  MUST stay above the watcher's hard deadline
+ *  (DEFAULT_STARTUP_WATCHER_TIMEOUT_MS, claude-code.ts) — if the fallback
+ *  fired first, windows would arm while dialogs are genuinely still being
+ *  fought, reintroducing the false-warning class. A test pins the relation. */
+export const SETTLE_FALLBACK_MS = 45_000;
 /** How long a given-up tracker lingers so a late receipt can retract the
  *  failure warning before the tracker is finally dropped. */
 const GIVEN_UP_RETENTION_MS = 10 * 60_000;
@@ -124,6 +127,17 @@ interface Tracker {
   settled: boolean;
   timer: NodeJS.Timeout | null;
   enterTimer: NodeJS.Timeout | null;
+  /** The self-settle fallback. Its OWN slot on purpose: it must survive every
+   *  phase transition until settle actually happens — an earlier version
+   *  armed it into `timer`, which the SessionStart branch clears, so the
+   *  ordering spawn → SessionStart → (settle never arrives) left the tracker
+   *  timerless forever: no re-delivery, no warning, exactly the silently
+   *  disabled detector the fallback exists to prevent. */
+  settleTimer: NodeJS.Timeout | null;
+  /** The one-shot paste fallback has been used. Distinguishes the two give-up
+   *  flavors: a no-SessionStart give-up still has its re-delivery unspent, so
+   *  a late SessionStart RESUMES tracking instead of finishing. */
+  redelivered: boolean;
   /** Retraction ids of failure-claim notifications, so a late receipt can
    *  withdraw them. The factual "was re-delivered" note is never retracted. */
   failureNotificationIds: string[];
@@ -166,8 +180,10 @@ function safeNotify(t: Tracker, message: string): string | undefined {
 function clearTimers(t: Tracker): void {
   if (t.timer) clearTimeout(t.timer);
   if (t.enterTimer) clearTimeout(t.enterTimer);
+  if (t.settleTimer) clearTimeout(t.settleTimer);
   t.timer = null;
   t.enterTimer = null;
+  t.settleTimer = null;
 }
 
 function finish(sessionId: string): void {
@@ -207,15 +223,18 @@ export function trackPromptDelivery(
     settled: false,
     timer: null,
     enterTimer: null,
+    settleTimer: null,
+    redelivered: false,
     failureNotificationIds: [],
   };
   trackers.set(sessionId, tracker);
 
   // Fallback self-settle: if no watcher is attached (or its callback is lost
   // to a wiring regression), the detector must still run rather than silently
-  // never warning again.
-  armTimer(tracker, io.settleFallbackMs ?? SETTLE_FALLBACK_MS, () =>
-    noteStartupSettled(sessionId),
+  // never warning again. Dedicated slot — see Tracker.settleTimer.
+  tracker.settleTimer = setTimeout(
+    () => noteStartupSettled(sessionId),
+    io.settleFallbackMs ?? SETTLE_FALLBACK_MS,
   );
 }
 
@@ -229,6 +248,8 @@ export function noteStartupSettled(sessionId: string): void {
   const t = trackers.get(sessionId);
   if (!t || t.settled) return;
   t.settled = true;
+  if (t.settleTimer) clearTimeout(t.settleTimer);
+  t.settleTimer = null;
   if (t.phase === "awaiting_session_start") {
     armTimer(t, t.io.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS, () =>
       giveUpNoSessionStart(sessionId),
@@ -265,13 +286,21 @@ function enterGivenUp(sessionId: string, t: Tracker): void {
   );
 }
 
-/** A receipt arrived for a tracker that had already given up — the warning
- *  was premature. Say so and withdraw it. */
-function retractGiveUp(sessionId: string, t: Tracker, eventName: string): void {
+/** Withdraw the failure-claim notifications. Returns how many retracted; a
+ *  failed retraction is warned about (a stale "needs a manual nudge" the
+ *  operator acts on is worse than none — if we can't withdraw it, at least
+ *  the log says so). */
+function retractFailureWarnings(t: Tracker): number {
   let retracted = 0;
   for (const id of t.failureNotificationIds) {
     try {
-      if (t.io.retract?.(id)) retracted++;
+      if (t.io.retract?.(id)) {
+        retracted++;
+      } else {
+        console.warn(
+          `[prompt-delivery] ${t.label} could not retract stale warning ${id} — it may still show in the panel`,
+        );
+      }
     } catch (err) {
       console.warn(
         `[prompt-delivery] ${t.label} retract callback threw:`,
@@ -279,6 +308,14 @@ function retractGiveUp(sessionId: string, t: Tracker, eventName: string): void {
       );
     }
   }
+  t.failureNotificationIds = [];
+  return retracted;
+}
+
+/** A CONFIRMING event arrived for a tracker that had already given up — the
+ *  prompt demonstrably ran, so the warning was premature. Withdraw and stop. */
+function retractGiveUp(sessionId: string, t: Tracker, eventName: string): void {
+  const retracted = retractFailureWarnings(t);
   console.log(
     `[prompt-delivery] ${t.label} ${eventName} arrived after give-up — the ` +
       `prompt was delivered after all${retracted > 0 ? "; earlier warning retracted" : ""}`,
@@ -302,6 +339,30 @@ export function notePromptHookEvent(
     // Compact-triggered SessionStarts are mid-conversation, not a boot.
     if (source === "compact") return;
     if (t.phase === "given_up") {
+      // SessionStart is NOT a delivery receipt — it only proves the session
+      // booted. The no-SessionStart boot warning was premature (retract it),
+      // but the prompt may still be genuinely dropped, so tracking RESUMES:
+      // the submit window arms and the one-shot re-delivery (unspent on this
+      // give-up flavor) is available again. Finishing here would have logged
+      // "delivered after all" on evidence that proves no such thing, leaving
+      // a genuinely dropped prompt undetected AND affirmatively denied.
+      if (!t.redelivered) {
+        const retracted = retractFailureWarnings(t);
+        console.log(
+          `[prompt-delivery] ${t.label} SessionStart arrived after give-up — ` +
+            `boot warning ${retracted > 0 ? "retracted" : "already gone"}; now watching for prompt submission`,
+        );
+        t.phase = "awaiting_prompt_submit";
+        // settled is necessarily true here (give-up only fires post-settle).
+        armTimer(
+          t,
+          t.io.promptSubmitTimeoutMs ?? PROMPT_SUBMIT_TIMEOUT_MS,
+          () => redeliver(sessionId),
+        );
+        return;
+      }
+      // Post-re-delivery give-up: the paste is spent; a bare SessionStart in
+      // that state is anomalous (a restart?) — retract and stop quietly.
       retractGiveUp(sessionId, t, eventName);
       return;
     }
@@ -396,6 +457,7 @@ function redeliver(sessionId: string): void {
 
   // Watch for the receipt one more time — purely for observability; there is
   // never a second re-delivery.
+  t.redelivered = true;
   t.phase = "awaiting_redelivery_confirm";
   armTimer(t, waitedMs, () => {
     const tr = trackers.get(sessionId);

@@ -950,9 +950,16 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   const startupWatcherAttached =
     getSettings().autoTrust !== false && provider.attachStartupWatcher != null;
   if (startupWatcherAttached) {
-    provider.attachStartupWatcher?.(pty, resolved, () =>
-      noteStartupSettled(resolved.sessionId),
-    );
+    provider.attachStartupWatcher?.(pty, resolved, () => {
+      // Staleness guard (mirrors the prompt-delivery write guard below): a
+      // watcher has no PTY-exit listener, so one from a killed spawn can
+      // outlive its PTY until its hard timeout — its terminal callback must
+      // not settle the REPLACEMENT spawn's tracker while that spawn's dialogs
+      // are still up. live is populated a few sync lines below, before any
+      // watcher timer can fire, so the guard never misfires on our own spawn.
+      if (live.get(resolved.sessionId)?.pty !== pty) return;
+      noteStartupSettled(resolved.sessionId);
+    });
   }
 
   // Persist the agent record: reattaching an existing record → markRunning;

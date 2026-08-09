@@ -43,9 +43,10 @@ interface HookStatus {
   lastEvent: string;
 }
 
-// Generous: covers trust-dialog retries AND a worst-case fallback
-// re-delivery at SessionStart + 20s, plus CI scheduling noise.
-const TURN_TIMEOUT_MS = 60_000;
+// Generous: covers trust-dialog retries AND the worst-case settle-gated
+// fallback re-delivery (settle + 90s submit window per ADR-072), plus CI
+// scheduling noise. A waitFor cap, not a sleep — costs nothing when green.
+const TURN_TIMEOUT_MS = 180_000;
 
 // A marker that can only reach the mock backend inside the prompt itself.
 const PROMPT_MARKER = "PROMPT_DELIVERY_RECEIPT_7f3a";
