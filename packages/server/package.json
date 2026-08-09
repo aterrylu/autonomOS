@@ -17,7 +17,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
-    "perf:l1": "tsx perf/l1-transport-harness.ts"
+    "perf:l1": "tsx perf/l1-transport-harness.ts",
+    "perf:l1-replay": "tsx perf/l1-replay-harness.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.71",

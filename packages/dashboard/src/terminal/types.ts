@@ -2,7 +2,7 @@
  * Terminal Backend Types
  *
  * Defines the interface contract the xterm.js backend satisfies, built from
- * the exact set of members that useTerminal.ts uses.
+ * the exact set of members that terminal/liveTerminals.ts uses.
  */
 
 export interface IDisposable {
@@ -53,7 +53,7 @@ export interface TerminalOptions {
 }
 
 /**
- * The terminal instance interface — the exact surface that useTerminal.ts uses.
+ * The terminal instance interface — the exact surface that liveTerminals.ts uses.
  * xterm.js Terminal satisfies this structurally.
  */
 export interface TerminalInstance {
@@ -75,6 +75,7 @@ export interface TerminalInstance {
   scrollToBottom(): void;
   selectAll(): void;
   clear(): void;
+  reset(): void;
   readonly onData: IEvent<string>;
   readonly onScroll: IEvent<number>;
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;

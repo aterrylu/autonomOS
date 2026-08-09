@@ -189,6 +189,9 @@ export function buildBaseEnv(
     if (key.startsWith("CLAUDE_CODE_")) delete env[key];
   }
   delete env.CLAUDECODE;
+  // Perf-harness mode must not propagate: an agent that later launches its own
+  // autonomOS server (make dev/prod) would silently inherit the auth bypass.
+  delete env.AUTONOMOS_PERF;
 
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
