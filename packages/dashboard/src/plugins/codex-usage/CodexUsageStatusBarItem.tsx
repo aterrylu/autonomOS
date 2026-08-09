@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Codicon } from "../../components/Codicon";
 import { ProviderIcon } from "../../components/ui/provider-icon";
 import { THEMES, useStore } from "../../store";
 import { CodexUsagePanel } from "./CodexUsagePanel";
@@ -22,10 +23,17 @@ function Divider({ color }: { color: string }) {
   );
 }
 
-/** Inline "<label> <pct>%" for one window, colored by utilization. */
-function WindowLabel({ window }: { window: CodexUsageWindow }) {
+/** Inline "<label> <pct>%" for one window, colored by utilization. `name`
+ * overrides the window-length label, for a named limit that shows its own. */
+function WindowLabel({
+  window,
+  name,
+}: {
+  window: CodexUsageWindow;
+  name?: string;
+}) {
   const pct = Math.round(window.usedPercent);
-  const label = windowLabel(window.windowMinutes) || "usage";
+  const label = name ?? (windowLabel(window.windowMinutes) || "usage");
   return (
     <span title={`${label}: ${pct}% used`}>
       <span style={{ fontSize: 10, opacity: 0.85 }}>{label}</span>{" "}
@@ -51,8 +59,15 @@ export function CodexUsageStatusBarItem() {
   // Loading, unreachable, or no Codex signal → render nothing (no flash/nag).
   if (!data || error || data.needsData) return null;
 
+  const windows = [data.secondary, data.primary]
+    .filter((w): w is CodexUsageWindow => w != null)
+    .sort((a, b) => a.windowMinutes - b.windowMinutes);
+
   // An error with no fallback data to show: a compact, clickable indicator.
-  if (data.error) {
+  // With windows present, `data.error` is a marked fallback (e.g. expired
+  // token served from the rollout snapshot) — the numbers render below with a
+  // warning glyph instead of being replaced by this pill.
+  if (data.error && windows.length === 0) {
     const credential = isCodexCredentialError(data.errorKind);
     return (
       <div className="relative flex items-center gap-2">
@@ -79,11 +94,21 @@ export function CodexUsageStatusBarItem() {
     );
   }
 
-  const windows = [data.secondary, data.primary]
-    .filter((w): w is CodexUsageWindow => w != null)
-    .sort((a, b) => a.windowMinutes - b.windowMinutes);
   // Have a credential but no windows yet (e.g. never ran a turn) → stay hidden.
   if (windows.length === 0) return null;
+
+  // The usage-queue caps on the max across primary/secondary AND every named
+  // limit — so when a named limit exceeds both headline windows, surface it
+  // here too, or the bar and the queue button appear to disagree.
+  const headlineMax = Math.max(...windows.map((w) => w.usedPercent));
+  const named = data.additionalLimits
+    .flatMap((l) =>
+      [l.primary, l.secondary]
+        .filter((w): w is CodexUsageWindow => w != null)
+        .map((w) => ({ window: w, name: l.name })),
+    )
+    .sort((a, b) => b.window.usedPercent - a.window.usedPercent)[0];
+  const showNamed = named && named.window.usedPercent > headlineMax;
 
   return (
     <div className="relative flex items-center gap-2">
@@ -100,6 +125,20 @@ export function CodexUsageStatusBarItem() {
         {windows.map((w) => (
           <WindowLabel key={w.windowMinutes} window={w} />
         ))}
+        {showNamed && <WindowLabel window={named.window} name={named.name} />}
+        {data.error && (
+          <span
+            title={data.error}
+            style={{
+              color: isCodexCredentialError(data.errorKind)
+                ? "#ea6c73"
+                : "#e6b450",
+              display: "inline-flex",
+            }}
+          >
+            <Codicon name="warning" size={12} />
+          </span>
+        )}
       </button>
       {open && (
         <CodexUsagePanel

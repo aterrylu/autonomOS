@@ -28,9 +28,13 @@ export type ErrorKind =
   | "unavailable"
   | "stale_token";
 
-/** True for failures a new session key can actually fix. */
+/** True for failures a new session key can actually fix. `stale_token`
+ * belongs here: an expired Claude Code login never clears on its own (the
+ * token is read-only by contract, never refreshed), and pasting a key or
+ * re-running `claude` IS the remedy — classifying it transient sent users
+ * into a retry loop that could never succeed. */
 export function isCredentialError(kind?: ErrorKind): boolean {
-  return kind === "unauthorized" || kind === "no_org";
+  return kind === "unauthorized" || kind === "no_org" || kind === "stale_token";
 }
 
 /** Where the active credential came from (mirrored from the server).

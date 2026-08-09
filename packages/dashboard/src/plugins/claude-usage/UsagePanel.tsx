@@ -254,7 +254,8 @@ function CredentialsSection({
 }) {
   // When usage comes from Claude Code's OAuth login and the user hasn't pasted
   // their own key, say so explicitly instead of "Not set" — the credential
-  // isn't missing, it's the zero-touch default. A manual paste still overrides.
+  // isn't missing, it's the zero-touch default. A manual paste switches the
+  // source (it turns auto-detect off); the toggle switches it back.
   const autoDetected = isAutoDetected(credentialSource);
   const [expanded, setExpanded] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -306,6 +307,9 @@ function CredentialsSection({
     setSaving(false);
     if (res.kind === "ok") {
       setMaskedKey(redactKey(key));
+      // saveAndValidate turns auto-detect off in the same write (pasting a key
+      // selects the manual source) — mirror that here so the toggle is honest.
+      setAutoDetect(false);
       setEditingKey(false);
       setKeyDraft("");
       setSaved(true);
@@ -416,7 +420,10 @@ function CredentialsSection({
             </button>
           )}
           {/* Auto-detect toggle: read Claude Code's OAuth login (read-only) so
-              no manual paste is needed. A pasted key always overrides it. */}
+              no manual paste is needed. The toggle SELECTS the source: On =
+              the detected login wins (a saved key is only a fallback if the
+              login breaks); Off = the saved key wins. Pasting a key flips this
+              Off automatically (see saveAndValidate). */}
           <button
             type="button"
             onClick={toggleAutoDetect}
@@ -434,6 +441,19 @@ function CredentialsSection({
               {autoDetect ? "On" : "Off"}
             </span>
           </button>
+          {autoDetect && maskedKey && (
+            <div className="text-[10px]" style={{ color: page.statusFg }}>
+              {credentialSource === "oauth"
+                ? "Auto-detect is on — usage tracks the Claude Code login. " +
+                  "Your saved session key is kept as a fallback; turn " +
+                  "auto-detect off to use it instead."
+                : // The toggle says auto-detect but the ACTIVE source is the
+                  // key (no usable Claude Code login) — describe reality, not
+                  // the toggle's aspiration.
+                  "Auto-detect is on, but no usable Claude Code login was " +
+                  "found — usage is using your saved session key."}
+            </div>
+          )}
         </div>
       )}
     </div>

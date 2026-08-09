@@ -102,7 +102,7 @@ describe("codex scanner — getCodexUsage (two-tier, read-only)", () => {
     assert.equal(data.error, undefined);
   });
 
-  it("FALLBACK: live 401 but rollout present → source=rollout (no error banner)", async () => {
+  it("FALLBACK: live 401 + rollout present → last-known numbers WITH the credential failure stamped", async () => {
     writeAuth(futureExp());
     writeRollout(55);
     const fail: Fetcher = async () => ({
@@ -114,10 +114,13 @@ describe("codex scanner — getCodexUsage (two-tier, read-only)", () => {
     assert.equal(data.source, "rollout");
     assert.equal(data.primary?.usedPercent, 55);
     assert.equal(data.snapshotAt, "2026-06-28T00:00:00.000Z");
-    assert.equal(data.error, undefined);
+    // The failure must ride along: without it, an armed usage-queue pane held
+    // forever with no re-auth warning whenever any rollout file existed.
+    assert.equal(data.errorKind, "unauthorized");
+    assert.match(data.error ?? "", /re-authenticate/);
   });
 
-  it("EXPIRED token → rollout fallback, NEVER calls the fetcher (no refresh)", async () => {
+  it("EXPIRED token → rollout fallback stamped stale_token, NEVER calls the fetcher (no refresh)", async () => {
     writeAuth(pastExp());
     writeRollout(33);
     let called = false;
@@ -133,6 +136,7 @@ describe("codex scanner — getCodexUsage (two-tier, read-only)", () => {
     );
     assert.equal(data.source, "rollout");
     assert.equal(data.primary?.usedPercent, 33);
+    assert.equal(data.errorKind, "stale_token");
   });
 
   it("expired token + NO rollout → stale_token error", async () => {

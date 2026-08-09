@@ -345,7 +345,7 @@ function makeMultiHarness() {
       claude = u;
     },
     setCodex: (utilization: number) => {
-      codex = { windows: [{ utilization, resetsAt: null }] };
+      codex = { windows: [{ utilization, resetsAt: null, label: "5h" }] };
     },
   };
 }
@@ -472,8 +472,78 @@ describe("usage adapters + evaluateCap", () => {
 
   it("evaluateCap: below the cap is not capped", () => {
     assert.equal(
-      evaluateCap({ windows: [{ utilization: 89, resetsAt: null }] }).capped,
+      evaluateCap({
+        windows: [{ utilization: 89, resetsAt: null, label: "5h" }],
+      }).capped,
       false,
     );
+  });
+
+  it("evaluateCap names the capping window (highest utilization wins)", () => {
+    const cap = evaluateCap({
+      windows: [
+        { utilization: 87, resetsAt: null, label: "5h" },
+        { utilization: 91, resetsAt: null, label: "Sonnet 7d" },
+      ],
+    });
+    assert.equal(cap.capped, true);
+    assert.equal(cap.window, "Sonnet 7d");
+  });
+
+  it("evaluateCap: window is null when not capped", () => {
+    const cap = evaluateCap({
+      windows: [{ utilization: 50, resetsAt: null, label: "5h" }],
+    });
+    assert.equal(cap.capped, false);
+    assert.equal(cap.window, null);
+  });
+});
+
+describe("window normalization — labels + credential errors", () => {
+  it("normalizeClaudeUsage labels all four windows as the UI names them", () => {
+    const n = normalizeClaudeUsage({
+      ...EMPTY,
+      fiveHour: { utilization: 10, resetsAt: "r1" },
+      sevenDay: { utilization: 20, resetsAt: "r2" },
+      sevenDaySonnet: { utilization: 91, resetsAt: "r3" },
+      sevenDayOpus: { utilization: 5, resetsAt: "r4" },
+    });
+    assert.deepEqual(
+      n.windows.map((w) => w.label),
+      ["5h", "7d", "Sonnet 7d", "Opus 7d"],
+    );
+    // The queue caps on the per-model weekly here — evaluateCap must name it.
+    assert.equal(evaluateCap(n).window, "Sonnet 7d");
+  });
+
+  it("normalizeClaudeUsage treats stale_token as a credential error (armed panes get warned)", () => {
+    const n = normalizeClaudeUsage({ ...EMPTY, errorKind: "stale_token" });
+    assert.deepEqual(n.windows, []);
+    assert.equal(n.authError, true);
+  });
+
+  it("normalizeCodexUsage labels headline windows by length and named limits by name", () => {
+    const data = {
+      primary: { usedPercent: 30, windowMinutes: 300, resetsAt: null },
+      secondary: { usedPercent: 40, windowMinutes: 10080, resetsAt: null },
+      additionalLimits: [
+        {
+          name: "gpt-5",
+          primary: { usedPercent: 95, windowMinutes: 300, resetsAt: null },
+          secondary: null,
+        },
+      ],
+      credits: null,
+      planType: null,
+      account: {},
+      source: "live",
+      fetchedAt: "now",
+    } as unknown as CodexUsageData;
+    const n = normalizeCodexUsage(data);
+    assert.deepEqual(
+      n.windows.map((w) => w.label),
+      ["5h", "7d", "gpt-5 5h"],
+    );
+    assert.equal(evaluateCap(n).window, "gpt-5 5h");
   });
 });

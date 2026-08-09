@@ -14,7 +14,9 @@
  */
 
 import { createHash } from "node:crypto";
+import { createSingleFlight } from "../singleFlight.js";
 import {
+  type CodexAuth,
   readChatGptBaseUrl,
   readCodexAuth,
   readCodexIdentity,
@@ -82,10 +84,19 @@ function errorResult(
 }
 
 /** Build a snapshot from the on-disk rollout fallback. `source: "rollout"` +
- *  `snapshotAt` let the UI show an honest "last-known · Xm ago" age. */
+ *  `snapshotAt` let the UI show an honest "last-known · Xm ago" age.
+ *
+ *  `failure` rides the CAUSE of the fallback along with the numbers. Without
+ *  it, an expired/rejected token was indistinguishable from a healthy fallback
+ *  whenever any rollout file existed (the normal case for an active Codex
+ *  user): no errorKind meant `normalizeCodexUsage` reported `authError: false`,
+ *  so an armed usage-queue pane held forever WITHOUT the one-shot re-auth
+ *  warning built for exactly that state, and the panel showed aging numbers
+ *  with no re-auth hint. */
 function fromRollout(
   snap: RolloutSnapshot,
   account: CodexAccountInfo,
+  failure?: { error: string; errorKind: CodexErrorKind },
 ): CodexUsageData {
   return {
     secondary: snap.secondary,
@@ -97,7 +108,22 @@ function fromRollout(
     source: "rollout",
     snapshotAt: snap.snapshotAt,
     fetchedAt: new Date().toISOString(),
+    ...(failure ?? {}),
   };
+}
+
+/** De-dupe concurrent cache-missing reads (see {@link createSingleFlight}) —
+ * this endpoint is shared with the Codex CLI and a 429 pins the display for 5
+ * minutes, so a multi-tab stampede is expensive. */
+const singleFlight = createSingleFlight<CodexUsageData>();
+
+/** The cache entry for this token, if it exists and is still fresh. The
+ * fingerprint match is what stops an account switch from serving the previous
+ * account's numbers. */
+function cachedFor(fp: string): CodexUsageData | null {
+  if (cached && cached.expiresAt > Date.now() && cached.fp === fp)
+    return cached.data;
+  return null;
 }
 
 /**
@@ -121,20 +147,35 @@ export async function getCodexUsage(
     return snap ? fromRollout(snap, account) : needsDataResult(account);
   }
 
-  const now = Date.now();
   const fp = fingerprint(auth.accessToken);
-  if (cached && cached.expiresAt > now && cached.fp === fp) return cached.data;
+  return (
+    cachedFor(fp) ??
+    singleFlight(fp, () => fetchCodexUsageSnapshot(auth, account, fp, fetcher))
+  );
+}
 
-  // Expired token: NEVER refresh — fall back to the rollout snapshot. Only when
-  // there's no fallback do we surface the stale-token state for the user to fix.
+async function fetchCodexUsageSnapshot(
+  auth: CodexAuth,
+  account: CodexAccountInfo,
+  fp: string,
+  fetcher?: CodexUsageFetcher,
+): Promise<CodexUsageData> {
+  const now = Date.now();
+  // Re-check under the flight: a caller that queued behind a completed flight
+  // reads the fresh cache instead of refetching.
+  const hit = cachedFor(fp);
+  if (hit) return hit;
+
+  // Expired token: NEVER refresh — fall back to the rollout snapshot, but
+  // carry the stale-token state with it (see fromRollout's failure param).
   if (auth.expiresAt <= now) {
+    const staleFailure = {
+      error: "Your Codex login has expired. Run `codex` to re-authenticate.",
+      errorKind: "stale_token" as const,
+    };
     const snap = readFreshestRollout();
-    if (snap) return fromRollout(snap, account);
-    return errorResult(
-      "Your Codex login has expired. Run `codex` to re-authenticate.",
-      "stale_token",
-      account,
-    );
+    if (snap) return fromRollout(snap, account, staleFailure);
+    return errorResult(staleFailure.error, staleFailure.errorKind, account);
   }
 
   // Live path (primary).
@@ -163,10 +204,30 @@ export async function getCodexUsage(
     return data;
   }
 
-  // Live failed → prefer the on-disk fallback so the panel stays populated.
+  // Live failed → prefer the on-disk fallback so the panel stays populated,
+  // with the failure riding along: credential failures must reach the UI and
+  // the usage-queue's authError path; transient ones render as "delayed".
+  const liveFailure =
+    result.status === "unauthorized"
+      ? {
+          error:
+            "Codex rejected the login token. Run `codex` to re-authenticate. Showing last-known usage.",
+          errorKind: "unauthorized" as const,
+        }
+      : result.status === "rate_limited"
+        ? {
+            error:
+              "OpenAI is rate-limiting usage requests — showing last-known usage.",
+            errorKind: "rate_limited" as const,
+          }
+        : {
+            error:
+              "The Codex usage API is unreachable — showing last-known usage.",
+            errorKind: "unavailable" as const,
+          };
   const snap = readFreshestRollout();
   if (snap) {
-    const data = fromRollout(snap, account);
+    const data = fromRollout(snap, account, liveFailure);
     // Cache the fallback briefly so a shared-endpoint 429 isn't re-hit every
     // poll; a plain outage retries the live path sooner.
     const ttl = result.status === "rate_limited" ? CACHE_TTL_429 : CACHE_TTL;

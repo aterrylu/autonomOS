@@ -673,3 +673,290 @@ describe("claude-usage credential resolution (manual override vs OAuth)", () => 
     );
   });
 });
+
+const { __expireCacheForTests } = await import(
+  "../plugins/claude-usage/scanner.js"
+);
+
+describe("claude-usage credential selection — the auto-detect toggle governs", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    invalidateCache();
+    delete process.env.CLAUDE_SESSION_KEY;
+    __setOAuthTokenReaderForTests(() => null);
+  });
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    invalidateCache();
+    delete process.env.CLAUDE_SESSION_KEY;
+    __setOAuthTokenReaderForTests(null);
+    __setOAuthFetcherForTests(null);
+  });
+
+  function stubWorkingOAuth(): void {
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "working-oauth-token",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+      subscriptionType: "max",
+    }));
+    __setOAuthFetcherForTests(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        five_hour: { utilization: 12, resets_at: "2026-08-08T10:00:00Z" },
+      }),
+    }));
+  }
+
+  it("auto-detect ON: the detected login wins even with a manual key saved (account-switch fix)", async () => {
+    // The old precedence made the saved key always win, so turning auto-detect
+    // ON after pasting a key was a silent no-op — usage kept tracking the OLD
+    // account after a `claude` login switch. The toggle now selects the source.
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeAccount: true,
+      }),
+    );
+    stubWorkingOAuth();
+    const data = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(data.credentialSource, "oauth");
+    assert.equal(data.fiveHour?.utilization, 12);
+  });
+
+  it("auto-detect ON with a BROKEN OAuth credential falls back to the saved key", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeAccount: true,
+      }),
+    );
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "expired-token",
+      expiresAt: Date.now() - 1_000, // stale → credential failure
+      source: "keychain",
+    }));
+    const data = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(data.credentialSource, "settings");
+    assert.equal(data.fiveHour?.utilization, 42);
+  });
+
+  it("auto-detect ON with a TRANSIENT OAuth failure stays on OAuth (no account flap)", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeAccount: true,
+      }),
+    );
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "rate-limited-token",
+      expiresAt: Date.now() + 3_600_000,
+      source: "keychain",
+    }));
+    __setOAuthFetcherForTests(async () => ({
+      ok: false,
+      status: 429,
+      json: async () => ({}),
+    }));
+    const data = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(data.credentialSource, "oauth");
+    assert.equal(data.errorKind, "rate_limited");
+  });
+});
+
+describe("claude-usage scanner — single-flight + honest stale serving", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    invalidateCache();
+    __setOAuthTokenReaderForTests(() => null);
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "FLIGHTKEY",
+        autoDetectClaudeAccount: false,
+      }),
+    );
+  });
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    invalidateCache();
+    __setOAuthTokenReaderForTests(null);
+    __setOAuthFetcherForTests(null);
+  });
+
+  it("concurrent cache-missing reads share ONE upstream flight", async () => {
+    let usageCalls = 0;
+    const fetcher: UsageFetcher = async (url) => {
+      await new Promise((r) => setTimeout(r, 10)); // hold the flight open
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      usageCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 42, resets_at: "2026-08-08T05:00:00Z" },
+        }),
+      };
+    };
+    const [a, b, c] = await Promise.all([
+      getRateLimits(fetcher),
+      getRateLimits(fetcher),
+      getRateLimits(fetcher),
+    ]);
+    assert.equal(usageCalls, 1, "three concurrent misses must share one fetch");
+    assert.equal(a.fiveHour?.utilization, 42);
+    assert.equal(b.fiveHour?.utilization, 42);
+    assert.equal(c.fiveHour?.utilization, 42);
+  });
+
+  it("a transient failure serves last-good MARKED stale, fetchedAt unrestamped", async () => {
+    let fail = false;
+    const fetcher: UsageFetcher = async (url) => {
+      if (url.includes("/bootstrap")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      if (fail) return { ok: false, status: 500, json: async () => ({}) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 42, resets_at: "2026-08-08T05:00:00Z" },
+        }),
+      };
+    };
+    const first = await getRateLimits(fetcher);
+    assert.equal(first.error, undefined);
+
+    fail = true;
+    __expireCacheForTests(); // TTL elapses; lastGood survives
+    const second = await getRateLimits(fetcher);
+    assert.equal(second.fiveHour?.utilization, 42, "numbers stay visible");
+    assert.match(second.error ?? "", /last successful reading/);
+    assert.equal(second.errorKind, "unavailable");
+    assert.equal(
+      second.fetchedAt,
+      first.fetchedAt,
+      "stale data must keep its ORIGINAL fetch time",
+    );
+  });
+});
+
+describe("claude-usage — fallback marker + org-id fingerprint", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    invalidateCache();
+    delete process.env.CLAUDE_SESSION_KEY;
+    __setOAuthTokenReaderForTests(() => null);
+  });
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    invalidateCache();
+    delete process.env.CLAUDE_SESSION_KEY;
+    __setOAuthTokenReaderForTests(null);
+    __setOAuthFetcherForTests(null);
+  });
+
+  it("the OAuth→manual fallback carries the broken-login marker on healthy key data", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeAccount: true,
+      }),
+    );
+    __setOAuthTokenReaderForTests(() => ({
+      accessToken: "expired-token",
+      expiresAt: Date.now() - 1_000,
+      source: "keychain",
+    }));
+    const data = await getRateLimits(makeFetcher().fetcher);
+    // Numbers come from the key; the broken login is NOT silently swallowed.
+    assert.equal(data.credentialSource, "settings");
+    assert.equal(data.fiveHour?.utilization, 42);
+    assert.match(data.error ?? "", /Claude Code login expired/);
+    assert.equal(data.errorKind, "stale_token");
+  });
+
+  it("a MISSING login (needsSetup) falls back silently — key-only setups aren't nagged", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "MANUAL",
+        autoDetectClaudeAccount: true,
+      }),
+    );
+    // Token reader finds nothing at all (the stubbed default).
+    const data = await getRateLimits(makeFetcher().fetcher);
+    assert.equal(data.credentialSource, "settings");
+    assert.equal(data.fiveHour?.utilization, 42);
+    assert.equal(data.error, undefined);
+  });
+
+  it("cachedOrgId is fingerprint-tagged — a new key never reuses the old key's org", async () => {
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "OLDKEY",
+        autoDetectClaudeAccount: false,
+      }),
+    );
+    const bootstraps: string[] = [];
+    const fetcher: UsageFetcher = async (url, init) => {
+      if (url.includes("/bootstrap")) {
+        bootstraps.push(init.headers.Cookie);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            account: {
+              memberships: [{ organization: { uuid: BOOTSTRAP_ORG } }],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 42, resets_at: "2026-08-08T05:00:00Z" },
+        }),
+      };
+    };
+    await getRateLimits(fetcher); // resolves + caches org under OLDKEY's fp
+
+    // Key change WITHOUT invalidateCache (worst case) — the fp mismatch alone
+    // must force a fresh bootstrap under the new cookie.
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        claudeSessionKey: "NEWKEY",
+        autoDetectClaudeAccount: false,
+      }),
+    );
+    await getRateLimits(fetcher);
+    assert.equal(bootstraps.length, 2, "second key must re-resolve its org");
+    assert.match(bootstraps[1], /NEWKEY/);
+  });
+});
