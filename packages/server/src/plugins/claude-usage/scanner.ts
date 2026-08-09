@@ -17,11 +17,8 @@
 import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings, isAutoDetectAccountEnabled } from "../../settings.js";
-<<<<<<< HEAD
-import { createEdgeLogger } from "./edgeLog.js";
-=======
 import { createSingleFlight } from "../singleFlight.js";
->>>>>>> 4abdad2 (fix(usage): bar/queue window alignment + auto-detect selects the credential source (ADR-071))
+import { createEdgeLogger } from "./edgeLog.js";
 import {
   getOAuthToken,
   getOAuthUsage,
@@ -344,7 +341,6 @@ export async function fetchOrgId(
           }>;
         };
       };
-<<<<<<< HEAD
       const memberships = data?.account?.memberships ?? [];
       const orgId = selectUsageOrg(memberships);
       if (!orgId) {
@@ -363,34 +359,11 @@ export async function fetchOrgId(
         );
         return { orgId: null, status: "no_org" };
       }
-      cachedOrgId = orgId;
+      cachedOrgId = { orgId, fp };
       return { orgId, status: "ok" };
     })();
     bootstrapFetchLog.success();
     return result;
-=======
-    };
-    const memberships = data?.account?.memberships ?? [];
-    const orgId = selectUsageOrg(memberships);
-    if (!orgId) {
-      // No usable org. Two shapes land here: an expired cookie (bootstrap
-      // treats it as logged-out → empty memberships) vs. a valid key whose
-      // only orgs lack claude.ai access (e.g. an API-only account). Log the
-      // shape (never the cookie) so they're tellable apart from server logs.
-      console.warn(
-        `[claude-usage] bootstrap resolved no usable org (account=${!!data?.account}, memberships=${
-          Array.isArray(data?.account?.memberships)
-            ? `[${memberships.length}; caps=${memberships
-                .map((m) => (m.organization?.capabilities ?? []).join("|"))
-                .join(",")}]`
-            : typeof data?.account?.memberships
-        })`,
-      );
-      return { orgId: null, status: "no_org" };
-    }
-    cachedOrgId = { orgId, fp };
-    return { orgId, status: "ok" };
->>>>>>> 4abdad2 (fix(usage): bar/queue window alignment + auto-detect selects the credential source (ADR-071))
   } catch (err) {
     bootstrapFetchLog.failure(err);
     return { orgId: null, status: "error" };
