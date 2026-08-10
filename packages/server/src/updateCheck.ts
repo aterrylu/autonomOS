@@ -1,4 +1,4 @@
-// Server-side update-availability check (ADR-072 §6).
+// Server-side update-availability check (ADR-077 §6).
 //
 // The DASHBOARD never calls GitHub — that was Terry's original objection to
 // a version badge, and it's engineered out: the SERVER polls the releases
@@ -60,33 +60,53 @@ export function isUpdateCheckEnabled(): boolean {
 /**
  * Run one check now. Exposed for tests (with an injectable API base) and
  * for the interval below. Never throws; failure leaves the cache as-is.
+ *
+ * Failure taxonomy — user-facing silence is deliberate everywhere (the
+ * badge simply doesn't show), but the OPERATOR gets one log line for the
+ * failures that aren't plain offline, so "no update", "offline", and
+ * "checker broken since March" stay distinguishable in autonomos.log:
+ *   - network throw (offline/DNS/timeout): fully silent, the documented case
+ *   - HTTP non-200 (renamed repo → 404, rate-limit → 403): console.warn —
+ *     these persist forever and would otherwise kill the feature invisibly
+ *   - anything thrown AFTER the fetch is a programming error and is NOT
+ *     caught here: only the network I/O sits inside the try.
  */
 export async function runUpdateCheck(
   apiBase = "https://api.github.com",
   repo = DEFAULT_RELEASE_REPO,
 ): Promise<UpdateCheckState> {
+  let resp: Response;
+  let release: { tag_name?: string };
   try {
-    const resp = await fetch(`${apiBase}/repos/${repo}/releases/latest`, {
+    resp = await fetch(`${apiBase}/repos/${repo}/releases/latest`, {
       headers: { Accept: "application/vnd.github+json" },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!resp.ok) return state;
-    const release = (await resp.json()) as { tag_name?: string };
-    if (typeof release.tag_name !== "string") return state;
-    const latest = release.tag_name.replace(/^v/, "");
-    if (!/^\d+\.\d+\.\d+/.test(latest)) return state;
-
-    const current = getServerVersion();
-    state = {
-      latest,
-      updateAvailable:
-        current !== "unknown" && compareSemver(current, latest) < 0,
-      checkedAt: new Date().toISOString(),
-    };
+    if (!resp.ok) {
+      console.warn(
+        `[update-check] releases API returned ${resp.status} for ${repo} — ` +
+          "keeping last-known state (disable with settings updateCheck:false)",
+      );
+      return state;
+    }
+    release = (await resp.json()) as { tag_name?: string };
   } catch {
-    // Offline / rate-limited / DNS-less box: keep last-known, stay quiet.
+    // Offline / DNS-less / timed-out box: keep last-known, stay quiet.
     // The badge not showing IS the correct offline behavior.
+    return state;
   }
+
+  if (typeof release.tag_name !== "string") return state;
+  const latest = release.tag_name.replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+/.test(latest)) return state;
+
+  const current = getServerVersion();
+  state = {
+    latest,
+    updateAvailable:
+      current !== "unknown" && compareSemver(current, latest) < 0,
+    checkedAt: new Date().toISOString(),
+  };
   return state;
 }
 
@@ -95,12 +115,31 @@ export async function runUpdateCheck(
  * settings toggle at each firing (so flipping it off stops future checks
  * without a restart; already-cached state remains served).
  */
+// Increments on every stop — an in-flight tick from an older generation
+// must not reschedule after stopUpdateCheck ran (clearTimeout only cancels
+// the PENDING handle; a tick that already fired and is awaiting its fetch
+// would otherwise resurrect the chain, and after a stop/start pair the
+// orphan chain would be unreachable forever).
+let generation = 0;
+
 export function startUpdateCheck(): void {
   if (timer) return;
+  const myGeneration = generation;
   const tick = async (): Promise<void> => {
-    if (isUpdateCheckEnabled()) {
-      await runUpdateCheck();
+    try {
+      if (isUpdateCheckEnabled()) {
+        await runUpdateCheck();
+      }
+    } catch (err) {
+      // Belt over runUpdateCheck's own guarantees: an unhandled rejection
+      // here would BOTH kill the reschedule (checks silently die forever)
+      // AND crash the daemon under Node's default policy — a version check
+      // must never be able to take the server down.
+      console.warn(
+        `[update-check] tick failed: ${err instanceof Error ? err.message : err}`,
+      );
     }
+    if (generation !== myGeneration) return; // stopped while in flight
     const jitter = Math.floor(Math.random() * JITTER_MS);
     timer = setTimeout(tick, CHECK_INTERVAL_MS + jitter);
     timer.unref(); // never keep the process alive for a version check
@@ -110,6 +149,7 @@ export function startUpdateCheck(): void {
 }
 
 export function stopUpdateCheck(): void {
+  generation += 1;
   if (timer) {
     clearTimeout(timer);
     timer = undefined;

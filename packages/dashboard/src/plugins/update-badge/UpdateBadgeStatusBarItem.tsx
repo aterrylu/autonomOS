@@ -1,4 +1,4 @@
-// Passive update-available badge (ADR-072 §6).
+// Passive update-available badge (ADR-077 §6).
 //
 // PASSIVE is load-bearing: this renders information and nothing else. No
 // update button in v1 — the in-process REST upgrade path has no health gate
@@ -51,8 +51,10 @@ function useUpdateAvailable(): VersionInfo | null {
           }
         }
       } catch {
-        // Server unreachable or fields absent (older server) — keep whatever
-        // we had; the connection-status item owns reachability display.
+        // Server unreachable / non-JSON body — keep whatever we had; the
+        // connection-status item owns reachability display. (Fields ABSENT
+        // never lands here: an older server's response parses fine and falls
+        // through the type guard above, same keep-state outcome.)
       } finally {
         if (mounted) timer = setTimeout(tick, POLL_INTERVAL_MS);
       }

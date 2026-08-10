@@ -5,7 +5,7 @@ import "../../test/setup-dom";
 import { UpdateBadgeStatusBarItem } from "./UpdateBadgeStatusBarItem";
 
 /**
- * UpdateBadgeStatusBarItem — the PASSIVE update indicator (ADR-072 §6). It
+ * UpdateBadgeStatusBarItem — the PASSIVE update indicator (ADR-077 §6). It
  * reads the server's cached update-check answer off /api/system/version and
  * renders a pill only when an update is known. Everything else — no update,
  * fields absent (older server), fetch failure — renders NOTHING: null is the

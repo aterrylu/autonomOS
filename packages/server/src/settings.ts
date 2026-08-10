@@ -42,7 +42,7 @@ export interface AppSettings {
   /**
    * Check GitHub Releases (server-side, ~daily, cached) for a newer version
    * and surface a passive badge in the dashboard (default: true — matching
-   * this documented default is part of the ADR-072 contract). The dashboard
+   * this documented default is part of the ADR-077 contract). The dashboard
    * itself never contacts GitHub. Set false to disable the check entirely;
    * offline boxes need no setting (a failed check is silent).
    */

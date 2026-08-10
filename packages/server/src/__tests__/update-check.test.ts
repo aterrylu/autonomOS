@@ -1,4 +1,4 @@
-// Server-side update check (ADR-072 §6) against a local releases-API
+// Server-side update check (ADR-077 §6) against a local releases-API
 // fixture. The contract under test: never throws, failure keeps last-known
 // state, availability is a strict "newer than running", and the settings
 // toggle (default ON, documented default = actual default) is honored.
