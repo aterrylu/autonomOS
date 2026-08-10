@@ -150,11 +150,24 @@ describe("starting prompt delivery — no manual keystrokes", {
     // (argv + auto-trust watcher) delivered. Without this, a watcher
     // regression would hide behind the (settle + 90s) re-delivery crutch and
     // CI would stay green while every real spawn got slower and double-pasted.
+    // Bulk feed (the per-session single was deleted in this PR — and its 404
+    // body made this assertion pass VACUOUSLY, which for a fallback-must-not-
+    // fire guard is the worst failure mode). The bulk feed carries
+    // SystemWarning events, so filtering by sessionId preserves the check —
+    // and the presence-probe below proves the read itself works.
     const { body: notif } = await authedJson<{
-      notifications: Array<{ event: string; message?: string }>;
-    }>(server, `/api/hooks/${agent.id}/notifications`);
-    const warnings = (notif.notifications ?? []).filter(
-      (n) => n.event === "SystemWarning",
+      notifications: Array<{
+        event: string;
+        sessionId: string;
+        message?: string;
+      }>;
+    }>(server, "/api/hooks/notifications");
+    assert.ok(
+      Array.isArray(notif.notifications),
+      "bulk notifications feed must answer — a missing/renamed endpoint would make the no-warning assertion vacuous",
+    );
+    const warnings = notif.notifications.filter(
+      (n) => n.sessionId === agent.id && n.event === "SystemWarning",
     );
     assert.deepEqual(
       warnings,
