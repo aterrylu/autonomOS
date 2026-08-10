@@ -123,7 +123,7 @@ export const createAgentShape = {
     .string()
     .optional()
     .describe(
-      "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+      "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
     ),
   // Deliberately the CURRENT values only, matching mcp/tools.ts exactly.
   // Adding the legacy spelling here would publish it in the machine-readable
@@ -202,7 +202,10 @@ export const setManagerShape = {
  *  is nullable rather than merely optional. `version` is the body-carried
  *  optimistic-concurrency token this surface uses everywhere. */
 export const restSetManagerSchema = z.object({
-  manager: z.string().optional(),
+  // NULLISH, not optional: the channel server's set_manager forwards
+  // `{ manager: null }` for the documented remove-manager flow, and the
+  // route's `if (body.manager)` already treats null as clear.
+  manager: z.string().nullish(),
   managerId: z.string().nullish(),
   version: z.number().optional(),
 });

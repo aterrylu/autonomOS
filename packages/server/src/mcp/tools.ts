@@ -75,7 +75,7 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       forkFrom: {
         type: "string",
         description:
-          "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+          "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
       },
       permissionMode: {
         type: "string",

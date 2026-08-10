@@ -109,34 +109,36 @@ describe("mcp/tools.ts JSON literals match validation.ts Zod shapes", () => {
 
       for (const [key, lit] of Object.entries(literalProps)) {
         const der = derived.properties[key];
-        if (lit.type !== undefined) {
-          assert.equal(
-            der.type,
-            lit.type,
-            `${tool.name}.${key}: type differs (zod=${der.type}, json=${lit.type})`,
-          );
-        }
-        if (lit.enum !== undefined) {
-          assert.deepEqual(
-            der.enum,
-            lit.enum,
-            `${tool.name}.${key}: enum differs`,
-          );
-        }
-        if (lit.items?.type !== undefined) {
-          assert.equal(
-            der.items?.type,
-            lit.items.type,
-            `${tool.name}.${key}: items.type differs`,
-          );
-        }
-        if (lit.description !== undefined) {
-          assert.equal(
-            der.description,
-            lit.description,
-            `${tool.name}.${key}: description drifted`,
-          );
-        }
+        // UNCONDITIONAL comparisons (both-undefined passes): a one-directional
+        // check gated on the literal declaring the fact would let a
+        // description or — worse — a `.default(true)` reintroduced on the zod
+        // side (the fail-open class the scheduler-removal ADR eliminated)
+        // drift in silently.
+        assert.equal(
+          der.type,
+          lit.type,
+          `${tool.name}.${key}: type differs (zod=${der.type}, json=${lit.type})`,
+        );
+        assert.deepEqual(
+          der.enum,
+          lit.enum,
+          `${tool.name}.${key}: enum differs`,
+        );
+        assert.equal(
+          der.items?.type,
+          lit.items?.type,
+          `${tool.name}.${key}: items.type differs`,
+        );
+        assert.deepEqual(
+          der.default,
+          lit.default,
+          `${tool.name}.${key}: default differs (zod=${JSON.stringify(der.default)}, json=${JSON.stringify(lit.default)})`,
+        );
+        assert.equal(
+          der.description,
+          lit.description,
+          `${tool.name}.${key}: description drifted`,
+        );
       }
     });
   }
