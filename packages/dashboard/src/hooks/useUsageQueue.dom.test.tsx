@@ -17,8 +17,11 @@ import { useUsageQueue } from "./useUsageQueue";
 type FetchInit = { method?: string } | undefined;
 let respond: (url: string, init: FetchInit) => { ok: boolean; body: unknown };
 
+// The api client reads every body through `res.text()` + JSON.parse (so a
+// non-JSON error body degrades instead of throwing), so the stub exposes
+// text(), not json().
 function fakeResponse(ok: boolean, body: unknown) {
-  return { ok, json: async () => body };
+  return { ok, status: ok ? 200 : 500, text: async () => JSON.stringify(body) };
 }
 
 const flush = () => act(async () => await new Promise((r) => setTimeout(r, 0)));

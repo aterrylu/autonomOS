@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { statusApi } from "../api/status";
 import { focusTerminal } from "../hooks/useTerminal";
 import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import { THEMES, useStore } from "../store";
@@ -58,14 +59,11 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
   const [visible, setVisible] = useState(PAGE_SIZE);
 
   useEffect(() => {
-    fetch("/api/hooks/notifications")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    statusApi
+      .feed()
       .then((data) => {
-        setNotifications(data.notifications ?? []);
-        setTotalUnread(data.totalUnread ?? 0);
+        setNotifications(data?.notifications ?? []);
+        setTotalUnread(data?.totalUnread ?? 0);
       })
       .catch((err) => {
         setError("Failed to load notifications");
@@ -103,10 +101,11 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
     const unreadSessionIds = [
       ...new Set(notifications.filter((n) => !n.read).map((n) => n.sessionId)),
     ];
+    // Per-session fan-out, settled independently: one session failing to mark
+    // read must not strand the rest as unread.
     const results = await Promise.allSettled(
       unreadSessionIds.map(async (id) => {
-        const res = await fetch(`/api/hooks/${id}/read`, { method: "POST" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await statusApi.markRead(id);
         return id;
       }),
     );
@@ -128,6 +127,11 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
             .length,
       ),
     );
+    // Kept as the store action rather than a bare `statusPoll.refresh()`: the
+    // poll's only subscriber is the Sidebar, which is unmounted whenever the
+    // sidebar is collapsed — a bare refresh would then update the poll's
+    // snapshot while the bell's badge kept showing the stale unread count.
+    // fetchNotifications refreshes that same poll AND applies the result.
     useStore.getState().fetchNotifications();
     setMarkingRead(false);
   }

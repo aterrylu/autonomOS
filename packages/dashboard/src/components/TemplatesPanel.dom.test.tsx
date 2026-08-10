@@ -4,8 +4,34 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
+import { templatesApi } from "../api/config";
 import { useStore } from "../store";
 import { TemplatesPanel } from "./TemplatesPanel";
+
+// The panel reads the shared templatesPoll and mutates via templatesApi —
+// mock both at the module seam (the store slices it used to read are gone).
+vi.mock("../api/config", () => ({
+  templatesApi: {
+    save: vi.fn(async () => ({ ok: true, message: "" })),
+    remove: vi.fn(async () => ({ ok: true })),
+  },
+}));
+// getSnapshot must return a REFERENCE-STABLE object or useSyncExternalStore
+// re-renders forever ("maximum update depth exceeded").
+let pollSnapshot: { data: Record<string, unknown>; error: null } = {
+  data: {},
+  error: null,
+};
+function seedPoll(data: Record<string, unknown>): void {
+  pollSnapshot = { data, error: null };
+}
+vi.mock("../api/polls", () => ({
+  templatesPoll: {
+    subscribe: () => () => {},
+    getSnapshot: () => pollSnapshot,
+    refresh: vi.fn(async () => {}),
+  },
+}));
 
 /**
  * TemplatesPanel had NO test coverage, which is part of why ADR-058 happened:
@@ -30,20 +56,12 @@ const planTemplate: AgentTemplate = {
   permissionMode: "plan",
 };
 
-let saveTemplate: ReturnType<typeof vi.fn>;
+const saveTemplate = vi.mocked(templatesApi.save);
 
 beforeEach(() => {
-  saveTemplate = vi.fn(() => Promise.resolve());
-  useStore.setState({
-    theme: "midnight",
-    sessions: [],
-    templates: { "feature-worker": bypassTemplate, reviewer: planTemplate },
-    templatesLoading: false,
-    templatesError: null,
-    fetchTemplates: () => Promise.resolve(),
-    saveTemplate,
-    deleteTemplate: vi.fn(() => Promise.resolve()),
-  });
+  saveTemplate.mockClear();
+  seedPoll({ "feature-worker": bypassTemplate, reviewer: planTemplate });
+  useStore.setState({ theme: "midnight", sessions: [] });
 });
 
 afterEach(() => {

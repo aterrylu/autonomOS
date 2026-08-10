@@ -105,6 +105,8 @@ export interface MaskedSettings {
   autoDetectClaudeAccount: boolean;
   channels: string[];
   autoTrust: boolean;
+  /** Passive release check for the update badge (#323); default on. */
+  updateCheck: boolean;
   customEnvVars: Record<string, string>;
   statusLine: { enabled: boolean };
 }

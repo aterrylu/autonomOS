@@ -18,14 +18,15 @@ function stubEmptyFetch() {
     "fetch",
     vi.fn((url: string) => {
       // /api/agents, /api/agents/tree and /api/projects return arrays;
-      // /api/hooks (notifications) returns an object map.
+      // /api/hooks (notifications) returns an object map. Real `Response`
+      // objects, not `{ ok, json }` duck types — the api client reads the body
+      // via `res.text()`.
       const u = typeof url === "string" ? url : "";
       const body =
         u.includes("/api/agents") || u.includes("/api/projects") ? [] : {};
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(body),
-      } as Response);
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { status: 200 }),
+      );
     }),
   );
 }

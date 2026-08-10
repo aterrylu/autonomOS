@@ -3,8 +3,19 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
-import { THEMES, useStore } from "../store";
+import { presetsApi } from "../api/config";
+import { presetsPoll } from "../api/polls";
+import { THEMES } from "../store";
 import { SecretRow } from "./PresetsPanel";
+
+vi.mock("../api/config", () => ({
+  presetsApi: { update: vi.fn(async () => ({})) },
+}));
+vi.mock("../api/polls", () => ({
+  presetsPoll: { refresh: vi.fn(async () => {}) },
+}));
+const updateMock = vi.mocked(presetsApi.update);
+void presetsPoll; // poll refresh is fire-and-verify via the mock above
 
 /**
  * The settled↔edit behavior of the API-key field (ADR-067 UX): a SET key must
@@ -16,7 +27,7 @@ const page = Object.values(THEMES)[0].page;
 const pasteInput = () => screen.queryByPlaceholderText(/paste/i);
 
 afterEach(() => {
-  useStore.setState({ updatePreset: (async () => {}) as never });
+  updateMock.mockClear();
 });
 
 describe("SecretRow — settled vs edit", () => {
@@ -56,8 +67,7 @@ describe("SecretRow — settled vs edit", () => {
 
   it("Clear is two-step — one click confirms, doesn't wipe the key", async () => {
     const user = userEvent.setup();
-    const updatePreset = vi.fn().mockResolvedValue(undefined);
-    useStore.setState({ updatePreset: updatePreset as never });
+
     render(
       <SecretRow
         presetName="kimi"
@@ -68,10 +78,10 @@ describe("SecretRow — settled vs edit", () => {
       />,
     );
     await user.click(screen.getByText("Clear"));
-    expect(updatePreset).not.toHaveBeenCalled(); // not wiped on the first click
+    expect(updateMock).not.toHaveBeenCalled(); // not wiped on the first click
     expect(screen.getByText("Confirm clear")).toBeInTheDocument();
     await user.click(screen.getByText("Confirm clear"));
-    expect(updatePreset).toHaveBeenCalledWith("kimi", {
+    expect(updateMock).toHaveBeenCalledWith("kimi", {
       secrets: { ANTHROPIC_AUTH_TOKEN: "" },
     });
   });
@@ -91,8 +101,7 @@ describe("SecretRow — settled vs edit", () => {
 
   it("Save PUTs the typed value then collapses to the settled chip", async () => {
     const user = userEvent.setup();
-    const updatePreset = vi.fn().mockResolvedValue(undefined);
-    useStore.setState({ updatePreset: updatePreset as never });
+
     render(
       <SecretRow
         presetName="kimi"
@@ -105,7 +114,7 @@ describe("SecretRow — settled vs edit", () => {
     if (!input) throw new Error("expected an input");
     await user.type(input, "sk-new-key-9999");
     await user.click(screen.getByText("Save"));
-    expect(updatePreset).toHaveBeenCalledWith("kimi", {
+    expect(updateMock).toHaveBeenCalledWith("kimi", {
       secrets: { ANTHROPIC_AUTH_TOKEN: "sk-new-key-9999" },
     });
   });

@@ -1,6 +1,8 @@
 import type { RunRecord, Schedule, SchedulerStatus } from "@autonomos/core";
-import { useCallback, useEffect, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { useCallback, useState } from "react";
+import { schedulesPoll } from "../api/polls";
+import { schedulesApi } from "../api/schedules";
+import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
 
 /**
@@ -8,6 +10,12 @@ import { THEMES, useStore } from "../store";
  *
  * No create button: agents create schedules via MCP tools.
  * Dashboard shows status, run history, and controls (toggle, run now, delete).
+ *
+ * Data comes from the shared `schedulesPoll` (10s, the panel's old cadence —
+ * one tick still fetches both the schedule list and scheduler status). Every
+ * mutation below reconciles by awaiting `schedulesPoll.refresh()` INSIDE its
+ * own busy window, so the UI transitions on server truth rather than on an
+ * optimistic guess, with no intermediate state the user can see.
  */
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -108,16 +116,6 @@ interface ScheduleCardProps {
 }
 
 function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
-  const { deleteSchedule, runSchedule, updateSchedule, fetchSchedules } =
-    useStore(
-      useShallow((s) => ({
-        deleteSchedule: s.deleteSchedule,
-        runSchedule: s.runSchedule,
-        updateSchedule: s.updateSchedule,
-        fetchSchedules: s.fetchSchedules,
-      })),
-    );
-
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -126,13 +124,7 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
   const loadRuns = useCallback(async () => {
     setLoadingRuns(true);
     try {
-      const res = await fetch(
-        `/api/schedules/${encodeURIComponent(name)}/runs?limit=20`,
-      );
-      if (res.ok) {
-        const data = await res.json();
-        setRuns(data);
-      }
+      setRuns(await schedulesApi.runs(name, 20));
     } catch {
       // non-critical
     }
@@ -141,8 +133,8 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
 
   const handleToggleEnabled = async () => {
     try {
-      await updateSchedule(name, { enabled: !schedule.enabled });
-      fetchSchedules();
+      await schedulesApi.update(name, { enabled: !schedule.enabled });
+      await schedulesPoll.refresh();
     } catch (err) {
       console.warn("Toggle failed:", err);
     }
@@ -150,8 +142,8 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
 
   const handleRunNow = async () => {
     try {
-      await runSchedule(name);
-      fetchSchedules();
+      await schedulesApi.run(name);
+      await schedulesPoll.refresh();
     } catch (err) {
       console.warn("Run failed:", err);
     }
@@ -159,7 +151,10 @@ function ScheduleCard({ name, schedule, page }: ScheduleCardProps) {
 
   const handleDelete = async () => {
     try {
-      await deleteSchedule(name);
+      await schedulesApi.remove(name);
+      // The store used to drop the row optimistically; refreshing here is what
+      // makes the deleted card disappear now instead of at the next 10s tick.
+      await schedulesPoll.refresh();
     } catch (err) {
       console.warn("Delete failed:", err);
     }
@@ -406,7 +401,6 @@ function MaxRunsControl({
   status: SchedulerStatus | null;
   page: PageTheme;
 }) {
-  const updateSchedulerSettings = useStore((s) => s.updateSchedulerSettings);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(String(status?.maxConcurrentRuns ?? 3));
 
@@ -414,7 +408,11 @@ function MaxRunsControl({
     const num = Number.parseInt(value, 10);
     if (num >= 1) {
       try {
-        await updateSchedulerSettings(num);
+        await schedulesApi.updateSchedulerSettings({ maxConcurrentRuns: num });
+        // Refresh BEFORE leaving edit mode so the collapsed button never shows
+        // the pre-save number (the store patched schedulerStatus optimistically
+        // to get the same effect).
+        await schedulesPoll.refresh();
       } catch {
         // revert
       }
@@ -475,22 +473,15 @@ function MaxRunsControl({
 export function SchedulesPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const schedules = useStore((s) => s.schedules);
-  const schedulesLoading = useStore((s) => s.schedulesLoading);
-  const schedulesError = useStore((s) => s.schedulesError);
-  const schedulerStatus = useStore((s) => s.schedulerStatus);
-  const fetchSchedules = useStore((s) => s.fetchSchedules);
-  const fetchSchedulerStatus = useStore((s) => s.fetchSchedulerStatus);
+  const { data, error } = usePoll(schedulesPoll);
 
-  useEffect(() => {
-    fetchSchedules();
-    fetchSchedulerStatus();
-    const interval = setInterval(() => {
-      fetchSchedules();
-      fetchSchedulerStatus();
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [fetchSchedules, fetchSchedulerStatus]);
+  const schedules = data?.schedules ?? {};
+  const schedulerStatus = data?.scheduler ?? null;
+  // "Loading" is the pre-first-response state, exactly as before: the store's
+  // schedulesLoading was set only when no schedules had ever been loaded. A
+  // LATER failure keeps the last list on screen and shows the error beside it.
+  const schedulesLoading = data === null && error === null;
+  const schedulesError = error?.message ?? null;
 
   const names = Object.keys(schedules).sort();
   const activeRuns = schedulerStatus?.activeRuns ?? 0;

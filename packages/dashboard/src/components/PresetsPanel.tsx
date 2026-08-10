@@ -1,6 +1,8 @@
 import { type EnvPreset, SECRET_MASK } from "@autonomos/core";
-import { useEffect, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { useState } from "react";
+import { presetsApi } from "../api/config";
+import { presetsPoll } from "../api/polls";
+import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
 
 /**
@@ -12,6 +14,11 @@ import { THEMES, useStore } from "../store";
  * Secret values are always masked on read; typing a new value PUTs it, an empty
  * value clears it, and echoing a masked value back is a no-op (server-ignored).
  * See ADR-067.
+ *
+ * Presets come from the shared `presetsPoll` (10s, the panel's old cadence).
+ * Every mutation awaits `presetsPoll.refresh()` INSIDE its own busy window
+ * before flipping any local UI state — the rows are driven entirely by polled
+ * data, so collapsing a form first would briefly render the pre-write state.
  */
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -180,7 +187,6 @@ export function SecretRow({
   maskedValue?: string;
   page: PageTheme;
 }) {
-  const updatePreset = useStore((s) => s.updatePreset);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -196,7 +202,10 @@ export function SecretRow({
     setBusy(true);
     setErr(null);
     try {
-      await updatePreset(presetName, { secrets: { [keyName]: raw } });
+      await presetsApi.update(presetName, { secrets: { [keyName]: raw } });
+      // Reconcile BEFORE collapsing: `isSet` is polled data, so leaving edit
+      // mode first would flash the "not set" entry box for a key just saved.
+      await presetsPoll.refresh();
       setValue("");
       // raw === "" is a Clear → now unset, stay in entry; otherwise it's set →
       // collapse to the settled chip.
@@ -365,13 +374,6 @@ export function SecretRow({
 // ── Preset card ─────────────────────────────────────────────────
 
 function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
-  const { updatePreset, deletePreset } = useStore(
-    useShallow((s) => ({
-      updatePreset: s.updatePreset,
-      deletePreset: s.deletePreset,
-    })),
-  );
-
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -408,13 +410,14 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
     }
     const keys = secretKeys.map((k) => k.trim()).filter(Boolean);
     try {
-      await updatePreset(preset.name, {
+      await presetsApi.update(preset.name, {
         description,
         label,
         provider: provider || undefined,
         env,
         secretKeys: keys,
       });
+      await presetsPoll.refresh();
       setEditing(false);
     } catch (e) {
       setSaveErr(e instanceof Error ? e.message : "Failed to save");
@@ -424,7 +427,8 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
   const handleDelete = async () => {
     setDeleteErr(null);
     try {
-      await deletePreset(preset.name);
+      await presetsApi.remove(preset.name);
+      await presetsPoll.refresh();
     } catch (e) {
       // Surface to the user like every other mutation in this panel — a
       // swallowed DELETE (e.g. server 500) left the human thinking a preset
@@ -693,7 +697,6 @@ function PresetCard({ preset, page }: { preset: EnvPreset; page: PageTheme }) {
 // ── Create form ─────────────────────────────────────────────────
 
 function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
-  const createPreset = useStore((s) => s.createPreset);
   const [name, setName] = useState("");
   const [label, setLabel] = useState("");
   const [description, setDescription] = useState("");
@@ -716,7 +719,7 @@ function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
     const keys = secretKeys.map((k) => k.trim()).filter(Boolean);
     setBusy(true);
     try {
-      await createPreset({
+      await presetsApi.create({
         name: name.trim(),
         label: label.trim() || undefined,
         description: description.trim() || undefined,
@@ -724,6 +727,8 @@ function CreateForm({ page, onDone }: { page: PageTheme; onDone: () => void }) {
         env,
         secretKeys: keys,
       });
+      // Refresh before closing the form so the new card is already there.
+      await presetsPoll.refresh();
       onDone();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to create preset");
@@ -891,18 +896,12 @@ function EmptyState({ page }: { page: PageTheme }) {
 export function PresetsPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const presets = useStore((s) => s.presets);
-  const presetsLoading = useStore((s) => s.presetsLoading);
-  const presetsError = useStore((s) => s.presetsError);
-  const fetchPresets = useStore((s) => s.fetchPresets);
+  const { data, error } = usePoll(presetsPoll);
+  const presets = data ?? {};
+  const presetsLoading = data === null && !error;
+  const presetsError = error?.message ?? "";
 
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    fetchPresets();
-    const interval = setInterval(fetchPresets, 10000);
-    return () => clearInterval(interval);
-  }, [fetchPresets]);
 
   const names = Object.keys(presets).sort();
 

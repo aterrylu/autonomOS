@@ -27,6 +27,20 @@ function useServerHealth(): ServerHealth {
     let failures = 0;
     let everConnected = false;
 
+    // Deliberately the ONLY REST call in the dashboard still on raw `fetch`
+    // (consolidation ADR-078 routed the rest through api/). This is a liveness
+    // probe, and the client can't express what it needs:
+    //   - It must truly CANCEL a hung request. `request()` accepts a signal but
+    //     never forwards it to fetch — an abort detaches the caller and leaves
+    //     the socket open by design (so one caller can't kill a GET its
+    //     siblings share). Here that would leak an in-flight request every
+    //     2s against a hung server, and once the browser's ~6-per-host
+    //     connection limit fills, later probes queue behind the dead ones
+    //     instead of recovering in ~2s.
+    //   - It must put a real request on the wire each tick, which the client's
+    //     in-flight GET dedup would otherwise coalesce.
+    // Migrate this the day `request()` forwards `signal` to fetch for
+    // non-deduped (`fresh`) requests; until then the probe owns its transport.
     async function probe(): Promise<boolean> {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);

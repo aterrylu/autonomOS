@@ -1,14 +1,28 @@
 import {
+  type Agent,
+  type AgentStatusMap,
   type AgentTemplate,
   DEFAULT_PERMISSION_MODE,
   type EnvPreset,
   type PermissionMode,
+  type ProjectInfo,
   permissionModeFromLegacy,
   permissionModeFromStored,
 } from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { agentsApi, type SpawnAgentBody } from "./api/agents";
+import { presetsApi, templatesApi } from "./api/config";
+import { ApiError } from "./api/core";
+import { agentsPoll, projectsPoll, statusPoll } from "./api/polls";
+import { statusApi } from "./api/status";
 import { isValidActivePane, SINGLETON_TYPES } from "./layout/dockview/paneId";
+
+/** The project wire types now live in @autonomos/core alongside every other
+ *  shape that crosses the HTTP boundary (ADR-078). Re-exported here so the
+ *  existing `import type { ProjectInfo } from "../store"` consumers keep
+ *  working while there is exactly one declaration. */
+export type { ProjectInfo, ProjectSession } from "@autonomos/core";
 
 // ── Desktop notifications ────────────────────────────────────────────
 
@@ -83,31 +97,6 @@ export interface SessionInfo {
    *  accent-highlighted pill right after the repo·branch text on the sidebar
    *  row's bottom line. See ADR-067. */
   envPreset?: string;
-}
-
-/** A Claude Code session from the SDK's listSessions() */
-export interface ProjectSession {
-  sessionId: string;
-  summary: string;
-  lastModified: number;
-  gitBranch?: string;
-  firstPrompt?: string;
-  /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
-  customTitle?: string;
-  /** True if this session is managed by autonomOS */
-  isAutonomosAgent?: boolean;
-  /** Lifecycle status for autonomOS agents */
-  autonomosStatus?: "running" | "exited";
-  /** Template used to spawn this agent */
-  template?: string;
-}
-
-/** A project directory with its Claude Code sessions */
-export interface ProjectInfo {
-  path: string;
-  name: string;
-  sessions: ProjectSession[];
-  lastActive: number;
 }
 
 export type ActivePane =
@@ -401,6 +390,203 @@ export function pickActiveFallback(
   return next ? { type: "session", id: next } : null;
 }
 
+// ── Snapshot appliers (the poll → store bridge) ────────────────────────
+//
+// One function per polled resource, called from TWO places that must not
+// diverge: the store's own imperative action (post-mutation refresh) and the
+// Sidebar's subscription to the shared poll. Keeping the store as the source of
+// truth — rather than having components read poll snapshots directly — is what
+// lets every existing selector keep working untouched.
+
+/**
+ * Map the server's Agent record onto the dashboard's SessionInfo view model.
+ *
+ * `claudeSessionId` is deliberately `agent.id`, NOT `providerSessionId`: it is
+ * the dashboard's stable lookup key, consumed by useAgentStatusById
+ * (HierarchyPanel) and the /api/agents/:id/* route builders, and
+ * /api/agents/tree publishes the same alias. Keying off providerSessionId would
+ * split the key space — migrated agents (id == providerSessionId) would still
+ * work while freshly-spawned ones silently lost status/activity in the org
+ * chart. The real provider session id rides along separately for callers that
+ * need to invoke `claude --resume` or read CC's JSONL.
+ *
+ * `managerName` is resolved by the caller: /api/agents returns `managerId` (a
+ * UUID), and only a caller holding the whole list can turn it into a name.
+ */
+function agentToSession(agent: Agent, managerName?: string): SessionInfo {
+  return {
+    id: agent.id,
+    name: agent.name,
+    status: agent.status,
+    workingDirectory: agent.workingDirectory,
+    provider: agent.provider,
+    claudeSessionId: agent.id,
+    providerSessionId: agent.providerSessionId,
+    template: agent.template,
+    manager: managerName,
+    // The mode the server actually resolved — which is not necessarily the one
+    // requested (a template can supply it, and an invalid request value falls
+    // back). Carry the server's answer, never the local default that was sent.
+    permissionMode: agent.permissionMode,
+    createdAt: agent.createdAt,
+    updatedAt: agent.updatedAt,
+    exitedAt: agent.exitedAt,
+    exitReason: agent.exitReason,
+    envPreset: agent.envPreset,
+  };
+}
+
+/** Apply a `GET /api/agents` snapshot: session lists, order-key pruning,
+ *  active-pane fallback, and dead-workspace reconciliation. */
+export function applyAgentsSnapshot(agents: Agent[]): void {
+  const set = useStore.setState;
+  const get = useStore.getState;
+  // Resolve manager name client-side so the existing UI continues to surface a
+  // human-readable label without an extra round-trip.
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const allSessions = agents.map((a) =>
+    agentToSession(a, a.managerId ? byId.get(a.managerId)?.name : undefined),
+  );
+  // Filter out exited sessions — they have no PTY and would create broken
+  // terminals with perpetual WebSocket reconnect loops.
+  const sessions = allSessions.filter((s) => s.status !== "exited");
+  const exitedSessions = allSessions.filter((s) => s.status === "exited");
+  const prev = get().sessions;
+  const unchanged =
+    prev.length === sessions.length &&
+    prev.every(
+      (s, i) =>
+        s.id === sessions[i].id &&
+        s.name === sessions[i].name &&
+        s.status === sessions[i].status &&
+        s.claudeSessionId === sessions[i].claudeSessionId,
+    );
+  const prevExited = get().exitedSessions;
+  const exitedUnchanged =
+    prevExited.length === exitedSessions.length &&
+    prevExited.every((s, i) => s.id === exitedSessions[i].id);
+  if (!unchanged || !exitedUnchanged) {
+    // Prune flat-view order keys whose agent no longer exists so dead entries
+    // don't accumulate for users who never reorder/pin. This also retires
+    // leftover `preview:*` keys from the removed markdown preview feature.
+    // Reorder/pin/unpin also re-freeze, so this only matters between
+    // interactions.
+    const live = new Set<string>(sessions.map(sessionOrderKey));
+    const keepKey = (k: string) => live.has(k);
+    const { pinnedOrder, unpinnedOrder } = get();
+    const prunedPinned = pinnedOrder.filter(keepKey);
+    const prunedUnpinned = unpinnedOrder.filter(keepKey);
+    const orderChanged =
+      prunedPinned.length !== pinnedOrder.length ||
+      prunedUnpinned.length !== unpinnedOrder.length;
+    set({
+      sessions,
+      exitedSessions,
+      sessionsInitialFetchDone: true,
+      ...(orderChanged && {
+        pinnedOrder: prunedPinned,
+        unpinnedOrder: prunedUnpinned,
+      }),
+    });
+
+    const liveIds = new Set(sessions.map((s) => s.id));
+    const { activePane, dvWorkspaces, dvPaneWorkspace } = get();
+
+    // If the pane we're viewing just died, fall back to a live sibling from its
+    // group (or any live session) instead of blanking the dock. Compute this
+    // BEFORE reconcile, which may dissolve the group.
+    if (activePane?.type === "session" && !liveIds.has(activePane.id)) {
+      const fallback = pickActiveFallback(
+        activePane.id,
+        dvWorkspaces,
+        dvPaneWorkspace,
+        sessions.map((s) => s.id),
+      );
+      set(
+        fallback
+          ? { activePane: fallback, status: "connected" }
+          : { activePane: null, status: "disconnected" },
+      );
+    }
+
+    // Drop dead members from bound workspaces so surviving members don't
+    // trigger a full teardown/rebuild on every click (see helper).
+    const reconciled = reconcileDeadWorkspaces(
+      dvWorkspaces,
+      dvPaneWorkspace,
+      (paneId) => !SINGLETON_TYPES.has(paneId) && !liveIds.has(paneId),
+    );
+    if (reconciled)
+      set({
+        dvWorkspaces: reconciled.workspaces,
+        dvPaneWorkspace: reconciled.paneWorkspace,
+      });
+  } else if (!get().sessionsInitialFetchDone) {
+    // No change in session arrays (both empty) but this was the first
+    // successful fetch — flip the flag so App.tsx can act (e.g. auto-open the
+    // Create Agent panel for first-run UX).
+    set({ sessionsInitialFetchDone: true });
+  }
+}
+
+/** Apply a `GET /api/hooks` snapshot: unread counts, agent activity statuses,
+ *  and the `needs_input` desktop notification for a backgrounded tab. */
+export function applyStatusSnapshot(data: AgentStatusMap): void {
+  const set = useStore.setState;
+  const get = useStore.getState;
+  if (!data || typeof data !== "object") return;
+  const counts: Record<string, number> = {};
+  const statuses: Record<
+    string,
+    { status: string; currentTool?: string; toolDetail?: string }
+  > = {};
+  for (const [id, entry] of Object.entries(data)) {
+    if (entry.unread) counts[id] = entry.unread;
+    if (entry.status) statuses[id] = entry.status;
+  }
+  // Desktop notification when an agent needs input and tab isn't focused.
+  // Driven by snapshot CHANGES: an already-notified agent whose status is still
+  // needs_input fails the `prev` guard, so it never double-fires.
+  if (!document.hasFocus()) {
+    const prev = get().agentStatuses;
+    const sessions = get().sessions;
+    for (const [id, s] of Object.entries(statuses)) {
+      if (s.status === "needs_input" && prev[id]?.status !== "needs_input") {
+        const name = sessions.find((ss) => ss.id === id)?.name ?? "Agent";
+        sendDesktopNotification(name, "Needs your input");
+      }
+    }
+  }
+  const prevCounts = get().notificationCounts;
+  const prevStatuses = get().agentStatuses;
+  const countsChanged = !shallowEqualRecord(counts, prevCounts);
+  const statusesChanged = !shallowEqualRecord(
+    statuses,
+    prevStatuses,
+    (a, b) =>
+      a.status === b.status &&
+      a.currentTool === b.currentTool &&
+      a.toolDetail === b.toolDetail,
+  );
+  if (countsChanged || statusesChanged) {
+    set({ notificationCounts: counts, agentStatuses: statuses });
+  }
+}
+
+/** Apply a `GET /api/projects` snapshot. */
+export function applyProjectsSnapshot(projects: ProjectInfo[]): void {
+  if (!Array.isArray(projects)) return;
+  useStore.setState({ projects });
+}
+
+/** "network error" for an unreachable server, else "HTTP <status>" — the shape
+ *  the pre-client console lines used, kept so log greps still match. */
+function apiErrorLabel(err: unknown): string {
+  if (err instanceof ApiError)
+    return err.unreachable ? "network error" : `HTTP ${err.status}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
 interface AppState {
   // Persisted
   theme: ThemeName;
@@ -443,15 +629,11 @@ interface AppState {
    *  first-run flow re-fires only on a fresh tab or page reload. */
   sessionsInitialFetchDone: boolean;
   projects: ProjectInfo[];
-  /** Loaded templates keyed by name */
+  /** Loaded templates keyed by name (CreateAgentPanel dropdown; the
+   *  TemplatesPanel reads templatesPoll directly). */
   templates: Record<string, AgentTemplate>;
   templatesLoading: boolean;
   templatesError: string | null;
-  /** Loaded schedules keyed by name */
-  schedules: Record<string, import("@autonomos/core").Schedule>;
-  schedulesLoading: boolean;
-  schedulesError: string | null;
-  schedulerStatus: import("@autonomos/core").SchedulerStatus | null;
   /** Loaded env presets keyed by name (secrets masked by the server). */
   presets: Record<string, EnvPreset>;
   presetsLoading: boolean;
@@ -529,39 +711,7 @@ interface AppState {
   openSchedules: () => void;
   openPresets: () => void;
   fetchTemplates: () => Promise<void>;
-  saveTemplate: (name: string, template: AgentTemplate) => Promise<void>;
-  deleteTemplate: (name: string) => Promise<void>;
-  fetchSchedules: () => Promise<void>;
-  deleteSchedule: (name: string) => Promise<void>;
-  runSchedule: (name: string) => Promise<void>;
-  updateSchedule: (
-    name: string,
-    partial: Record<string, unknown>,
-  ) => Promise<void>;
-  fetchSchedulerStatus: () => Promise<void>;
-  updateSchedulerSettings: (maxConcurrentRuns: number) => Promise<void>;
   fetchPresets: () => Promise<void>;
-  createPreset: (input: {
-    name: string;
-    description?: string;
-    provider?: EnvPreset["provider"];
-    label?: string;
-    env?: Record<string, string>;
-    secretKeys?: string[];
-    secrets?: Record<string, string>;
-  }) => Promise<void>;
-  updatePreset: (
-    name: string,
-    partial: {
-      description?: string;
-      provider?: EnvPreset["provider"];
-      label?: string;
-      env?: Record<string, string>;
-      secretKeys?: string[];
-      secrets?: Record<string, string>;
-    },
-  ) => Promise<void>;
-  deletePreset: (name: string) => Promise<void>;
   toggleSidebarViewMode: () => void;
   reorderHierarchy: (
     groupKey: string,
@@ -597,79 +747,48 @@ async function spawnSession(
   get: GetState,
   pendingStatus: string,
   failureStatus: string,
-  body: Record<string, unknown>,
+  body: SpawnAgentBody,
   onSuccess?: (session: SessionInfo) => void,
 ): Promise<void> {
   const { status } = get();
   if (status === "spawning..." || status === "resuming...") return;
   set({ status: pendingStatus });
 
-  // Translate the legacy SessionInfo-shaped body into the new /api/agents shape.
-  // - forkFrom → forkFromAgentId (same value)
-  // resumeSessionId is passed THROUGH unchanged: the server resolves it against
-  // both the agent store and disk (reattach a managed record OR adopt an external
-  // CC session). It must NOT be rewritten to resumeAgentId — that rewrite assumed
-  // agent.id == claudeSessionId, which is false for external sessions and was the
-  // root cause of external-session resume 404ing (the #165 regression).
-  // The server still accepts `manager` (name) at the API boundary.
-  const agentBody: Record<string, unknown> = { ...body };
-  if (typeof agentBody.forkFrom === "string") {
-    agentBody.forkFromAgentId = agentBody.forkFrom;
-    delete agentBody.forkFrom;
-  }
-  const res = await fetch("/api/agents", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(agentBody),
-  }).catch(() => null);
-
-  if (!res) {
-    set({ status: "server unreachable" });
-    throw new Error("Server unreachable");
-  }
-  if (!res.ok) {
+  // `resumeSessionId` is passed THROUGH unchanged: the server resolves it
+  // against both the agent store and disk (reattach a managed record OR adopt an
+  // external CC session). It must NOT be rewritten to `resumeAgentId` — that
+  // rewrite assumed agent.id == claudeSessionId, which is false for external
+  // sessions and was the root cause of external-session resume 404ing (the #165
+  // regression). The server still accepts `manager` (name) at the API boundary.
+  //
+  // The old `forkFrom → forkFromAgentId` translation is gone with the typed
+  // body: SpawnAgentBody names the field `forkFromAgentId`, so no caller can
+  // hand us the legacy spelling for it to rewrite (none ever did).
+  let agent: Agent;
+  try {
+    agent = await agentsApi.spawn(body);
+  } catch (err) {
+    if (err instanceof ApiError && err.unreachable) {
+      set({ status: "server unreachable" });
+      throw new ApiError("Server unreachable", 0);
+    }
     // Surface the server's reason (e.g. "nothing to resume", template not found,
     // "Env preset ... is missing its API key") instead of a bare generic status.
-    // We set `status` (so isBusy resets) AND throw: the status string is only
+    // We set `status` (so isBusy resets) AND rethrow: the status string is only
     // read for the isBusy boolean and is NOT rendered anywhere, so a caller with
     // an error UI (CreateAgentPanel) must receive the throw to show the reason.
     // Before this, a keyless-preset spawn was refused loudly server-side but died
     // silently on screen (ADR-067 polish).
-    const err = await res.json().catch(() => null);
-    const detail =
-      err && typeof err.error === "string" ? err.error : `HTTP ${res.status}`;
-    set({ status: `${failureStatus}: ${detail}` });
-    throw new Error(detail);
+    set({
+      status: `${failureStatus}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    throw err;
   }
 
   // Server returns an Agent; translate to SessionInfo for legacy code paths.
-  const agent = await res.json();
-  const session: SessionInfo = {
-    id: agent.id,
-    name: agent.name,
-    status: agent.status,
-    workingDirectory: agent.workingDirectory,
-    provider: agent.provider,
-    // SessionInfo.claudeSessionId is the dashboard's stable lookup key —
-    // must equal agent.id to align with /api/agents/tree, useAgentStatusById,
-    // and the /api/agents/:id/* route URLs. See fetchSessions for full rationale.
-    claudeSessionId: agent.id,
-    // Actual CC session id — kept distinct so callers that need to invoke
-    // `claude --resume` or read CC's JSONL have access.
-    providerSessionId: agent.providerSessionId,
-    template: agent.template,
-    manager: undefined, // managerId is a UUID; resolve to name handled in fetchSessions
-    // The mode the server actually resolved for this spawn — which is not
-    // necessarily the one requested (a template can supply it, and an invalid
-    // request value falls back). Carry the server's answer, never the local
-    // default that was sent.
-    permissionMode: agent.permissionMode,
-    createdAt: agent.createdAt,
-    updatedAt: agent.updatedAt,
-    exitedAt: agent.exitedAt,
-    exitReason: agent.exitReason,
-    envPreset: agent.envPreset,
-  };
+  // No manager name: managerId is a UUID, resolvable only against the whole
+  // list, which the fetchSessions below is about to deliver anyway.
+  const session = agentToSession(agent);
   if (onSuccess) {
     onSuccess(session);
   } else {
@@ -701,10 +820,6 @@ export const useStore = create<AppState>()(
         templates: {},
         templatesLoading: false,
         templatesError: null,
-        schedules: {},
-        schedulesLoading: false,
-        schedulesError: null,
-        schedulerStatus: null,
         presets: {},
         presetsLoading: false,
         presetsError: null,
@@ -787,211 +902,46 @@ export const useStore = create<AppState>()(
           set({ activePane: pane });
         },
 
+        // The three query actions below refresh the SHARED poll rather than
+        // issuing a side-channel GET: a post-mutation refetch then updates the
+        // poll's snapshot too, so subscribers aren't left showing pre-mutation
+        // data until their next tick. Each applies the resulting snapshot
+        // itself, which is what keeps them working when nothing is subscribed
+        // (the Sidebar — the only subscriber — unmounts when it is collapsed).
         fetchSessions: async () => {
-          const res = await fetch("/api/agents").catch(() => null);
-          if (!res?.ok) return;
-          // Server returns Agent[] from /api/agents; translate to SessionInfo[]
-          // for legacy dashboard code that still keys off the old shape. The
-          // mapping is mechanical — id, name, status, etc. line up directly.
-          const agents = (await res.json()) as Array<{
-            id: string;
-            name: string;
-            status: "running" | "exited";
-            workingDirectory: string;
-            provider: string;
-            providerSessionId: string;
-            template?: string;
-            managerId: string | null;
-            project?: string;
-            permissionMode?: PermissionMode;
-            createdAt: number;
-            updatedAt: number;
-            exitedAt?: number;
-            exitReason?: "user_killed" | "self_exited" | "crashed";
-            envPreset?: string;
-          }>;
-          // Resolve manager name client-side so the existing UI continues to
-          // surface a human-readable label without an extra round-trip.
-          const byId = new Map(agents.map((a) => [a.id, a]));
-          // SessionInfo.claudeSessionId is the dashboard's stable lookup key
-          // — it's consumed by useAgentStatusById (HierarchyPanel) and the
-          // /api/agents/:id/attach URL builder (resumeSession). For both to
-          // align with /api/agents/tree (which sets node.claudeSessionId =
-          // agent.id as a backward-compat alias), we set it to agent.id
-          // here too. Using providerSessionId would split the key space:
-          // migrated agents (id == providerSessionId) would still work, but
-          // freshly-spawned agents (different UUIDs) would silently drop
-          // status/activity in the org chart card view.
-          const allSessions: SessionInfo[] = agents.map((a) => ({
-            id: a.id,
-            name: a.name,
-            status: a.status,
-            workingDirectory: a.workingDirectory,
-            provider: a.provider,
-            claudeSessionId: a.id,
-            providerSessionId: a.providerSessionId,
-            template: a.template,
-            manager: a.managerId ? byId.get(a.managerId)?.name : undefined,
-            permissionMode: a.permissionMode,
-            createdAt: a.createdAt,
-            updatedAt: a.updatedAt,
-            exitedAt: a.exitedAt,
-            exitReason: a.exitReason,
-            envPreset: a.envPreset,
-          }));
-          // Filter out exited sessions — they have no PTY and would create
-          // broken terminals with perpetual WebSocket reconnect loops.
-          const sessions = allSessions.filter((s) => s.status !== "exited");
-          const exitedSessions = allSessions.filter(
-            (s) => s.status === "exited",
-          );
-          const prev = get().sessions;
-          const unchanged =
-            prev.length === sessions.length &&
-            prev.every(
-              (s, i) =>
-                s.id === sessions[i].id &&
-                s.name === sessions[i].name &&
-                s.status === sessions[i].status &&
-                s.claudeSessionId === sessions[i].claudeSessionId,
-            );
-          const prevExited = get().exitedSessions;
-          const exitedUnchanged =
-            prevExited.length === exitedSessions.length &&
-            prevExited.every((s, i) => s.id === exitedSessions[i].id);
-          if (!unchanged || !exitedUnchanged) {
-            // Prune flat-view order keys whose agent no longer exists so dead
-            // entries don't accumulate for users who never reorder/pin. This
-            // also retires leftover `preview:*` keys from the removed markdown
-            // preview feature. Reorder/pin/unpin also re-freeze, so this only
-            // matters between interactions.
-            const live = new Set<string>(sessions.map(sessionOrderKey));
-            const keepKey = (k: string) => live.has(k);
-            const { pinnedOrder, unpinnedOrder } = get();
-            const prunedPinned = pinnedOrder.filter(keepKey);
-            const prunedUnpinned = unpinnedOrder.filter(keepKey);
-            const orderChanged =
-              prunedPinned.length !== pinnedOrder.length ||
-              prunedUnpinned.length !== unpinnedOrder.length;
-            set({
-              sessions,
-              exitedSessions,
-              sessionsInitialFetchDone: true,
-              ...(orderChanged && {
-                pinnedOrder: prunedPinned,
-                unpinnedOrder: prunedUnpinned,
-              }),
-            });
-
-            const liveIds = new Set(sessions.map((s) => s.id));
-            const { activePane, dvWorkspaces, dvPaneWorkspace } = get();
-
-            // If the pane we're viewing just died, fall back to a live sibling
-            // from its group (or any live session) instead of blanking the dock.
-            // Compute this BEFORE reconcile, which may dissolve the group.
-            if (activePane?.type === "session" && !liveIds.has(activePane.id)) {
-              const fallback = pickActiveFallback(
-                activePane.id,
-                dvWorkspaces,
-                dvPaneWorkspace,
-                sessions.map((s) => s.id),
-              );
-              set(
-                fallback
-                  ? { activePane: fallback, status: "connected" }
-                  : { activePane: null, status: "disconnected" },
-              );
-            }
-
-            // Drop dead members from bound workspaces so surviving members don't
-            // trigger a full teardown/rebuild on every click (see helper).
-            const reconciled = reconcileDeadWorkspaces(
-              dvWorkspaces,
-              dvPaneWorkspace,
-              (paneId) => !SINGLETON_TYPES.has(paneId) && !liveIds.has(paneId),
-            );
-            if (reconciled)
-              set({
-                dvWorkspaces: reconciled.workspaces,
-                dvPaneWorkspace: reconciled.paneWorkspace,
-              });
-          } else if (!get().sessionsInitialFetchDone) {
-            // No change in session arrays (both empty) but this was the
-            // first successful fetch — flip the flag so App.tsx can act
-            // (e.g. auto-open the Create Agent panel for first-run UX).
-            set({ sessionsInitialFetchDone: true });
-          }
+          await agentsPoll.refresh();
+          const { data } = agentsPoll.getSnapshot();
+          if (data) applyAgentsSnapshot(data);
         },
         fetchProjects: async () => {
-          const res = await fetch("/api/projects").catch(() => null);
-          if (!res?.ok) return;
-          const projects: ProjectInfo[] = await res.json();
-          set({ projects });
+          await projectsPoll.refresh();
+          const { data } = projectsPoll.getSnapshot();
+          if (data) applyProjectsSnapshot(data);
         },
         fetchNotifications: async () => {
-          const res = await fetch("/api/hooks").catch(() => null);
-          if (!res?.ok) return;
-          const data = await res.json().catch(() => null);
-          if (!data || typeof data !== "object") return;
-          const counts: Record<string, number> = {};
-          const statuses: Record<
-            string,
-            { status: string; currentTool?: string; toolDetail?: string }
-          > = {};
-          for (const [id, entry] of Object.entries(data)) {
-            const e = entry as {
-              status?: {
-                status: string;
-                currentTool?: string;
-                toolDetail?: string;
-              };
-              unread?: number;
-            };
-            if (e.unread) counts[id] = e.unread;
-            if (e.status) statuses[id] = e.status;
-          }
-          // Desktop notification when an agent needs input and tab isn't focused
-          if (!document.hasFocus()) {
-            const prev = get().agentStatuses;
-            const sessions = get().sessions;
-            for (const [id, s] of Object.entries(statuses)) {
-              if (
-                s.status === "needs_input" &&
-                prev[id]?.status !== "needs_input"
-              ) {
-                const name =
-                  sessions.find((ss) => ss.id === id)?.name ?? "Agent";
-                sendDesktopNotification(name, "Needs your input");
-              }
-            }
-          }
-          const prevCounts = get().notificationCounts;
-          const prevStatuses = get().agentStatuses;
-          const countsChanged = !shallowEqualRecord(counts, prevCounts);
-          const statusesChanged = !shallowEqualRecord(
-            statuses,
-            prevStatuses,
-            (a, b) =>
-              a.status === b.status &&
-              a.currentTool === b.currentTool &&
-              a.toolDetail === b.toolDetail,
-          );
-          if (countsChanged || statusesChanged) {
-            set({ notificationCounts: counts, agentStatuses: statuses });
-          }
+          await statusPoll.refresh();
+          const { data } = statusPoll.getSnapshot();
+          if (data) applyStatusSnapshot(data);
         },
         markNotificationsRead: async (sessionId) => {
-          const res = await fetch(`/api/hooks/${sessionId}/read`, {
-            method: "POST",
-          }).catch(() => null);
-          if (res?.ok) {
-            set({
-              notificationCounts: {
-                ...get().notificationCounts,
-                [sessionId]: 0,
-              },
-            });
+          try {
+            await statusApi.markRead(sessionId);
+          } catch (err) {
+            // Unchanged from the pre-client behavior: a failed mark-read leaves
+            // the badge alone rather than faking a cleared count the next poll
+            // tick would restore.
+            console.warn(
+              `[autonomOS] markNotificationsRead failed for ${sessionId}:`,
+              apiErrorLabel(err),
+            );
+            return;
           }
+          set({
+            notificationCounts: {
+              ...get().notificationCounts,
+              [sessionId]: 0,
+            },
+          });
         },
         createSession: async (workingDirectory = "~", opts) => {
           await spawnSession(
@@ -1045,15 +995,12 @@ export const useStore = create<AppState>()(
           // which re-resolves the template and restores full config.
           if (opts?.isAutonomosAgent) {
             set({ status: "resuming..." });
-            const res = await fetch(`/api/agents/${claudeSessionId}/attach`, {
-              method: "POST",
-            }).catch(() => null);
-            if (!res?.ok) {
-              const err = await res
-                ?.json()
-                .catch(() => ({ error: "Server error" }));
-              const detail =
-                err?.error || err?.detail || `HTTP ${res?.status ?? "network"}`;
+            try {
+              await agentsApi.attach(claudeSessionId);
+            } catch (err) {
+              // ApiError.message is the server's own `error` envelope field
+              // when it sent one, so the surfaced reason is unchanged.
+              const detail = err instanceof Error ? err.message : String(err);
               console.error("Failed to resume autonomOS session:", detail);
               set({ status: `resume failed: ${detail}` });
               return;
@@ -1121,16 +1068,15 @@ export const useStore = create<AppState>()(
           );
         },
         killSession: async (id) => {
-          const res = await fetch(`/api/agents/${id}/kill`, {
-            method: "POST",
-          }).catch(() => null);
           // Only give optimistic feedback if the kill was actually accepted —
           // otherwise the agent is still alive and retargeting would fake a
           // success the next fetchSessions() would silently reverse.
-          if (!res?.ok) {
+          try {
+            await agentsApi.kill(id);
+          } catch (err) {
             console.error(
               `[autonomOS] killSession failed for ${id}:`,
-              res ? `HTTP ${res.status}` : "network error",
+              apiErrorLabel(err),
             );
             await get().fetchSessions();
             return;
@@ -1169,15 +1115,7 @@ export const useStore = create<AppState>()(
           const isInitialLoad = Object.keys(get().templates).length === 0;
           if (isInitialLoad) set({ templatesLoading: true });
           try {
-            const res = await fetch("/api/templates");
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              throw new Error(
-                (body as { error?: string }).error ??
-                  `Server error (${res.status})`,
-              );
-            }
-            const data = (await res.json()) as Record<string, AgentTemplate>;
+            const data = await templatesApi.list();
             set({
               templates: data,
               templatesLoading: false,
@@ -1191,42 +1129,6 @@ export const useStore = create<AppState>()(
           }
         },
 
-        saveTemplate: async (name, template) => {
-          const res = await fetch("/api/templates", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, ...template }),
-          });
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          // Optimistic update — polling will sync from server
-          set((state) => ({
-            templates: { ...state.templates, [name]: template },
-          }));
-        },
-
-        deleteTemplate: async (name) => {
-          const res = await fetch(
-            `/api/templates/${encodeURIComponent(name)}`,
-            { method: "DELETE" },
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          set((state) => {
-            const next = { ...state.templates };
-            delete next[name];
-            return { templates: next };
-          });
-        },
-
         openSchedules: () => {
           get().switchPane({ type: "schedules", id: "schedules" });
         },
@@ -1235,130 +1137,11 @@ export const useStore = create<AppState>()(
           get().switchPane({ type: "presets", id: "presets" });
         },
 
-        fetchSchedules: async () => {
-          const isInitialLoad = Object.keys(get().schedules).length === 0;
-          if (isInitialLoad) set({ schedulesLoading: true });
-          try {
-            const res = await fetch("/api/schedules");
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              throw new Error(
-                (body as { error?: string }).error ??
-                  `Server error (${res.status})`,
-              );
-            }
-            const data = await res.json();
-            set({
-              schedules: data,
-              schedulesLoading: false,
-              schedulesError: null,
-            });
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : "Failed to load schedules";
-            console.warn("[schedules] fetch failed:", message);
-            set({ schedulesLoading: false, schedulesError: message });
-          }
-        },
-
-        deleteSchedule: async (name) => {
-          const res = await fetch(
-            `/api/schedules/${encodeURIComponent(name)}`,
-            { method: "DELETE" },
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          set((state) => {
-            const next = { ...state.schedules };
-            delete next[name];
-            return { schedules: next };
-          });
-        },
-
-        runSchedule: async (name) => {
-          const res = await fetch(
-            `/api/schedules/${encodeURIComponent(name)}/run`,
-            { method: "POST" },
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-        },
-
-        updateSchedule: async (name, partial) => {
-          const res = await fetch(
-            `/api/schedules/${encodeURIComponent(name)}`,
-            {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(partial),
-            },
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          const result = await res.json();
-          if (result.schedule) {
-            set((state) => ({
-              schedules: { ...state.schedules, [name]: result.schedule },
-            }));
-          }
-        },
-
-        fetchSchedulerStatus: async () => {
-          try {
-            const res = await fetch("/api/scheduler/status");
-            if (res.ok) {
-              const data = await res.json();
-              set({ schedulerStatus: data });
-            }
-          } catch {
-            // non-critical
-          }
-        },
-
-        updateSchedulerSettings: async (maxConcurrentRuns) => {
-          const res = await fetch("/api/scheduler/settings", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ maxConcurrentRuns }),
-          });
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          set((state) => ({
-            schedulerStatus: state.schedulerStatus
-              ? { ...state.schedulerStatus, maxConcurrentRuns }
-              : null,
-          }));
-        },
-
         fetchPresets: async () => {
           const isInitialLoad = Object.keys(get().presets).length === 0;
           if (isInitialLoad) set({ presetsLoading: true });
           try {
-            const res = await fetch("/api/env-presets");
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              throw new Error(
-                (body as { error?: string }).error ??
-                  `Server error (${res.status})`,
-              );
-            }
-            const data = (await res.json()) as Record<string, EnvPreset>;
+            const data = await presetsApi.list();
             set({ presets: data, presetsLoading: false, presetsError: null });
           } catch (err) {
             const message =
@@ -1366,63 +1149,6 @@ export const useStore = create<AppState>()(
             console.warn("[presets] fetch failed:", message);
             set({ presetsLoading: false, presetsError: message });
           }
-        },
-
-        createPreset: async (input) => {
-          const res = await fetch("/api/env-presets", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(input),
-          });
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          const preset = (await res.json()) as EnvPreset;
-          set((state) => ({
-            presets: { ...state.presets, [preset.name]: preset },
-          }));
-        },
-
-        updatePreset: async (name, partial) => {
-          const res = await fetch(
-            `/api/env-presets/${encodeURIComponent(name)}`,
-            {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(partial),
-            },
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          const preset = (await res.json()) as EnvPreset;
-          set((state) => ({
-            presets: { ...state.presets, [name]: preset },
-          }));
-        },
-
-        deletePreset: async (name) => {
-          const res = await fetch(
-            `/api/env-presets/${encodeURIComponent(name)}`,
-            { method: "DELETE" },
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(
-              (body as { error?: string }).error ?? `HTTP ${res.status}`,
-            );
-          }
-          set((state) => {
-            const next = { ...state.presets };
-            delete next[name];
-            return { presets: next };
-          });
         },
 
         toggleSidebarViewMode: () => {
@@ -1459,15 +1185,17 @@ export const useStore = create<AppState>()(
         },
 
         removeSession: async (id) => {
-          const res = await fetch(`/api/agents/${id}?force=true`, {
-            method: "DELETE",
-          }).catch(() => null);
-          if (!res?.ok) {
+          try {
+            await agentsApi.remove(id, { force: true });
+          } catch (err) {
             console.error(
               `[removeSession] Failed to remove session ${id}:`,
-              res ? `HTTP ${res.status}` : "network error",
+              apiErrorLabel(err),
             );
-            throw new Error("Failed to remove session");
+            // Rethrow the typed error rather than a generic one: the caller
+            // (the org chart's confirm dialog) keeps its dialog open on any
+            // throw, and the ApiError carries the server's actual reason.
+            throw err;
           }
           await get().fetchSessions();
         },

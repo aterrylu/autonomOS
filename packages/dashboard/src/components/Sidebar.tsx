@@ -6,14 +6,24 @@ import React, {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import type { Poll } from "../api/poll";
+import { agentsPoll, projectsPoll, statusPoll, treePoll } from "../api/polls";
+import { usePoll } from "../api/usePoll";
 import { focusTerminal } from "../hooks/useTerminal";
 import { DRAG_TYPE, encodeDragData } from "../layout/DragContext";
 import type { ActivePane, ProjectInfo, SessionInfo } from "../store";
-import { buildFlatSections, sessionOrderKey, THEMES, useStore } from "../store";
+import {
+  applyAgentsSnapshot,
+  applyProjectsSnapshot,
+  applyStatusSnapshot,
+  buildFlatSections,
+  sessionOrderKey,
+  THEMES,
+  useStore,
+} from "../store";
 import { Codicon } from "./Codicon";
 import {
   mergeOrgWithSessions,
-  type OrgNode,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
 import {
@@ -52,14 +62,11 @@ function useSidebarData() {
 function useSidebarActions() {
   return useStore(
     useShallow((s) => ({
-      fetchSessions: s.fetchSessions,
-      fetchProjects: s.fetchProjects,
       createSession: s.createSession,
       switchPane: s.switchPane,
       reorderFlat: s.reorderFlat,
       pinAgent: s.pinAgent,
       unpinAgent: s.unpinAgent,
-      fetchNotifications: s.fetchNotifications,
       markNotificationsRead: s.markNotificationsRead,
       openOrgChart: s.openOrgChart,
       openTemplates: s.openTemplates,
@@ -78,64 +85,53 @@ type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 type FlatSection = "pinned" | "unpinned";
 
 /**
- * Poll the org chart endpoint, expose a manual refresh trigger, and surface
- * fetch errors so the UI can warn instead of silently hiding agents.
+ * Read the shared org-chart poll and surface fetch errors so the UI can warn
+ * instead of silently hiding agents.
  *
- * `refreshKey` is a monotonic counter — when bumped, the hook immediately
- * refetches. Callers use this to sync org chart refreshes with session changes
- * rather than waiting for the next 5s tick.
+ * `refreshKey` is a monotonic counter — when bumped, the hook forces an
+ * immediate refresh. Callers use this to sync org chart refreshes with session
+ * changes rather than waiting for the next 5s tick.
+ *
+ * This used to run its own 5s timer against `/api/agents/tree?k=<key>` with
+ * `cache: "no-store"`, alongside an identical timer in HierarchyPanel. Both now
+ * subscribe to ONE `treePoll`; the cache-buster is gone because a per-render
+ * query param would have split this consumer off from that shared poll (and the
+ * client's in-flight dedup + the poll's own equality check already make a
+ * proxy-cached response a non-issue).
  */
 function useOrgChartData(refreshKey: number) {
-  const [chart, setChart] = useState<OrgNode[]>([]);
-  /** Tracks whether the most recent fetch succeeded. "unknown" = pre-first-fetch. */
-  const [status, setStatus] = useState<"unknown" | "ok" | "error">("unknown");
+  const { data, error } = usePoll(treePoll);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function fetchChart() {
-      try {
-        // `refreshKey` as query param gives biome a real dependency edge so
-        // the hook re-runs when the key changes. `cache: "no-store"` avoids
-        // relying on proxies to honor cache-busting query params.
-        const res = await fetch(`/api/agents/tree?k=${refreshKey}`, {
-          cache: "no-store",
-        });
-        if (!res.ok) {
-          console.error(
-            "[useOrgChartData] /api/agents/tree returned",
-            res.status,
-            res.statusText,
-          );
-          if (!cancelled) setStatus("error");
-          return;
-        }
-        const data = await res.json();
-        if (cancelled) return;
-        if (Array.isArray(data)) {
-          setChart(data);
-          setStatus("ok");
-        } else {
-          // Defensive: server contract is `OrgNode[]`. A non-array means the
-          // server regressed or auth-gated the endpoint with a 200 + error
-          // envelope — treat as a real failure rather than silently keeping
-          // stale chart state forever.
-          console.error("[useOrgChartData] unexpected response shape", data);
-          setStatus("error");
-        }
-      } catch (err) {
-        console.error("[useOrgChartData] fetch failed", err);
-        if (!cancelled) setStatus("error");
-      }
-    }
-
-    fetchChart();
-    const interval = setInterval(fetchChart, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    // Subscribing already fires an immediate refresh, so the mount value (0)
+    // needs nothing — only a real session change forces an extra fetch.
+    if (refreshKey > 0) void treePoll.refresh();
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (error) {
+      console.error(
+        "[useOrgChartData] /api/agents/tree failed:",
+        error.status,
+        error.message,
+      );
+    } else if (data !== null && !Array.isArray(data)) {
+      console.error("[useOrgChartData] unexpected response shape", data);
+    }
+  }, [error, data]);
+
+  // Defensive: the server contract is `AgentTreeNode[]`. A non-array means the
+  // server regressed or auth-gated the endpoint with a 200 + error envelope —
+  // treat it as a real failure (the degraded banner) rather than an empty chart.
+  const chart = Array.isArray(data) ? data : [];
+  /** Whether the most recent fetch succeeded. "unknown" = pre-first-fetch. */
+  const status: "unknown" | "ok" | "error" = error
+    ? "error"
+    : data === null
+      ? "unknown"
+      : Array.isArray(data)
+        ? "ok"
+        : "error";
 
   return { chart, status };
 }
@@ -187,10 +183,7 @@ export function Sidebar() {
   } = useSidebarData();
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const {
-    fetchSessions,
-    fetchProjects,
     switchPane,
-    fetchNotifications,
     markNotificationsRead,
     openOrgChart,
     openTemplates,
@@ -360,20 +353,30 @@ export function Sidebar() {
     return set;
   }, [sessions]);
 
-  // Poll live sessions every 5s, projects every 30s, notifications every 3s
+  // Feed the store from the shared polls — live sessions every 5s, projects
+  // every 30s, notifications every 3s: the same three cadences the three
+  // setIntervals here used to drive, now one timer per resource shared with
+  // every other subscriber. Subscribing kicks off an immediate refresh, which
+  // is what the old mount-time fetch trio did. The store stays the source of
+  // truth (every selector below reads it); the polls only feed it.
+  //
+  // Scope is deliberately unchanged: the Sidebar unmounts when collapsed, which
+  // stopped all three intervals before and stops all three polls now.
   useEffect(() => {
-    fetchSessions();
-    fetchProjects();
-    fetchNotifications();
-    const sessionsInterval = setInterval(fetchSessions, 5000);
-    const projectsInterval = setInterval(fetchProjects, 30000);
-    const notifInterval = setInterval(fetchNotifications, 3000);
+    const bridge = <T,>(poll: Poll<T>, apply: (data: T) => void) =>
+      poll.subscribe(() => {
+        const { data } = poll.getSnapshot();
+        if (data) apply(data);
+      });
+    const unsubscribes = [
+      bridge(agentsPoll, applyAgentsSnapshot),
+      bridge(projectsPoll, applyProjectsSnapshot),
+      bridge(statusPoll, applyStatusSnapshot),
+    ];
     return () => {
-      clearInterval(sessionsInterval);
-      clearInterval(projectsInterval);
-      clearInterval(notifInterval);
+      for (const unsubscribe of unsubscribes) unsubscribe();
     };
-  }, [fetchSessions, fetchProjects, fetchNotifications]);
+  }, []);
 
   // Drag state — section-scoped. Reordering is confined to within one section;
   // moving between pinned/unpinned is done via the pin/unpin button, not drag.

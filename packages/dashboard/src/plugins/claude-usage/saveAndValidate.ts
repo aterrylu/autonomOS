@@ -1,3 +1,5 @@
+import { settingsApi } from "../../api/config";
+import { ApiError, request } from "../../api/core";
 import type { ErrorKind, RateLimitData } from "./types";
 
 /**
@@ -13,32 +15,32 @@ export type SaveValidateResult =
 const USAGE_ENDPOINT = "/api/plugins/claude-usage";
 
 /** Fetch fresh usage data and classify it. The server keys its usage cache to
- * the session key, so this reflects the key just saved (not a stale entry). */
+ * the session key, so this reflects the key just saved (not a stale entry).
+ * `fresh` carries the old `cache: "no-store"` AND opts out of the client's
+ * in-flight GET dedup — a validation read must never be answered by the usage
+ * poll's request, which may have been issued before the key was written. */
 async function validate(): Promise<SaveValidateResult> {
-  const res = await fetch(USAGE_ENDPOINT, {
-    cache: "no-store",
-  }).catch(() => null);
-  if (!res) {
-    return { kind: "unreachable", message: "Could not reach the server" };
-  }
-  if (!res.ok) {
+  let data: RateLimitData | null;
+  try {
+    data = await request<RateLimitData>(USAGE_ENDPOINT, { fresh: true });
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.unreachable) {
+      return { kind: "unreachable", message: "Could not reach the server" };
+    }
     // The endpoint returns 200 even for credential failures (the error rides
     // in the body). A non-2xx means the server itself faulted — surface its
     // `detail` if present and treat it as transient, not "unreachable".
-    let message = `Usage check failed (HTTP ${res.status})`;
-    try {
-      const body = (await res.json()) as { error?: string; detail?: string };
-      if (body?.error) {
-        message = body.detail ? `${body.error}: ${body.detail}` : body.error;
-      }
-    } catch {}
-    return { kind: "invalid", message, errorKind: "unavailable" };
+    const detail = err.details?.detail;
+    return {
+      kind: "invalid",
+      message:
+        typeof detail === "string" ? `${err.message}: ${detail}` : err.message,
+      errorKind: "unavailable",
+    };
   }
 
-  let data: RateLimitData;
-  try {
-    data = (await res.json()) as RateLimitData;
-  } catch {
+  // A non-JSON body parses to null rather than throwing (see api/core).
+  if (!data) {
     return { kind: "unreachable", message: "Server sent an invalid response" };
   }
 
@@ -78,36 +80,28 @@ export async function saveAndValidate(
   // user walks away believing they stayed on auto-detect, with a broken key
   // silently selected. Default true mirrors the server's default.
   let previousAutoDetect = true;
-  const settingsRes = await fetch("/api/settings").catch(() => null);
-  if (settingsRes?.ok) {
-    try {
-      const settings = (await settingsRes.json()) as {
-        autoDetectClaudeAccount?: boolean;
-      };
-      previousAutoDetect = settings.autoDetectClaudeAccount !== false;
-    } catch {}
+  try {
+    const settings = await settingsApi.get();
+    previousAutoDetect = settings?.autoDetectClaudeAccount !== false;
+  } catch {
+    // Best-effort pre-read; the default above stands.
   }
 
-  const res = await fetch("/api/settings", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  try {
+    await settingsApi.update({
       claudeSessionKey: sessionKey,
       autoDetectClaudeAccount: false,
-    }),
-  }).catch(() => null);
-
-  if (!res?.ok) {
-    let message = res
-      ? `Failed to save (HTTP ${res.status})`
-      : "Could not reach the server";
-    if (res) {
-      try {
-        const body = await res.json();
-        if (body?.error) message = body.error;
-      } catch {}
-    }
-    return { kind: "unreachable", message };
+    });
+  } catch (err) {
+    // ApiError.message is the server's own `error` when it sent one, which is
+    // the message worth showing; otherwise it names the failed operation.
+    return {
+      kind: "unreachable",
+      message:
+        err instanceof ApiError && !err.unreachable
+          ? err.message
+          : "Could not reach the server",
+    };
   }
 
   const result = await validate();
@@ -116,11 +110,9 @@ export async function saveAndValidate(
     // below is still the actionable message; the toggle then shows a stale
     // value until the panel remounts (its settings fetch is latched per
     // mount), which a page reload also fixes.
-    await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ autoDetectClaudeAccount: true }),
-    }).catch(() => null);
+    await settingsApi
+      .update({ autoDetectClaudeAccount: true })
+      .catch(() => null);
   }
   return result;
 }
