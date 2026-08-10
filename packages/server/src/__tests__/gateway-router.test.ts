@@ -235,3 +235,21 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
     unregisterSessionClient(ws);
   });
 });
+
+describe("system-sender reply handling", () => {
+  it("a reply to agent://Scheduler explains the system sender instead of the generic not-found", async () => {
+    const error = await routeMessage(
+      "agent://Scheduler",
+      "ok",
+      "11111111-1111-1111-1111-111111111111",
+    );
+    assert.ok(error, "must not be accepted — nothing exists to deliver to");
+    assert.match(error ?? "", /not an agent/i);
+    assert.match(error ?? "", /scheduler/i);
+    assert.doesNotMatch(
+      error ?? "",
+      /list_agents/,
+      "must not send the agent hunting for a peer that never existed",
+    );
+  });
+});

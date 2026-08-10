@@ -301,6 +301,21 @@ async function routeToAgent(
 
   const resolved = await resolveConnectedAgent(targetName);
   if (!resolved) {
+    // Replying to a SYSTEM sender is a predictable mistake: a scheduled
+    // prompt's from_uri reads agent://Scheduler, which looks addressable.
+    // Name what it actually is instead of returning the generic not-found,
+    // which sends the agent hunting through list_agents for a peer that has
+    // never existed. Checked only AFTER real resolution fails, so an actual
+    // agent named "Scheduler" (discouraged) still receives its messages.
+    const systemName = Object.values(SYSTEM_SENDER_NAMES).find(
+      (n) => n.toLowerCase() === targetName.toLowerCase(),
+    );
+    if (systemName) {
+      return (
+        `"${systemName}" is not an agent — it is the autonomOS cron scheduler, a system sender. ` +
+        "Scheduled prompts need no reply: just do the task they describe; the operator sees your work in your own session."
+      );
+    }
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
     return `Agent "${targetName}" not found or not connected. Use list_agents to see available agents.`;
   }
