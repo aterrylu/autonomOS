@@ -144,17 +144,106 @@ describe("performSourceUpgrade", () => {
     const result = await performSourceUpgrade({
       repoRoot: cloneDir,
       installInfo: makeInstallInfo(),
-      currentVersion: "0.1.0", // behind the 0.2.0 tag we're already on? no: force a real move
+      currentVersion: "0.1.0",
       targetVersion: "0.2.0",
       buildCommand: STUB_BUILD,
     });
-    // Reaching up-to-date/upgraded (anything but the dirty refusal) proves
-    // the artifact drift was restored, not blocked on.
-    assert.notEqual(result.status, "error");
+    assert.equal(result.status, "upgraded");
     assert.equal(
       readFileSync(join(cloneDir, artifact), "utf-8"),
       "// committed artifact v1\n",
     );
+  });
+
+  it("artifact drift plus a REAL tracked edit still refuses, naming only the real edit", async () => {
+    const artifact = "packages/server/src/channel-server/dist.mjs";
+    mkdirSync(join(originDir, "packages/server/src/channel-server"), {
+      recursive: true,
+    });
+    writeFileSync(join(originDir, artifact), "// committed artifact v1\n");
+    writeFileSync(join(originDir, "README.md"), "readme v1\n");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "add artifact + readme");
+    tagRelease("0.2.0");
+    git(cloneDir, "fetch", "--tags", "origin");
+    git(cloneDir, "checkout", "v0.2.0");
+
+    writeFileSync(join(cloneDir, artifact), "// drifted\n"); // exempt
+    writeFileSync(join(cloneDir, "README.md"), "hand edit\n"); // NOT exempt
+
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      targetVersion: "0.2.0",
+      buildCommand: STUB_BUILD,
+    });
+    assert.equal(result.status, "error");
+    const message = result.status === "error" ? result.message : "";
+    assert.match(message, /README\.md/);
+    assert.doesNotMatch(message, /dist\.mjs/);
+  });
+
+  it("recovers to the previous commit even when the FAILED build dirtied a tracked artifact", async () => {
+    // The failure the revert path must survive: esbuild rewrote dist.mjs,
+    // THEN vite failed. Without resetting artifacts before the revert
+    // checkout, git refuses ("local changes would be overwritten") and the
+    // recovery path is broken by the debris of the failure it recovers from.
+    const artifact = "packages/server/src/channel-server/dist.mjs";
+    mkdirSync(join(originDir, "packages/server/src/channel-server"), {
+      recursive: true,
+    });
+    writeFileSync(join(originDir, artifact), "// artifact v1\n");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "artifact v1");
+    git(originDir, "tag", "-f", "v0.1.0"); // re-tag so the clone's base has it
+    tagRelease("0.2.0");
+    // Make the artifact CHANGE between the two releases so a dirty copy
+    // genuinely conflicts with the revert checkout.
+    writeFileSync(join(originDir, artifact), "// artifact v2\n");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "artifact v2");
+    git(originDir, "tag", "-f", "v0.2.0");
+    git(cloneDir, "fetch", "--tags", "--force", "origin");
+    git(cloneDir, "checkout", "v0.1.0");
+
+    const before = git(cloneDir, "rev-parse", "HEAD");
+    const dirtyingFailingBuild = [
+      "sh",
+      "-c",
+      `printf '// rewritten by failed build\\n' > ${artifact}; exit 1`,
+    ];
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      targetVersion: "0.2.0",
+      buildCommand: dirtyingFailingBuild,
+    });
+    assert.equal(result.status, "error");
+    const message = result.status === "error" ? result.message : "";
+    assert.match(message, /returned to its previous commit/);
+    assert.equal(git(cloneDir, "rev-parse", "HEAD"), before);
+  });
+
+  it("gitEnv scrubbing binds: a hostile GIT_DIR in the environment is ignored", async () => {
+    // Inside a git hook GIT_DIR is exported and would point every spawned
+    // git at the OUTER repo. Set it to the ORIGIN fixture and verify the
+    // upgrade still operates on the clone.
+    process.env.GIT_DIR = join(originDir, ".git");
+    try {
+      tagRelease("0.2.0");
+      const result = await performSourceUpgrade({
+        repoRoot: cloneDir,
+        installInfo: makeInstallInfo(),
+        currentVersion: "0.1.0",
+        buildCommand: STUB_BUILD,
+      });
+      assert.equal(result.status, "upgraded");
+      assert.equal(getVersionAt(cloneDir), "0.2.0");
+    } finally {
+      delete process.env.GIT_DIR;
+    }
   });
 
   it("allows untracked files (build output legitimately sits untracked)", async () => {

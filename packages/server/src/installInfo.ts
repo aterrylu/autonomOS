@@ -14,13 +14,12 @@
 // unrecognized layout — resolves to a hard error with instructions, never a
 // guess.
 //
-// Mode "source" (a managed git clone updated by tag checkout) is part of the
-// schema now so a newer install.json loads cleanly here, but this release
-// only performs bundle-mode upgrades — resolution succeeds and the CALLER
-// decides what "source" means (the upgrade command refuses with instructions
-// until source-mode upgrade ships).
+// Mode "source" is a managed git clone updated by tag checkout
+// (sourceUpgrade.ts); mode "bundle" is the vended-tarball install
+// (upgrade.ts). Resolution only names the shape — the CALLER routes to the
+// matching backend.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as pathResolve } from "node:path";
 
 export const INSTALL_JSON = "install.json";
@@ -55,7 +54,12 @@ export type InstallInfo = {
 };
 
 export type ResolvedInstall = {
-  /** Directory the running bundle lives in (contains index.js). */
+  /**
+   * Where the marker was PHYSICALLY found — bundle mode: the bundle dir
+   * (contains index.js); source mode: the managed clone's repo root. This
+   * is ground truth for every filesystem/git operation; the marker's own
+   * `prefix` field is install-time metadata that can go stale.
+   */
   bundleDir: string;
   info: InstallInfo;
   /** Whether the marker was read from disk or inferred from the legacy layout. */
@@ -100,10 +104,14 @@ export function readInstallJson(bundleDir: string): InstallInfo | null {
 }
 
 export function writeInstallJson(bundleDir: string, info: InstallInfo): void {
-  writeFileSync(
-    join(bundleDir, INSTALL_JSON),
-    `${JSON.stringify(info, null, 2)}\n`,
-  );
+  // Write-temp-then-rename: in source mode previousRef in this file is the
+  // ONLY rollback record (bundle mode at least has the physical .previous
+  // dir) — a torn write (crash / ENOSPC mid-write) must not leave
+  // unparseable JSON where the rollback state used to be.
+  const target = join(bundleDir, INSTALL_JSON);
+  const tmp = `${target}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(info, null, 2)}\n`);
+  renameSync(tmp, target);
 }
 
 // How many parent directories the source-marker walk inspects. A managed

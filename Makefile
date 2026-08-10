@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy doctor hero
+.PHONY: dev prod stop restart logs down check fmt deploy doctor hero build
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -63,7 +63,7 @@ prod: build
 	@PORT=$(PROD_PORT) NO_MIGRATE=$(NO_MIGRATE) HOST='$(BIND_HOST)' bash scripts/install-prod-service.sh
 
 # ── build: deps + channel server + dashboard, NO service operations ──
-#   Factored out of `prod` so the source-mode updater (ADR-071) can rebuild a
+#   Factored out of `prod` so the source-mode updater (ADR-077) can rebuild a
 #   managed clone after a tag checkout without touching the supervisor — the
 #   updater owns the restart (out-of-process, health-gated). Everything here
 #   must stay side-effect-free with respect to the running daemon.
@@ -111,7 +111,7 @@ down:
 #
 deploy:
 	@[ -n "$(DEPLOY_HOST)" ] || { echo "Error: Set DEPLOY_HOST in .env or pass it: make deploy DEPLOY_HOST=forge"; exit 1; }
-	@echo "⚠️  make deploy is a private dev tool, NOT a supported install shape (ADR-071)."
+	@echo "⚠️  make deploy is a private dev tool, NOT a supported install shape (ADR-077)."
 	@echo "   It rsyncs a mutable working tree with no git history — no provenance, no"
 	@echo "   'autonomos upgrade', no rollback. For a managed deployment use:"
 	@echo "   scripts/install-source.sh on the target (clone-at-tag, upgradeable)."

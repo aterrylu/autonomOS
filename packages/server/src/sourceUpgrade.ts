@@ -58,19 +58,32 @@ const DEFAULT_BUILD_COMMAND = ["make", "build"] as const;
  * GIT_WORK_TREE / GIT_INDEX_FILE are exported — an inherited GIT_DIR makes
  * every spawned git operate on the OUTER repository regardless of cwd.
  */
+const GIT_ENV_ALLOWLIST = new Set([
+  // Network/auth plumbing a fetch legitimately needs:
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_ASKPASS",
+  "GIT_PROXY_COMMAND",
+  "GIT_SSL_CAINFO",
+  "GIT_SSL_CAPATH",
+  "GIT_TERMINAL_PROMPT",
+]);
+
 function gitEnv(): NodeJS.ProcessEnv {
+  // Allowlist, not denylist: ANY unrecognized GIT_* is scrubbed. The
+  // original 5-key denylist missed GIT_NAMESPACE (redirects what tag --list
+  // sees), GIT_OBJECT_DIRECTORY, GIT_CONFIG_* (config/hook injection), and
+  // whatever git adds next — each a way for the caller's environment to
+  // silently redirect operations away from the managed clone.
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (
-      key === "GIT_DIR" ||
-      key === "GIT_WORK_TREE" ||
-      key === "GIT_INDEX_FILE" ||
-      key === "GIT_COMMON_DIR" ||
-      key === "GIT_PREFIX"
-    ) {
+    if (key.startsWith("GIT_") && !GIT_ENV_ALLOWLIST.has(key)) {
       delete env[key];
     }
   }
+  // Never hang the CLI on an interactive credential prompt — spawnSync has
+  // no timeout; a fetch that wants credentials should fail, not block.
+  env.GIT_TERMINAL_PROMPT = "0";
   return env;
 }
 
@@ -129,6 +142,16 @@ export const BUILD_MUTATED_TRACKED_FILES = [
  */
 export function resetBuildArtifacts(repoRoot: string): void {
   for (const path of BUILD_MUTATED_TRACKED_FILES) {
+    // Say what gets discarded: silently reverting tracked content is the
+    // exact behavior the dirty-tree refusal exists to prevent — these two
+    // paths are exempt because builds regenerate them, but a deliberate
+    // operator edit (e.g. a hand-pinned bun.lock) deserves a trace.
+    const status = git(repoRoot, ["status", "--porcelain", "--", path]);
+    if (status) {
+      console.warn(
+        `[source-upgrade] resetting build-regenerated tracked file to committed state: ${path}`,
+      );
+    }
     git(repoRoot, ["checkout", "--", path]);
   }
 }
@@ -252,7 +275,11 @@ export async function performSourceUpgrade(
     return { status: "error", message: "git rev-parse HEAD failed." };
   }
 
-  const checkout = gitOrError(repoRoot, ["checkout", `v${targetVersion}`]);
+  const checkout = gitOrError(repoRoot, [
+    "checkout",
+    "--detach",
+    `refs/tags/v${targetVersion}`,
+  ]);
   if (!checkout.ok) {
     return {
       status: "error",
@@ -270,6 +297,12 @@ export async function performSourceUpgrade(
     // previous commit" would be true of the source and false of the
     // artifacts — the next daemon respawn would serve a clone with no
     // dashboard build.
+    // The failed build may already have rewritten the tracked artifacts
+    // (esbuild -> dist.mjs runs before vite, the likeliest failure point) —
+    // without this reset the revert checkout itself refuses with "local
+    // changes would be overwritten", breaking the recovery path with the
+    // exact debris of the failure it recovers from.
+    resetBuildArtifacts(repoRoot);
     const revert = gitOrError(repoRoot, ["checkout", previousRef]);
     if (!revert.ok) {
       return {
