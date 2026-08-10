@@ -399,6 +399,63 @@ describe("performSourceRollback", () => {
     assert.equal(getVersionAt(cloneDir), "0.2.0");
   });
 
+  it("clears the failed rollback-build's artifact debris so the printed roll-forward works", async () => {
+    // Mirror of the upgrade flow's debris test: performSourceRollback's
+    // build-failure arm resets build artifacts so the manual
+    // `git checkout <ref> && make build` it prints doesn't refuse over the
+    // failed build's rewrites. Without this pin, a refactor could drop the
+    // reset and the suite would stay green.
+    const artifact = "packages/server/src/channel-server/dist.mjs";
+    mkdirSync(join(originDir, "packages/server/src/channel-server"), {
+      recursive: true,
+    });
+    writeFileSync(join(originDir, artifact), "// artifact v1\n");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "artifact v1");
+    git(originDir, "tag", "-f", "v0.1.0");
+    tagRelease("0.2.0");
+    writeFileSync(join(originDir, artifact), "// artifact v2\n");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "artifact v2");
+    git(originDir, "tag", "-f", "v0.2.0");
+    git(cloneDir, "fetch", "--tags", "--force", "origin");
+    git(cloneDir, "checkout", "v0.1.0");
+
+    await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      targetVersion: "0.2.0",
+      buildCommand: STUB_BUILD,
+    });
+    const markerAfterUpgrade = readInstallJson(cloneDir);
+    assert.ok(markerAfterUpgrade);
+
+    const dirtyingFailingBuild = [
+      "sh",
+      "-c",
+      `printf '// rewritten by failed rollback build\\n' > ${artifact}; exit 1`,
+    ];
+    const result = performSourceRollback(
+      cloneDir,
+      markerAfterUpgrade,
+      dirtyingFailingBuild,
+    );
+    assert.equal(result.status, "error");
+    assert.match(
+      result.status === "error" ? result.message : "",
+      /Roll forward with/,
+    );
+    // The debris was cleared: the artifact matches the checked-out commit
+    // (v0.1.0's content after the rollback checkout), so the printed
+    // roll-forward command won't refuse over local changes.
+    assert.equal(
+      readFileSync(join(cloneDir, artifact), "utf-8"),
+      "// artifact v1\n",
+    );
+    assert.deepEqual(dirtyTrackedFiles(cloneDir), []);
+  });
+
   it("errors when no previous checkout is recorded", () => {
     const result = performSourceRollback(
       cloneDir,
