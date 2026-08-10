@@ -47,7 +47,7 @@ export function findInstalledService(): InstalledService | null {
 
 // systemctl --user needs a user bus; over a non-login shell XDG_RUNTIME_DIR may
 // be unset. Best-effort set it (Linux only) so stop/restart work over ssh.
-function ensureUserBusEnv(): void {
+export function ensureUserBusEnv(): void {
   if (process.platform === "linux" && !process.env.XDG_RUNTIME_DIR) {
     const uid = process.getuid?.() ?? 0;
     process.env.XDG_RUNTIME_DIR = `/run/user/${uid}`;
@@ -62,6 +62,24 @@ export function restartService(svc: InstalledService): RunResult {
     if (kick.ok) return kick;
     // Not currently bootstrapped (e.g. after `autonomos stop`) — load it, which
     // starts it via RunAtLoad.
+    return run("launchctl", ["bootstrap", `gui/${svc.uid}`, svc.serviceFile]);
+  }
+  ensureUserBusEnv();
+  return run("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
+}
+
+/**
+ * Restart that also RE-READS the service file. Required after a unit rewrite
+ * (service-sync drift): on macOS `kickstart -k` restarts the job definition
+ * launchd already has LOADED and never re-reads the plist — only
+ * bootout+bootstrap does. On Linux a plain restart already follows the
+ * daemon-reload the sync issued, so the two restarts are the same command.
+ */
+export function restartServiceReloading(svc: InstalledService): RunResult {
+  if (svc.platform === "darwin") {
+    // bootout may fail if the job isn't currently loaded — that's fine, the
+    // bootstrap below is what re-reads the plist and starts it.
+    run("launchctl", ["bootout", `gui/${svc.uid}/${LAUNCHAGENT_LABEL}`]);
     return run("launchctl", ["bootstrap", `gui/${svc.uid}`, svc.serviceFile]);
   }
   ensureUserBusEnv();
