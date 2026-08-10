@@ -181,8 +181,20 @@ async function runSourceUpgradeFlow(
   );
   // performSourceUpgrade rewrote the marker on disk (previousRef now points
   // at the checkout that was serving) — re-read it rather than using the
-  // pre-upgrade snapshot in `install.info`.
-  const freshMarker = readInstallJson(repoRoot) ?? install.info;
+  // pre-upgrade snapshot in `install.info`. If the re-read FAILS, refuse the
+  // auto-rollback outright: the stale snapshot's previousRef is from the
+  // prior cycle, so substituting it would check out a commit from two
+  // generations back (or falsely claim no rollback state exists).
+  const freshMarker = readInstallJson(repoRoot);
+  if (!freshMarker) {
+    console.error(
+      `✗ Cannot auto-rollback: install.json could not be re-read after the ` +
+        `upgrade. Roll back manually once the marker is repaired:\n` +
+        `  autonomos rollback   (or: git -C ${repoRoot} log to locate the ` +
+        `pre-upgrade commit for v${result.from})`,
+    );
+    return 1;
+  }
   const rollback = performSourceRollback(repoRoot, freshMarker);
   if (rollback.status === "error") {
     console.error(`✗ Automatic rollback also failed: ${rollback.message}`);

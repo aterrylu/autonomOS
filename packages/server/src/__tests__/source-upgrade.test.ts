@@ -329,7 +329,10 @@ describe("helpers", () => {
     tagRelease("0.2.0");
     tagRelease("0.10.0"); // numeric beats lexicographic (0.10 > 0.9-style)
     git(cloneDir, "fetch", "--tags", "origin");
-    assert.equal(latestVersionTag(cloneDir), "0.10.0");
+    assert.deepEqual(latestVersionTag(cloneDir), {
+      ok: true,
+      version: "0.10.0",
+    });
   });
 
   it("dirtyTrackedFiles: tracked modifications listed, untracked excluded", () => {

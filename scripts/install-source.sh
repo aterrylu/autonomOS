@@ -49,7 +49,14 @@ if [[ -d "$CLONE_DIR/.git" ]]; then
   echo "[install-source] Adopting existing clone at $CLONE_DIR"
   # Refuse to adopt a clone with uncommitted tracked changes — the updater
   # will refuse on them forever after, so surface it at install time.
-  DIRTY=$(git -C "$CLONE_DIR" status --porcelain | grep -v '^??' || true)
+  # Two-step: run status first and check ITS exit — `status | grep || true`
+  # would also swallow a FAILING git status (corrupt .git) and adopt a broken
+  # repo as "clean".
+  STATUS_OUT=$(git -C "$CLONE_DIR" status --porcelain) || {
+    echo "Error: git status failed in $CLONE_DIR — repository may be corrupt." >&2
+    exit 1
+  }
+  DIRTY=$(printf '%s' "$STATUS_OUT" | grep -v '^??' || true)
   if [[ -n "$DIRTY" ]]; then
     echo "Error: $CLONE_DIR has uncommitted changes to tracked files:" >&2
     echo "$DIRTY" | sed 's/^/  /' >&2
@@ -67,7 +74,9 @@ fi
 
 # ── pick + checkout the release tag ───────────────────────────────────────
 if [[ -z "$REF" ]]; then
-  REF=$(git -C "$CLONE_DIR" tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+  # `|| true`: zero matches exits grep 1 → pipefail would kill the script
+  # here, making the explanatory error below unreachable.
+  REF=$(git -C "$CLONE_DIR" tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
   [[ -n "$REF" ]] || { echo "Error: no vX.Y.Z release tags found." >&2; exit 1; }
 else
   # A managed clone is pinned to release TAGS — that's the provenance story
@@ -100,6 +109,17 @@ cat > "$CLONE_DIR/install.json" <<EOF
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
+# Validate the marker actually parses: a CLONE_DIR containing a quote or
+# backslash would yield invalid JSON here, the install would print success,
+# and the failure would surface much later as resolveInstall's
+# "Cannot determine install shape" — deferred and misattributed. bun is
+# already a hard requirement of this script.
+(cd "$CLONE_DIR" && bun -e 'JSON.parse(require("fs").readFileSync("install.json", "utf8"))') || {
+  echo "Error: the written install.json is not valid JSON — the clone path" >&2
+  echo "likely contains characters that break the marker ($CLONE_DIR)." >&2
+  echo "Move the clone to a plain path and re-run." >&2
+  exit 1
+}
 echo "[install-source] ✓ Marked $CLONE_DIR as a managed source install"
 
 # install.json must never show up as an untracked file in `git status` UI

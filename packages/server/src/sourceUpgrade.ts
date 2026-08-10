@@ -147,17 +147,23 @@ export function dirtyTrackedFiles(repoRoot: string): string[] | null {
     .map((line) => line.slice(3));
 }
 
-/** Highest semver v* tag known locally (call after a fetch). */
-export function latestVersionTag(repoRoot: string): string | null {
-  const out = git(repoRoot, ["tag", "--list", "v*"]);
-  if (!out) return null;
-  const versions = out
+/**
+ * Highest semver v* tag known locally (call after a fetch). A git execution
+ * failure is distinguished from "no tags" — conflating them made the caller
+ * report "No release tags found" for what could be a broken git.
+ */
+export function latestVersionTag(
+  repoRoot: string,
+): { ok: true; version: string | null } | { ok: false; message: string } {
+  const result = gitOrError(repoRoot, ["tag", "--list", "v*"]);
+  if (!result.ok) return result;
+  const versions = result.stdout
     .split("\n")
     .map((t) => t.trim())
     .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
     .map((t) => t.slice(1))
     .sort(compareSemver);
-  return versions[versions.length - 1] ?? null;
+  return { ok: true, version: versions[versions.length - 1] ?? null };
 }
 
 export async function performSourceUpgrade(
@@ -208,16 +214,24 @@ export async function performSourceUpgrade(
     };
   }
 
-  const targetVersion = opts.targetVersion ?? latestVersionTag(repoRoot);
+  let targetVersion = opts.targetVersion;
   if (!targetVersion) {
-    return {
-      status: "error",
-      message: "No release tags (vX.Y.Z) found in the clone after fetch.",
-    };
-  }
-  if (
-    opts.targetVersion &&
-    !git(repoRoot, ["rev-parse", `v${targetVersion}`])
+    const latest = latestVersionTag(repoRoot);
+    if (!latest.ok) {
+      return {
+        status: "error",
+        message: `git tag listing failed: ${latest.message}`,
+      };
+    }
+    if (!latest.version) {
+      return {
+        status: "error",
+        message: "No release tags (vX.Y.Z) found in the clone after fetch.",
+      };
+    }
+    targetVersion = latest.version;
+  } else if (
+    !git(repoRoot, ["rev-parse", "--verify", `refs/tags/v${targetVersion}`])
   ) {
     return {
       status: "error",
@@ -248,30 +262,66 @@ export async function performSourceUpgrade(
 
   const build = runBuild(repoRoot, opts.buildCommand);
   if (!build.ok) {
-    // A failed build must not leave the clone on a tag it can't serve —
-    // go back to the ref that was running.
+    // A failed build must not leave the clone on a tag it can't serve — go
+    // back to the ref that was running, AND REBUILD THERE: the failed build
+    // may already have destroyed gitignored artifacts (make build rm -rf's
+    // _embedded_dashboard before vite regenerates it), and a git checkout
+    // restores only tracked files. Without the rebuild, "returned to the
+    // previous commit" would be true of the source and false of the
+    // artifacts — the next daemon respawn would serve a clone with no
+    // dashboard build.
     const revert = gitOrError(repoRoot, ["checkout", previousRef]);
+    if (!revert.ok) {
+      return {
+        status: "error",
+        message:
+          `Build failed after checking out v${targetVersion}: ${build.message}\n` +
+          `AND returning to the previous commit failed — the clone is at ` +
+          `v${targetVersion} unbuilt. Recover with: git checkout ${previousRef} && make build`,
+      };
+    }
+    const revertBuild = runBuild(repoRoot, opts.buildCommand);
     return {
       status: "error",
       message:
         `Build failed after checking out v${targetVersion}: ${build.message}\n` +
-        (revert.ok
-          ? `The clone was returned to its previous commit (${previousRef.slice(0, 12)}); ` +
-            `the running daemon was never touched.`
-          : `AND returning to the previous commit failed — the clone is at ` +
-            `v${targetVersion} unbuilt. Recover with: git checkout ${previousRef} && make build`),
+        (revertBuild.ok
+          ? `The clone was returned to its previous commit (${previousRef.slice(0, 12)}) ` +
+            `and rebuilt there; the running daemon was never touched.`
+          : `The clone was returned to its previous commit (${previousRef.slice(0, 12)}), ` +
+            `but REBUILDING there also failed (${revertBuild.message}) — build ` +
+            `artifacts (e.g. the dashboard bundle) may be missing until ` +
+            `\`make build\` succeeds. The running daemon keeps serving from ` +
+            `memory, but do not restart it until the build is repaired.`),
     };
   }
 
   // Marker rewrite AFTER the build succeeds: previousRef is what rollback
   // returns to, and it must only ever point at a state that was serving.
-  writeInstallJson(repoRoot, {
-    ...opts.installInfo,
-    installedBy: "upgrade",
-    installedAt: new Date().toISOString(),
-    previousRef,
-    previousVersion: opts.currentVersion,
-  });
+  // Guarded: a throw here (ENOSPC, EACCES) would escape as a raw stack while
+  // leaving the clone checked out+built at the NEW tag with the OLD cycle's
+  // rollback state — a later rollback would target a commit from two cycles
+  // ago. Report the exact state and recovery instead.
+  try {
+    writeInstallJson(repoRoot, {
+      ...opts.installInfo,
+      installedBy: "upgrade",
+      installedAt: new Date().toISOString(),
+      previousRef,
+      previousVersion: opts.currentVersion,
+    });
+  } catch (err) {
+    return {
+      status: "error",
+      message:
+        `Upgrade is checked out and built at v${targetVersion}, but writing ` +
+        `install.json failed (${err instanceof Error ? err.message : err}). ` +
+        `The daemon was NOT restarted and rollback state was NOT recorded.\n` +
+        `Fix the write (disk space / permissions on ${repoRoot}), then either ` +
+        `re-run \`autonomos upgrade\` or restart manually — the pre-upgrade ` +
+        `commit was ${previousRef.slice(0, 12)}.`,
+    };
+  }
 
   return {
     status: "upgraded",
@@ -297,6 +347,14 @@ export function performSourceRollback(
       message:
         "No previous checkout recorded in install.json — only the state " +
         "displaced by the most recent source-mode upgrade can be rolled back to.",
+    };
+  }
+  if (!existsSync(join(repoRoot, ".git"))) {
+    return {
+      status: "error",
+      message:
+        `${repoRoot} is marked as a source install but is not a git clone ` +
+        `(.git missing). Re-create it with scripts/install-source.sh.`,
     };
   }
 
@@ -345,13 +403,25 @@ export function performSourceRollback(
   const to = getVersionAt(repoRoot) ?? "unknown";
   // Symmetric, like bundle mode: the displaced state becomes the new
   // "previous", so running rollback twice returns to where you started.
-  writeInstallJson(repoRoot, {
-    ...installInfo,
-    installedBy: "rollback",
-    installedAt: new Date().toISOString(),
-    previousRef: currentRef,
-    previousVersion: from,
-  });
+  // Guarded for the same reason as the upgrade flow's marker write.
+  try {
+    writeInstallJson(repoRoot, {
+      ...installInfo,
+      installedBy: "rollback",
+      installedAt: new Date().toISOString(),
+      previousRef: currentRef,
+      previousVersion: from,
+    });
+  } catch (err) {
+    return {
+      status: "error",
+      message:
+        `Rolled back and rebuilt at ${previousRef.slice(0, 12)}, but writing ` +
+        `install.json failed (${err instanceof Error ? err.message : err}) — ` +
+        `roll-forward state was NOT recorded. Fix the write (disk space / ` +
+        `permissions on ${repoRoot}); the displaced commit was ${currentRef.slice(0, 12)}.`,
+    };
+  }
 
   return { status: "rolled-back", from, to };
 }
