@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ApiError, request } from "../../api/core";
 import { THEMES, useStore } from "../../store";
 
 type ServerHealth = "connected" | "disconnected" | "checking";
@@ -27,43 +28,30 @@ function useServerHealth(): ServerHealth {
     let failures = 0;
     let everConnected = false;
 
-    // Deliberately the ONLY REST call in the dashboard still on raw `fetch`
-    // (consolidation ADR-078 routed the rest through api/). This is a liveness
-    // probe, and the client can't express what it needs:
-    //   - It must truly CANCEL a hung request. `request()` accepts a signal but
-    //     never forwards it to fetch — an abort detaches the caller and leaves
-    //     the socket open by design (so one caller can't kill a GET its
-    //     siblings share). Here that would leak an in-flight request every
-    //     2s against a hung server, and once the browser's ~6-per-host
-    //     connection limit fills, later probes queue behind the dead ones
-    //     instead of recovering in ~2s.
-    //   - It must put a real request on the wire each tick, which the client's
-    //     in-flight GET dedup would otherwise coalesce.
-    // Migrate this the day `request()` forwards `signal` to fetch for
-    // non-deduped (`fresh`) requests; until then the probe owns its transport.
+    // A liveness probe has two transport needs the shared GET path deliberately
+    // doesn't provide: each tick must put a REAL request on the wire (in-flight
+    // dedup would coalesce probes behind a hung sibling), and an abort must
+    // truly cancel the socket (a hung server would otherwise accumulate one
+    // leaked request per tick until the browser's ~6-per-host cap wedges every
+    // later probe). `fresh: true` opts out of dedup, and the client forwards
+    // `signal` to fetch on non-deduped requests — abort kills the socket.
     async function probe(): Promise<boolean> {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
       try {
-        const res = await fetch("/api/host", { signal: controller.signal });
-        // A reachable-but-erroring server (5xx/401/…) is "unhealthy" for our
-        // purposes, but leave a breadcrumb so it's distinguishable from "down".
-        if (!res.ok) {
-          console.debug(`Health check got non-ok status: ${res.status}`);
-        }
-        return res.ok;
+        await request("/api/host", { fresh: true, signal: controller.signal });
+        return true;
       } catch (err) {
-        // A timed-out (aborted) probe and a real network failure both mean
-        // "unhealthy", but log them distinctly so an up-but-slow server is
-        // diagnosable from the console rather than looking identical to down.
-        const timedOut =
-          err instanceof DOMException && err.name === "AbortError";
-        console.debug(
-          timedOut
-            ? `Health check timed out after ${PROBE_TIMEOUT_MS}ms`
-            : "Health check failed (network error):",
-          err,
-        );
+        // A timed-out probe, a network failure, and a reachable-but-erroring
+        // server (5xx/401/…) all mean "unhealthy", but log them distinctly so
+        // an up-but-slow server is diagnosable from the console.
+        if (err instanceof ApiError && err.code === "ABORTED") {
+          console.debug(`Health check timed out after ${PROBE_TIMEOUT_MS}ms`);
+        } else if (err instanceof ApiError && !err.unreachable) {
+          console.debug(`Health check got non-ok status: ${err.status}`);
+        } else {
+          console.debug("Health check failed (network error):", err);
+        }
         return false;
       } finally {
         clearTimeout(timeout);

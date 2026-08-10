@@ -21,6 +21,8 @@ import { ConnectionStatusBarItem } from "./ConnectionStatusBarItem";
 let probeOutcome: "ok" | "notok" | "throw" = "ok";
 
 function stubHostFetch(): void {
+  // REAL Response objects — the probe now goes through the api client core,
+  // which reads res.text(); a bare `{ ok }` fake would silently fail parsing.
   vi.stubGlobal(
     "fetch",
     vi.fn((url: unknown) => {
@@ -28,9 +30,11 @@ function stubHostFetch(): void {
       if (u.includes("/api/host")) {
         if (probeOutcome === "throw")
           return Promise.reject(new Error("offline"));
-        return Promise.resolve({ ok: probeOutcome === "ok" } as Response);
+        return Promise.resolve(
+          new Response("{}", { status: probeOutcome === "ok" ? 200 : 500 }),
+        );
       }
-      return Promise.resolve({ ok: true } as Response);
+      return Promise.resolve(new Response("{}", { status: 200 }));
     }),
   );
 }
