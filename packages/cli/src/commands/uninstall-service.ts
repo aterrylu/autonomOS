@@ -13,6 +13,7 @@
 
 import { existsSync, unlinkSync } from "node:fs";
 import { defaultPrefix, getServicePaths } from "../lib/service-paths.js";
+import { systemdUnitName } from "../lib/service-templates.js";
 import { runIgnoring } from "../lib/shell.js";
 
 function parseFlags(argv: readonly string[]): { prefix: string } {
@@ -52,15 +53,19 @@ export async function runUninstallServiceCommand(
 
   // Stop + remove from supervisor first; if those fail it's not fatal,
   // we still want to remove the file.
+  //
+  // DANGER, learned the hard way (three production-daemon kills, see the
+  // test-label ADR): `launchctl unload <file>` reads only the LABEL from the
+  // file and unloads whatever loaded job carries that label — the file's
+  // location is irrelevant, so a test-prefix copy of a production-labeled
+  // plist unloads the REAL daemon. The label in the file comes from
+  // serviceLabel() at render time; a test harness must run every verb under
+  // AUTONOMOS_SERVICE_LABEL so the file it wrote can only ever address the
+  // test job.
   if (process.platform === "darwin") {
     runIgnoring("launchctl", ["unload", paths.serviceFile]);
   } else if (process.platform === "linux") {
-    runIgnoring("systemctl", [
-      "--user",
-      "disable",
-      "--now",
-      "autonomos.service",
-    ]);
+    runIgnoring("systemctl", ["--user", "disable", "--now", systemdUnitName()]);
   }
 
   try {

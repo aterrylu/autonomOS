@@ -72,9 +72,12 @@ function tempService(
 }
 
 describe("round-trip: parse(render(params)) is exact", () => {
-  it("LaunchAgent plist", () => {
+  it("LaunchAgent plist (label recovered too)", () => {
     const recovered = parseLaunchAgentPlist(renderLaunchAgentPlist(params));
-    assert.deepEqual(recovered, params);
+    assert.deepEqual(recovered, {
+      ...params,
+      label: "com.autonomos.daemon",
+    });
   });
 
   it("systemd user unit", () => {

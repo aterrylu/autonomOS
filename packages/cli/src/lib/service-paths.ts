@@ -7,10 +7,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getConfigDir } from "@autonomos/server/configDir.js";
-import {
-  LAUNCHAGENT_FILENAME,
-  SYSTEMD_UNIT_NAME,
-} from "./service-templates.js";
+import { launchAgentFilename, systemdUnitName } from "./service-templates.js";
 
 export type ServicePaths = {
   /** Where the plist or unit file is written */
@@ -27,7 +24,7 @@ export function getServicePaths(prefix: string): ServicePaths {
     const serviceDir = join(prefix, "Library/LaunchAgents");
     return {
       serviceDir,
-      serviceFile: join(serviceDir, LAUNCHAGENT_FILENAME),
+      serviceFile: join(serviceDir, launchAgentFilename()),
       logDir,
     };
   }
@@ -35,7 +32,7 @@ export function getServicePaths(prefix: string): ServicePaths {
     const serviceDir = join(prefix, ".config/systemd/user");
     return {
       serviceDir,
-      serviceFile: join(serviceDir, SYSTEMD_UNIT_NAME),
+      serviceFile: join(serviceDir, systemdUnitName()),
       logDir,
     };
   }

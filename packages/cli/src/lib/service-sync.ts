@@ -51,6 +51,15 @@ export type RecoveredUnitParams = {
   logDir: string;
   home: string;
   path: string;
+  /**
+   * launchd job label (darwin only; systemd units carry their identity in
+   * the FILENAME, not the content). Recovered and preserved like every other
+   * parameter: a heal must never re-address a unit to a different job —
+   * that's how a test-labeled unit stays test-labeled after a heal, keeping
+   * the label the only thing standing between a test harness and the real
+   * daemon (see the test-label ADR).
+   */
+  label?: string;
 };
 
 // Reverse of service-templates' escapeXml. Entity order matters: &amp; must
@@ -72,6 +81,11 @@ function xmlUnescape(s: string): string {
 export function parseLaunchAgentPlist(
   content: string,
 ): RecoveredUnitParams | null {
+  const label = content.match(
+    /<key>Label<\/key>\s*<string>([\s\S]*?)<\/string>/,
+  );
+  if (!label) return null;
+
   const pa = content.match(
     /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/,
   );
@@ -105,7 +119,7 @@ export function parseLaunchAgentPlist(
   const path = kv.get("PATH");
   if (home === undefined || path === undefined) return null;
 
-  return { programArgs, logDir, home, path };
+  return { programArgs, logDir, home, path, label: xmlUnescape(label[1]) };
 }
 
 /**

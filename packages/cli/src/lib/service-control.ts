@@ -11,7 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { defaultPrefix, getServicePaths } from "./service-paths.js";
-import { LAUNCHAGENT_LABEL, SYSTEMD_UNIT_NAME } from "./service-templates.js";
+import { serviceLabel, systemdUnitName } from "./service-templates.js";
 import { type RunResult, run } from "./shell.js";
 
 export type InstalledService = {
@@ -57,7 +57,7 @@ export function ensureUserBusEnv(): void {
 /** Restart the installed service via its supervisor. */
 export function restartService(svc: InstalledService): RunResult {
   if (svc.platform === "darwin") {
-    const target = `gui/${svc.uid}/${LAUNCHAGENT_LABEL}`;
+    const target = `gui/${svc.uid}/${serviceLabel()}`;
     const kick = run("launchctl", ["kickstart", "-k", target]);
     if (kick.ok) return kick;
     // Not currently bootstrapped (e.g. after `autonomos stop`) — load it, which
@@ -65,7 +65,7 @@ export function restartService(svc: InstalledService): RunResult {
     return run("launchctl", ["bootstrap", `gui/${svc.uid}`, svc.serviceFile]);
   }
   ensureUserBusEnv();
-  return run("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
+  return run("systemctl", ["--user", "restart", systemdUnitName()]);
 }
 
 /**
@@ -79,11 +79,11 @@ export function restartServiceReloading(svc: InstalledService): RunResult {
   if (svc.platform === "darwin") {
     // bootout may fail if the job isn't currently loaded — that's fine, the
     // bootstrap below is what re-reads the plist and starts it.
-    run("launchctl", ["bootout", `gui/${svc.uid}/${LAUNCHAGENT_LABEL}`]);
+    run("launchctl", ["bootout", `gui/${svc.uid}/${serviceLabel()}`]);
     return run("launchctl", ["bootstrap", `gui/${svc.uid}`, svc.serviceFile]);
   }
   ensureUserBusEnv();
-  return run("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
+  return run("systemctl", ["--user", "restart", systemdUnitName()]);
 }
 
 /** Stop the installed service so the supervisor won't immediately revive it. */
@@ -91,8 +91,8 @@ export function stopService(svc: InstalledService): RunResult {
   if (svc.platform === "darwin") {
     // bootout removes the job from launchd → KeepAlive can't revive it.
     // `autonomos restart` / `start`'s bootstrap path brings it back.
-    return run("launchctl", ["bootout", `gui/${svc.uid}/${LAUNCHAGENT_LABEL}`]);
+    return run("launchctl", ["bootout", `gui/${svc.uid}/${serviceLabel()}`]);
   }
   ensureUserBusEnv();
-  return run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
+  return run("systemctl", ["--user", "stop", systemdUnitName()]);
 }
