@@ -828,9 +828,13 @@ function poseHook(
       join(server.configDir, "agent-tokens", sessionId),
       "utf8",
     ).trim();
-  } catch {
-    // fall through with an empty header — the 401 warn at the call site names
-    // the agent, which beats throwing here mid-pose-loop
+  } catch (err) {
+    // Named warn so "token file missing/unreadable" is distinguishable from
+    // "server rejected the token" (the call site's 401 handling) — the two
+    // failures need different fixes.
+    console.warn(
+      `pose: could not read agent token file ${join(server.configDir, "agent-tokens", sessionId)}: ${err}`,
+    );
   }
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({ ...event, session_id: sessionId });
@@ -986,8 +990,17 @@ async function stageScene(
     for (const ev of m.pose) {
       try {
         const status = await poseHook(server, socketPath, idOf(m.name), ev);
+        // 401 is a harness bug (bad/missing per-agent token), and a silently
+        // flattened badge ships straight into the committed hero — fail loud,
+        // same philosophy as the turn guard. Other non-200s stay non-fatal.
+        if (status === 401) {
+          throw new Error(
+            `pose ${m.name} → 401: per-agent token rejected — harness auth is broken, refusing to capture with flattened badges`,
+          );
+        }
         if (status !== 200) console.warn(`pose ${m.name} → ${status} (non-fatal)`);
       } catch (err) {
+        if (err instanceof Error && err.message.includes("401")) throw err;
         console.warn(`pose ${m.name} failed (non-fatal): ${err}`);
       }
       await sleep(120);
