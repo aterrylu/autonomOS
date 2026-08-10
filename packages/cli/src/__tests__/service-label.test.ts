@@ -17,6 +17,8 @@
 // rather than "healing" it back to production.
 
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { parseLaunchAgentPlist, planUnitSync } from "../lib/service-sync.js";
 import {
@@ -85,6 +87,43 @@ describe("service identity (AUTONOMOS_SERVICE_LABEL)", () => {
     process.env.AUTONOMOS_SERVICE_LABEL = TEST_LABEL;
     const plist = renderLaunchAgentPlist({ ...params, label: "com.other" });
     assert.equal(plistLabel(plist), "com.other");
+  });
+
+  it("ENFORCEMENT: no CLI source outside service-templates.ts names the production identity", () => {
+    // The review that hardened this PR found `install-service`'s Linux
+    // activation hardcoding `autonomos.service` — under the override it
+    // would have enabled/restarted the PRODUCTION unit while writing a
+    // test-named file. This scan makes that class unrepresentable: the
+    // production label / unit name may appear ONLY in service-templates.ts
+    // (the single identity source). Everything else must go through
+    // serviceLabel()/systemdUnitName()/launchAgentFilename().
+    const root = join(import.meta.dirname, "..");
+    const offenders: string[] = [];
+    const scan = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "__tests__") continue;
+          scan(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".ts")) continue;
+        if (entry.name === "service-templates.ts") continue;
+        const src = readFileSync(full, "utf-8");
+        if (
+          src.includes(DEFAULT_LAUNCHAGENT_LABEL) ||
+          src.includes(DEFAULT_SYSTEMD_UNIT_NAME)
+        ) {
+          offenders.push(full);
+        }
+      }
+    };
+    scan(root);
+    assert.deepEqual(
+      offenders,
+      [],
+      "production service identity hardcoded outside service-templates.ts",
+    );
   });
 
   it("the unit-sync heal PRESERVES a test label — never re-addresses to production", () => {

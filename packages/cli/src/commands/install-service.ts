@@ -36,6 +36,7 @@ import {
 import {
   renderLaunchAgentPlist,
   renderSystemdUserUnit,
+  systemdUnitName,
 } from "../lib/service-templates.js";
 import { runIgnoring, runOrThrow } from "../lib/shell.js";
 
@@ -229,13 +230,18 @@ export async function runInstallServiceCommand(
         // active one, so first-install and re-install both end on the new
         // code. (macOS needs no equivalent: its activation is unload/load,
         // which always cycles.)
-        runOrThrow("systemctl", ["--user", "enable", "autonomos.service"]);
-        runOrThrow("systemctl", ["--user", "restart", "autonomos.service"]);
+        // systemdUnitName(), not a literal: under AUTONOMOS_SERVICE_LABEL
+        // the unit FILE is test-named, and a hardcoded name here would
+        // enable/restart the PRODUCTION unit while claiming success on the
+        // test one — the exact label-collision class ADR-081 exists to kill
+        // (caught in review before it could become incident #4).
+        runOrThrow("systemctl", ["--user", "enable", systemdUnitName()]);
+        runOrThrow("systemctl", ["--user", "restart", systemdUnitName()]);
       } catch (err) {
         console.error(
           err instanceof Error ? err.message : err,
           "\n(Unit file is written; you can enable it manually with " +
-            "`systemctl --user enable --now autonomos.service`)",
+            `\`systemctl --user enable --now ${systemdUnitName()}\`)`,
         );
         return 1;
       }

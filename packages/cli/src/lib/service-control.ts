@@ -68,22 +68,60 @@ export function restartService(svc: InstalledService): RunResult {
   return run("systemctl", ["--user", "restart", systemdUnitName()]);
 }
 
+// Synchronous sleep for the bootstrap retry below — this module is
+// spawnSync-based throughout, so an async sleep has nothing to await it.
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Restart that also RE-READS the service file. Required after a unit rewrite
  * (service-sync drift): on macOS `kickstart -k` restarts the job definition
  * launchd already has LOADED and never re-reads the plist — only
  * bootout+bootstrap does. On Linux a plain restart already follows the
  * daemon-reload the sync issued, so the two restarts are the same command.
+ *
+ * Unlike restartService(), the bootout makes the bootstrap LOAD-BEARING:
+ * between the two calls the job is removed from launchd, so a failed
+ * bootstrap leaves the daemon DOWN, not "still on the old version". Two
+ * consequences: (a) `launchctl bootout` can return before teardown of a
+ * live process completes, making an immediate bootstrap fail with
+ * "Operation already in progress" — so bootstrap is retried on a short
+ * bounded backoff instead of giving up on the first attempt; (b) the caller
+ * must describe a persistent failure as "service may be unloaded — run
+ * autonomos restart", whose bootstrap fallback recovers it (see
+ * apply-bundle.ts).
  */
-export function restartServiceReloading(svc: InstalledService): RunResult {
+export function restartServiceReloading(
+  svc: InstalledService,
+  deps: {
+    runCmd?: (cmd: string, args: readonly string[]) => RunResult;
+    sleep?: (ms: number) => void;
+  } = {},
+): RunResult {
+  const runCmd = deps.runCmd ?? run;
+  const sleep = deps.sleep ?? sleepMs;
   if (svc.platform === "darwin") {
     // bootout may fail if the job isn't currently loaded — that's fine, the
     // bootstrap below is what re-reads the plist and starts it.
-    run("launchctl", ["bootout", `gui/${svc.uid}/${serviceLabel()}`]);
-    return run("launchctl", ["bootstrap", `gui/${svc.uid}`, svc.serviceFile]);
+    runCmd("launchctl", ["bootout", `gui/${svc.uid}/${serviceLabel()}`]);
+    let result = runCmd("launchctl", [
+      "bootstrap",
+      `gui/${svc.uid}`,
+      svc.serviceFile,
+    ]);
+    for (let attempt = 0; !result.ok && attempt < 5; attempt++) {
+      sleep(500);
+      result = runCmd("launchctl", [
+        "bootstrap",
+        `gui/${svc.uid}`,
+        svc.serviceFile,
+      ]);
+    }
+    return result;
   }
   ensureUserBusEnv();
-  return run("systemctl", ["--user", "restart", systemdUnitName()]);
+  return runCmd("systemctl", ["--user", "restart", systemdUnitName()]);
 }
 
 /** Stop the installed service so the supervisor won't immediately revive it. */

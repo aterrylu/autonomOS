@@ -145,11 +145,26 @@ export async function restartDaemonAfterSwap(
       : restartService(svc);
     if (!result.ok) {
       console.warn(`  Supervisor restart failed: ${result.stderr.trim()}`);
-      console.warn(
-        "  The swapped-in version is on disk but was NOT judged — the daemon " +
-          "is likely still running the previous version.",
-      );
-      console.warn("  Restart manually: autonomos restart");
+      if (opts.reloadUnit) {
+        // The reloading restart boots the job OUT before bootstrapping it
+        // back (bootstrap retried on a bounded backoff), so a persistent
+        // failure here means the job may be UNLOADED — the opposite failure
+        // mode of the kickstart path below, and it must be said honestly.
+        console.warn(
+          "  The unit was re-rendered and the job may currently be " +
+            "unloaded (not merely on the old version).",
+        );
+        console.warn(
+          "  Recover with: autonomos restart  (its bootstrap fallback " +
+            "loads the updated unit)",
+        );
+      } else {
+        console.warn(
+          "  The swapped-in version is on disk but was NOT judged — the " +
+            "daemon is likely still running the previous version.",
+        );
+        console.warn("  Restart manually: autonomos restart");
+      }
       return { kind: "restart-failed" };
     }
     const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs);
