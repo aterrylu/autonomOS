@@ -23,7 +23,7 @@ Last updated: 2026-04-14
 - [x] Live/project session sync — green dots, name propagation
 - [x] Plugin system — modular architecture with VSCode-style status bar (ADR-013)
 - [x] Claude Usage plugin — rate limit tracking via claude.ai API (ADR-013)
-- [x] Instant terminal switching — VSCode-style keep-alive, no flash on switch (ADR-015)
+- [x] Instant terminal switching — VSCode-style keep-alive, no flash on switch (ADR-015). Silently regressed when dockview re-created panels on switch (ADR-047 accepted the teardown); restored for real — instance + WS survive teardown, zero bytes re-streamed — in ADR-072 (#316)
 - [x] xterm.js 6 upgrade — native synchronized output support (flicker-free rendering)
 - [x] Auto-persist sessions — survive server restarts, PM2 daemon mode
 - [x] Settings panel — configure API keys, channels, auto-trust toggle
@@ -55,6 +55,7 @@ Last updated: 2026-04-14
 - [x] Tier 1 perf — CSS spinner, polling equality guards, useShallow, rAF debounce (#88)
 - [x] Documentation overhaul — README, CLAUDE.md, AGENTS.md updated for current state (#96)
 - [x] Cron scheduler — Croner-based scheduling engine, 6 MCP tools, REST API, dashboard Schedules pane, isolated + agent execution modes (ADR-026)
+- [x] Terminal render efficiency — keep-alive terminal cache + coalesced reconnect-replay; agent switch re-streams 0 frames (was ~37k/1MB), throttle-immune; L1/L2 perf harness + `AUTONOMOS_PERF` loopback-gated rig (ADR-072, #316)
 
 ## Now — Polish & Daily Driver
 
