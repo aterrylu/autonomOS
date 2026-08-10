@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import type { AgentTreeNode } from "@autonomos/core";
+import { useMemo, useState } from "react";
 import { Tree, TreeNode } from "react-organizational-chart";
 import { useShallow } from "zustand/react/shallow";
+import { treePoll } from "../api/polls";
+import { usePoll } from "../api/usePoll";
 import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { Codicon } from "./Codicon";
@@ -22,17 +25,10 @@ import { ProviderAgentIcon } from "./ui/provider-icon";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
-export interface OrgNode {
-  claudeSessionId: string;
-  name: string;
-  template?: string;
-  project?: string;
-  /** Lifecycle from the server — "running" or "exited". */
-  status: "running" | "exited";
-  /** Provider backing the agent (claude-code / codex / gemini-cli). */
-  provider?: string;
-  children: OrgNode[];
-}
+/** A node of `GET /api/agents/tree`. The shape is declared once in
+ *  @autonomos/core (ADR-078) — this alias keeps the local name the card and
+ *  tree components read. */
+export type OrgNode = AgentTreeNode;
 
 const WORKING_STATUSES: ReadonlySet<AgentStatus> = new Set([
   "working",
@@ -42,48 +38,28 @@ const WORKING_STATUSES: ReadonlySet<AgentStatus> = new Set([
 
 // ── Data fetching ────────────────────────────────────────────────
 
+/**
+ * Read the shared 5s org-chart poll (this panel used to run its own identical
+ * timer next to the Sidebar's — see `treePoll`).
+ *
+ * The three error strings are unchanged, just re-derived from the typed
+ * `ApiError`: status 0 means the request never reached the server, anything
+ * else is the server answering with a failure.
+ */
 export function useOrgChart() {
-  const [chart, setChart] = useState<OrgNode[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, error } = usePoll(treePoll);
 
-  useEffect(() => {
-    let cancelled = false;
+  const chart = Array.isArray(data) ? data : [];
+  const loading = data === null && error === null;
+  const message = error
+    ? error.unreachable
+      ? "Cannot reach server"
+      : `Server error (${error.status})`
+    : data !== null && !Array.isArray(data)
+      ? "Unexpected response format"
+      : null;
 
-    async function fetchChart() {
-      try {
-        const res = await fetch("/api/agents/tree");
-        if (!res.ok) {
-          if (!cancelled) setError(`Server error (${res.status})`);
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          if (Array.isArray(data)) {
-            setChart(data);
-            setError(null);
-          } else {
-            setError("Unexpected response format");
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setError("Cannot reach server");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    fetchChart();
-    const interval = setInterval(fetchChart, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
-
-  return { chart, loading, error };
+  return { chart, loading, error: message };
 }
 
 // ── Status resolver ──────────────────────────────────────────────

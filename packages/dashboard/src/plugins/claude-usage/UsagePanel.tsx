@@ -1,4 +1,7 @@
+import type { MaskedSettings } from "@autonomos/core";
 import { useEffect, useRef, useState } from "react";
+import { settingsApi } from "../../api/config";
+import { isAbort } from "../../api/core";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { saveAndValidate } from "./saveAndValidate";
@@ -271,22 +274,24 @@ function CredentialsSection({
   useEffect(() => {
     if (!expanded || loaded) return;
     const controller = new AbortController();
-    fetch("/api/settings", { signal: controller.signal })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    settingsApi
+      .get({ signal: controller.signal })
       .then((data) => {
-        setMaskedKey(data.claudeSessionKey ?? null);
+        // An older server may omit `autoDetectClaudeAccount` even though the
+        // wire type declares it, and sent `autoDetectClaudeSession` instead.
+        const settings = data as Partial<MaskedSettings> & {
+          autoDetectClaudeSession?: boolean;
+        };
+        setMaskedKey(settings.claudeSessionKey ?? null);
         // Prefer the new key; fall back to the legacy one for older servers.
         setAutoDetect(
-          (data.autoDetectClaudeAccount ?? data.autoDetectClaudeSession) !==
-            false,
+          (settings.autoDetectClaudeAccount ??
+            settings.autoDetectClaudeSession) !== false,
         );
         setLoaded(true);
       })
       .catch((err) => {
-        if (err.name === "AbortError") return;
+        if (isAbort(err)) return;
         setError(
           `Failed to load: ${err instanceof Error ? err.message : "unknown"}`,
         );
@@ -325,12 +330,7 @@ function CredentialsSection({
     const next = !autoDetect;
     setAutoDetect(next); // optimistic
     try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoDetectClaudeAccount: next }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await settingsApi.update({ autoDetectClaudeAccount: next });
       onRefetch?.();
     } catch {
       setAutoDetect(!next); // revert on failure

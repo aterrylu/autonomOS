@@ -1,3 +1,4 @@
+import type { ProviderInfo } from "@autonomos/core";
 import { Hono } from "hono";
 import { getAllProviders } from "../providers/index.js";
 
@@ -8,7 +9,7 @@ const app = new Hono();
  * Used by the dashboard's "Create Agent" panel to show runtime options.
  */
 app.get("/", (c) => {
-  const providers = getAllProviders().map((p) => {
+  const providers: ProviderInfo[] = getAllProviders().map((p) => {
     let installed = false;
     try {
       p.resolveBinary();

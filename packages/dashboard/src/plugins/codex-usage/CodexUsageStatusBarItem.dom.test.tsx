@@ -13,17 +13,20 @@ import type { CodexUsageData } from "./types";
  */
 
 function stubUsage(body: CodexUsageData | null): void {
+  // REAL Response objects: the api client core reads res.text(), which the
+  // old {json} fake lacked — data silently stayed null.
   vi.stubGlobal(
     "fetch",
     vi.fn((url: unknown) => {
       if (String(url).includes("/api/plugins/codex-usage")) {
-        return Promise.resolve({
-          ok: body !== null,
-          status: body !== null ? 200 : 500,
-          json: async () => body,
-        } as Response);
+        return Promise.resolve(
+          new Response(JSON.stringify(body ?? { error: "boom" }), {
+            status: body !== null ? 200 : 500,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+      return Promise.resolve(new Response("{}", { status: 200 }));
     }),
   );
 }

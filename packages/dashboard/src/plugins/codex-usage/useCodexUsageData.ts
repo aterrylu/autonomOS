@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError, request } from "../../api/core";
 import type { CodexUsageData } from "./types";
 
 const POLL_INTERVAL = 60_000;
@@ -11,18 +12,35 @@ export function useCodexUsageData() {
   const [error, setError] = useState<string | null>(null);
   const cancelledRef = useRef(false);
 
+  // Error handling mirrors claude-usage's useUsageData exactly, including
+  // keeping the last data on a failed poll.
   const fetchUsage = useCallback(async () => {
-    const res = await fetch("/api/plugins/codex-usage").catch(() => null);
-    if (cancelledRef.current) return;
-    if (!res?.ok) {
-      setError(res ? `HTTP ${res.status}` : "unreachable");
-      return;
-    }
     try {
-      setData(await res.json());
+      const usage = await request<CodexUsageData>("/api/plugins/codex-usage");
+      if (cancelledRef.current) return;
+      // request() resolves null only for an EMPTY 2xx body (non-JSON now
+      // throws BAD_BODY); guard stays for that edge.
+      if (!usage) {
+        setError("Invalid response");
+        return;
+      }
+      setData(usage);
       setError(null);
-    } catch {
-      setError("Invalid response");
+    } catch (err) {
+      if (cancelledRef.current) return;
+      if (err instanceof ApiError) {
+        setError(
+          err.unreachable
+            ? "unreachable"
+            : // BAD_BODY carries the wire-faithful status 200 — rendering
+              // "HTTP 200" as an error reads as nonsense; keep the old label.
+              err.code === "BAD_BODY"
+              ? "Invalid response"
+              : `HTTP ${err.status}`,
+        );
+      } else {
+        setError("Invalid response");
+      }
     }
   }, []);
 

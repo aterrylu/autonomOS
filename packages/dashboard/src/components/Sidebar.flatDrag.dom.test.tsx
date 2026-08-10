@@ -38,6 +38,7 @@ function stubFetch(ids: string[]) {
     createdAt: 1,
     updatedAt: 1,
   }));
+  // Real `Response` objects — the api client reads the body via `res.text()`.
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
@@ -46,10 +47,9 @@ function stubFetch(ids: string[]) {
       if (u.includes("/api/agents") && !u.includes("/tree")) body = agents;
       else if (u.includes("/api/agents") || u.includes("/api/projects"))
         body = [];
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(body),
-      } as Response);
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { status: 200 }),
+      );
     }),
   );
 }

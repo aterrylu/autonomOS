@@ -12,35 +12,41 @@
  * agent's provider cap, so the button renders exactly when THAT runtime is at
  * its limit — a Claude cap never lights a Codex pane, and Gemini (no cap entry)
  * never shows it. With split panes each pane resolves independently.
+ *
+ * The poll itself is now the shared `createPoll` manager (consolidation
+ * ADR-078) rather than a bespoke timer — same 15s foreground cadence, plus the
+ * visibility gating every poll gets. What createPoll deliberately does NOT own
+ * is the optimistic arm/disarm flip: its state is server data, committed only
+ * by a fetch. So the flip lives here as a one-field OVERLAY layered on top of
+ * the poll's data, and the derived view below is memoized so
+ * `useSyncExternalStore` still sees a stable reference while nothing changed.
  */
 
+import type { UsageCapStatus, UsageQueueSnapshot } from "@autonomos/core";
 import { useCallback, useSyncExternalStore } from "react";
+import { usageQueueApi } from "../api/misc";
+import { createPoll } from "../api/poll";
 
-interface CapStatus {
-  capped: boolean;
-  resetsAt: string | null;
-  /** Label of the limit that's capping (e.g. "5h", "Sonnet 7d") — may name a
-   * window the status bar doesn't render, which is exactly why it's shown. */
-  window: string | null;
-}
-
-interface QueueSnapshot {
+interface QueueView {
   armed: Set<string>;
   /** Per-provider cap state (e.g. "claude-code", "codex"). A provider absent
    * here is not capped / has no usage source. */
-  caps: Record<string, CapStatus>;
+  caps: Record<string, UsageCapStatus>;
 }
 
 const POLL_MS = 15_000;
 
-let snapshot: QueueSnapshot = { armed: new Set(), caps: {} };
-const listeners = new Set<() => void>();
-let timer: ReturnType<typeof setInterval> | null = null;
-let refCount = 0;
+const queuePoll = createPoll<UsageQueueSnapshot>({
+  source: () => usageQueueApi.snapshot(),
+  intervalMs: POLL_MS,
+});
 
-function emit(): void {
-  for (const listener of listeners) listener();
-}
+/** Pending optimistic arm/disarm, shown INSTEAD of the poll's armed set until
+ * the reconciling refresh lands. `null` = show server truth. */
+let optimisticArmed: Set<string> | null = null;
+/** Subscribers to notify when the overlay flips — poll changes are delivered
+ * by the poll's own subscription, which every listener also holds. */
+const overlayListeners = new Set<() => void>();
 
 function sameSet(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
@@ -49,8 +55,8 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
 }
 
 function sameCaps(
-  a: Record<string, CapStatus>,
-  b: Record<string, CapStatus>,
+  a: Record<string, UsageCapStatus>,
+  b: Record<string, UsageCapStatus>,
 ): boolean {
   const ak = Object.keys(a);
   const bk = Object.keys(b);
@@ -67,54 +73,39 @@ function sameCaps(
   return true;
 }
 
-/** Replace the snapshot only on a real change, so `useSyncExternalStore` keeps a
- * stable reference and avoids spurious re-renders. */
-function commit(next: QueueSnapshot): void {
-  if (
-    sameSet(next.armed, snapshot.armed) &&
-    sameCaps(next.caps, snapshot.caps)
-  ) {
-    return;
-  }
-  snapshot = next;
-  emit();
+// Memoized derivation of (poll data + overlay) → the view components read.
+// Two layers of stability, both required by useSyncExternalStore: skip the
+// work when neither input moved, and keep the OLD object when the recomputed
+// view is equal anyway (the poll's JSON equality can't see that a reordered
+// `armed` array is the same set).
+let lastData: UsageQueueSnapshot | null = null;
+let lastOverlay: Set<string> | null = null;
+let view: QueueView = { armed: new Set(), caps: {} };
+
+function getSnapshot(): QueueView {
+  const { data } = queuePoll.getSnapshot();
+  if (data === lastData && optimisticArmed === lastOverlay) return view;
+  lastData = data;
+  lastOverlay = optimisticArmed;
+  const armed = optimisticArmed ?? new Set(data?.armed ?? []);
+  const caps = data?.caps ?? {};
+  if (sameSet(armed, view.armed) && sameCaps(caps, view.caps)) return view;
+  view = { armed, caps };
+  return view;
 }
 
-async function refresh(): Promise<void> {
-  const res = await fetch("/api/usage-queue").catch(() => null);
-  if (!res?.ok) return;
-  let data: { armed?: string[]; caps?: Record<string, CapStatus> };
-  try {
-    data = await res.json();
-  } catch {
-    return;
-  }
-  commit({
-    armed: new Set(data.armed ?? []),
-    caps: data.caps ?? {},
-  });
+function setOptimisticArmed(next: Set<string> | null): void {
+  optimisticArmed = next;
+  for (const listener of overlayListeners) listener();
 }
 
 function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  refCount += 1;
-  if (!timer) {
-    void refresh();
-    timer = setInterval(() => void refresh(), POLL_MS);
-  }
+  overlayListeners.add(listener);
+  const unsubscribePoll = queuePoll.subscribe(listener);
   return () => {
-    listeners.delete(listener);
-    refCount -= 1;
-    if (refCount <= 0 && timer) {
-      clearInterval(timer);
-      timer = null;
-      refCount = 0;
-    }
+    overlayListeners.delete(listener);
+    unsubscribePoll();
   };
-}
-
-function getSnapshot(): QueueSnapshot {
-  return snapshot;
 }
 
 export interface UsageQueuePane {
@@ -143,28 +134,28 @@ export function useUsageQueue(
   const cap = s.caps[provider];
 
   const toggle = useCallback(async () => {
-    const arming = !snapshot.armed.has(sessionId);
+    const current =
+      optimisticArmed ?? new Set(queuePoll.getSnapshot().data?.armed ?? []);
+    const arming = !current.has(sessionId);
     // Optimistic flip so the button responds instantly.
-    const optimistic = new Set(snapshot.armed);
+    const optimistic = new Set(current);
     if (arming) optimistic.add(sessionId);
     else optimistic.delete(sessionId);
-    commit({ ...snapshot, armed: optimistic });
+    setOptimisticArmed(optimistic);
 
-    const res = await fetch(`/api/usage-queue/${sessionId}`, {
-      method: arming ? "POST" : "DELETE",
-    }).catch(() => null);
-
-    if (!res?.ok) {
-      // The server never confirmed — undo the optimistic flip. Don't leave the
-      // button claiming a state the server doesn't hold.
-      const reverted = new Set(snapshot.armed);
-      if (arming) reverted.delete(sessionId);
-      else reverted.add(sessionId);
-      commit({ ...snapshot, armed: reverted });
+    try {
+      if (arming) await usageQueueApi.arm(sessionId);
+      else await usageQueueApi.disarm(sessionId);
+    } catch {
+      // The server never confirmed — drop the overlay. Don't leave the button
+      // claiming a state the server doesn't hold.
+      setOptimisticArmed(null);
       return;
     }
-    // Confirmed — reconcile with server truth.
-    await refresh();
+    // Confirmed — reconcile with server truth, and only THEN drop the overlay,
+    // so the button never flashes its pre-toggle value in between.
+    await queuePoll.refresh();
+    setOptimisticArmed(null);
   }, [sessionId]);
 
   return {

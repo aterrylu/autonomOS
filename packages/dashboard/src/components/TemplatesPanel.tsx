@@ -3,8 +3,10 @@ import {
   DEFAULT_PERMISSION_MODE,
   type PermissionMode,
 } from "@autonomos/core";
-import { useEffect, useMemo, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { useMemo, useState } from "react";
+import { templatesApi } from "../api/config";
+import { templatesPoll } from "../api/polls";
+import { usePoll } from "../api/usePoll";
 import { useUndoableTextValue } from "../hooks/useUndoableTextValue";
 import { THEMES, useStore } from "../store";
 import { PermissionModeSelect } from "./PermissionModeSelect";
@@ -19,6 +21,11 @@ import { PermissionModeSelect } from "./PermissionModeSelect";
  * Running agent count is derived from live sessions whose `template`
  * field matches the template name. Templates are immutable snapshots
  * once an agent is spawned — edits only affect newly spawned agents.
+ *
+ * Templates come from the shared `templatesPoll` (10s, the panel's old
+ * cadence — it keeps the running counts fresh). Save/delete reconcile by
+ * awaiting `templatesPoll.refresh()` before the editor closes, so the list the
+ * user lands back on already reflects the write.
  */
 
 // ── Types ────────────────────────────────────────────────────────
@@ -309,12 +316,6 @@ function EditorView({
 }: EditorViewProps) {
   const runningCounts = useRunningAgentsByTemplate();
   const runningCount = runningCounts[initialName] ?? 0;
-  const { saveTemplate, deleteTemplate } = useStore(
-    useShallow((s) => ({
-      saveTemplate: s.saveTemplate,
-      deleteTemplate: s.deleteTemplate,
-    })),
-  );
 
   const [name, setName] = useState(initialName);
   const [role, setRole] = useState(template?.role ?? "");
@@ -360,7 +361,10 @@ function EditorView({
         permissionMode,
         ...(model.trim() ? { model: model.trim() } : {}),
       };
-      await saveTemplate(name.trim(), payload);
+      await templatesApi.save(name.trim(), payload);
+      // Reconcile while the button still reads "Saving…", so the list behind
+      // the editor is already truthful when we navigate back to it.
+      await templatesPoll.refresh();
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
@@ -373,7 +377,8 @@ function EditorView({
     if (!existing) return;
     setSubmitting(true);
     try {
-      await deleteTemplate(initialName);
+      await templatesApi.remove(initialName);
+      await templatesPoll.refresh();
       setSubmitting(false);
       onSaved();
     } catch (err) {
@@ -620,23 +625,20 @@ function EditorView({
 export function TemplatesPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const templates = useStore((s) => s.templates);
-  const templatesLoading = useStore((s) => s.templatesLoading);
-  const templatesError = useStore((s) => s.templatesError);
-  const fetchTemplates = useStore((s) => s.fetchTemplates);
+  const { data, error } = usePoll(templatesPoll);
+
+  const templates = data ?? {};
+  // Pre-first-response only, as before; a later failure keeps the last list
+  // on screen and shows the error beside it.
+  const templatesLoading = data === null && error === null;
+  const templatesError = error?.message ?? null;
 
   const [mode, setMode] = useState<PanelMode>({ kind: "list" });
 
-  // Initial fetch + poll every 10s so running counts stay fresh
-  useEffect(() => {
-    fetchTemplates();
-    const interval = setInterval(fetchTemplates, 10000);
-    return () => clearInterval(interval);
-  }, [fetchTemplates]);
-
+  // The editor already refreshed the poll before calling back, so this only
+  // has to switch views.
   const handleSaved = () => {
     setMode({ kind: "list" });
-    fetchTemplates();
   };
 
   return (

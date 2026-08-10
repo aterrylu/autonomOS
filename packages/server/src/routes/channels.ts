@@ -5,17 +5,13 @@
  * subprocess is needed anymore.
  */
 
+import type { ChannelStatusEntry } from "@autonomos/core";
 import { Hono } from "hono";
-import { type ChannelStatus, KNOWN_CHANNELS } from "../channels.js";
+import { KNOWN_CHANNELS } from "../channels.js";
 
-export interface ChannelStatusEntry {
-  id: string;
-  label: string;
-  icon: string;
-  status: ChannelStatus;
-  /** Actionable command the user can run to reach "ok". */
-  fix: string | null;
-}
+// Wire shape lives in @autonomos/core (types/api.ts) — one declaration
+// shared with the dashboard client.
+export type { ChannelStatusEntry } from "@autonomos/core";
 
 export function getChannelStatuses(): ChannelStatusEntry[] {
   return KNOWN_CHANNELS.map((ch) => ({

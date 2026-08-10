@@ -29,5 +29,3 @@ export const CHANNEL_ID_RE = /^server:[^:@\s]+$/;
 export function isValidChannelId(id: string): boolean {
   return CHANNEL_ID_RE.test(id);
 }
-
-export type ChannelStatus = "ok" | "disabled" | "not-installed" | "unknown";

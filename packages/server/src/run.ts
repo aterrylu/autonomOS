@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
+import type { HostInfo } from "@autonomos/core";
 import { createAdaptorServer, serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
@@ -360,7 +361,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   internalApp.use("/mcp", requireAuth);
 
   app.get("/api/host", (c) =>
-    c.json({ hostname: hostname(), dashboard: dashboardBuild }),
+    c.json({
+      hostname: hostname(),
+      dashboard: dashboardBuild,
+    } satisfies HostInfo),
   );
 
   // Hook INGEST is internal-only; the hook READ surface stays public because

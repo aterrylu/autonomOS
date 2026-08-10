@@ -8,15 +8,17 @@ import { NotificationBell } from "./NotificationBell";
 
 // The panel fetches /api/hooks/notifications on mount. Stub it so the test is
 // hermetic (no real network) and deterministic — we only care about the bell's
-// toggle behavior, not the panel's data.
+// toggle behavior, not the panel's data. A real `Response` (not an `{ ok, json }`
+// duck type) because the api client reads the body via `res.text()`.
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ notifications: [], totalUnread: 0 }),
-      } as Response),
+      Promise.resolve(
+        new Response(JSON.stringify({ notifications: [], totalUnread: 0 }), {
+          status: 200,
+        }),
+      ),
     ),
   );
 });

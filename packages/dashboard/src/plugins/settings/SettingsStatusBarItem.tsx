@@ -1,19 +1,18 @@
+import type {
+  ChannelStatus,
+  ChannelStatusEntry,
+  MaskedSettings,
+} from "@autonomos/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { agentsApi } from "../../api/agents";
+import { channelsApi, settingsApi } from "../../api/config";
+import { ApiError } from "../../api/core";
 import { Codicon, type CodiconName } from "../../components/Codicon";
 import { PermissionModeSelect } from "../../components/PermissionModeSelect";
 import { AgentStatusIcon } from "../../components/ui/agent-status-icon";
 import { ProviderAgentIcon } from "../../components/ui/provider-icon";
 import { type AgentIconStyle, THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
-
-interface MaskedSettings {
-  claudeSessionKey: string | null;
-  channels: string[];
-  autoTrust: boolean;
-  updateCheck: boolean;
-  customEnvVars: Record<string, string>;
-  statusLine: { enabled: boolean };
-}
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
@@ -47,16 +46,6 @@ function ToggleSwitch({
       />
     </div>
   );
-}
-
-type ChannelStatus = "ok" | "disabled" | "not-installed" | "unknown";
-
-interface ChannelStatusEntry {
-  id: string;
-  label: string;
-  icon: string;
-  status: ChannelStatus;
-  fix: string | null;
 }
 
 function channelStatusLabel(status: ChannelStatus): string | null {
@@ -277,12 +266,7 @@ function RestartAllButton({ page }: { page: PageTheme }) {
     setState("restarting");
     setError(null);
     try {
-      const res = await fetch("/api/agents/restart-all", { method: "POST" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { idMap, failures } = (await res.json()) as {
-        idMap?: Record<string, string>;
-        failures?: Array<{ id: string; name: string; error: string }>;
-      };
+      const { idMap, failures } = await agentsApi.restartAll();
       if (idMap && Object.keys(idMap).length > 0) {
         useStore.getState().remapSessionIds(idMap);
       }
@@ -527,21 +511,15 @@ export function SettingsPanel({
   const toggleSetting = useCallback(
     async (key: keyof MaskedSettings, newVal: unknown) => {
       try {
-        const res = await fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [key]: newVal }),
-        });
-        if (res.ok) {
-          const updated: MaskedSettings = await res.json();
-          setSettings(updated);
-          setSaved(true);
-          setTimeout(() => setSaved(false), 2000);
-        } else {
-          setError(`Toggle failed (HTTP ${res.status})`);
-        }
-      } catch {
-        setError("Could not reach server");
+        setSettings(await settingsApi.update({ [key]: newVal }));
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      } catch (err) {
+        setError(
+          err instanceof ApiError && !err.unreachable
+            ? `Toggle failed (HTTP ${err.status})`
+            : "Could not reach server",
+        );
       }
     },
     [],
@@ -549,9 +527,7 @@ export function SettingsPanel({
 
   const refreshChannelStatuses = useCallback(async () => {
     try {
-      const r = await fetch("/api/channels/status");
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data: { channels: ChannelStatusEntry[] } = await r.json();
+      const data = await channelsApi.status();
       setChannelStatuses(data.channels);
     } catch {
       // Leave channelStatuses null — the panel shows its loading
@@ -562,12 +538,9 @@ export function SettingsPanel({
   }, []);
 
   useEffect(() => {
-    fetch("/api/settings")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: MaskedSettings) => {
+    settingsApi
+      .get()
+      .then((data) => {
         setSettings(data);
         setLoaded(true);
       })
@@ -602,26 +575,7 @@ export function SettingsPanel({
         }
         body.customEnvVars = vars;
       }
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        // Surface the actionable error message the server returns
-        // (e.g. "Refusing to save channels that would silently no-op...").
-        const data = await res.json().catch(() => null);
-        setError(
-          data && typeof data.error === "string"
-            ? data.error
-            : `Failed to save (HTTP ${res.status})`,
-        );
-        // Plugin state may have flipped since the panel opened — refresh
-        // so the banner error lines up with what the toggles show.
-        refreshChannelStatuses();
-        return;
-      }
-      const updated: MaskedSettings = await res.json();
+      const updated = await settingsApi.update(body);
       setSettings(updated);
       setPending({});
       setPendingChannels(null);
@@ -629,6 +583,16 @@ export function SettingsPanel({
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
+      if (err instanceof ApiError && !err.unreachable) {
+        // Surface the actionable error message the server returns
+        // (e.g. "Refusing to save channels that would silently no-op...").
+        // ApiError.message already prefers the server's `error` field.
+        setError(err.message);
+        // Plugin state may have flipped since the panel opened — refresh
+        // so the banner error lines up with what the toggles show.
+        refreshChannelStatuses();
+        return;
+      }
       console.error("Failed to save settings:", err);
       setError("Could not reach server");
     } finally {

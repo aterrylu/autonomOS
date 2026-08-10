@@ -1,19 +1,13 @@
+import type { AgentActivityStatus } from "@autonomos/core";
 import { AnimatePresence, motion } from "framer-motion";
 
 /**
- * Agent status types derived from Claude Code hook events.
+ * Alias of the core wire union — this file used to keep a byte-identical
+ * hand copy, so a new activity status type-checked everywhere while
+ * rendering a blank icon. Importing the source means a new state shows up
+ * here as a compile-visible gap instead.
  */
-export type AgentStatus =
-  | "unknown"
-  | "ready"
-  | "working"
-  | "tool_running"
-  | "idle"
-  | "needs_input"
-  | "error"
-  | "compacting"
-  | "orchestrating"
-  | "stopped";
+export type AgentStatus = AgentActivityStatus;
 
 export type StatusCategory =
   | "completed"

@@ -7,6 +7,7 @@
  */
 
 import {
+  type AgentTreeNode,
   type ExitReason,
   isExitReason,
   type PermissionMode,
@@ -102,29 +103,11 @@ agentsRouter.get("/", (c) => {
   return c.json(listAgents());
 });
 
-/** Node shape returned by `/api/agents/tree`. The `claudeSessionId` alias
- *  is kept for dashboard-side compatibility with the legacy OrgNode shape
- *  that pre-dates the Agent/Session merger. */
-interface AgentTreeApiNode {
-  id: string;
-  claudeSessionId: string;
-  name: string;
-  template?: string;
-  project?: string;
-  status: string;
-  provider: string;
-  /** Each agent's OWN resolved mode. Included because this endpoint is how
-   *  external MCP clients see the fleet, and omitting it left them unable to
-   *  tell a supervised agent from a fully autonomous one. */
-  permissionMode: PermissionMode;
-  children: AgentTreeApiNode[];
-}
-
 // Tree-shape variant for clients that can't build the tree themselves
 // (e.g. external MCP clients). Same data, just nested by managerId.
 agentsRouter.get("/tree", (c) => {
   const includeExited = c.req.query("includeExited") === "true";
-  const tree = buildAgentTree<AgentTreeApiNode>({
+  const tree = buildAgentTree<AgentTreeNode>({
     includeExited,
     mapNode: (a) => ({
       id: a.id,

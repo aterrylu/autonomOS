@@ -11,12 +11,15 @@ import { isCredentialError } from "./types";
 
 type Json = Record<string, unknown>;
 
+// The api client reads every body through `res.text()` + JSON.parse (so a
+// non-JSON body degrades to null instead of throwing), so these stubs expose
+// text(), not json().
 function jsonResponse(status: number, body: Json): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: async () => body,
-  } as Response;
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
 }
 
 interface RecordedCall {

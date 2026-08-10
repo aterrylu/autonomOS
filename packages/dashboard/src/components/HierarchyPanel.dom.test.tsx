@@ -12,6 +12,9 @@ import { HierarchyPanel } from "./HierarchyPanel";
  * status overlay/activity is sourced from the Zustand store, which we seed.
  */
 
+/** Real `Response` objects, not `{ ok, json }` duck types: the api client reads
+ *  the body via `res.text()`, so a partial stub would fail the parse rather
+ *  than the assertion under test. */
 function stubTreeFetch(impl: () => Promise<unknown>) {
   vi.stubGlobal(
     "fetch",
@@ -19,7 +22,7 @@ function stubTreeFetch(impl: () => Promise<unknown>) {
       if (typeof url === "string" && url.includes("/api/agents/tree")) {
         return impl();
       }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      return Promise.resolve(new Response("{}", { status: 200 }));
     }),
   );
 }
@@ -39,21 +42,14 @@ afterEach(() => {
 
 describe("HierarchyPanel", () => {
   it("shows the empty-state guidance when no agents are running", async () => {
-    stubTreeFetch(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve([]),
-      } as Response),
-    );
+    stubTreeFetch(() => Promise.resolve(new Response("[]", { status: 200 })));
     render(<HierarchyPanel />);
     expect(await screen.findByText(/no agents running/i)).toBeInTheDocument();
     expect(screen.getByText(/set_manager\(\)/i)).toBeInTheDocument();
   });
 
   it("shows an error state with retry copy when the server returns non-ok", async () => {
-    stubTreeFetch(() =>
-      Promise.resolve({ ok: false, status: 500 } as Response),
-    );
+    stubTreeFetch(() => Promise.resolve(new Response(null, { status: 500 })));
     render(<HierarchyPanel />);
     expect(
       await screen.findByText(/server error \(500\)/i),
@@ -69,10 +65,9 @@ describe("HierarchyPanel", () => {
 
   it("renders an agent card with name, template and status for a returned tree", async () => {
     stubTreeFetch(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve([
+      Promise.resolve(
+        new Response(
+          JSON.stringify([
             {
               claudeSessionId: "sess-1",
               name: "Dispatcher",
@@ -81,7 +76,9 @@ describe("HierarchyPanel", () => {
               children: [],
             },
           ]),
-      } as Response),
+          { status: 200 },
+        ),
+      ),
     );
 
     // Seed the activity status looked up by claudeSessionId.

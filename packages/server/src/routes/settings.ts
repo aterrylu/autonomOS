@@ -1,3 +1,4 @@
+import type { MaskedSettings } from "@autonomos/core";
 import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
@@ -21,7 +22,7 @@ function redact(value: string | undefined): string | null {
   return `••••${value.slice(-4)}`;
 }
 
-function maskSettings(settings: AppSettings) {
+function maskSettings(settings: AppSettings): MaskedSettings {
   return {
     claudeSessionKey: redact(settings.claudeSessionKey),
     autoDetectClaudeAccount: isAutoDetectAccountEnabled(settings),

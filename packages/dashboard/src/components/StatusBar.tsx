@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { hostApi } from "../api/misc";
 import { plugins } from "../plugins/registry";
 import { SettingsPanel } from "../plugins/settings/SettingsStatusBarItem";
 import type { StatusBarItem } from "../plugins/types";
@@ -17,19 +18,17 @@ export function StatusBar() {
   const badgeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    fetch("/api/host")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d) => {
-        setHost(d.hostname ?? "unknown");
+    hostApi
+      .get()
+      .then((info) => {
+        setHost(info.hostname ?? "unknown");
         // Surface a stale dashboard (deploy-while-open, or a stale-serve) instead
         // of silently running an old bundle. Server reports its served bundle id.
         const loaded = getLoadedDashboardBuildId();
-        if (isDashboardStale(loaded, d.dashboard?.build)) {
+        const served = info.dashboard?.build ?? null;
+        if (isDashboardStale(loaded, served)) {
           console.warn(
-            `Dashboard is out of date: this tab loaded ${loaded}, but the server is serving ${d.dashboard.build}. Reload to update.`,
+            `Dashboard is out of date: this tab loaded ${loaded}, but the server is serving ${served}. Reload to update.`,
           );
         }
       })

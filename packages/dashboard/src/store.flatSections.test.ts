@@ -253,13 +253,14 @@ describe("fetchSessions prune (pinned agent exits)", () => {
       pinnedOrder: ["dead"],
       unpinnedOrder: ["alive"],
     });
+    // A real `Response` — the api client reads the body via `res.text()`, so an
+    // `{ ok, json }` duck type would fail the parse instead of the assertion.
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) =>
-        Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve(
+        Promise.resolve(
+          new Response(
+            JSON.stringify(
               typeof url === "string" && url.includes("/api/agents")
                 ? [
                     {
@@ -274,7 +275,9 @@ describe("fetchSessions prune (pinned agent exits)", () => {
                   ]
                 : {},
             ),
-        } as Response),
+            { status: 200 },
+          ),
+        ),
       ),
     );
 

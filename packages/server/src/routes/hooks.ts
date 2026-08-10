@@ -1,7 +1,14 @@
+import type {
+  AgentActivityState,
+  AgentActivityStatus,
+  AgentStatusMap,
+  NotificationFeed,
+} from "@autonomos/core";
 import { Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents } from "../agents/store.js";
+import { emitAgentDelta } from "../events/agents.js";
 import { getProvider } from "../providers/index.js";
 
 /**
@@ -43,31 +50,12 @@ export interface SessionNotification {
   id?: string;
 }
 
-export type AgentStatus =
-  | "unknown"
-  | "ready"
-  | "working"
-  | "tool_running"
-  | "idle"
-  | "needs_input"
-  | "error"
-  | "compacting"
-  | "orchestrating"
-  | "stopped";
-
-export interface AgentState {
-  status: AgentStatus;
-  currentTool?: string;
-  toolDetail?: string;
-  lastEvent: string;
-  updatedAt: number;
-  /** Status saved when entering "compacting" (on PreCompact) so a compaction
-   *  resolve signal (PostCompact OR SessionStart source=compact) can restore it.
-   *  Cleared once resolved, or when any non-compaction status change ends the
-   *  interlude. Undefined when no meaningful baseline exists (e.g. cold-start +
-   *  auto-compact on session resume). See ADR-053. */
-  preCompactStatus?: AgentStatus;
-}
+// The activity types are the WIRE shape of the read surface, so they live in
+// @autonomos/core (types/api.ts) where the dashboard imports the same
+// declaration — re-exported under the names this module's consumers use.
+// (Core's `AgentStatus` is the RECORD lifecycle enum; these are activity.)
+export type AgentStatus = AgentActivityStatus;
+export type AgentState = AgentActivityState;
 
 const DEFAULT_AGENT_STATE: AgentState = {
   status: "unknown",
@@ -149,10 +137,44 @@ export function getUnreadCount(sessionId: string): number {
   return getNotifications(sessionId).filter((n) => !n.read).length;
 }
 
+/**
+ * Push the CURRENT activity state + unread count for a session onto the
+ * /ws/agents delta stream. Called from every mutation of `agentStates` or the
+ * unread count — the push migration's whole premise is that this module
+ * already sees every change at a chokepoint, so the dashboard's 3s poll was
+ * pure waste. No-op for ids with no state (e.g. a markRead on a session that
+ * never emitted).
+ */
+function emitStatusDelta(sessionId: string): void {
+  const state = agentStates.get(sessionId);
+  if (!state) return;
+  emitAgentDelta({
+    type: "agent.status",
+    id: sessionId,
+    state,
+    unread: getUnreadCount(sessionId),
+    ts: Date.now(),
+  });
+}
+
+/** Snapshot of every session's activity state + unread count — rides the
+ * /ws/agents `reconcile` frame so a (re)connect needs no follow-up poll. */
+export function getAgentStatusSnapshot(): Record<
+  string,
+  { state: AgentState; unread: number }
+> {
+  const snap: Record<string, { state: AgentState; unread: number }> = {};
+  for (const [id, state] of agentStates) {
+    snap[id] = { state, unread: getUnreadCount(id) };
+  }
+  return snap;
+}
+
 export function markRead(sessionId: string): void {
   const items = notifications.get(sessionId);
   if (items) {
     for (const n of items) n.read = true;
+    emitStatusDelta(sessionId);
   }
 }
 
@@ -169,6 +191,7 @@ function appendNotification(
   items.push(item);
   if (items.length > 50) items.splice(0, items.length - 50);
   notifications.set(sessionId, items);
+  emitStatusDelta(sessionId);
 }
 
 let nextNotificationId = 0;
@@ -215,6 +238,7 @@ export function retractSystemNotification(
   if (idx === -1) return false;
   items.splice(idx, 1);
   if (items.length === 0) notifications.delete(sessionId);
+  emitStatusDelta(sessionId);
   return true;
 }
 
@@ -245,6 +269,7 @@ export function setAgentStatus(sessionId: string, status: AgentStatus): void {
     lastEvent: "provider/status",
     updatedAt: Date.now(),
   });
+  emitStatusDelta(sessionId);
 }
 
 /** Derive agent status from a hook event.
@@ -449,6 +474,7 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
         lastEvent: event,
         updatedAt: timestamp,
       });
+      emitStatusDelta(sessionId);
     }
   } else if (isCompactResolve) {
     // Idempotent "compaction resolved" signal. SessionStart(source=compact)
@@ -471,6 +497,7 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
         lastEvent: event,
         updatedAt: timestamp,
       });
+      emitStatusDelta(sessionId);
     }
     // else: already resolved by the sibling signal → no-op.
   } else if (
@@ -508,6 +535,7 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
           lastEvent: event,
           updatedAt: timestamp,
         });
+        emitStatusDelta(sessionId);
       }
     }
   }
@@ -590,7 +618,11 @@ hooksReadRouter.get("/notifications", (c) => {
   // Newest first
   all.sort((a, b) => b.timestamp - a.timestamp);
 
-  return c.json({ notifications: all.slice(0, 100), totalUnread });
+  const payload: NotificationFeed = {
+    notifications: all.slice(0, 100),
+    totalUnread,
+  };
+  return c.json(payload);
 });
 
 // Mark all notifications as read for a session
@@ -602,7 +634,9 @@ hooksReadRouter.post("/:sessionId/read", (c) => {
 
 // Bulk status for all sessions (efficient single call from sidebar)
 hooksReadRouter.get("/", (c) => {
-  const result: Record<string, { status: AgentState; unread: number }> = {};
+  // Annotated with the WIRE type so a field rename here breaks the build
+  // instead of blanking every sidebar status icon at runtime.
+  const result: AgentStatusMap = {};
   for (const [id, state] of agentStates) {
     result[id] = { status: state, unread: getUnreadCount(id) };
   }
