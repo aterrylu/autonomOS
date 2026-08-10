@@ -35,8 +35,20 @@ export interface Poll<T> {
    * last unsubscribe stops it. */
   subscribe(listener: () => void): () => void;
   getSnapshot(): PollState<T>;
-  /** Force a refresh now (e.g. after a mutation). Shared with pollers. */
+  /** Force a refresh now (e.g. after a mutation). Shared with pollers.
+   * Deliberately NOT gated by suspension — a mutation's catch-up fetch must
+   * land even while a push channel owns the cadence. */
   refresh(): Promise<void>;
+  /** Suspend/resume the TIMER (push migration): while a live push channel
+   * delivers this resource, the poll stops ticking; `inject` keeps the
+   * snapshot current for subscribers. Resuming with subscribers fires an
+   * immediate catch-up refresh, so a dropped socket degrades to exactly the
+   * pre-push polling behavior with no stale window. */
+  setSuspended(suspended: boolean): void;
+  /** Push externally-sourced data into the snapshot as if fetched — same
+   * equality/commit path, so reference stability and change-only re-renders
+   * hold regardless of source. Clears any standing error. */
+  inject(data: T): void;
 }
 
 interface PollOptions<T> {
@@ -68,6 +80,7 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
   const listeners = new Set<() => void>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let visListener: (() => void) | null = null;
+  let suspended = false;
 
   function emit(): void {
     for (const l of listeners) l();
@@ -105,6 +118,7 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
   let lastHiddenRefresh = 0;
 
   function tick(): void {
+    if (suspended) return;
     if (document.visibilityState === "hidden") {
       // Hidden: fully paused by default; throttled for polls that feed
       // background-critical behavior (desktop notifications). The immediate
@@ -123,10 +137,10 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
 
   function start(): void {
     if (timer) return;
-    void refresh();
+    if (!suspended) void refresh();
     timer = setInterval(tick, opts.intervalMs);
     visListener = () => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible" && !suspended) void refresh();
     };
     document.addEventListener("visibilitychange", visListener);
   }
@@ -153,5 +167,16 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
     },
     getSnapshot: () => state,
     refresh,
+    setSuspended(next) {
+      if (suspended === next) return;
+      suspended = next;
+      // Resuming while subscribed = the push channel just dropped: catch up
+      // immediately so the gap between "socket died" and "first poll tick"
+      // never exceeds one round-trip.
+      if (!next && listeners.size > 0) void refresh();
+    },
+    inject(data) {
+      commit({ data, error: null });
+    },
   };
 }

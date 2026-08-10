@@ -85,6 +85,76 @@ describe("createPoll", () => {
   });
 });
 
+describe("setSuspended / inject (push migration)", () => {
+  it("suspension stops ticking; inject keeps the snapshot current", async () => {
+    const fetcher = vi.fn(async () => ({ v: 1 }));
+    const poll = createPoll<{ v: number }>({
+      source: fetcher,
+      intervalMs: 1000,
+    });
+    const un = poll.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    poll.setSuspended(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetcher).toHaveBeenCalledTimes(1); // push channel owns the cadence
+
+    poll.inject({ v: 42 });
+    expect(poll.getSnapshot().data).toEqual({ v: 42 });
+    un();
+  });
+
+  it("resuming with subscribers fires an immediate catch-up refresh", async () => {
+    const fetcher = vi.fn(async () => ({ v: 1 }));
+    const poll = createPoll<{ v: number }>({
+      source: fetcher,
+      intervalMs: 1000,
+    });
+    const un = poll.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    poll.setSuspended(true);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    poll.setSuspended(false); // socket dropped → degrade to polling
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(2); // no stale window
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetcher).toHaveBeenCalledTimes(3); // interval cadence resumes
+    un();
+  });
+
+  it("manual refresh() still lands while suspended (mutation catch-up)", async () => {
+    const fetcher = vi.fn(async () => ({ v: 1 }));
+    const poll = createPoll<{ v: number }>({
+      source: fetcher,
+      intervalMs: 1000,
+    });
+    const un = poll.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    poll.setSuspended(true);
+    await poll.refresh();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    un();
+  });
+
+  it("a subscribe that lands while suspended does not fetch; inject clears a standing error", async () => {
+    const fetcher = vi.fn(async () => ({ v: 1 }));
+    const poll = createPoll<{ v: number }>({
+      source: fetcher,
+      intervalMs: 1000,
+    });
+    poll.setSuspended(true);
+    const un = poll.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).not.toHaveBeenCalled(); // socket data is coming instead
+    poll.inject({ v: 7 });
+    expect(poll.getSnapshot()).toEqual({ data: { v: 7 }, error: null });
+    un();
+  });
+});
+
 describe("hiddenIntervalMs (background-critical polls)", () => {
   it("throttles instead of pausing while hidden — desktop notifications keep flowing", async () => {
     const fetcher = vi.fn(async () => ({ v: 1 }));

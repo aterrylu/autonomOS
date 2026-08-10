@@ -6,6 +6,7 @@ import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { ThemeVars } from "./components/ThemeVars";
+import { startPushBridge } from "./pushBridge";
 import { QuickSwitcher } from "./shortcuts/QuickSwitcher";
 import { ShortcutHelpOverlay } from "./shortcuts/ShortcutHelpOverlay";
 import { useModKeyHold } from "./shortcuts/useModKeyHold";
@@ -142,6 +143,15 @@ export function App() {
   useEffect(() => {
     probeAuth("probe").then(setAuthState);
   }, []);
+
+  // Push channel: while /ws/agents is live it feeds agents/tree/statuses and
+  // suspends their polls; on socket loss the polls resume seamlessly. Gated
+  // on auth — the upgrade rides the auth cookie, so connecting pre-login
+  // would just churn 401 reconnects.
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    return startPushBridge();
+  }, [authState]);
 
   // Global keyboard shortcuts (see src/shortcuts/registry.ts). Gated on auth
   // so no chord fires over the login page's password field.
