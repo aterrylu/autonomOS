@@ -13,11 +13,12 @@ import { UpdateBadgeStatusBarItem } from "./UpdateBadgeStatusBarItem";
  */
 
 function stubVersionFetch(body: unknown, ok = true): ReturnType<typeof vi.fn> {
+  // REAL Response objects — the badge reads through the api client core,
+  // which parses res.text(); a bare `{ ok, json }` fake would stall it.
   const mock = vi.fn(() =>
-    Promise.resolve({
-      ok,
-      json: () => Promise.resolve(body),
-    } as Response),
+    Promise.resolve(
+      new Response(JSON.stringify(body), { status: ok ? 200 : 500 }),
+    ),
   );
   vi.stubGlobal("fetch", mock);
   return mock;

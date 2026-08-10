@@ -3,21 +3,13 @@ import {
   PERMISSION_MODE_INFO,
   type PermissionMode,
   type Provider,
-  type ProviderCapabilities,
+  type ProviderInfo,
 } from "@autonomos/core";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { providersApi } from "../api/misc";
 import { THEMES, useStore } from "../store";
 import { PermissionModeSelect } from "./PermissionModeSelect";
-
-interface ProviderInfo {
-  name: string;
-  displayName: string;
-  installed: boolean;
-  version: string | null;
-  recommended: boolean;
-  capabilities: ProviderCapabilities;
-}
 
 export function CreateAgentPanel() {
   const theme = useStore((s) => s.theme);
@@ -72,9 +64,9 @@ export function CreateAgentPanel() {
   const isBusy = status === "spawning..." || status === "resuming...";
 
   useEffect(() => {
-    fetch("/api/providers")
-      .then((r) => r.json())
-      .then((data: ProviderInfo[]) => setProviders(data))
+    providersApi
+      .list()
+      .then((data) => setProviders(data))
       .catch(() => {});
     fetchProjects();
     fetchTemplates();

@@ -15,6 +15,7 @@
 // state, which also means the README hero is unaffected.
 
 import { useEffect, useState } from "react";
+import { request } from "../../api/core";
 import { THEMES, useStore } from "../../store";
 
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -38,11 +39,15 @@ function useUpdateAvailable(): VersionInfo | null {
 
     async function tick(): Promise<void> {
       try {
-        const res = await fetch("/api/system/version", {
-          signal: AbortSignal.timeout(5_000),
-        });
-        if (res.ok && mounted) {
-          const data = (await res.json()) as Partial<VersionInfo>;
+        // `fresh` keeps the timeout signal attached to the actual socket
+        // (deduped GETs detach their signal); at a 6h cadence dedup buys
+        // nothing anyway. The local VersionInfo stays deliberately tolerant —
+        // /api/system/version is ReleaseRollout's contract, not this file's.
+        const data = await request<Partial<VersionInfo>>(
+          "/api/system/version",
+          { fresh: true, signal: AbortSignal.timeout(5_000) },
+        );
+        if (data && mounted) {
           if (
             typeof data.version === "string" &&
             typeof data.updateAvailable === "boolean"
