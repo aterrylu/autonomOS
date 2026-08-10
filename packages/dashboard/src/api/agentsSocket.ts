@@ -54,9 +54,13 @@ function applyDelta(delta: AgentDelta): void {
   switch (delta.type) {
     case "reconcile": {
       const agents = new Map(delta.agents.map((a) => [a.id, a]));
-      const statuses = new Map(
-        Object.entries(delta.statuses ?? {}).map(([id, v]) => [id, v]),
-      );
+      // `statuses` is optional in the union for forward-compat; the server
+      // always sends it today. If a future server omits it, keep what we
+      // have rather than wiping every status while the status poll is
+      // suspended on a "healthy" socket.
+      const statuses = delta.statuses
+        ? new Map(Object.entries(delta.statuses))
+        : snapshot.statuses;
       commit({ agents, statuses });
       break;
     }
@@ -145,7 +149,13 @@ function connect(): void {
   };
   socket.onclose = () => {
     if (ws === socket) ws = null;
-    commit({ connected: false });
+    // Reset the baseline, not just the flag: a REconnect fires onopen before
+    // its reconcile arrives, and a kept map would make the bridge treat the
+    // stale pre-disconnect snapshot as live — suspending polls and replaying
+    // outdated statuses (a phantom needs_input desktop notification, killed
+    // agents briefly resurrected). `agents: null` re-arms the "open ≠ live"
+    // guard for every connection, not just the first.
+    commit({ connected: false, agents: null, statuses: new Map() });
     scheduleReconnect();
   };
   socket.onerror = () => {

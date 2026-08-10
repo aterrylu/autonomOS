@@ -18,7 +18,8 @@ export function useCodexUsageData() {
     try {
       const usage = await request<CodexUsageData>("/api/plugins/codex-usage");
       if (cancelledRef.current) return;
-      // request() resolves null instead of throwing on a non-JSON body.
+      // request() resolves null only for an EMPTY 2xx body (non-JSON now
+      // throws BAD_BODY); guard stays for that edge.
       if (!usage) {
         setError("Invalid response");
         return;

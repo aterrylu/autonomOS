@@ -24,9 +24,9 @@ export function useUsageData() {
     try {
       const usage = await request<RateLimitData>("/api/plugins/claude-usage");
       if (cancelledRef.current) return;
-      // request() resolves null instead of throwing on a non-JSON body (it
-      // degrades rather than crashing on a plaintext error page); for this
-      // endpoint that is exactly the old "Invalid response" case.
+      // request() resolves null only for an EMPTY 2xx body (non-JSON now
+      // throws BAD_BODY and lands in the catch below); the guard stays for
+      // that edge — exactly the old "Invalid response" case.
       if (!usage) {
         setError("Invalid response");
         return;

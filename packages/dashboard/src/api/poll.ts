@@ -104,14 +104,19 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
       const data = await fetcher();
       commit({ data, error: null });
     } catch (err) {
+      const error =
+        err instanceof ApiError
+          ? err
+          : new ApiError(err instanceof Error ? err.message : String(err), 0);
+      // Not every subscriber renders `.error` (the sidebar store bridge reads
+      // only data), so log the TRANSITION into failure — otherwise a poll
+      // failing behind a healthy /api/host probe is fully invisible. One line
+      // per distinct failure, not one per tick.
+      if (state.error?.message !== error.message) {
+        console.warn(`[poll] refresh failed: ${error.message}`);
+      }
       // Keep last data; surface the failure beside it.
-      commit({
-        data: state.data,
-        error:
-          err instanceof ApiError
-            ? err
-            : new ApiError(err instanceof Error ? err.message : String(err), 0),
-      });
+      commit({ data: state.data, error });
     }
   }
 

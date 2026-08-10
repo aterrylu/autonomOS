@@ -102,13 +102,25 @@ async function execute<T>(path: string, opts: RequestOptions): Promise<T> {
     );
   }
 
-  // Parse the body once, tolerating non-JSON (e.g. dev-mode plaintext 404s).
+  // Parse the body once. Non-JSON on an ERROR status is tolerated (dev-mode
+  // plaintext 404s — the status carries the signal); a non-empty 2xx body
+  // that isn't JSON (broken proxy, captive portal serving HTML with a 200)
+  // must THROW, not resolve null: a null resolution reads as "empty data" at
+  // most call sites, silently masking a real outage. Truly empty 2xx bodies
+  // (e.g. /auth, markRead) still resolve null.
   let body: unknown = null;
   const text = await res.text().catch(() => "");
   if (text) {
     try {
       body = JSON.parse(text);
     } catch {
+      if (res.ok) {
+        throw new ApiError(
+          `Non-JSON response body on ${opts.method ?? "GET"} ${path}`,
+          res.status,
+          { code: "BAD_BODY" },
+        );
+      }
       body = null;
     }
   }

@@ -58,6 +58,19 @@ describe("request", () => {
     expect(err.message).toContain("404");
   });
 
+  it("throws BAD_BODY on a non-JSON 2xx body (captive portal / broken proxy) instead of resolving null", async () => {
+    stubFetch(() => new Response("<html>hotel wifi</html>", { status: 200 }));
+    const err = await request("/api/agents").catch((e) => e as ApiError);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.code).toBe("BAD_BODY");
+    expect(err.status).toBe(200);
+  });
+
+  it("still resolves null for a truly EMPTY 2xx body (auth, markRead)", async () => {
+    stubFetch(() => new Response("", { status: 200 }));
+    await expect(request("/api/hooks/x/read")).resolves.toBeNull();
+  });
+
   it("maps a network failure to status 0 / unreachable", async () => {
     stubFetch(() => {
       throw new TypeError("Failed to fetch");
