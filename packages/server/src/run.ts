@@ -538,6 +538,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const { initGateway } = await import("./gateway/index.js");
     initGateway().catch((err) => console.error("[gateway] init failed:", err));
 
+    // Background update-availability check (ADR-077 §6): first run minutes
+    // after boot, then ~daily; unref'd timer, settings-gated, never touches
+    // a request path. The dashboard badge reads its cache off
+    // /api/system/version.
+    const { startUpdateCheck } = await import("./updateCheck.js");
+    startUpdateCheck();
+
     // Write the shared Gemini settings file HERE, not at top-of-boot: its MCP
     // config bakes in the control-socket path AND the public REST base, so it
     // can only be correct once both are published (setServerPort in the listen

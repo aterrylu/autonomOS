@@ -36,8 +36,61 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InstallInfo, writeInstallJson } from "./installInfo.js";
 
-const DEFAULT_RELEASE_REPO = "aterrylu/autonomOS";
-const DEFAULT_RELEASE_API_BASE = "https://api.github.com";
+export const DEFAULT_RELEASE_REPO = "aterrylu/autonomOS";
+export const DEFAULT_RELEASE_API_BASE = "https://api.github.com";
+
+export type ReleaseOverrides =
+  | { releaseApiBase: string | undefined; releaseRepo: string | undefined }
+  | { error: string };
+
+/**
+ * The release-source env overrides exist for the hermetic test harness, but
+ * they are production-reachable — and whoever controls the API base controls
+ * BOTH the tarball and its SHA256SUMS, so the checksum cannot protect
+ * against a redirected source (nothing is signed). A var planted in a shell
+ * rc converts the user's own later `autonomos upgrade` into running
+ * attacker code. So: warn loudly whenever one is set, and refuse a
+ * non-HTTPS base unless it points at loopback (the fixture case).
+ *
+ * SHARED by the CLI upgrade command and the server's passive update check —
+ * both must resolve the same source with the same guard rails, or a
+ * redirected box's badge and CLI would disagree about "latest".
+ */
+export function resolveReleaseOverrides(): ReleaseOverrides {
+  const releaseApiBase = process.env.AUTONOMOS_RELEASE_API_URL;
+  const releaseRepo = process.env.AUTONOMOS_RELEASE_REPO;
+  if (releaseApiBase || releaseRepo) {
+    console.warn("⚠️  Release source is overridden by environment variables:");
+    if (releaseApiBase) {
+      console.warn(`   AUTONOMOS_RELEASE_API_URL=${releaseApiBase}`);
+    }
+    if (releaseRepo) {
+      console.warn(`   AUTONOMOS_RELEASE_REPO=${releaseRepo}`);
+    }
+    console.warn("   (unset these unless you set them yourself, on purpose)");
+  }
+  if (releaseApiBase) {
+    let url: URL;
+    try {
+      url = new URL(releaseApiBase);
+    } catch {
+      return {
+        error: `AUTONOMOS_RELEASE_API_URL is not a valid URL: ${releaseApiBase}`,
+      };
+    }
+    const loopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(
+      url.hostname,
+    );
+    if (url.protocol !== "https:" && !loopback) {
+      return {
+        error:
+          `AUTONOMOS_RELEASE_API_URL must be https:// (or loopback, for the ` +
+          `test harness): ${releaseApiBase}`,
+      };
+    }
+  }
+  return { releaseApiBase, releaseRepo };
+}
 
 export type Platform =
   | "darwin-arm64"

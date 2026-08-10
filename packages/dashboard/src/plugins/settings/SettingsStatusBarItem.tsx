@@ -10,6 +10,7 @@ interface MaskedSettings {
   claudeSessionKey: string | null;
   channels: string[];
   autoTrust: boolean;
+  updateCheck: boolean;
   customEnvVars: Record<string, string>;
   statusLine: { enabled: boolean };
 }
@@ -651,7 +652,12 @@ export function SettingsPanel({
   return (
     <div
       ref={ref}
-      className="absolute bottom-full left-0 mb-1 w-[340px] rounded-md p-3 text-xs shadow-lg"
+      // max-h + scroll: the panel grew past short viewports as toggles
+      // accumulated (the Update Check toggle tipped it over in the e2e
+      // viewport, leaving lower controls unreachable — clicks timed out
+      // "outside of the viewport"). Cap to the space above the status bar
+      // and scroll the overflow instead.
+      className="absolute bottom-full left-0 mb-1 w-[340px] rounded-md p-3 text-xs shadow-lg max-h-[calc(100vh-4rem)] overflow-y-auto"
       style={{
         background: page.bg,
         border: `1px solid ${page.border}`,
@@ -687,6 +693,28 @@ export function SettingsPanel({
           <div className="text-[10px]" style={labelStyle}>
             Auto-dismiss workspace trust and dev channel prompts on session
             start.
+          </div>
+
+          <div className="flex items-center justify-between mt-3">
+            <div
+              className="text-[10px] font-medium uppercase tracking-wide"
+              style={labelStyle}
+            >
+              Update Check
+            </div>
+            <ToggleSwitch
+              // Default-on: only off when explicitly set to false.
+              enabled={settings?.updateCheck !== false}
+              inactiveBackground={page.border}
+              onClick={() =>
+                toggleSetting("updateCheck", settings?.updateCheck === false)
+              }
+              testId="update-check-toggle"
+            />
+          </div>
+          <div className="text-[10px]" style={labelStyle}>
+            Check GitHub daily for a newer release and show a passive badge in
+            the status bar. The dashboard itself never contacts GitHub.
           </div>
 
           <div className="flex items-center justify-between mt-3">

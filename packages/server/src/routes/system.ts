@@ -21,19 +21,47 @@
 // gets no Update button in v1.
 
 import { Hono } from "hono";
+import type { InstallMode } from "../installInfo.js";
 import { type ResolvedInstall, resolveInstall } from "../installInfo.js";
+import { getUpdateCheckState } from "../updateCheck.js";
 import { detectPlatform, performUpgrade } from "../upgrade.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();
 
-systemRouter.get("/version", (c) =>
-  c.json({
+// Memoized once: the install shape cannot change under a running daemon
+// (an upgrade restarts it), and the version endpoint must stay cheap — it
+// doubles as the pid-file liveness probe's target. `null` = unresolvable
+// (a plain dev checkout), which the badge uses to give shape-true advice
+// instead of advertising a command that would refuse.
+let installModeMemo: InstallMode | null | undefined;
+function installMode(): InstallMode | null {
+  if (installModeMemo === undefined) {
+    try {
+      installModeMemo = resolveInstall().info.mode;
+    } catch {
+      installModeMemo = null;
+    }
+  }
+  return installModeMemo;
+}
+
+systemRouter.get("/version", (c) => {
+  // {version, platform, arch} are frozen (contract above). The update-check
+  // fields and installMode are ADDITIVE and read from in-memory state — this
+  // handler must never wait on anything remote.
+  const update = getUpdateCheckState();
+  return c.json({
     version: getServerVersion(),
     platform: process.platform,
     arch: process.arch,
-  }),
-);
+    latest: update.latest,
+    updateAvailable: update.updateAvailable,
+    checkedAt: update.checkedAt,
+    releaseUrl: update.releaseUrl,
+    installMode: installMode(),
+  });
+});
 
 // At most one in-process upgrade at a time: concurrent runs share a staging
 // dir keyed by pid (the second's cleanup clobbers the first's download) and
