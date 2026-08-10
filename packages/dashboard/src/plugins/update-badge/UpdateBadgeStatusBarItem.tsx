@@ -23,6 +23,8 @@ type VersionInfo = {
   version: string;
   latest: string | null;
   updateAvailable: boolean;
+  /** "bundle" | "source" | null (dev checkout / older server). */
+  installMode: string | null;
 };
 
 function useUpdateAvailable(): VersionInfo | null {
@@ -47,6 +49,8 @@ function useUpdateAvailable(): VersionInfo | null {
               version: data.version,
               latest: typeof data.latest === "string" ? data.latest : null,
               updateAvailable: data.updateAvailable,
+              installMode:
+                typeof data.installMode === "string" ? data.installMode : null,
             });
           }
         }
@@ -83,7 +87,12 @@ export function UpdateBadgeStatusBarItem() {
       style={{ color: page.statusFg }}
       title={
         `Update available: v${info.version} → v${info.latest}. ` +
-        "Run `autonomos upgrade` in a terminal (verified restart, auto-rollback)."
+        // Shape-true advice: `autonomos upgrade` refuses on a plain dev
+        // checkout (installMode null) — pointing at it from the dashboard
+        // Terry actually watches would advertise a refusal.
+        (info.installMode === "bundle" || info.installMode === "source"
+          ? "Run `autonomos upgrade` in a terminal (verified restart, auto-rollback)."
+          : "Update this dev checkout with `git pull && make prod`.")
       }
       data-testid="update-badge"
     >

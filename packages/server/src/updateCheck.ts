@@ -21,10 +21,13 @@
 // phone-home flag is treated as a bug in its own right (see Gitea #22078).
 
 import { getSettings } from "./settings.js";
-import { compareSemver } from "./upgrade.js";
+import {
+  compareSemver,
+  DEFAULT_RELEASE_API_BASE,
+  DEFAULT_RELEASE_REPO,
+} from "./upgrade.js";
 import { getServerVersion } from "./version.js";
 
-const DEFAULT_RELEASE_REPO = "aterrylu/autonomOS";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // First check shortly after boot (the daemon typically restarts at most
 // every few days — a pure 24h timer would leave a fresh boot blind for a
@@ -72,8 +75,13 @@ export function isUpdateCheckEnabled(): boolean {
  *     caught here: only the network I/O sits inside the try.
  */
 export async function runUpdateCheck(
-  apiBase = "https://api.github.com",
-  repo = DEFAULT_RELEASE_REPO,
+  // Same source resolution as `autonomos upgrade` (incl. its documented
+  // AUTONOMOS_RELEASE_* env overrides) — otherwise, on a fork/mirror using
+  // that escape hatch, the badge would check a DIFFERENT repository than
+  // the command it advertises, saying "up to date" while the CLI has a
+  // newer build (or vice versa).
+  apiBase = process.env.AUTONOMOS_RELEASE_API_URL || DEFAULT_RELEASE_API_BASE,
+  repo = process.env.AUTONOMOS_RELEASE_REPO || DEFAULT_RELEASE_REPO,
 ): Promise<UpdateCheckState> {
   let resp: Response;
   let release: { tag_name?: string };
@@ -98,6 +106,9 @@ export async function runUpdateCheck(
 
   if (typeof release.tag_name !== "string") return state;
   const latest = release.tag_name.replace(/^v/, "");
+  // Prefix match: a hypothetical v0.6.0-rc.1 would pass and compare equal
+  // to 0.6.0 (compareSemver strips prereleases) — unreachable today because
+  // GitHub's releases/latest excludes prereleases.
   if (!/^\d+\.\d+\.\d+/.test(latest)) return state;
 
   const current = getServerVersion();

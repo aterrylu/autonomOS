@@ -12,16 +12,15 @@ import { UpdateBadgeStatusBarItem } from "./UpdateBadgeStatusBarItem";
  * normal state, and there is deliberately no button.
  */
 
-function stubVersionFetch(body: unknown, ok = true): void {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() =>
-      Promise.resolve({
-        ok,
-        json: () => Promise.resolve(body),
-      } as Response),
-    ),
+function stubVersionFetch(body: unknown, ok = true): ReturnType<typeof vi.fn> {
+  const mock = vi.fn(() =>
+    Promise.resolve({
+      ok,
+      json: () => Promise.resolve(body),
+    } as Response),
   );
+  vi.stubGlobal("fetch", mock);
+  return mock;
 }
 
 afterEach(() => {
@@ -30,13 +29,14 @@ afterEach(() => {
 
 describe("UpdateBadgeStatusBarItem", () => {
   it("renders the pill when the server reports an update", async () => {
-    stubVersionFetch({
+    const fetchMock = stubVersionFetch({
       version: "0.5.0",
       platform: "darwin",
       arch: "arm64",
       latest: "0.6.0",
       updateAvailable: true,
       checkedAt: "2026-08-09T00:00:00Z",
+      installMode: "bundle",
     });
     await act(async () => {
       render(<UpdateBadgeStatusBarItem />);
@@ -45,6 +45,43 @@ describe("UpdateBadgeStatusBarItem", () => {
     expect(badge.textContent).toContain("v0.6.0 available");
     // The tooltip carries the CLI instruction — the badge is passive.
     expect(badge.getAttribute("title")).toContain("autonomos upgrade");
+    // THE invariant this feature leads with: the dashboard reads only the
+    // server's cached answer — it never contacts GitHub (or anywhere else).
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/system/version");
+  });
+
+  it("points a dev checkout at git pull + make prod, not at a command that refuses", async () => {
+    stubVersionFetch({
+      version: "0.5.0",
+      platform: "darwin",
+      arch: "arm64",
+      latest: "0.6.0",
+      updateAvailable: true,
+      checkedAt: "2026-08-09T00:00:00Z",
+      installMode: null,
+    });
+    await act(async () => {
+      render(<UpdateBadgeStatusBarItem />);
+    });
+    const badge = await screen.findByTestId("update-badge");
+    expect(badge.getAttribute("title")).toContain("git pull && make prod");
+    expect(badge.getAttribute("title")).not.toContain("autonomos upgrade");
+  });
+
+  it("renders nothing when updateAvailable is true but latest is absent (no 'vnull')", async () => {
+    stubVersionFetch({
+      version: "0.5.0",
+      platform: "darwin",
+      arch: "arm64",
+      latest: null,
+      updateAvailable: true,
+      checkedAt: "2026-08-09T00:00:00Z",
+    });
+    await act(async () => {
+      render(<UpdateBadgeStatusBarItem />);
+    });
+    expect(screen.queryByTestId("update-badge")).toBeNull();
   });
 
   it("renders nothing when up to date", async () => {

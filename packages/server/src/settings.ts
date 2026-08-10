@@ -41,10 +41,12 @@ export interface AppSettings {
   autoTrust?: boolean;
   /**
    * Check GitHub Releases (server-side, ~daily, cached) for a newer version
-   * and surface a passive badge in the dashboard (default: true — matching
-   * this documented default is part of the ADR-077 contract). The dashboard
-   * itself never contacts GitHub. Set false to disable the check entirely;
-   * offline boxes need no setting (a failed check is silent).
+   * and surface a passive badge in the dashboard. Default: true — and the
+   * README documents exactly that (a doc/behavior mismatch on a phone-home
+   * default is a bug in its own right; see Gitea #22078). The dashboard
+   * itself never contacts GitHub. Set false (settings panel or API) to
+   * disable the check entirely; offline boxes need no setting (a failed
+   * check is silent).
    */
   updateCheck?: boolean;
   /** User-defined env vars injected into every spawned session */

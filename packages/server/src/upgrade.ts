@@ -36,8 +36,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InstallInfo, writeInstallJson } from "./installInfo.js";
 
-const DEFAULT_RELEASE_REPO = "aterrylu/autonomOS";
-const DEFAULT_RELEASE_API_BASE = "https://api.github.com";
+export const DEFAULT_RELEASE_REPO = "aterrylu/autonomOS";
+export const DEFAULT_RELEASE_API_BASE = "https://api.github.com";
 
 export type Platform =
   | "darwin-arm64"
