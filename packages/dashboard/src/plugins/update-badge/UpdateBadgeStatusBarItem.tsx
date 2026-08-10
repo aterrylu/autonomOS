@@ -15,6 +15,7 @@
 // state, which also means the README hero is unaffected.
 
 import { useEffect, useState } from "react";
+import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -114,11 +115,12 @@ export function UpdateBadgeStatusBarItem() {
           href={info.releaseUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="hover:underline"
+          className="hover:underline inline-flex items-center gap-1"
           style={{ color: "inherit" }}
           data-testid="update-badge-link"
         >
           {label}
+          <Codicon name="link-external" size={11} />
         </a>
       ) : (
         <span>{label}</span>
