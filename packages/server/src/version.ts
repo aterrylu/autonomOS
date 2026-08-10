@@ -3,8 +3,11 @@
 //
 // Resolves a package.json reachable from import.meta.dirname:
 //   - When bundled (dist/<platform>/index.js): package.json sits next to it
-//     (the build script copies it in).
+//     (the build script copies it in). The channel-server dist.mjs staged in
+//     the same bundle dir resolves identically.
 //   - When running from source via tsx (src/run.ts): ../package.json.
+//   - When the channel-server bundle runs from source
+//     (src/channel-server/dist.mjs): ../../package.json.
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -15,6 +18,8 @@ export function getServerVersion(): string {
     resolve(import.meta.dirname, "package.json"),
     // Source layout: src/ → packages/server/package.json
     resolve(import.meta.dirname, "../package.json"),
+    // Source channel-server layout: src/channel-server/ → packages/server/
+    resolve(import.meta.dirname, "../../package.json"),
   ];
   for (const p of candidates) {
     if (!existsSync(p)) continue;

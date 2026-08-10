@@ -37,13 +37,15 @@ One line — installs the server as an OS-native daemon and prints your dashboar
 curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 ```
 
-This detects your OS, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and hands you a `http://localhost:3100/?token=…` link. Requires **Node 20+**.
+This detects your OS, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and prints your dashboard URL and access token. Requires **Node 20+**. Pin a version with `VERSION=0.5.0 curl … | bash`.
 
 Manage it anytime with the `autonomos` CLI:
 
 ```bash
 autonomos status        # is the daemon healthy?
 autonomos logs -f       # follow the server log
+autonomos upgrade       # update to the latest release (verified, auto-rolls back if it breaks)
+autonomos rollback      # swap back to the previous version
 autonomos restart       # bounce the service
 autonomos stop          # stop it (stays down until you start it)
 ```
