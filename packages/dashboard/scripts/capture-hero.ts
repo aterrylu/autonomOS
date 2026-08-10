@@ -102,10 +102,10 @@ import { type BrowserContext, chromium } from "@playwright/test";
 // ── Paths — derived from the script location so this works from ANY checkout ──
 // This file lives at <repo>/packages/dashboard/scripts/capture-hero.ts.
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..");
-const DASHBOARD_DIR = join(REPO_ROOT, "packages/dashboard");
+export const DASHBOARD_DIR = join(REPO_ROOT, "packages/dashboard");
 const SERVER_ENTRY = join(REPO_ROOT, "packages/server/src/index.ts");
 const TSX_BIN = join(REPO_ROOT, "packages/server/node_modules/.bin/tsx");
-const OUT_DIR = process.env.HERO_OUT_DIR ?? join(REPO_ROOT, "docs/assets");
+export const OUT_DIR = process.env.HERO_OUT_DIR ?? join(REPO_ROOT, "docs/assets");
 
 const REAL_HOME = homedir();
 const REAL_CODEX_DIR = join(REAL_HOME, ".codex");
@@ -115,15 +115,15 @@ const REAL_CLAUDE_CREDS = join(REAL_HOME, ".claude", ".credentials.json");
 const argv = process.argv.slice(2);
 const KEEP_ALIVE = argv.includes("--keep");
 // Three panes → ~1680 wide is legible; dsf 1 keeps the xterm fit intact.
-const HERO_W = Number(process.env.HERO_W ?? 1680);
-const HERO_H = Number(process.env.HERO_H ?? 920);
+export const HERO_W = Number(process.env.HERO_W ?? 1680);
+export const HERO_H = Number(process.env.HERO_H ?? 920);
 const HERO_DSF = Number(process.env.HERO_DSF ?? 1);
 const HERO_ZOOM = Number(process.env.HERO_ZOOM ?? 1);
 
 // ── Provider capabilities (drives graceful degradation) ──────────────────────
 type Provider = "claude-code" | "codex" | "gemini-cli";
 
-interface Caps {
+export interface Caps {
   /** Claude can do REAL turns (keychain token or on-disk creds present). When
    *  false, Claude agents run against a local mock backend instead. */
   claudeCreds: boolean;
@@ -156,7 +156,7 @@ function readClaudeKeychainToken(): string | null {
   return out.startsWith("{") ? out : null;
 }
 
-function detectCaps(): Caps {
+export function detectCaps(): Caps {
   if (!onPath("claude")) {
     throw new Error("`claude` not on PATH — required to render the base scene.");
   }
@@ -187,7 +187,7 @@ function detectCaps(): Caps {
 }
 
 // ── The cast (built from capabilities) ───────────────────────────────────────
-interface CastMember {
+export interface CastMember {
   name: string;
   provider: Provider;
   cols?: number;
@@ -367,7 +367,7 @@ function streamText(res: ServerResponse, text: string): void {
   res.end();
 }
 
-interface DemoMock {
+export interface DemoMock {
   url: string;
   served: () => ReadonlyMap<string, number>;
   close: () => Promise<void>;
@@ -375,7 +375,7 @@ interface DemoMock {
 
 /** Local stand-in for the Anthropic SSE endpoint. Matches each request body
  *  against a cast member's `mock.matchKey` and streams its canned reply. */
-function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
+export function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
   const canned = cast.filter((m) => m.mock);
   const served = new Map<string, number>();
 
@@ -431,7 +431,7 @@ function startDemoMock(cast: CastMember[]): Promise<DemoMock> {
 }
 
 // ── Demo workspace (agents' cwd) ─────────────────────────────────────────────
-function makeDemoWorkspace(): string {
+export function makeDemoWorkspace(): string {
   const dir = join(
     mkdtempSync(join(tmpdir(), "autonomos-capture-")),
     "demo-webapp",
@@ -462,7 +462,7 @@ function makeDemoWorkspace(): string {
 }
 
 // ── Server boot ──────────────────────────────────────────────────────────────
-interface DemoServer {
+export interface DemoServer {
   port: number;
   token: string;
   configDir: string;
@@ -475,7 +475,7 @@ interface DemoServer {
 /** Temp dirs + child registered AS bootServer creates them, so a throw or
  *  Ctrl-C mid-boot (before a full DemoServer exists) can still reap the
  *  partially-constructed, credential-bearing state. */
-interface Resources {
+export interface Resources {
   configDir?: string;
   fakeHome?: string;
   workspace?: string;
@@ -503,7 +503,7 @@ function seedClaudeToken(fakeHome: string): void {
   }
 }
 
-async function bootServer(
+export async function bootServer(
   workspace: string,
   caps: Caps,
   mockUrl: string | undefined,
@@ -693,7 +693,7 @@ async function bootServer(
 }
 
 // ── API helpers ──────────────────────────────────────────────────────────────
-async function api<T>(
+export async function api<T>(
   server: DemoServer,
   path: string,
   init?: RequestInit,
@@ -716,9 +716,9 @@ async function api<T>(
   return { status: res.status, body };
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-async function warmUsage(server: DemoServer, label: string): Promise<void> {
+export async function warmUsage(server: DemoServer, label: string): Promise<void> {
   try {
     const { status, body } = await api<Record<string, unknown>>(
       server,
@@ -736,7 +736,7 @@ async function warmUsage(server: DemoServer, label: string): Promise<void> {
   }
 }
 
-async function warmCodexUsage(server: DemoServer, label: string): Promise<void> {
+export async function warmCodexUsage(server: DemoServer, label: string): Promise<void> {
   try {
     const { status, body } = await api<Record<string, unknown>>(
       server,
@@ -761,7 +761,7 @@ async function warmCodexUsage(server: DemoServer, label: string): Promise<void> 
 }
 
 /** Scan a fake-home JSONL tree for a substring proving a real assistant turn. */
-function jsonlTreeHas(root: string, needle: string): boolean {
+export function jsonlTreeHas(root: string, needle: string): boolean {
   if (!existsSync(root)) return false;
   const stack = [root];
   while (stack.length) {
@@ -787,13 +787,13 @@ function jsonlTreeHas(root: string, needle: string): boolean {
   return false;
 }
 
-const codexProducedOutput = (fakeHome: string): boolean =>
+export const codexProducedOutput = (fakeHome: string): boolean =>
   jsonlTreeHas(join(fakeHome, ".codex", "sessions"), "agent_message");
-const claudeProducedOutput = (fakeHome: string): boolean =>
+export const claudeProducedOutput = (fakeHome: string): boolean =>
   jsonlTreeHas(join(fakeHome, ".claude", "projects"), '"type":"assistant"');
 
 // ── Scene staging ────────────────────────────────────────────────────────────
-interface AgentInfo {
+export interface AgentInfo {
   id: string;
   name: string;
   status: string;
@@ -1014,7 +1014,7 @@ async function stageScene(
 }
 
 // ── Web capture ──────────────────────────────────────────────────────────────
-const THEME = "void"; // pure-black theme (#000000 bg) — see store.ts THEMES
+export const THEME = "void"; // pure-black theme (#000000 bg) — see store.ts THEMES
 const VIEWPORT = { width: HERO_W, height: HERO_H };
 
 type PaneObj =
@@ -1093,12 +1093,12 @@ function seedBlob3(
 
 // Force ALL dockview panes to full brightness (product dims inactive groups to
 // opacity 0.5 on .dv-pane-fill) — capture-time visual only.
-const UNDIM_CSS = ".dv-pane-fill { opacity: 1 !important; }";
+export const UNDIM_CSS = ".dv-pane-fill { opacity: 1 !important; }";
 
 // The org-chart tree (HierarchyPanel) centers + overflows its pane rather than
 // fitting; scale it down a touch so the whole hierarchy (all provider icons)
 // fits inside the narrower left pane. Capture-time visual only.
-const ORG_FIT_CSS =
+export const ORG_FIT_CSS =
   ".overflow-auto.p-8 > .flex.flex-col.gap-12 { transform: scale(0.8) !important; transform-origin: top center !important; }";
 
 async function shoot(
@@ -1410,7 +1410,7 @@ function fakeHomePids(fakeHome: string): number[] {
   return matched;
 }
 
-async function teardown(
+export async function teardown(
   server: DemoServer,
   agents: AgentInfo[],
   workspace: string,
@@ -1492,7 +1492,7 @@ async function teardown(
  *  PID sweep + temp-dir removal, minus the agent-API deletes (no reachable
  *  server). Scoped by PID + HOME===fakeHome — never by name — so the operator's
  *  real agents are untouched. Removes the credential-bearing temp dirs. */
-async function bestEffortReap(r: Resources): Promise<void> {
+export async function bestEffortReap(r: Resources): Promise<void> {
   shuttingDown = true;
   console.log("Interrupted/failed during boot — best-effort cleanup…");
 
@@ -1638,7 +1638,9 @@ async function main(): Promise<void> {
   console.log(`\nDone. Assets in ${OUT_DIR}`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
