@@ -66,9 +66,10 @@ systemRouter.post("/upgrade", async (c) => {
       {
         status: "error",
         message:
-          "This is a source (git clone) install — upgrade it from a shell " +
-          "with `git pull && make prod` (source-mode upgrade backend ships " +
-          "in a later release).",
+          "This is a source (git clone) install — run `autonomos upgrade` " +
+          "from a shell. The in-process REST path is bundle-only: a source " +
+          "upgrade rebuilds for minutes inside the request and gets no " +
+          "health gate (the process that would run it exits).",
       },
       400,
     );

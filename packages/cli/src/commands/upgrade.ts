@@ -27,8 +27,14 @@
 
 import {
   type ResolvedInstall,
+  readInstallJson,
   resolveInstall,
 } from "@autonomos/server/installInfo.js";
+import {
+  getVersionAt,
+  performSourceRollback,
+  performSourceUpgrade,
+} from "@autonomos/server/sourceUpgrade.js";
 import {
   detectPlatform,
   performRollback,
@@ -109,6 +115,106 @@ function parseFlags(argv: readonly string[]): UpgradeFlags {
   return { targetVersion };
 }
 
+/**
+ * Source-mode (managed clone) upgrade: fetch tags → dirty-tree refusal →
+ * checkout target tag → rebuild → supervisor restart + health gate →
+ * auto-rollback (checkout previousRef + rebuild + restart) if the new
+ * version doesn't come up. Same shape as the bundle flow below; git is the
+ * version store instead of the .previous directory.
+ */
+async function runSourceUpgradeFlow(
+  install: ResolvedInstall,
+  flags: UpgradeFlags,
+): Promise<number> {
+  // bundleDir is where resolveInstall PHYSICALLY found the marker — ground
+  // truth. info.prefix is what the installer wrote at install time and goes
+  // stale (relative path, moved clone); it is display metadata only.
+  const repoRoot = install.bundleDir;
+  const currentVersion = getVersionAt(repoRoot) ?? "unknown";
+  console.log(
+    `Current version: ${currentVersion} (managed clone: ${repoRoot})`,
+  );
+  console.log(
+    flags.targetVersion
+      ? `Fetching tag v${flags.targetVersion}...`
+      : "Fetching release tags...",
+  );
+
+  const result = await performSourceUpgrade({
+    repoRoot,
+    installInfo: install.info,
+    currentVersion,
+    targetVersion: flags.targetVersion,
+  });
+
+  if (result.status === "up-to-date") {
+    console.log(`✓ Already on the latest version (${result.version}).`);
+    return 0;
+  }
+  if (result.status === "error") {
+    console.error(`✗ Upgrade failed: ${result.message}`);
+    return 1;
+  }
+
+  if (result.direction === "downgrade") {
+    console.log(`⚠️  DOWNGRADED ${result.from} → ${result.to} (as requested).`);
+  } else {
+    console.log(`✓ Upgraded ${result.from} → ${result.to}.`);
+  }
+  console.log("  Roll back anytime with: autonomos rollback");
+
+  const outcome = await restartDaemonAfterSwap(result.to);
+  if (outcome.kind === "restart-failed") {
+    // Same verdict semantics as the bundle flow below: a failed supervisor
+    // COMMAND says nothing about the just-built checkout — don't undo it.
+    console.error(
+      `✗ Upgrade is built and checked out, but the supervisor restart could ` +
+        `not be issued. Not rolling back. Fix the supervisor, then run: ` +
+        `autonomos restart (or undo with: autonomos rollback)`,
+    );
+    return 1;
+  }
+  if (outcome.kind !== "not-verified") return 0;
+
+  console.error(
+    `✗ Version ${result.to} did not become healthy. Rolling back to ${result.from}...`,
+  );
+  // performSourceUpgrade rewrote the marker on disk (previousRef now points
+  // at the checkout that was serving) — re-read it rather than using the
+  // pre-upgrade snapshot in `install.info`. If the re-read FAILS, refuse the
+  // auto-rollback outright: the stale snapshot's previousRef is from the
+  // prior cycle, so substituting it would check out a commit from two
+  // generations back (or falsely claim no rollback state exists).
+  const freshMarker = readInstallJson(repoRoot);
+  if (!freshMarker) {
+    console.error(
+      `✗ Cannot auto-rollback: install.json could not be re-read after the ` +
+        `upgrade. Roll back manually once the marker is repaired:\n` +
+        `  autonomos rollback   (or: git -C ${repoRoot} log to locate the ` +
+        `pre-upgrade commit for v${result.from})`,
+    );
+    return 1;
+  }
+  const rollback = performSourceRollback(repoRoot, freshMarker);
+  if (rollback.status === "error") {
+    console.error(`✗ Automatic rollback also failed: ${rollback.message}`);
+    return 1;
+  }
+  const recovery = await restartDaemonAfterSwap(rollback.to);
+  if (recovery.kind === "verified") {
+    console.error(
+      `✓ Rolled back to ${rollback.to} and it is serving again. ` +
+        "The failed upgrade's logs: autonomos logs",
+    );
+  } else {
+    console.error(
+      `⚠️  Rolled back to ${rollback.to} but could not verify it came up. ` +
+        "Check: autonomos status / autonomos logs",
+    );
+  }
+  return 1;
+}
+
 export async function runUpgradeCommand(
   argv: readonly string[] = [],
 ): Promise<number> {
@@ -129,12 +235,7 @@ export async function runUpgradeCommand(
   }
 
   if (install.info.mode === "source") {
-    console.error(
-      "This is a source (git clone) install. The source-mode upgrade backend\n" +
-        "ships in an upcoming release; until then update with:\n" +
-        "  git pull && make prod",
-    );
-    return 2;
+    return await runSourceUpgradeFlow(install, flags);
   }
 
   const overrides = resolveReleaseOverrides();

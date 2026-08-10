@@ -14,13 +14,12 @@
 // unrecognized layout — resolves to a hard error with instructions, never a
 // guess.
 //
-// Mode "source" (a managed git clone updated by tag checkout) is part of the
-// schema now so a newer install.json loads cleanly here, but this release
-// only performs bundle-mode upgrades — resolution succeeds and the CALLER
-// decides what "source" means (the upgrade command refuses with instructions
-// until source-mode upgrade ships).
+// Mode "source" is a managed git clone updated by tag checkout
+// (sourceUpgrade.ts); mode "bundle" is the vended-tarball install
+// (upgrade.ts). Resolution only names the shape — the CALLER routes to the
+// matching backend.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as pathResolve } from "node:path";
 
 export const INSTALL_JSON = "install.json";
@@ -35,16 +34,32 @@ function isInstallMode(value: unknown): value is InstallMode {
 export type InstallInfo = {
   /** How this install is laid out — decides which upgrade backend applies. */
   mode: InstallMode;
-  /** Install prefix (bundle mode: the dir containing share/ and bin/). */
+  /**
+   * Bundle mode: the install prefix (the dir containing share/ and bin/).
+   * Source mode: the managed clone's repo root.
+   */
   prefix: string;
   /** Which tool wrote the marker (install.sh, upgrade, …). Informational. */
   installedBy?: string;
   /** ISO timestamp of the write. Informational. */
   installedAt?: string;
+  /**
+   * Source mode only — the commit the previous checkout pointed at, kept for
+   * `autonomos rollback` (the source-mode analogue of bundle mode's
+   * `.previous` directory, one cycle deep).
+   */
+  previousRef?: string;
+  /** Source mode only — the version previousRef carried. Informational. */
+  previousVersion?: string;
 };
 
 export type ResolvedInstall = {
-  /** Directory the running bundle lives in (contains index.js). */
+  /**
+   * Where the marker was PHYSICALLY found — bundle mode: the bundle dir
+   * (contains index.js); source mode: the managed clone's repo root. This
+   * is ground truth for every filesystem/git operation; the marker's own
+   * `prefix` field is install-time metadata that can go stale.
+   */
   bundleDir: string;
   info: InstallInfo;
   /** Whether the marker was read from disk or inferred from the legacy layout. */
@@ -73,6 +88,12 @@ export function readInstallJson(bundleDir: string): InstallInfo | null {
         typeof raw.installedBy === "string" ? raw.installedBy : undefined,
       installedAt:
         typeof raw.installedAt === "string" ? raw.installedAt : undefined,
+      previousRef:
+        typeof raw.previousRef === "string" ? raw.previousRef : undefined,
+      previousVersion:
+        typeof raw.previousVersion === "string"
+          ? raw.previousVersion
+          : undefined,
     };
   } catch {
     console.warn(
@@ -83,11 +104,21 @@ export function readInstallJson(bundleDir: string): InstallInfo | null {
 }
 
 export function writeInstallJson(bundleDir: string, info: InstallInfo): void {
-  writeFileSync(
-    join(bundleDir, INSTALL_JSON),
-    `${JSON.stringify(info, null, 2)}\n`,
-  );
+  // Write-temp-then-rename: in source mode previousRef in this file is the
+  // ONLY rollback record (bundle mode at least has the physical .previous
+  // dir) — a torn write (crash / ENOSPC mid-write) must not leave
+  // unparseable JSON where the rollback state used to be.
+  const target = join(bundleDir, INSTALL_JSON);
+  const tmp = `${target}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(info, null, 2)}\n`);
+  renameSync(tmp, target);
 }
+
+// How many parent directories the source-marker walk inspects. A managed
+// clone's entry script sits at <root>/packages/cli/src/index.ts — 3 levels —
+// but a future layout shuffle shouldn't silently break resolution, and an
+// unbounded walk would read markers from unrelated ancestor directories.
+const SOURCE_MARKER_WALK_LIMIT = 10;
 
 /**
  * Resolve the install this process is running from. `scriptPath` is
@@ -97,7 +128,14 @@ export function writeInstallJson(bundleDir: string, info: InstallInfo): void {
  *   1. install.json next to the entry script → trust the marker.
  *   2. Legacy layout <prefix>/share/autonomos → bundle mode, derived prefix
  *      (installs made before the marker existed).
- *   3. Anything else → throw with instructions. NEVER guess.
+ *   3. A SOURCE-mode marker in a parent directory (bounded walk): a managed
+ *      clone's marker lives at the repo ROOT while the entry script runs
+ *      from packages/cli/src/ — writing it next to the script would dirty
+ *      the git tree the upgrade flow requires clean. Only mode "source" is
+ *      accepted from the walk; a bundle marker above the script is a
+ *      misconfiguration, not an install.
+ *   4. Anything else → throw with instructions. NEVER guess. A plain dev
+ *      checkout has no marker anywhere and lands here by design.
  */
 export function resolveInstall(
   scriptPath: string | undefined = process.argv[1],
@@ -122,11 +160,25 @@ export function resolveInstall(
     };
   }
 
+  // Source-marker walk: a managed clone marks its repo root.
+  let dir = dirname(bundleDir);
+  for (let i = 0; i < SOURCE_MARKER_WALK_LIMIT; i++) {
+    const found = readInstallJson(dir);
+    if (found?.mode === "source") {
+      return { bundleDir: dir, info: found, source: "marker" };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break; // filesystem root
+    dir = parent;
+  }
+
   throw new Error(
     `Cannot determine install shape for: ${scriptPath}\n` +
-      `No ${INSTALL_JSON} found in ${bundleDir} and the layout doesn't match ` +
-      `a bundle install (<prefix>/share/autonomos).\n` +
+      `No ${INSTALL_JSON} found in ${bundleDir} (or a source-mode marker in ` +
+      `its parents) and the layout doesn't match a bundle install ` +
+      `(<prefix>/share/autonomos).\n` +
       `- Installed via curl|sh? Re-run the installer to record the marker.\n` +
+      `- Deployed as a managed clone? Re-run scripts/install-source.sh.\n` +
       `- Running from a dev checkout? Update with: git pull && make prod`,
   );
 }

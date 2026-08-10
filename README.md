@@ -50,9 +50,18 @@ autonomos restart       # bounce the service
 autonomos stop          # stop it (stays down until you start it)
 ```
 
-> **Deploy to a remote box** you own (a homelab server, a VPS): clone the repo and run
-> `make deploy DEPLOY_HOST=your-host` — it rsyncs, builds, and supervises the server there
-> via systemd-user. Now your agents live on hardware that's *always* on.
+> **Deploy to a remote box** you own (a homelab server, a VPS) as a **managed clone** —
+> a git checkout pinned to a release tag that `autonomos upgrade`/`rollback` manage
+> (fetch tags → checkout → rebuild → verified restart), and whose running code your
+> agents can read:
+>
+> ```bash
+> bash scripts/install-source.sh            # clone to ~/autonomos at the newest release
+> bash scripts/install-source.sh --ref v0.6.0 --dir /srv/autonomos   # pin + place
+> ```
+>
+> (`make deploy DEPLOY_HOST=…` still exists as a dev tool, but it rsyncs a working
+> tree with no git history — no provenance, no `autonomos upgrade`, no rollback.)
 
 ## Coding-CLI support
 

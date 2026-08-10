@@ -1,19 +1,21 @@
-// `autonomos rollback` — swap the live bundle with `.previous` and restart
-// (ADR-077).
+// `autonomos rollback` — return to the version the last upgrade displaced,
+// then restart (ADR-077).
 //
-// `.previous` is the version displaced by the most recent upgrade (kept for
-// exactly one cycle). The swap is symmetric: rolling back twice returns to
+// Bundle mode: swap the live bundle with the `.previous` directory.
+// Source mode: checkout install.json's previousRef and rebuild.
+// Both are one cycle deep and symmetric — rolling back twice returns to
 // where you started, so this doubles as "roll forward again".
 //
 // Exit codes:
 //   0  rolled back (verified where verifiable)
-//   1  failure (no .previous, filesystem error)
-//   2  unsupported install shape (source mode / dev checkout / unknown)
+//   1  failure (nothing to roll back to, git/filesystem error)
+//   2  unsupported install shape (dev checkout / unknown)
 
 import {
   type ResolvedInstall,
   resolveInstall,
 } from "@autonomos/server/installInfo.js";
+import { performSourceRollback } from "@autonomos/server/sourceUpgrade.js";
 import { performRollback } from "@autonomos/server/upgrade.js";
 import { restartDaemonAfterSwap } from "../lib/apply-bundle.js";
 
@@ -26,15 +28,10 @@ export async function runRollbackCommand(): Promise<number> {
     return 2;
   }
 
-  if (install.info.mode === "source") {
-    console.error(
-      "This is a source (git clone) install. Roll back with git instead:\n" +
-        "  git checkout <previous-tag> && make prod",
-    );
-    return 2;
-  }
-
-  const result = performRollback(install.bundleDir);
+  const result =
+    install.info.mode === "source"
+      ? performSourceRollback(install.bundleDir, install.info)
+      : performRollback(install.bundleDir);
   if (result.status === "error") {
     console.error(`✗ Rollback failed: ${result.message}`);
     return 1;
@@ -42,8 +39,10 @@ export async function runRollbackCommand(): Promise<number> {
 
   console.log(`✓ Rolled back ${result.from} → ${result.to}.`);
   console.log(
-    `  The displaced version is now at ${install.bundleDir}.previous ` +
-      "(run rollback again to swap forward).",
+    install.info.mode === "source"
+      ? "  The displaced checkout is recorded in install.json (run rollback again to swap forward)."
+      : `  The displaced version is now at ${install.bundleDir}.previous ` +
+          "(run rollback again to swap forward).",
   );
 
   const outcome = await restartDaemonAfterSwap(result.to);
