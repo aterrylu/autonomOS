@@ -25,6 +25,8 @@ type VersionInfo = {
   updateAvailable: boolean;
   /** "bundle" | "source" | null (dev checkout / older server). */
   installMode: string | null;
+  /** GitHub release-notes page for `latest`, or null (repo override). */
+  releaseUrl: string | null;
 };
 
 function useUpdateAvailable(): VersionInfo | null {
@@ -51,6 +53,8 @@ function useUpdateAvailable(): VersionInfo | null {
               updateAvailable: data.updateAvailable,
               installMode:
                 typeof data.installMode === "string" ? data.installMode : null,
+              releaseUrl:
+                typeof data.releaseUrl === "string" ? data.releaseUrl : null,
             });
           }
         }
@@ -81,26 +85,44 @@ export function UpdateBadgeStatusBarItem() {
 
   if (!info?.updateAvailable || !info.latest) return null;
 
+  const label = `New release available (v${info.version} → v${info.latest})`;
+  const tooltip =
+    // Shape-true advice: `autonomos upgrade` refuses on a plain dev
+    // checkout (installMode null) — pointing at it from the dashboard
+    // Terry actually watches would advertise a refusal.
+    (info.installMode === "bundle" || info.installMode === "source"
+      ? "Run `autonomos upgrade` in a terminal (verified restart, auto-rollback)."
+      : "Update this dev checkout with `git pull && make prod`.") +
+    (info.releaseUrl ? " Click to open the release notes." : "");
+
   return (
     <span
       className="flex items-center gap-1.5"
       style={{ color: page.statusFg }}
-      title={
-        `Update available: v${info.version} → v${info.latest}. ` +
-        // Shape-true advice: `autonomos upgrade` refuses on a plain dev
-        // checkout (installMode null) — pointing at it from the dashboard
-        // Terry actually watches would advertise a refusal.
-        (info.installMode === "bundle" || info.installMode === "source"
-          ? "Run `autonomos upgrade` in a terminal (verified restart, auto-rollback)."
-          : "Update this dev checkout with `git pull && make prod`.")
-      }
+      title={tooltip}
       data-testid="update-badge"
     >
       <span
         className="inline-block rounded-full"
         style={{ width: 7, height: 7, background: "#58a6ff" }}
       />
-      <span>{`v${info.latest} available`}</span>
+      {info.releaseUrl ? (
+        // A link to the release NOTES is navigation the USER performs — the
+        // dashboard app still never calls GitHub, and this is not an update
+        // button (nothing touches the daemon).
+        <a
+          href={info.releaseUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:underline"
+          style={{ color: "inherit" }}
+          data-testid="update-badge-link"
+        >
+          {label}
+        </a>
+      ) : (
+        <span>{label}</span>
+      )}
     </span>
   );
 }

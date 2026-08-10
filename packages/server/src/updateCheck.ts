@@ -43,12 +43,20 @@ export type UpdateCheckState = {
   updateAvailable: boolean;
   /** ISO timestamp of the last SUCCESSFUL check, or null. */
   checkedAt: string | null;
+  /**
+   * GitHub release-notes page for `latest`, or null. Only constructed for
+   * the canonical repo — an AUTONOMOS_RELEASE_REPO override points at a
+   * repository whose web layout we can't assume, so the badge simply
+   * renders without a link there.
+   */
+  releaseUrl: string | null;
 };
 
 let state: UpdateCheckState = {
   latest: null,
   updateAvailable: false,
   checkedAt: null,
+  releaseUrl: null,
 };
 let timer: NodeJS.Timeout | undefined;
 
@@ -131,6 +139,10 @@ export async function runUpdateCheck(
     updateAvailable:
       current !== "unknown" && compareSemver(current, latest) < 0,
     checkedAt: new Date().toISOString(),
+    releaseUrl:
+      repo === DEFAULT_RELEASE_REPO
+        ? `https://github.com/${repo}/releases/tag/v${latest}`
+        : null,
   };
   return state;
 }
@@ -184,5 +196,10 @@ export function stopUpdateCheck(): void {
 /** Test hook — reset the module cache between tests. */
 export function _resetUpdateCheckForTesting(): void {
   stopUpdateCheck();
-  state = { latest: null, updateAvailable: false, checkedAt: null };
+  state = {
+    latest: null,
+    updateAvailable: false,
+    checkedAt: null,
+    releaseUrl: null,
+  };
 }

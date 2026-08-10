@@ -37,18 +37,47 @@ describe("UpdateBadgeStatusBarItem", () => {
       updateAvailable: true,
       checkedAt: "2026-08-09T00:00:00Z",
       installMode: "bundle",
+      releaseUrl: "https://github.com/aterrylu/autonomOS/releases/tag/v0.6.0",
     });
     await act(async () => {
       render(<UpdateBadgeStatusBarItem />);
     });
     const badge = await screen.findByTestId("update-badge");
-    expect(badge.textContent).toContain("v0.6.0 available");
+    expect(badge.textContent).toContain(
+      "New release available (v0.5.0 → v0.6.0)",
+    );
+    // The label links to the GitHub release notes — user navigation, in a
+    // new tab; the dashboard app itself still never calls GitHub.
+    const link = screen.getByTestId("update-badge-link");
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/aterrylu/autonomOS/releases/tag/v0.6.0",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
     // The tooltip carries the CLI instruction — the badge is passive.
     expect(badge.getAttribute("title")).toContain("autonomos upgrade");
     // THE invariant this feature leads with: the dashboard reads only the
     // server's cached answer — it never contacts GitHub (or anywhere else).
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/system/version");
+  });
+
+  it("renders an unlinked label when releaseUrl is absent (repo override)", async () => {
+    stubVersionFetch({
+      version: "0.5.0",
+      platform: "darwin",
+      arch: "arm64",
+      latest: "0.6.0",
+      updateAvailable: true,
+      checkedAt: "2026-08-09T00:00:00Z",
+      installMode: "bundle",
+      releaseUrl: null,
+    });
+    await act(async () => {
+      render(<UpdateBadgeStatusBarItem />);
+    });
+    const badge = await screen.findByTestId("update-badge");
+    expect(badge.textContent).toContain("New release available");
+    expect(screen.queryByTestId("update-badge-link")).toBeNull();
   });
 
   it("points a dev checkout at git pull + make prod, not at a command that refuses", async () => {

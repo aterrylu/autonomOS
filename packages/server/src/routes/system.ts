@@ -58,6 +58,7 @@ systemRouter.get("/version", (c) => {
     latest: update.latest,
     updateAvailable: update.updateAvailable,
     checkedAt: update.checkedAt,
+    releaseUrl: update.releaseUrl,
     installMode: installMode(),
   });
 });
