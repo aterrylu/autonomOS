@@ -3,36 +3,14 @@ import {
   listSessions,
   type SDKSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { ProjectInfo, ProjectSession } from "@autonomos/core";
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
 import { batchGetTitles } from "../titleCache";
 
-export interface ProjectInfo {
-  path: string;
-  name: string;
-  sessions: ProjectSession[];
-  lastActive: number;
-}
-
-export interface ProjectSession {
-  sessionId: string;
-  summary: string;
-  lastModified: number;
-  gitBranch?: string;
-  firstPrompt?: string;
-  /** User-set title via /rename — SDK bug: currently returns undefined (v0.2.71) */
-  customTitle?: string;
-  /** True if this session is managed by autonomOS (has an agent record) */
-  isAutonomosAgent?: boolean;
-  /** Lifecycle status for autonomOS agents: "running" or "exited" */
-  autonomosStatus?: "running" | "exited";
-  /** Template used to spawn this agent */
-  template?: string;
-  /** Manager display name in the org chart (resolved from managerId) */
-  manager?: string;
-  /** Project scope */
-  project?: string;
-}
+// Wire shapes live in @autonomos/core (types/api.ts) — one declaration
+// shared with the dashboard client.
+export type { ProjectInfo, ProjectSession } from "@autonomos/core";
 
 export const projectRouter = new Hono();
 

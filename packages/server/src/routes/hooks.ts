@@ -1,3 +1,4 @@
+import type { AgentActivityState, AgentActivityStatus } from "@autonomos/core";
 import { Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
@@ -43,31 +44,12 @@ export interface SessionNotification {
   id?: string;
 }
 
-export type AgentStatus =
-  | "unknown"
-  | "ready"
-  | "working"
-  | "tool_running"
-  | "idle"
-  | "needs_input"
-  | "error"
-  | "compacting"
-  | "orchestrating"
-  | "stopped";
-
-export interface AgentState {
-  status: AgentStatus;
-  currentTool?: string;
-  toolDetail?: string;
-  lastEvent: string;
-  updatedAt: number;
-  /** Status saved when entering "compacting" (on PreCompact) so a compaction
-   *  resolve signal (PostCompact OR SessionStart source=compact) can restore it.
-   *  Cleared once resolved, or when any non-compaction status change ends the
-   *  interlude. Undefined when no meaningful baseline exists (e.g. cold-start +
-   *  auto-compact on session resume). See ADR-053. */
-  preCompactStatus?: AgentStatus;
-}
+// The activity types are the WIRE shape of the read surface, so they live in
+// @autonomos/core (types/api.ts) where the dashboard imports the same
+// declaration — re-exported under the names this module's consumers use.
+// (Core's `AgentStatus` is the RECORD lifecycle enum; these are activity.)
+export type AgentStatus = AgentActivityStatus;
+export type AgentState = AgentActivityState;
 
 const DEFAULT_AGENT_STATE: AgentState = {
   status: "unknown",

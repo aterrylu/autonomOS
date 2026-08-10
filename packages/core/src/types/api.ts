@@ -144,9 +144,15 @@ export interface ProjectSession {
   /** User-set title via /rename — SDK bug: currently returns undefined. */
   customTitle?: string;
   /** True if this session is managed by autonomOS (has an agent record). */
-  isManaged?: boolean;
-  /** True if the managed agent is currently running. */
-  isLive?: boolean;
+  isAutonomosAgent?: boolean;
+  /** Lifecycle status for autonomOS agents. */
+  autonomosStatus?: "running" | "exited";
+  /** Template used to spawn this agent. */
+  template?: string;
+  /** Manager display name in the org chart (resolved from managerId). */
+  manager?: string;
+  /** Project scope. */
+  project?: string;
 }
 
 export interface ProjectInfo {
