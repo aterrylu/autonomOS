@@ -11,7 +11,6 @@ import debugStartSvg from "@vscode/codicons/src/icons/debug-start.svg?raw";
 import eyeSvg from "@vscode/codicons/src/icons/eye.svg?raw";
 import eyeClosedSvg from "@vscode/codicons/src/icons/eye-closed.svg?raw";
 import gearSvg from "@vscode/codicons/src/icons/gear.svg?raw";
-import linkExternalSvg from "@vscode/codicons/src/icons/link-external.svg?raw";
 import listFlatSvg from "@vscode/codicons/src/icons/list-flat.svg?raw";
 import listTreeSvg from "@vscode/codicons/src/icons/list-tree.svg?raw";
 import lockSvg from "@vscode/codicons/src/icons/lock.svg?raw";
@@ -41,7 +40,6 @@ const ICONS = {
   eye: extractPaths(eyeSvg),
   "eye-closed": extractPaths(eyeClosedSvg),
   gear: extractPaths(gearSvg),
-  "link-external": extractPaths(linkExternalSvg),
   "list-flat": extractPaths(listFlatSvg),
   "list-tree": extractPaths(listTreeSvg),
   lock: extractPaths(lockSvg),
