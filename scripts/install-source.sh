@@ -69,6 +69,21 @@ fi
 if [[ -z "$REF" ]]; then
   REF=$(git -C "$CLONE_DIR" tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
   [[ -n "$REF" ]] || { echo "Error: no vX.Y.Z release tags found." >&2; exit 1; }
+else
+  # A managed clone is pinned to release TAGS — that's the provenance story
+  # (a tag is a version with a name). Accepting `--ref main` here would
+  # silently create the branch-tip deployment this mode exists to reject.
+  REF="v${REF#v}"
+  if ! [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: --ref must be a release tag (vX.Y.Z), got: $REF" >&2
+    echo "  Branch-tip deployments are what this mode replaces. For a dev" >&2
+    echo "  checkout, clone normally and use git pull + make prod." >&2
+    exit 64
+  fi
+  if ! git -C "$CLONE_DIR" rev-parse --verify --quiet "refs/tags/$REF" >/dev/null; then
+    echo "Error: no tag $REF exists in the repository." >&2
+    exit 1
+  fi
 fi
 echo "[install-source] Checking out $REF"
 git -C "$CLONE_DIR" checkout "$REF"

@@ -108,6 +108,32 @@ function gitOrError(
 }
 
 /**
+ * TRACKED files that `make build` regenerates in place. A byte-difference
+ * from the committed artifact (esbuild version drift, lockfile re-resolve)
+ * would otherwise leave the tree dirty after every successful build — so the
+ * NEXT upgrade/rollback would hit the dirty-tree refusal forever, defeated
+ * by the updater's own build step. These are restored to the committed state
+ * before the dirty check (they are regenerable by definition; anything ELSE
+ * modified still refuses), and the post-checkout build regenerates them.
+ */
+export const BUILD_MUTATED_TRACKED_FILES = [
+  "packages/server/src/channel-server/dist.mjs",
+  "bun.lock",
+] as const;
+
+/**
+ * Restore the build-regenerated tracked artifacts to their committed state.
+ * Per-path and failure-tolerant: a path may not exist in the current
+ * revision (older tags), which is fine — the dirty check right after is the
+ * arbiter of what remains.
+ */
+export function resetBuildArtifacts(repoRoot: string): void {
+  for (const path of BUILD_MUTATED_TRACKED_FILES) {
+    git(repoRoot, ["checkout", "--", path]);
+  }
+}
+
+/**
  * Tracked modifications block an upgrade; untracked files don't (build
  * output and .env legitimately sit untracked in a deployment clone — and
  * everything ignored never shows in porcelain at all).
@@ -156,6 +182,10 @@ export async function performSourceUpgrade(
     };
   }
 
+  // Build-regenerated tracked artifacts are restored first — without this,
+  // the tree is dirty after every successful build and this refusal would
+  // fire on every subsequent run.
+  resetBuildArtifacts(repoRoot);
   const dirty = dirtyTrackedFiles(repoRoot);
   if (dirty === null) {
     return { status: "error", message: "git status failed in the clone." };
@@ -270,6 +300,10 @@ export function performSourceRollback(
     };
   }
 
+  // Build-regenerated tracked artifacts are restored first — without this,
+  // the tree is dirty after every successful build and this refusal would
+  // fire on every subsequent run.
+  resetBuildArtifacts(repoRoot);
   const dirty = dirtyTrackedFiles(repoRoot);
   if (dirty === null) {
     return { status: "error", message: "git status failed in the clone." };

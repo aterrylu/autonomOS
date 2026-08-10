@@ -126,7 +126,10 @@ async function runSourceUpgradeFlow(
   install: ResolvedInstall,
   flags: UpgradeFlags,
 ): Promise<number> {
-  const repoRoot = install.info.prefix;
+  // bundleDir is where resolveInstall PHYSICALLY found the marker — ground
+  // truth. info.prefix is what the installer wrote at install time and goes
+  // stale (relative path, moved clone); it is display metadata only.
+  const repoRoot = install.bundleDir;
   const currentVersion = getVersionAt(repoRoot) ?? "unknown";
   console.log(
     `Current version: ${currentVersion} (managed clone: ${repoRoot})`,

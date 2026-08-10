@@ -5,7 +5,13 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -113,6 +119,42 @@ describe("performSourceUpgrade", () => {
     );
     // The checkout was not moved.
     assert.equal(git(cloneDir, "describe", "--tags"), "v0.1.0");
+  });
+
+  it("restores build-regenerated tracked artifacts instead of refusing on them", async () => {
+    // make build rewrites tracked files (channel-server/dist.mjs, bun.lock)
+    // in place — after any successful build they can differ byte-wise from
+    // the committed artifact. That drift must NOT trip the dirty-tree
+    // refusal (it would fire on every run after the first), while any OTHER
+    // tracked modification still refuses.
+    const artifact = "packages/server/src/channel-server/dist.mjs";
+    mkdirSync(join(originDir, "packages/server/src/channel-server"), {
+      recursive: true,
+    });
+    writeFileSync(join(originDir, artifact), "// committed artifact v1\n");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "add build artifact");
+    tagRelease("0.2.0");
+    git(cloneDir, "fetch", "--tags", "origin");
+    git(cloneDir, "checkout", "v0.2.0");
+
+    // Simulate post-build drift in the clone.
+    writeFileSync(join(cloneDir, artifact), "// locally rebuilt, differs\n");
+
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0", // behind the 0.2.0 tag we're already on? no: force a real move
+      targetVersion: "0.2.0",
+      buildCommand: STUB_BUILD,
+    });
+    // Reaching up-to-date/upgraded (anything but the dirty refusal) proves
+    // the artifact drift was restored, not blocked on.
+    assert.notEqual(result.status, "error");
+    assert.equal(
+      readFileSync(join(cloneDir, artifact), "utf-8"),
+      "// committed artifact v1\n",
+    );
   });
 
   it("allows untracked files (build output legitimately sits untracked)", async () => {

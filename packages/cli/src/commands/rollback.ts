@@ -30,7 +30,7 @@ export async function runRollbackCommand(): Promise<number> {
 
   const result =
     install.info.mode === "source"
-      ? performSourceRollback(install.info.prefix, install.info)
+      ? performSourceRollback(install.bundleDir, install.info)
       : performRollback(install.bundleDir);
   if (result.status === "error") {
     console.error(`✗ Rollback failed: ${result.message}`);
