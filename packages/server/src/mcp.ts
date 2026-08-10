@@ -51,9 +51,11 @@ import {
   createEnvPresetShape,
   createScheduleShape,
   createTemplateShape,
+  deleteScheduleShape,
   envPresetNameShape,
   killAgentShape,
   orgChartShape,
+  runScheduleShape,
   scheduleNameShape,
   setManagerShape,
   updateEnvPresetShape,
@@ -689,7 +691,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "delete_schedule",
     "Delete a schedule (run history preserved).",
-    scheduleNameShape,
+    deleteScheduleShape,
     async (args) => {
       removeScheduleJob(args.name);
       const removed = deleteSchedule(args.name);
@@ -710,7 +712,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "run_schedule",
     "Trigger a schedule immediately.",
-    scheduleNameShape,
+    runScheduleShape,
     async (args) => {
       const result = runScheduleNow(args.name);
       if (result.error) {

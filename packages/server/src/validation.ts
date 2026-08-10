@@ -60,28 +60,47 @@ const createAgentCommonShape = {
   workingDirectory: z
     .string()
     .describe("Absolute path to the working directory (~ allowed)"),
-  name: z.string().optional().describe("Display name for the agent"),
+  name: z
+    .string()
+    .optional()
+    .describe(
+      "Display name for the agent (shown in dashboard and list_agents)",
+    ),
   prompt: z
     .string()
     .optional()
-    .describe("Initial task or message — what the agent starts working on"),
+    .describe(
+      "Initial task or message to send to the agent — this is what the agent starts working on",
+    ),
   template: z
     .string()
     .optional()
-    .describe("Template name (e.g. 'team-lead', 'worker')"),
-  manager: z.string().optional().describe("Manager agent name for org chart"),
-  project: z.string().optional().describe("Project scope (e.g. 'autonomOS')"),
+    .describe(
+      "Template name to base this agent on (e.g. 'team-lead', 'worker'). Templates define role, system prompt, and permission mode.",
+    ),
+  manager: z
+    .string()
+    .optional()
+    .describe(
+      "Manager agent name (e.g. 'TeamLead@autonomOS'). Sets the org chart relationship.",
+    ),
+  project: z
+    .string()
+    .optional()
+    .describe(
+      "Project scope (e.g. 'autonomOS', 'homelab'). Used in role@project naming.",
+    ),
   provider: z
     .enum(PROVIDER_VALUES)
     .optional()
     .describe(
-      "Agent runtime/CLI (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. Must be installed on the host.",
+      "Agent runtime/CLI to spawn (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. The chosen CLI must be installed on the host.",
     ),
   envPreset: z
     .string()
     .optional()
     .describe(
-      "Env preset name (see list_env_presets) — applies a model-override env (e.g. Kimi backend) to only this agent. The preset's API key must be set by a human in the dashboard first.",
+      "Name of an env preset (see list_env_presets) to apply — e.g. run this Claude Code agent against a Kimi/Moonshot backend. Injects the preset's model-override env into ONLY this agent. The preset must have its API key set by a human in the dashboard first; spawning with a preset whose key is unset fails.",
     ),
 };
 
@@ -92,19 +111,19 @@ export const createAgentShape = {
     .string()
     .optional()
     .describe(
-      "Instructions appended to the system prompt. Defines role/goals.",
+      "Instructions appended to the default system prompt. Defines the agent's role. Keeps CLAUDE.md and CC defaults.",
     ),
   resumeSessionId: z
     .string()
     .optional()
     .describe(
-      "Session id to resume: an autonomOS agent id, OR a raw Claude Code session id — including an EXTERNAL session started via terminal `claude` (discovered in the Projects panel). External sessions are adopted into a new managed agent and resumed.",
+      "Session id to resume: an autonomOS agent id OR a raw Claude Code session id — including an EXTERNAL session started via terminal `claude`. External sessions are adopted into a new managed agent and resumed.",
     ),
   forkFrom: z
     .string()
     .optional()
     .describe(
-      "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+      "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
     ),
   // Deliberately the CURRENT values only, matching mcp/tools.ts exactly.
   // Adding the legacy spelling here would publish it in the machine-readable
@@ -122,7 +141,7 @@ export const createAgentShape = {
     .enum(PERMISSION_MODES)
     .optional()
     .describe(
-      "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
+      "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
     ),
 };
 export const CreateAgentBody = z.object(createAgentShape);
@@ -151,11 +170,14 @@ export const restCreateAgentSchema = z.object({
  *  and the handler reports the "provide one of" case itself so it can name the
  *  usage in its message. */
 export const killAgentShape = {
-  agent: z.string().optional().describe("Agent name or id to terminate"),
+  agent: z
+    .string()
+    .optional()
+    .describe("Agent name or session ID to terminate"),
   name: z
     .string()
     .optional()
-    .describe("Alias for 'agent' — agent name or id to terminate"),
+    .describe("Alias for 'agent' — agent name or session ID to terminate"),
 };
 
 /** MCP `set_manager`. */
@@ -171,7 +193,9 @@ export const setManagerShape = {
   manager: z
     .string()
     .optional()
-    .describe("Manager agent name, or omit to remove manager"),
+    .describe(
+      "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager.",
+    ),
 };
 
 /** `POST /api/agents/:id/manager`. `managerId: null` clears the manager, so it
@@ -188,7 +212,9 @@ export const orgChartShape = {
   includeExited: z
     .boolean()
     .optional()
-    .describe("Include exited agents (default: false, only running)"),
+    .describe(
+      "Include exited agents in the chart (default: false, only running agents shown)",
+    ),
 };
 
 // ── Templates ───────────────────────────────────────────────────
@@ -197,12 +223,22 @@ export const orgChartShape = {
 export const createTemplateShape = {
   name: z
     .string()
-    .describe("Template name (lowercase, hyphens, e.g. 'feature-worker')"),
-  role: z.string().describe("Human-readable role name"),
-  description: z.string().describe("Short description of the template"),
+    .describe(
+      "Template name (lowercase, hyphens, e.g. 'feature-worker', 'code-reviewer'). Used as the filename.",
+    ),
+  role: z
+    .string()
+    .describe(
+      "Human-readable role name (e.g. 'Feature Worker', 'Code Reviewer')",
+    ),
+  description: z
+    .string()
+    .describe("Short description of what this template is for"),
   systemPrompt: z
     .string()
-    .describe("System prompt defining the agent's behavior"),
+    .describe(
+      "System prompt appended to the agent's CC session. Defines the agent's behavior and responsibilities.",
+    ),
   permissionMode: z
     .enum(PERMISSION_MODES)
     .optional()
@@ -212,7 +248,9 @@ export const createTemplateShape = {
   model: z
     .string()
     .optional()
-    .describe("Model override (e.g. 'opus', 'haiku')"),
+    .describe(
+      "Model override for litellm routing (e.g. 'opus', 'sonnet', 'haiku'). Omit for CC default.",
+    ),
   // Declared solely so it can be REPORTED as ignored. Zod strips unknown
   // keys, so without this the field vanishes silently — and agents spawned
   // before ADR-058 still hold the old schema and keep sending it. Naming it
@@ -243,21 +281,40 @@ export const restCreateTemplateSchema = z.object({
 
 // ── Schedules ───────────────────────────────────────────────────
 
-/** Shared by the MCP tools keyed only by schedule name (get/delete/run). */
+/** MCP `get_schedule`. delete/run carry their own verb-specific description
+ *  (the channel schema always has; the drift test keeps all three honest). */
 export const scheduleNameShape = {
   name: z.string().describe("Schedule name"),
 };
 
+/** MCP `delete_schedule`. */
+export const deleteScheduleShape = {
+  name: z.string().describe("Schedule name to delete"),
+};
+
+/** MCP `run_schedule`. */
+export const runScheduleShape = {
+  name: z.string().describe("Schedule name to trigger"),
+};
+
 /** MCP `create_schedule`. */
 export const createScheduleShape = {
-  name: z.string().describe("Schedule name (kebab-case)"),
-  schedule: z.string().describe("Cron expression or once:ISO"),
+  name: z
+    .string()
+    .describe(
+      "Schedule name (lowercase, hyphens, e.g. 'daily-github-summary')",
+    ),
+  schedule: z
+    .string()
+    .describe(
+      'Cron expression (e.g. "0 9 * * 1-5") or one-time (e.g. "once:2026-04-15T09:00")',
+    ),
   target: z
     .string()
     .describe(
-      '"agent:<name>" — send the prompt to a running agent (its own permission mode governs the run)',
+      '"agent:<name>" — send the prompt to a running agent. That agent must be alive when the schedule fires; its own permission mode governs what the run may do.',
     ),
-  prompt: z.string().describe("Task prompt"),
+  prompt: z.string().describe("The prompt/task to execute on each run"),
   // The three below are accepted-and-ignored leftovers of the removed
   // `isolated` target, kept so pre-removal clients still validate.
   // `workingDirectory` is optional now — it used to be required.
@@ -267,43 +324,72 @@ export const createScheduleShape = {
   workingDirectory: z
     .string()
     .optional()
-    .describe("DEPRECATED — ignored (the target agent's cwd is used)"),
-  description: z.string().optional().describe("Description"),
-  timezone: z.string().optional().describe("IANA timezone"),
+    .describe(
+      "DEPRECATED — ignored. The run happens inside the target agent, in that agent's working directory.",
+    ),
+  description: z
+    .string()
+    .optional()
+    .describe("Human-readable description of what this schedule does"),
+  timezone: z
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone (e.g. 'America/Los_Angeles'). Defaults to server local.",
+    ),
   template: z
     .string()
     .optional()
-    .describe("DEPRECATED — ignored (never had an effect)"),
+    .describe("DEPRECATED — ignored. Never had an effect."),
   autonomous: z
     .boolean()
     .optional()
     .describe(
-      "DEPRECATED — ignored (autonomy is the target agent's permissionMode)",
+      "DEPRECATED — ignored. Autonomy is the target agent's own permissionMode; a schedule cannot change it.",
     ),
-  overlapPolicy: z.string().optional().describe("skip or allow"),
+  overlapPolicy: z
+    .string()
+    .optional()
+    .describe(
+      '"skip" (default, skip if previous run active) or "allow" (run regardless)',
+    ),
   onComplete: z
     .string()
     .optional()
-    .describe("DEPRECATED — ignored (see create_schedule in mcp/tools.ts)"),
-  notify: z.string().optional().describe("always, failure, or never"),
-  enabled: z.boolean().optional().default(true),
+    .describe(
+      "DEPRECATED — ignored. Only ever fired for the removed isolated target; an agent: run 'completes' on delivery, before the agent has started.",
+    ),
+  notify: z
+    .string()
+    .optional()
+    .describe(
+      '"always", "failure" (default), or "never" — when to send notifications',
+    ),
+  enabled: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe("Whether the schedule is active (default: true)"),
 };
 
 /** MCP `update_schedule` — every config field optional, keyed by name. */
 export const updateScheduleShape = {
-  name: z.string().describe("Schedule name"),
-  schedule: z.string().optional(),
-  target: z.string().optional(),
-  prompt: z.string().optional(),
-  workingDirectory: z.string().optional(),
-  description: z.string().optional(),
-  timezone: z.string().optional(),
-  template: z.string().optional(),
-  autonomous: z.boolean().optional(),
-  overlapPolicy: z.string().optional(),
-  onComplete: z.string().optional(),
-  notify: z.string().optional(),
-  enabled: z.boolean().optional(),
+  name: z.string().describe("Schedule name to update"),
+  schedule: z.string().optional().describe("New cron expression"),
+  target: z.string().optional().describe("New target"),
+  prompt: z.string().optional().describe("New prompt"),
+  workingDirectory: z.string().optional().describe("New working directory"),
+  description: z.string().optional().describe("New description"),
+  timezone: z.string().optional().describe("New timezone"),
+  template: z.string().optional().describe("New template"),
+  autonomous: z
+    .boolean()
+    .optional()
+    .describe("DEPRECATED — ignored. See create_schedule."),
+  overlapPolicy: z.string().optional().describe("New overlap policy"),
+  onComplete: z.string().optional().describe("New onComplete URI"),
+  notify: z.string().optional().describe("New notify policy"),
+  enabled: z.boolean().optional().describe("Enable/disable"),
 };
 
 /**
@@ -347,35 +433,55 @@ export const schedulerSettingsSchema = z.object({
 
 /** MCP `create_env_preset` — no `secrets`. */
 export const createEnvPresetShape = {
-  name: z.string().describe("Preset name (lowercase, digits, hyphens)"),
-  description: z.string().optional(),
-  provider: z.enum(PROVIDER_VALUES).optional(),
-  label: z.string().optional().describe("Short label for the agent's row"),
+  name: z
+    .string()
+    .describe(
+      "Preset name (lowercase, digits, hyphens — used as the filename).",
+    ),
+  description: z.string().optional().describe("What this preset points at."),
+  provider: z
+    .enum(PROVIDER_VALUES)
+    .optional()
+    .describe("Base provider this override targets (default 'claude-code')."),
+  label: z
+    .string()
+    .optional()
+    .describe(
+      "Short label shown on the agent's row in the dashboard (e.g. 'Kimi K2.7-code').",
+    ),
   env: z
     .record(z.string(), z.string())
     .optional()
-    .describe("Non-secret env vars (e.g. ANTHROPIC_BASE_URL, ANTHROPIC_MODEL)"),
+    .describe(
+      'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Reserved autonomOS control-plane vars are rejected.',
+    ),
   secretKeys: z
     .array(z.string())
     .optional()
     .describe(
-      "Names of required secret env vars (e.g. ['ANTHROPIC_AUTH_TOKEN'])",
+      'Names of the secret env vars this preset needs (e.g. ["ANTHROPIC_AUTH_TOKEN"]). You declare the names; the human fills the values in the dashboard.',
     ),
 };
 
 /** MCP `update_env_preset` — no `secrets`. */
 export const updateEnvPresetShape = {
-  name: z.string().describe("Name of the preset to update"),
+  name: z.string().describe("Name of the preset to update."),
   description: z.string().optional(),
   provider: z.enum(PROVIDER_VALUES).optional(),
   label: z.string().optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  secretKeys: z.array(z.string()).optional(),
+  env: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe("Replaces the non-secret env map."),
+  secretKeys: z
+    .array(z.string())
+    .optional()
+    .describe("Replaces the declared secret-key names."),
 };
 
 /** MCP `delete_env_preset`. */
 export const envPresetNameShape = {
-  name: z.string().describe("Name of the preset to delete"),
+  name: z.string().describe("Name of the preset to delete."),
 };
 
 /** `POST /api/env-presets` — the human surface, so `secrets` is accepted. */
