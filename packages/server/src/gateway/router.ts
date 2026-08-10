@@ -40,9 +40,6 @@ import { DELIVERY_ACK_MS } from "./deliveryTimings.js";
 /** Connected channel MCP server WebSockets, keyed by autonomOS agent id. */
 const sessionClients = new Map<string, WSContext>();
 
-/** Connected dashboard WebSockets (for observability — all messages fanned out) */
-const dashboardClients = new Set<WSContext>();
-
 /** `WSContext.readyState` for OPEN. Hono types this as a numeric union rather
  *  than exporting the constants, so name it once here — annotated so the
  *  compiler checks the value against that union instead of trusting this
@@ -104,14 +101,6 @@ export function unregisterSessionClient(ws: WSContext): void {
  *  launched channel server never came up (a silent loss of send()). */
 export function isSessionClientRegistered(sessionId: string): boolean {
   return sessionClients.has(sessionId);
-}
-
-export function registerDashboard(ws: WSContext): void {
-  dashboardClients.add(ws);
-}
-
-export function unregisterDashboard(ws: WSContext): void {
-  dashboardClients.delete(ws);
 }
 
 // ── URI-based message routing ─────────────────────────────────────
@@ -196,8 +185,17 @@ async function resolveConnectedAgent(
   return null;
 }
 
+/** Display names for system (non-agent) senders. These arrive as literal
+ *  sender ids, not UUIDs, so without this map they hit the unknown-id branch
+ *  below and render as a sliced pseudo-UUID ("Agent schedule"). */
+const SYSTEM_SENDER_NAMES: Record<string, string> = {
+  scheduler: "Scheduler",
+};
+
 /** Resolve the display name for an agent id (enriched via titleCache) */
 async function resolveAgentName(agentId: string): Promise<string> {
+  const systemName = SYSTEM_SENDER_NAMES[agentId];
+  if (systemName) return systemName;
   const agent = getAgent(agentId);
   if (!agent) return `Agent ${agentId.slice(0, 8)}`;
 
@@ -223,8 +221,6 @@ function buildAgentMessage(
 ): GatewayMessage {
   return {
     id: crypto.randomUUID(),
-    platform: "slack", // unused for agent messages — fromUri is the source of truth
-    platformMessageId: "",
     chatId: "",
     userId: senderId,
     userName: senderName,
@@ -300,25 +296,26 @@ async function routeToAgent(
     if (!delivery.delivered) {
       return `Message to Codex agent "${targetName}" was NOT delivered — ${delivery.reason}.`;
     }
-    // Fan out only once the daemon has accepted the turn — a feed showing a
-    // message that never arrived is the same lie as a false ack. This also
-    // matches the Claude Code branch below, which has always fanned out after
-    // its write succeeded.
-    //
-    // NB: `dashboardClients` is empty in every deployment today — nothing in
-    // packages/dashboard opens a gateway socket, so no client ever sends
-    // `dashboard_connect`. Ordering it correctly now is cheap and means the
-    // feed is not born lying if a consumer is ever built; do not read this
-    // comment as evidence that one exists.
-    fanOutToDashboard({
-      type: "message",
-      payload: buildAgentMessage(fromSessionId, senderName, content),
-    });
     return null;
   }
 
   const resolved = await resolveConnectedAgent(targetName);
   if (!resolved) {
+    // Replying to a SYSTEM sender is a predictable mistake: a scheduled
+    // prompt's from_uri reads agent://Scheduler, which looks addressable.
+    // Name what it actually is instead of returning the generic not-found,
+    // which sends the agent hunting through list_agents for a peer that has
+    // never existed. Checked only AFTER real resolution fails, so an actual
+    // agent named "Scheduler" (discouraged) still receives its messages.
+    const systemName = Object.values(SYSTEM_SENDER_NAMES).find(
+      (n) => n.toLowerCase() === targetName.toLowerCase(),
+    );
+    if (systemName) {
+      return (
+        `"${systemName}" is not an agent — it is the autonomOS cron scheduler, a system sender. ` +
+        "Scheduled prompts need no reply: just do the task they describe; the operator sees your work in your own session."
+      );
+    }
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
     return `Agent "${targetName}" not found or not connected. Use list_agents to see available agents.`;
   }
@@ -364,7 +361,6 @@ async function routeToAgent(
     console.error(`[gateway] failed to send to agent ${targetName}:`, err);
     return `Failed to deliver message to agent "${targetName}"`;
   }
-  fanOutToDashboard(wsMsg);
   return null;
 }
 
@@ -405,18 +401,4 @@ export async function getAgentList(): Promise<AgentInfo[]> {
       permissionMode: a.permissionMode,
     };
   });
-}
-
-// ── Dashboard fan-out ─────────────────────────────────────────────
-
-function fanOutToDashboard(msg: GatewayWsMessage): void {
-  const json = JSON.stringify(msg);
-  for (const client of dashboardClients) {
-    try {
-      client.send(json);
-    } catch (err) {
-      console.warn("[gateway] dashboard client send failed, removing:", err);
-      dashboardClients.delete(client);
-    }
-  }
 }

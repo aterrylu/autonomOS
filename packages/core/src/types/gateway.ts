@@ -5,16 +5,17 @@
 
 import type { PermissionMode } from "./permissions";
 
-// ── Platform Messages ─────────────────────────────────────────────
+// ── Agent Messages ────────────────────────────────────────────────
+// `Platform`, `GatewayMessage.platform`, and `platformMessageId` went with the
+// last ADR-064 adapter vestiges — hardcoded `"slack"`, read by nothing.
 
-export type Platform = "slack";
-
-/** Normalized inbound message from any platform or agent */
+/** An agent-to-agent message routed through the gateway. */
 export interface GatewayMessage {
   id: string;
-  platform: Platform;
-  platformMessageId: string;
-  /** Platform-specific routing key (e.g. "workspaceId:channelId" for Slack) */
+  /** Set to the sender's session id, which makes it identical to `userId` —
+   *  and read by nothing. Kept only because dropping it changes the
+   *  channel-server wire payload; slated for removal with the other unread
+   *  fields. */
   chatId: string;
   userId: string;
   userName: string;
@@ -59,7 +60,9 @@ export type GatewayWsMessage =
   // maps to sessionId before trusting the registration; a register without a
   // valid token is rejected, closing the "assert any name" spoof.
   | { type: "register"; sessionId: string; agentToken?: string }
-  | { type: "dashboard_connect" }
+  // `dashboard_connect` was removed: ADR-055 put /ws/gateway on the internal
+  // Unix socket, which no browser can dial. A dashboard feed needs a public
+  // /ws endpoint and its own contract.
   | { type: "message"; payload: GatewayMessage }
   | { type: "send"; to: string; message: string; requestId: string }
   | { type: "send_result"; requestId: string; success: boolean; error?: string }

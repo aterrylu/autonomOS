@@ -139,7 +139,7 @@ Concrete divergences this produced: `create_agent({permissionMode:"yolo"})` reje
 - Dashboard cannot **reparent** or **edit** an agent (the routes exist; `HierarchyPanel` tells the user to use MCP `set_manager`).
 - Unread notification counts are not in any push shape.
 - Duplicate agent names are silently tolerated by two of three resolvers.
-- Scheduler messages arrive from sender `"Agent schedul"` (literal `"scheduler"` string sliced as if a UUID).
+- Scheduler messages arrive from sender `"Agent schedule"` (literal `"scheduler"` string sliced as if a UUID).
 
 ---
 
@@ -178,7 +178,7 @@ A typed client — not a framework adoption:
 - **Dead-surface removal**: `dashboard_connect`/`dashboardClients`/`fanOutToDashboard`, `GET /api/hooks/:sid/*` singles, vestigial `platform` field. ~~`POST /api/system/upgrade`~~ — **withdrawn 2026-08-08**: ReleaseRollout@autonomOS's rollout initiative is actively reviving this handler (their PR-1 swaps its install-mode resolution); the zero-caller state was a symptom of the unreachable-upgrade bug they're fixing, not abandonment. Their lane owns it. (Also agreed with ReleaseRollout: `GET /api/system/version` keeps its path and `{version, platform, arch}` fields byte-for-byte; their badge fields `{latest, updateAvailable, checkedAt}` are additive — to be encoded in the conventions ADR.) `PATCH /api/agents/:id`: **deleted** per Terry's decision (rename/reparent UI is a feature for later, not consolidation). `GET /api/agents/:id` and `GET /api/env-presets/:name` stay (standard REST reads, usable by external clients).
 - **Hook-state reclamation**: wire `clearAgentState`/`clearNotifications` to agent delete (kill keeps state; delete reclaims).
 - **Efficiency**: cache `providers` binary probe (TTL), mtime-cache `/api/projects`, bound `runs?limit`.
-- Fix scheduler sender URI (`scheduler` pseudo-name rendered honestly, not `"Agent schedul"`).
+- Fix scheduler sender URI (`scheduler` pseudo-name rendered honestly, not `"Agent schedule"`).
 
 ### 2.5 Breaking changes — honest list
 

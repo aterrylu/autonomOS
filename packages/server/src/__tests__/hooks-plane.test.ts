@@ -106,12 +106,15 @@ describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
   it("the rejected write did not mutate agent state", async () => {
     // The tokenless ingest above must have changed nothing — read it back on
     // the public surface and confirm the session never reached a live status.
-    const { body } = await authedJson<HookState>(
+    // Bulk endpoint — the per-session single was removed in the dead-surface
+    // pass. A session the ingest never touched has NO entry here, which is
+    // itself the assertion: nothing was written.
+    const { body } = await authedJson<Record<string, { status: HookState }>>(
       server,
-      `/api/hooks/${SESSION}/status`,
+      "/api/hooks",
     );
     assert.notEqual(
-      body.lastEvent,
+      body[SESSION]?.status.lastEvent,
       "UserPromptSubmit",
       "a rejected hook must not have written status",
     );

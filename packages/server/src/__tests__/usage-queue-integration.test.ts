@@ -88,11 +88,17 @@ describe("usage-queue auto-fire — real spawn", {
   });
 
   async function hookStatus(id: string): Promise<HookStatus> {
-    const { body } = await authedJson<HookStatus>(
+    // Reads the BULK endpoint — the per-session single was removed in the
+    // dead-surface pass (this harness was its last caller). An id with no
+    // entry yet maps to the old endpoint's "unknown" sentinel so polls that
+    // start before the first hook keep their semantics.
+    const { body } = await authedJson<Record<string, { status: HookStatus }>>(
       server,
-      `/api/hooks/${id}/status`,
+      "/api/hooks",
     );
-    return body;
+    return (
+      body[id]?.status ?? ({ status: "unknown", lastEvent: "" } as HookStatus)
+    );
   }
 
   function sawMarker(): boolean {

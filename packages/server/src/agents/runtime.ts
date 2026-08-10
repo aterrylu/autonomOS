@@ -32,6 +32,8 @@ import {
 } from "../gateway/codexControl.js";
 import { getProvider } from "../providers/index.js";
 import {
+  clearAgentState,
+  clearNotifications,
   pushSystemNotification,
   retractSystemNotification,
 } from "../routes/hooks.js";
@@ -1212,10 +1214,16 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         providerSessionId: crypto.randomUUID(),
         providerThreadId: undefined,
       });
-      pushSystemNotification(
-        persisted.id,
-        `Couldn't resume ${persisted.name}'s prior ${provider.displayName} session (its history may have been pruned) — starting fresh.`,
-      );
+      // Existence-guarded: this exit handler runs async, so the record may
+      // have been DELETED since (which also reclaimed its notifications) — an
+      // unguarded push would re-create a notifications entry under an id
+      // nothing can resolve, the exact leak the reclamation closes.
+      if (getAgent(persisted.id)) {
+        pushSystemNotification(
+          persisted.id,
+          `Couldn't resume ${persisted.name}'s prior ${provider.displayName} session (its history may have been pruned) — starting fresh.`,
+        );
+      }
       console.warn(
         `[runtime] ${persisted.id.slice(0, 8)} crashed on resume — reset session id + cleared thread id, respawning fresh`,
       );
@@ -1253,7 +1261,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       //     that surfaces an error and lingers exits well past a tight bound.
       // The record keeps its external session id, so retrying resume reattaches
       // THIS record rather than adopting a duplicate.
-      if (isAdoptedRecord && lifetime < 60_000) {
+      // Existence-guarded like the resume-crash push above: deleting a
+      // just-adopted agent inside this 60s window would otherwise re-create
+      // its just-reclaimed notifications entry under a deleted id.
+      if (isAdoptedRecord && lifetime < 60_000 && getAgent(persisted.id)) {
         pushSystemNotification(
           persisted.id,
           exitCode === 0
@@ -1341,6 +1352,13 @@ export function deleteAgent(agentId: UUID): boolean {
   cancelChannelServerCheck(agentId);
   const removed = deleteAgentRaw(agentId);
   if (removed) {
+    // deleteAgentRaw revoked the token at the store chokepoint; reclaim the
+    // hook state here (the store can't — routes/hooks would be a layering
+    // inversion). Without this, GET /api/hooks keeps returning ids no store
+    // lookup can resolve. KILL deliberately keeps both — the record survives,
+    // and the history is part of it.
+    clearAgentState(agentId);
+    clearNotifications(agentId);
     emitAgentDelta({ type: "agent.deleted", id: agentId });
   }
   return removed || wasLive;
