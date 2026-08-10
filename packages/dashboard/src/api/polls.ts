@@ -70,11 +70,11 @@ export const schedulesPoll = createPoll<{
 });
 
 /** 10s each — config panels. */
-export const templatesPoll = createPoll<AgentTemplate[]>({
+export const templatesPoll = createPoll<Record<string, AgentTemplate>>({
   source: () => templatesApi.list(),
   intervalMs: 10_000,
 });
-export const presetsPoll = createPoll<EnvPreset[]>({
+export const presetsPoll = createPoll<Record<string, EnvPreset>>({
   source: () => presetsApi.list(),
   intervalMs: 10_000,
 });

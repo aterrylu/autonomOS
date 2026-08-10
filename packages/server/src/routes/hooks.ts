@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents } from "../agents/store.js";
+import { emitAgentDelta } from "../events/agents.js";
 import { getProvider } from "../providers/index.js";
 
 /**
@@ -131,10 +132,44 @@ export function getUnreadCount(sessionId: string): number {
   return getNotifications(sessionId).filter((n) => !n.read).length;
 }
 
+/**
+ * Push the CURRENT activity state + unread count for a session onto the
+ * /ws/agents delta stream. Called from every mutation of `agentStates` or the
+ * unread count — the push migration's whole premise is that this module
+ * already sees every change at a chokepoint, so the dashboard's 3s poll was
+ * pure waste. No-op for ids with no state (e.g. a markRead on a session that
+ * never emitted).
+ */
+function emitStatusDelta(sessionId: string): void {
+  const state = agentStates.get(sessionId);
+  if (!state) return;
+  emitAgentDelta({
+    type: "agent.status",
+    id: sessionId,
+    state,
+    unread: getUnreadCount(sessionId),
+    ts: Date.now(),
+  });
+}
+
+/** Snapshot of every session's activity state + unread count — rides the
+ * /ws/agents `reconcile` frame so a (re)connect needs no follow-up poll. */
+export function getAgentStatusSnapshot(): Record<
+  string,
+  { state: AgentState; unread: number }
+> {
+  const snap: Record<string, { state: AgentState; unread: number }> = {};
+  for (const [id, state] of agentStates) {
+    snap[id] = { state, unread: getUnreadCount(id) };
+  }
+  return snap;
+}
+
 export function markRead(sessionId: string): void {
   const items = notifications.get(sessionId);
   if (items) {
     for (const n of items) n.read = true;
+    emitStatusDelta(sessionId);
   }
 }
 
@@ -151,6 +186,7 @@ function appendNotification(
   items.push(item);
   if (items.length > 50) items.splice(0, items.length - 50);
   notifications.set(sessionId, items);
+  emitStatusDelta(sessionId);
 }
 
 let nextNotificationId = 0;
@@ -197,6 +233,7 @@ export function retractSystemNotification(
   if (idx === -1) return false;
   items.splice(idx, 1);
   if (items.length === 0) notifications.delete(sessionId);
+  emitStatusDelta(sessionId);
   return true;
 }
 
@@ -227,6 +264,7 @@ export function setAgentStatus(sessionId: string, status: AgentStatus): void {
     lastEvent: "provider/status",
     updatedAt: Date.now(),
   });
+  emitStatusDelta(sessionId);
 }
 
 /** Derive agent status from a hook event.
@@ -431,6 +469,7 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
         lastEvent: event,
         updatedAt: timestamp,
       });
+      emitStatusDelta(sessionId);
     }
   } else if (isCompactResolve) {
     // Idempotent "compaction resolved" signal. SessionStart(source=compact)
@@ -453,6 +492,7 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
         lastEvent: event,
         updatedAt: timestamp,
       });
+      emitStatusDelta(sessionId);
     }
     // else: already resolved by the sibling signal → no-op.
   } else if (
@@ -490,6 +530,7 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
           lastEvent: event,
           updatedAt: timestamp,
         });
+        emitStatusDelta(sessionId);
       }
     }
   }

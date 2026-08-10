@@ -10,6 +10,7 @@
  * field tracks whether the underlying PTY is currently running or has exited.
  */
 
+import type { AgentActivityState } from "./api";
 import type { PermissionMode } from "./permissions";
 
 export type UUID = string;
@@ -161,6 +162,25 @@ export type AgentDelta =
     }
   /** Hard delete — file removed. */
   | { type: "agent.deleted"; id: UUID }
+  /** ACTIVITY status changed (hook relay / Codex daemon feed) or the unread
+   *  notification count moved. Added by the API consolidation's push
+   *  migration: this was the ONE thing the delta union didn't model, forcing
+   *  the dashboard's highest-frequency poll (3s) for data the server already
+   *  had event-shaped at its chokepoint. `state` is the full activity state,
+   *  not a patch — idempotent to apply, safe to reorder with reconcile.
+   *  `ts` per the ADR-078 WS envelope convention. */
+  | {
+      type: "agent.status";
+      id: string;
+      state: AgentActivityState;
+      unread: number;
+      ts: number;
+    }
   /** Full snapshot — sent on connect and reconnect. Client replaces local
-   *  state wholesale. */
-  | { type: "reconcile"; agents: Agent[] };
+   *  state wholesale. Statuses arrive via the companion `statuses` map so a
+   *  reconnect needs no follow-up poll. */
+  | {
+      type: "reconcile";
+      agents: Agent[];
+      statuses?: Record<string, { state: AgentActivityState; unread: number }>;
+    };

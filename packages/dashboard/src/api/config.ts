@@ -9,12 +9,13 @@ import type {
 import { request } from "./core";
 
 export const templatesApi = {
+  /** Keyed by template name — the server serves its store map verbatim. */
   list: (opts?: { signal?: AbortSignal }) =>
-    request<AgentTemplate[]>("/api/templates", opts),
-  save: (template: AgentTemplate) =>
+    request<Record<string, AgentTemplate>>("/api/templates", opts),
+  save: (name: string, template: AgentTemplate) =>
     request<{ ok: boolean; message: string; warnings?: string[] }>(
       "/api/templates",
-      { method: "POST", body: template },
+      { method: "POST", body: { name, ...template } },
     ),
   remove: (name: string) =>
     request<{ ok: boolean }>(`/api/templates/${encodeURIComponent(name)}`, {
@@ -23,8 +24,9 @@ export const templatesApi = {
 };
 
 export const presetsApi = {
+  /** Keyed by preset name — the server serves its store map verbatim. */
   list: (opts?: { signal?: AbortSignal }) =>
-    request<EnvPreset[]>("/api/env-presets", opts),
+    request<Record<string, EnvPreset>>("/api/env-presets", opts),
   create: (preset: unknown) =>
     request<EnvPreset>("/api/env-presets", { method: "POST", body: preset }),
   update: (name: string, patch: unknown) =>

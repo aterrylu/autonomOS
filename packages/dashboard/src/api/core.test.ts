@@ -112,3 +112,23 @@ describe("request", () => {
     await expect(surviving).resolves.toEqual({ fine: true });
   });
 });
+
+describe("abort semantics per dedup class", () => {
+  it("a fresh request's abort kills the underlying fetch (no socket leak)", async () => {
+    let sawSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      sawSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    });
+    const ctl = new AbortController();
+    const p = request("/api/host", { fresh: true, signal: ctl.signal });
+    ctl.abort();
+    const err = await p.catch((e) => e as ApiError);
+    expect(isAbort(err)).toBe(true);
+    expect(sawSignal?.aborted).toBe(true); // the SOCKET was aborted, not just the caller
+  });
+});

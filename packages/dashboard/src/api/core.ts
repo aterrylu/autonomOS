@@ -12,8 +12,11 @@
  *   third idiom.
  * - DEDUP: concurrent GETs of the same URL share one in-flight promise, so a
  *   poll tick racing a user action can't land two responses out of order.
- * - CANCELLATION: an `AbortSignal` is accepted everywhere and detaches the
- *   CALLER (dropped result) without aborting a fetch other callers share.
+ * - CANCELLATION: an `AbortSignal` is accepted everywhere. On a DEDUPED GET
+ *   it detaches the caller (dropped result) without aborting the fetch other
+ *   callers share; on a non-deduped request (`fresh` or any mutation) it
+ *   aborts the actual socket — a timed-out liveness probe must not leak
+ *   connections into the browser's per-host cap.
  * - BASE URL / AUTH: relative paths against the page origin; auth rides the
  *   same-origin `autonomos_token` httpOnly cookie set by /auth. This module
  *   is deliberately the ONLY place a future cross-origin deployment (PWA
@@ -79,11 +82,23 @@ async function execute<T>(path: string, opts: RequestOptions): Promise<T> {
         body: JSON.stringify(opts.body),
       }),
       ...(opts.fresh && { cache: "no-store" as const }),
+      // Forwarded ONLY for non-deduped requests (request() strips it before a
+      // shared GET): with no siblings awaiting the response, an abort must
+      // kill the actual socket. Otherwise a timed-out liveness probe leaks a
+      // connection per tick until the browser's per-host cap wedges every
+      // later request behind the dead ones.
+      ...(opts.signal && { signal: opts.signal }),
     });
   } catch (err) {
+    const aborted = err instanceof DOMException && err.name === "AbortError";
     throw new ApiError(
-      err instanceof Error ? err.message : "Network request failed",
+      aborted
+        ? "Aborted"
+        : err instanceof Error
+          ? err.message
+          : "Network request failed",
       0,
+      aborted ? { code: "ABORTED" } : {},
     );
   }
 
@@ -156,6 +171,10 @@ export function request<T>(
   if (signal.aborted) {
     return Promise.reject(new ApiError("Aborted", 0, { code: "ABORTED" }));
   }
+  // Non-deduped requests forwarded the signal into fetch itself — the abort
+  // rejects out of execute() as a status-0 ApiError; normalize its code so
+  // isAbort() holds for both paths.
+
   // Detach on abort: reject THIS caller, leave the shared fetch running.
   return new Promise<T>((resolve, reject) => {
     const onAbort = () =>

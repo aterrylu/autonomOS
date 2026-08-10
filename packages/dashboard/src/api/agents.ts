@@ -49,9 +49,13 @@ export const agentsApi = {
       { method: "DELETE" },
     );
   },
+  /** `failures` is per-agent, not a list of ids — the route returns
+   * `restartAllAttachments()`'s `Array<{ id, name, error }>` verbatim
+   * (server `agents/runtime.ts`), and the settings panel names the agents that
+   * didn't come back. */
   restartAll: () =>
-    request<{ idMap?: Record<string, string>; failures?: string[] }>(
-      "/api/agents/restart-all",
-      { method: "POST", body: {} },
-    ),
+    request<{
+      idMap?: Record<string, string>;
+      failures?: Array<{ id: string; name: string; error: string }>;
+    }>("/api/agents/restart-all", { method: "POST", body: {} }),
 };

@@ -9,7 +9,10 @@ import type {
 import { request } from "./core";
 
 export const hostApi = {
-  get: (opts?: { signal?: AbortSignal }) =>
+  /** `fresh: true` for liveness probes — a probe must put a REAL request on
+   * the wire every tick (dedup would let one hung fetch satisfy every
+   * subsequent probe) and its abort must kill the socket. */
+  get: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<HostInfo>("/api/host", opts),
 };
 

@@ -14,6 +14,7 @@ import type { AgentDelta } from "@autonomos/core";
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import { listAgents } from "../agents/store.js";
 import { onAgentDelta } from "../events/agents.js";
+import { getAgentStatusSnapshot } from "../routes/hooks.js";
 
 const clients = new Set<WSContext>();
 
@@ -84,6 +85,10 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
           const json = JSON.stringify({
             type: "reconcile" as const,
             agents: listAgents(),
+            // Activity statuses + unread counts ride the snapshot so a
+            // (re)connect needs no follow-up status poll — the poll this
+            // channel exists to retire.
+            statuses: getAgentStatusSnapshot(),
           });
           safeSend(ws, json);
         } catch (err) {

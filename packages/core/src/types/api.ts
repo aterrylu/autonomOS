@@ -13,6 +13,7 @@
  */
 
 import type { PermissionMode } from "./permissions";
+import type { ProviderCapabilities } from "./provider";
 
 // ── Agent activity status (the hooks read surface) ────────────────
 
@@ -95,6 +96,7 @@ export interface ProviderInfo {
   installed: boolean;
   version: string | null;
   recommended: boolean;
+  capabilities: ProviderCapabilities;
 }
 
 /** `GET /api/settings` — the MASKED projection (never raw credentials). */
