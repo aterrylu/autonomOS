@@ -28,6 +28,7 @@ import { join } from "node:path";
 import {
   type Agent,
   type AgentStatus,
+  buildTreeFromRecords,
   DEFAULT_PERMISSION_MODE,
   type ExitReason,
   isPermissionMode,
@@ -511,38 +512,10 @@ export function buildAgentTree<
   includeExited?: boolean;
   mapNode: (a: Agent) => Omit<N, "children">;
 }): N[] {
-  const all = listAgents();
-  // Strict `running`-only filter: matches the prior canonical helper
-  // that this PR consolidates. Transient states (`starting`) appear
-  // in flat /api/agents queries but are deliberately omitted from the
-  // tree view so the org chart stays stable while a session warms up.
-  const visible = options.includeExited
-    ? all
-    : all.filter((a) => a.status === "running");
-  const byId = new Map(visible.map((a) => [a.id, a]));
-  const nodeById = new Map<string, N>();
-  for (const a of visible) {
-    // Construct the full node shape directly. The constraint
-    // `N extends { id: string; children: N[] }` means
-    // `Omit<N, "children"> & { children: N[] }` is structurally
-    // identical to N — but TS's structural inference can't prove that
-    // through a spread, so a single `as N` (without `as unknown`)
-    // bridges the gap. Type-safe at the call site because
-    // mapNode's return type IS Omit<N, "children">.
-    const node = { ...options.mapNode(a), children: [] as N[] } as N;
-    nodeById.set(a.id, node);
-  }
-  const roots: N[] = [];
-  for (const a of visible) {
-    const node = nodeById.get(a.id)!;
-    const parent =
-      a.managerId && byId.has(a.managerId)
-        ? nodeById.get(a.managerId)
-        : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  }
-  return roots;
+  // The filter/link algorithm lives in @autonomos/core (buildTreeFromRecords)
+  // so the dashboard's socket-derived tree is the same code path as this one
+  // — parity by construction. This wrapper only supplies the live records.
+  return buildTreeFromRecords<N>(listAgents(), options);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

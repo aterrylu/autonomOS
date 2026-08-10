@@ -10,7 +10,7 @@ import { request } from "./core";
 
 export const templatesApi = {
   /** Keyed by template name — the server serves its store map verbatim. */
-  list: (opts?: { signal?: AbortSignal }) =>
+  list: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<Record<string, AgentTemplate>>("/api/templates", opts),
   save: (name: string, template: AgentTemplate) =>
     request<{ ok: boolean; message: string; warnings?: string[] }>(
@@ -25,7 +25,7 @@ export const templatesApi = {
 
 export const presetsApi = {
   /** Keyed by preset name — the server serves its store map verbatim. */
-  list: (opts?: { signal?: AbortSignal }) =>
+  list: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<Record<string, EnvPreset>>("/api/env-presets", opts),
   create: (preset: unknown) =>
     request<EnvPreset>("/api/env-presets", { method: "POST", body: preset }),
@@ -41,7 +41,7 @@ export const presetsApi = {
 };
 
 export const settingsApi = {
-  get: (opts?: { signal?: AbortSignal }) =>
+  get: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<MaskedSettings>("/api/settings", opts),
   /** Partial update; the server whitelists keys. All six former PUT sites
    * funnel here so panels can share one invalidation path. */
@@ -50,6 +50,6 @@ export const settingsApi = {
 };
 
 export const channelsApi = {
-  status: (opts?: { signal?: AbortSignal }) =>
+  status: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<{ channels: ChannelStatusEntry[] }>("/api/channels/status", opts),
 };

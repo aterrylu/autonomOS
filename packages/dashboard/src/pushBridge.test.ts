@@ -50,7 +50,8 @@ vi.mock("./store", () => ({
 
 const { agentsPoll, statusPoll, treePoll } = await import("./api/polls");
 const { applyAgentsSnapshot, applyStatusSnapshot } = await import("./store");
-const { buildTreeFromAgents, startPushBridge } = await import("./pushBridge");
+const { startPushBridge } = await import("./pushBridge");
+const { buildAgentTreeNodes } = await import("@autonomos/core");
 
 function agent(partial: Partial<Agent> & { id: string }): Agent {
   return {
@@ -81,13 +82,13 @@ afterEach(() => {
   stop = null;
 });
 
-describe("buildTreeFromAgents (server buildAgentTree parity)", () => {
+describe("buildAgentTreeNodes (the shared core algorithm both sides call)", () => {
   it("running-only filter, children under visible managers, orphans promoted", () => {
     const lead = agent({ id: "lead" });
     const worker = agent({ id: "worker", managerId: "lead" });
     const orphan = agent({ id: "orphan", managerId: "dead-mgr" });
     const exited = agent({ id: "gone", status: "exited" });
-    const tree = buildTreeFromAgents([lead, worker, orphan, exited]);
+    const tree = buildAgentTreeNodes([lead, worker, orphan, exited]);
     expect(tree.map((n) => n.id)).toEqual(["lead", "orphan"]);
     expect(tree[0].children.map((n) => n.id)).toEqual(["worker"]);
     // Field parity with the /tree route's mapNode.
@@ -104,7 +105,7 @@ describe("buildTreeFromAgents (server buildAgentTree parity)", () => {
   it("a child of an EXITED manager becomes a root (manager filtered out)", () => {
     const mgr = agent({ id: "mgr", status: "exited" });
     const child = agent({ id: "child", managerId: "mgr" });
-    const tree = buildTreeFromAgents([mgr, child]);
+    const tree = buildAgentTreeNodes([mgr, child]);
     expect(tree.map((n) => n.id)).toEqual(["child"]);
   });
 });
@@ -138,7 +139,31 @@ describe("startPushBridge", () => {
       a1: { status: { status: "working" }, unread: 2 },
     });
     expect(agentsPoll.inject).toHaveBeenCalledWith([a]);
-    expect(treePoll.inject).toHaveBeenCalledWith(buildTreeFromAgents([a]));
+    expect(treePoll.inject).toHaveBeenCalledWith(buildAgentTreeNodes([a]));
+  });
+
+  it("a statuses-only frame (same agents map by REFERENCE) skips the agents/tree re-derive", () => {
+    const a = agent({ id: "a1" });
+    const agents = new Map([[a.id, a]]);
+    fakeSocket.snapshot = {
+      connected: true,
+      agents,
+      statuses: new Map(),
+    };
+    stop = startPushBridge();
+    expect(applyAgentsSnapshot).toHaveBeenCalledTimes(1);
+
+    // agent.status deltas commit a NEW statuses map but keep `agents` by
+    // reference — the high-frequency frame must not re-stringify the fleet.
+    fakeSocket.snapshot = {
+      connected: true,
+      agents,
+      statuses: new Map([["a1", { state: { status: "working" }, unread: 0 }]]),
+    };
+    fakeSocket.emit();
+    expect(applyAgentsSnapshot).toHaveBeenCalledTimes(1); // unchanged
+    expect(treePoll.inject).toHaveBeenCalledTimes(1); // unchanged
+    expect(applyStatusSnapshot).toHaveBeenCalledTimes(2); // statuses flowed
   });
 
   it("socket drop resumes polling (degrade, never below)", () => {

@@ -4,7 +4,7 @@
 "@autonomos/core": patch
 ---
 
-feat(dashboard): API client layer + push-over-poll migration (API-consolidation PR A, ADR-079)
+feat(dashboard): API client layer + push-over-poll migration (API-consolidation PR A, ADR-082)
 
 - One typed client (`request<T>()`/`ApiError`) behind family modules replaces 45+ ad-hoc raw `fetch` sites; wire shapes are declared once in `@autonomos/core` and shared by server routes and dashboard.
 - Shared, visibility-gated polls (one timer per resource) replace ~12 independent intervals. Foreground cadences are unchanged byte-for-byte; hidden tabs pause pure-display polls and throttle the notification-bearing status poll (3s→15s) so desktop notifications keep flowing; returning to the tab refreshes immediately.

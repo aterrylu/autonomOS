@@ -8,49 +8,19 @@
  * drops, the polls resume with an immediate catch-up refresh — a flaky
  * network degrades to exactly the pre-push dashboard, never below it.
  *
- * The tree is derived client-side with the same algorithm as the server's
- * buildAgentTree (routes/agents.ts /tree): running-only filter, children
- * grouped under a visible manager, orphans promoted to roots. The reconcile
- * frame carries the same listAgents() array the REST endpoints serve, so
- * order parity holds without sorting.
+ * The tree comes from the SAME algorithm the server serves on
+ * `/api/agents/tree` (`buildAgentTreeNodes` in @autonomos/core) — parity by
+ * construction, not by a mirror kept in sync by hand.
  */
 
-import type { Agent, AgentStatusMap, AgentTreeNode } from "@autonomos/core";
+import {
+  type Agent,
+  type AgentStatusMap,
+  buildAgentTreeNodes,
+} from "@autonomos/core";
 import { agentsSocket } from "./api/agentsSocket";
 import { agentsPoll, statusPoll, treePoll } from "./api/polls";
 import { applyAgentsSnapshot, applyStatusSnapshot } from "./store";
-
-/** Mirror of the server's buildAgentTree with the /tree route's mapNode. */
-export function buildTreeFromAgents(agents: Agent[]): AgentTreeNode[] {
-  const visible = agents.filter((a) => a.status === "running");
-  const byId = new Map(visible.map((a) => [a.id, a]));
-  const nodeById = new Map<string, AgentTreeNode>();
-  for (const a of visible) {
-    nodeById.set(a.id, {
-      id: a.id,
-      claudeSessionId: a.id,
-      name: a.name,
-      template: a.template,
-      project: a.project,
-      status: a.status,
-      provider: a.provider,
-      permissionMode: a.permissionMode,
-      children: [],
-    });
-  }
-  const roots: AgentTreeNode[] = [];
-  for (const a of visible) {
-    const node = nodeById.get(a.id);
-    if (!node) continue;
-    const parent =
-      a.managerId && byId.has(a.managerId)
-        ? nodeById.get(a.managerId)
-        : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  }
-  return roots;
-}
 
 let stopBridge: (() => void) | null = null;
 
@@ -60,6 +30,13 @@ export function startPushBridge(): () => void {
   if (stopBridge) return stopBridge;
 
   let live = false;
+  // agent.status deltas commit a new statuses map but keep the agents map by
+  // REFERENCE — and status deltas are the high-frequency frame (~2 per tool
+  // call per agent). Skipping the agents/tree re-derive + re-inject (whose
+  // commit equality is a full JSON.stringify of a fleet-sized payload) on
+  // those frames is what keeps a busy fleet from turning the push channel
+  // into a main-thread stringify loop (see ADR-072 for why we care).
+  let lastAgents: Map<string, Agent> | null = null;
 
   const setLive = (next: boolean) => {
     if (live === next) return;
@@ -67,6 +44,7 @@ export function startPushBridge(): () => void {
     agentsPoll.setSuspended(next);
     treePoll.setSuspended(next);
     statusPoll.setSuspended(next);
+    if (!next) lastAgents = null;
   };
 
   const onSnapshot = () => {
@@ -76,10 +54,13 @@ export function startPushBridge(): () => void {
     setLive(snap.connected && snap.agents !== null);
     if (!live || !snap.agents) return;
 
-    const agents = Array.from(snap.agents.values());
-    applyAgentsSnapshot(agents);
-    agentsPoll.inject(agents);
-    treePoll.inject(buildTreeFromAgents(agents));
+    if (snap.agents !== lastAgents) {
+      lastAgents = snap.agents;
+      const agents = Array.from(snap.agents.values());
+      applyAgentsSnapshot(agents);
+      agentsPoll.inject(agents);
+      treePoll.inject(buildAgentTreeNodes(agents));
+    }
 
     const map: AgentStatusMap = {};
     for (const [id, v] of snap.statuses) {

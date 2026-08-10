@@ -1,3 +1,4 @@
+export * from "./tree";
 export * from "./types/agent";
 export * from "./types/api";
 export * from "./types/envPreset";

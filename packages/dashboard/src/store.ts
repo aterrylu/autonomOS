@@ -1,9 +1,7 @@
 import {
   type Agent,
   type AgentStatusMap,
-  type AgentTemplate,
   DEFAULT_PERMISSION_MODE,
-  type EnvPreset,
   type PermissionMode,
   type ProjectInfo,
   permissionModeFromLegacy,
@@ -12,7 +10,6 @@ import {
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { agentsApi, type SpawnAgentBody } from "./api/agents";
-import { presetsApi, templatesApi } from "./api/config";
 import { ApiError } from "./api/core";
 import { agentsPoll, projectsPoll, statusPoll } from "./api/polls";
 import { statusApi } from "./api/status";
@@ -629,15 +626,6 @@ interface AppState {
    *  first-run flow re-fires only on a fresh tab or page reload. */
   sessionsInitialFetchDone: boolean;
   projects: ProjectInfo[];
-  /** Loaded templates keyed by name (CreateAgentPanel dropdown; the
-   *  TemplatesPanel reads templatesPoll directly). */
-  templates: Record<string, AgentTemplate>;
-  templatesLoading: boolean;
-  templatesError: string | null;
-  /** Loaded env presets keyed by name (secrets masked by the server). */
-  presets: Record<string, EnvPreset>;
-  presetsLoading: boolean;
-  presetsError: string | null;
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
   /** Agent status per session ID (from hook events) */
@@ -710,8 +698,6 @@ interface AppState {
   openTemplates: () => void;
   openSchedules: () => void;
   openPresets: () => void;
-  fetchTemplates: () => Promise<void>;
-  fetchPresets: () => Promise<void>;
   toggleSidebarViewMode: () => void;
   reorderHierarchy: (
     groupKey: string,
@@ -817,12 +803,6 @@ export const useStore = create<AppState>()(
         exitedSessions: [],
         sessionsInitialFetchDone: false,
         projects: [],
-        templates: {},
-        templatesLoading: false,
-        templatesError: null,
-        presets: {},
-        presetsLoading: false,
-        presetsError: null,
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
@@ -1111,44 +1091,12 @@ export const useStore = create<AppState>()(
           get().switchPane({ type: "templates", id: "templates" });
         },
 
-        fetchTemplates: async () => {
-          const isInitialLoad = Object.keys(get().templates).length === 0;
-          if (isInitialLoad) set({ templatesLoading: true });
-          try {
-            const data = await templatesApi.list();
-            set({
-              templates: data,
-              templatesLoading: false,
-              templatesError: null,
-            });
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : "Failed to load templates";
-            console.warn("[templates] fetch failed:", message);
-            set({ templatesLoading: false, templatesError: message });
-          }
-        },
-
         openSchedules: () => {
           get().switchPane({ type: "schedules", id: "schedules" });
         },
 
         openPresets: () => {
           get().switchPane({ type: "presets", id: "presets" });
-        },
-
-        fetchPresets: async () => {
-          const isInitialLoad = Object.keys(get().presets).length === 0;
-          if (isInitialLoad) set({ presetsLoading: true });
-          try {
-            const data = await presetsApi.list();
-            set({ presets: data, presetsLoading: false, presetsError: null });
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : "Failed to load presets";
-            console.warn("[presets] fetch failed:", message);
-            set({ presetsLoading: false, presetsError: message });
-          }
         },
 
         toggleSidebarViewMode: () => {

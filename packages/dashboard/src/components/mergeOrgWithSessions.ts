@@ -1,12 +1,15 @@
+import type { AgentTreeNode } from "@autonomos/core";
 import type { SessionInfo } from "../store";
 
-/** Org chart node as returned by /api/agents/tree. */
-export interface OrgNode {
-  name: string;
-  claudeSessionId?: string;
-  status?: string;
-  template?: string;
-  project?: string;
+/** The subset of the wire `AgentTreeNode` this merge actually reads —
+ * DERIVED from the source type, so renaming a field there breaks here at
+ * compile time instead of silently severing nodes from their sessions.
+ * Kept structural (extras optional) so tests can build minimal fixtures. */
+export interface OrgNode
+  extends Pick<AgentTreeNode, "name">,
+    Partial<
+      Pick<AgentTreeNode, "claudeSessionId" | "status" | "template" | "project">
+    > {
   children: OrgNode[];
 }
 

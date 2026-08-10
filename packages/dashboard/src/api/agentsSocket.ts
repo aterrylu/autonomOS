@@ -92,12 +92,12 @@ function applyDelta(delta: AgentDelta): void {
           version: delta.version,
         });
       } else if (delta.type === "agent.attached") {
-        agents.set(delta.id, {
-          ...existing,
-          status: "running",
-          providerSessionId: delta.providerSessionId,
-          version: delta.version,
-        });
+        // The delta carries the full refreshed record — apply it wholesale.
+        // A field-list here silently dropped `provider` (and would have
+        // dropped permissionMode/envPreset changes on resume): the socket
+        // tree and the REST tree then ping-pong for the socket's lifetime,
+        // because treePoll.refresh() is deliberately not suspension-gated.
+        agents.set(delta.id, delta.agent);
       } else {
         agents.set(delta.id, {
           ...existing,
@@ -130,6 +130,23 @@ function applyDelta(delta: AgentDelta): void {
   }
 }
 
+// Half-open detection: the server heartbeats every 30s, so a healthy socket
+// is never frameless for long. If an OPEN socket goes silent past ~2.5 beats
+// (VPN drop, Wi-Fi switch, sleep/wake — the OS can take minutes to notice),
+// force-close it: onclose resets the baseline and resumes the polls, which
+// is the "degrade to polling, never below it" rule applied to a connection
+// that LOOKS alive but isn't.
+const STALE_AFTER_MS = 75_000;
+const WATCHDOG_CHECK_MS = 20_000;
+let lastFrameAt = 0;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function closeIfStale(): void {
+  if (ws && snapshot.connected && Date.now() - lastFrameAt > STALE_AFTER_MS) {
+    ws.close();
+  }
+}
+
 function connect(): void {
   if (ws) return;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -138,9 +155,11 @@ function connect(): void {
 
   socket.onopen = () => {
     retryMs = BASE_RETRY_MS;
+    lastFrameAt = Date.now();
     commit({ connected: true });
   };
   socket.onmessage = (ev) => {
+    lastFrameAt = Date.now();
     try {
       applyDelta(JSON.parse(ev.data as string) as AgentDelta);
     } catch {
@@ -176,7 +195,11 @@ function scheduleReconnect(): void {
 }
 
 function handleVisibility(): void {
-  if (document.visibilityState === "visible" && started && !ws) {
+  if (document.visibilityState !== "visible" || !started) return;
+  // Wake/return with a socket that still LOOKS open: check staleness now
+  // rather than waiting a watchdog cycle — sleep froze the timers too.
+  closeIfStale();
+  if (!ws) {
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = null;
@@ -192,6 +215,7 @@ export const agentsSocket = {
     if (!started) {
       started = true;
       document.addEventListener("visibilitychange", handleVisibility);
+      watchdogTimer = setInterval(closeIfStale, WATCHDOG_CHECK_MS);
       connect();
     }
     return () => {
@@ -199,6 +223,10 @@ export const agentsSocket = {
       if (listeners.size === 0) {
         started = false;
         document.removeEventListener("visibilitychange", handleVisibility);
+        if (watchdogTimer) {
+          clearInterval(watchdogTimer);
+          watchdogTimer = null;
+        }
         if (retryTimer) {
           clearTimeout(retryTimer);
           retryTimer = null;

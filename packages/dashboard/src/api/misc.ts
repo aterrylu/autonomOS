@@ -17,17 +17,17 @@ export const hostApi = {
 };
 
 export const providersApi = {
-  list: (opts?: { signal?: AbortSignal }) =>
+  list: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<ProviderInfo[]>("/api/providers", opts),
 };
 
 export const projectsApi = {
-  list: (opts?: { signal?: AbortSignal }) =>
+  list: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<ProjectInfo[]>("/api/projects", opts),
 };
 
 export const usageQueueApi = {
-  snapshot: (opts?: { signal?: AbortSignal }) =>
+  snapshot: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<UsageQueueSnapshot>("/api/usage-queue", opts),
   arm: (sessionId: string) =>
     request<{ armed: boolean; provider: string }>(

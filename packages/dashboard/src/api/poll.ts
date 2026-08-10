@@ -52,8 +52,11 @@ export interface Poll<T> {
 }
 
 interface PollOptions<T> {
-  /** GET path polled; or a custom fetcher for multi-request polls. */
-  source: string | (() => Promise<T>);
+  /** GET path polled; or a custom fetcher for multi-request polls. The
+   * fetcher receives `{ fresh: true }` on MANUAL refreshes (mutation
+   * catch-ups) — forward it to the api call so the dedup can't answer a
+   * post-mutation refetch with a pre-mutation response already in flight. */
+  source: string | ((opts?: { fresh?: boolean }) => Promise<T>);
   intervalMs: number;
   /** Poll cadence while the tab is HIDDEN. Default 0 = fully paused (the
    * right choice for pure-display data). Set for polls that feed
@@ -70,9 +73,9 @@ interface PollOptions<T> {
 const jsonEqual = <T>(a: T, b: T) => JSON.stringify(a) === JSON.stringify(b);
 
 export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
-  const fetcher: () => Promise<T> =
+  const fetcher: (fetchOpts?: { fresh?: boolean }) => Promise<T> =
     typeof opts.source === "string"
-      ? () => request<T>(opts.source as string)
+      ? (fetchOpts) => request<T>(opts.source as string, fetchOpts)
       : opts.source;
   const equal = opts.equal ?? jsonEqual<T>;
 
@@ -87,8 +90,14 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
   }
 
   function commit(next: PollState<T>): void {
+    // Both-null counts as same: without it, a server-down-at-load poll
+    // (data null, identical error every tick) emits and re-renders every
+    // interval for the whole outage.
     const dataSame =
-      state.data !== null && next.data !== null && equal(state.data, next.data);
+      (state.data === null && next.data === null) ||
+      (state.data !== null &&
+        next.data !== null &&
+        equal(state.data, next.data));
     const errorSame =
       state.error?.message === next.error?.message &&
       state.error?.status === next.error?.status;
@@ -99,9 +108,9 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
     emit();
   }
 
-  async function refresh(): Promise<void> {
+  async function doRefresh(fresh: boolean): Promise<void> {
     try {
-      const data = await fetcher();
+      const data = await fetcher(fresh ? { fresh: true } : undefined);
       commit({ data, error: null });
     } catch (err) {
       const error =
@@ -120,6 +129,12 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
     }
   }
 
+  // Interval refreshes may share an in-flight GET (dedup is fine when
+  // nothing changed on purpose); MANUAL refreshes are post-mutation
+  // reconciliation and must hit the wire — a deduped answer would be the
+  // pre-mutation response that was already in flight.
+  const refresh = () => doRefresh(true);
+
   let lastHiddenRefresh = 0;
 
   function tick(): void {
@@ -133,19 +148,23 @@ export function createPoll<T>(opts: PollOptions<T>): Poll<T> {
       const now = Date.now();
       if (now - lastHiddenRefresh < hidden) return;
       lastHiddenRefresh = now;
-      void refresh();
+      void doRefresh(false);
       return;
     }
     lastHiddenRefresh = 0;
-    void refresh();
+    void doRefresh(false);
   }
 
   function start(): void {
     if (timer) return;
-    if (!suspended) void refresh();
+    if (!suspended) void doRefresh(false);
     timer = setInterval(tick, opts.intervalMs);
+    // NOT gated on suspension: returning to the tab must land fresh data even
+    // when a push channel owns the cadence — after sleep/wake the socket can
+    // be half-open (looks connected, delivers nothing) and this one-shot
+    // refresh is what keeps the UI honest until the watchdog closes it.
     visListener = () => {
-      if (document.visibilityState === "visible" && !suspended) void refresh();
+      if (document.visibilityState === "visible") void doRefresh(false);
     };
     document.addEventListener("visibilitychange", visListener);
   }

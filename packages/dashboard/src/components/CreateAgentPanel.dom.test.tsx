@@ -36,44 +36,45 @@ beforeEach(() => {
   createSession = vi.fn(() => Promise.resolve());
 
   useStore.setState({
-    templates: { dispatcher: dispatcherTemplate, worker: workerTemplate },
     projects: [],
     status: "ready",
     createSession,
-    // Stub the fetch-on-mount store actions so no network is hit.
+    // Stub the fetch-on-mount store action so no network is hit.
     fetchProjects: () => Promise.resolve(),
-    fetchTemplates: () => Promise.resolve(),
   });
 
-  // The panel also fetches /api/providers directly.
+  // Templates/presets now come from the shared polls, which fetch through the
+  // real api client — serve REAL Response JSON (the client reads res.text()).
+  const providers = [
+    {
+      name: "claude-code",
+      displayName: "Claude Code",
+      installed: true,
+      version: "1.0.0",
+      recommended: true,
+      capabilities: {
+        messaging: { inbound: true, outbound: true },
+        hooks: { eventCount: 13, requiresSetup: false },
+        liveStatus: { supported: true, method: "hooks" },
+        systemPrompt: { supported: true },
+      },
+    },
+  ];
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
+      const body = (data: unknown) =>
+        Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
       if (typeof url === "string" && url.includes("/api/providers")) {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve([
-              {
-                name: "claude-code",
-                displayName: "Claude Code",
-                installed: true,
-                version: "1.0.0",
-                recommended: true,
-                capabilities: {
-                  messaging: { inbound: true, outbound: true },
-                  hooks: { eventCount: 13, requiresSetup: false },
-                  liveStatus: { supported: true, method: "hooks" },
-                  systemPrompt: { supported: true },
-                },
-              },
-            ]),
-        } as Response);
+        return body(providers);
       }
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve([]),
-      } as Response);
+      if (typeof url === "string" && url.includes("/api/templates")) {
+        return body({ dispatcher: dispatcherTemplate, worker: workerTemplate });
+      }
+      if (typeof url === "string" && url.includes("/api/env-presets")) {
+        return body({});
+      }
+      return body([]);
     }),
   );
 });

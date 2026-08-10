@@ -4,7 +4,7 @@ import type { RunRecord, Schedule, SchedulerStatus } from "@autonomos/core";
 import { request } from "./core";
 
 export const schedulesApi = {
-  list: (opts?: { signal?: AbortSignal }) =>
+  list: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<Record<string, Schedule>>("/api/schedules", opts),
   update: (name: string, patch: Partial<Schedule>) =>
     request<{ ok: boolean; schedule: Schedule }>(
@@ -25,7 +25,7 @@ export const schedulesApi = {
     request<RunRecord[]>(
       `/api/schedules/${encodeURIComponent(name)}/runs?limit=${limit}`,
     ),
-  schedulerStatus: (opts?: { signal?: AbortSignal }) =>
+  schedulerStatus: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<SchedulerStatus>("/api/scheduler/status", opts),
   updateSchedulerSettings: (settings: { maxConcurrentRuns: number }) =>
     request<{ ok: boolean }>("/api/scheduler/settings", {

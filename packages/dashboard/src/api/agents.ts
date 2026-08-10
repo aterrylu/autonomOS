@@ -22,9 +22,9 @@ export interface SpawnAgentBody {
 }
 
 export const agentsApi = {
-  list: (opts?: { signal?: AbortSignal }) =>
+  list: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<Agent[]>("/api/agents", opts),
-  tree: (opts?: { signal?: AbortSignal }) =>
+  tree: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<AgentTreeNode[]>("/api/agents/tree", opts),
   spawn: (body: SpawnAgentBody) =>
     request<Agent>("/api/agents", { method: "POST", body }),

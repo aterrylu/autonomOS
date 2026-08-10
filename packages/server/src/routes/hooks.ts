@@ -1,4 +1,9 @@
-import type { AgentActivityState, AgentActivityStatus } from "@autonomos/core";
+import type {
+  AgentActivityState,
+  AgentActivityStatus,
+  AgentStatusMap,
+  NotificationFeed,
+} from "@autonomos/core";
 import { Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
@@ -613,7 +618,11 @@ hooksReadRouter.get("/notifications", (c) => {
   // Newest first
   all.sort((a, b) => b.timestamp - a.timestamp);
 
-  return c.json({ notifications: all.slice(0, 100), totalUnread });
+  const payload: NotificationFeed = {
+    notifications: all.slice(0, 100),
+    totalUnread,
+  };
+  return c.json(payload);
 });
 
 // Mark all notifications as read for a session
@@ -625,7 +634,9 @@ hooksReadRouter.post("/:sessionId/read", (c) => {
 
 // Bulk status for all sessions (efficient single call from sidebar)
 hooksReadRouter.get("/", (c) => {
-  const result: Record<string, { status: AgentState; unread: number }> = {};
+  // Annotated with the WIRE type so a field rename here breaks the build
+  // instead of blanking every sidebar status icon at runtime.
+  const result: AgentStatusMap = {};
   for (const [id, state] of agentStates) {
     result[id] = { status: state, unread: getUnreadCount(id) };
   }

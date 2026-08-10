@@ -8,6 +8,8 @@ import {
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { providersApi } from "../api/misc";
+import { presetsPoll, templatesPoll } from "../api/polls";
+import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
 import { PermissionModeSelect } from "./PermissionModeSelect";
 
@@ -16,28 +18,24 @@ export function CreateAgentPanel() {
   const page = THEMES[theme].page;
 
   const {
-    templates,
     projects,
-    presets,
     createSession,
     status,
     fetchProjects,
-    fetchTemplates,
-    fetchPresets,
     defaultPermissionMode,
   } = useStore(
     useShallow((s) => ({
-      templates: s.templates,
       projects: s.projects,
-      presets: s.presets,
       createSession: s.createSession,
       status: s.status,
       fetchProjects: s.fetchProjects,
-      fetchTemplates: s.fetchTemplates,
-      fetchPresets: s.fetchPresets,
       defaultPermissionMode: s.permissionMode,
     })),
   );
+  // Shared polls, not a mount-time store fetch: a template/preset created in
+  // a side-by-side panel shows up here within one 10s cycle instead of never.
+  const templates = usePoll(templatesPoll).data ?? {};
+  const presets = usePoll(presetsPoll).data ?? {};
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [name, setName] = useState("");
@@ -69,9 +67,7 @@ export function CreateAgentPanel() {
       .then((data) => setProviders(data))
       .catch(() => {});
     fetchProjects();
-    fetchTemplates();
-    fetchPresets();
-  }, [fetchProjects, fetchTemplates, fetchPresets]);
+  }, [fetchProjects]);
 
   // Auto-select Dispatcher on first render where templates include it AND
   // the user hasn't already chosen something. Only runs once thanks to

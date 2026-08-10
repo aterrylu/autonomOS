@@ -110,6 +110,37 @@ describe("agentsSocket reconnect baseline", () => {
     expect(agentsSocket.getSnapshot().agents?.has("a1")).toBe(false);
   });
 
+  it("watchdog force-closes a half-open socket (open, frameless past the stale window)", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.open();
+    ws1.frame({ type: "reconcile", agents: [agent("a1")], statuses: {} });
+    expect(agentsSocket.getSnapshot().connected).toBe(true);
+
+    // The server heartbeats every 30s; a socket silent past ~2.5 beats is
+    // half-open (VPN drop / sleep-wake) and must be torn down so polls
+    // resume — advancing past the stale window with NO frames does that.
+    vi.advanceTimersByTime(100_000);
+    expect(ws1.closed).toBe(true);
+    expect(agentsSocket.getSnapshot().connected).toBe(false);
+    expect(agentsSocket.getSnapshot().agents).toBeNull(); // baseline reset too
+  });
+
+  it("heartbeat frames keep a healthy socket alive through the watchdog", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.open();
+    ws1.frame({ type: "reconcile", agents: [agent("a1")], statuses: {} });
+
+    // Simulate the 30s server heartbeat for 3 minutes of wall time.
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(30_000);
+      ws1.frame({ type: "ping", ts: i });
+    }
+    expect(ws1.closed).toBe(false);
+    expect(agentsSocket.getSnapshot().connected).toBe(true);
+  });
+
   it("a reconcile WITHOUT a statuses field keeps current statuses instead of wiping them", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws = FakeWebSocket.instances[0];

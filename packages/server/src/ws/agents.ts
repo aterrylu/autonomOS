@@ -18,6 +18,22 @@ import { getAgentStatusSnapshot } from "../routes/hooks.js";
 
 const clients = new Set<WSContext>();
 
+/** Heartbeat cadence. A dashboard client watchdog force-closes its socket
+ *  after ~2.5 missed beats — that is what turns a HALF-OPEN socket (VPN
+ *  drop, Wi-Fi→cellular, sleep/wake) into a real close, so the client's
+ *  polls resume instead of sitting suspended behind a dead connection. */
+export const HEARTBEAT_INTERVAL_MS = 30_000;
+const heartbeats = new Map<WSContext, ReturnType<typeof setInterval>>();
+
+function dropClient(ws: WSContext): void {
+  clients.delete(ws);
+  const hb = heartbeats.get(ws);
+  if (hb) {
+    clearInterval(hb);
+    heartbeats.delete(ws);
+  }
+}
+
 /** Send a pre-serialized JSON string to one client. Serialization is
  *  hoisted to the caller — see ensureListenerInstalled — so a single
  *  non-serializable payload (circular ref, BigInt, leaked Buffer, etc.)
@@ -31,7 +47,7 @@ function safeSend(ws: WSContext, json: string): void {
     // dead client stays in `clients` and gets hit on every future broadcast,
     // each silently failing — a slow leak. Drop the client here as defense
     // in depth so the set stays bounded.
-    clients.delete(ws);
+    dropClient(ws);
     if (err instanceof Error && !/closed|disconnect/i.test(err.message)) {
       console.warn(`[ws/agents] safeSend dropped a client: ${err.message}`);
     }
@@ -91,11 +107,20 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
             statuses: getAgentStatusSnapshot(),
           });
           safeSend(ws, json);
+          // Per-connection heartbeat: a frame at a fixed cadence is the
+          // client watchdog's liveness signal — agent deltas alone can be
+          // legitimately silent for minutes on an idle fleet.
+          heartbeats.set(
+            ws,
+            setInterval(() => {
+              safeSend(ws, JSON.stringify({ type: "ping", ts: Date.now() }));
+            }, HEARTBEAT_INTERVAL_MS),
+          );
         } catch (err) {
           console.error(
             `[ws/agents] reconcile serialization failed: ${err instanceof Error ? err.message : err}`,
           );
-          clients.delete(ws);
+          dropClient(ws);
           try {
             ws.close(1011, "reconcile failed");
           } catch {
@@ -105,14 +130,14 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
       },
 
       onClose(_event, ws) {
-        clients.delete(ws);
+        dropClient(ws);
       },
 
       onError(event, ws) {
         console.error(
           `[ws/agents] error: ${JSON.stringify(event).slice(0, 200)}`,
         );
-        clients.delete(ws);
+        dropClient(ws);
       },
     };
   });
@@ -120,6 +145,8 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
 
 /** For testing — reset internal state. */
 export function _resetForTesting(): void {
+  for (const hb of heartbeats.values()) clearInterval(hb);
+  heartbeats.clear();
   clients.clear();
   listenerInstalled = false;
 }

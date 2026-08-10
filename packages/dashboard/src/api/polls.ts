@@ -29,27 +29,27 @@ import { statusApi } from "./status";
 
 /** 3s foreground (status icons + desktop notifications), 15s hidden. */
 export const statusPoll = createPoll<AgentStatusMap>({
-  source: () => statusApi.map(),
+  source: (o) => statusApi.map(o),
   intervalMs: 3000,
   hiddenIntervalMs: 15_000,
 });
 
 /** 5s — the sidebar agent list. Retired outright by the push migration. */
 export const agentsPoll = createPoll<Agent[]>({
-  source: () => agentsApi.list(),
+  source: (o) => agentsApi.list(o),
   intervalMs: 5000,
 });
 
 /** 5s — ONE shared tree poll (replaces the Sidebar + HierarchyPanel twins,
  * which each ran their own 5s timer with different cache policies). */
 export const treePoll = createPoll<AgentTreeNode[]>({
-  source: () => agentsApi.tree(),
+  source: (o) => agentsApi.tree(o),
   intervalMs: 5000,
 });
 
 /** 30s — the 86KB payload; subscribed only while the Projects UI is in use. */
 export const projectsPoll = createPoll<ProjectInfo[]>({
-  source: () => projectsApi.list(),
+  source: (o) => projectsApi.list(o),
   intervalMs: 30_000,
 });
 
@@ -59,10 +59,10 @@ export const schedulesPoll = createPoll<{
   schedules: Record<string, Schedule>;
   scheduler: SchedulerStatus | null;
 }>({
-  source: async () => {
+  source: async (o) => {
     const [schedules, scheduler] = await Promise.all([
-      schedulesApi.list(),
-      schedulesApi.schedulerStatus().catch(() => null),
+      schedulesApi.list(o),
+      schedulesApi.schedulerStatus(o).catch(() => null),
     ]);
     return { schedules, scheduler };
   },
@@ -71,10 +71,10 @@ export const schedulesPoll = createPoll<{
 
 /** 10s each — config panels. */
 export const templatesPoll = createPoll<Record<string, AgentTemplate>>({
-  source: () => templatesApi.list(),
+  source: (o) => templatesApi.list(o),
   intervalMs: 10_000,
 });
 export const presetsPoll = createPoll<Record<string, EnvPreset>>({
-  source: () => presetsApi.list(),
+  source: (o) => presetsApi.list(o),
   intervalMs: 10_000,
 });

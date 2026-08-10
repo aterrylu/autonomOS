@@ -1109,6 +1109,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     emitAgentDelta({
       type: "agent.attached",
       id: persisted.id,
+      // Full record: a resume can change permissionMode/envPreset/
+      // providerSessionId — a field-list would silently drop one.
+      agent: persisted,
       provider: providerName,
       providerSessionId,
       version: persisted.version,

@@ -145,10 +145,15 @@ export type AgentDelta =
       managerId: UUID | null;
       version: number;
     }
-  /** Exited agent resumed (status: exited → running). */
+  /** Exited agent resumed (status: exited → running). Carries the FULL
+   *  refreshed record: a resume can change more than status (permissionMode
+   *  and envPreset follow the "explicit param wins" rule, providerSessionId
+   *  may regenerate), and a field-list here would silently drop whichever
+   *  one the client forgot to apply. */
   | {
       type: "agent.attached";
       id: UUID;
+      agent: Agent;
       provider: Provider;
       providerSessionId: string;
       version: number;

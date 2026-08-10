@@ -7,7 +7,7 @@
  * server-side); these routes are a thin shell over it.
  */
 
-import type { Provider, UUID } from "@autonomos/core";
+import type { Provider, UsageQueueSnapshot, UUID } from "@autonomos/core";
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
 import type { RateLimitData } from "../plugins/claude-usage/scanner.js";
@@ -100,7 +100,7 @@ usageQueueRouter.get("/", async (c) => {
       caps[provider] = evaluateCap(await probe());
     }
   }
-  return c.json({ armed, caps });
+  return c.json({ armed, caps } satisfies UsageQueueSnapshot);
 });
 
 /**

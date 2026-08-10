@@ -12,6 +12,7 @@
  * bundling constraint), and provider-internal shapes that never cross HTTP.
  */
 
+import type { AgentStatus, Provider } from "./agent";
 import type { PermissionMode } from "./permissions";
 import type { ProviderCapabilities } from "./provider";
 
@@ -75,8 +76,8 @@ export interface AgentTreeNode {
   name: string;
   template?: string;
   project?: string;
-  status: string;
-  provider: string;
+  status: AgentStatus;
+  provider: Provider;
   permissionMode: PermissionMode;
   children: AgentTreeNode[];
 }
