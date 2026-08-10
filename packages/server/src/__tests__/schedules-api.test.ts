@@ -13,12 +13,17 @@ process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 const { scheduleRouter, schedulerRouter } = await import(
   "../routes/schedules.js"
 );
+const { installErrorHandling } = await import("../httpError.js");
 const { _resetForTesting, _setExecutors, _onRunCompleted, initScheduler } =
   await import("../scheduler.js");
 const { getSchedule } = await import("../schedules.js");
 
 function createApp() {
   const app = new Hono();
+  // Mirrors run.ts. Body-shape failures now THROW an HttpError that the
+  // app-level handler turns into the ADR-078 envelope — a bare test app would
+  // report them as 500s and pin a shape production never returns.
+  installErrorHandling(app, "test");
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);
   return app;
@@ -77,9 +82,28 @@ describe("POST /api/schedules — validation", () => {
       body: "not json{{{",
     });
     assert.equal(res.status, 400);
-    const json = (await res.json()) as { error: string };
-    assert.equal(json.error, "Invalid JSON body");
+    const json = (await res.json()) as { error: string; code: string };
+    assert.equal(json.code, "BAD_JSON");
+    assert.ok(json.error.length > 0);
   });
+
+  // The four below used to pin one hand-written string each ("name is
+  // required", …). Those strings were the per-route convention PR B replaces
+  // with one envelope, so what is pinned now is the CONTRACT rather than the
+  // wording: 400, code VALIDATION, and a `details.issues` entry naming the
+  // field — which is the part a client (or a person) actually acts on.
+  function assertMissingField(
+    json: Record<string, unknown>,
+    field: string,
+  ): void {
+    assert.equal(json.code, "VALIDATION");
+    assert.ok(String(json.error).length > 0, "a human-readable error survives");
+    const issues = (json.details as { issues: { path: string }[] }).issues;
+    assert.ok(
+      issues.some((i) => i.path === field),
+      `expected an issue for "${field}", got ${JSON.stringify(issues)}`,
+    );
+  }
 
   it("rejects missing name", async () => {
     const { status, json } = await req(createApp(), "POST", "/api/schedules", {
@@ -87,7 +111,7 @@ describe("POST /api/schedules — validation", () => {
       name: undefined,
     });
     assert.equal(status, 400);
-    assert.equal(json.error, "name is required");
+    assertMissingField(json, "name");
   });
 
   it("rejects missing schedule", async () => {
@@ -96,7 +120,7 @@ describe("POST /api/schedules — validation", () => {
       schedule: undefined,
     });
     assert.equal(status, 400);
-    assert.equal(json.error, "schedule is required");
+    assertMissingField(json, "schedule");
   });
 
   it("rejects missing target", async () => {
@@ -105,7 +129,7 @@ describe("POST /api/schedules — validation", () => {
       target: undefined,
     });
     assert.equal(status, 400);
-    assert.equal(json.error, "target is required");
+    assertMissingField(json, "target");
   });
 
   it("rejects missing prompt", async () => {
@@ -114,7 +138,16 @@ describe("POST /api/schedules — validation", () => {
       prompt: undefined,
     });
     assert.equal(status, 400);
-    assert.equal(json.error, "prompt is required");
+    assertMissingField(json, "prompt");
+  });
+
+  it("rejects a whitespace-only required field, as the old trim guard did", async () => {
+    const { status, json } = await req(createApp(), "POST", "/api/schedules", {
+      ...validBody,
+      name: "   ",
+    });
+    assert.equal(status, 400);
+    assertMissingField(json, "name");
   });
 
   it("ACCEPTS a missing workingDirectory — it is deprecated and ignored", () => {
@@ -409,8 +442,9 @@ describe("PUT /api/schedules/:name", () => {
       body: "{bad json",
     });
     assert.equal(res.status, 400);
-    const json = (await res.json()) as { error: string };
-    assert.equal(json.error, "Invalid JSON body");
+    const json = (await res.json()) as { error: string; code: string };
+    assert.equal(json.code, "BAD_JSON");
+    assert.ok(json.error.length > 0);
   });
 
   it("rejects unsupported overlap policy on update", async () => {
@@ -686,7 +720,8 @@ describe("PUT /api/scheduler/settings", () => {
       body: "bad{",
     });
     assert.equal(res.status, 400);
-    const json = (await res.json()) as { error: string };
-    assert.equal(json.error, "Invalid JSON body");
+    const json = (await res.json()) as { error: string; code: string };
+    assert.equal(json.code, "BAD_JSON");
+    assert.ok(json.error.length > 0);
   });
 });

@@ -75,3 +75,46 @@ describe("POST /api/agents — template resolution errors (ADR-058)", () => {
     assert.match(String(json.error), /not found/);
   });
 });
+
+/**
+ * parseBody THROWS an HttpError; agentsRouter has its OWN onError, which is the
+ * nearest handler and therefore the only one that runs. Without an explicit
+ * HttpError branch there it falls into the router's generic 500 — so this app is
+ * deliberately bare (no installErrorHandling) to exercise that branch and not
+ * the app-level net that would mask its absence.
+ */
+describe("POST /api/agents — body-shape failures use the error envelope", () => {
+  let bare: Hono;
+  before(async () => {
+    const { agentsRouter } = await import("../routes/agents.js");
+    bare = new Hono();
+    bare.route("/api/agents", agentsRouter);
+  });
+
+  async function post(body: string) {
+    const res = await bare.request("/api/agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    return {
+      status: res.status,
+      json: (await res.json()) as Record<string, unknown>,
+    };
+  }
+
+  it("a missing workingDirectory is 400 VALIDATION naming the field", async () => {
+    const { status, json } = await post(JSON.stringify({ name: "x" }));
+    assert.equal(status, 400, "not the router's generic 500");
+    assert.equal(json.code, "VALIDATION");
+    const issues = (json.details as { issues: { path: string }[] }).issues;
+    assert.ok(issues.some((i) => i.path === "workingDirectory"));
+    assert.match(String(json.error), /workingDirectory/);
+  });
+
+  it("an unparseable body is 400 BAD_JSON", async () => {
+    const { status, json } = await post("{not json");
+    assert.equal(status, 400);
+    assert.equal(json.code, "BAD_JSON");
+  });
+});

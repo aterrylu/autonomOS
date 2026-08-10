@@ -26,6 +26,12 @@ import {
   validateScheduleInput,
 } from "../schedules.js";
 import { getSettings, updateSettings } from "../settings.js";
+import {
+  parseBody,
+  restCreateScheduleSchema,
+  restUpdateScheduleSchema,
+  schedulerSettingsSchema,
+} from "../validation.js";
 
 export const scheduleRouter = new Hono();
 export const schedulerRouter = new Hono();
@@ -42,72 +48,45 @@ scheduleRouter.get("/", (c) => {
 });
 
 scheduleRouter.post("/", async (c) => {
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-
+  // Shape (required fields, types, trimming) is the schema's; cron/target/
+  // overlap-policy VALIDITY stays with validateScheduleInput below, which the
+  // MCP path shares. workingDirectory is NOT required — it only ever configured
+  // the removed `isolated` executor's child process, and demanding a field the
+  // server ignores is worse than ignoring it quietly.
+  const body = await parseBody(c, restCreateScheduleSchema);
   const { name, schedule, target, prompt, workingDirectory } = body;
-  if (typeof name !== "string" || !name.trim())
-    return c.json({ error: "name is required" }, 400);
-  if (typeof schedule !== "string" || !schedule.trim())
-    return c.json({ error: "schedule is required" }, 400);
-  if (typeof target !== "string" || !target.trim())
-    return c.json({ error: "target is required" }, 400);
-  if (typeof prompt !== "string" || !prompt.trim())
-    return c.json({ error: "prompt is required" }, 400);
-  // workingDirectory is NO LONGER required. It only ever configured the
-  // removed `isolated` executor's child process; an `agent:` run happens
-  // inside the target agent's own cwd. Demanding a field the server ignores
-  // is worse than ignoring it quietly — it tells the caller the value matters.
-
-  const overlapPolicy =
-    typeof body.overlapPolicy === "string" ? body.overlapPolicy : undefined;
-  const timezone =
-    typeof body.timezone === "string" ? body.timezone : undefined;
 
   const validationError = validateScheduleInput({
     schedule,
     target,
-    timezone,
-    overlapPolicy: overlapPolicy as ScheduleConfig["overlapPolicy"],
+    timezone: body.timezone,
+    overlapPolicy: body.overlapPolicy as ScheduleConfig["overlapPolicy"],
   });
   if (validationError) return c.json({ error: validationError }, 400);
 
   try {
     const config: ScheduleConfig = {
-      name: name.trim(),
-      schedule: schedule.trim(),
-      target: target.trim(),
-      prompt: prompt.trim(),
+      name,
+      schedule,
+      target,
+      prompt,
       // Stored verbatim when supplied (deprecated, ignored) so a round-trip
       // through this endpoint doesn't silently drop an operator's value.
-      workingDirectory:
-        typeof workingDirectory === "string" && workingDirectory.trim()
-          ? workingDirectory.trim()
-          : undefined,
-      description:
-        typeof body.description === "string" ? body.description : undefined,
-      timezone,
-      template: typeof body.template === "string" ? body.template : undefined,
+      workingDirectory: workingDirectory?.trim() || undefined,
+      description: body.description,
+      timezone: body.timezone,
+      template: body.template,
       // Passed through, never defaulted. The old `: true` here was a third
       // fail-open default (alongside the executor's `!== false` and the MCP
       // schema's `.default(true)`) — it materialized full autonomy for any
       // caller that simply omitted the field. Deprecated and ignored now, but
       // synthesizing a value for a dead field would still misreport what the
       // operator asked for when the record is read back.
-      autonomous:
-        typeof body.autonomous === "boolean" ? body.autonomous : undefined,
-      overlapPolicy: overlapPolicy as ScheduleConfig["overlapPolicy"],
-      onComplete:
-        typeof body.onComplete === "string" ? body.onComplete : undefined,
-      notify:
-        typeof body.notify === "string"
-          ? (body.notify as ScheduleConfig["notify"])
-          : undefined,
-      enabled: typeof body.enabled === "boolean" ? body.enabled : true,
+      autonomous: body.autonomous,
+      overlapPolicy: body.overlapPolicy as ScheduleConfig["overlapPolicy"],
+      onComplete: body.onComplete,
+      notify: body.notify as ScheduleConfig["notify"],
+      enabled: body.enabled ?? true,
     };
 
     const created = createSchedule(config);
@@ -146,40 +125,23 @@ scheduleRouter.get("/:name", (c) => {
 
 scheduleRouter.put("/:name", async (c) => {
   const name = c.req.param("name");
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
+  // The name is the PATH's — a `name` in the body is accepted (older clients
+  // echo the whole record back) and ignored, as it always was: updateSchedule
+  // pins `name: existing.name`.
+  const { name: _ignoredName, ...rawPartial } = await parseBody(
+    c,
+    restUpdateScheduleSchema,
+  );
+  // `overlapPolicy` and `notify` cross the wire as plain strings;
+  // validateScheduleInput owns the value check and its message, so the narrowing
+  // cast lives here rather than in the schema.
+  const partial = rawPartial as Partial<ScheduleConfig>;
 
   try {
-    const stringFields = [
-      "schedule",
-      "target",
-      "prompt",
-      "workingDirectory",
-      "description",
-      "timezone",
-      "template",
-      "overlapPolicy",
-      "onComplete",
-      "notify",
-    ] as const;
-    const boolFields = ["autonomous", "enabled"] as const;
-
-    const partial: Partial<ScheduleConfig> = {};
-    for (const key of stringFields) {
-      if (typeof body[key] === "string")
-        (partial as Record<string, unknown>)[key] = body[key];
-    }
-    for (const key of boolFields) {
-      if (typeof body[key] === "boolean")
-        (partial as Record<string, unknown>)[key] = body[key];
-    }
-
-    // Validate partial input against existing config — cron is checked
-    // against the effective timezone (new if provided, else existing).
+    // Only the keys actually present survive the parse, which is what the
+    // `"schedule" in partial` cron re-arm check below reads. Validate the
+    // partial against the existing config — cron is checked against the
+    // effective timezone (new if provided, else existing).
     const existing = getSchedule(name);
     const validationError = validateScheduleInput(partial, {
       existing: existing ?? undefined,
@@ -254,20 +216,7 @@ schedulerRouter.get("/status", (c) => {
 });
 
 schedulerRouter.put("/settings", async (c) => {
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-
-  const maxConcurrentRuns = body.maxConcurrentRuns;
-  if (typeof maxConcurrentRuns !== "number" || maxConcurrentRuns < 1) {
-    return c.json(
-      { error: "maxConcurrentRuns must be a positive number" },
-      400,
-    );
-  }
+  const { maxConcurrentRuns } = await parseBody(c, schedulerSettingsSchema);
 
   const settings = getSettings();
   updateSettings({

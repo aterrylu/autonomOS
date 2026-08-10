@@ -11,6 +11,10 @@
  *     plaintext: every read goes through `maskEnvPreset`. `getEnvPresetRaw`
  *     (unmasked) exists solely for the spawn path and is not wired to any
  *     REST/MCP response.
+ *   - WRITING a secret value requires an explicit `writeSecrets` opt-in. Both
+ *     write paths strip them otherwise (`stripSecrets`), so "agents cannot set
+ *     a credential" is enforced here rather than by every surface remembering
+ *     to leave the field out of its schema.
  *   - On update, a secret value that is empty CLEARS the key, and a value that
  *     is already masked (a UI round-trip of the redacted form) is IGNORED so it
  *     can't overwrite the real stored secret with the mask.
@@ -155,9 +159,48 @@ export interface EnvPresetInput {
   label?: string;
   env?: Record<string, string>;
   secretKeys?: string[];
-  /** Secret VALUES. Accepted only from the UI/REST path — the MCP handler must
-   *  never pass this. Empty string clears; a masked value is ignored. */
+  /** Secret VALUES. Honored only when the caller passes `writeSecrets` (the
+   *  dashboard REST route); stripped by default. Empty string clears; a masked
+   *  value is ignored. */
   secrets?: Record<string, string>;
+}
+
+export interface EnvPresetWriteOptions {
+  /**
+   * Let `input.secrets` reach disk. The HUMAN surface only — the dashboard
+   * Presets tab is where an API key is entered.
+   *
+   * The default is to STRIP, which is what makes ADR-067's asymmetry an
+   * enforced boundary instead of a convention. Omitting `secrets` from the MCP
+   * tool schemas keeps an agent from setting a credential only for as long as
+   * every present and future surface remembers to omit it; stripping at the
+   * store means a new surface — a channel dispatch, a webhook, a CLI — is safe
+   * by construction and has to opt in loudly to be otherwise.
+   *
+   * It does NOT change the read side, which was already a hard wall
+   * (`maskEnvPreset`), nor the caveat that a spawned agent holds the real key
+   * in its env.
+   */
+  writeSecrets?: boolean;
+}
+
+/**
+ * Return `input` without secret VALUES. Exported so a caller can state the
+ * boundary explicitly; every write path runs it unless `writeSecrets` is set.
+ */
+export function stripSecrets<T extends { secrets?: Record<string, string> }>(
+  input: T,
+): Omit<T, "secrets"> {
+  const { secrets: _dropped, ...rest } = input;
+  return rest;
+}
+
+/** One place both write paths agree on: strip unless the caller opted in. */
+function applyWritePolicy<T extends { secrets?: Record<string, string> }>(
+  input: T,
+  opts: EnvPresetWriteOptions,
+): T | Omit<T, "secrets"> {
+  return opts.writeSecrets ? input : stripSecrets(input);
 }
 
 /** Merge incoming secret values onto existing, honoring the boundary rules:
@@ -200,8 +243,14 @@ function pruneSecrets(
   return out;
 }
 
-/** Create a new preset. Throws if one already exists. Returns the MASKED form. */
-export function createEnvPreset(input: EnvPresetInput, now: number): EnvPreset {
+/** Create a new preset. Throws if one already exists. Returns the MASKED form.
+ *  Secret values are stripped unless `opts.writeSecrets` — see the option. */
+export function createEnvPreset(
+  rawInput: EnvPresetInput,
+  now: number,
+  opts: EnvPresetWriteOptions = {},
+): EnvPreset {
+  const input = applyWritePolicy(rawInput, opts);
   validateName(input.name);
   if (getEnvPresetRaw(input.name)) {
     throw new Error(`Preset "${input.name}" already exists`);
@@ -210,7 +259,10 @@ export function createEnvPreset(input: EnvPresetInput, now: number): EnvPreset {
   const secretKeys = input.secretKeys ?? [];
   validateEnvKeys(Object.keys(env), "env");
   validateEnvKeys(secretKeys, "secret");
-  const secrets = pruneSecrets(mergeSecrets({}, input.secrets), secretKeys);
+  const secrets = pruneSecrets(
+    mergeSecrets({}, "secrets" in input ? input.secrets : undefined),
+    secretKeys,
+  );
   validateEnvKeys(Object.keys(secrets), "secret");
   const preset: EnvPreset = {
     name: input.name,
@@ -231,9 +283,11 @@ export function createEnvPreset(input: EnvPresetInput, now: number): EnvPreset {
  *  Returns the MASKED form. Throws if not found. */
 export function updateEnvPreset(
   name: string,
-  partial: Omit<EnvPresetInput, "name">,
+  rawPartial: Omit<EnvPresetInput, "name">,
   now: number,
+  opts: EnvPresetWriteOptions = {},
 ): EnvPreset {
+  const partial = applyWritePolicy(rawPartial, opts);
   const existing = getEnvPresetRaw(name);
   if (!existing) throw new Error(`Preset "${name}" not found`);
   if (partial.env) validateEnvKeys(Object.keys(partial.env), "env");
@@ -242,7 +296,10 @@ export function updateEnvPreset(
   // Prune to the FINAL declared keys so removing/renaming a secretKey drops its
   // orphaned plaintext value from disk rather than leaving it invisibly (Nox).
   const secrets = pruneSecrets(
-    mergeSecrets(existing.secrets, partial.secrets),
+    mergeSecrets(
+      existing.secrets,
+      "secrets" in partial ? partial.secrets : undefined,
+    ),
     finalSecretKeys,
   );
   validateEnvKeys(Object.keys(secrets), "secret");

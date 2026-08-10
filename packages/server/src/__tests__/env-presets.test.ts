@@ -34,6 +34,26 @@ afterEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
+/**
+ * The HUMAN (dashboard REST) write path. The store strips secret VALUES unless
+ * a caller opts in, so every test that needs a credential ON DISK has to say so
+ * — which is the boundary itself, asserted by "the default write path strips…"
+ * below. Agent-surface behaviour is the plain `createEnvPreset` call.
+ */
+function createWithSecrets(
+  input: Parameters<typeof createEnvPreset>[0],
+  now: number,
+) {
+  return createEnvPreset(input, now, { writeSecrets: true });
+}
+function updateWithSecrets(
+  name: string,
+  partial: Parameters<typeof updateEnvPreset>[1],
+  now: number,
+) {
+  return updateEnvPreset(name, partial, now, { writeSecrets: true });
+}
+
 function kimiInput(overrides = {}) {
   return {
     name: `kimi-${randomUUID().slice(0, 8)}`,
@@ -111,7 +131,7 @@ describe("createEnvPreset", () => {
   });
 
   it("accepts secret VALUES from the UI path and masks them on return", () => {
-    const p = createEnvPreset(
+    const p = createWithSecrets(
       kimiInput({
         name: "kimi",
         secrets: { ANTHROPIC_AUTH_TOKEN: "sk-live-9999" },
@@ -123,6 +143,26 @@ describe("createEnvPreset", () => {
     assert.equal(
       getEnvPresetRaw("kimi")?.secrets.ANTHROPIC_AUTH_TOKEN,
       "sk-live-9999",
+    );
+  });
+
+  it("the DEFAULT write path STRIPS secret values — an agent cannot set a credential", () => {
+    // The store, not the schema, is what enforces this. Omitting `secrets` from
+    // the MCP tool shapes only holds for as long as every surface remembers to;
+    // here a caller that passes values WITHOUT opting in gets none on disk, so
+    // a new surface is safe by construction.
+    createEnvPreset(
+      kimiInput({
+        name: "kimi",
+        secrets: { ANTHROPIC_AUTH_TOKEN: "sk-agent-set-me" },
+      }),
+      NOW,
+    );
+    assert.deepEqual(getEnvPresetRaw("kimi")?.secrets, {});
+    const raw = readFileSync(join(PRESETS_DIR, "kimi.json"), "utf-8");
+    assert.ok(
+      !raw.includes("sk-agent-set-me"),
+      "the value must not reach disk at all, masked or otherwise",
     );
   });
 
@@ -200,8 +240,28 @@ describe("createEnvPreset", () => {
 // ── update: the secret-merge rules ─────────────────────────────
 
 describe("updateEnvPreset — secret handling", () => {
+  it("the DEFAULT update path STRIPS secret values too", () => {
+    createWithSecrets(
+      kimiInput({
+        name: "k",
+        secrets: { ANTHROPIC_AUTH_TOKEN: "sk-original" },
+      }),
+      NOW,
+    );
+    // No opt-in: the new value is dropped and the stored one is untouched.
+    updateEnvPreset(
+      "k",
+      { secrets: { ANTHROPIC_AUTH_TOKEN: "sk-agent-overwrite" } },
+      NOW + 1,
+    );
+    assert.equal(
+      getEnvPresetRaw("k")?.secrets.ANTHROPIC_AUTH_TOKEN,
+      "sk-original",
+    );
+  });
+
   it("preserves an existing secret when the update carries none", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({
         name: "k",
         secrets: { ANTHROPIC_AUTH_TOKEN: "sk-keepme-1" },
@@ -217,7 +277,7 @@ describe("updateEnvPreset — secret handling", () => {
   });
 
   it("IGNORES a masked round-trip value (does not clobber the real secret with its mask)", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({
         name: "k",
         secrets: { ANTHROPIC_AUTH_TOKEN: "sk-real-4242" },
@@ -225,7 +285,7 @@ describe("updateEnvPreset — secret handling", () => {
       NOW,
     );
     // Simulate the UI PUTing back the masked read
-    updateEnvPreset(
+    updateWithSecrets(
       "k",
       { secrets: { ANTHROPIC_AUTH_TOKEN: "••••4242" } },
       NOW + 1,
@@ -239,7 +299,7 @@ describe("updateEnvPreset — secret handling", () => {
 
   it("sets a new real secret value", () => {
     createEnvPreset(kimiInput({ name: "k" }), NOW);
-    updateEnvPreset(
+    updateWithSecrets(
       "k",
       { secrets: { ANTHROPIC_AUTH_TOKEN: "sk-new-8888" } },
       NOW + 1,
@@ -251,11 +311,16 @@ describe("updateEnvPreset — secret handling", () => {
   });
 
   it("clears a secret when given an empty string", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({ name: "k", secrets: { ANTHROPIC_AUTH_TOKEN: "sk-clearme" } }),
       NOW,
     );
-    updateEnvPreset("k", { secrets: { ANTHROPIC_AUTH_TOKEN: "" } }, NOW + 1);
+    assert.equal(
+      getEnvPresetRaw("k")?.secrets.ANTHROPIC_AUTH_TOKEN,
+      "sk-clearme",
+      "precondition: there is a stored secret to clear",
+    );
+    updateWithSecrets("k", { secrets: { ANTHROPIC_AUTH_TOKEN: "" } }, NOW + 1);
     assert.equal(getEnvPresetRaw("k")?.secrets.ANTHROPIC_AUTH_TOKEN, undefined);
   });
 
@@ -285,7 +350,7 @@ describe("deleteEnvPreset / listEnvPresets", () => {
   });
 
   it("lists all presets, MASKED", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({
         name: "a",
         secrets: { ANTHROPIC_AUTH_TOKEN: "sk-aaaa1111" },
@@ -303,7 +368,7 @@ describe("deleteEnvPreset / listEnvPresets", () => {
 
 describe("resolvePresetEnv", () => {
   it("merges non-secret env + REAL secret values for injection", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({
         name: "k",
         secrets: { ANTHROPIC_AUTH_TOKEN: "sk-inject-me" },
@@ -420,12 +485,17 @@ describe("resolvePresetEnv", () => {
 
 describe("updateEnvPreset — secret pruning (Nox)", () => {
   it("drops an undeclared secret value from DISK when its key is removed", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({
         name: "k",
         secrets: { ANTHROPIC_AUTH_TOKEN: "sk-orphan-me" },
       }),
       NOW,
+    );
+    assert.equal(
+      getEnvPresetRaw("k")?.secrets.ANTHROPIC_AUTH_TOKEN,
+      "sk-orphan-me",
+      "precondition: there is a plaintext value to orphan",
     );
     // Remove the declared key (e.g. a rename to a new key name).
     updateEnvPreset("k", { secretKeys: [] }, NOW + 1);
@@ -434,7 +504,7 @@ describe("updateEnvPreset — secret pruning (Nox)", () => {
   });
 
   it("keeps a still-declared secret when other fields change", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({ name: "k", secrets: { ANTHROPIC_AUTH_TOKEN: "sk-keep" } }),
       NOW,
     );
@@ -447,7 +517,7 @@ describe("updateEnvPreset — secret pruning (Nox)", () => {
 
 describe("applyPresetToEnv", () => {
   it("merges the preset's resolved env into the target", () => {
-    createEnvPreset(
+    createWithSecrets(
       kimiInput({ name: "k", secrets: { ANTHROPIC_AUTH_TOKEN: "sk-real" } }),
       NOW,
     );

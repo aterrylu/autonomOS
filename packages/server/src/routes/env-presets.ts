@@ -3,12 +3,12 @@
  *
  * This is the HUMAN surface (the dashboard Presets tab). Unlike the MCP tools
  * (agent surface), PUT/POST here MAY set secret values — this is where the
- * human pastes the API key. All reads are masked by the storage layer
- * (createEnvPreset/updateEnvPreset/getEnvPreset/listEnvPresets all return the
- * masked form). See ADR-067.
+ * human pastes the API key, and the ONLY place that passes `writeSecrets` to
+ * the store (which strips secret values by default). All reads are masked by
+ * the storage layer (createEnvPreset/updateEnvPreset/getEnvPreset/listEnvPresets
+ * all return the masked form). See ADR-067.
  */
 
-import type { Provider } from "@autonomos/core";
 import { Hono } from "hono";
 import {
   createEnvPreset,
@@ -17,31 +17,16 @@ import {
   listEnvPresets,
   updateEnvPreset,
 } from "../envPresets.js";
+import {
+  parseBody,
+  restCreateEnvPresetSchema,
+  restUpdateEnvPresetSchema,
+} from "../validation.js";
 
 export const envPresetRouter = new Hono();
 
-const PROVIDERS = new Set<Provider>(["claude-code", "codex", "gemini-cli"]);
-
-function asProvider(v: unknown): Provider | undefined {
-  return typeof v === "string" && PROVIDERS.has(v as Provider)
-    ? (v as Provider)
-    : undefined;
-}
-
-function asStringRecord(v: unknown): Record<string, string> | undefined {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
-  const out: Record<string, string> = {};
-  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    if (typeof val === "string") out[k] = val;
-  }
-  return out;
-}
-
-function asStringArray(v: unknown): string[] | undefined {
-  return Array.isArray(v) && v.every((x) => typeof x === "string")
-    ? (v as string[])
-    : undefined;
-}
+/** The human write path — see the module note. */
+const HUMAN_WRITE = { writeSecrets: true } as const;
 
 envPresetRouter.get("/", (c) => {
   try {
@@ -53,29 +38,9 @@ envPresetRouter.get("/", (c) => {
 });
 
 envPresetRouter.post("/", async (c) => {
-  let body: Record<string, unknown>;
+  const body = await parseBody(c, restCreateEnvPresetSchema);
   try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-  if (typeof body.name !== "string" || !body.name.trim()) {
-    return c.json({ error: "name is required" }, 400);
-  }
-  try {
-    const preset = createEnvPreset(
-      {
-        name: body.name,
-        description:
-          typeof body.description === "string" ? body.description : undefined,
-        provider: asProvider(body.provider),
-        label: typeof body.label === "string" ? body.label : undefined,
-        env: asStringRecord(body.env),
-        secretKeys: asStringArray(body.secretKeys),
-        secrets: asStringRecord(body.secrets),
-      },
-      Date.now(),
-    );
+    const preset = createEnvPreset(body, Date.now(), HUMAN_WRITE);
     return c.json(preset, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -103,26 +68,9 @@ envPresetRouter.get("/:name", (c) => {
 
 envPresetRouter.put("/:name", async (c) => {
   const name = c.req.param("name");
-  let body: Record<string, unknown>;
+  const body = await parseBody(c, restUpdateEnvPresetSchema);
   try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-  try {
-    const preset = updateEnvPreset(
-      name,
-      {
-        description:
-          typeof body.description === "string" ? body.description : undefined,
-        provider: asProvider(body.provider),
-        label: typeof body.label === "string" ? body.label : undefined,
-        env: asStringRecord(body.env),
-        secretKeys: asStringArray(body.secretKeys),
-        secrets: asStringRecord(body.secrets),
-      },
-      Date.now(),
-    );
+    const preset = updateEnvPreset(name, body, Date.now(), HUMAN_WRITE);
     return c.json(preset);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

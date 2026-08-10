@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DEFAULT_PERMISSION_MODE, PERMISSION_MODES } from "@autonomos/core";
+import { DEFAULT_PERMISSION_MODE } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
 import {
   killAttachment,
   resolveAgentId,
@@ -45,6 +44,21 @@ import {
   listTemplates,
   saveTemplate,
 } from "./templates.js";
+// Request shapes live in ONE place (validation.ts) — the same objects back the
+// REST routes, so the two surfaces can no longer drift apart field by field.
+import {
+  createAgentShape,
+  createEnvPresetShape,
+  createScheduleShape,
+  createTemplateShape,
+  envPresetNameShape,
+  killAgentShape,
+  orgChartShape,
+  scheduleNameShape,
+  setManagerShape,
+  updateEnvPresetShape,
+  updateScheduleShape,
+} from "./validation.js";
 
 // ── MCP Server (HTTP transport — for external clients) ─────────────────
 // Claude Desktop, CI pipelines, other MCP clients can connect here.
@@ -85,76 +99,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "create_agent",
     "Create a new agent — a dedicated CLI session with a name, context, and optional task. Defaults to Claude Code; set `provider` to spawn a Codex or Gemini agent instead.",
-    {
-      workingDirectory: z
-        .string()
-        .describe("Absolute path to the working directory (~ allowed)"),
-      name: z.string().optional().describe("Display name for the agent"),
-      systemPrompt: z
-        .string()
-        .optional()
-        .describe(
-          "Instructions appended to the system prompt. Defines role/goals.",
-        ),
-      prompt: z
-        .string()
-        .optional()
-        .describe("Initial task or message — what the agent starts working on"),
-      resumeSessionId: z
-        .string()
-        .optional()
-        .describe(
-          "Session id to resume: an autonomOS agent id, OR a raw Claude Code session id — including an EXTERNAL session started via terminal `claude` (discovered in the Projects panel). External sessions are adopted into a new managed agent and resumed.",
-        ),
-      forkFrom: z
-        .string()
-        .optional()
-        .describe(
-          "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
-        ),
-      // Deliberately the CURRENT values only, matching mcp/tools.ts exactly.
-      // Adding the legacy spelling here would publish it in the machine-readable
-      // `enum` — the field a model actually trusts — teaching "default" as
-      // current to every client reading this schema, and making the two MCP
-      // transports advertise different vocabularies. That divergence is the bug
-      // class this PR closes, not one to reintroduce.
-      //
-      // Backward compatibility lives where it is needed instead: autonomOS-
-      // spawned agents reach create_agent through the CHANNEL server, which
-      // forwards to POST /api/agents, and that route normalizes the legacy
-      // spelling. This schema is read by external clients, which see the
-      // current vocabulary and have no old one to hold onto.
-      permissionMode: z
-        .enum(PERMISSION_MODES)
-        .optional()
-        .describe(
-          "Tool-use autonomy: 'ask' (prompt before each action), 'auto' (auto-approve edits), 'plan' (read-only; Codex falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
-        ),
-      template: z
-        .string()
-        .optional()
-        .describe("Template name (e.g. 'team-lead', 'worker')"),
-      manager: z
-        .string()
-        .optional()
-        .describe("Manager agent name for org chart"),
-      project: z
-        .string()
-        .optional()
-        .describe("Project scope (e.g. 'autonomOS')"),
-      provider: z
-        .enum(["claude-code", "codex", "gemini-cli"])
-        .optional()
-        .describe(
-          "Agent runtime/CLI (default: 'claude-code'). 'codex' = OpenAI Codex CLI, 'gemini-cli' = Google Gemini CLI. Must be installed on the host.",
-        ),
-      envPreset: z
-        .string()
-        .optional()
-        .describe(
-          "Env preset name (see list_env_presets) — applies a model-override env (e.g. Kimi backend) to only this agent. The preset's API key must be set by a human in the dashboard first.",
-        ),
-    },
+    createAgentShape,
     async (args) => {
       try {
         const tmpl = args.template ? getTemplate(args.template) : null;
@@ -253,13 +198,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "kill_agent",
     "Terminate an active agent by name or id.",
-    {
-      agent: z.string().optional().describe("Agent name or id to terminate"),
-      name: z
-        .string()
-        .optional()
-        .describe("Alias for 'agent' — agent name or id to terminate"),
-    },
+    killAgentShape,
     async (args) => {
       const target = args.agent || args.name;
       if (!target) {
@@ -300,22 +239,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "set_manager",
     "Set an agent's manager in the org chart.",
-    {
-      agent: z
-        .string()
-        .optional()
-        .describe("Agent name (e.g. 'Dashboard@autonomOS')"),
-      name: z
-        .string()
-        .optional()
-        .describe(
-          "Alias for 'agent' — agent name (e.g. 'Dashboard@autonomOS')",
-        ),
-      manager: z
-        .string()
-        .optional()
-        .describe("Manager agent name, or omit to remove manager"),
-    },
+    setManagerShape,
     async (args) => {
       const target = args.agent || args.name;
       if (!target) {
@@ -421,12 +345,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "get_org_chart",
     "Get the organization chart showing all agents and their hierarchy.",
-    {
-      includeExited: z
-        .boolean()
-        .optional()
-        .describe("Include exited agents (default: false, only running)"),
-    },
+    orgChartShape,
     async ({ includeExited }) => {
       const chart = buildOrgChartFromAgents(includeExited);
       return {
@@ -467,38 +386,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "create_template",
     "Create a reusable agent template.",
-    {
-      name: z
-        .string()
-        .describe("Template name (lowercase, hyphens, e.g. 'feature-worker')"),
-      role: z.string().describe("Human-readable role name"),
-      description: z.string().describe("Short description of the template"),
-      systemPrompt: z
-        .string()
-        .describe("System prompt defining the agent's behavior"),
-      permissionMode: z
-        .enum(PERMISSION_MODES)
-        .optional()
-        .describe(
-          "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'.",
-        ),
-      model: z
-        .string()
-        .optional()
-        .describe("Model override (e.g. 'opus', 'haiku')"),
-      // Declared solely so it can be REPORTED as ignored. Zod strips unknown
-      // keys, so without this the field vanishes silently — and agents spawned
-      // before ADR-058 still hold the old schema and keep sending it. Naming it
-      // deprecated here also teaches the fleet, which is the whole thesis of
-      // ADR-058: tell the agent, don't hide from it. Removable once no
-      // pre-ADR-058 agent is still running.
-      capabilities: z
-        .array(z.string())
-        .optional()
-        .describe(
-          "DEPRECATED (ADR-058) — ignored. It never restricted anything. Constrain workers in systemPrompt instead.",
-        ),
-    },
+    createTemplateShape,
     async (args) => {
       try {
         saveTemplate(args.name, {
@@ -570,27 +458,12 @@ function createMcpServer(): McpServer {
   server.tool(
     "create_env_preset",
     'Create a model-override env preset. Sets env + declares secret key names; you CANNOT set the secret value — a human enters it in the dashboard. Do not ask for tokens in chat. Flow: create → human keys it in the Presets tab → verify with list_env_presets → create_agent(envPreset). Kimi: ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic, ANTHROPIC_MODEL=kimi-k2.7-code, secretKeys=["ANTHROPIC_AUTH_TOKEN"].',
-    {
-      name: z.string().describe("Preset name (lowercase, digits, hyphens)"),
-      description: z.string().optional(),
-      provider: z.enum(["claude-code", "codex", "gemini-cli"]).optional(),
-      label: z.string().optional().describe("Short label for the agent's row"),
-      env: z
-        .record(z.string(), z.string())
-        .optional()
-        .describe(
-          "Non-secret env vars (e.g. ANTHROPIC_BASE_URL, ANTHROPIC_MODEL)",
-        ),
-      secretKeys: z
-        .array(z.string())
-        .optional()
-        .describe(
-          "Names of required secret env vars (e.g. ['ANTHROPIC_AUTH_TOKEN'])",
-        ),
-    },
+    createEnvPresetShape,
     async (args) => {
       try {
-        // NOTE: no `secrets` in the schema — the agent surface cannot set values.
+        // No `secrets` in the schema AND no `writeSecrets` here — the agent
+        // surface cannot set values, and the store enforces that even if this
+        // call site ever changed.
         const preset = createEnvPreset(
           {
             name: args.name,
@@ -625,14 +498,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "update_env_preset",
     "Update a preset's non-secret fields. You cannot set secret values (human-only, in the dashboard).",
-    {
-      name: z.string().describe("Name of the preset to update"),
-      description: z.string().optional(),
-      provider: z.enum(["claude-code", "codex", "gemini-cli"]).optional(),
-      label: z.string().optional(),
-      env: z.record(z.string(), z.string()).optional(),
-      secretKeys: z.array(z.string()).optional(),
-    },
+    updateEnvPresetShape,
     async (args) => {
       try {
         const preset = updateEnvPreset(
@@ -664,7 +530,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "delete_env_preset",
     "Delete an env preset by name.",
-    { name: z.string().describe("Name of the preset to delete") },
+    envPresetNameShape,
     async (args) => {
       try {
         const removed = deleteEnvPreset(args.name);
@@ -696,45 +562,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "create_schedule",
     "Create a new scheduled task.",
-    {
-      name: z.string().describe("Schedule name (kebab-case)"),
-      schedule: z.string().describe("Cron expression or once:ISO"),
-      target: z
-        .string()
-        .describe(
-          '"agent:<name>" — send the prompt to a running agent (its own permission mode governs the run)',
-        ),
-      prompt: z.string().describe("Task prompt"),
-      // The three below are accepted-and-ignored leftovers of the removed
-      // `isolated` target, kept so pre-removal clients still validate.
-      // `workingDirectory` is optional now — it used to be required.
-      // `autonomous` has no `.default(true)` any more: advertising that
-      // omission grants full autonomy is what made this the one scheduled
-      // path outside PermissionMode.
-      workingDirectory: z
-        .string()
-        .optional()
-        .describe("DEPRECATED — ignored (the target agent's cwd is used)"),
-      description: z.string().optional().describe("Description"),
-      timezone: z.string().optional().describe("IANA timezone"),
-      template: z
-        .string()
-        .optional()
-        .describe("DEPRECATED — ignored (never had an effect)"),
-      autonomous: z
-        .boolean()
-        .optional()
-        .describe(
-          "DEPRECATED — ignored (autonomy is the target agent's permissionMode)",
-        ),
-      overlapPolicy: z.string().optional().describe("skip or allow"),
-      onComplete: z
-        .string()
-        .optional()
-        .describe("DEPRECATED — ignored (see create_schedule in mcp/tools.ts)"),
-      notify: z.string().optional().describe("always, failure, or never"),
-      enabled: z.boolean().optional().default(true),
-    },
+    createScheduleShape,
     async (args) => {
       try {
         const config =
@@ -788,7 +616,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "get_schedule",
     "Get schedule details and recent runs.",
-    { name: z.string().describe("Schedule name") },
+    scheduleNameShape,
     async (args) => {
       const schedule = getSchedule(args.name);
       if (!schedule) {
@@ -814,21 +642,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "update_schedule",
     "Update a schedule's configuration (partial merge).",
-    {
-      name: z.string().describe("Schedule name"),
-      schedule: z.string().optional(),
-      target: z.string().optional(),
-      prompt: z.string().optional(),
-      workingDirectory: z.string().optional(),
-      description: z.string().optional(),
-      timezone: z.string().optional(),
-      template: z.string().optional(),
-      autonomous: z.boolean().optional(),
-      overlapPolicy: z.string().optional(),
-      onComplete: z.string().optional(),
-      notify: z.string().optional(),
-      enabled: z.boolean().optional(),
-    },
+    updateScheduleShape,
     async (args) => {
       try {
         const { name, ...partial } = args;
@@ -875,7 +689,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "delete_schedule",
     "Delete a schedule (run history preserved).",
-    { name: z.string().describe("Schedule name") },
+    scheduleNameShape,
     async (args) => {
       removeScheduleJob(args.name);
       const removed = deleteSchedule(args.name);
@@ -896,7 +710,7 @@ function createMcpServer(): McpServer {
   server.tool(
     "run_schedule",
     "Trigger a schedule immediately.",
-    { name: z.string().describe("Schedule name") },
+    scheduleNameShape,
     async (args) => {
       const result = runScheduleNow(args.name);
       if (result.error) {

@@ -30,6 +30,7 @@ import {
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
+import { installErrorHandling } from "./httpError.js";
 import {
   assertUsableSocketPath,
   getControlSocketPath,
@@ -217,6 +218,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   }
 
   const app = new Hono<NodeEnv>();
+  // One error envelope for the whole surface (ADR-078). Installed before the
+  // routes so nothing can be mounted "outside" it: onError/notFound are
+  // app-level, and a router with its own onError still composes on top
+  // (agents.ts) because Hono runs the nearest handler.
+  installErrorHandling(app, "api");
 
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
@@ -227,6 +233,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // but rejected": there is no port to connect to. The public listener below
   // keeps only the browser surface.
   const internalApp = new Hono<NodeEnv>();
+  // Same envelope on the control socket — a failure's shape must not depend on
+  // which listener the request arrived through.
+  installErrorHandling(internalApp, "internal");
 
   // Per-app WebSocket closures for the internal listener. createNodeWebSocket
   // returns per-app upgrade/inject functions — calling it a second time for

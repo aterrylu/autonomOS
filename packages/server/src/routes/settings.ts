@@ -8,12 +8,9 @@ import {
   isAutoDetectAccountEnabled,
   updateSettings,
 } from "../settings.js";
+import { parseBody, restUpdateSettingsSchema } from "../validation.js";
 
 export const settingsRouter = new Hono();
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 /** Redact secrets — show only last 4 chars */
 function redact(value: string | undefined): string | null {
@@ -39,40 +36,40 @@ settingsRouter.get("/", (c) => {
 });
 
 settingsRouter.put("/", async (c) => {
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
+  // Shape only. The two value-level rules below — channel-id format and the
+  // env-var-name filter — are domain validation and stay here: one 400s with a
+  // message naming the offending ids, the other drops silently, and neither is
+  // expressible as "this field is a string".
+  const body = await parseBody(c, restUpdateSettingsSchema);
 
   const partial: Partial<AppSettings> = {};
-  if (typeof body.claudeSessionKey === "string") {
+  if (body.claudeSessionKey !== undefined) {
     partial.claudeSessionKey = body.claudeSessionKey.trim();
   }
   // Accept the new key; also accept the legacy `autoDetectClaudeSession` from
   // older dashboards and map it onto the new field.
-  if (typeof body.autoDetectClaudeAccount === "boolean") {
+  if (body.autoDetectClaudeAccount !== undefined) {
     partial.autoDetectClaudeAccount = body.autoDetectClaudeAccount;
-  } else if (typeof body.autoDetectClaudeSession === "boolean") {
+  } else if (body.autoDetectClaudeSession !== undefined) {
     partial.autoDetectClaudeAccount = body.autoDetectClaudeSession;
   }
   // `claudeOrgId`, the anthropic* override keys, and `terminalRenderer` are
-  // removed features — accept-but-discard for back-compat with older
-  // dashboards that still send them; they are never persisted. (A stale
-  // `terminalRenderer` already on disk is scrubbed on read in settings.ts.)
-  if (typeof body.autoTrust === "boolean") {
+  // removed features — undeclared in the schema, so zod strips them. That is
+  // the same accept-but-discard older dashboards have always got; they are
+  // never persisted. (A stale `terminalRenderer` already on disk is scrubbed on
+  // read in settings.ts.)
+  if (body.autoTrust !== undefined) {
     partial.autoTrust = body.autoTrust;
   }
   // A default-ON phone-home whose off switch only exists as a hand-edited
   // JSON key isn't a real off switch — the flag is settable through the
   // same API/panel as every other toggle.
-  if (typeof body.updateCheck === "boolean") {
+  if (body.updateCheck !== undefined) {
     partial.updateCheck = body.updateCheck;
   }
-  if (Array.isArray(body.channels)) {
+  if (body.channels !== undefined) {
     const requested = body.channels
-      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .filter((v) => v.trim().length > 0)
       .map((v) => v.trim());
 
     const invalid = requested.filter((id) => !isValidChannelId(id));
@@ -87,23 +84,14 @@ settingsRouter.put("/", async (c) => {
 
     partial.channels = requested;
   }
-  if (
-    isPlainObject(body.statusLine) &&
-    typeof body.statusLine.enabled === "boolean"
-  ) {
+  if (body.statusLine?.enabled !== undefined) {
     partial.statusLine = { enabled: body.statusLine.enabled };
   }
-  if (isPlainObject(body.customEnvVars)) {
+  if (body.customEnvVars !== undefined) {
     const vars: Record<string, string> = {};
-    for (const [k, v] of Object.entries(
-      body.customEnvVars as Record<string, unknown>,
-    )) {
+    for (const [k, v] of Object.entries(body.customEnvVars)) {
       const key = k.trim();
-      if (
-        key &&
-        typeof v === "string" &&
-        /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)
-      ) {
+      if (key && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
         vars[key] = v;
       }
     }

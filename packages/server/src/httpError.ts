@@ -14,7 +14,7 @@
  * app-level net — Hono runs the nearest handler, so both compose.
  */
 
-import type { Context, Hono } from "hono";
+import type { Context, Env, Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ZodError } from "zod";
 import { CachePoisonedError } from "./agents/store.js";
@@ -59,8 +59,16 @@ export const conflict = (
   opts?: { code?: string; details?: Record<string, unknown> },
 ): HttpError => new HttpError(409, message, { code: "CONFLICT", ...opts });
 
-/** Envelope for one error, shared by onError and notFound below. */
-function envelope(c: Context, err: HttpError): Response {
+/**
+ * Envelope for one error. Exported because a router with its OWN onError
+ * (agents.ts) is the nearest handler and never reaches the app-level one — it
+ * has to be able to emit the same envelope rather than dropping an HttpError
+ * into its generic 500 branch.
+ */
+export function httpErrorResponse<E extends Env>(
+  c: Context<E>,
+  err: HttpError,
+): Response {
   return c.json(
     {
       error: err.message,
@@ -77,8 +85,8 @@ function envelope(c: Context, err: HttpError): Response {
  * (public TCP and the internal control socket) — an error envelope must not
  * depend on which surface a request arrived through.
  */
-export function installErrorHandling(
-  app: Hono,
+export function installErrorHandling<E extends Env>(
+  app: Hono<E>,
   scope: string,
 ): void {
   app.onError((err, c) => {
@@ -89,12 +97,12 @@ export function installErrorHandling(
           `[${scope}] ${err.code ?? err.name} on ${c.req.method} ${c.req.path}: ${err.message}`,
         );
       }
-      return envelope(c, err);
+      return httpErrorResponse(c, err);
     }
     // A ZodError that escaped a route (parseBody throws HttpError, so this
     // is a schema used directly) still becomes a structured 400.
     if (err instanceof ZodError) {
-      return envelope(
+      return httpErrorResponse(
         c,
         new HttpError(400, "Invalid request body", {
           code: "VALIDATION",
