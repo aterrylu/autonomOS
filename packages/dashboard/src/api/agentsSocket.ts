@@ -153,12 +153,20 @@ function connect(): void {
   const socket = new WebSocket(`${proto}//${location.host}/ws/agents`);
   ws = socket;
 
+  // Every handler is superseded-socket guarded (the invariant the terminal
+  // socket learned the hard way): close events are ASYNC, so a torn-down
+  // socket's onclose can land after a newer socket exists (StrictMode
+  // mount→unmount→mount, the auth Retry re-running the bridge effect) — and
+  // an unguarded handler would reset the HEALTHY connection's baseline or
+  // re-arm a reconnect loop against it.
   socket.onopen = () => {
+    if (ws !== socket) return;
     retryMs = BASE_RETRY_MS;
     lastFrameAt = Date.now();
     commit({ connected: true });
   };
   socket.onmessage = (ev) => {
+    if (ws !== socket) return;
     lastFrameAt = Date.now();
     try {
       applyDelta(JSON.parse(ev.data as string) as AgentDelta);
@@ -167,7 +175,8 @@ function connect(): void {
     }
   };
   socket.onclose = () => {
-    if (ws === socket) ws = null;
+    if (ws !== socket) return;
+    ws = null;
     // Reset the baseline, not just the flag: a REconnect fires onopen before
     // its reconcile arrives, and a kept map would make the bridge treat the
     // stale pre-disconnect snapshot as live — suspending polls and replaying
@@ -233,6 +242,11 @@ export const agentsSocket = {
         }
         ws?.close();
         ws = null;
+        // The closed socket's onclose is superseded-guarded (ws is already
+        // null ≠ socket), so IT won't reset the baseline — do it here, or a
+        // resubscribe would treat this stale snapshot as live before the new
+        // connection's reconcile lands.
+        commit({ connected: false, agents: null, statuses: new Map() });
       }
     };
   },

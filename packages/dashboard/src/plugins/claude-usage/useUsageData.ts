@@ -36,7 +36,15 @@ export function useUsageData() {
     } catch (err) {
       if (cancelledRef.current) return;
       if (err instanceof ApiError) {
-        setError(err.unreachable ? "unreachable" : `HTTP ${err.status}`);
+        setError(
+          err.unreachable
+            ? "unreachable"
+            : // BAD_BODY carries the wire-faithful status 200 — rendering
+              // "HTTP 200" as an error reads as nonsense; keep the old label.
+              err.code === "BAD_BODY"
+              ? "Invalid response"
+              : `HTTP ${err.status}`,
+        );
       } else {
         setError("Invalid response");
       }

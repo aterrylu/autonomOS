@@ -27,6 +27,14 @@ async function validate(): Promise<SaveValidateResult> {
     if (!(err instanceof ApiError) || err.unreachable) {
       return { kind: "unreachable", message: "Could not reach the server" };
     }
+    // A non-JSON 2xx (captive portal, broken proxy) throws BAD_BODY rather
+    // than resolving null — same user-facing verdict as the old null path.
+    if (err.code === "BAD_BODY") {
+      return {
+        kind: "unreachable",
+        message: "Server sent an invalid response",
+      };
+    }
     // The endpoint returns 200 even for credential failures (the error rides
     // in the body). A non-2xx means the server itself faulted — surface its
     // `detail` if present and treat it as transient, not "unreachable".
@@ -39,7 +47,7 @@ async function validate(): Promise<SaveValidateResult> {
     };
   }
 
-  // A non-JSON body parses to null rather than throwing (see api/core).
+  // Only a truly EMPTY 2xx body resolves null (see api/core BAD_BODY).
   if (!data) {
     return { kind: "unreachable", message: "Server sent an invalid response" };
   }
