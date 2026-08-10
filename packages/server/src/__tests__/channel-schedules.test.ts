@@ -28,11 +28,15 @@ process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 const { scheduleRouter, schedulerRouter } = await import(
   "../routes/schedules.js"
 );
+const { installErrorHandling } = await import("../httpError.js");
 const { _resetForTesting, _setExecutors, _onRunCompleted, initScheduler } =
   await import("../scheduler.js");
 
 function createApp() {
   const app = new Hono();
+  // Mirrors run.ts — the channel server talks to the REAL app, whose error
+  // envelope comes from this handler (see httpError.ts).
+  installErrorHandling(app, "test");
   app.route("/api/schedules", scheduleRouter);
   app.route("/api/scheduler", schedulerRouter);
   return app;

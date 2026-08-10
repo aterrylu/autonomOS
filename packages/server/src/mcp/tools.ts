@@ -75,7 +75,7 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       forkFrom: {
         type: "string",
         description:
-          "Claude session ID to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
+          "Agent id to fork from — child inherits parent's conversation context. Mutually exclusive with resumeSessionId.",
       },
       permissionMode: {
         type: "string",
@@ -191,7 +191,7 @@ export const TOOL_SET_MANAGER: ToolDef = {
       manager: {
         type: "string",
         description:
-          "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager.",
+          "Manager agent name (e.g. 'TeamLead@autonomOS'). Omit (or pass an empty string) to remove the manager.",
       },
     },
   },

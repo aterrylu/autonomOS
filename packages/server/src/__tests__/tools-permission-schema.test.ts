@@ -23,6 +23,12 @@ import {
 } from "@autonomos/core";
 import { TOOL_CREATE_AGENT, TOOL_CREATE_TEMPLATE } from "../mcp/tools.js";
 
+/** The HTTP transport's zod shapes — read as SOURCE, see describedPermissionProse. */
+const VALIDATION_SOURCE = readFileSync(
+  new URL("../validation.ts", import.meta.url),
+  "utf-8",
+);
+
 /** Pull the `permissionMode` property out of a tool's JSON Schema. */
 function permissionSchema(tool: {
   inputSchema: { properties: Record<string, unknown> };
@@ -35,10 +41,10 @@ function permissionSchema(tool: {
 /**
  * Every piece of operator/agent-facing prose describing a permission mode.
  *
- * Deliberately includes the zod `.describe()` strings from mcp.ts, not just the
- * JSON Schema in tools.ts. They are two hand-written copies of the same
- * explanation for two different MCP transports, and a check that covers only
- * one leaves the other free to drift — which is precisely how the HTTP and
+ * Deliberately includes the zod `.describe()` strings from validation.ts, not
+ * just the JSON Schema in tools.ts. They are two hand-written copies of the
+ * same explanation for two different MCP transports, and a check that covers
+ * only one leaves the other free to drift — which is precisely how the HTTP and
  * channel servers came to disagree about `list_agents` in the first place.
  */
 function describedPermissionProse(): Array<[label: string, prose: string]> {
@@ -49,24 +55,23 @@ function describedPermissionProse(): Array<[label: string, prose: string]> {
   ] as const) {
     out.push([label, permissionSchema(tool).description ?? ""]);
   }
-  // The zod schemas live inside a closure in mcp.ts, so read the source. A
+  // The zod raw shapes are plain objects in validation.ts (consolidation PR B
+  // moved them out of the closure in mcp.ts), so read the source. A
   // brittle-looking approach that is the point: it fails loudly if the file
-  // moves, rather than silently checking nothing.
-  const mcpSource = readFileSync(
-    new URL("../mcp.ts", import.meta.url),
-    "utf-8",
-  );
+  // moves, rather than silently checking nothing. Anchored on `.enum(` so it
+  // reads the two PUBLISHED modes and not the REST shapes' deliberately loose
+  // `permissionMode: z.unknown()`.
   const described = [
-    ...mcpSource.matchAll(
-      /permissionMode:\s*z[\s\S]{0,600}?\.describe\(\s*"((?:[^"\\]|\\.)*)"/g,
+    ...VALIDATION_SOURCE.matchAll(
+      /permissionMode:\s*z\s*\n?\s*\.enum\([^)]*\)[\s\S]{0,300}?\.describe\(\s*"((?:[^"\\]|\\.)*)"/g,
     ),
   ];
   assert.ok(
     described.length >= 2,
-    `expected to find both zod permissionMode descriptions in mcp.ts, found ${described.length} — has the schema shape changed?`,
+    `expected to find both zod permissionMode descriptions in validation.ts, found ${described.length} — has the schema shape changed?`,
   );
   described.forEach((m, i) => {
-    out.push([`mcp.ts zod #${i + 1}`, m[1]]);
+    out.push([`validation.ts zod #${i + 1}`, m[1]]);
   });
   return out;
 }
@@ -105,31 +110,30 @@ describe("MCP tool schemas mirror core's permission modes", () => {
   });
 
   it("both MCP transports advertise the SAME permission vocabulary", () => {
-    // The channel server (tools.ts JSON Schema) and the HTTP server (mcp.ts
-    // zod) are hand-written copies for two transports. When they drifted on
-    // `list_agents`, agents could not see a peer's mode at all — the readback
-    // gap this PR closes. The same drift in the create_agent enum would teach
-    // different vocabularies to different clients, so pin them together.
+    // The channel server (tools.ts JSON Schema) and the HTTP server
+    // (validation.ts zod, consumed by mcp.ts) are hand-written copies for two
+    // transports. When they drifted on `list_agents`, agents could not see a
+    // peer's mode at all — the readback gap this PR closes. The same drift in
+    // the create_agent enum would teach different vocabularies to different
+    // clients, so pin them together.
     //
     // Notably this must FAIL if the legacy spelling is added to only one side:
     // backward compatibility belongs at the REST boundary, not in a published
     // enum, precisely because the enum is what a model treats as current.
-    const mcpSource = readFileSync(
-      new URL("../mcp.ts", import.meta.url),
-      "utf-8",
-    );
     const zodEnums = [
-      ...mcpSource.matchAll(/permissionMode:\s*z\s*\n?\s*\.enum\(([^)]*)\)/g),
+      ...VALIDATION_SOURCE.matchAll(
+        /permissionMode:\s*z\s*\n?\s*\.enum\(([^)]*)\)/g,
+      ),
     ].map((m) => m[1].trim());
     assert.ok(
       zodEnums.length >= 2,
-      `expected both zod permissionMode enums in mcp.ts, found ${zodEnums.length}`,
+      `expected both zod permissionMode enums in validation.ts, found ${zodEnums.length}`,
     );
     for (const e of zodEnums) {
       assert.equal(
         e,
         "PERMISSION_MODES",
-        `mcp.ts publishes a permissionMode enum of \`${e}\` instead of deriving it from PERMISSION_MODES — the two transports would advertise different vocabularies`,
+        `validation.ts publishes a permissionMode enum of \`${e}\` instead of deriving it from PERMISSION_MODES — the two transports would advertise different vocabularies`,
       );
     }
   });

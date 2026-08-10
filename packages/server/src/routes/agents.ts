@@ -10,8 +10,6 @@ import {
   type AgentTreeNode,
   type ExitReason,
   isExitReason,
-  type PermissionMode,
-  type Provider,
   permissionModeFromStored,
   type UUID,
 } from "@autonomos/core";
@@ -37,9 +35,15 @@ import {
   setManager,
 } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
+import { HttpError, httpErrorResponse } from "../httpError.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
 import { usageQueue } from "../usageQueue.js";
+import {
+  parseBody,
+  restCreateAgentSchema,
+  restSetManagerSchema,
+} from "../validation.js";
 import { clearAgentState, clearNotifications } from "./hooks.js";
 
 export const agentsRouter = new Hono();
@@ -57,6 +61,10 @@ export const agentsRouter = new Hono();
 // to keep WS clients in sync with disk before the response goes out.
 // This onError covers the simpler routes that don't have that.
 agentsRouter.onError((err, c) => {
+  // A router-level onError is the NEAREST handler, so the app-level one in
+  // httpError.ts never sees these — this branch is what keeps a thrown
+  // HttpError (parseBody's 400, say) from falling into the generic 500 below.
+  if (err instanceof HttpError) return httpErrorResponse(c, err);
   // A spawn that lands in the boot window before the control socket binds
   // (ADR-055). Distinct from CachePoisonedError below in one important way:
   // this one IS retryable, and clears on its own within a moment of startup —
@@ -196,16 +204,10 @@ export function spawnErrorStatus(message: string): 400 | 404 | 409 | 422 | 500 {
 }
 
 agentsRouter.post("/", async (c) => {
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
-
-  if (!body.workingDirectory || typeof body.workingDirectory !== "string") {
-    return c.json({ error: "workingDirectory is required" }, 400);
-  }
+  // Body SHAPE only (validation.ts). Everything below — template resolution,
+  // manager lookup, the permissionMode fallback — is domain validation and
+  // keeps its own statuses and messages.
+  const body = await parseBody(c, restCreateAgentSchema);
 
   // Resolve template if provided. getTemplate() returns null for a missing file
   // but THROWS for a corrupt one (bad JSON, wrong shape) — the message names the
@@ -213,8 +215,7 @@ agentsRouter.post("/", async (c) => {
   // default handler and becomes an opaque 500, dropping exactly the guidance an
   // operator needs. The MCP create_agent path already wraps this call, so
   // without this the two surfaces disagree about the same corrupt file.
-  const templateName =
-    typeof body.template === "string" ? body.template : undefined;
+  const templateName = body.template;
   let tmpl: ReturnType<typeof getTemplate> = null;
   try {
     tmpl = templateName ? getTemplate(templateName) : null;
@@ -229,23 +230,20 @@ agentsRouter.post("/", async (c) => {
   // Resolve manager — accept either managerId (UUID) or manager (name).
   // Name takes precedence if both supplied since MCP/UI surfaces use names.
   let managerId: UUID | null = null;
-  if (typeof body.manager === "string" && body.manager.length > 0) {
+  if (body.manager) {
     const mgr = resolveAgentByName(body.manager);
     if (!mgr) {
       return c.json({ error: `Manager "${body.manager}" not found` }, 400);
     }
     managerId = mgr.id;
-  } else if (typeof body.managerId === "string") {
+  } else if (body.managerId !== undefined) {
     if (!getAgent(body.managerId)) {
       return c.json({ error: `managerId "${body.managerId}" not found` }, 400);
     }
     managerId = body.managerId;
   }
 
-  const systemPrompt =
-    typeof body.appendSystemPrompt === "string"
-      ? body.appendSystemPrompt
-      : tmpl?.systemPrompt;
+  const systemPrompt = body.appendSystemPrompt ?? tmpl?.systemPrompt;
   // `permissionModeFromStored` also accepts the pre-rename spelling
   // ("default" → "ask"), so a client holding the older tool schema — every
   // agent spawned before that rename — keeps working instead of failing.
@@ -272,8 +270,8 @@ agentsRouter.post("/", async (c) => {
   try {
     const result = await spawnAgent({
       workingDirectory: body.workingDirectory,
-      name: typeof body.name === "string" ? body.name : undefined,
-      prompt: typeof body.prompt === "string" ? body.prompt : undefined,
+      name: body.name,
+      prompt: body.prompt,
       // The three id fields are forwarded RAW (not coerced to undefined on a
       // type mismatch) so spawnAgent's boundary guard can reject a present-but-
       // malformed value. Coercing here would silently drop `resumeSessionId: 42`
@@ -290,18 +288,14 @@ agentsRouter.post("/", async (c) => {
       appendSystemPrompt: systemPrompt,
       template: templateName,
       managerId,
-      project: typeof body.project === "string" ? body.project : undefined,
-      cols: typeof body.cols === "number" ? body.cols : undefined,
-      rows: typeof body.rows === "number" ? body.rows : undefined,
-      provider:
-        typeof body.provider === "string"
-          ? (body.provider as Provider)
-          : undefined,
+      project: body.project,
+      cols: body.cols,
+      rows: body.rows,
+      provider: body.provider,
       // Env preset (model override, ADR-067). Forwarded raw; spawnAgent resolves
       // it against the record on a body-less resume. undefined = no override /
       // keep the resumed agent's existing preset.
-      envPreset:
-        typeof body.envPreset === "string" ? body.envPreset : undefined,
+      envPreset: body.envPreset,
     });
     return c.json(result.agent, 201);
   } catch (err) {
@@ -331,33 +325,21 @@ agentsRouter.post("/:id/manager", async (c) => {
   const agent = resolveAgent(param);
   if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
 
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
-  }
+  const body = await parseBody(c, restSetManagerSchema);
 
   // Accept either managerId (UUID) or manager (name). Null/undefined clears.
   let managerId: UUID | null;
-  if (typeof body.manager === "string" && body.manager.length > 0) {
+  if (body.manager) {
     const mgr = resolveAgentByName(body.manager);
     if (!mgr) {
       return c.json({ error: `Manager "${body.manager}" not found` }, 404);
     }
     managerId = mgr.id;
-  } else if (body.managerId === null || body.managerId === undefined) {
-    managerId = null;
-  } else if (typeof body.managerId === "string") {
-    managerId = body.managerId;
   } else {
-    return c.json({ error: "managerId must be string or null" }, 400);
+    managerId = body.managerId ?? null;
   }
 
-  const expectedVersion =
-    typeof body.version === "number" ? body.version : undefined;
-
-  const result = setManager(agent.id, managerId, expectedVersion);
+  const result = setManager(agent.id, managerId, body.version);
   if (result === undefined) {
     return c.json({ error: `Agent "${param}" or managerId not found` }, 404);
   }

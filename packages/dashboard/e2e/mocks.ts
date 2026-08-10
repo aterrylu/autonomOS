@@ -196,6 +196,13 @@ export async function mockApi(
     const path = url.pathname;
     const method = request.method();
 
+    // The glob also matches VITE MODULE URLS: the dashboard's api client
+    // lives at /src/api/*, and fulfilling those with JSON serves the app's
+    // own source files as `application/json` — strict MIME checking then
+    // refuses the module and the page never boots (every spec times out on
+    // its first locator). Only BACKEND paths belong to this mock.
+    if (!path.startsWith("/api/")) return route.fallback();
+
     // ── Mutations ────────────────────────────────────────────────
     if (path === "/api/agents" && method === "POST") {
       const body = (request.postDataJSON?.() ?? {}) as Record<string, unknown>;
