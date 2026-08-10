@@ -652,7 +652,12 @@ export function SettingsPanel({
   return (
     <div
       ref={ref}
-      className="absolute bottom-full left-0 mb-1 w-[340px] rounded-md p-3 text-xs shadow-lg"
+      // max-h + scroll: the panel grew past short viewports as toggles
+      // accumulated (the Update Check toggle tipped it over in the e2e
+      // viewport, leaving lower controls unreachable — clicks timed out
+      // "outside of the viewport"). Cap to the space above the status bar
+      // and scroll the overflow instead.
+      className="absolute bottom-full left-0 mb-1 w-[340px] rounded-md p-3 text-xs shadow-lg max-h-[calc(100vh-4rem)] overflow-y-auto"
       style={{
         background: page.bg,
         border: `1px solid ${page.border}`,
