@@ -516,8 +516,10 @@ async function bootServer(
   writeFileSync(
     join(configDir, "settings.json"),
     `${JSON.stringify(
-      // channels:[] → injectChannelServer false for every provider (no MCP).
-      { channels: [], autoTrust: true, statusLine: { enabled: false } },
+      // Prod parity: channel-server MCP wired and the autonomOS statusline
+      // visible — the old { channels: [], statusLine: { enabled: false } }
+      // quietly hid a healthy product feature from every capture.
+      { channels: ["server:autonomos"], autoTrust: true },
       null,
       2,
     )}\n`,
