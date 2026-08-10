@@ -25,7 +25,12 @@ import {
   readPidFile,
 } from "@autonomos/server/pid-file.js";
 import { readBundleVersion } from "@autonomos/server/upgrade.js";
-import { findInstalledService, restartService } from "./service-control.js";
+import {
+  findInstalledService,
+  restartService,
+  restartServiceReloading,
+} from "./service-control.js";
+import { syncServiceUnitFor } from "./service-sync.js";
 
 /**
  * The version to health-gate on after a swap: what the swapped-in bundle
@@ -41,6 +46,64 @@ export function expectedVersionAfterSwap(
 ): string {
   const bundleVersion = readBundleVersion(bundleDir);
   return bundleVersion === "unknown" ? tagVersion : bundleVersion;
+}
+
+/**
+ * Sync the installed supervisor unit to the current template before the
+ * post-swap restart. Idempotent in the strict sense: byte-identical render →
+ * nothing written, no supervisor command issued, nothing printed. Only on
+ * genuine template drift is the file re-rendered (around the PRESERVED
+ * install-time program path, --port/--host, and env — never regenerated),
+ * and the returned flag tells the caller to use a plist-re-reading restart
+ * (macOS kickstart never re-reads the file; see restartServiceReloading).
+ *
+ * `restartFollows: false` (the already-up-to-date paths) still self-heals
+ * drift but must be honest about when it takes effect: on macOS a rewritten
+ * plist is only re-read on bootstrap, so we SAY that instead of forcing a
+ * daemon bounce for a unit-file heal — a no-op upgrade must not restart
+ * anything (Terry's ruling, ADR pending).
+ *
+ * A sync failure never blocks the upgrade — the daemon keeps running under
+ * the existing unit, which was good enough yesterday.
+ */
+export function syncSupervisorUnit(opts: { restartFollows: boolean }): {
+  reloadUnit: boolean;
+} {
+  const svc = findInstalledService();
+  if (!svc) return { reloadUnit: false };
+  const outcome = syncServiceUnitFor(svc);
+  switch (outcome.kind) {
+    case "in-sync":
+      return { reloadUnit: false };
+    case "updated": {
+      console.log(
+        "✓ Supervisor unit re-rendered to the current template " +
+          "(install-time program path, port/host, and environment preserved).",
+      );
+      if (outcome.reloadWarning) {
+        console.warn(
+          `  ⚠️  systemd daemon-reload failed: ${outcome.reloadWarning}\n` +
+            "  The updated unit applies at the next daemon-reload or reboot.",
+        );
+      }
+      if (!opts.restartFollows && svc.platform === "darwin") {
+        console.log(
+          "  It takes effect at the next full service reload " +
+            "(autonomos stop && autonomos restart) or reboot — not forcing " +
+            "a restart for a unit-file change alone.",
+        );
+      }
+      return { reloadUnit: true };
+    }
+    case "skipped":
+      console.warn(
+        `⚠️  Supervisor unit not synced: ${outcome.reason}.\n` +
+          "  Continuing the upgrade under the existing unit. Re-render " +
+          "manually with: autonomos install-service --force (keep any " +
+          "--port/--host baked into the current file).",
+      );
+      return { reloadUnit: false };
+  }
 }
 
 export type RestartOutcome =
@@ -65,18 +128,43 @@ export type RestartOutcome =
 export async function restartDaemonAfterSwap(
   expectedVersion: string,
   timeoutMs = 45_000,
+  opts: {
+    /**
+     * True when syncSupervisorUnit just rewrote the unit file: restart via
+     * bootout+bootstrap so launchd re-reads the plist (kickstart would
+     * restart the stale loaded definition). No-op difference on Linux.
+     */
+    reloadUnit?: boolean;
+  } = {},
 ): Promise<RestartOutcome> {
   const svc = findInstalledService();
   if (svc) {
     console.log("Restarting the installed service...");
-    const result = restartService(svc);
+    const result = opts.reloadUnit
+      ? restartServiceReloading(svc)
+      : restartService(svc);
     if (!result.ok) {
       console.warn(`  Supervisor restart failed: ${result.stderr.trim()}`);
-      console.warn(
-        "  The swapped-in version is on disk but was NOT judged — the daemon " +
-          "is likely still running the previous version.",
-      );
-      console.warn("  Restart manually: autonomos restart");
+      if (opts.reloadUnit) {
+        // The reloading restart boots the job OUT before bootstrapping it
+        // back (bootstrap retried on a bounded backoff), so a persistent
+        // failure here means the job may be UNLOADED — the opposite failure
+        // mode of the kickstart path below, and it must be said honestly.
+        console.warn(
+          "  The unit was re-rendered and the job may currently be " +
+            "unloaded (not merely on the old version).",
+        );
+        console.warn(
+          "  Recover with: autonomos restart  (its bootstrap fallback " +
+            "loads the updated unit)",
+        );
+      } else {
+        console.warn(
+          "  The swapped-in version is on disk but was NOT judged — the " +
+            "daemon is likely still running the previous version.",
+        );
+        console.warn("  Restart manually: autonomos restart");
+      }
       return { kind: "restart-failed" };
     }
     const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs);

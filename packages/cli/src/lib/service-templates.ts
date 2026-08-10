@@ -19,6 +19,46 @@
 // rotating autonomos.log instead. `autonomos logs` tails autonomos.log.
 export const BOOT_ERROR_LOG = "autonomos.boot.error.log";
 
+// ── Service identity (label / unit name) ─────────────────────────────────
+//
+// The launchd label and systemd unit name are the ADDRESS of the daemon in a
+// per-user, GLOBAL namespace — `launchctl unload <file>` reads only the Label
+// out of the file and then unloads whatever loaded job carries that label,
+// regardless of where the file lives. That made HOME/path isolation useless
+// as a test boundary: a hermetic harness that wrote units under an isolated
+// prefix still took down the real daemon three times in two days (2026-08-08
+// / 08-09) the moment any verb touched a file carrying the production label.
+// See the test-label ADR (provisionally ADR-081).
+//
+// AUTONOMOS_SERVICE_LABEL overrides the identity everywhere at once — the
+// rendered unit files, the filenames install/uninstall/find resolve, and
+// every launchctl/systemctl target in service-control. The test harness sets
+// it to `com.autonomos.daemon.test`; production leaves it unset. This is an
+// env var rather than a flag so no verb can be forgotten.
+
+export const DEFAULT_LAUNCHAGENT_LABEL = "com.autonomos.daemon";
+export const DEFAULT_SYSTEMD_UNIT_NAME = "autonomos.service";
+
+export function serviceLabel(): string {
+  return process.env.AUTONOMOS_SERVICE_LABEL || DEFAULT_LAUNCHAGENT_LABEL;
+}
+
+export function launchAgentFilename(): string {
+  return `${serviceLabel()}.plist`;
+}
+
+/**
+ * The systemd unit name. Production keeps the historical `autonomos.service`
+ * (existing installs address it by that name); an overridden label derives
+ * the unit name from the label so a test harness can never collide with it.
+ */
+export function systemdUnitName(): string {
+  const label = serviceLabel();
+  return label === DEFAULT_LAUNCHAGENT_LABEL
+    ? DEFAULT_SYSTEMD_UNIT_NAME
+    : `${label}.service`;
+}
+
 function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -48,6 +88,12 @@ export type LaunchAgentOptions = {
   home: string;
   /** Value of $PATH to set in the daemon's environment */
   path: string;
+  /**
+   * launchd job label. Defaults to serviceLabel() (env-overridable). The
+   * unit-sync heal passes the label RECOVERED from the installed file so a
+   * re-render can never re-address a unit to a different job.
+   */
+  label?: string;
 };
 
 export function renderLaunchAgentPlist(opts: LaunchAgentOptions): string {
@@ -59,7 +105,7 @@ export function renderLaunchAgentPlist(opts: LaunchAgentOptions): string {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.autonomos.daemon</string>
+    <string>${escapeXml(opts.label ?? serviceLabel())}</string>
     <key>ProgramArguments</key>
     <array>
 ${argsXml}
@@ -121,7 +167,3 @@ Environment=PATH=${opts.path}
 WantedBy=default.target
 `;
 }
-
-export const LAUNCHAGENT_LABEL = "com.autonomos.daemon";
-export const LAUNCHAGENT_FILENAME = `${LAUNCHAGENT_LABEL}.plist`;
-export const SYSTEMD_UNIT_NAME = "autonomos.service";

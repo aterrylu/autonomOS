@@ -45,6 +45,7 @@ import { getServerVersion } from "@autonomos/server/version.js";
 import {
   expectedVersionAfterSwap,
   restartDaemonAfterSwap,
+  syncSupervisorUnit,
 } from "../lib/apply-bundle.js";
 
 type UpgradeFlags = { targetVersion: string | undefined };
@@ -101,6 +102,9 @@ async function runSourceUpgradeFlow(
 
   if (result.status === "up-to-date") {
     console.log(`✓ Already on the latest version (${result.version}).`);
+    // Still self-heal unit-template drift — an install can be current on
+    // code but running under an install-day unit. No restart follows here.
+    syncSupervisorUnit({ restartFollows: false });
     return 0;
   }
   if (result.status === "error") {
@@ -115,7 +119,15 @@ async function runSourceUpgradeFlow(
   }
   console.log("  Roll back anytime with: autonomos rollback");
 
-  const outcome = await restartDaemonAfterSwap(result.to);
+  // Unit sync happens between swap and restart so the single existing
+  // restart applies any drift heal — zero extra restarts either way. Sync
+  // never alters programArgs, so if the health gate below fails, rollback's
+  // previousRef checkout restores code at the very path the (possibly
+  // freshly-healed) unit points at.
+  const { reloadUnit } = syncSupervisorUnit({ restartFollows: true });
+  const outcome = await restartDaemonAfterSwap(result.to, undefined, {
+    reloadUnit,
+  });
   if (outcome.kind === "restart-failed") {
     // Same verdict semantics as the bundle flow below: a failed supervisor
     // COMMAND says nothing about the just-built checkout — don't undo it.
@@ -217,6 +229,8 @@ export async function runUpgradeCommand(
 
   if (result.status === "up-to-date") {
     console.log(`✓ Already on the latest version (${result.version}).`);
+    // Same self-heal as the source flow: current code, install-day unit.
+    syncSupervisorUnit({ restartFollows: false });
     return 0;
   }
   if (result.status === "error") {
@@ -232,8 +246,15 @@ export async function runUpgradeCommand(
   console.log(`  Previous version kept at: ${install.bundleDir}.previous`);
   console.log("  Roll back anytime with: autonomos rollback");
 
+  // Between swap and restart, same as the source flow: the one restart that
+  // already happens applies any healed unit; sync preserves the program path
+  // so a health-gate rollback (in-place .previous swap) stays consistent
+  // with whatever unit is now installed.
+  const { reloadUnit } = syncSupervisorUnit({ restartFollows: true });
   const outcome = await restartDaemonAfterSwap(
     expectedVersionAfterSwap(install.bundleDir, result.to),
+    undefined,
+    { reloadUnit },
   );
   if (outcome.kind === "restart-failed") {
     // The supervisor COMMAND failed — the bundle was never judged, and the

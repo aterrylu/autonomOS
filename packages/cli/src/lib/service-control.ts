@@ -11,7 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { defaultPrefix, getServicePaths } from "./service-paths.js";
-import { LAUNCHAGENT_LABEL, SYSTEMD_UNIT_NAME } from "./service-templates.js";
+import { serviceLabel, systemdUnitName } from "./service-templates.js";
 import { type RunResult, run } from "./shell.js";
 
 export type InstalledService = {
@@ -47,7 +47,7 @@ export function findInstalledService(): InstalledService | null {
 
 // systemctl --user needs a user bus; over a non-login shell XDG_RUNTIME_DIR may
 // be unset. Best-effort set it (Linux only) so stop/restart work over ssh.
-function ensureUserBusEnv(): void {
+export function ensureUserBusEnv(): void {
   if (process.platform === "linux" && !process.env.XDG_RUNTIME_DIR) {
     const uid = process.getuid?.() ?? 0;
     process.env.XDG_RUNTIME_DIR = `/run/user/${uid}`;
@@ -57,7 +57,7 @@ function ensureUserBusEnv(): void {
 /** Restart the installed service via its supervisor. */
 export function restartService(svc: InstalledService): RunResult {
   if (svc.platform === "darwin") {
-    const target = `gui/${svc.uid}/${LAUNCHAGENT_LABEL}`;
+    const target = `gui/${svc.uid}/${serviceLabel()}`;
     const kick = run("launchctl", ["kickstart", "-k", target]);
     if (kick.ok) return kick;
     // Not currently bootstrapped (e.g. after `autonomos stop`) — load it, which
@@ -65,7 +65,63 @@ export function restartService(svc: InstalledService): RunResult {
     return run("launchctl", ["bootstrap", `gui/${svc.uid}`, svc.serviceFile]);
   }
   ensureUserBusEnv();
-  return run("systemctl", ["--user", "restart", SYSTEMD_UNIT_NAME]);
+  return run("systemctl", ["--user", "restart", systemdUnitName()]);
+}
+
+// Synchronous sleep for the bootstrap retry below — this module is
+// spawnSync-based throughout, so an async sleep has nothing to await it.
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Restart that also RE-READS the service file. Required after a unit rewrite
+ * (service-sync drift): on macOS `kickstart -k` restarts the job definition
+ * launchd already has LOADED and never re-reads the plist — only
+ * bootout+bootstrap does. On Linux a plain restart already follows the
+ * daemon-reload the sync issued, so the two restarts are the same command.
+ *
+ * Unlike restartService(), the bootout makes the bootstrap LOAD-BEARING:
+ * between the two calls the job is removed from launchd, so a failed
+ * bootstrap leaves the daemon DOWN, not "still on the old version". Two
+ * consequences: (a) `launchctl bootout` can return before teardown of a
+ * live process completes, making an immediate bootstrap fail with
+ * "Operation already in progress" — so bootstrap is retried on a short
+ * bounded backoff instead of giving up on the first attempt; (b) the caller
+ * must describe a persistent failure as "service may be unloaded — run
+ * autonomos restart", whose bootstrap fallback recovers it (see
+ * apply-bundle.ts).
+ */
+export function restartServiceReloading(
+  svc: InstalledService,
+  deps: {
+    runCmd?: (cmd: string, args: readonly string[]) => RunResult;
+    sleep?: (ms: number) => void;
+  } = {},
+): RunResult {
+  const runCmd = deps.runCmd ?? run;
+  const sleep = deps.sleep ?? sleepMs;
+  if (svc.platform === "darwin") {
+    // bootout may fail if the job isn't currently loaded — that's fine, the
+    // bootstrap below is what re-reads the plist and starts it.
+    runCmd("launchctl", ["bootout", `gui/${svc.uid}/${serviceLabel()}`]);
+    let result = runCmd("launchctl", [
+      "bootstrap",
+      `gui/${svc.uid}`,
+      svc.serviceFile,
+    ]);
+    for (let attempt = 0; !result.ok && attempt < 5; attempt++) {
+      sleep(500);
+      result = runCmd("launchctl", [
+        "bootstrap",
+        `gui/${svc.uid}`,
+        svc.serviceFile,
+      ]);
+    }
+    return result;
+  }
+  ensureUserBusEnv();
+  return runCmd("systemctl", ["--user", "restart", systemdUnitName()]);
 }
 
 /** Stop the installed service so the supervisor won't immediately revive it. */
@@ -73,8 +129,8 @@ export function stopService(svc: InstalledService): RunResult {
   if (svc.platform === "darwin") {
     // bootout removes the job from launchd → KeepAlive can't revive it.
     // `autonomos restart` / `start`'s bootstrap path brings it back.
-    return run("launchctl", ["bootout", `gui/${svc.uid}/${LAUNCHAGENT_LABEL}`]);
+    return run("launchctl", ["bootout", `gui/${svc.uid}/${serviceLabel()}`]);
   }
   ensureUserBusEnv();
-  return run("systemctl", ["--user", "stop", SYSTEMD_UNIT_NAME]);
+  return run("systemctl", ["--user", "stop", systemdUnitName()]);
 }
