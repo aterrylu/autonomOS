@@ -191,7 +191,7 @@ export const TOOL_SET_MANAGER: ToolDef = {
       manager: {
         type: "string",
         description:
-          "Manager agent name (e.g. 'TeamLead@autonomOS'). Use null or empty to remove manager.",
+          "Manager agent name (e.g. 'TeamLead@autonomOS'). Omit (or pass an empty string) to remove the manager.",
       },
     },
   },

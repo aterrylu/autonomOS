@@ -23,7 +23,28 @@ import {
   updateEnvPreset,
 } from "./envPresets.js";
 import { emitAgentDelta } from "./events/agents.js";
-import { MCP_INSTRUCTIONS_EXTERNAL, MCP_SERVER_INFO } from "./mcp/tools.js";
+import {
+  MCP_INSTRUCTIONS_EXTERNAL,
+  MCP_SERVER_INFO,
+  TOOL_CREATE_AGENT,
+  TOOL_CREATE_ENV_PRESET,
+  TOOL_CREATE_SCHEDULE,
+  TOOL_CREATE_TEMPLATE,
+  TOOL_DELETE_ENV_PRESET,
+  TOOL_DELETE_SCHEDULE,
+  TOOL_GET_ORG_CHART,
+  TOOL_GET_SCHEDULE,
+  TOOL_KILL_AGENT,
+  TOOL_LIST_AGENTS,
+  TOOL_LIST_ENV_PRESETS,
+  TOOL_LIST_SCHEDULES,
+  TOOL_LIST_TEMPLATES,
+  TOOL_RUN_SCHEDULE,
+  TOOL_SELF_EXIT,
+  TOOL_SET_MANAGER,
+  TOOL_UPDATE_ENV_PRESET,
+  TOOL_UPDATE_SCHEDULE,
+} from "./mcp/tools.js";
 import {
   addScheduleJob,
   removeScheduleJob,
@@ -100,7 +121,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "create_agent",
-    "Create a new agent — a dedicated CLI session with a name, context, and optional task. Defaults to Claude Code; set `provider` to spawn a Codex or Gemini agent instead.",
+    TOOL_CREATE_AGENT.description,
     createAgentShape,
     async (args) => {
       try {
@@ -177,29 +198,24 @@ function createMcpServer(): McpServer {
     },
   );
 
-  server.tool(
-    "list_agents",
-    "List all active agents with their status, working directory, and metadata.",
-    {},
-    async () => {
-      const agents = listAgents();
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              agents.length === 0
-                ? "No agents."
-                : JSON.stringify(agents, null, 2),
-          },
-        ],
-      };
-    },
-  );
+  server.tool("list_agents", TOOL_LIST_AGENTS.description, {}, async () => {
+    const agents = listAgents();
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            agents.length === 0
+              ? "No agents."
+              : JSON.stringify(agents, null, 2),
+        },
+      ],
+    };
+  });
 
   server.tool(
     "kill_agent",
-    "Terminate an active agent by name or id.",
+    TOOL_KILL_AGENT.description,
     killAgentShape,
     async (args) => {
       const target = args.agent || args.name;
@@ -240,7 +256,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "set_manager",
-    "Set an agent's manager in the org chart.",
+    TOOL_SET_MANAGER.description,
     setManagerShape,
     async (args) => {
       const target = args.agent || args.name;
@@ -346,7 +362,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "get_org_chart",
-    "Get the organization chart showing all agents and their hierarchy.",
+    TOOL_GET_ORG_CHART.description,
     orgChartShape,
     async ({ includeExited }) => {
       const chart = buildOrgChartFromAgents(includeExited);
@@ -366,7 +382,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "list_templates",
-    "List available agent templates.",
+    TOOL_LIST_TEMPLATES.description,
     {},
     async () => {
       const templates = listTemplates();
@@ -387,7 +403,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "create_template",
-    "Create a reusable agent template.",
+    TOOL_CREATE_TEMPLATE.description,
     createTemplateShape,
     async (args) => {
       try {
@@ -436,7 +452,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "list_env_presets",
-    "List env presets (model-override profiles). Secret values are masked. IS-SET RULE: a secret key is SET when it appears in the returned `secrets` map (masked ••••value); a declared `secretKey` absent from `secrets` is UNSET — a human must fill it in the dashboard. Check before spawning.",
+    TOOL_LIST_ENV_PRESETS.description,
     {},
     async () => {
       try {
@@ -499,7 +515,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "update_env_preset",
-    "Update a preset's non-secret fields. You cannot set secret values (human-only, in the dashboard).",
+    TOOL_UPDATE_ENV_PRESET.description,
     updateEnvPresetShape,
     async (args) => {
       try {
@@ -531,7 +547,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "delete_env_preset",
-    "Delete an env preset by name.",
+    TOOL_DELETE_ENV_PRESET.description,
     envPresetNameShape,
     async (args) => {
       try {
@@ -563,7 +579,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "create_schedule",
-    "Create a new scheduled task.",
+    TOOL_CREATE_SCHEDULE.description,
     createScheduleShape,
     async (args) => {
       try {
@@ -597,27 +613,32 @@ function createMcpServer(): McpServer {
     },
   );
 
-  server.tool("list_schedules", "List all scheduled tasks.", {}, async () => {
-    const schedules = listSchedules();
-    const names = Object.keys(schedules);
-    if (names.length === 0) {
+  server.tool(
+    "list_schedules",
+    TOOL_LIST_SCHEDULES.description,
+    {},
+    async () => {
+      const schedules = listSchedules();
+      const names = Object.keys(schedules);
+      if (names.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No schedules. Use create_schedule to add one.",
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: "No schedules. Use create_schedule to add one.",
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(schedules, null, 2) }],
       };
-    }
-    return {
-      content: [{ type: "text", text: JSON.stringify(schedules, null, 2) }],
-    };
-  });
+    },
+  );
 
   server.tool(
     "get_schedule",
-    "Get schedule details and recent runs.",
+    TOOL_GET_SCHEDULE.description,
     scheduleNameShape,
     async (args) => {
       const schedule = getSchedule(args.name);
@@ -643,7 +664,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "update_schedule",
-    "Update a schedule's configuration (partial merge).",
+    TOOL_UPDATE_SCHEDULE.description,
     updateScheduleShape,
     async (args) => {
       try {
@@ -690,7 +711,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "delete_schedule",
-    "Delete a schedule (run history preserved).",
+    TOOL_DELETE_SCHEDULE.description,
     deleteScheduleShape,
     async (args) => {
       removeScheduleJob(args.name);
@@ -711,7 +732,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "run_schedule",
-    "Trigger a schedule immediately.",
+    TOOL_RUN_SCHEDULE.description,
     runScheduleShape,
     async (args) => {
       const result = runScheduleNow(args.name);
