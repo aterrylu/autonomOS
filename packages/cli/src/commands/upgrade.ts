@@ -39,6 +39,7 @@ import {
   detectPlatform,
   performRollback,
   performUpgrade,
+  resolveReleaseOverrides,
 } from "@autonomos/server/upgrade.js";
 import { getServerVersion } from "@autonomos/server/version.js";
 import {
@@ -47,55 +48,6 @@ import {
 } from "../lib/apply-bundle.js";
 
 type UpgradeFlags = { targetVersion: string | undefined };
-
-type ReleaseOverrides =
-  | { releaseApiBase: string | undefined; releaseRepo: string | undefined }
-  | { error: string };
-
-/**
- * The release-source env overrides exist for the hermetic test harness, but
- * they are production-reachable — and whoever controls the API base controls
- * BOTH the tarball and its SHA256SUMS, so the checksum cannot protect
- * against a redirected source (nothing is signed). A var planted in a shell
- * rc converts the user's own later `autonomos upgrade` into running
- * attacker code. So: warn loudly whenever one is set, and refuse a
- * non-HTTPS base unless it points at loopback (the fixture case).
- */
-function resolveReleaseOverrides(): ReleaseOverrides {
-  const releaseApiBase = process.env.AUTONOMOS_RELEASE_API_URL;
-  const releaseRepo = process.env.AUTONOMOS_RELEASE_REPO;
-  if (releaseApiBase || releaseRepo) {
-    console.warn("⚠️  Release source is overridden by environment variables:");
-    if (releaseApiBase) {
-      console.warn(`   AUTONOMOS_RELEASE_API_URL=${releaseApiBase}`);
-    }
-    if (releaseRepo) {
-      console.warn(`   AUTONOMOS_RELEASE_REPO=${releaseRepo}`);
-    }
-    console.warn("   (unset these unless you set them yourself, on purpose)");
-  }
-  if (releaseApiBase) {
-    let url: URL;
-    try {
-      url = new URL(releaseApiBase);
-    } catch {
-      return {
-        error: `AUTONOMOS_RELEASE_API_URL is not a valid URL: ${releaseApiBase}`,
-      };
-    }
-    const loopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(
-      url.hostname,
-    );
-    if (url.protocol !== "https:" && !loopback) {
-      return {
-        error:
-          `AUTONOMOS_RELEASE_API_URL must be https:// (or loopback, for the ` +
-          `test harness): ${releaseApiBase}`,
-      };
-    }
-  }
-  return { releaseApiBase, releaseRepo };
-}
 
 function parseFlags(argv: readonly string[]): UpgradeFlags {
   let targetVersion: string | undefined;

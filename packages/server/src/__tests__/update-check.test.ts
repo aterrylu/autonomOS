@@ -125,30 +125,66 @@ describe("isUpdateCheckEnabled", () => {
 
 describe("startUpdateCheck gate", () => {
   // The privacy claim is that updateCheck:false means NO network call — not
-  // merely that the predicate returns false. Pin the gate itself: a started
-  // ticker under the off switch must never contact the releases API.
+  // merely that the predicate returns false. The counting fixture is wired
+  // into the tick's ACTUAL code path via the AUTONOMOS_RELEASE_API_URL
+  // override (the tick calls runUpdateCheck() bare, which resolves the env);
+  // without that wiring, hits === 0 would be structurally vacuous — the
+  // fixture would simply never be the URL under test.
+  async function startCountingFixture(): Promise<{
+    base: string;
+    hits: () => number;
+  }> {
+    let count = 0;
+    server = createServer((_req, res) => {
+      count += 1;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ tag_name: "v9.9.9" }));
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const addr = server?.address();
+    if (!addr || typeof addr !== "object") throw new Error("no port");
+    return { base: `http://127.0.0.1:${addr.port}`, hits: () => count };
+  }
+
+  it("a started ticker under updateCheck:true DOES hit the release API (wiring is live)", async () => {
+    const fixture = await startCountingFixture();
+    process.env.AUTONOMOS_RELEASE_API_URL = fixture.base;
+    try {
+      startUpdateCheck(5); // first tick ~5ms out
+      const deadline = Date.now() + 3_000;
+      while (fixture.hits() === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      stopUpdateCheck();
+      assert.ok(fixture.hits() >= 1, "fixture was never contacted");
+      assert.equal(getUpdateCheckState().latest, "9.9.9");
+    } finally {
+      delete process.env.AUTONOMOS_RELEASE_API_URL;
+      stopUpdateCheck();
+    }
+  });
+
   it("performs no network call when updateCheck is false", async () => {
     writeFileSync(
       join(cfgDir, "settings.json"),
       JSON.stringify({ updateCheck: false }),
     );
-    let hits = 0;
-    server = createServer((_req, res) => {
-      hits += 1;
-      res.end("{}");
-    });
-    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
-
-    startUpdateCheck(5); // first tick ~5ms out
-    await new Promise((r) => setTimeout(r, 100));
-    stopUpdateCheck();
-
-    assert.equal(hits, 0);
-    assert.deepEqual(getUpdateCheckState(), {
-      latest: null,
-      updateAvailable: false,
-      checkedAt: null,
-    });
+    const fixture = await startCountingFixture();
+    process.env.AUTONOMOS_RELEASE_API_URL = fixture.base;
+    try {
+      startUpdateCheck(5);
+      await new Promise((r) => setTimeout(r, 150));
+      stopUpdateCheck();
+      assert.equal(fixture.hits(), 0);
+      assert.deepEqual(getUpdateCheckState(), {
+        latest: null,
+        updateAvailable: false,
+        checkedAt: null,
+      });
+    } finally {
+      delete process.env.AUTONOMOS_RELEASE_API_URL;
+      stopUpdateCheck();
+    }
   });
 });
 

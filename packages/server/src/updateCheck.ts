@@ -25,6 +25,7 @@ import {
   compareSemver,
   DEFAULT_RELEASE_API_BASE,
   DEFAULT_RELEASE_REPO,
+  resolveReleaseOverrides,
 } from "./upgrade.js";
 import { getServerVersion } from "./version.js";
 
@@ -75,14 +76,27 @@ export function isUpdateCheckEnabled(): boolean {
  *     caught here: only the network I/O sits inside the try.
  */
 export async function runUpdateCheck(
-  // Same source resolution as `autonomos upgrade` (incl. its documented
-  // AUTONOMOS_RELEASE_* env overrides) — otherwise, on a fork/mirror using
-  // that escape hatch, the badge would check a DIFFERENT repository than
-  // the command it advertises, saying "up to date" while the CLI has a
-  // newer build (or vice versa).
-  apiBase = process.env.AUTONOMOS_RELEASE_API_URL || DEFAULT_RELEASE_API_BASE,
-  repo = process.env.AUTONOMOS_RELEASE_REPO || DEFAULT_RELEASE_REPO,
+  apiBase?: string,
+  repo?: string,
 ): Promise<UpdateCheckState> {
+  // Same source resolution as `autonomos upgrade` — the SHARED resolver,
+  // guard rails included (loud warn when an override is set; refuse a
+  // non-https non-loopback base). Otherwise, on a fork/mirror using the
+  // documented escape hatch, the badge would check a DIFFERENT repository
+  // than the command it advertises — and unlike the CLI, a bare env read
+  // here would skip the validation the CLI enforces.
+  if (apiBase === undefined && repo === undefined) {
+    const overrides = resolveReleaseOverrides();
+    if ("error" in overrides) {
+      console.warn(`[update-check] skipping check: ${overrides.error}`);
+      return state;
+    }
+    apiBase = overrides.releaseApiBase ?? DEFAULT_RELEASE_API_BASE;
+    repo = overrides.releaseRepo ?? DEFAULT_RELEASE_REPO;
+  } else {
+    apiBase = apiBase ?? DEFAULT_RELEASE_API_BASE;
+    repo = repo ?? DEFAULT_RELEASE_REPO;
+  }
   let resp: Response;
   let release: { tag_name?: string };
   try {
