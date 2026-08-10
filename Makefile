@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy doctor hero
+.PHONY: dev prod stop restart logs down check fmt deploy doctor hero demo
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -141,3 +141,6 @@ check:
 # See packages/dashboard/scripts/capture-hero.ts for prerequisites + details.
 hero:
 	cd packages/dashboard && $(BUN) run capture-hero
+
+demo:
+	cd packages/dashboard && $(BUN) run capture-demo

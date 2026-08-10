@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "capture-hero": "bun scripts/capture-hero.ts"
+    "capture-hero": "bun scripts/capture-hero.ts",
+    "capture-demo": "bun scripts/capture-demo.ts"
   },
   "dependencies": {
     "@autonomos/core": "workspace:*",
