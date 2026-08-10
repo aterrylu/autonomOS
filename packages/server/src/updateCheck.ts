@@ -122,7 +122,7 @@ export async function runUpdateCheck(
 // orphan chain would be unreachable forever).
 let generation = 0;
 
-export function startUpdateCheck(): void {
+export function startUpdateCheck(initialDelayMs = INITIAL_DELAY_MS): void {
   if (timer) return;
   const myGeneration = generation;
   const tick = async (): Promise<void> => {
@@ -144,7 +144,7 @@ export function startUpdateCheck(): void {
     timer = setTimeout(tick, CHECK_INTERVAL_MS + jitter);
     timer.unref(); // never keep the process alive for a version check
   };
-  timer = setTimeout(tick, INITIAL_DELAY_MS);
+  timer = setTimeout(tick, initialDelayMs);
   timer.unref();
 }
 

@@ -18,6 +18,8 @@ import {
   getUpdateCheckState,
   isUpdateCheckEnabled,
   runUpdateCheck,
+  startUpdateCheck,
+  stopUpdateCheck,
 } from "../updateCheck.js";
 import { getServerVersion } from "../version.js";
 
@@ -118,5 +120,54 @@ describe("isUpdateCheckEnabled", () => {
       JSON.stringify({ updateCheck: false }),
     );
     assert.equal(isUpdateCheckEnabled(), false);
+  });
+});
+
+describe("startUpdateCheck gate", () => {
+  // The privacy claim is that updateCheck:false means NO network call — not
+  // merely that the predicate returns false. Pin the gate itself: a started
+  // ticker under the off switch must never contact the releases API.
+  it("performs no network call when updateCheck is false", async () => {
+    writeFileSync(
+      join(cfgDir, "settings.json"),
+      JSON.stringify({ updateCheck: false }),
+    );
+    let hits = 0;
+    server = createServer((_req, res) => {
+      hits += 1;
+      res.end("{}");
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+
+    startUpdateCheck(5); // first tick ~5ms out
+    await new Promise((r) => setTimeout(r, 100));
+    stopUpdateCheck();
+
+    assert.equal(hits, 0);
+    assert.deepEqual(getUpdateCheckState(), {
+      latest: null,
+      updateAvailable: false,
+      checkedAt: null,
+    });
+  });
+});
+
+describe("GET /api/system/version additive fields", () => {
+  it("serves the cached update state without blocking", async () => {
+    const base = await serveLatest("v9.9.9");
+    await runUpdateCheck(base);
+
+    const { systemRouter } = await import("../routes/system.js");
+    const res = await systemRouter.request("/version");
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Frozen contract fields...
+    assert.equal(typeof body.version, "string");
+    assert.equal(body.platform, process.platform);
+    assert.equal(body.arch, process.arch);
+    // ...plus the additive trio from the cache.
+    assert.equal(body.latest, "9.9.9");
+    assert.equal(body.updateAvailable, true);
+    assert.equal(typeof body.checkedAt, "string");
   });
 });

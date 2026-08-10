@@ -126,7 +126,7 @@ export function __resetUsageToggleMigrationForTests(): void {
 }
 
 /**
- * Pre-ADR-077, a saved session key ALWAYS won over the auto-detect (OAuth)
+ * Pre-ADR-075, a saved session key ALWAYS won over the auto-detect (OAuth)
  * path, and the toggle only gated the fallback. Now the toggle SELECTS the
  * source, defaulting ON — which would silently switch every existing
  * key-with-untouched-toggle config onto the Claude Code login's account on

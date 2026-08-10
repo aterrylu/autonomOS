@@ -45,6 +45,8 @@ Manage it anytime with the `autonomos` CLI:
 autonomos status        # is the daemon healthy?
 autonomos logs -f       # follow the server log
 autonomos upgrade       # update to the latest release (verified, auto-rolls back if it breaks)
+                        # (the dashboard shows a passive "vX.Y.Z available" badge when one exists;
+                        #  the server checks GitHub ~daily — disable with settings updateCheck: false)
 autonomos rollback      # swap back to the previous version
 autonomos restart       # bounce the service
 autonomos stop          # stop it (stays down until you start it)

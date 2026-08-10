@@ -27,6 +27,7 @@ function maskSettings(settings: AppSettings) {
     autoDetectClaudeAccount: isAutoDetectAccountEnabled(settings),
     channels: settings.channels ?? [],
     autoTrust: settings.autoTrust !== false,
+    updateCheck: settings.updateCheck !== false,
     customEnvVars: settings.customEnvVars ?? {},
     statusLine: { enabled: settings.statusLine?.enabled !== false },
   };
@@ -61,6 +62,12 @@ settingsRouter.put("/", async (c) => {
   // `terminalRenderer` already on disk is scrubbed on read in settings.ts.)
   if (typeof body.autoTrust === "boolean") {
     partial.autoTrust = body.autoTrust;
+  }
+  // A default-ON phone-home whose off switch only exists as a hand-edited
+  // JSON key isn't a real off switch — the flag is settable through the
+  // same API/panel as every other toggle.
+  if (typeof body.updateCheck === "boolean") {
+    partial.updateCheck = body.updateCheck;
   }
   if (Array.isArray(body.channels)) {
     const requested = body.channels
