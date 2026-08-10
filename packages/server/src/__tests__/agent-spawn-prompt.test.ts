@@ -87,7 +87,7 @@ describe("starting prompt delivery — no manual keystrokes", {
     // start before the first hook keep their semantics.
     const { body } = await authedJson<Record<string, { status: HookStatus }>>(
       server,
-      "/api/hooks",
+      "/api/agent-status",
     );
     return (
       body[id]?.status ?? ({ status: "unknown", lastEvent: "" } as HookStatus)
@@ -161,7 +161,7 @@ describe("starting prompt delivery — no manual keystrokes", {
         sessionId: string;
         message?: string;
       }>;
-    }>(server, "/api/hooks/notifications");
+    }>(server, "/api/notifications");
     assert.ok(
       Array.isArray(notif.notifications),
       "bulk notifications feed must answer — a missing/renamed endpoint would make the no-warning assertion vacuous",

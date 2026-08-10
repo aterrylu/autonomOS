@@ -111,7 +111,7 @@ describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
     // itself the assertion: nothing was written.
     const { body } = await authedJson<Record<string, { status: HookState }>>(
       server,
-      "/api/hooks",
+      "/api/agent-status",
     );
     assert.notEqual(
       body[SESSION]?.status.lastEvent,
@@ -121,7 +121,7 @@ describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
   });
 
   it("requires the token on the read surface", async () => {
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/hooks`);
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/agent-status`);
     assert.equal(
       res.status,
       401,
@@ -132,7 +132,7 @@ describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
   it("does not serve the dashboard read routes on the socket", async () => {
     // The read surface is for the browser; putting it on the socket would be
     // harmless security-wise but would mean the dashboard had lost it.
-    const res = await socketRequest(server, "/api/hooks");
+    const res = await socketRequest(server, "/api/agent-status");
     assert.equal(res.status, 404);
   });
 });

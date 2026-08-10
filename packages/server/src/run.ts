@@ -30,6 +30,7 @@ import {
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
+import { deprecatedAlias } from "./deprecation.js";
 import { installErrorHandling } from "./httpError.js";
 import {
   assertUsableSocketPath,
@@ -49,7 +50,12 @@ import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
 import { gatewayRouter } from "./routes/gateway.js";
-import { hooksIngestRouter, hooksReadRouter } from "./routes/hooks.js";
+import {
+  agentStatusRouter,
+  hooksIngestRouter,
+  hooksReadRouter,
+  notificationsRouter,
+} from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
 import { providerRouter } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
@@ -295,7 +301,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     return undefined;
   }
 
-  app.post("/auth", async (c) => {
+  const authHandler = async (c: Context) => {
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
@@ -312,7 +318,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       maxAge: 60 * 60 * 24 * 365,
     });
     return c.json({ ok: true });
-  });
+  };
+  // PR C: /api/auth is the real path (the ONE endpoint that used to live
+  // outside /api). It needs an explicit requireAuth exemption below — you
+  // cannot hold a token cookie before authenticating. Old path aliased one
+  // release.
+  app.post("/api/auth", authHandler);
+  app.post("/auth", deprecatedAlias("/auth", "/api/auth"), authHandler);
 
   const requireAuth: MiddlewareHandler = async (c, next) => {
     // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
@@ -322,6 +334,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // too. Removing it means there is no unauthenticated POST anywhere on the
     // public surface; the browser already sends the token for /read.
     if (c.req.method === "GET" && c.req.path === "/api/host") return next();
+    // The login endpoint itself — a browser cannot present the cookie it is
+    // asking for. Token verification happens inside the handler.
+    if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
     const token = extractToken(c) ?? c.req.query("token") ?? undefined;
     if (token && safeEqual(token, AUTH_TOKEN)) return next();
     return c.json(
@@ -376,9 +391,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     } satisfies HostInfo),
   );
 
-  // Hook INGEST is internal-only; the hook READ surface stays public because
-  // the dashboard (a browser, not an agent) is what calls it. See routes/hooks.ts.
+  // Hook INGEST is internal-only (unchanged — the relay curls post here).
+  // The READ surface renamed in PR C to say what it serves: the status map
+  // at /api/agent-status, the feed + read-marking at /api/notifications.
+  // /api/hooks (read) is the one-release alias.
   internalApp.route("/api/hooks", hooksIngestRouter);
+  app.route("/api/agent-status", agentStatusRouter);
+  app.route("/api/notifications", notificationsRouter);
+  // The wildcard middleware also matches the bare /api/hooks path.
+  app.use(
+    "/api/hooks/*",
+    deprecatedAlias("/api/hooks", "/api/agent-status + /api/notifications"),
+  );
   app.route("/api/hooks", hooksReadRouter);
 
   // REST API (behind auth)
@@ -389,7 +413,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.route("/api/templates", templateRouter);
   app.route("/api/env-presets", envPresetRouter);
   app.route("/api/providers", providerRouter);
+  // PR C: scheduler control lives under /api/schedules/{status,settings}.
+  // Mount ORDER is load-bearing: the static routes must register before the
+  // :name router or the param route shadows them (verified — Hono resolves
+  // same-base mounts in registration order). "status"/"settings" are also
+  // reserved as schedule names at create (validation.ts) so a schedule can
+  // never claim those keys. /api/scheduler is the one-release alias.
+  app.route("/api/schedules", schedulerRouter);
   app.route("/api/schedules", scheduleRouter);
+  app.use(
+    "/api/scheduler/*",
+    deprecatedAlias("/api/scheduler", "/api/schedules/{status,settings}"),
+  );
   app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
   app.route("/api/plugins/codex-usage", codexUsageRouter);

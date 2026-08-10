@@ -49,9 +49,12 @@ function LoginPage() {
     if (!token.trim()) return;
     setError("");
     try {
-      // No api/ module for /auth — it is the one endpoint that runs BEFORE a
-      // session exists — so this goes through the client core directly.
-      await request("/auth", { method: "POST", body: { token: token.trim() } });
+      // No api/ module for /api/auth — it is the one endpoint that runs BEFORE
+      // a session exists — so this goes through the client core directly.
+      await request("/api/auth", {
+        method: "POST",
+        body: { token: token.trim() },
+      });
     } catch (err) {
       setError(
         err instanceof ApiError && err.unreachable

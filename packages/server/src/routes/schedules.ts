@@ -57,6 +57,7 @@ scheduleRouter.post("/", async (c) => {
   const { name, schedule, target, prompt, workingDirectory } = body;
 
   const validationError = validateScheduleInput({
+    name,
     schedule,
     target,
     timezone: body.timezone,

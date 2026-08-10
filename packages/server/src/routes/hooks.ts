@@ -4,7 +4,7 @@ import type {
   AgentStatusMap,
   NotificationFeed,
 } from "@autonomos/core";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents } from "../agents/store.js";
@@ -584,16 +584,19 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
 
 // ── Read surface (public listener, token-gated) ──────────────────────
 //
-// Deliberately BULK-only: the dashboard consumes `GET /` (statuses) and
-// `GET /notifications` (feed). The per-session GETs were removed as
-// caller-less — and `/:sessionId/status` could not report a missing agent
-// anyway, since an unknown id returned the `DEFAULT_AGENT_STATE` sentinel
-// rather than a 404.
-
-export const hooksReadRouter = new Hono();
+// Deliberately BULK-only: the dashboard consumes the status map and the
+// notification feed. The per-session GETs were removed as caller-less — and
+// a per-session status could not report a missing agent anyway, since an
+// unknown id returned the `DEFAULT_AGENT_STATE` sentinel rather than a 404.
+//
+// PR C renamed the mounts: `GET /api/agent-status` (status map) and
+// `/api/notifications` (feed + read-marking) — names that say what they
+// serve instead of how it's produced. `hooksReadRouter` below is the
+// ONE-RELEASE compat alias preserving the old `/api/hooks` read shape;
+// both routers share these handlers, so the alias cannot drift.
 
 // Bulk notifications across all sessions (for notification panel)
-hooksReadRouter.get("/notifications", (c) => {
+const notificationFeedHandler = (c: Context) => {
   const allAgents = listAgents();
   const sessionNames = new Map(allAgents.map((a) => [a.id, a.name]));
 
@@ -623,17 +626,20 @@ hooksReadRouter.get("/notifications", (c) => {
     totalUnread,
   };
   return c.json(payload);
-});
+};
 
 // Mark all notifications as read for a session
-hooksReadRouter.post("/:sessionId/read", (c) => {
+const markReadHandler = (c: Context) => {
   const sessionId = c.req.param("sessionId");
+  // Unreachable from either mount (both declare :sessionId) — this narrows
+  // the generic Context type these shared handlers use.
+  if (!sessionId) return c.json({ error: "sessionId required" }, 400);
   markRead(sessionId);
   return c.json({ ok: true });
-});
+};
 
 // Bulk status for all sessions (efficient single call from sidebar)
-hooksReadRouter.get("/", (c) => {
+const statusMapHandler = (c: Context) => {
   // Annotated with the WIRE type so a field rename here breaks the build
   // instead of blanking every sidebar status icon at runtime.
   const result: AgentStatusMap = {};
@@ -641,4 +647,21 @@ hooksReadRouter.get("/", (c) => {
     result[id] = { status: state, unread: getUnreadCount(id) };
   }
   return c.json(result);
-});
+};
+
+/** `GET /api/agent-status` — the bulk activity-status map. */
+export const agentStatusRouter = new Hono();
+agentStatusRouter.get("/", statusMapHandler);
+
+/** `/api/notifications` — feed + read-marking. */
+export const notificationsRouter = new Hono();
+notificationsRouter.get("/", notificationFeedHandler);
+notificationsRouter.post("/:sessionId/read", markReadHandler);
+
+/** ONE-RELEASE compat alias: the pre-rename `/api/hooks` read shape.
+ *  Same handlers as above — the alias cannot drift. Removed next release
+ *  along with the `deprecatedAlias` wrapper at its mount. */
+export const hooksReadRouter = new Hono();
+hooksReadRouter.get("/notifications", notificationFeedHandler);
+hooksReadRouter.post("/:sessionId/read", markReadHandler);
+hooksReadRouter.get("/", statusMapHandler);

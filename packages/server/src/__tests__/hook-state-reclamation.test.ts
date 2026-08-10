@@ -2,7 +2,7 @@
  * DELETE reclaims the in-memory hook state with the record. Before this,
  * `clearAgentState`/`clearNotifications` had NO production caller: deleting an
  * agent left its status entry and notifications in the maps forever, so
- * `GET /api/hooks` kept returning ids no store lookup could resolve.
+ * `GET /api/agent-status` (né /api/hooks) kept returning ids no store lookup could resolve.
  */
 
 import assert from "node:assert/strict";
@@ -57,13 +57,13 @@ afterEach(() => {
   rmSync(isolatedDir, { recursive: true, force: true });
 });
 
-/** Ids carrying a status entry on `GET /api/hooks`. */
+/** Ids carrying a status entry on the bulk status map. */
 async function statusIds(): Promise<string[]> {
   const res = await hooksReadRouter.request("/", { method: "GET" });
   return Object.keys((await res.json()) as Record<string, unknown>);
 }
 
-/** Ids appearing in the `GET /api/hooks/notifications` feed. */
+/** Ids appearing in the notification feed. */
 async function notifiedIds(): Promise<string[]> {
   const res = await hooksReadRouter.request("/notifications", {
     method: "GET",

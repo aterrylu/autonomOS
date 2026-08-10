@@ -1,4 +1,4 @@
-/** Schedules family — `/api/schedules/*` + `/api/scheduler/*`. */
+/** Schedules family — `/api/schedules/*` (incl. scheduler control at /status, /settings). */
 
 import type { RunRecord, Schedule, SchedulerStatus } from "@autonomos/core";
 import { request } from "./core";
@@ -26,9 +26,9 @@ export const schedulesApi = {
       `/api/schedules/${encodeURIComponent(name)}/runs?limit=${limit}`,
     ),
   schedulerStatus: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
-    request<SchedulerStatus>("/api/scheduler/status", opts),
+    request<SchedulerStatus>("/api/schedules/status", opts),
   updateSchedulerSettings: (settings: { maxConcurrentRuns: number }) =>
-    request<{ ok: boolean }>("/api/scheduler/settings", {
+    request<{ ok: boolean }>("/api/schedules/settings", {
       method: "PUT",
       body: settings,
     }),

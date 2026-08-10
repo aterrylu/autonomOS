@@ -286,10 +286,19 @@ export function pruneRuns(name: string, maxLines = 2000): void {
  * timezone (new value if provided, else existing).
  * Returns null on success, or an error message suitable for a 400 response.
  */
+/** Names that collide with the scheduler-control routes now living under
+ *  /api/schedules/{status,settings} (PR C). Hono prefers static routes over
+ *  the :name param anyway, so such a schedule would be unreachable — reject
+ *  it at create instead of storing a key no route can serve. */
+const RESERVED_SCHEDULE_NAMES = new Set(["status", "settings"]);
+
 export function validateScheduleInput(
   input: Partial<ScheduleConfig>,
   opts: { existing?: Schedule } = {},
 ): string | null {
+  if (input.name !== undefined && RESERVED_SCHEDULE_NAMES.has(input.name)) {
+    return `"${input.name}" is a reserved name (scheduler control lives at /api/schedules/${input.name})`;
+  }
   if (input.schedule !== undefined) {
     if (typeof input.schedule !== "string" || !input.schedule.trim()) {
       return "schedule must be a non-empty string";
