@@ -424,6 +424,11 @@ export function performSourceRollback(
 
   const build = runBuild(repoRoot, buildCommand);
   if (!build.ok) {
+    // Same debris problem as the upgrade flow's revert: the failed build may
+    // have rewritten tracked artifacts, and the manual roll-forward command
+    // below would refuse over them ("local changes would be overwritten").
+    // Clear them so the printed command actually works when pasted.
+    resetBuildArtifacts(repoRoot);
     return {
       status: "error",
       message:
