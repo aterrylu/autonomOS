@@ -443,15 +443,20 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         `(build ${dashboardBuild?.build ?? "?"}, built ${dashboardBuild?.builtAt ?? "?"})`,
     );
 
-    app.all("/api/*", (c) =>
-      c.json({ error: `Not found: ${c.req.path}` }, 404),
-    );
-    app.all("/ws/*", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+    // Same envelope as the app-level notFound (which never fires in prod —
+    // the SPA catch-all below is a ROUTE and answers everything else).
+    const apiNotFound = (c: Context) =>
+      c.json(
+        { error: `Not found: ${c.req.path}`, code: "NOT_FOUND" as const },
+        404,
+      );
+    app.all("/api/*", apiNotFound);
+    app.all("/ws/*", apiNotFound);
     // /mcp is internal-socket-only (ADR-055) and has no public handler. This
     // must stay: without it the SPA catch-all below would answer a public
     // /mcp probe with index.html, which reads like "the endpoint is here" to
     // anyone scanning. 404 is the honest answer.
-    app.all("/mcp", (c) => c.json({ error: `Not found: ${c.req.path}` }, 404));
+    app.all("/mcp", apiNotFound);
 
     app.use("/*", serveStatic({ root: dashboardDist }));
 
