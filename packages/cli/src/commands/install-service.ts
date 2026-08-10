@@ -221,12 +221,16 @@ export async function runInstallServiceCommand(
       runIgnoring("loginctl", ["enable-linger", userInfo().username]);
       try {
         runOrThrow("systemctl", ["--user", "daemon-reload"]);
-        runOrThrow("systemctl", [
-          "--user",
-          "enable",
-          "--now",
-          "autonomos.service",
-        ]);
+        // `enable` WITHOUT --now, then an explicit `restart`: --now is
+        // `start`, and `start` on an already-active unit is a NO-OP — a
+        // re-install over a running daemon (the installer's upgrade path)
+        // would rewrite the unit but leave the OLD process serving while
+        // reporting success. `restart` starts an inactive unit and cycles an
+        // active one, so first-install and re-install both end on the new
+        // code. (macOS needs no equivalent: its activation is unload/load,
+        // which always cycles.)
+        runOrThrow("systemctl", ["--user", "enable", "autonomos.service"]);
+        runOrThrow("systemctl", ["--user", "restart", "autonomos.service"]);
       } catch (err) {
         console.error(
           err instanceof Error ? err.message : err,
@@ -235,7 +239,7 @@ export async function runInstallServiceCommand(
         );
         return 1;
       }
-      console.log("✓ Enabled and started via systemctl --user");
+      console.log("✓ Enabled and (re)started via systemctl --user");
       console.log(`  Logs: ${paths.logDir}/autonomos.log`);
       if (!(await verifyAndReportInstall({ open: flags.open }))) return 3;
     }

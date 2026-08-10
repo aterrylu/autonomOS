@@ -22,6 +22,11 @@
 // derived. `__tests__/tools-permission-schema.test.ts` asserts the copy matches
 // PERMISSION_MODES / DEFAULT_PERMISSION_MODE exactly, which buys the same
 // drift protection a shared import would, without the runtime dependency.
+//
+// RELATIVE imports (like ../version.js below) are fine: esbuild inlines them
+// into channel-server/dist.mjs — only bare package specifiers stay external.
+
+import { getServerVersion } from "../version.js";
 
 /** Tool definition shape matching MCP SDK's tool list format */
 export interface ToolDef {
@@ -597,9 +602,12 @@ export const ALL_TOOLS: ToolDef[] = [
 
 // ── Shared MCP metadata ──────────────────────────────────────────
 
+// Version resolved at runtime from the package.json the bundle carries —
+// this was a hand-frozen literal ("0.3.0") that outlived two minor releases;
+// every MCP client saw a stale identity.
 export const MCP_SERVER_INFO = {
   name: "autonomos",
-  version: "0.3.0",
+  version: getServerVersion(),
 } as const;
 
 // The single source of truth for the tool prose injected into every agent's

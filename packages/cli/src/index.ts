@@ -17,10 +17,12 @@
 // MUST be the FIRST import — sets NAPI_RS_NATIVE_LIBRARY_PATH for the universal2
 // bundle before any module transitively loads impit's native binding. See file.
 import "./napi-universal-binding.js";
+import { getServerVersion } from "@autonomos/server/version.js";
 import { runInstallServiceCommand } from "./commands/install-service.js";
 import { runLogsCommand } from "./commands/logs.js";
 import { runMigrateFromPm2Command } from "./commands/migrate-from-pm2.js";
 import { runRestartCommand } from "./commands/restart.js";
+import { runRollbackCommand } from "./commands/rollback.js";
 import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
@@ -44,9 +46,13 @@ Commands:
                        service file; prefer AUTONOMOS_HOST in .env to persist it)
   uninstall-service    Stop daemon and remove the service file
                        Options: --prefix=DIR
-  upgrade              Fetch latest release, verify, atomic swap, restart daemon
+  upgrade [version]    Fetch a release (default: latest), verify, atomic swap,
+    (alias: update)    restart, verify the new version boots — auto-rolls back
+                       if it doesn't. Options: --version=X.Y.Z (pin/downgrade)
+  rollback             Swap back to the version the last upgrade replaced
   migrate-from-pm2     Stop pm2's autonomos process and install the new
                        OS-native supervisor (one-shot migration for old users)
+  version, --version   Print the installed version
   help, --help, -h     Print this message
 
 Examples:
@@ -64,12 +70,19 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const first = argv[0];
 
+  // The two informational commands answer to both a bare word and a flag —
+  // handled before the implicit-start branch so each has one implementation.
+  if (first === "help" || first === "--help" || first === "-h") {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  if (first === "version" || first === "--version" || first === "-v") {
+    process.stdout.write(`${getServerVersion()}\n`);
+    return 0;
+  }
+
   // No args, or first arg is a flag → implicit start
   if (first === undefined || first.startsWith("-")) {
-    if (first === "--help" || first === "-h") {
-      process.stdout.write(USAGE);
-      return 0;
-    }
     await runStartCommand(argv);
     return 0;
   }
@@ -91,12 +104,12 @@ async function main(): Promise<number> {
     case "uninstall-service":
       return await runUninstallServiceCommand(argv.slice(1));
     case "upgrade":
-      return await runUpgradeCommand();
+    case "update":
+      return await runUpgradeCommand(argv.slice(1));
+    case "rollback":
+      return await runRollbackCommand();
     case "migrate-from-pm2":
       return await runMigrateFromPm2Command(argv.slice(1));
-    case "help":
-      process.stdout.write(USAGE);
-      return 0;
     default:
       process.stderr.write(`Unknown command: ${first}\n\n${USAGE}`);
       return 64; // EX_USAGE

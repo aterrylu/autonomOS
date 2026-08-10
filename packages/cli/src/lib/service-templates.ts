@@ -100,6 +100,12 @@ export function renderSystemdUserUnit(opts: SystemdUserUnitOptions): string {
   return `[Unit]
 Description=autonomOS server (agent orchestration platform)
 After=default.target
+# No start-limit: with the default StartLimitBurst, a bundle that crashes on
+# boot (e.g. right after an upgrade) exhausts the burst and systemd STOPS
+# restarting — Restart=always silently becomes permanent downtime. The upgrade
+# flow's health gate + auto-rollback (ADR-077) is the safety net; the
+# supervisor's job is to never give up.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
