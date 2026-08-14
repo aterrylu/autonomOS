@@ -63,6 +63,40 @@ function codexApprovalPolicy(
   }
 }
 
+/**
+ * Map the common permission mode → Codex `mcp_servers.<name>.default_tools_approval_mode`.
+ *
+ * SEPARATE axis from `approval_policy` (which gates shell/exec): this governs
+ * whether the model must get user approval before calling an MCP *tool*. Codex's
+ * default when the key is ABSENT is `auto`, whose heuristic prompts for any tool
+ * that doesn't declare `readOnlyHint`/non-destructive annotations — so our 19
+ * un-annotated channel-server tools ALL prompt, once per session. That is the
+ * recurring "approve the autonomOS MCP server" gate.
+ *
+ * The mapping is deliberately mode-aware, mirroring the trust the permission mode
+ * already grants for shell:
+ *   - bypass / auto → "approve": never prompt (the agent is already autonomous).
+ *   - ask / plan    → "writes": prompt only for MUTATING tools; a tool that
+ *     declares `readOnlyHint: true` (see the annotated read-only tools in
+ *     mcp/tools.ts) is auto-approved even under `writes`. So a supervised agent
+ *     still gets asked before kill_agent / delete_* but not before list_agents.
+ * `plan` has no Codex equivalent and is clamped to ask-equivalent behavior here,
+ * consistent with codexApprovalPolicy.
+ */
+function codexMcpApprovalMode(
+  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
+): string {
+  switch (mode) {
+    case "bypass":
+    case "auto":
+      return "approve";
+    default:
+      // "ask" and the clamped "plan": prompt for mutations, auto-approve
+      // read-only (readOnlyHint) tools.
+      return "writes";
+  }
+}
+
 /** Bypass is the all-in-one skip flag (and the resolved default when unset). */
 function isBypassMode(mode: PermissionMode | undefined): boolean {
   return (mode ?? DEFAULT_PERMISSION_MODE) === "bypass";
@@ -114,6 +148,13 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       `mcp_servers.autonomos.command="node"`,
       "-c",
       `mcp_servers.autonomos.args=${JSON.stringify([options.channelServerScript])}`,
+      // Pre-approve our own tools per the permission mode — otherwise Codex's
+      // `auto` default prompts once per session for the un-annotated tool set
+      // (the recurring "approve the autonomOS MCP server" gate). Set on the
+      // DAEMON because the daemon hosts the MCP client and makes the approval
+      // decision; the --remote TUI never injects mcp_servers.
+      "-c",
+      `mcp_servers.autonomos.default_tools_approval_mode=${JSON.stringify(codexMcpApprovalMode(options.permissionMode))}`,
       "-c",
       // Gateway on the internal socket (ADR-055 PR B); REST base stays public.
       `mcp_servers.autonomos.env.AUTONOMOS_SERVER_URL=${JSON.stringify(`ws+unix://${options.socketPath}:/ws/gateway`)}`,

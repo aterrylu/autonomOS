@@ -198,20 +198,26 @@ function createMcpServer(): McpServer {
     },
   );
 
-  server.tool("list_agents", TOOL_LIST_AGENTS.description, {}, async () => {
-    const agents = listAgents();
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            agents.length === 0
-              ? "No agents."
-              : JSON.stringify(agents, null, 2),
-        },
-      ],
-    };
-  });
+  server.tool(
+    "list_agents",
+    TOOL_LIST_AGENTS.description,
+    {},
+    TOOL_LIST_AGENTS.annotations ?? {},
+    async () => {
+      const agents = listAgents();
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              agents.length === 0
+                ? "No agents."
+                : JSON.stringify(agents, null, 2),
+          },
+        ],
+      };
+    },
+  );
 
   server.tool(
     "kill_agent",
@@ -364,6 +370,7 @@ function createMcpServer(): McpServer {
     "get_org_chart",
     TOOL_GET_ORG_CHART.description,
     orgChartShape,
+    TOOL_GET_ORG_CHART.annotations ?? {},
     async ({ includeExited }) => {
       const chart = buildOrgChartFromAgents(includeExited);
       return {
@@ -384,6 +391,7 @@ function createMcpServer(): McpServer {
     "list_templates",
     TOOL_LIST_TEMPLATES.description,
     {},
+    TOOL_LIST_TEMPLATES.annotations ?? {},
     async () => {
       const templates = listTemplates();
       const names = Object.keys(templates);
@@ -454,6 +462,7 @@ function createMcpServer(): McpServer {
     "list_env_presets",
     TOOL_LIST_ENV_PRESETS.description,
     {},
+    TOOL_LIST_ENV_PRESETS.annotations ?? {},
     async () => {
       try {
         return {
@@ -617,6 +626,7 @@ function createMcpServer(): McpServer {
     "list_schedules",
     TOOL_LIST_SCHEDULES.description,
     {},
+    TOOL_LIST_SCHEDULES.annotations ?? {},
     async () => {
       const schedules = listSchedules();
       const names = Object.keys(schedules);
@@ -640,6 +650,7 @@ function createMcpServer(): McpServer {
     "get_schedule",
     TOOL_GET_SCHEDULE.description,
     scheduleNameShape,
+    TOOL_GET_SCHEDULE.annotations ?? {},
     async (args) => {
       const schedule = getSchedule(args.name);
       if (!schedule) {

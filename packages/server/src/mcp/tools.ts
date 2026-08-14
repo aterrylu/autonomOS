@@ -37,6 +37,21 @@ export interface ToolDef {
     properties: Record<string, unknown>;
     required?: string[];
   };
+  /**
+   * MCP tool behavior hints (MCP SDK `ToolAnnotations`). `readOnlyHint: true`
+   * declares a tool has no side effects; it is load-bearing for approval:
+   * Codex auto-approves read-only tools under `default_tools_approval_mode`
+   * "writes" (see codexMcpApprovalMode in providers/codex.ts) and Claude Code
+   * uses it for parallel-execution eligibility. Omitted for tools with side
+   * effects, so those still prompt a supervised (ask/plan) agent.
+   */
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+    title?: string;
+  };
 }
 
 // ── Tool Definitions ──────────────────────────────────────────────
@@ -122,6 +137,7 @@ export const TOOL_CREATE_AGENT: ToolDef = {
 
 export const TOOL_LIST_AGENTS: ToolDef = {
   name: "list_agents",
+  annotations: { readOnlyHint: true },
   description:
     "List all active agents with their names, URIs, status, and working directories",
   inputSchema: {
@@ -199,6 +215,7 @@ export const TOOL_SET_MANAGER: ToolDef = {
 
 export const TOOL_GET_ORG_CHART: ToolDef = {
   name: "get_org_chart",
+  annotations: { readOnlyHint: true },
   description:
     "Get the organization chart showing all agents and their hierarchy.",
   inputSchema: {
@@ -215,6 +232,7 @@ export const TOOL_GET_ORG_CHART: ToolDef = {
 
 export const TOOL_LIST_TEMPLATES: ToolDef = {
   name: "list_templates",
+  annotations: { readOnlyHint: true },
   description:
     "List available agent templates (blueprints for creating agents with predefined roles).",
   inputSchema: {
@@ -376,6 +394,7 @@ export const TOOL_CREATE_SCHEDULE: ToolDef = {
 
 export const TOOL_LIST_SCHEDULES: ToolDef = {
   name: "list_schedules",
+  annotations: { readOnlyHint: true },
   description: "List all scheduled tasks with their config and current state.",
   inputSchema: {
     type: "object",
@@ -385,6 +404,7 @@ export const TOOL_LIST_SCHEDULES: ToolDef = {
 
 export const TOOL_GET_SCHEDULE: ToolDef = {
   name: "get_schedule",
+  annotations: { readOnlyHint: true },
   description: "Get a schedule's full config, state, and recent run history.",
   inputSchema: {
     type: "object",
@@ -480,6 +500,7 @@ const ENV_PRESET_WORKFLOW =
 
 export const TOOL_LIST_ENV_PRESETS: ToolDef = {
   name: "list_env_presets",
+  annotations: { readOnlyHint: true },
   description:
     "List env presets (model-override profiles, e.g. a Kimi/Moonshot backend). Secret values are always MASKED — never the values. IS-SET RULE: a secret key is SET when it appears in the returned `secrets` map (as a masked ••••value); a declared `secretKey` that is ABSENT from `secrets` is UNSET — a human still needs to fill it in the dashboard. Check this before spawning an agent with the preset.",
   inputSchema: { type: "object", properties: {} },

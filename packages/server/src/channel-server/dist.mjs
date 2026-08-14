@@ -106,6 +106,7 @@ var TOOL_CREATE_AGENT = {
 };
 var TOOL_LIST_AGENTS = {
   name: "list_agents",
+  annotations: { readOnlyHint: true },
   description: "List all active agents with their names, URIs, status, and working directories",
   inputSchema: {
     type: "object",
@@ -170,6 +171,7 @@ var TOOL_SET_MANAGER = {
 };
 var TOOL_GET_ORG_CHART = {
   name: "get_org_chart",
+  annotations: { readOnlyHint: true },
   description: "Get the organization chart showing all agents and their hierarchy.",
   inputSchema: {
     type: "object",
@@ -183,6 +185,7 @@ var TOOL_GET_ORG_CHART = {
 };
 var TOOL_LIST_TEMPLATES = {
   name: "list_templates",
+  annotations: { readOnlyHint: true },
   description: "List available agent templates (blueprints for creating agents with predefined roles).",
   inputSchema: {
     type: "object",
@@ -319,6 +322,7 @@ var TOOL_CREATE_SCHEDULE = {
 };
 var TOOL_LIST_SCHEDULES = {
   name: "list_schedules",
+  annotations: { readOnlyHint: true },
   description: "List all scheduled tasks with their config and current state.",
   inputSchema: {
     type: "object",
@@ -327,6 +331,7 @@ var TOOL_LIST_SCHEDULES = {
 };
 var TOOL_GET_SCHEDULE = {
   name: "get_schedule",
+  annotations: { readOnlyHint: true },
   description: "Get a schedule's full config, state, and recent run history.",
   inputSchema: {
     type: "object",
@@ -403,6 +408,7 @@ var ENV_PRESET_SECRET_GUIDANCE = "You CANNOT set the secret value (the API key/t
 var ENV_PRESET_WORKFLOW = 'Full flow: (1) create_env_preset with its `env` + `secretKeys`; (2) tell the human to open the dashboard Presets tab and set the API key; (3) confirm it\'s set with list_env_presets (see its is-set rule); (4) THEN create_agent(envPreset: <name>). Spawning before the key is set fails with a clear message pointing at the Presets tab. For Kimi (Moonshot): ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic, ANTHROPIC_MODEL=kimi-k2.7-code (or kimi-k3), secretKeys=["ANTHROPIC_AUTH_TOKEN"] (note: AUTH_TOKEN, not API_KEY).';
 var TOOL_LIST_ENV_PRESETS = {
   name: "list_env_presets",
+  annotations: { readOnlyHint: true },
   description: "List env presets (model-override profiles, e.g. a Kimi/Moonshot backend). Secret values are always MASKED \u2014 never the values. IS-SET RULE: a secret key is SET when it appears in the returned `secrets` map (as a masked \u2022\u2022\u2022\u2022value); a declared `secretKey` that is ABSENT from `secrets` is UNSET \u2014 a human still needs to fill it in the dashboard. Check this before spawning an agent with the preset.",
   inputSchema: { type: "object", properties: {} }
 };

@@ -114,6 +114,51 @@ describe("codex daemon topology", () => {
       assert.doesNotMatch(spec.args.join(" "), /mcp_servers/);
     });
 
+    it("pre-approves our MCP tools mode-aware on the DAEMON (approve for bypass/auto, writes for ask/plan)", () => {
+      // Without this, Codex's `auto` default prompts once per session for the
+      // un-annotated tool set. The mode-aware value mirrors the autonomy the
+      // permission mode already grants: an autonomous agent never prompts; a
+      // supervised (ask/plan) agent still prompts for MUTATING tools but not
+      // for the readOnlyHint-annotated read-only ones (auto-approved by "writes").
+      const expected: Record<PermissionMode, string> = {
+        bypass: "approve",
+        auto: "approve",
+        ask: "writes",
+        plan: "writes",
+      };
+      for (const permissionMode of PERMISSION_MODES) {
+        const spec = codexProvider.buildSidecar?.(
+          baseOptions({
+            sidecarEndpoint: ENDPOINT,
+            injectChannelServer: true,
+            permissionMode,
+          }),
+        );
+        assert.ok(spec);
+        assert.match(
+          spec.args.join(" "),
+          new RegExp(
+            `mcp_servers\\.autonomos\\.default_tools_approval_mode="${expected[permissionMode]}"`,
+          ),
+          `mode '${permissionMode}' should map to '${expected[permissionMode]}'`,
+        );
+      }
+    });
+
+    it("omits the MCP approval mode when injectChannelServer is false", () => {
+      // The approval mode is meaningless without our MCP server attached — it
+      // must ride the same injectChannelServer gate as the rest of the config.
+      const spec = codexProvider.buildSidecar?.(
+        baseOptions({
+          sidecarEndpoint: ENDPOINT,
+          injectChannelServer: false,
+          permissionMode: "ask",
+        }),
+      );
+      assert.ok(spec);
+      assert.doesNotMatch(spec.args.join(" "), /default_tools_approval_mode/);
+    });
+
     it("ALWAYS disables the OS sandbox on the daemon (no bubblewrap), all modes", () => {
       for (const permissionMode of PERMISSION_MODES) {
         const spec = codexProvider.buildSidecar?.(
