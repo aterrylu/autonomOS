@@ -13,14 +13,14 @@ import type { Page, Route, Request } from "@playwright/test";
  *   - GET  /api/agents          → Agent[]  (store.fetchSessions)
  *   - GET  /api/agents/tree     → OrgNode[] (HierarchyPanel / Sidebar org chart)
  *   - GET  /api/projects        → ProjectInfo[]
- *   - GET  /api/hooks           → Record<id, {status, unread}> (notifications)
+ *   - GET  /api/agent-status    → Record<id, {status, unread}> (PR C rename)
  *   - GET  /api/templates       → Record<name, AgentTemplate>
  *   - GET  /api/providers       → ProviderInfo[] (CreateAgentPanel)
  *   - GET  /api/host            → { hostname }
  *   - GET  /api/settings        → MaskedSettings
  *   - GET  /api/channels/status → { channels: [] }
  *   - GET  /api/schedules       → Record<name, Schedule>
- *   - GET  /api/scheduler/status→ SchedulerStatus
+ *   - GET  /api/schedules/status→ SchedulerStatus (PR C rename)
  *   - POST /api/agents          → Agent (create-agent flow)
  *   - PUT  /api/settings        → MaskedSettings (settings toggle)
  */
@@ -259,14 +259,14 @@ export async function mockApi(
     if (path === "/api/host") {
       return json(route, { hostname: "e2e-mock" });
     }
-    if (path === "/api/hooks") {
+    if (path === "/api/agent-status") {
       // Notification + agent-status map keyed by agent id.
       return json(route, {});
     }
     if (path === "/api/schedules") {
       return json(route, {});
     }
-    if (path === "/api/scheduler/status") {
+    if (path === "/api/schedules/status") {
       return json(route, {
         running: 0,
         queued: 0,
