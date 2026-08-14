@@ -103,6 +103,20 @@ describe("route-rename compat aliases (PR C)", () => {
     assert.equal(validateScheduleInput({ name: "normal-name" }), null);
   });
 
+  it("the BARE old path (/api/hooks, no sub-path) matches the wildcard alias and warns", async () => {
+    // The single most likely straggler is a stale dashboard's statusApi.map()
+    // calling exactly GET /api/hooks with no sub-path. This pins two facts the
+    // combined-count test cannot distinguish: the bare path SERVES through the
+    // alias, and it PRODUCES a deprecation line (i.e. `use("/api/hooks/*")`
+    // matches the bare mount path too).
+    const app = buildApp();
+    const res = await app.request("/api/hooks");
+    assert.equal(res.status, 200);
+    const deprecations = warns.filter((w) => w.includes("[deprecated]"));
+    assert.equal(deprecations.length, 1, deprecations.join("\n"));
+    assert.ok(deprecations[0].includes("GET /api/hooks"));
+  });
+
   it("each alias warns ONCE per mount, pointing at the new path", async () => {
     const app = buildApp();
     await app.request("/api/hooks");

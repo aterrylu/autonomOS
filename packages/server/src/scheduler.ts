@@ -149,6 +149,22 @@ export function initScheduler(): void {
     );
   }
 
+  // PR C reserved "status"/"settings" as schedule names (the scheduler-control
+  // routes own those paths under /api/schedules). The create guard only stops
+  // NEW ones — a pre-rename schedule with a reserved name still loads and
+  // still FIRES, but its detail routes (GET/PUT/DELETE /api/schedules/<name>)
+  // are shadowed by the control routes, so it can no longer be inspected or
+  // edited over REST. Same reporting rationale as the isolated warn above.
+  const shadowed = names.filter((n) => n === "status" || n === "settings");
+  if (shadowed.length > 0) {
+    console.warn(
+      `[scheduler] ${shadowed.length} schedule(s) use a name reserved by the ` +
+        `scheduler-control routes and cannot be managed over REST: ` +
+        `${shadowed.join(", ")}. Rename each (delete + recreate under a new ` +
+        `name) — the schedule still fires, but the dashboard cannot show it.`,
+    );
+  }
+
   for (const name of names) {
     const schedule = schedules[name];
     if (!schedule.enabled) continue;

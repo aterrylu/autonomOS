@@ -287,9 +287,11 @@ export function pruneRuns(name: string, maxLines = 2000): void {
  * Returns null on success, or an error message suitable for a 400 response.
  */
 /** Names that collide with the scheduler-control routes now living under
- *  /api/schedules/{status,settings} (PR C). Hono prefers static routes over
- *  the :name param anyway, so such a schedule would be unreachable — reject
- *  it at create instead of storing a key no route can serve. */
+ *  /api/schedules/{status,settings} (PR C). The scheduler mounts register
+ *  BEFORE the :name router and the first-registered mount wins (verified —
+ *  Hono resolves same-base mounts in registration order, NOT static-over-
+ *  param), so such a schedule would be unreachable — reject it at create
+ *  instead of storing a key no route can serve. */
 const RESERVED_SCHEDULE_NAMES = new Set(["status", "settings"]);
 
 export function validateScheduleInput(
