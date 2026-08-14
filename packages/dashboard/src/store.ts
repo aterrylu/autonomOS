@@ -526,7 +526,7 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
   }
 }
 
-/** Apply a `GET /api/hooks` snapshot: unread counts, agent activity statuses,
+/** Apply a `GET /api/agent-status` snapshot: unread counts, agent activity statuses,
  *  and the `needs_input` desktop notification for a backgrounded tab. */
 export function applyStatusSnapshot(data: AgentStatusMap): void {
   const set = useStore.setState;

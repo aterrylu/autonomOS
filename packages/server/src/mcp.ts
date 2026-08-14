@@ -475,7 +475,7 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "create_env_preset",
-    'Create a model-override env preset. Sets env + declares secret key names; you CANNOT set the secret value — a human enters it in the dashboard. Do not ask for tokens in chat. Flow: create → human keys it in the Presets tab → verify with list_env_presets → create_agent(envPreset). Kimi: ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic, ANTHROPIC_MODEL=kimi-k2.7-code, secretKeys=["ANTHROPIC_AUTH_TOKEN"].',
+    TOOL_CREATE_ENV_PRESET.description,
     createEnvPresetShape,
     async (args) => {
       try {

@@ -24,8 +24,10 @@ function createApp() {
   // app-level handler turns into the ADR-078 envelope — a bare test app would
   // report them as 500s and pin a shape production never returns.
   installErrorHandling(app, "test");
+  // Order is LOAD-BEARING: schedulerRouter's static /status,/settings must
+  // register before scheduleRouter's /:name or the param route shadows them.
+  app.route("/api/schedules", schedulerRouter);
   app.route("/api/schedules", scheduleRouter);
-  app.route("/api/scheduler", schedulerRouter);
   return app;
 }
 
@@ -641,7 +643,7 @@ describe("GET /api/schedules/:name/runs", () => {
   });
 });
 
-describe("GET /api/scheduler/status", () => {
+describe("GET /api/schedules/status", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
@@ -656,7 +658,7 @@ describe("GET /api/scheduler/status", () => {
     const { status, json } = await req(
       createApp(),
       "GET",
-      "/api/scheduler/status",
+      "/api/schedules/status",
     );
     assert.equal(status, 200);
     assert.equal(json.running, true);
@@ -666,7 +668,7 @@ describe("GET /api/scheduler/status", () => {
   });
 });
 
-describe("PUT /api/scheduler/settings", () => {
+describe("PUT /api/schedules/settings", () => {
   beforeEach(() => {
     setupTestDir();
     _resetForTesting();
@@ -681,7 +683,7 @@ describe("PUT /api/scheduler/settings", () => {
     const { status, json } = await req(
       createApp(),
       "PUT",
-      "/api/scheduler/settings",
+      "/api/schedules/settings",
       { maxConcurrentRuns: 5 },
     );
     assert.equal(status, 200);
@@ -693,7 +695,7 @@ describe("PUT /api/scheduler/settings", () => {
     const { status, json } = await req(
       createApp(),
       "PUT",
-      "/api/scheduler/settings",
+      "/api/schedules/settings",
       { maxConcurrentRuns: 0 },
     );
     assert.equal(status, 400);
@@ -706,7 +708,7 @@ describe("PUT /api/scheduler/settings", () => {
     const { status, json } = await req(
       createApp(),
       "PUT",
-      "/api/scheduler/settings",
+      "/api/schedules/settings",
       { maxConcurrentRuns: "five" },
     );
     assert.equal(status, 400);
@@ -714,7 +716,7 @@ describe("PUT /api/scheduler/settings", () => {
 
   it("rejects invalid JSON body", async () => {
     const app = createApp();
-    const res = await app.request("/api/scheduler/settings", {
+    const res = await app.request("/api/schedules/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: "bad{",

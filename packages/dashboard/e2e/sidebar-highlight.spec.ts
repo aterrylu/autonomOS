@@ -127,7 +127,7 @@ test.describe("active-agent sidebar highlight", () => {
     await mockApi(page);
     // A sibling agent carries an unread count; the active agent shows its ring.
     // The two signals use independent code paths and must render side-by-side.
-    await page.route("**/api/hooks", (r) =>
+    await page.route("**/api/agent-status", (r) =>
       r.fulfill({
         status: 200,
         contentType: "application/json",

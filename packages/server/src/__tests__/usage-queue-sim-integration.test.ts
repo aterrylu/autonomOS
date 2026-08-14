@@ -82,7 +82,7 @@ describe("usage-queue timed simulation — real spawn auto-fire", {
     // start before the first hook keep their semantics.
     const { body } = await authedJson<Record<string, { status: HookStatus }>>(
       server,
-      "/api/hooks",
+      "/api/agent-status",
     );
     return (
       body[id]?.status ?? ({ status: "unknown", lastEvent: "" } as HookStatus)

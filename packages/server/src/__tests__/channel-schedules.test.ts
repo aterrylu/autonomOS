@@ -38,7 +38,7 @@ function createApp() {
   // envelope comes from this handler (see httpError.ts).
   installErrorHandling(app, "test");
   app.route("/api/schedules", scheduleRouter);
-  app.route("/api/scheduler", schedulerRouter);
+  app.route("/api/schedules", schedulerRouter);
   return app;
 }
 

@@ -417,7 +417,7 @@ export const restUpdateScheduleSchema = z.object({
   name: z.string().optional(),
 });
 
-/** `PUT /api/scheduler/settings`. */
+/** `PUT /api/schedules/settings` (was /api/scheduler/settings pre-PR C). */
 export const schedulerSettingsSchema = z.object({
   maxConcurrentRuns: z
     .number()
