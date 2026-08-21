@@ -101,10 +101,14 @@ perfRouter.post("/emit/:id", (c) => {
   return c.json({ chunks: burst.length, bytes: burstBytes(burst) });
 });
 
-/** Raw scrollback chunks for ANY live attachment (real agents too) — PTY chunk
- *  boundaries preserved, so a TUI's repaint pattern (sync-output brackets,
- *  erase/redraw pairs, alt-screen) can be analyzed exactly as it hit the
- *  coalescer. Diagnostic only; perf-mode gated like the rest of this router. */
+/** Raw scrollback chunks for ANY live attachment — REAL agents included, on
+ *  purpose: the ADR-086 TUI forensics workflow captures a real gemini/codex
+ *  stream here and replays it via /emit-raw. That means up to 1MB of a real
+ *  agent's raw terminal output (which can include echoed secrets, ADR-067)
+ *  is readable on this route — acceptable ONLY because perf mode is the
+ *  trust boundary: opt-in, loopback-bind-only, auth-dropped surface where
+ *  POST /api/agents is already reachable; this adds no reach beyond it.
+ *  PTY chunk boundaries preserved. Never mounted outside perf mode. */
 perfRouter.get("/buffer/:id", (c) => {
   const managed = getAttachment(c.req.param("id") as UUID);
   if (!managed) return c.json({ error: "no live attachment" }, 404);
