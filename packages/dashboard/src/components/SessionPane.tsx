@@ -48,7 +48,10 @@ export const SessionPane = memo(function SessionPane({
         <button
           type="button"
           onClick={jumpToLatest}
-          className="absolute bottom-3 right-3 z-10 rounded-full border border-neutral-600 bg-neutral-800/90 px-3 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+          // bottom-12, not bottom-3: UsageQueueButton owns the bottom-right corner
+          // (same stacking rule CopyToast documents). Theme tokens, not a fixed
+          // palette — the daylight theme is light.
+          className="absolute bottom-12 right-3 z-10 rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground shadow-lg hover:brightness-110"
         >
           ↓ Jump to latest
         </button>

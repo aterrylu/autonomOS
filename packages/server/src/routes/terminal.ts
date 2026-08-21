@@ -45,12 +45,6 @@ function intEnv(name: string, def: number): number {
   return n;
 }
 
-/** Defaults read from env. Coalescing is ON by default — it eliminates
- *  burst-induced dropped frames (measured 12/31/65 → 0 at 1/4/12 MB on a real
- *  GPU) and cuts frame count ~570× (remote/multi-pane). Flushing is
- *  TRAILING-edge (see LEADING_EDGE above): repaints stay whole at the cost of
- *  ≤ windowMs echo latency after idle. Set
- *  `AUTONOMOS_WS_COALESCE=0` to fall back to the historical per-chunk send. */
 // Leading-edge flushing is OPT-IN for ablation only (AUTONOMOS_WS_COALESCE_LEADING=1).
 // It was the #260 default — flush the first chunk after idle immediately for
 // zero-latency echo — but it is exactly wrong for a TUI that repaints WITHOUT
@@ -64,6 +58,12 @@ function intEnv(name: string, def: number): number {
 // Cost: ≤ windowMs added echo latency after idle — below one display frame.
 const LEADING_EDGE = process.env.AUTONOMOS_WS_COALESCE_LEADING === "1";
 
+/** Defaults read from env. Coalescing is ON by default — it eliminates
+ *  burst-induced dropped frames (measured 12/31/65 → 0 at 1/4/12 MB on a real
+ *  GPU) and cuts frame count ~570× (remote/multi-pane). Flushing is
+ *  TRAILING-edge (see the LEADING_EDGE note above): repaints stay whole at the cost of
+ *  ≤ windowMs echo latency after idle. Set
+ *  `AUTONOMOS_WS_COALESCE=0` to fall back to the historical per-chunk send. */
 export const DEFAULT_COALESCE: CoalesceOptions = {
   coalesce: process.env.AUTONOMOS_WS_COALESCE !== "0",
   windowMs: intEnv("AUTONOMOS_WS_COALESCE_MS", 5),
@@ -97,8 +97,8 @@ export function makeStreamForwarder(
   let pending: string[] = [];
   let pendingBytes = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  // Timestamp of the last send, so an idle stream flushes the next chunk
-  // immediately (leading edge). 0 = never sent → first chunk is immediate.
+  // Timestamp of the last send. Read ONLY by the ablation-only leading-edge
+  // branch below; unused on the trailing-edge default path. 0 = never sent.
   let lastFlushAt = 0;
 
   const flush = () => {

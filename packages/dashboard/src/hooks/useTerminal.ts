@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
-import { acquireTerminal, getLiveTerminal } from "../terminal/liveTerminals";
+import {
+  acquireTerminal,
+  getLiveTerminal,
+  type LiveTerminal,
+} from "../terminal/liveTerminals";
 import {
   COPY_TOAST_DISPLAY_MS,
   shouldSuppressCopyToast,
@@ -35,6 +39,11 @@ export function useTerminal(
   // True while the viewport is parked off-bottom (trackpad flick /
   // Shift+PageUp) — drives the "Jump to latest" recovery pill.
   const [followOff, setFollowOff] = useState(false);
+  // The mount's OWN entry — jumpToLatest must not go through the cache: a
+  // deferred-ended session (final output on screen, 4010 freed its slot) is
+  // uncached but very much clickable, and a cache-miss ?. would render the
+  // pill as a silent no-op button exactly there.
+  const entryRef = useRef<LiveTerminal | null>(null);
   const copyToastIdRef = useRef(0);
   const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCopyTextRef = useRef<string | null>(null);
@@ -114,11 +123,14 @@ export function useTerminal(
 
     entry.attach(container, handleClipboardCopy);
     entry.bindFollowIndicator(setFollowOff);
+    entryRef.current = entry;
 
     return () => {
-      entry.bindFollowIndicator(null);
       // Pass the container so a stale cleanup (dockview created the new
       // panel's mount before removing ours) can't detach the newer mount.
+      // detach() clears the follow sink too, and it is ownership-checked —
+      // clearing it here separately would let a stale mount blank the newer
+      // mount's pill.
       entry.detach(container);
     };
   }, [sessionId, setStatus, containerRef, handleClipboardCopy]);
@@ -138,10 +150,7 @@ export function useTerminal(
     }
   }, [theme, sessionId]);
 
-  const jumpToLatest = useCallback(
-    () => getLiveTerminal(sessionId)?.jumpToLatest(),
-    [sessionId],
-  );
+  const jumpToLatest = useCallback(() => entryRef.current?.jumpToLatest(), []);
 
   return { copyToast, followOff, jumpToLatest };
 }

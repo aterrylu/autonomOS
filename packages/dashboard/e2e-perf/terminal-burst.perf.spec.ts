@@ -128,9 +128,11 @@ test("burst render cost through real dashboard", async ({ page, request }) => {
     return {
       frames: p.frames,
       bytes: p.bytes,
-      // Frames <12ms apart = a repaint split across WS frames — the torn-paint
-      // flicker fingerprint (gemini fix regression guard; ~0 expected with the
-      // trailing-edge coalescer).
+      // Frames <12ms apart = a repaint split across WS frames — the torn-
+      // paint flicker fingerprint. DIAGNOSTIC on this synchronous burst (the
+      // 16KB threshold emits back-to-back frames in one tick, so ~0 is not
+      // achievable here); the enforced guards are the trailing-edge unit
+      // tests + the DEFAULT_COALESCE pin in terminal-coalesce.test.ts.
       tightPairs: p.tightPairs,
       drainMs: p.sentinelT - p.firstFrameT,
       longtaskMs: p.longtaskMs,

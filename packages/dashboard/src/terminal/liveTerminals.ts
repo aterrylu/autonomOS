@@ -23,8 +23,8 @@ import { createXtermBackend } from "./xterm-backend";
 // it, while the instance, its buffer, and its socket stay alive. Switching
 // back re-attaches instantly with ZERO bytes re-streamed.
 //
-// The WS stays open while detached — frames arrive pre-coalesced (8ms
-// leading-edge window server-side) and a write to a renderer-less terminal is
+// The WS stays open while detached — frames arrive pre-coalesced (5ms
+// trailing-edge window server-side, ADR-086) and a write to a renderer-less terminal is
 // just a buffer/parser update, so a hidden busy agent costs parser CPU only.
 // WebGL is disposed on detach and recreated on attach (same discipline the
 // visibility path always used), so hidden terminals hold no GPU context.
@@ -45,14 +45,6 @@ export type ClipboardCopySink =
   | null;
 
 const cache = new Map<string, LiveTerminal>();
-// Dev-only diagnostic handle: lets a browser/Playwright probe read the real
-// buffer state (viewportY vs baseY, userScrolledUp) — xterm 6's custom
-// scrollbars expose nothing useful in the DOM. Never shipped in prod builds.
-if (import.meta.env.DEV) {
-  (window as unknown as { __liveTerminals: typeof cache }).__liveTerminals =
-    cache;
-}
-
 // Injectable backend factory — tests swap in a fake so cache-lifecycle logic
 // can be exercised under jsdom (where xterm's renderer cannot boot).
 type BackendFactory = typeof createXtermBackend;
@@ -365,9 +357,7 @@ export class LiveTerminal {
     // The buffer may have advanced while hidden; keep the tail pinned unless
     // the user had scrolled up (same rule the live stream follows).
     if (!this.userScrolledUp) {
-      this.programmaticScroll = true;
-      this.terminal.scrollToBottom();
-      this.programmaticScroll = false;
+      this.scrollToTail();
     }
   }
 
@@ -447,12 +437,21 @@ export class LiveTerminal {
     cb?.(this.userScrolledUp);
   }
 
-  /** One-click recovery for a parked viewport: back to the live tail. */
+  /** One-click recovery for a parked viewport: back to the live tail. Works
+   *  on a deferred-ended session too (final output still on screen) — only a
+   *  fully disposed instance refuses (its xterm would throw). */
   jumpToLatest(): void {
+    if (this.disposed) return;
+    this.scrollToTail();
+    this.setUserScrolledUp(false);
+  }
+
+  /** Scroll to the live tail without the onScroll handler mistaking it for a
+   *  user scroll (which would flip userScrolledUp and park the pane). */
+  private scrollToTail(): void {
     this.programmaticScroll = true;
     this.terminal.scrollToBottom();
     this.programmaticScroll = false;
-    this.setUserScrolledUp(false);
   }
 
   private setUserScrolledUp(v: boolean): void {
@@ -479,7 +478,6 @@ export class LiveTerminal {
     // onopen before the server's 4004 close, and its reset() would blank
     // exactly the output the deferral preserves.
     if (this.disposed || this.ended) return;
-    this.setUserScrolledUp(false);
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -510,6 +508,11 @@ export class LiveTerminal {
       // duplication would be permanent and cumulative.
       if (this.everConnected) this.terminal.reset();
       this.everConnected = true;
+      // Follow-state resets ONLY once the socket actually opened (reset +
+      // full replay re-pin the bottom). Resetting at connect START would
+      // dismiss the pill during a FAILED reconnect attempt while the
+      // viewport is still genuinely parked.
+      this.setUserScrolledUp(false);
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
       // Nudge only when attached — a detached terminal has nothing to
       // repaint, and the fresh fit on attach() supersedes any stale size.
@@ -532,9 +535,7 @@ export class LiveTerminal {
       if (!this.userScrolledUp) {
         if (this.scrollTimer) clearTimeout(this.scrollTimer);
         this.scrollTimer = setTimeout(() => {
-          this.programmaticScroll = true;
-          this.terminal.scrollToBottom();
-          this.programmaticScroll = false;
+          this.scrollToTail();
         }, 100);
       }
     };

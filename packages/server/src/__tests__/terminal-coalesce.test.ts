@@ -10,7 +10,6 @@ function fakeWs() {
 }
 
 const ON = { coalesce: true, windowMs: 8, maxBytes: 16384 };
-const LEADING = { ...ON, leadingEdge: true };
 
 test("coalesce OFF — one send per chunk, byte-identical passthrough", () => {
   const ws = fakeWs();
@@ -35,7 +34,11 @@ test("trailing edge (default) — an after-idle chunk WAITS for the window, so a
 
 test("leading edge (ablation flag) — first chunk after idle flushes immediately", async () => {
   const ws = fakeWs();
-  const f = makeStreamForwarder(ws, () => {}, { ...LEADING, windowMs: 50 });
+  const f = makeStreamForwarder(ws, () => {}, {
+    ...ON,
+    leadingEdge: true,
+    windowMs: 50,
+  });
   f.onData("a"); // leading → flushed
   f.onData("b");
   f.onData("c");
@@ -119,4 +122,18 @@ test("send failure with pending bytes — frame dropped, onSendError fires once,
   await sleep(25); // timer fires → flush → send throws → onSendError
   assert.equal(errors, 1, "onSendError fired once for the dropped frame");
   assert.deepEqual(sent, ["prime"], "no further successful sends");
+});
+
+test("DEFAULT_COALESCE pins the shipped behavior — trailing-edge, 5ms window (ADR-086)", async () => {
+  // Env-unset defaults (node:test runs this file in its own process; the CI
+  // env does not set the coalescer vars). Flipping the env check's polarity
+  // or reverting the window turns this red — the ADR's headline claim is
+  // enforced, not just documented.
+  const { DEFAULT_COALESCE } = await import("../routes/terminal.js");
+  assert.equal(DEFAULT_COALESCE.coalesce, true);
+  assert.equal(DEFAULT_COALESCE.windowMs, 5);
+  assert.ok(
+    !DEFAULT_COALESCE.leadingEdge,
+    "leading edge must be OFF by default",
+  );
 });

@@ -23,8 +23,10 @@ AUTONOMOS_WS_COALESCE=1 bun run perf:l1      # with #1 frame coalescing
 PANES=4 AUTONOMOS_WS_COALESCE=1 bun run perf:l1   # 4-pane scenario
 ```
 
-Knobs: `AUTONOMOS_WS_COALESCE_MS` (flush window, default 8), `AUTONOMOS_WS_COALESCE_BYTES`
-(size flush, default 16384), `PANES` (concurrent clients).
+Knobs: `AUTONOMOS_WS_COALESCE_MS` (flush window, default 5), `AUTONOMOS_WS_COALESCE_BYTES`
+(size flush, default 16384), `AUTONOMOS_WS_COALESCE_LEADING=1` (restore the
+pre-ADR-086 leading-edge flush — ablation only; it tears unsynchronized TUI
+repaints), `PANES` (concurrent clients).
 
 ### Measured ablation (1.09 MB burst → 18,829 PTY chunks)
 
