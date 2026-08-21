@@ -95,6 +95,7 @@ export interface DraggableOverlay {
     onPointerDown: (e: ReactPointerEvent) => void;
     onPointerMove: (e: ReactPointerEvent) => void;
     onPointerUp: (e: ReactPointerEvent) => void;
+    onPointerCancel: (e: ReactPointerEvent) => void;
     onKeyDown: (e: KeyboardEvent) => void;
   };
 }
@@ -133,21 +134,27 @@ export function useDraggableOverlay(
     startY: number;
   } | null>(null);
 
-  // Fires when the overlay element actually mounts (overlayEl becomes non-null)
-  // and re-fires on a hide→show remount. Two jobs:
+  // Fires when the overlay element mounts (overlayEl becomes non-null). Two jobs:
   //  1. Clamp-on-mount — a position saved when the pane was larger must be
-  //     pulled back into the current pane immediately, not only on a later
-  //     resize; otherwise a restore into a smaller pane strands it off-canvas.
-  //  2. Re-clamp on every pane resize so an explicit position can't end up
-  //     off-canvas (the pane is overflow-hidden).
+  //     pulled back in immediately, else a restore into a smaller pane strands
+  //     it off-canvas.
+  //  2. Re-clamp on every pane resize (the pane is overflow-hidden).
+  // Observe `parentElement`, NOT `offsetParent`: a pane hidden with display:none
+  // (dockview keeps every panel mounted and toggles display for WebGL disposal)
+  // has a NULL offsetParent, so keying the observer off it would leave it
+  // unwired for every non-visible pane — and a provider-wide cap flips ALL of a
+  // provider's panes capped on one tick, so most mount hidden. parentElement is
+  // non-null under display:none, and its ResizeObserver fires on the 0×0→real
+  // box transition when the pane becomes visible — exactly when the clamp must
+  // run. clampPos no-ops safely while offsetParent is still null, so reclamp can
+  // run at any time.
   useEffect(() => {
     const el = overlayEl;
-    const parent = el?.offsetParent as HTMLElement | null;
+    const parent = el?.parentElement;
     if (!el || !parent || typeof ResizeObserver === "undefined") return;
-    setPos((p) => (p ? clampPos(p, el) : p));
-    const ro = new ResizeObserver(() => {
-      setPos((p) => (p ? clampPos(p, el) : p));
-    });
+    const reclamp = () => setPos((p) => (p ? clampPos(p, el) : p));
+    reclamp();
+    const ro = new ResizeObserver(reclamp);
     ro.observe(parent);
     return () => ro.disconnect();
   }, [overlayEl]);
@@ -189,7 +196,12 @@ export function useDraggableOverlay(
     setPos(clampPos(desired, el));
   }, []);
 
-  const onPointerUp = useCallback(
+  // Ends a drag on pointerup AND pointercancel. The cancel path is load-bearing:
+  // if the browser fires pointercancel (a touch gesture stolen by the system,
+  // the pointer captured by browser UI), pointerup never comes, so without this
+  // drag.current + dragging would stay latched — and then a bare hover over the
+  // handle (onPointerMove) would keep chasing the cursor with no button down.
+  const endDrag = useCallback(
     (e: ReactPointerEvent) => {
       if (!drag.current) return;
       drag.current = null;
@@ -235,6 +247,12 @@ export function useDraggableOverlay(
     overlayRef,
     positionStyle: pos ? { left: pos.x, top: pos.y } : defaultStyle,
     dragging,
-    handleProps: { onPointerDown, onPointerMove, onPointerUp, onKeyDown },
+    handleProps: {
+      onPointerDown,
+      onPointerMove,
+      onPointerUp: endDrag,
+      onPointerCancel: endDrag,
+      onKeyDown,
+    },
   };
 }

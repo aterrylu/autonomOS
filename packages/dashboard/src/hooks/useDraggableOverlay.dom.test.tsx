@@ -28,6 +28,10 @@ const START_TOP = 100;
 const MAX_X = PARENT.clientWidth - OVERLAY_W - 12; // 496
 const MAX_Y = PARENT.clientHeight - OVERLAY_H - 12; // 544
 
+// Controllable offsetParent: null simulates a display:none (hidden) pane, whose
+// descendants have a null offsetParent; flip to PARENT to simulate the pane
+// becoming visible. parentElement stays the real rendered node throughout.
+let offsetParentVal: unknown = PARENT;
 let roCallback: (() => void) | null = null;
 const saved: Array<[string, PropertyDescriptor | undefined]> = [];
 
@@ -54,7 +58,8 @@ beforeEach(() => {
   localStorage.clear();
   PARENT.clientWidth = 800;
   PARENT.clientHeight = 600;
-  stubProto("offsetParent", () => PARENT);
+  offsetParentVal = PARENT;
+  stubProto("offsetParent", () => offsetParentVal);
   stubProto("offsetWidth", () => OVERLAY_W);
   stubProto("offsetHeight", () => OVERLAY_H);
   stubProto("offsetLeft", () => START_LEFT);
@@ -242,6 +247,37 @@ describe("draggable usage-queue overlay", () => {
     pointer("pointerdown", 200, 200);
     expect(document.activeElement).toBe(handle());
     pointer("pointerup", 200, 200);
+  });
+
+  it("clamps a background (display:none) pane's overlay once it becomes visible", () => {
+    // A provider-wide cap flips ALL that provider's panes capped at once, so a
+    // background pane's overlay mounts inside a display:none subtree — offsetParent
+    // is null, so clamp-on-mount is a no-op. The observer is keyed on
+    // parentElement (non-null while hidden), so it fires when the pane gets a real
+    // box on becoming visible, and THEN the clamp runs.
+    localStorage.setItem(KEY, JSON.stringify({ x: 700, y: 400 }));
+    offsetParentVal = null; // hidden pane
+    render(<UsageQueueButton sessionId="s1" provider="codex" />);
+    expect(overlay().style.left).toBe("700px"); // not clamped while hidden
+
+    offsetParentVal = PARENT; // pane becomes visible → 0×0 → real box
+    act(() => {
+      roCallback?.();
+    });
+    expect(overlay().style.left).toBe("496px"); // now pulled in-bounds (maxX)
+    expect(overlay().style.top).toBe("400px"); // y=400 already inside 544
+  });
+
+  it("clears the drag session on pointercancel so a later hover doesn't chase the cursor", () => {
+    render(<UsageQueueButton sessionId="s1" provider="codex" />);
+    pointer("pointerdown", 200, 200);
+    pointer("pointermove", 260, 240); // → (160,140)
+    expect(overlay().style.left).toBe("160px");
+
+    pointer("pointercancel", 260, 240);
+    // A bare move afterwards (no active drag) must NOT move the overlay.
+    pointer("pointermove", 500, 500);
+    expect(overlay().style.left).toBe("160px"); // unchanged — session cleared
   });
 
   it("keeps the arm toggle working (drag handle is separate from the switch)", () => {
