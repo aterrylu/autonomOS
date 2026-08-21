@@ -1,27 +1,35 @@
 /**
- * Bottom-right pill to queue an auto-press-Enter for when the Claude usage
+ * Draggable overlay to queue an auto-press-Enter for when this pane's usage
  * limit next clears.
  *
- * Visibility: it ONLY appears when the account is at the usage cap — the exact
- * moment it's useful (you've run out and want to line up your next prompt).
- * Showing it always would be noise; showing it only here makes it a timely call
- * to action rather than ambient chrome.
+ * Visibility: it ONLY appears when THIS pane's runtime is at its usage cap — the
+ * exact moment it's useful (you've run out and want to line up your next
+ * prompt). Showing it always would be noise.
+ *
+ * Position: DEFAULTS to the pane's top-right so it stays clear of Claude/Codex's
+ * bottom input line. Drag it by the left grip handle (or focus the handle and
+ * use arrow keys) to move it anywhere in the pane; the position is remembered
+ * PER TERMINAL and clamped inside the pane on drag and on pane resize, so it
+ * can't be lost off-canvas. See `useDraggableOverlay`.
  *
  * Intent: the label spells out both halves of how it works — it auto-presses
  * Enter at reset, and YOU queue the message by typing it into the terminal
- * yourself (the dashboard can't read the in-progress prompt; it lives in Claude
- * Code's input box). The server presses Enter the moment the limit lifts, even
- * with no dashboard open (see server `usageQueue.ts`). Click again to cancel.
+ * yourself (the dashboard can't read the in-progress prompt; it lives in the
+ * CLI's input box). The server presses Enter the moment the limit lifts, even
+ * with no dashboard open (see server `usageQueue.ts`). Click the pill to cancel.
  */
 
+import { MARGIN, useDraggableOverlay } from "../hooks/useDraggableOverlay";
 import { useUsageQueue } from "../hooks/useUsageQueue";
 import { timeUntilReset } from "../plugins/claude-usage/utils";
 
 /** Accent colors: yellow = off (armed-able), green = on (armed). */
 const GREEN = "#3fb950";
 const YELLOW = "#e6b450";
-/** Hardcoded bar width so the differing on/off subtitle never resizes it. */
+/** Fixed content width so the differing on/off subtitle never resizes it. */
 const BAR_WIDTH = 270;
+/** Grip-handle column width. */
+const HANDLE_WIDTH = 22;
 
 function HourglassIcon() {
   return (
@@ -41,6 +49,26 @@ function HourglassIcon() {
       <path d="M5 2h14" />
       <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" />
       <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+    </svg>
+  );
+}
+
+/** Two columns of dots — the conventional "drag me" grip affordance. */
+function GripIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="12"
+      height="16"
+      viewBox="0 0 12 16"
+      fill="currentColor"
+      style={{ flexShrink: 0 }}
+    >
+      {[3, 8, 13].map((cy) =>
+        [3, 9].map((cx) => (
+          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.3" />
+        )),
+      )}
     </svg>
   );
 }
@@ -93,6 +121,14 @@ export function UsageQueueButton({
     sessionId,
     provider,
   );
+  // Position is per-terminal (keyed by session) and defaults to the pane's
+  // top-right, clear of the bottom input line. Hook is called unconditionally
+  // (Rules of Hooks) — the early return below is AFTER it.
+  const { overlayRef, positionStyle, dragging, handleProps } =
+    useDraggableOverlay(`usageQueueOverlayPos:${sessionId}`, {
+      top: MARGIN,
+      right: MARGIN,
+    });
 
   // Only surfaces when THIS pane's runtime is at its limit — the moment queueing
   // is actually useful, and only for the agent whose usage is actually capped.
@@ -111,18 +147,13 @@ export function UsageQueueButton({
     : `Off — your ${limitName} is at its cap. Turn on, then type your next prompt into the terminal and it auto-presses Enter when the limit resets.`;
 
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={isArmed}
-      onClick={toggle}
-      title={title}
-      aria-label="Auto-Enter when usage limit resets"
-      className="absolute right-3 bottom-3 z-10 flex items-center gap-2.5 rounded-lg px-3 py-2 text-left shadow-lg transition-colors"
+    <div
+      ref={overlayRef}
+      data-testid="usage-queue-overlay"
+      className="absolute z-10 flex items-stretch overflow-hidden rounded-lg shadow-lg"
       style={{
-        // Hardcoded width + solid card background. The border signals state
-        // (yellow off / green on) at a constant 2px width.
-        width: BAR_WIDTH,
+        ...positionStyle,
+        width: HANDLE_WIDTH + BAR_WIDTH,
         background: "rgb(var(--card))",
         borderStyle: "solid",
         borderWidth: 1.5,
@@ -130,28 +161,66 @@ export function UsageQueueButton({
         color: "rgb(var(--foreground))",
       }}
     >
-      <span style={{ color: accent, flexShrink: 0 }}>
-        <HourglassIcon />
-      </span>
-      {/* min-w-0 lets the truncating children shrink instead of widening the bar */}
-      <span className="flex min-w-0 flex-col leading-tight">
-        <span className="truncate text-xs font-semibold">
-          Auto-Enter when limit resets
+      {/* Drag handle — pointer drag + keyboard nudge. A real <button> for
+          native focus/keyboard semantics; Enter/Space are harmless no-ops
+          (there's no onClick), arrow keys nudge via onKeyDown. */}
+      <button
+        type="button"
+        {...handleProps}
+        aria-label="Drag to reposition the auto-Enter control (arrow keys to nudge)"
+        title="Drag to move"
+        data-testid="usage-queue-drag-handle"
+        className="flex items-center justify-center"
+        style={{
+          width: HANDLE_WIDTH,
+          cursor: dragging ? "grabbing" : "grab",
+          touchAction: "none",
+          border: "none",
+          borderRight: "1px solid rgb(var(--border))",
+          background: "transparent",
+          color: accent,
+          opacity: 0.75,
+        }}
+      >
+        <GripIcon />
+      </button>
+
+      {/* Toggle — arm/disarm the auto-Enter. */}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={isArmed}
+        onClick={toggle}
+        title={title}
+        aria-label="Auto-Enter when usage limit resets"
+        className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left transition-colors"
+        style={{ background: "transparent", color: "inherit" }}
+      >
+        <span style={{ color: accent, flexShrink: 0 }}>
+          <HourglassIcon />
         </span>
-        <span
-          className="truncate text-[11px]"
-          style={isArmed ? { color: GREEN, fontWeight: 600 } : { opacity: 0.7 }}
-        >
-          {isArmed
-            ? eta
-              ? `Sends in ~${eta}`
-              : "Sends at reset"
-            : capWindow
-              ? `${capWindow} at limit — type to queue`
-              : "Type in the terminal to queue"}
+        {/* min-w-0 lets the truncating children shrink instead of widening the bar */}
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="truncate text-xs font-semibold">
+            Auto-Enter when limit resets
+          </span>
+          <span
+            className="truncate text-[11px]"
+            style={
+              isArmed ? { color: GREEN, fontWeight: 600 } : { opacity: 0.7 }
+            }
+          >
+            {isArmed
+              ? eta
+                ? `Sends in ~${eta}`
+                : "Sends at reset"
+              : capWindow
+                ? `${capWindow} at limit — type to queue`
+                : "Type in the terminal to queue"}
+          </span>
         </span>
-      </span>
-      <Switch on={isArmed} />
-    </button>
+        <Switch on={isArmed} />
+      </button>
+    </div>
   );
 }
