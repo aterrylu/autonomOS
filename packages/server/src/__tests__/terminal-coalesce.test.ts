@@ -18,23 +18,33 @@ test("coalesce OFF — one send per chunk, byte-identical passthrough", () => {
   assert.deepEqual(ws.sent, ["a", "bb", "ccc"]);
 });
 
-test("leading edge — first chunk after idle flushes immediately (0 added latency)", () => {
+test("trailing edge (default) — an after-idle chunk WAITS for the window, so a multi-chunk repaint ships whole", async () => {
   const ws = fakeWs();
-  const f = makeStreamForwarder(ws, () => {}, ON);
-  f.onData("x"); // stream idle → sent now, no waiting for the window
-  assert.deepEqual(ws.sent, ["x"]);
+  const f = makeStreamForwarder(ws, () => {}, { ...ON, windowMs: 30 });
+  f.onData("\x1b[2A\x1b[2K"); // repaint's ERASE half — must NOT go out alone
+  f.onData("redrawn line");
+  assert.deepEqual(ws.sent, [], "nothing flushed before the window");
+  await sleep(100);
+  assert.deepEqual(
+    ws.sent,
+    ["\x1b[2A\x1b[2Kredrawn line"],
+    "erase+redraw in ONE frame",
+  );
 });
 
-test("burst — leading chunk immediate, rapid remainder coalesced into one frame", async () => {
+test("leading edge (ablation flag) — first chunk after idle flushes immediately", async () => {
   const ws = fakeWs();
-  const f = makeStreamForwarder(ws, () => {}, { ...ON, windowMs: 50 });
+  const f = makeStreamForwarder(ws, () => {}, {
+    ...ON,
+    leadingEdge: true,
+    windowMs: 50,
+  });
   f.onData("a"); // leading → flushed
   f.onData("b");
   f.onData("c");
-  f.onData("d"); // within the 50ms window → pending
   assert.deepEqual(ws.sent, ["a"], "only the leading chunk so far");
-  await sleep(120); // >> 50ms window, generous margin for a loaded CI box
-  assert.deepEqual(ws.sent, ["a", "bcd"], "remainder coalesced");
+  await sleep(120);
+  assert.deepEqual(ws.sent, ["a", "bc"], "remainder coalesced");
 });
 
 test("size threshold forces a flush mid-burst (no waiting for the window)", () => {
@@ -44,32 +54,32 @@ test("size threshold forces a flush mid-burst (no waiting for the window)", () =
     windowMs: 1000,
     maxBytes: 4,
   });
-  f.onData("ab"); // leading → flushed
-  f.onData("cd"); // pending (2 < 4)
-  assert.deepEqual(ws.sent, ["ab"]);
-  f.onData("ef"); // pending now 4 ≥ maxBytes → flush
-  assert.deepEqual(ws.sent, ["ab", "cdef"]);
+  f.onData("ab"); // pending (2 < 4) — trailing edge, nothing flushes yet
+  assert.deepEqual(ws.sent, []);
+  f.onData("cd"); // pending now 4 ≥ maxBytes → flush
+  assert.deepEqual(ws.sent, ["abcd"]);
 });
 
 test("close() flushes pending bytes", () => {
   const ws = fakeWs();
   const f = makeStreamForwarder(ws, () => {}, { ...ON, windowMs: 1000 });
-  f.onData("a"); // leading → flushed
-  f.onData("tail"); // pending (within window)
-  assert.deepEqual(ws.sent, ["a"]);
+  f.onData("a");
+  f.onData("tail"); // both pending (trailing edge, within window)
+  assert.deepEqual(ws.sent, []);
   f.close();
-  assert.deepEqual(ws.sent, ["a", "tail"]);
+  assert.deepEqual(ws.sent, ["atail"]);
 });
 
-test("slow trickle — each chunk after an idle gap flushes immediately", async () => {
+test("slow trickle — each chunk still ships as its own frame (one window later)", async () => {
   const ws = fakeWs();
   const f = makeStreamForwarder(ws, () => {}, ON); // 8ms window
   f.onData("line1\n");
-  await sleep(20); // idle gap > window
+  await sleep(20); // idle gap > window → timer fired, frame shipped
   f.onData("line2\n");
   await sleep(20);
   f.onData("line3\n");
-  // A slow stream never coalesces — every line is its own immediate frame.
+  await sleep(20);
+  // A slow stream never coalesces — each line is its own frame, ≤ window late.
   assert.deepEqual(ws.sent, ["line1\n", "line2\n", "line3\n"]);
 });
 
@@ -103,7 +113,8 @@ test("send failure with pending bytes — frame dropped, onSendError fires once,
     },
   };
   const f = makeStreamForwarder(ws, () => errors++, { ...ON, windowMs: 8 });
-  f.onData("prime"); // leading → flush → ok
+  f.onData("prime"); // trailing edge → ships when the window timer fires
+  await sleep(25);
   assert.deepEqual(sent, ["prime"]);
   fail = true; // socket dies
   f.onData("x");
@@ -111,4 +122,18 @@ test("send failure with pending bytes — frame dropped, onSendError fires once,
   await sleep(25); // timer fires → flush → send throws → onSendError
   assert.equal(errors, 1, "onSendError fired once for the dropped frame");
   assert.deepEqual(sent, ["prime"], "no further successful sends");
+});
+
+test("DEFAULT_COALESCE pins the shipped behavior — trailing-edge, 5ms window (ADR-086)", async () => {
+  // Env-unset defaults (node:test runs this file in its own process; the CI
+  // env does not set the coalescer vars). Flipping the env check's polarity
+  // or reverting the window turns this red — the ADR's headline claim is
+  // enforced, not just documented.
+  const { DEFAULT_COALESCE } = await import("../routes/terminal.js");
+  assert.equal(DEFAULT_COALESCE.coalesce, true);
+  assert.equal(DEFAULT_COALESCE.windowMs, 5);
+  assert.ok(
+    !DEFAULT_COALESCE.leadingEdge,
+    "leading edge must be OFF by default",
+  );
 });

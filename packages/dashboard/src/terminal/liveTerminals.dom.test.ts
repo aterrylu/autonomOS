@@ -56,7 +56,9 @@ function makeFakeBackend(): TerminalBackend & {
   disposed: boolean;
   resets: number;
 } {
-  const state = { disposed: false, resets: 0 };
+  const state = { disposed: false, resets: 0, scrolls: 0 };
+  const buf = { baseY: 0, viewportY: 0, getLine: () => null };
+  let onScrollCb: (n: number) => void = () => {};
   const element = document.createElement("div");
   const terminal = {
     open: (parent: HTMLElement) => parent.appendChild(element),
@@ -68,19 +70,25 @@ function makeFakeBackend(): TerminalBackend & {
     },
     attachCustomKeyEventHandler: () => {},
     registerLinkProvider: () => {},
-    onScroll: () => ({ dispose: () => {} }),
+    onScroll: (cb: (n: number) => void) => {
+      onScrollCb = cb;
+      return { dispose: () => {} };
+    },
     onData: () => ({ dispose: () => {} }),
     loadAddon: () => {},
     clear: () => {},
     focus: () => {},
     selectAll: () => {},
-    scrollToBottom: () => {},
+    scrollToBottom: () => {
+      state.scrolls++;
+      buf.viewportY = buf.baseY;
+    },
     scrollLines: () => {},
     write: () => {},
     cols: 80,
     rows: 24,
     options: { theme: {}, fontSize: 14, lineHeight: 1 },
-    buffer: { active: { baseY: 0, viewportY: 0, getLine: () => null } },
+    buffer: { active: buf },
     textarea: null,
   };
   const backend = {
@@ -93,8 +101,19 @@ function makeFakeBackend(): TerminalBackend & {
     get resets() {
       return state.resets;
     },
+    get scrolls() {
+      return state.scrolls;
+    },
+    buf,
+    fireScroll: (n: number) => onScrollCb(n),
   };
-  return backend as TerminalBackend & { disposed: boolean; resets: number };
+  return backend as TerminalBackend & {
+    disposed: boolean;
+    resets: number;
+    scrolls: number;
+    buf: { baseY: number; viewportY: number };
+    fireScroll: (n: number) => void;
+  };
 }
 
 describe("liveTerminals keep-alive cache", () => {
@@ -316,5 +335,85 @@ describe("liveTerminals keep-alive cache", () => {
     });
     expect(acquireTerminal("bad")).toBeNull();
     expect(_liveTerminalCount()).toBe(0);
+  });
+});
+
+describe("follow indicator (jump-to-latest pill)", () => {
+  let backends: ReturnType<typeof makeFakeBackend>[];
+
+  beforeEach(() => {
+    backends = [];
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    _setBackendFactoryForTesting(() => {
+      const b = makeFakeBackend();
+      backends.push(b);
+      return b;
+    });
+    useStore.setState({ fetchSessions: vi.fn() as never });
+  });
+
+  afterEach(() => {
+    _disposeAllTerminals();
+    _setBackendFactoryForTesting(null);
+    vi.unstubAllGlobals();
+  });
+
+  function mountF(id: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const entry = acquireTerminal(id);
+    if (!entry) throw new Error("null entry");
+    entry.attach(container, null);
+    return { entry, container, backend: backends[backends.length - 1] };
+  }
+
+  it("notifies on park + re-follow, and jumpToLatest recovers", () => {
+    const { entry, backend } = mountF("f1");
+    const states: boolean[] = [];
+    entry.bindFollowIndicator((v) => states.push(v));
+    expect(states).toEqual([false]); // fires immediately with current state
+    // User parks the viewport 20 lines up (trackpad flick / Shift+PageUp).
+    backend.buf.baseY = 30;
+    backend.buf.viewportY = 10;
+    backend.fireScroll(10);
+    expect(states).toEqual([false, true]);
+    // One click returns to the live tail and re-follows.
+    entry.jumpToLatest();
+    expect(states).toEqual([false, true, false]);
+    expect(backend.scrolls).toBeGreaterThan(0);
+    expect(backend.buf.viewportY).toBe(backend.buf.baseY);
+  });
+
+  it("a stale mount's detach cannot clear the newer mount's follow sink", () => {
+    const { entry, container: oldContainer, backend } = mountF("f2");
+    const newContainer = document.createElement("div");
+    document.body.appendChild(newContainer);
+    entry.attach(newContainer, null); // newer mount takes over
+    const states: boolean[] = [];
+    entry.bindFollowIndicator((v) => states.push(v)); // newer mount binds
+    entry.detach(oldContainer); // stale cleanup — must not touch the sink
+    backend.buf.baseY = 30;
+    backend.fireScroll(0);
+    expect(states).toEqual([false, true]); // sink still live
+  });
+
+  it("jumpToLatest still works on a deferred-ended session (uncached, on screen)", () => {
+    const { entry, backend } = mountF("f3");
+    FakeWebSocket.instances[0].onclose?.({ code: 4010 }); // ended while attached
+    expect(getLiveTerminal("f3")).toBeUndefined(); // slot freed → cache lookups miss
+    backend.buf.baseY = 30;
+    backend.buf.viewportY = 5;
+    backend.fireScroll(5);
+    entry.jumpToLatest(); // must act on the ENTRY, not via the cache
+    expect(backend.buf.viewportY).toBe(backend.buf.baseY);
   });
 });

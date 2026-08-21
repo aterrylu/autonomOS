@@ -100,3 +100,47 @@ perfRouter.post("/emit/:id", (c) => {
   pty.emitBurst(burst);
   return c.json({ chunks: burst.length, bytes: burstBytes(burst) });
 });
+
+/** Raw scrollback chunks for ANY live attachment — REAL agents included, on
+ *  purpose: the ADR-086 TUI forensics workflow captures a real gemini/codex
+ *  stream here and replays it via /emit-raw. That means up to 1MB of a real
+ *  agent's raw terminal output (which can include echoed secrets, ADR-067)
+ *  is readable on this route — acceptable ONLY because perf mode is the
+ *  trust boundary: opt-in, loopback-bind-only, auth-dropped surface where
+ *  POST /api/agents is already reachable; this adds no reach beyond it.
+ *  PTY chunk boundaries preserved. Never mounted outside perf mode. */
+perfRouter.get("/buffer/:id", (c) => {
+  const managed = getAttachment(c.req.param("id") as UUID);
+  if (!managed) return c.json({ error: "no live attachment" }, 404);
+  return c.json({
+    chunks: managed.outputBuffer.length,
+    bytes: managed.outputSize,
+    // The runtime head-trims the buffer at its 1MB cap — a capture near the
+    // cap has lost its start (possibly mid-escape state). Flagged so a replay
+    // consumer knows the preamble may be missing.
+    likelyTruncated: managed.outputSize > 900 * 1024,
+    data: managed.outputBuffer,
+  });
+});
+
+/** Emit CAPTURED raw chunks (e.g. a real Codex/Gemini stream from /buffer)
+ *  into a synthetic session — reproduces a TUI's exact sequence pattern with
+ *  deep scrollback, without needing a long-lived real agent. Manual TUI
+ *  forensics workflow (used for ADR-086): capture GET /buffer/:realId, then
+ *  POST the chunks here with repeat>1. */
+perfRouter.post("/emit-raw/:id", async (c) => {
+  const pty = ptys.get(c.req.param("id"));
+  if (!pty) return c.json({ error: "session not registered" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    data?: string[];
+    repeat?: number;
+  };
+  if (!Array.isArray(body.data))
+    return c.json({ error: "data[] required" }, 400);
+  const repeat = Math.max(1, Math.floor(body.repeat ?? 1));
+  for (let i = 0; i < repeat; i++) pty.emitBurst(body.data);
+  return c.json({
+    chunks: body.data.length * repeat,
+    bytes: body.data.reduce((a, c2) => a + c2.length, 0) * repeat,
+  });
+});

@@ -53,17 +53,12 @@ test("coalesced trailing output is flushed on PTY exit (not dropped)", async () 
   // (runtime buffer + this client = 2).
   for (let i = 0; i < 100 && pty.listenerCount < 2; i++) await sleep(5);
 
-  // Prime the stream: the first chunk leading-edge flushes immediately, so the
-  // NEXT chunk (arriving within the 100s window) is the one that stays PENDING.
+  // Trailing-edge default: BOTH chunks stay pending inside the huge window —
+  // the only thing that can deliver them is the onExit flush under test.
   pty.emit("PRIME\n");
-  for (let i = 0; i < 100 && received === ""; i++) await sleep(5);
-  assert.equal(received, "PRIME\n", "leading chunk should flush immediately");
-
-  // This chunk arrives within the window → coalesced (pending). With the bug,
-  // it never reaches the client because onExit closes without flushing.
   pty.emit("FINAL_PROMPT$ ");
   await sleep(30);
-  assert.equal(received, "PRIME\n", "second chunk should still be pending");
+  assert.equal(received, "", "chunks must still be pending (trailing edge)");
 
   // PTY exits → onExit must flush the pending tail before closing.
   pty.kill();
