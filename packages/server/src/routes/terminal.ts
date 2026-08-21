@@ -24,6 +24,10 @@ export interface CoalesceOptions {
   coalesce: boolean;
   /** Flush a partial buffer after this many ms of accumulation. */
   windowMs: number;
+  /** Ablation only: restore the #260 leading-edge flush (first chunk after
+   *  idle goes out immediately). Splits unsynchronized repaints — see the
+   *  LEADING_EDGE note below. */
+  leadingEdge?: boolean;
   /** Flush immediately once this many bytes are pending. */
   maxBytes: number;
 }
@@ -43,12 +47,27 @@ function intEnv(name: string, def: number): number {
 
 /** Defaults read from env. Coalescing is ON by default — it eliminates
  *  burst-induced dropped frames (measured 12/31/65 → 0 at 1/4/12 MB on a real
- *  GPU) and cuts frame count ~570× (remote/multi-pane). Leading-edge flushing
- *  keeps interactive echo at zero added latency (see below). Set
+ *  GPU) and cuts frame count ~570× (remote/multi-pane). Flushing is
+ *  TRAILING-edge (see LEADING_EDGE above): repaints stay whole at the cost of
+ *  ≤ windowMs echo latency after idle. Set
  *  `AUTONOMOS_WS_COALESCE=0` to fall back to the historical per-chunk send. */
+// Leading-edge flushing is OPT-IN for ablation only (AUTONOMOS_WS_COALESCE_LEADING=1).
+// It was the #260 default — flush the first chunk after idle immediately for
+// zero-latency echo — but it is exactly wrong for a TUI that repaints WITHOUT
+// synchronized-output brackets (gemini-cli's Ink emits no DECSET 2026): the
+// repaint's first PTY chunk is the ERASE half, the stream is idle >window
+// between repaints, so the erase flushed alone and the redraw followed a
+// window later — every repaint painted torn (~17/s, measured 265 split frame
+// pairs per 15s live). Trailing-edge holds every chunk ≤ windowMs so a
+// multi-chunk repaint lands in ONE frame, which xterm paints atomically:
+// measured 0 split pairs, 0 blank-ending frames on the same live stream.
+// Cost: ≤ windowMs added echo latency after idle — below one display frame.
+const LEADING_EDGE = process.env.AUTONOMOS_WS_COALESCE_LEADING === "1";
+
 export const DEFAULT_COALESCE: CoalesceOptions = {
   coalesce: process.env.AUTONOMOS_WS_COALESCE !== "0",
-  windowMs: intEnv("AUTONOMOS_WS_COALESCE_MS", 8),
+  windowMs: intEnv("AUTONOMOS_WS_COALESCE_MS", 5),
+  leadingEdge: LEADING_EDGE,
   maxBytes: intEnv("AUTONOMOS_WS_COALESCE_BYTES", 16384),
 };
 
@@ -117,12 +136,10 @@ export function makeStreamForwarder(
       }
       // Already coalescing within the current window — let the timer fire.
       if (timer) return;
-      // Leading edge: if the stream has been idle for ≥ windowMs (or never
-      // sent), flush this chunk immediately so interactive echo and slow
-      // output have ZERO added latency. Only a genuine burst — chunks arriving
-      // faster than the window — coalesces: the first goes out instantly, the
-      // rapid remainder batches under the trailing timer below.
-      if (Date.now() - lastFlushAt >= opts.windowMs) {
+      // Ablation-only leading edge (see LEADING_EDGE): flush an after-idle
+      // chunk immediately. Default is trailing-edge — every chunk waits up to
+      // windowMs for siblings so an unsynchronized repaint ships whole.
+      if (opts.leadingEdge && Date.now() - lastFlushAt >= opts.windowMs) {
         flush();
         return;
       }

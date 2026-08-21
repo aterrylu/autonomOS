@@ -18,7 +18,10 @@ export const SessionPane = memo(function SessionPane({
   visible,
 }: SessionPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const { copyToast } = useTerminal(containerRef, sessionId);
+  const { copyToast, followOff, jumpToLatest } = useTerminal(
+    containerRef,
+    sessionId,
+  );
   // This pane's agent runtime — gates the usage-queue button to THIS provider's
   // cap (ADR-068). "" when not found → the button stays hidden.
   const provider = useStore(
@@ -36,6 +39,20 @@ export const SessionPane = memo(function SessionPane({
         style={{ touchAction: "none" }}
       />
       <CopyToast toast={copyToast} />
+      {followOff && (
+        // Viewport is parked in the scrollback (accidental trackpad flick /
+        // Shift+PageUp) while output may still be arriving. Rendered whenever
+        // the pane is visible — focused or not — so a pane "wandered" into a
+        // parked state advertises it before the user clicks in. One click (or
+        // just typing: xterm scrollOnUserInput) returns to the live tail.
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="absolute bottom-3 right-3 z-10 rounded-full border border-neutral-600 bg-neutral-800/90 px-3 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+        >
+          ↓ Jump to latest
+        </button>
+      )}
       <UsageQueueButton sessionId={sessionId} provider={provider} />
     </div>
   );

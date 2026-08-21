@@ -32,6 +32,9 @@ export function useTerminal(
   // the CopyToast overlay; refs hold the coalescing/auto-dismiss bookkeeping so
   // the handler stays stable across renders.
   const [copyToast, setCopyToast] = useState<CopyToastState | null>(null);
+  // True while the viewport is parked off-bottom (trackpad flick /
+  // Shift+PageUp) — drives the "Jump to latest" recovery pill.
+  const [followOff, setFollowOff] = useState(false);
   const copyToastIdRef = useRef(0);
   const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCopyTextRef = useRef<string | null>(null);
@@ -110,8 +113,10 @@ export function useTerminal(
     }
 
     entry.attach(container, handleClipboardCopy);
+    entry.bindFollowIndicator(setFollowOff);
 
     return () => {
+      entry.bindFollowIndicator(null);
       // Pass the container so a stale cleanup (dockview created the new
       // panel's mount before removing ours) can't detach the newer mount.
       entry.detach(container);
@@ -133,5 +138,10 @@ export function useTerminal(
     }
   }, [theme, sessionId]);
 
-  return { copyToast };
+  const jumpToLatest = useCallback(
+    () => getLiveTerminal(sessionId)?.jumpToLatest(),
+    [sessionId],
+  );
+
+  return { copyToast, followOff, jumpToLatest };
 }

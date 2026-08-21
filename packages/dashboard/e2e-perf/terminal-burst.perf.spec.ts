@@ -22,6 +22,7 @@ window.__perf = {
   measuring: false, frames: 0, bytes: 0,
   firstFrameT: 0, sentinelT: 0, sawSentinel: false, wsOpen: false,
   longtaskMs: 0, droppedFrames: 0, _lastRaf: 0,
+  tightPairs: 0, lastFrameT: 0,
 };
 (function () {
   const Native = window.WebSocket;
@@ -34,6 +35,8 @@ window.__perf = {
         if (!p.measuring) return;
         const text = typeof ev.data === 'string' ? ev.data : '';
         p.frames++; p.bytes += text.length;
+        if (p.lastFrameT && ev.timeStamp - p.lastFrameT < 12) p.tightPairs++;
+        p.lastFrameT = ev.timeStamp;
         if (!p.firstFrameT) p.firstFrameT = performance.now();
         if (!p.sawSentinel && text.indexOf('${SENTINEL}') !== -1) {
           p.sawSentinel = true; p.sentinelT = performance.now();
@@ -125,6 +128,10 @@ test("burst render cost through real dashboard", async ({ page, request }) => {
     return {
       frames: p.frames,
       bytes: p.bytes,
+      // Frames <12ms apart = a repaint split across WS frames — the torn-paint
+      // flicker fingerprint (gemini fix regression guard; ~0 expected with the
+      // trailing-edge coalescer).
+      tightPairs: p.tightPairs,
       drainMs: p.sentinelT - p.firstFrameT,
       longtaskMs: p.longtaskMs,
       droppedFrames: p.droppedFrames,

@@ -318,3 +318,77 @@ describe("liveTerminals keep-alive cache", () => {
     expect(_liveTerminalCount()).toBe(0);
   });
 });
+
+describe("follow indicator (jump-to-latest pill)", () => {
+  // Reuses the outer suite's beforeEach stubs via a nested describe? No — this
+  // file's stubs live in the describe above, so re-stub here.
+  beforeEach(() => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    FakeWebSocket.instances = [];
+  });
+  afterEach(() => {
+    _disposeAllTerminals();
+    _setBackendFactoryForTesting(null);
+    vi.unstubAllGlobals();
+  });
+
+  it("notifies on park + re-follow, and jumpToLatest recovers", () => {
+    let scrolls = 0;
+    let onScrollCb = (_n: number) => {};
+    const buf = { baseY: 0, viewportY: 0, getLine: () => null };
+    _setBackendFactoryForTesting(() => {
+      const el = document.createElement("div");
+      return {
+        terminal: {
+          open: (p: HTMLElement) => p.appendChild(el),
+          dispose() {},
+          reset() {},
+          attachCustomKeyEventHandler() {},
+          registerLinkProvider() {},
+          onScroll: (cb: (n: number) => void) => {
+            onScrollCb = cb;
+            return { dispose() {} };
+          },
+          onData: () => ({ dispose() {} }),
+          loadAddon() {},
+          scrollToBottom: () => {
+            scrolls++;
+            buf.viewportY = buf.baseY;
+          },
+          write() {},
+          options: { theme: {} },
+          buffer: { active: buf },
+          textarea: null,
+        } as never,
+        fitAddon: { fit() {} } as never,
+        createWebglAddon: () => null,
+      } as never;
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const entry = acquireTerminal("f1");
+    if (!entry) throw new Error("null entry");
+    entry.attach(container, null);
+    const states: boolean[] = [];
+    entry.bindFollowIndicator((v) => states.push(v));
+    expect(states).toEqual([false]); // fires immediately with current state
+    // User parks the viewport 20 lines up (trackpad flick / Shift+PageUp).
+    buf.baseY = 30;
+    buf.viewportY = 10;
+    onScrollCb(10);
+    expect(states).toEqual([false, true]);
+    // One click returns to the live tail and re-follows.
+    entry.jumpToLatest();
+    expect(states).toEqual([false, true, false]);
+    expect(scrolls).toBeGreaterThan(0);
+    expect(buf.viewportY).toBe(buf.baseY);
+  });
+});

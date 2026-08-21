@@ -100,3 +100,29 @@ perfRouter.post("/emit/:id", (c) => {
   pty.emitBurst(burst);
   return c.json({ chunks: burst.length, bytes: burstBytes(burst) });
 });
+
+/** Raw scrollback chunks for ANY live attachment (real agents too) — PTY chunk
+ *  boundaries preserved, so a TUI's repaint pattern (sync-output brackets,
+ *  erase/redraw pairs, alt-screen) can be analyzed exactly as it hit the
+ *  coalescer. Diagnostic only; perf-mode gated like the rest of this router. */
+perfRouter.get("/buffer/:id", (c) => {
+  const managed = getAttachment(c.req.param("id") as UUID);
+  if (!managed) return c.json({ error: "no live attachment" }, 404);
+  return c.json({
+    chunks: managed.outputBuffer.length,
+    bytes: managed.outputSize,
+    data: managed.outputBuffer,
+  });
+});
+
+/** Emit CAPTURED raw chunks (e.g. a real Codex/Gemini stream from /buffer)
+ *  into a synthetic session — reproduces a TUI's exact sequence pattern with
+ *  deep scrollback, without needing a long-lived real agent. */
+perfRouter.post("/emit-raw/:id", async (c) => {
+  const pty = ptys.get(c.req.param("id"));
+  if (!pty) return c.json({ error: "session not registered" }, 404);
+  const body = (await c.req.json()) as { data: string[]; repeat?: number };
+  const n = body.repeat ?? 1;
+  for (let i = 0; i < n; i++) pty.emitBurst(body.data);
+  return c.json({ chunks: body.data.length * n });
+});

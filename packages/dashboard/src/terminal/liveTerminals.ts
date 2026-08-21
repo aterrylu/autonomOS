@@ -45,6 +45,13 @@ export type ClipboardCopySink =
   | null;
 
 const cache = new Map<string, LiveTerminal>();
+// Dev-only diagnostic handle: lets a browser/Playwright probe read the real
+// buffer state (viewportY vs baseY, userScrolledUp) — xterm 6's custom
+// scrollbars expose nothing useful in the DOM. Never shipped in prod builds.
+if (import.meta.env.DEV) {
+  (window as unknown as { __liveTerminals: typeof cache }).__liveTerminals =
+    cache;
+}
 
 // Injectable backend factory — tests swap in a fake so cache-lifecycle logic
 // can be exercised under jsdom (where xterm's renderer cannot boot).
@@ -161,6 +168,10 @@ export class LiveTerminal {
   detachedAt = 0;
 
   private onClipboardCopy: ClipboardCopySink = null;
+  /** Per-mount follow-state sink — drives the "Jump to latest" pill. Fires
+   *  whenever the viewport parks off-bottom (trackpad flick, Shift+PageUp)
+   *  or re-follows. Bound per mount like the clipboard sink. */
+  private onFollowChange: ((followOff: boolean) => void) | null = null;
   private readonly fitAddon: IFitAddon;
   private readonly createWebglAddon: () => IWebglAddon | null;
   private webglAddon: IWebglAddon | null = null;
@@ -260,7 +271,7 @@ export class LiveTerminal {
       if (this.disposed || this.programmaticScroll) return;
       const buf = this.terminal.buffer.active;
       const atBottom = buf.baseY - buf.viewportY <= 1;
-      this.userScrolledUp = !atBottom;
+      this.setUserScrolledUp(!atBottom);
     });
 
     this.terminal.onData((data) => {
@@ -374,6 +385,7 @@ export class LiveTerminal {
     this.attachedTo = null;
     this.detachedAt = Date.now();
     this.onClipboardCopy = null;
+    this.onFollowChange = null;
     if (this.nudgeTimer) {
       clearTimeout(this.nudgeTimer);
       this.nudgeTimer = null;
@@ -427,6 +439,28 @@ export class LiveTerminal {
     }
   }
 
+  /** Bind (or clear) the mount's follow-state indicator; fires immediately
+   *  with the current state so the pill is correct on attach — including on
+   *  an UNFOCUSED pane whose viewport was parked while the user was away. */
+  bindFollowIndicator(cb: ((followOff: boolean) => void) | null): void {
+    this.onFollowChange = cb;
+    cb?.(this.userScrolledUp);
+  }
+
+  /** One-click recovery for a parked viewport: back to the live tail. */
+  jumpToLatest(): void {
+    this.programmaticScroll = true;
+    this.terminal.scrollToBottom();
+    this.programmaticScroll = false;
+    this.setUserScrolledUp(false);
+  }
+
+  private setUserScrolledUp(v: boolean): void {
+    if (this.userScrolledUp === v) return;
+    this.userScrolledUp = v;
+    this.onFollowChange?.(v);
+  }
+
   private isHostVisible(): boolean {
     return this.host.offsetWidth > 0 && this.host.offsetHeight > 0;
   }
@@ -445,7 +479,7 @@ export class LiveTerminal {
     // onopen before the server's 4004 close, and its reset() would blank
     // exactly the output the deferral preserves.
     if (this.disposed || this.ended) return;
-    this.userScrolledUp = false;
+    this.setUserScrolledUp(false);
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
