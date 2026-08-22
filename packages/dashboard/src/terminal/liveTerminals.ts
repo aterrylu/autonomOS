@@ -179,13 +179,19 @@ export class LiveTerminal {
   private everConnected = false;
   /** Consecutive closes without a successful open — breadcrumb counter. */
   private consecutiveDrops = 0;
+  /** Armed by the ED3 parser hook: the app WIPED the scrollback (codex's
+   *  ratatui does `\x1b[2J\x1b[3J` + full rebuild on every resize). The
+   *  content a parked viewport was reading no longer exists — after the
+   *  frame finishes parsing, land at the live tail instead of stranding the
+   *  user at the absolute top of the rebuilt buffer (the reopened "codex
+   *  jumps to top" bug, ADR-086 follow-up). */
+  private repinAfterWrite = false;
 
   private userScrolledUp = false;
   private programmaticScroll = false;
   private retryDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
-  private nudgeTimer: ReturnType<typeof setTimeout> | null = null;
   private inertiaRaf: number | null = null;
   // Assigned in installLifecycle() (the constructor tail); left undefined
   // only when construction failed partway — the rollback catch guards reads.
@@ -256,6 +262,13 @@ export class LiveTerminal {
       handleKeyEvent(event, this.terminal, this.wsRef),
     );
     this.terminal.registerLinkProvider(new UrlLinkProvider(this.terminal));
+    // ED3 = erase scrollback. Never consumed (xterm's own handling proceeds);
+    // we only OBSERVE it to arm the parked-viewport re-pin above.
+    this.terminal.parser.registerCsiHandler({ final: "J" }, (params) => {
+      const p0 = Array.isArray(params[0]) ? params[0][0] : params[0];
+      if (p0 === 3 && this.userScrolledUp) this.repinAfterWrite = true;
+      return false;
+    });
     // xterm.js handles OSC 8 hyperlinks via the linkHandler constructor
     // option in xterm-backend.ts (Ctrl/Cmd+Click gated).
 
@@ -290,17 +303,13 @@ export class LiveTerminal {
         this.isHostVisible() &&
         this.wsRef.current?.readyState === WebSocket.OPEN
       ) {
-        // Re-fit (plausibility-guarded) to correct any stale size taken while
-        // unfocused, then nudge for a repaint. Only nudge on a PLAUSIBLE fit —
-        // nudgeResize is guarded solely by isDegenerate, so nudging after a
-        // failed fit could ship a mis-measured size to the PTY for a frame.
-        // If the renderer isn't settled, scheduleFit retries instead.
-        if (this.applyFit()) {
-          if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
-          this.nudgeTimer = nudgeResize(this.wsRef.current, this.terminal);
-        } else {
-          this.scheduleFit();
-        }
+        // Re-fit (plausibility-guarded) to correct any stale size taken
+        // while unfocused. NO repaint nudge: the old cols−1→cols fake-resize
+        // pair made ratatui (codex) clear-and-rebuild its whole screen INC.
+        // an \x1b[3J scrollback wipe on every window refocus — the "codex
+        // jumps to top" bug. Repaint-after-unfocus is covered since the
+        // keep-alive cache: WebGL recreates on attach and onContextLoss.
+        if (!this.applyFit()) this.scheduleFit();
       }
     };
     window.addEventListener("focus", this.handleFocus);
@@ -376,10 +385,6 @@ export class LiveTerminal {
     this.detachedAt = Date.now();
     this.onClipboardCopy = null;
     this.onFollowChange = null;
-    if (this.nudgeTimer) {
-      clearTimeout(this.nudgeTimer);
-      this.nudgeTimer = null;
-    }
     if (this.webglAddon) {
       this.webglAddon.dispose();
       this.webglAddon = null;
@@ -400,7 +405,6 @@ export class LiveTerminal {
     if (this.inertiaRaf !== null) cancelAnimationFrame(this.inertiaRaf);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
-    if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
     if (this.handleVisibility)
       document.removeEventListener("visibilitychange", this.handleVisibility);
     if (this.handleFocus) window.removeEventListener("focus", this.handleFocus);
@@ -487,10 +491,6 @@ export class LiveTerminal {
       clearTimeout(this.scrollTimer);
       this.scrollTimer = null;
     }
-    if (this.nudgeTimer) {
-      clearTimeout(this.nudgeTimer);
-      this.nudgeTimer = null;
-    }
     this.wsRef.current?.close();
 
     const ws = new WebSocket(`${WS_URL}/ws/terminal/${this.sessionId}`);
@@ -514,17 +514,21 @@ export class LiveTerminal {
       // viewport is still genuinely parked.
       this.setUserScrolledUp(false);
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
-      // Nudge only when attached — a detached terminal has nothing to
-      // repaint, and the fresh fit on attach() supersedes any stale size.
-      if (document.hasFocus() && this.isAttached()) {
-        this.nudgeTimer = nudgeResize(ws, this.terminal);
-      }
+      // No repaint nudge here either (see handleFocus): a reconnect just
+      // reset() the buffer and is about to replay it in full — that IS the
+      // repaint. The fake-resize pair only provoked codex's 3J rebuild.
     };
 
     ws.onmessage = (event) => {
       if (this.wsRef.current !== ws || this.disposed) return;
       try {
-        this.terminal.write(event.data);
+        this.terminal.write(event.data, () => {
+          if (this.repinAfterWrite && !this.disposed) {
+            this.repinAfterWrite = false;
+            this.scrollToTail();
+            this.setUserScrolledUp(false);
+          }
+        });
       } catch (err) {
         // xterm.js v6.0.0 has a bug in its DECRQM ($p) handler that throws
         // on certain escape sequences emitted by Ink (used by Claude Code).
@@ -778,17 +782,6 @@ export class LiveTerminal {
       { passive: true },
     );
   }
-}
-
-function nudgeResize(
-  ws: WebSocket,
-  terminal: TerminalInstance,
-): ReturnType<typeof setTimeout> | null {
-  if (ws.readyState !== WebSocket.OPEN) return null;
-  const { cols, rows } = terminal;
-  if (isDegenerate(cols, rows)) return null;
-  ws.send(JSON.stringify({ type: "resize", cols: cols - 1, rows }));
-  return setTimeout(() => sendResize(ws, terminal), 50);
 }
 
 function sendResize(ws: WebSocket, terminal: TerminalInstance): void {
