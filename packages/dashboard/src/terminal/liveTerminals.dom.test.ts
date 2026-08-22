@@ -56,9 +56,15 @@ function makeFakeBackend(): TerminalBackend & {
   disposed: boolean;
   resets: number;
 } {
-  const state = { disposed: false, resets: 0, scrolls: 0 };
+  const state = {
+    disposed: false,
+    resets: 0,
+    scrolls: 0,
+    failNextWrite: false,
+  };
   const buf = { baseY: 0, viewportY: 0, getLine: () => null };
   let onScrollCb: (n: number) => void = () => {};
+  let csiJHandler: ((params: number[]) => boolean) | null = null;
   const element = document.createElement("div");
   const terminal = {
     open: (parent: HTMLElement) => parent.appendChild(element),
@@ -69,6 +75,15 @@ function makeFakeBackend(): TerminalBackend & {
       state.resets++;
     },
     attachCustomKeyEventHandler: () => {},
+    parser: {
+      registerCsiHandler: (
+        id: { final: string },
+        cb: (params: number[]) => boolean,
+      ) => {
+        if (id.final === "J") csiJHandler = cb;
+        return { dispose: () => {} };
+      },
+    },
     registerLinkProvider: () => {},
     onScroll: (cb: (n: number) => void) => {
       onScrollCb = cb;
@@ -84,7 +99,21 @@ function makeFakeBackend(): TerminalBackend & {
       buf.viewportY = buf.baseY;
     },
     scrollLines: () => {},
-    write: () => {},
+    // Honors the captured codex rebuild shape: scanning written data for the
+    // ED3 wipe (\x1b[3J) drives the registered CSI handler exactly as xterm's
+    // parser would, then the completion callback fires — the same ordering
+    // the re-pin logic depends on.
+    write: (data: string, cb?: () => void) => {
+      // Parse (CSI dispatch) happens before the throw point, like xterm: an
+      // Ink-bug throw can land after handlers already ran for the chunk.
+      if (typeof data === "string" && data.includes("\x1b[3J"))
+        csiJHandler?.([3]);
+      if (state.failNextWrite) {
+        state.failNextWrite = false;
+        throw new Error("simulated xterm write throw");
+      }
+      cb?.();
+    },
     cols: 80,
     rows: 24,
     options: { theme: {}, fontSize: 14, lineHeight: 1 },
@@ -103,6 +132,9 @@ function makeFakeBackend(): TerminalBackend & {
     },
     get scrolls() {
       return state.scrolls;
+    },
+    set failNextWrite(v: boolean) {
+      state.failNextWrite = v;
     },
     buf,
     fireScroll: (n: number) => onScrollCb(n),
@@ -404,6 +436,69 @@ describe("follow indicator (jump-to-latest pill)", () => {
     backend.buf.baseY = 30;
     backend.fireScroll(0);
     expect(states).toEqual([false, true]); // sink still live
+  });
+
+  it("an app-initiated scrollback wipe (ED3, codex resize rebuild) re-pins a PARKED viewport to the tail", () => {
+    const { entry, backend } = mountF("f4");
+    const ws = FakeWebSocket.instances[0];
+    const states: boolean[] = [];
+    entry.bindFollowIndicator((v) => states.push(v));
+    backend.buf.baseY = 91;
+    backend.buf.viewportY = 49;
+    backend.fireScroll(49); // parked one page up — the long-session ambient state
+    expect(states).toEqual([false, true]);
+    // The captured codex refocus rebuild: clear + WIPE SCROLLBACK + redraw.
+    ws.onmessage?.({
+      data: "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H...rebuild...",
+    });
+    expect(backend.buf.viewportY).toBe(backend.buf.baseY); // landed at tail
+    expect(states).toEqual([false, true, false]); // pill dismissed
+  });
+
+  it("ED3 while PINNED at bottom does nothing special", () => {
+    const { entry, backend } = mountF("f5");
+    const states: boolean[] = [];
+    entry.bindFollowIndicator((v) => states.push(v));
+    const before = backend.scrolls;
+    FakeWebSocket.instances[0].onmessage?.({ data: "\x1b[2J\x1b[3J\x1b[H" });
+    expect(backend.scrolls).toBe(before);
+    expect(states).toEqual([false]);
+  });
+
+  it("window refocus never sends the cols-1 fake-resize pair (the codex 3J-rebuild trigger)", () => {
+    const { entry } = mountF("f6");
+    // Make the host measurable so handleFocus takes its active branch.
+    Object.defineProperty(entry.host, "offsetWidth", {
+      configurable: true,
+      get: () => 800,
+    });
+    Object.defineProperty(entry.host, "offsetHeight", {
+      configurable: true,
+      get: () => 600,
+    });
+    const ws = FakeWebSocket.instances[0];
+    const sent0 = ws.sent.length;
+    window.dispatchEvent(new Event("focus"));
+    const resizes = ws.sent.slice(sent0).filter((d) => d.includes('"resize"'));
+    // A real fit may send ONE true-size resize; the deliberate cols-1
+    // perturbation (what made ratatui wipe its scrollback) must never appear.
+    expect(resizes.some((d) => d.includes('"cols":79'))).toBe(false);
+    expect(resizes.length).toBeLessThanOrEqual(1);
+  });
+
+  it("a write-throw after ED3 armed the re-pin does NOT leak the flag into a later frame", () => {
+    const { entry, backend } = mountF("f7");
+    const ws = FakeWebSocket.instances[0];
+    backend.buf.baseY = 91;
+    backend.buf.viewportY = 49;
+    backend.fireScroll(49); // parked
+    backend.failNextWrite = true;
+    ws.onmessage?.({ data: "\x1b[2J\x1b[3J...partial..." }); // parse arms, write throws
+    // User re-parks deliberately; a later unrelated frame must NOT yank them.
+    const before = backend.scrolls;
+    ws.onmessage?.({ data: "plain output\r\n" });
+    expect(backend.scrolls).toBe(before);
+    expect(backend.buf.viewportY).toBe(49); // still parked where they chose
   });
 
   it("jumpToLatest still works on a deferred-ended session (uncached, on screen)", () => {

@@ -179,13 +179,23 @@ export class LiveTerminal {
   private everConnected = false;
   /** Consecutive closes without a successful open — breadcrumb counter. */
   private consecutiveDrops = 0;
+  /** Armed by the ED3 parser hook: the app WIPED the scrollback (codex's
+   *  ratatui does `\x1b[2J\x1b[3J` + full rebuild on every resize). The
+   *  content a parked viewport was reading no longer exists — after the
+   *  frame finishes parsing, land at the live tail instead of stranding the
+   *  user at the absolute top of the rebuilt buffer (the reopened "codex
+   *  jumps to top" bug, ADR-086 follow-up). Deliberate consequence: a stream
+   *  that wipes EVERY frame (e.g. a loop calling `clear` with E3) makes
+   *  parking impossible — accepted, because after a real wipe there is
+   *  nothing left to park in; if a session ever "can't scroll up", look for
+   *  per-frame ED3 in its stream first. */
+  private repinAfterWrite = false;
 
   private userScrolledUp = false;
   private programmaticScroll = false;
   private retryDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
-  private nudgeTimer: ReturnType<typeof setTimeout> | null = null;
   private inertiaRaf: number | null = null;
   // Assigned in installLifecycle() (the constructor tail); left undefined
   // only when construction failed partway — the rollback catch guards reads.
@@ -256,6 +266,19 @@ export class LiveTerminal {
       handleKeyEvent(event, this.terminal, this.wsRef),
     );
     this.terminal.registerLinkProvider(new UrlLinkProvider(this.terminal));
+    // ED3 = erase scrollback. Never consumed (xterm's own handling proceeds);
+    // we only OBSERVE it to arm the parked-viewport re-pin above.
+    const observeWipe = (params: (number | number[])[]) => {
+      const p0 = Array.isArray(params[0]) ? params[0][0] : params[0];
+      if (p0 === 3 && this.userScrolledUp) this.repinAfterWrite = true;
+      return false; // never consume — xterm's own ED handling proceeds
+    };
+    this.terminal.parser.registerCsiHandler({ final: "J" }, observeWipe);
+    // DECSED 3 (\x1b[?3J) trims the scrollback through the same xterm path.
+    this.terminal.parser.registerCsiHandler(
+      { prefix: "?", final: "J" },
+      observeWipe,
+    );
     // xterm.js handles OSC 8 hyperlinks via the linkHandler constructor
     // option in xterm-backend.ts (Ctrl/Cmd+Click gated).
 
@@ -290,17 +313,13 @@ export class LiveTerminal {
         this.isHostVisible() &&
         this.wsRef.current?.readyState === WebSocket.OPEN
       ) {
-        // Re-fit (plausibility-guarded) to correct any stale size taken while
-        // unfocused, then nudge for a repaint. Only nudge on a PLAUSIBLE fit —
-        // nudgeResize is guarded solely by isDegenerate, so nudging after a
-        // failed fit could ship a mis-measured size to the PTY for a frame.
-        // If the renderer isn't settled, scheduleFit retries instead.
-        if (this.applyFit()) {
-          if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
-          this.nudgeTimer = nudgeResize(this.wsRef.current, this.terminal);
-        } else {
-          this.scheduleFit();
-        }
+        // Re-fit (plausibility-guarded) to correct any stale size taken
+        // while unfocused. NO repaint nudge: the old cols−1→cols fake-resize
+        // pair made ratatui (codex) clear-and-rebuild its whole screen INC.
+        // an \x1b[3J scrollback wipe on every window refocus — the "codex
+        // jumps to top" bug. Repaint-after-unfocus is covered since the
+        // keep-alive cache: WebGL recreates on attach and onContextLoss.
+        if (!this.applyFit()) this.scheduleFit();
       }
     };
     window.addEventListener("focus", this.handleFocus);
@@ -376,10 +395,6 @@ export class LiveTerminal {
     this.detachedAt = Date.now();
     this.onClipboardCopy = null;
     this.onFollowChange = null;
-    if (this.nudgeTimer) {
-      clearTimeout(this.nudgeTimer);
-      this.nudgeTimer = null;
-    }
     if (this.webglAddon) {
       this.webglAddon.dispose();
       this.webglAddon = null;
@@ -400,7 +415,6 @@ export class LiveTerminal {
     if (this.inertiaRaf !== null) cancelAnimationFrame(this.inertiaRaf);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
-    if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
     if (this.handleVisibility)
       document.removeEventListener("visibilitychange", this.handleVisibility);
     if (this.handleFocus) window.removeEventListener("focus", this.handleFocus);
@@ -487,10 +501,6 @@ export class LiveTerminal {
       clearTimeout(this.scrollTimer);
       this.scrollTimer = null;
     }
-    if (this.nudgeTimer) {
-      clearTimeout(this.nudgeTimer);
-      this.nudgeTimer = null;
-    }
     this.wsRef.current?.close();
 
     const ws = new WebSocket(`${WS_URL}/ws/terminal/${this.sessionId}`);
@@ -513,19 +523,47 @@ export class LiveTerminal {
       // dismiss the pill during a FAILED reconnect attempt while the
       // viewport is still genuinely parked.
       this.setUserScrolledUp(false);
+      // A flag armed by a pre-reconnect frame must not survive into the new
+      // socket's life — its consuming callback may never have fired (write
+      // threw / socket died), and a stale arm would yank an unrelated later
+      // frame.
+      this.repinAfterWrite = false;
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
-      // Nudge only when attached — a detached terminal has nothing to
-      // repaint, and the fresh fit on attach() supersedes any stale size.
+      // The reconnect-path repaint nudge is RETAINED — this is where it was
+      // born (#16: "fixes cursor-below-rendering after buffer replay"): the
+      // replayed bytes can leave a full-screen TUI's cursor/screen state
+      // subtly stale until the app itself redraws. Firing it here is safe
+      // for the ADR-087 jump: onopen just reset follow-state to pinned, so
+      // codex's 3J rebuild cannot strand a parked viewport (and the ED3
+      // hook is the net). Only the WINDOW-FOCUS nudge was the bug — that
+      // one fired on every app-switch against the user's parked state.
       if (document.hasFocus() && this.isAttached()) {
-        this.nudgeTimer = nudgeResize(ws, this.terminal);
+        nudgeResize(ws, this.terminal);
       }
     };
 
     ws.onmessage = (event) => {
       if (this.wsRef.current !== ws || this.disposed) return;
       try {
-        this.terminal.write(event.data);
+        this.terminal.write(event.data, () => {
+          // Same superseded-socket rule as every WS handler: a callback
+          // queued under socket A must not act after socket B took over
+          // (onopen already reset the state it would touch).
+          if (this.wsRef.current !== ws || this.disposed) return;
+          if (this.repinAfterWrite) {
+            this.repinAfterWrite = false;
+            this.scrollToTail();
+            this.setUserScrolledUp(false);
+          }
+        });
       } catch (err) {
+        // Reachable for SYNCHRONOUS parses only — xterm parses inline on the
+        // first write after user input (_didUserInput); the common async
+        // path throws inside WriteBuffer instead (wedging it until the next
+        // reconnect, whose onopen also clears this flag). Either way an
+        // armed re-pin whose callback never fires must not leak into a
+        // later, unrelated frame.
+        this.repinAfterWrite = false;
         // xterm.js v6.0.0 has a bug in its DECRQM ($p) handler that throws
         // on certain escape sequences emitted by Ink (used by Claude Code).
         // An uncaught throw mid-write freezes the terminal — isolate it here
@@ -639,8 +677,7 @@ export class LiveTerminal {
   // xterm's WebglAddon silently stops painting if its GL context is lost
   // — common when several panes each hold a context (browsers cap WebGL
   // contexts) or after a GPU reset. Without an onContextLoss handler the
-  // terminal appears to freeze: typed input only shows up once a
-  // resize/focus nudge forces a full repaint. Disposing and recreating the
+  // terminal appears to freeze until something forces a full repaint. Disposing and recreating the
   // addon on context loss resumes live rendering.
   private loadWebglAddon(): void {
     if (this.disposed || this.webglAddon) return;
@@ -780,15 +817,15 @@ export class LiveTerminal {
   }
 }
 
-function nudgeResize(
-  ws: WebSocket,
-  terminal: TerminalInstance,
-): ReturnType<typeof setTimeout> | null {
-  if (ws.readyState !== WebSocket.OPEN) return null;
+/** Reconnect-only repaint nudge: briefly perturb the PTY size then restore,
+ *  forcing a full-screen TUI to redraw after buffer replay (#16). Never call
+ *  from focus/visibility paths — ADR-087. */
+function nudgeResize(ws: WebSocket, terminal: TerminalInstance): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
   const { cols, rows } = terminal;
-  if (isDegenerate(cols, rows)) return null;
+  if (isDegenerate(cols, rows)) return;
   ws.send(JSON.stringify({ type: "resize", cols: cols - 1, rows }));
-  return setTimeout(() => sendResize(ws, terminal), 50);
+  setTimeout(() => sendResize(ws, terminal), 50);
 }
 
 function sendResize(ws: WebSocket, terminal: TerminalInstance): void {

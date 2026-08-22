@@ -79,6 +79,12 @@ export interface TerminalInstance {
   readonly onData: IEvent<string>;
   readonly onScroll: IEvent<number>;
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
+  readonly parser: {
+    registerCsiHandler(
+      id: { final: string; prefix?: string; intermediates?: string },
+      handler: (params: (number | number[])[]) => boolean,
+    ): IDisposable;
+  };
   registerLinkProvider(provider: ILinkProvider): void;
   loadAddon(addon: ITerminalAddon): void;
 }
