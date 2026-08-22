@@ -184,7 +184,11 @@ export class LiveTerminal {
    *  content a parked viewport was reading no longer exists — after the
    *  frame finishes parsing, land at the live tail instead of stranding the
    *  user at the absolute top of the rebuilt buffer (the reopened "codex
-   *  jumps to top" bug, ADR-086 follow-up). */
+   *  jumps to top" bug, ADR-086 follow-up). Deliberate consequence: a stream
+   *  that wipes EVERY frame (e.g. a loop calling `clear` with E3) makes
+   *  parking impossible — accepted, because after a real wipe there is
+   *  nothing left to park in; if a session ever "can't scroll up", look for
+   *  per-frame ED3 in its stream first. */
   private repinAfterWrite = false;
 
   private userScrolledUp = false;
@@ -264,11 +268,17 @@ export class LiveTerminal {
     this.terminal.registerLinkProvider(new UrlLinkProvider(this.terminal));
     // ED3 = erase scrollback. Never consumed (xterm's own handling proceeds);
     // we only OBSERVE it to arm the parked-viewport re-pin above.
-    this.terminal.parser.registerCsiHandler({ final: "J" }, (params) => {
+    const observeWipe = (params: (number | number[])[]) => {
       const p0 = Array.isArray(params[0]) ? params[0][0] : params[0];
       if (p0 === 3 && this.userScrolledUp) this.repinAfterWrite = true;
-      return false;
-    });
+      return false; // never consume — xterm's own ED handling proceeds
+    };
+    this.terminal.parser.registerCsiHandler({ final: "J" }, observeWipe);
+    // DECSED 3 (\x1b[?3J) trims the scrollback through the same xterm path.
+    this.terminal.parser.registerCsiHandler(
+      { prefix: "?", final: "J" },
+      observeWipe,
+    );
     // xterm.js handles OSC 8 hyperlinks via the linkHandler constructor
     // option in xterm-backend.ts (Ctrl/Cmd+Click gated).
 
@@ -513,6 +523,11 @@ export class LiveTerminal {
       // dismiss the pill during a FAILED reconnect attempt while the
       // viewport is still genuinely parked.
       this.setUserScrolledUp(false);
+      // A flag armed by a pre-reconnect frame must not survive into the new
+      // socket's life — its consuming callback may never have fired (write
+      // threw / socket died), and a stale arm would yank an unrelated later
+      // frame.
+      this.repinAfterWrite = false;
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
       // No repaint nudge here either (see handleFocus): a reconnect just
       // reset() the buffer and is about to replay it in full — that IS the
@@ -523,13 +538,21 @@ export class LiveTerminal {
       if (this.wsRef.current !== ws || this.disposed) return;
       try {
         this.terminal.write(event.data, () => {
-          if (this.repinAfterWrite && !this.disposed) {
+          // Same superseded-socket rule as every WS handler: a callback
+          // queued under socket A must not act after socket B took over
+          // (onopen already reset the state it would touch).
+          if (this.wsRef.current !== ws || this.disposed) return;
+          if (this.repinAfterWrite) {
             this.repinAfterWrite = false;
             this.scrollToTail();
             this.setUserScrolledUp(false);
           }
         });
       } catch (err) {
+        // The parse may have armed the re-pin before the throw; its consuming
+        // callback will never fire for this chunk — clear it so a later,
+        // unrelated frame can't inherit the yank.
+        this.repinAfterWrite = false;
         // xterm.js v6.0.0 has a bug in its DECRQM ($p) handler that throws
         // on certain escape sequences emitted by Ink (used by Claude Code).
         // An uncaught throw mid-write freezes the terminal — isolate it here
@@ -643,8 +666,7 @@ export class LiveTerminal {
   // xterm's WebglAddon silently stops painting if its GL context is lost
   // — common when several panes each hold a context (browsers cap WebGL
   // contexts) or after a GPU reset. Without an onContextLoss handler the
-  // terminal appears to freeze: typed input only shows up once a
-  // resize/focus nudge forces a full repaint. Disposing and recreating the
+  // terminal appears to freeze until something forces a full repaint. Disposing and recreating the
   // addon on context loss resumes live rendering.
   private loadWebglAddon(): void {
     if (this.disposed || this.webglAddon) return;

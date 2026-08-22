@@ -56,7 +56,12 @@ function makeFakeBackend(): TerminalBackend & {
   disposed: boolean;
   resets: number;
 } {
-  const state = { disposed: false, resets: 0, scrolls: 0 };
+  const state = {
+    disposed: false,
+    resets: 0,
+    scrolls: 0,
+    failNextWrite: false,
+  };
   const buf = { baseY: 0, viewportY: 0, getLine: () => null };
   let onScrollCb: (n: number) => void = () => {};
   let csiJHandler: ((params: number[]) => boolean) | null = null;
@@ -99,8 +104,14 @@ function makeFakeBackend(): TerminalBackend & {
     // parser would, then the completion callback fires — the same ordering
     // the re-pin logic depends on.
     write: (data: string, cb?: () => void) => {
+      // Parse (CSI dispatch) happens before the throw point, like xterm: an
+      // Ink-bug throw can land after handlers already ran for the chunk.
       if (typeof data === "string" && data.includes("\x1b[3J"))
         csiJHandler?.([3]);
+      if (state.failNextWrite) {
+        state.failNextWrite = false;
+        throw new Error("simulated xterm write throw");
+      }
       cb?.();
     },
     cols: 80,
@@ -121,6 +132,9 @@ function makeFakeBackend(): TerminalBackend & {
     },
     get scrolls() {
       return state.scrolls;
+    },
+    set failNextWrite(v: boolean) {
+      state.failNextWrite = v;
     },
     buf,
     fireScroll: (n: number) => onScrollCb(n),
@@ -470,6 +484,21 @@ describe("follow indicator (jump-to-latest pill)", () => {
     // perturbation (what made ratatui wipe its scrollback) must never appear.
     expect(resizes.some((d) => d.includes('"cols":79'))).toBe(false);
     expect(resizes.length).toBeLessThanOrEqual(1);
+  });
+
+  it("a write-throw after ED3 armed the re-pin does NOT leak the flag into a later frame", () => {
+    const { entry, backend } = mountF("f7");
+    const ws = FakeWebSocket.instances[0];
+    backend.buf.baseY = 91;
+    backend.buf.viewportY = 49;
+    backend.fireScroll(49); // parked
+    backend.failNextWrite = true;
+    ws.onmessage?.({ data: "\x1b[2J\x1b[3J...partial..." }); // parse arms, write throws
+    // User re-parks deliberately; a later unrelated frame must NOT yank them.
+    const before = backend.scrolls;
+    ws.onmessage?.({ data: "plain output\r\n" });
+    expect(backend.scrolls).toBe(before);
+    expect(backend.buf.viewportY).toBe(49); // still parked where they chose
   });
 
   it("jumpToLatest still works on a deferred-ended session (uncached, on screen)", () => {
