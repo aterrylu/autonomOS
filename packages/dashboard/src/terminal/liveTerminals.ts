@@ -529,9 +529,17 @@ export class LiveTerminal {
       // frame.
       this.repinAfterWrite = false;
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
-      // No repaint nudge here either (see handleFocus): a reconnect just
-      // reset() the buffer and is about to replay it in full — that IS the
-      // repaint. The fake-resize pair only provoked codex's 3J rebuild.
+      // The reconnect-path repaint nudge is RETAINED — this is where it was
+      // born (#16: "fixes cursor-below-rendering after buffer replay"): the
+      // replayed bytes can leave a full-screen TUI's cursor/screen state
+      // subtly stale until the app itself redraws. Firing it here is safe
+      // for the ADR-087 jump: onopen just reset follow-state to pinned, so
+      // codex's 3J rebuild cannot strand a parked viewport (and the ED3
+      // hook is the net). Only the WINDOW-FOCUS nudge was the bug — that
+      // one fired on every app-switch against the user's parked state.
+      if (document.hasFocus() && this.isAttached()) {
+        nudgeResize(ws, this.terminal);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -549,9 +557,12 @@ export class LiveTerminal {
           }
         });
       } catch (err) {
-        // The parse may have armed the re-pin before the throw; its consuming
-        // callback will never fire for this chunk — clear it so a later,
-        // unrelated frame can't inherit the yank.
+        // Reachable for SYNCHRONOUS parses only — xterm parses inline on the
+        // first write after user input (_didUserInput); the common async
+        // path throws inside WriteBuffer instead (wedging it until the next
+        // reconnect, whose onopen also clears this flag). Either way an
+        // armed re-pin whose callback never fires must not leak into a
+        // later, unrelated frame.
         this.repinAfterWrite = false;
         // xterm.js v6.0.0 has a bug in its DECRQM ($p) handler that throws
         // on certain escape sequences emitted by Ink (used by Claude Code).
@@ -804,6 +815,17 @@ export class LiveTerminal {
       { passive: true },
     );
   }
+}
+
+/** Reconnect-only repaint nudge: briefly perturb the PTY size then restore,
+ *  forcing a full-screen TUI to redraw after buffer replay (#16). Never call
+ *  from focus/visibility paths — ADR-087. */
+function nudgeResize(ws: WebSocket, terminal: TerminalInstance): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const { cols, rows } = terminal;
+  if (isDegenerate(cols, rows)) return;
+  ws.send(JSON.stringify({ type: "resize", cols: cols - 1, rows }));
+  setTimeout(() => sendResize(ws, terminal), 50);
 }
 
 function sendResize(ws: WebSocket, terminal: TerminalInstance): void {
