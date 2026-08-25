@@ -11,6 +11,37 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.6.0] — 2026-08-25
+
+### Minor Changes
+
+- [#319](https://github.com/aterrylu/autonomOS/pull/319) `00953d9` — feat(shortcuts): ⌘K agent quick-switcher (ADR-073) — terminal-clear moves to ⌘⇧K
+- [#320](https://github.com/aterrylu/autonomOS/pull/320) `10e7f47` — feat(cli): autonomos upgrade/rollback — recorded install marker, health gate, auto-rollback (ADR-071, PR 1/3)
+- [#321](https://github.com/aterrylu/autonomOS/pull/321) `a0bfdd5` — feat(cli): source-mode upgrades — managed clone pinned to release tags (ADR-071, PR 2/3)
+- [#323](https://github.com/aterrylu/autonomOS/pull/323) `94ee89c` — feat(dashboard): passive update badge — server-side cached release check (ADR-072, PR 3/3)
+- [#333](https://github.com/aterrylu/autonomOS/pull/333) `058f751` — feat(cli): idempotent supervisor-unit sync on upgrade (ADR-080) + test-only service label (ADR-081)
+- [#340](https://github.com/aterrylu/autonomOS/pull/340) `9a7ccd2` — feat(dashboard): draggable per-terminal usage-queue overlay
+
+### Patch Changes
+
+- [#310](https://github.com/aterrylu/autonomOS/pull/310) `1d9adc7` — ci(release): blocking changeset-check + sync-changelog collapse guard + /release skill footer fix
+- [#311](https://github.com/aterrylu/autonomOS/pull/311) `9221e35` — feat(dashboard): move env-preset pill to row bottom-right + gold accent highlight
+- [#314](https://github.com/aterrylu/autonomOS/pull/314) `040729d` — fix(notifications): kill the false-positive warning classes from the live-install audit
+- [#316](https://github.com/aterrylu/autonomOS/pull/316) `05e4ffa` — perf(terminal): instant agent switch — keep-alive terminal cache + coalesced reconnect-replay (ADR-072)
+- [#317](https://github.com/aterrylu/autonomOS/pull/317) `e5485b7` — fix(usage): bar/queue window alignment + auto-detect selects the credential source (ADR-075)
+- [#318](https://github.com/aterrylu/autonomOS/pull/318) `0389128` — fix(prompt-delivery): settle-gated receipt windows + retractable give-up (ADR-072)
+- [#322](https://github.com/aterrylu/autonomOS/pull/322) `f54f0db` — refactor(shortcuts): Escape protects popover drafts + terminal keymap as data + help Tab trap
+- [#330](https://github.com/aterrylu/autonomOS/pull/330) `3d4bed1` — refactor(api): conventions ADR + dead-surface removal (consolidation PR 1)
+- [#334](https://github.com/aterrylu/autonomOS/pull/334) `43c6a4e` — feat(dashboard): API client layer + push-over-poll migration (consolidation PR A, ADR-082)
+- [#335](https://github.com/aterrylu/autonomOS/pull/335) `d3cd50c` — feat(server): typed errors + one Zod source + store-level secrets guard (consolidation PR B, ADR-083)
+- [#336](https://github.com/aterrylu/autonomOS/pull/336) `8922e24` — feat(server): route renames behind one-release compat aliases (consolidation PR C, ADR-084)
+- [#337](https://github.com/aterrylu/autonomOS/pull/337) `59a09c4` — fix(codex): stop per-session MCP approval prompt — mode-aware pre-approval + read-only annotations (ADR-085)
+- [#339](https://github.com/aterrylu/autonomOS/pull/339) `db7706d` — fix(terminal): atomic repaints (trailing-edge coalescing) + jump-to-latest pill (ADR-086)
+- [#341](https://github.com/aterrylu/autonomOS/pull/341) `1bb7bcd` — fix(terminal): remove focus-path fake-resize nudge; anchor parked viewports across scrollback wipes (ADR-087)
+- [#342](https://github.com/aterrylu/autonomOS/pull/342) `b0dbbac` — fix(gateway): fail loud on inbound to a no-inbound runtime (Gemini) instead of false-acking
+- [#343](https://github.com/aterrylu/autonomOS/pull/343) `a629132` — feat(dashboard): recency timestamp fade on agent rows (ADR-088)
+
+
 ## [0.5.0] — 2026-08-08
 
 ### Minor Changes
