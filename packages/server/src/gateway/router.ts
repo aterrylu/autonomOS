@@ -27,6 +27,7 @@ import type { WSContext, WSReadyState } from "hono/ws";
 import { noteChannelServerRegistered } from "../agents/channelServerCheck.js";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
+import { getProvider } from "../providers/index.js";
 import { batchGetTitles } from "../titleCache.js";
 import {
   type CodexDeliveryResult,
@@ -325,17 +326,45 @@ async function routeToAgent(
     return "Cannot send to yourself.";
   }
 
+  const targetRec = getAgent(targetSessionId);
+
   // A Codex agent that failed the running-check above falls through to here,
   // and it DOES hold a channel-server WS (it needs one for outbound send()) —
   // so this path would "succeed" into a socket whose reader ignores inbound
   // (Codex consumes turns from its daemon, never channel notifications). That
   // happens in the seconds between markExited and the MCP subprocess dropping
-  // its socket, and across a resume-crash respawn. Fail loudly instead.
-  if (getAgent(targetSessionId)?.provider === "codex") {
+  // its socket, and across a resume-crash respawn. Fail loudly instead. This is
+  // a running-STATE race (Codex IS inbound-capable), so it stays a provider
+  // check — NOT the capability guard below.
+  if (targetRec?.provider === "codex") {
     console.warn(
       `[gateway] Codex agent "${targetName}" is not running — inbound not delivered`,
     );
     return `Codex agent "${targetName}" is not currently running — message not delivered.`;
+  }
+
+  // Capability guard: a runtime whose messaging.inbound is false (Gemini today)
+  // holds a channel-server socket ONLY for outbound send() — its reader discards
+  // channel notifications, so delivering here false-acks: the sender is told
+  // "delivered" while the message silently vanishes (the ADR-064 bug class,
+  // still live for Gemini). Keyed on the provider CAPABILITY (the SSOT in
+  // providers/*), not a hardcoded name, so it auto-covers any future
+  // inbound-less runtime instead of re-arming this exact bug for the next one.
+  // Distinct from the Codex guard above: that is a running-STATE race (Codex is
+  // inbound-capable); this is a PERMANENT capability, so it is unconditional.
+  // Replace with real delivery once Gemini inbound lands.
+  // Residual (pre-existing, shared with the Codex guard): if a target is resolved
+  // by raw id whose store record was already purged, targetRec is undefined and
+  // both guards are skipped, so it could still false-ack. Narrow — only the by-id
+  // resolver bypasses the store — and out of scope here; noted, not fixed.
+  if (
+    targetRec &&
+    !getProvider(targetRec.provider).capabilities.messaging.inbound
+  ) {
+    console.warn(
+      `[gateway] agent "${targetName}" (${targetRec.provider}) has no inbound path — not delivered`,
+    );
+    return `Agent "${targetName}" cannot receive messages — its runtime (${targetRec.provider}) has no inbound delivery path. Not delivered.`;
   }
 
   // A socket can be registered and already CLOSING — the registry is cleaned up

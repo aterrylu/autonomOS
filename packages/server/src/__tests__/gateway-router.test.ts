@@ -131,7 +131,7 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
   function seedAgent(
     id: string,
     name: string,
-    provider: "codex" | "claude-code",
+    provider: "codex" | "claude-code" | "gemini-cli",
     exited: boolean,
   ) {
     const agent = insertAgent(
@@ -232,6 +232,69 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
       0,
       "must not write into a socket that cannot carry it",
     );
+    unregisterSessionClient(ws);
+  });
+
+  it("refuses delivery to a Gemini agent — it has NO inbound path (false-ack guard)", async () => {
+    // Gemini holds a channel-server socket for OUTBOUND send() only; its reader
+    // ignores channel notifications, so a write here reports success while the
+    // message vanishes (the ADR-064 bug class, previously still live for Gemini).
+    // readyState OPEN proves the guard fires BEFORE the send path — not via a
+    // closed socket — and it is unconditional (no running-state gate).
+    const id = "9e310000-0000-4000-8000-00000000000c";
+    seedAgent(id, "GhostGemini", "gemini-cli", false);
+    const writes: string[] = [];
+    const ws = {
+      readyState: 1, // OPEN
+      send: (data: string) => writes.push(data),
+    } as unknown as WSContext;
+    registerSessionClient(id, ws);
+
+    const err = await routeMessage(
+      "agent://GhostGemini",
+      "are you there?",
+      SENDER,
+    );
+
+    assert.ok(err, "must return an error, not null (null means success)");
+    assert.match(err, /gemini-cli/); // names the runtime that can't receive
+    assert.match(err, /no inbound delivery path/);
+    assert.match(err, /not delivered/i);
+    assert.equal(
+      writes.length,
+      0,
+      "must NOT write into a socket whose reader discards inbound",
+    );
+    unregisterSessionClient(ws);
+  });
+
+  it("does NOT block a Gemini agent's OUTBOUND send() (guard keys on recipient, not sender)", async () => {
+    // Gemini's own send() routes gemini→recipient; the guard checks the TARGET
+    // provider, so a Gemini agent messaging a live Claude agent still delivers.
+    const geminiId = "9e310000-0000-4000-8000-00000000000d";
+    const claudeId = "c1ad0000-0000-4000-8000-00000000000e";
+    seedAgent(geminiId, "SenderGemini", "gemini-cli", false);
+    seedAgent(claudeId, "RecvClaude", "claude-code", false);
+    const writes: string[] = [];
+    const ws = {
+      readyState: 1,
+      send: (data: string) => writes.push(data),
+    } as unknown as WSContext;
+    registerSessionClient(claudeId, ws);
+
+    const err = await routeMessage(
+      "agent://RecvClaude",
+      "hi from gemini",
+      geminiId,
+    );
+
+    assert.equal(err, null, `expected success, got: ${err}`);
+    assert.equal(
+      writes.length,
+      1,
+      "gemini's outbound must still reach the recipient",
+    );
+    assert.match(writes[0], /hi from gemini/);
     unregisterSessionClient(ws);
   });
 });
