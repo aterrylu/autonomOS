@@ -22,6 +22,10 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 
+// Opacity is applied to the age TEXT only (Sidebar.tsx wraps just formatAge in
+// the faded span); the unread-count prefix stays full-strength as an attention
+// signal, like the status dot and label.
+//
 // The fade is THEME-AWARE, because opacity composites toward the background:
 // on a dark theme "fainter" fades toward black (contrast preserved), but on a
 // light theme it fades toward white (contrast collapses fast, since statusFg is

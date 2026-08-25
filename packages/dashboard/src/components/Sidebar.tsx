@@ -1054,25 +1054,30 @@ function SessionRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <span className="flex-1 truncate text-xs">{s.name}</span>
-          {/* Recency treatment (B2 — timestamp-only fade): the timestamp fades
-              with age so wildly-stale sessions recede. Only this span changes;
-              the row, name, status, and repo·branch line are untouched. Computed
+          {/* Recency treatment (B2 — timestamp-only fade): the AGE TEXT fades
+              with age so wildly-stale sessions recede. The unread prefix stays
+              full-strength (an attention signal, like the status dot/label) —
+              only the formatAge() text is wrapped in the faded span. Computed
               from the same lastActive the text renders from, so it rides the
               sidebar's existing ~5s render cadence — no new timer. */}
           <span
             className="shrink-0 text-[10px]"
-            style={recencyTimestampStyle(
-              lastActive,
-              Date.now(),
-              page.statusFg,
-              page.fg,
-              page.bg,
-            )}
+            style={{ color: page.statusFg }}
           >
             {notifCount > 0 && (
               <span style={{ color: "#ea6c73" }}>{notifCount} unread · </span>
             )}
-            {formatAge(lastActive)}
+            <span
+              style={recencyTimestampStyle(
+                lastActive,
+                Date.now(),
+                page.statusFg,
+                page.fg,
+                page.bg,
+              )}
+            >
+              {formatAge(lastActive)}
+            </span>
           </span>
         </div>
         <div

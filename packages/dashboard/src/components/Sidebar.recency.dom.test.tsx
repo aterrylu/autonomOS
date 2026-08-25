@@ -11,9 +11,9 @@ import { Sidebar } from "./Sidebar";
  * The pure mapping is covered in recency.test.ts; this pins the integration:
  * that the row actually applies recencyTimestampStyle to the last-activity
  * span, that the age flows from the session (createdAt, since no meta is
- * stubbed → lastActive falls back to s.createdAt), and that the theme's
- * recencyFresh token reaches the fresh tint. Breaking any of those turns this
- * red — a plain-opacity regression, a dropped theme token, or a mis-wired span.
+ * stubbed → lastActive falls back to s.createdAt), and that the theme's `fg`
+ * reaches the fresh timestamp. Breaking any of those turns this red — a
+ * plain-opacity regression, the wrong fresh color, or a mis-wired span.
  */
 
 const NOW = Date.now();
@@ -37,7 +37,7 @@ function sess(id: string, ageMs: number): SessionInfo {
 // or fetchSessions prunes the seeded order; carrying createdAt in the payload
 // keeps the controlled ages whether the row reads the seed or the fetch result.
 const FRESH = sess("fresh-agent", 10 * MIN); // → "10m", fresh, opacity 1 + tint
-const ANCIENT = sess("ancient-agent", 30 * DAY); // → "30d", ancient, opacity 0.35
+const ANCIENT = sess("ancient-agent", 30 * DAY); // → "30d", ancient, opacity 0.52 (dark)
 
 function stubFetch() {
   vi.stubGlobal(
@@ -89,6 +89,21 @@ describe("Sidebar recency — timestamp fade wiring", () => {
     // void's foreground #d4d4d4 → rgb(212, 212, 212); proves the theme's fg
     // flows all the way to the span, not a hardcoded gray.
     expect(age).toHaveStyle({ color: "rgb(212, 212, 212)" });
+  });
+
+  it("keeps the unread-count prefix full-strength on a faded ancient row", async () => {
+    // An 8-day-stopped agent with unread output must still show "N unread ·"
+    // clearly — the unread count is an attention signal (like the status dot),
+    // NOT part of the age fade. Only formatAge() is wrapped in the faded span.
+    useStore.setState({ notificationCounts: { "ancient-agent": 3 } });
+    render(<Sidebar />);
+    const age = await screen.findByText("30d");
+    // the faded span wraps ONLY the age text (opacity applies to that subtree)…
+    expect(age).toHaveStyle({ opacity: "0.52" });
+    expect(age.textContent).toBe("30d");
+    // …and the unread prefix is a full-strength SIBLING, not inside the fade.
+    const unread = screen.getByText(/3 unread/);
+    expect(age.contains(unread)).toBe(false);
   });
 
   it("uses the shallower LIGHT ramp on the daylight theme (ancient → 0.74)", async () => {
