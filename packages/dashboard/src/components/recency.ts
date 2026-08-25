@@ -22,16 +22,38 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 
-// Opacity per bucket ("Balanced wide" ramp). Applied to the whole timestamp span
-// (including any unread prefix) so an old row's timestamp genuinely recedes. Fresh
-// and recent are full; stale and ancient fade far enough apart to read as distinct
-// steps without either becoming illegible.
-export const RECENCY_OPACITY: Record<RecencyBucket, number> = {
+// The fade is THEME-AWARE, because opacity composites toward the background:
+// on a dark theme "fainter" fades toward black (contrast preserved), but on a
+// light theme it fades toward white (contrast collapses fast, since statusFg is
+// already low-contrast on a near-white page). So dark themes take a deep ramp and
+// light themes a shallower one, chosen so 11d/34d stay legible on white.
+export const RECENCY_OPACITY_DARK: Record<RecencyBucket, number> = {
   fresh: 1,
   recent: 1,
   stale: 0.72,
   ancient: 0.52,
 };
+export const RECENCY_OPACITY_LIGHT: Record<RecencyBucket, number> = {
+  fresh: 1,
+  recent: 1,
+  stale: 0.86,
+  ancient: 0.74,
+};
+
+/**
+ * Whether a `#rrggbb` background reads as "light" (Rec. 601 luma > 0.5). Drives
+ * ramp selection so any theme — including a future one — is classified by its own
+ * background rather than a hardcoded name. An unparseable value falls back to the
+ * dark ramp (the deeper fade is the more common, dark-first case).
+ */
+export function isLightBg(bg: string): boolean {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(bg.trim());
+  if (!m) return false;
+  const r = Number.parseInt(m[1], 16);
+  const g = Number.parseInt(m[2], 16);
+  const b = Number.parseInt(m[3], 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
+}
 
 /**
  * Classify an age (ms since last activity) into a recency bucket.
@@ -49,15 +71,14 @@ export function recencyBucket(ageMs: number): RecencyBucket {
 
 /**
  * Resolve the inline style for the timestamp span from a `lastActive` timestamp
- * (ms epoch) and `now`, plus two theme tokens: the neutral `statusFg` and
- * `freshColor` (the theme's foreground / text color). Fresh renders in
- * `freshColor`; every other bucket keeps `statusFg` and only varies opacity. Both
- * colors are supplied by the caller so this stays a pure timestamp → style mapper
- * with no palette of its own — and because `freshColor` is the theme's own text
- * color, fresh is guaranteed legible on every theme with no per-theme tuning.
- * Opacity (rather than a pre-blended color) carries the fade on purpose: it
- * recedes toward whatever is behind the text — page background OR an active-row
- * highlight — and adapts across themes without per-theme color math.
+ * (ms epoch) and `now`, plus three theme tokens: the neutral `statusFg`, the
+ * `freshColor` (the theme's foreground / text color), and `bg` (the page
+ * background, used only to pick the light- vs dark-theme opacity ramp). Fresh
+ * renders in `freshColor`; every other bucket keeps `statusFg` and only varies
+ * opacity. All colors are supplied by the caller so this stays a pure
+ * timestamp → style mapper with no palette of its own — and because `freshColor`
+ * is the theme's own text color, fresh is guaranteed legible on every theme with
+ * no per-theme tuning.
  *
  * The timestamp is guarded on the SAME terms as formatAge() (Sidebar.tsx): a
  * non-finite or non-positive `lastActive` is "unknown", not ancient. Guarding the
@@ -72,14 +93,16 @@ export function recencyTimestampStyle(
   now: number,
   statusFg: string,
   freshColor: string,
+  bg: string,
 ): { color: string; opacity: number } {
   const ageMs =
     Number.isFinite(lastActive) && lastActive > 0
       ? now - lastActive
       : Number.NaN;
   const bucket = recencyBucket(ageMs);
+  const ramp = isLightBg(bg) ? RECENCY_OPACITY_LIGHT : RECENCY_OPACITY_DARK;
   return {
     color: bucket === "fresh" ? freshColor : statusFg,
-    opacity: RECENCY_OPACITY[bucket],
+    opacity: ramp[bucket],
   };
 }

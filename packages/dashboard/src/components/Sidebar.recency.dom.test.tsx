@@ -91,6 +91,16 @@ describe("Sidebar recency — timestamp fade wiring", () => {
     expect(age).toHaveStyle({ color: "rgb(212, 212, 212)" });
   });
 
+  it("uses the shallower LIGHT ramp on the daylight theme (ancient → 0.74)", async () => {
+    // Opacity fades toward the bg; on a light theme that washes out fast, so the
+    // ramp is theme-aware. daylight's light bg must select 0.74 for ancient, not
+    // void's 0.52 — proving page.bg drives ramp selection through the real row.
+    useStore.setState({ theme: "daylight" });
+    render(<Sidebar />);
+    const age = await screen.findByText("30d");
+    expect(age).toHaveStyle({ opacity: "0.74" });
+  });
+
   it("leaves the fresh row's NAME untouched (B2 is timestamp-only)", async () => {
     render(<Sidebar />);
     // The name for the ancient agent must NOT inherit the fade — only the

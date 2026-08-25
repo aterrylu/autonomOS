@@ -1066,6 +1066,7 @@ function SessionRow({
               Date.now(),
               page.statusFg,
               page.fg,
+              page.bg,
             )}
           >
             {notifCount > 0 && (
