@@ -25,6 +25,14 @@ completeness; the **release engineer** does everything else.
 
 ## Standing constraints (non-negotiable)
 
+- **Upgrades never break existing auth.** No migration, upgrade, reinstall,
+  or unit re-render may change what token the daemon accepts without
+  migrating it or saying so loudly (invariant set by Terry after the v0.6.0
+  forge lockout; pinned by `scripts/install-source-env.test.ts`). Every
+  migration/upgrade/install PR must carry a **"USER-VISIBLE BREAKAGE"**
+  section in its body — itemized, or explicitly empty with the reasoning —
+  and anything auth-touching in that section is a hard human gate before
+  merge.
 - **Never bind, tunnel, or touch `localhost:3100`** — that is the operator's
   live production server.
 - **Never run `scripts/test-install.sh` or any `autonomos` service verb
@@ -110,10 +118,16 @@ Report GOOD RELEASE / issues to TeamLead + Terry with the forge URL.
      `~/autonomos` at the newest tag; `--ref vX.Y.Z` to pin, `--dir` to
      place). **Never adopt the rsync tree** — `make deploy` ships
      `--exclude .git`, so it is not a clone.
-  3. The script writes the source-mode `install.json` and hands off to
-     `make prod`, which re-renders the supervisor unit **pointing at the new
-     clone** and restarts onto it (prod shape forces `--port=3100`). Config
-     dir + token live in `~/.autonomos` — untouched by either tree.
+  3. The script writes the source-mode `install.json`, **migrates
+     `AUTONOMOS_TOKEN` from the old tree's `.env`** (auth-continuity
+     invariant, see the env-migration ADR — other `.env` overrides are
+     deliberately dropped and listed by name in the output; copy any you
+     still need into the clone's `.env`), then hands off to `make prod`,
+     which re-renders the supervisor unit **pointing at the new clone** and
+     restarts onto it (prod shape forces `--port=3100`). The `$configDir`
+     state (`~/.autonomos`: sessions, logs, token FILE) is untouched by
+     either tree — but note the daemon's *effective* token is the `.env`
+     value when one exists, which is exactly why the migration carries it.
   4. Verify: `autonomos status`; dashboard answers on :3100;
      `autonomos upgrade` reports "Already on the latest version" (that no-op
      also self-heals the supervisor unit, ADR-080). If the fresh install fails
