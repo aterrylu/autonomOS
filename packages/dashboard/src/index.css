@@ -167,3 +167,65 @@ aside.overflow-y-auto::-webkit-scrollbar {
 .prose-tui th {
   font-weight: 600;
 }
+
+/* Agent status label — active-work rows shimmer (see statusLabelStyle.ts).
+   Theme-aware: .status-shimmer on the dark themes, .status-shimmer-light on the
+   light theme (the dark slate-blue is illegible on near-white). A symmetric
+   base→light→base gradient clipped to the label text, translated by exactly one
+   period so the loop is seamless (no snap); all active rows share the animation,
+   so they sweep in sync. Motion is a bonus signal on top of the color — BOTH
+   reduced-motion AND a background-clip:text @supports failure fall back to the
+   visible base color, so a busy label never renders as invisible transparent
+   text. */
+.status-shimmer,
+.status-shimmer-light {
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: status-shimmer 1.9s linear infinite;
+}
+.status-shimmer {
+  background-image: linear-gradient(90deg, #7e97b3 25%, #cfe0f0 50%, #7e97b3 75%);
+}
+.status-shimmer-light {
+  background-image: linear-gradient(90deg, #3f5f85 25%, #6a86ab 50%, #3f5f85 75%);
+}
+@keyframes status-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-shimmer {
+    animation: none;
+    background: none;
+    color: #7e97b3;
+    -webkit-text-fill-color: #7e97b3;
+  }
+  .status-shimmer-light {
+    animation: none;
+    background: none;
+    color: #3f5f85;
+    -webkit-text-fill-color: #3f5f85;
+  }
+}
+/* If background-clip:text is unsupported, the gradient would fill the box and the
+   text (color:transparent) would vanish — fall back to the solid base color. */
+@supports not (
+  (-webkit-background-clip: text) or (background-clip: text)
+) {
+  .status-shimmer {
+    background: none;
+    color: #7e97b3;
+    -webkit-text-fill-color: #7e97b3;
+  }
+  .status-shimmer-light {
+    background: none;
+    color: #3f5f85;
+    -webkit-text-fill-color: #3f5f85;
+  }
+}

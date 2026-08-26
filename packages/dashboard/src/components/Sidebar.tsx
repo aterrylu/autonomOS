@@ -26,12 +26,13 @@ import {
   mergeOrgWithSessions,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
-import { recencyTimestampStyle } from "./recency";
+import { isLightBg, recencyTimestampStyle } from "./recency";
 import {
   arrowForRow,
   digitForRow,
   flattenHierarchyRows,
 } from "./sidebarRowOrder";
+import { statusLabelStyle } from "./statusLabelStyle";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -949,6 +950,8 @@ function SessionRow({
   const paddingLeft = paddingLeftOverride ?? 9 + indent * 10;
   const agentIconStyle = useStore((st) => st.agentIconStyle);
   const status = (agentState?.status as AgentStatus) ?? "unknown";
+  const isLightTheme = isLightBg(page.bg);
+  const labelStyle = statusLabelStyle(status, isLightTheme);
   const accent = THEMES[useStore((st) => st.theme)].terminal.yellow;
 
   // Hold-mod hints (useModKeyHold): the digit that switches to THIS row, and
@@ -1113,9 +1116,23 @@ function SessionRow({
               truncate (NOT shrink-0) because currentTool is a raw hook
               tool_name ("Running mcp__autonomos__create_schedule") and the
               sidebar clips on x — a non-shrinking label would crowd out the
-              repo text and the pill on narrow rows. */}
+              repo text and the pill on narrow rows. Muted-accent color per
+              status (theme-aware); active-work statuses shimmer via the
+              theme-appropriate CSS class (the inline color is skipped so the
+              class wins). */}
           {agentState?.status && agentState.status !== "unknown" && (
-            <span className="ml-auto min-w-0 truncate pl-1.5 opacity-75">
+            <span
+              className={`ml-auto min-w-0 truncate pl-1.5${
+                labelStyle.shimmer
+                  ? isLightTheme
+                    ? " status-shimmer-light"
+                    : " status-shimmer"
+                  : ""
+              }`}
+              style={
+                labelStyle.shimmer ? undefined : { color: labelStyle.color }
+              }
+            >
               {agentStatusLabel(
                 agentState.status as AgentStatus,
                 agentState.currentTool,
