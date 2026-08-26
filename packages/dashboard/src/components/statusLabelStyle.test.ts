@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   STATUS_COLORS_DARK,
@@ -126,5 +128,19 @@ describe("statusLabelStyle — locked spec values", () => {
       error: "#b0503a",
       neutral: "#6b7178",
     });
+  });
+});
+
+describe("statusLabelStyle — CSS shimmer base agrees with the TS palette", () => {
+  // The .status-shimmer / .status-shimmer-light classes in index.css hardcode
+  // the active-work base hex (keyframes can't read TS). This guards against the
+  // two drifting apart: change the TS constant without the CSS and this fails.
+  it("index.css shimmer classes use the exact dark + light active hexes", () => {
+    const css = readFileSync(
+      fileURLToPath(new URL("../index.css", import.meta.url)),
+      "utf8",
+    );
+    expect(css).toContain(STATUS_COLORS_DARK.active); // #7e97b3 (.status-shimmer)
+    expect(css).toContain(STATUS_COLORS_LIGHT.active); // #3f5f85 (.status-shimmer-light)
   });
 });
