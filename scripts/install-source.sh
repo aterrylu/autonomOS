@@ -30,15 +30,32 @@ set -euo pipefail
 # migration silently switches the daemon to the $configDir/token file and
 # every existing browser session 401s with no pointer to the new credential.
 #
-# Policy: AUTONOMOS_TOKEN is MIGRATED (login continuity is the default a
-# user expects); every other key is dropped LOUDLY, listed by name with a
-# restore hint — carrying unknown overrides forward silently would be the
-# opposite bug (e.g. a stale AUTONOMOS_WS_COALESCE=0 pinning old transport
-# behavior through every future upgrade). See the env-migration ADR.
+# Policy: the OPERATOR-IDENTITY keys are MIGRATED — AUTONOMOS_TOKEN (what
+# login accepts), AUTONOMOS_HOST (where the server listens: dropping a
+# loopback restriction would silently WIDEN the bind to all interfaces —
+# run.ts's documented default), and AUTONOMOS_CONFIG_DIR (where state
+# lives: dropping it boots an empty fleet in ~/.autonomos that looks like a
+# migration that ate the agents). Continuity of auth, exposure, and state
+# location is the default a user expects. Every OTHER key is dropped
+# LOUDLY, listed by name with a restore hint — carrying unknown overrides
+# forward silently would be the opposite bug (e.g. a stale
+# AUTONOMOS_WS_COALESCE=0 pinning old transport behavior through every
+# future upgrade). See the env-migration ADR.
 #
 # Args: OLD_TREE (the install this script was launched from) and CLONE_DIR.
 # No-ops when there is nothing to migrate: no old .env, same tree, or the
 # clone already has a .env (never overwrite operator config).
+MIGRATED_ENV_KEYS="AUTONOMOS_TOKEN AUTONOMOS_HOST AUTONOMOS_CONFIG_DIR"
+
+# Last effective assignment wins — VERIFIED empirically against both
+# `node --env-file` and `tsx --env-file` (duplicate key → last line is what
+# the daemon sees), so a token rotated by appending migrates as the live
+# value, not the dead first one. Line preserved verbatim: values are
+# credentials/paths, never parsed.
+last_assignment() { # key file
+  grep -E "^$1=" "$2" | tail -1 || true
+}
+
 migrate_env_from_old_tree() {
   local old_tree="$1" clone_dir="$2"
   local old_env="$old_tree/.env" new_env="$clone_dir/.env"
@@ -49,29 +66,45 @@ migrate_env_from_old_tree() {
     return 0
   fi
 
-  # First effective (non-comment) assignment wins, mirroring how the daemon
-  # reads it. Preserved verbatim — the value is a credential, never parsed.
-  local token_line
-  token_line=$(grep -m1 -E '^AUTONOMOS_TOKEN=' "$old_env" || true)
+  local token_line carried key line
+  token_line=$(last_assignment "AUTONOMOS_TOKEN" "$old_env")
+  carried=""
+  for key in $MIGRATED_ENV_KEYS; do
+    line=$(last_assignment "$key" "$old_env")
+    [[ -n "$line" ]] && carried+="$line"$'\n'
+  done
 
   # Every other effective key, by NAME only (values may be secrets).
   local dropped
-  dropped=$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$old_env" | cut -d= -f1 | grep -vx 'AUTONOMOS_TOKEN' | sort -u || true)
+  dropped=$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$old_env" | cut -d= -f1 | sort -u | grep -vxF -e AUTONOMOS_TOKEN -e AUTONOMOS_HOST -e AUTONOMOS_CONFIG_DIR || true)
 
-  if [[ -n "$token_line" ]]; then
-    umask 077
-    cat > "$new_env" <<EOF
+  # Write the carried keys whenever ANY exist — the bind-widening and
+  # state-relocation hazards do not depend on a token being present.
+  if [[ -n "$carried" ]]; then
+    # Subshell scopes the umask to this one write — a bare `umask 077` here
+    # would leak into make prod below and flip every build artifact to
+    # group/other-unreadable (nox).
+    (
+      umask 077
+      cat > "$new_env" <<EOF
 # Migrated from $old_env by install-source.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# so your dashboard login keeps working across the install-shape change.
-# Only AUTONOMOS_TOKEN is carried; other overrides were deliberately left
-# behind (listed in the install output) — copy them here if you still need
-# them.
-$token_line
+# so your login, bind address, and state location survive the install-shape
+# change. Only the operator-identity keys are carried
+# ($MIGRATED_ENV_KEYS); other overrides were deliberately
+# left behind (listed in the install output) — copy them here if you still
+# need them.
+$carried
 EOF
-    echo "[install-source] ✓ Migrated AUTONOMOS_TOKEN from $old_env — your dashboard token is UNCHANGED."
-  else
+    )
+    echo "[install-source] ✓ Migrated operator config from $old_env:"
+    printf '%s' "$carried" | cut -d= -f1 | sed 's/^/      - /'
+    if [[ -n "$token_line" ]]; then
+      echo "    Your dashboard token is UNCHANGED."
+    fi
+  fi
+  if [[ -z "$token_line" ]]; then
     echo "" >&2
-    echo "⚠️  [install-source] $old_env exists but has no AUTONOMOS_TOKEN." >&2
+    echo "⚠️  [install-source] $old_env has no AUTONOMOS_TOKEN." >&2
     echo "    After this install the daemon resolves its token from" >&2
     echo "    \$AUTONOMOS_CONFIG_DIR/token (default ~/.autonomos/token) —" >&2
     echo "    if you logged in with an env-provided token before, that" >&2

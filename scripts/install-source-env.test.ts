@@ -115,6 +115,74 @@ describe("UPGRADES NEVER BREAK EXISTING AUTH (the auth-continuity invariant)", (
     const mode = statSync(join(cloneDir, ".env")).mode & 0o777;
     assert.equal(mode, 0o600);
   });
+
+  it("a rotated token (duplicate key) migrates the LAST assignment — what the daemon actually uses", () => {
+    // Empirically verified: node/tsx --env-file resolve duplicates to the
+    // LAST line. Migrating the first would carry the dead pre-rotation
+    // token — auth continuity in letter, lockout in fact.
+    const { oldTree, cloneDir } = fixture(
+      "AUTONOMOS_TOKEN=old-rotated-away\nAUTONOMOS_TOKEN=live-token\n",
+    );
+    const res = runMigrateFull(oldTree, cloneDir);
+    assert.equal(res.status, 0, res.stderr);
+    const migrated = readFileSync(join(cloneDir, ".env"), "utf-8");
+    assert.ok(migrated.includes("AUTONOMOS_TOKEN=live-token"));
+    assert.ok(!migrated.includes("old-rotated-away"));
+  });
+
+  it("bind address and state location migrate with the token (exposure + fleet continuity)", () => {
+    // Dropping AUTONOMOS_HOST=127.0.0.1 would silently WIDEN the bind to
+    // all interfaces (run.ts's default when unset); dropping
+    // AUTONOMOS_CONFIG_DIR would boot an empty fleet in ~/.autonomos.
+    const env =
+      "AUTONOMOS_TOKEN=tok\nAUTONOMOS_HOST=127.0.0.1\nAUTONOMOS_CONFIG_DIR=/srv/autonomos-state\nAUTONOMOS_WS_COALESCE=0\n";
+    const { oldTree, cloneDir } = fixture(env);
+    const res = runMigrateFull(oldTree, cloneDir);
+    assert.equal(res.status, 0, res.stderr);
+    const migrated = readFileSync(join(cloneDir, ".env"), "utf-8");
+    assert.ok(migrated.includes("AUTONOMOS_HOST=127.0.0.1"));
+    assert.ok(migrated.includes("AUTONOMOS_CONFIG_DIR=/srv/autonomos-state"));
+    assert.ok(!migrated.includes("WS_COALESCE"), "tuning key must not carry");
+    // And the identity keys must NOT appear in the dropped list:
+    assert.ok(!res.stderr.includes("AUTONOMOS_HOST"));
+    assert.ok(!res.stderr.includes("AUTONOMOS_CONFIG_DIR"));
+  });
+
+  it("identity keys carry even when no token exists (bind hazard is token-independent)", () => {
+    const { oldTree, cloneDir } = fixture("AUTONOMOS_HOST=127.0.0.1\n");
+    const res = runMigrateFull(oldTree, cloneDir);
+    assert.equal(res.status, 0);
+    assert.ok(
+      readFileSync(join(cloneDir, ".env"), "utf-8").includes(
+        "AUTONOMOS_HOST=127.0.0.1",
+      ),
+    );
+    // Still warns that the LOGIN token is about to change:
+    assert.match(res.stderr, /no AUTONOMOS_TOKEN/);
+  });
+
+  it("umask stays scoped to the .env write — files created after the migration are unaffected", () => {
+    // A leaked `umask 077` would flip everything make prod creates to
+    // group/other-unreadable. Prove the caller's umask survives by
+    // creating a file AFTER the function returns, in the same shell.
+    const { oldTree, cloneDir } = fixture("AUTONOMOS_TOKEN=tok\n");
+    const res = spawnSync(
+      "bash",
+      [
+        "-c",
+        `umask 022 && source "$1" && migrate_env_from_old_tree "$2" "$3" && touch "$3/after-file" && umask`,
+        "env-migrate-test",
+        SCRIPT,
+        oldTree,
+        cloneDir,
+      ],
+      { encoding: "utf-8" },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stdout.trim().split("\n").pop(), "0022");
+    assert.equal(statSync(join(cloneDir, ".env")).mode & 0o777, 0o600);
+    assert.equal(statSync(join(cloneDir, "after-file")).mode & 0o777, 0o644);
+  });
 });
 
 describe("non-token overrides are dropped LOUDLY, never silently", () => {
