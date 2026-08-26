@@ -11,6 +11,13 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.6.1] — 2026-08-26
+
+### Patch Changes
+
+- [#344](https://github.com/aterrylu/autonomOS/pull/344) `a1f34a5` — fix(install): migrate AUTONOMOS_TOKEN across source migration — upgrades never break existing auth (ADR-089)
+
+
 ## [0.6.0] — 2026-08-25
 
 ### Minor Changes
