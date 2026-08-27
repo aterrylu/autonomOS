@@ -55,6 +55,17 @@ const binaryCache = { path: null as string | null };
  * TUI-only (kept out of daemonConfigArgs, which the popup-less app-server daemon
  * also uses): pushed explicitly onto each buildArgs path so a future refactor
  * can't silently drop it on one (pinned by test).
+ *
+ * VERSION ASSUMPTION (checkpoint on every codex bump): codex SILENTLY accepts
+ * unknown `-c` keys — no warning, and `--strict-config` doesn't cover overrides
+ * — so if a future codex renames/removes `check_for_update_on_startup`, this flag
+ * becomes an UNDETECTED no-op: the popup returns and accepting it kills the
+ * session again, indistinguishable from a normal exit. The test only asserts we
+ * EMIT the flag, not that codex HONORS it (CI has no codex binary). So treat each
+ * codex version bump as the checkpoint — re-confirm with
+ * `codex -c check_for_update_on_startup=false doctor --all` that "startup update
+ * check" reads false. (A doctor-style runtime probe would make this self-detecting
+ * — see ADR-091 follow-up.)
  */
 const SUPPRESS_UPDATE_PROMPT_ARGS = ["-c", "check_for_update_on_startup=false"];
 
