@@ -41,6 +41,24 @@ import {
 const binaryCache = { path: null as string | null };
 
 /**
+ * Suppress codex's in-pane self-update popup on EVERY interactive TUI spawn.
+ *
+ * codex (standalone install) shows an update popup at TUI startup; accepting it
+ * runs the self-updater, which swaps the binary in place and restarts the
+ * process — which our PTY sees as a process EXIT, so the session is killed.
+ * autonomOS manages the codex binary version, so an in-pane self-update is never
+ * appropriate for an orchestrated session. `check_for_update_on_startup=false`
+ * makes the TUI's update_prompt return early with no popup (the gate is
+ * `config.check_for_update_on_startup` in codex-rs/tui/src/updates.rs), removing
+ * the trigger entirely — no restart-vs-real-exit heuristic needed.
+ *
+ * TUI-only (kept out of daemonConfigArgs, which the popup-less app-server daemon
+ * also uses): pushed explicitly onto each buildArgs path so a future refactor
+ * can't silently drop it on one (pinned by test).
+ */
+const SUPPRESS_UPDATE_PROMPT_ARGS = ["-c", "check_for_update_on_startup=false"];
+
+/**
  * Map the common permission mode → Codex `approval_policy` value.
  *
  * Codex's two-axis model (approval + sandbox) is effectively one axis here:
@@ -240,6 +258,7 @@ export const codexProvider: AgentProvider = {
             options.sidecarEndpoint,
           ]
         : ["--remote", options.sidecarEndpoint];
+      args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
       // The TUI creates/owns the thread, so ITS sandbox/approval flags govern the
       // thread (the daemon-side -c is necessary but not sufficient — both layers
       // must say danger-full-access or Codex falls back to workspace-write and
@@ -266,6 +285,7 @@ export const codexProvider: AgentProvider = {
     if (isBypassMode(options.permissionMode)) {
       args.push("--dangerously-bypass-approvals-and-sandbox");
     }
+    args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
     args.push("--cd", options.cwd, ...daemonConfigArgs(options));
     if (options.prompt) args.push(options.prompt);
     return args;

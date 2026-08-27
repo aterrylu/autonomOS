@@ -237,6 +237,8 @@ describe("codex daemon topology", () => {
       assert.deepEqual(args, [
         "--remote",
         ENDPOINT,
+        "-c",
+        "check_for_update_on_startup=false",
         "--dangerously-bypass-approvals-and-sandbox",
       ]);
     });
@@ -248,6 +250,8 @@ describe("codex daemon topology", () => {
       assert.deepEqual(args, [
         "--remote",
         ENDPOINT,
+        "-c",
+        "check_for_update_on_startup=false",
         "-s",
         "danger-full-access",
         "-c",
@@ -263,6 +267,8 @@ describe("codex daemon topology", () => {
       assert.deepEqual(args, [
         "--remote",
         ENDPOINT,
+        "-c",
+        "check_for_update_on_startup=false",
         "-s",
         "danger-full-access",
         "-c",
@@ -285,6 +291,8 @@ describe("codex daemon topology", () => {
         "thread-abc-123",
         "--remote",
         ENDPOINT,
+        "-c",
+        "check_for_update_on_startup=false",
         "--dangerously-bypass-approvals-and-sandbox",
       ]);
     });
@@ -327,6 +335,42 @@ describe("codex daemon topology", () => {
         "legacy path still sets --cd for the in-process TUI",
       );
       assert.ok(!args.includes("--remote"));
+    });
+
+    it("suppresses the codex update popup on EVERY interactive spawn path", () => {
+      // Accepting codex's in-pane self-update swaps the binary + restarts the
+      // process, which our PTY sees as an exit → the session dies. The
+      // suppression flag must ride every TUI path so a future buildArgs refactor
+      // can't silently drop it on one. Asserts it's a real `-c` override, not a
+      // stray token.
+      const suppressesUpdate = (args: string[]): boolean => {
+        const i = args.indexOf("check_for_update_on_startup=false");
+        return i > 0 && args[i - 1] === "-c";
+      };
+      // fresh --remote (first spawn, no threadId)
+      assert.ok(
+        suppressesUpdate(
+          codexProvider.buildArgs(baseOptions({ sidecarEndpoint: ENDPOINT })),
+        ),
+        "fresh --remote must suppress the update popup",
+      );
+      // resume --remote (respawn with a captured thread)
+      assert.ok(
+        suppressesUpdate(
+          codexProvider.buildArgs(
+            baseOptions({
+              sidecarEndpoint: ENDPOINT,
+              providerThreadId: "thread-abc-123",
+            }),
+          ),
+        ),
+        "resume --remote must suppress the update popup",
+      );
+      // legacy in-process TUI (no sidecar)
+      assert.ok(
+        suppressesUpdate(codexProvider.buildArgs(baseOptions())),
+        "legacy in-process TUI must suppress the update popup",
+      );
     });
   });
 
