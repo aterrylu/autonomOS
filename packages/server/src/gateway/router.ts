@@ -140,6 +140,20 @@ export async function routeMessage(
     );
   }
 
+  // schedule://<name> is a SENDER-only namespace: it identifies the scheduled
+  // task that fired a prompt (its from_uri), and from_uri is exactly what
+  // BASE_CONTEXT teaches agents to reply to — so answering it here with a
+  // helpful pointer, not "unknown scheme", is the whole design. Actionable on
+  // purpose: the reply names the schedule tools with the name pre-filled.
+  if (scheme === "schedule") {
+    return (
+      `schedule://${path} identifies the scheduled task "${path}" that sent you a prompt — ` +
+      "schedules cannot receive replies. Just do the task it delivered; the operator sees " +
+      `your work in your own session. To inspect or change the schedule itself, use the MCP ` +
+      `tools: get_schedule("${path}"), update_schedule, or delete_schedule.`
+    );
+  }
+
   return `Unknown URI scheme: "${scheme}" — supported: agent`;
 }
 
@@ -188,10 +202,43 @@ async function resolveConnectedAgent(
 
 /** Display names for system (non-agent) senders. These arrive as literal
  *  sender ids, not UUIDs, so without this map they hit the unknown-id branch
- *  below and render as a sliced pseudo-UUID ("Agent schedule"). */
+ *  below and render as a sliced pseudo-UUID ("Agent schedule").
+ *
+ *  "scheduler" is legacy: the scheduler now sends per-schedule ids
+ *  (`schedule:<name>` → schedule://<name>, see resolveSenderIdentity), but the
+ *  literal is kept so anything still passing it renders sanely. */
 const SYSTEM_SENDER_NAMES: Record<string, string> = {
   scheduler: "Scheduler",
 };
+
+/** Sender ids of the form `schedule:<name>` identify the SCHEDULE that fired
+ *  a prompt, not an agent. Mirrors the `agent:<name>` convention schedule
+ *  TARGETS already use. */
+const SCHEDULE_SENDER_PREFIX = "schedule:";
+
+/** A resolved sender: display name + the reply URI stamped on the message.
+ *  For agents the URI is agent://<name>; for schedule senders it is
+ *  schedule://<name> — a different NAMESPACE, so a real agent that happens to
+ *  share a schedule's name can never collide with it (the reservation concern
+ *  from #330 dissolves instead of needing enforcement). */
+interface SenderIdentity {
+  name: string;
+  uri: string;
+}
+
+async function resolveSenderIdentity(
+  fromSessionId: string,
+): Promise<SenderIdentity> {
+  if (fromSessionId.startsWith(SCHEDULE_SENDER_PREFIX)) {
+    const scheduleName = fromSessionId.slice(SCHEDULE_SENDER_PREFIX.length);
+    return {
+      name: `Schedule ${scheduleName}`,
+      uri: `schedule://${scheduleName}`,
+    };
+  }
+  const name = await resolveAgentName(fromSessionId);
+  return { name, uri: `agent://${name}` };
+}
 
 /** Resolve the display name for an agent id (enriched via titleCache) */
 async function resolveAgentName(agentId: string): Promise<string> {
@@ -217,16 +264,16 @@ async function resolveAgentName(agentId: string): Promise<string> {
 /** Build a GatewayMessage for agent-to-agent communication */
 function buildAgentMessage(
   senderId: string,
-  senderName: string,
+  sender: SenderIdentity,
   text: string,
 ): GatewayMessage {
   return {
     id: crypto.randomUUID(),
     chatId: "",
     userId: senderId,
-    userName: senderName,
+    userName: sender.name,
     text,
-    fromUri: `agent://${senderName}`,
+    fromUri: sender.uri,
     timestamp: Date.now(),
   };
 }
@@ -286,12 +333,12 @@ async function routeToAgent(
     if (!endpoint) {
       return `Codex agent "${targetName}" is not reachable — its app-server daemon isn't running.`;
     }
-    const senderName = await resolveAgentName(fromSessionId);
+    const sender = await resolveSenderIdentity(fromSessionId);
     const delivery = await awaitDelivery(
       deliverToCodex(
         codexTarget.id,
         endpoint,
-        formatInbound(senderName, `agent://${senderName}`, content),
+        formatInbound(sender.name, sender.uri, content),
       ),
     );
     if (!delivery.delivered) {
@@ -379,10 +426,10 @@ async function routeToAgent(
     return `Agent "${targetName}" is disconnecting — message not delivered.`;
   }
 
-  const senderName = await resolveAgentName(fromSessionId);
+  const sender = await resolveSenderIdentity(fromSessionId);
   const wsMsg: GatewayWsMessage = {
     type: "message",
-    payload: buildAgentMessage(fromSessionId, senderName, content),
+    payload: buildAgentMessage(fromSessionId, sender, content),
   };
   try {
     target.send(JSON.stringify(wsMsg));

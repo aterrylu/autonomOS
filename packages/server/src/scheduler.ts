@@ -505,7 +505,12 @@ async function executeAgentSend(
     const agentName = schedule.target.slice("agent:".length);
     const to = `agent://${agentName}`;
 
-    const error = await routeMsg(to, schedule.prompt, "scheduler");
+    // Sender id `schedule:<name>` (mirrors the `agent:<name>` target
+    // convention): the router renders it as "Schedule <name>" with from_uri
+    // schedule://<name>, so the receiving agent knows WHICH schedule fired —
+    // and a reply attempt gets the schedule-scheme guidance instead of
+    // hunting for a phantom "Scheduler" agent.
+    const error = await routeMsg(to, schedule.prompt, `schedule:${name}`);
     if (error) {
       onRunCompleted(name, { status: "failure", error });
     } else {

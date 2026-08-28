@@ -303,6 +303,69 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
   });
 });
 
+describe("schedule://<name> sender scheme", () => {
+  it("a reply to schedule://<name> gets actionable guidance, not 'unknown scheme'", async () => {
+    const error = await routeMessage(
+      "schedule://pr-watchdog",
+      "done, pausing myself",
+      "22222222-2222-2222-2222-222222222222",
+    );
+    assert.ok(error, "must not be accepted — schedules have no inbox");
+    assert.match(error ?? "", /cannot receive replies/i);
+    assert.match(
+      error ?? "",
+      /get_schedule\("pr-watchdog"\)/,
+      "must name the schedule tools with the name pre-filled",
+    );
+    assert.doesNotMatch(error ?? "", /Unknown URI scheme/);
+    assert.doesNotMatch(
+      error ?? "",
+      /list_agents/,
+      "must not send the agent hunting for a peer that never existed",
+    );
+  });
+
+  it("a schedule-fired prompt is stamped with the schedule identity, not agent://Scheduler", async () => {
+    // The channel-server renders "[<userName> → you via <fromUri>]" from
+    // exactly these two payload fields, so pinning them here pins the header
+    // an agent sees in its terminal.
+    const id = "c1ad0000-0000-4000-8000-00000000000f";
+    const agent = buildAgent({
+      id,
+      name: "ScheduleTarget",
+      workingDirectory: "/tmp",
+      provider: "claude-code",
+      providerSessionId: id,
+      permissionMode: "ask",
+    });
+    insertAgent(agent);
+    const writes: string[] = [];
+    const ws = {
+      readyState: 1,
+      send: (data: string) => writes.push(data),
+    } as unknown as WSContext;
+    registerSessionClient(id, ws);
+
+    const err = await routeMessage(
+      "agent://ScheduleTarget",
+      "nightly report please",
+      "schedule:nightly-report",
+    );
+
+    assert.equal(err, null, `expected delivery, got: ${err}`);
+    assert.equal(writes.length, 1);
+    const payload = JSON.parse(writes[0]).payload as {
+      userName: string;
+      fromUri: string;
+      text: string;
+    };
+    assert.equal(payload.userName, "Schedule nightly-report");
+    assert.equal(payload.fromUri, "schedule://nightly-report");
+    assert.equal(payload.text, "nightly report please");
+    unregisterSessionClient(ws);
+  });
+});
+
 describe("system-sender reply handling", () => {
   it("a reply to agent://Scheduler explains the system sender instead of the generic not-found", async () => {
     const error = await routeMessage(
