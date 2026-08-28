@@ -304,6 +304,22 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
 });
 
 describe("schedule://<name> sender scheme", () => {
+  // Same isolation as the Codex describe above. This block originally had
+  // NONE and its insertAgent escaped into the REAL ~/.autonomos during a
+  // pre-#350 `make check` (the injected AUTONOMOS_CONFIG_DIR defeats naive
+  // isolation) — the config-dir guard now throws on that; this is the fix.
+  let isolatedDir = "";
+  beforeEach(() => {
+    isolatedDir = mkdtempSync(join(tmpdir(), "autonomos-sched-scheme-"));
+    _setConfigDirForTesting(isolatedDir);
+    _resetCacheForTesting();
+  });
+  afterEach(() => {
+    _resetConfigDirForTesting();
+    _resetCacheForTesting();
+    rmSync(isolatedDir, { recursive: true, force: true });
+  });
+
   it("a reply to schedule://<name> gets actionable guidance, not 'unknown scheme'", async () => {
     const error = await routeMessage(
       "schedule://pr-watchdog",
