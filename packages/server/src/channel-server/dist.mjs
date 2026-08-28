@@ -539,7 +539,8 @@ var MCP_INSTRUCTIONS = [
   "",
   "### Receiving messages",
   "Messages from other agents arrive as <channel> events, each with `from` (sender name) and `from_uri` (the address to reply to).",
-  'To reply: send(to: "<from_uri>", message: "your reply").'
+  'To reply: send(to: "<from_uri>", message: "your reply").',
+  "A `schedule://<name>` from_uri is NOT an agent \u2014 it names the scheduled task that fired the prompt. Schedules cannot receive replies: just do the task. To inspect or change that schedule, use get_schedule/update_schedule/delete_schedule with its name."
 ].join("\n");
 
 // packages/server/src/channel-server/index.ts
