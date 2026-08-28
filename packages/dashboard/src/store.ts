@@ -82,6 +82,9 @@ export interface SessionInfo {
    *  record (or a stubbed fixture) may not carry one. */
   permissionMode?: PermissionMode;
   createdAt: number;
+  /** Last genuine activity (hook/turn-driven, survives restarts) — absent on
+   *  records that predate the field. Preferred recency source. */
+  lastActivityAt?: number;
   updatedAt: number;
   /** When this session transitioned to status "exited". Only set for exited rows;
    *  missing on pre-schema records so the sidebar falls back to updatedAt. */
@@ -426,6 +429,7 @@ function agentToSession(agent: Agent, managerName?: string): SessionInfo {
     // back). Carry the server's answer, never the local default that was sent.
     permissionMode: agent.permissionMode,
     createdAt: agent.createdAt,
+    lastActivityAt: agent.lastActivityAt,
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
     exitReason: agent.exitReason,

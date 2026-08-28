@@ -946,7 +946,10 @@ function SessionRow({
   onTogglePin,
   onClick,
 }: SessionRowProps) {
-  const lastActive = meta?.lastModified ?? s.createdAt;
+  // Prefer the persisted activity timestamp (hook/turn-driven; upgrade-proof)
+  // over the CC transcript mtime — a resumed CC process touches its JSONL at
+  // boot, which is exactly the "every session shows 1m after upgrade" bug.
+  const lastActive = s.lastActivityAt ?? meta?.lastModified ?? s.createdAt;
   const paddingLeft = paddingLeftOverride ?? 9 + indent * 10;
   const agentIconStyle = useStore((st) => st.agentIconStyle);
   const status = (agentState?.status as AgentStatus) ?? "unknown";

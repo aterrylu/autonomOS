@@ -287,6 +287,35 @@ function writeAgentFile(agent: Agent): void {
   renameSync(tmpPath, finalPath);
 }
 
+/** Record genuine agent activity (hook event / Codex turn) — the ONLY writer
+ *  of `lastActivityAt`. Debounced: the in-memory record updates immediately
+ *  (API reads see it), but disk flushes at most once per agent per
+ *  ACTIVITY_FLUSH_MS unless `flush` forces it (turn boundaries) — a busy
+ *  tool loop must not write a file per PostToolUse. Deliberately does NOT
+ *  bump version/updatedAt: activity is not a record mutation, and bumping
+ *  version here would churn optimistic-concurrency for every hook event.
+ *  Unknown ids no-op (a hook can outlive its record). */
+const ACTIVITY_FLUSH_MS = 30_000;
+const lastActivityFlush = new Map<UUID, number>();
+export function markActivity(
+  id: UUID,
+  ts: number = Date.now(),
+  opts?: { flush?: boolean },
+): void {
+  const cache = readCache();
+  const existing = cache.get(id);
+  if (!existing) return;
+  if (existing.lastActivityAt !== undefined && ts <= existing.lastActivityAt)
+    return;
+  const next: Agent = { ...existing, lastActivityAt: ts };
+  cache.set(id, next);
+  const lastFlush = lastActivityFlush.get(id) ?? 0;
+  if (opts?.flush || ts - lastFlush >= ACTIVITY_FLUSH_MS) {
+    lastActivityFlush.set(id, ts);
+    writeAgentFile(next);
+  }
+}
+
 /** Insert or update an agent. Bumps version + updatedAt automatically.
  *  For full-record writes (e.g. from migration). For partial updates from
  *  routes, prefer patchAgent / setManager / markExited / etc. */

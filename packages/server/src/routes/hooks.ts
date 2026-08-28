@@ -3,11 +3,12 @@ import type {
   AgentActivityStatus,
   AgentStatusMap,
   NotificationFeed,
+  UUID,
 } from "@autonomos/core";
 import { type Context, Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
-import { getAgent, listAgents } from "../agents/store.js";
+import { getAgent, listAgents, markActivity } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
 import { getProvider } from "../providers/index.js";
 
@@ -279,6 +280,23 @@ export function setAgentStatus(sessionId: string, status: AgentStatus): void {
  * the status as "working" so the UI doesn't flicker between warning and
  * in-progress when errors happen during normal flow.
  */
+/** Events that constitute GENUINE activity (user or agent did work).
+ *  Lifecycle (SessionStart/End) and housekeeping (Pre/PostCompact) are
+ *  deliberately excluded — they fire on upgrades/restarts and would recreate
+ *  the everything-shows-now bug this field exists to fix. */
+const ACTIVITY_EVENTS = new Set([
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "Stop",
+  "SubagentStart",
+  "SubagentStop",
+  "SendUserMessage",
+  "Notification",
+  "PermissionRequest",
+]);
+
 function deriveStatus(event: HookEvent): Partial<AgentState> {
   switch (event.hook_event_name) {
     case "SessionStart":
@@ -509,6 +527,16 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
     // resolve signal — otherwise it flickers to orchestrating/working.
   } else {
     // Generic path — derive status + sticky-idle guard (unchanged behavior).
+    // Genuine-activity events advance lastActivityAt (Terry's "upgrade resets
+    // every session to now" fix: recency must survive restarts, so ONLY real
+    // work updates it — never lifecycle). Stop-shaped events force the
+    // debounced flush so a finished turn's timestamp always persists.
+    if (ACTIVITY_EVENTS.has(event)) {
+      markActivity(sessionId as UUID, Date.now(), {
+        flush: event === "Stop" || event === "SubagentStop",
+      });
+    }
+
     const statusUpdate = deriveStatus(body);
     if (statusUpdate.status) {
       // Guard: idle and stopped are "sticky" states — only specific events
