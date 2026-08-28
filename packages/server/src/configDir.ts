@@ -20,6 +20,20 @@ const DEFAULT_CONFIG_DIR = join(HOME, ".autonomos");
 export const CONFIG_DIR =
   process.env.AUTONOMOS_CONFIG_DIR?.trim() || DEFAULT_CONFIG_DIR;
 
+/** Test-process detection for the escape guard. NODE_TEST_CONTEXT covers the
+ *  default child-process runner; the extra signals close the fail-open paths
+ *  a dev actually hits (running one file directly — node:test auto-runs on
+ *  import with no env marker — and `--test` with isolation=none). Belt over
+ *  belt on purpose: this guard is the load-bearing part of the fixture-escape
+ *  fix, and fail-open here is how a "killed" class recurs. */
+export function runningUnderTestRunner(): boolean {
+  if (process.env.NODE_TEST_CONTEXT) return true;
+  if (process.execArgv.includes("--test") || process.argv.includes("--test"))
+    return true;
+  const entry = process.argv[1] ?? "";
+  return /\.test\.[cm]?[tj]s$/.test(entry);
+}
+
 let _testOverride: string | null = null;
 
 /** Returns the active config dir — test override if set, otherwise CONFIG_DIR. */
@@ -38,7 +52,7 @@ export function getConfigDir(): string {
   // in a before-hook pass.
   const resolved =
     process.env.AUTONOMOS_CONFIG_DIR?.trim() || DEFAULT_CONFIG_DIR;
-  if (process.env.NODE_TEST_CONTEXT && resolved === DEFAULT_CONFIG_DIR) {
+  if (runningUnderTestRunner() && resolved === DEFAULT_CONFIG_DIR) {
     throw new Error(
       "Test resolved the REAL config dir (~/.autonomos). Tests must isolate: " +
         "set AUTONOMOS_CONFIG_DIR to a temp dir before importing persistence " +

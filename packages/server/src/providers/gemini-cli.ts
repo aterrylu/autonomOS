@@ -18,6 +18,7 @@ import {
   type PermissionMode,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
+import { getConfigDir } from "../configDir.js";
 import { getControlSocketPath } from "../internalSocket.js";
 import { getAuthToken, getServerPort } from "../serverState.js";
 import {
@@ -83,11 +84,13 @@ function geminiApprovalMode(
   }
 }
 
-const AUTONOMOS_CONFIG_DIR =
-  process.env.AUTONOMOS_CONFIG_DIR ||
-  join(process.env.HOME || "/tmp", ".autonomos");
+// Per-call via the guarded accessor (#350): the old module-load freeze here
+// bypassed the config-dir escape guard AND handed a stale value to the MCP
+// subprocess env below (#272 freeze-at-import hazard, flagged in review).
+const autonomosConfigDir = () => getConfigDir();
 
-const GEMINI_SETTINGS_PATH = join(AUTONOMOS_CONFIG_DIR, "gemini-settings.json");
+const geminiSettingsPath = () =>
+  join(autonomosConfigDir(), "gemini-settings.json");
 
 export const geminiCliProvider: AgentProvider = {
   name: "gemini-cli",
@@ -142,7 +145,7 @@ export const geminiCliProvider: AgentProvider = {
     const env = buildBaseEnv(sessionId, agentName);
 
     // Point Gemini at the autonomOS-managed settings file (hooks + MCP)
-    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = GEMINI_SETTINGS_PATH;
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = geminiSettingsPath();
 
     return env;
   },
@@ -272,7 +275,7 @@ export function writeGeminiSettings(channelServerScript: string): void {
         env: {
           AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
           AUTONOMOS_API_URL: apiUrl,
-          AUTONOMOS_CONFIG_DIR,
+          AUTONOMOS_CONFIG_DIR: autonomosConfigDir(),
           AUTONOMOS_TOKEN: getAuthToken(),
         },
       },
@@ -282,11 +285,11 @@ export function writeGeminiSettings(channelServerScript: string): void {
   // 0700 to match ensureConfigDir (configDir.ts): this creates the SAME config
   // root, and whichever site runs first on a fresh install sets the permanent
   // mode — so this one must agree, or an early Gemini spawn leaves the root 0755.
-  mkdirSync(AUTONOMOS_CONFIG_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2), {
+  mkdirSync(autonomosConfigDir(), { recursive: true, mode: 0o700 });
+  writeFileSync(geminiSettingsPath(), JSON.stringify(settings, null, 2), {
     mode: 0o600,
   });
-  console.log(`[gemini-cli] wrote settings to ${GEMINI_SETTINGS_PATH}`);
+  console.log(`[gemini-cli] wrote settings to ${geminiSettingsPath()}`);
 }
 
 export function _resetBinaryCacheForTesting(): void {

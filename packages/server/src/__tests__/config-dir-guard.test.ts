@@ -44,3 +44,29 @@ test("passes with the explicit test override, even when env points at real", () 
   _setConfigDirForTesting("/tmp/aos-guard-override");
   assert.equal(getConfigDir(), "/tmp/aos-guard-override");
 });
+
+test("test-runner detection belts: --test flag and .test.ts entry both count", async () => {
+  const { runningUnderTestRunner } = await import("../configDir.js");
+  // This process runs under the child runner → NODE_TEST_CONTEXT path.
+  assert.equal(runningUnderTestRunner(), true);
+  // Belt behaviors are pure functions of process state; simulate the two
+  // fail-open paths nox flagged (direct file run / isolation=none).
+  const savedEnv = process.env.NODE_TEST_CONTEXT;
+  const savedArgv = process.argv;
+  try {
+    delete process.env.NODE_TEST_CONTEXT;
+    process.argv = ["node", "/x/y/hooks.test.ts"]; // direct-run entry
+    assert.equal(
+      runningUnderTestRunner(),
+      true,
+      "direct .test.ts entry detected",
+    );
+    process.argv = ["node", "--test", "src/"]; // isolation=none shape
+    assert.equal(runningUnderTestRunner(), true, "--test argv detected");
+    process.argv = ["node", "/x/server.js"];
+    assert.equal(runningUnderTestRunner(), false, "prod shape not flagged");
+  } finally {
+    if (savedEnv !== undefined) process.env.NODE_TEST_CONTEXT = savedEnv;
+    process.argv = savedArgv;
+  }
+});
