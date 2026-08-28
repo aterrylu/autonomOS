@@ -532,9 +532,21 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
     // work updates it — never lifecycle). Stop-shaped events force the
     // debounced flush so a finished turn's timestamp always persists.
     if (ACTIVITY_EVENTS.has(event)) {
-      markActivity(sessionId as UUID, Date.now(), {
+      const flushed = markActivity(sessionId as UUID, Date.now(), {
         flush: event === "Stop" || event === "SubagentStop",
       });
+      // Push the recency to live dashboards WHEN it persists (debounce-rate,
+      // so ≤1 delta / agent / 30s) — agent polls are suspended while the
+      // socket is up, so without this a connected client's ages freeze at
+      // page-load values (review catch).
+      if (flushed) {
+        emitAgentDelta({
+          type: "agent.updated",
+          id: flushed.id,
+          patch: { lastActivityAt: flushed.lastActivityAt },
+          version: flushed.version,
+        });
+      }
     }
 
     const statusUpdate = deriveStatus(body);

@@ -301,18 +301,39 @@ export function markActivity(
   id: UUID,
   ts: number = Date.now(),
   opts?: { flush?: boolean },
-): void {
+): Agent | undefined {
   const cache = readCache();
   const existing = cache.get(id);
-  if (!existing) return;
-  if (existing.lastActivityAt !== undefined && ts <= existing.lastActivityAt)
-    return;
+  if (!existing) return undefined;
+  // Monotonic — but a forced flush (turn boundary) must still persist a
+  // same-millisecond value that only lives in memory (review: a Stop landing
+  // in the same ms as its PostToolUse must not leave the turn-end memory-only).
+  if (existing.lastActivityAt !== undefined && ts <= existing.lastActivityAt) {
+    if (opts?.flush) return flushActivity(id, existing);
+    return undefined;
+  }
   const next: Agent = { ...existing, lastActivityAt: ts };
   cache.set(id, next);
   const lastFlush = lastActivityFlush.get(id) ?? 0;
   if (opts?.flush || ts - lastFlush >= ACTIVITY_FLUSH_MS) {
-    lastActivityFlush.set(id, ts);
-    writeAgentFile(next);
+    return flushActivity(id, next);
+  }
+  return undefined;
+}
+
+/** Best-effort durability: recency must never take down the hook-ingest
+ *  pipeline (review: an ENOSPC here previously 500'd the POST and skipped
+ *  status derivation for the event). The in-memory value is already updated;
+ *  a failed flush costs durability only. Returns the record when the flush
+ *  landed — callers use that to emit a push delta. */
+function flushActivity(id: UUID, record: Agent): Agent | undefined {
+  try {
+    writeAgentFile(record);
+    lastActivityFlush.set(id, record.lastActivityAt ?? Date.now());
+    return record;
+  } catch (err) {
+    console.warn(`[agents] activity flush failed for ${id.slice(0, 8)}:`, err);
+    return undefined;
   }
 }
 
@@ -494,6 +515,7 @@ export function markRunning(
 /** Hard delete an agent record. Returns true if removed.
  *  Caller is responsible for handling children — see deleteAgent in routes. */
 export function deleteAgentRaw(id: UUID): boolean {
+  lastActivityFlush.delete(id);
   const cache = readCache();
   if (!cache.has(id)) return false;
   try {
@@ -605,6 +627,7 @@ export function agentsDirExists(): boolean {
 
 /** For testing — clear the in-memory cache so the next read hits disk. */
 export function _resetCacheForTesting(): void {
+  lastActivityFlush.clear();
   agentsCache = null;
   lastReadFailed = false;
 }

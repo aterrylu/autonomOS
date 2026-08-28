@@ -460,7 +460,12 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
         s.id === sessions[i].id &&
         s.name === sessions[i].name &&
         s.status === sessions[i].status &&
-        s.claudeSessionId === sessions[i].claudeSessionId,
+        s.claudeSessionId === sessions[i].claudeSessionId &&
+        // Recency must not be dropped by the short-circuit: for a steadily
+        // running fleet nothing else changes, and the freshly-computed
+        // lastActivityAt would be thrown away — freezing sidebar ages at
+        // their page-load values (review catch).
+        s.lastActivityAt === sessions[i].lastActivityAt,
     );
   const prevExited = get().exitedSessions;
   const exitedUnchanged =

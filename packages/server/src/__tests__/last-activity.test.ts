@@ -137,3 +137,29 @@ describe("lastActivityAt — hook-event feed through the real ingest route", () 
     );
   });
 });
+
+describe("lastActivityAt — review hardening", () => {
+  beforeEach(() => _resetCacheForTesting());
+
+  it("a same-millisecond Stop still persists (forced flush honors the monotonic early-return)", () => {
+    const id = "0000a111-0000-4000-8000-000000000008";
+    insertAgent(fix(id));
+    const t0 = Date.now();
+    markActivity(id as never, t0); // PostToolUse: flushes (first mark)
+    markActivity(id as never, t0 + 1); // within debounce → memory only
+    assert.equal(onDisk(id).lastActivityAt, t0);
+    const flushed = markActivity(id as never, t0 + 1, { flush: true }); // Stop, same ms as memory value
+    assert.ok(flushed, "forced flush returns the record");
+    assert.equal(onDisk(id).lastActivityAt, t0 + 1, "turn boundary persisted");
+  });
+
+  it("_resetCacheForTesting clears the debounce map (no cross-test bleed)", () => {
+    const id = "0000a111-0000-4000-8000-000000000009";
+    insertAgent(fix(id));
+    markActivity(id as never, Date.now());
+    _resetCacheForTesting();
+    insertAgent(fix(id));
+    const flushed = markActivity(id as never, Date.now() + 1); // debounced if map leaked
+    assert.ok(flushed, "first mark after reset flushes");
+  });
+});
