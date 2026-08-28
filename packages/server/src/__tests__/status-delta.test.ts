@@ -11,7 +11,8 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AgentDelta } from "@autonomos/core";
 
-process.env.AUTONOMOS_CONFIG_DIR ??= `/tmp/aos-status-delta-${randomUUID()}`;
+// UNCONDITIONAL (not ??=): worker agents inherit AUTONOMOS_CONFIG_DIR=<real dir>.
+process.env.AUTONOMOS_CONFIG_DIR = `/tmp/aos-status-delta-${randomUUID()}`;
 
 const { onAgentDelta } = await import("../events/agents.js");
 const {

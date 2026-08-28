@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// Config-dir isolation: transitively resolves the config dir; the configDir
+// test-escape guard refuses the production dir from a test process.
+import { mkdtempSync as __mkdtemp, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir as __tmpdir, tmpdir } from "node:os";
+import { join as __join, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { WSContext } from "hono/ws";
 import {
@@ -20,6 +22,8 @@ import {
   routeMessage,
   unregisterSessionClient,
 } from "../gateway/router.js";
+
+process.env.AUTONOMOS_CONFIG_DIR = __mkdtemp(__join(__tmpdir(), "aos-iso-"));
 
 describe("routeMessage — URI routing", () => {
   // Note: routeMessage depends on sessionClients registry.

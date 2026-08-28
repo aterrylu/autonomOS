@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+// Config-dir isolation: transitively resolves the config dir; the configDir
+// test-escape guard refuses the production dir from a test process.
+import { mkdtempSync as __mkdtemp } from "node:fs";
+import { tmpdir as __tmpdir } from "node:os";
+import { join as __join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-
 import { buildBaseEnv } from "../providers/shared.js";
 import {
   _resetServerStateForTesting,
@@ -11,6 +15,8 @@ import {
   setInternalSocketPath,
   setServerPort,
 } from "../serverState.js";
+
+process.env.AUTONOMOS_CONFIG_DIR = __mkdtemp(__join(__tmpdir(), "aos-iso-"));
 
 /**
  * The boot window (ADR-055).

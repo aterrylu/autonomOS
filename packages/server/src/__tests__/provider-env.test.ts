@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// Config-dir isolation via the OVERRIDE (not env): buildBaseEnv assertions
+// here are sensitive to the process env's exact contents, so we must not add
+// AUTONOMOS_CONFIG_DIR to it. The override satisfies the test-escape guard.
+import {
+  mkdtempSync as __mkdtemp,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir as __tmpdir, tmpdir } from "node:os";
+import { join as __join, join } from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
 import {
-  _resetConfigDirForTesting,
+  _setConfigDirForTesting as __isolate,
   _setConfigDirForTesting,
 } from "../configDir.js";
 import { claudeCodeProvider } from "../providers/claude-code.js";
@@ -14,6 +22,9 @@ import {
   setInternalSocketPath,
   setServerPort,
 } from "../serverState.js";
+
+const __fileIsolatedDir = __mkdtemp(__join(__tmpdir(), "aos-provider-env-"));
+__isolate(__fileIsolatedDir);
 
 /**
  * buildEnv contract after the Anthropic API-override removal:
@@ -50,7 +61,10 @@ describe("claudeCodeProvider.buildEnv — ANTHROPIC_* handling", () => {
   });
 
   after(() => {
-    _resetConfigDirForTesting();
+    // Restore to the FILE-LEVEL isolated dir, not a full reset — later
+    // describes in this file still resolve the config dir, and a full reset
+    // would land them on the production dir (the test-escape guard throws).
+    __isolate(__fileIsolatedDir);
     _resetServerStateForTesting();
     rmSync(tmpDir, { recursive: true, force: true });
   });

@@ -32,10 +32,12 @@ import {
 import { join } from "node:path";
 import type { EnvPreset, Provider } from "@autonomos/core";
 import { SECRET_MASK } from "@autonomos/core";
-import { CONFIG_DIR } from "./configDir.js";
+import { getConfigDir } from "./configDir.js";
 import { RESERVED_ENV_KEYS } from "./providers/shared.js";
 
-const PRESETS_DIR = join(CONFIG_DIR, "env-presets");
+// Per-call (not module-load) so the configDir test-escape guard applies and
+// env-based isolation set in a before-hook is honored (#272 class).
+const PRESETS_DIR = () => join(getConfigDir(), "env-presets");
 
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -119,7 +121,7 @@ export function maskEnvPreset(preset: EnvPreset): EnvPreset {
  *  from any REST/MCP handler; use maskEnvPreset first. */
 export function getEnvPresetRaw(name: string): EnvPreset | null {
   validateName(name);
-  const filePath = join(PRESETS_DIR, `${name}.json`);
+  const filePath = join(PRESETS_DIR(), `${name}.json`);
   try {
     return JSON.parse(readFileSync(filePath, "utf-8")) as EnvPreset;
   } catch (err: unknown) {
@@ -142,9 +144,9 @@ export function getEnvPreset(name: string): EnvPreset | null {
 
 function writePreset(preset: EnvPreset): void {
   validateName(preset.name);
-  ensureDir(PRESETS_DIR);
+  ensureDir(PRESETS_DIR());
   writeFileSync(
-    join(PRESETS_DIR, `${preset.name}.json`),
+    join(PRESETS_DIR(), `${preset.name}.json`),
     `${JSON.stringify(preset, null, 2)}\n`,
     {
       mode: 0o600,
@@ -322,7 +324,7 @@ export function updateEnvPreset(
 export function deleteEnvPreset(name: string): boolean {
   validateName(name);
   try {
-    unlinkSync(join(PRESETS_DIR, `${name}.json`));
+    unlinkSync(join(PRESETS_DIR(), `${name}.json`));
     return true;
   } catch (err: unknown) {
     if (
@@ -338,9 +340,9 @@ export function deleteEnvPreset(name: string): boolean {
 
 /** All presets, MASKED. */
 export function listEnvPresets(): Record<string, EnvPreset> {
-  ensureDir(PRESETS_DIR);
+  ensureDir(PRESETS_DIR());
   const result: Record<string, EnvPreset> = {};
-  for (const file of readdirSync(PRESETS_DIR)) {
+  for (const file of readdirSync(PRESETS_DIR())) {
     if (!file.endsWith(".json")) continue;
     const name = file.replace(/\.json$/, "");
     try {

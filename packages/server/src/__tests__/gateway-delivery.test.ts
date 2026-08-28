@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+// Config-dir isolation: the delivery path transitively resolves the config
+// dir (credentials/notifications). The configDir test-escape guard throws on
+// the production dir; isolate like every persistence-touching suite.
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -21,6 +24,8 @@ import {
   unregisterSessionClient,
 } from "../gateway/router.js";
 import { gatewayRouter } from "../routes/gateway.js";
+
+process.env.AUTONOMOS_CONFIG_DIR = mkdtempSync(join(tmpdir(), "aos-gwd-test-"));
 
 /**
  * Gateway send-DELIVERY over the real ws+unix socket transport (ADR-055 PR B).
