@@ -24,10 +24,14 @@ import type {
 } from "@autonomos/core";
 import { SUPPORTED_OVERLAP_POLICIES } from "@autonomos/core";
 import { Cron } from "croner";
-import { CONFIG_DIR } from "./configDir.js";
+import { getConfigDir } from "./configDir.js";
 
-const SCHEDULES_DIR = join(CONFIG_DIR, "schedules");
-const RUNS_DIR = join(CONFIG_DIR, "schedule-runs");
+// Per-call (not module-load) so the configDir test-escape guard applies and
+// env-based isolation set in a before-hook is honored (#272 class).
+const SCHEDULES_DIR = () => join(getConfigDir(), "schedules");
+// Per-call (not module-load) so the configDir test-escape guard applies and
+// env-based isolation set in a before-hook is honored (#272 class).
+const RUNS_DIR = () => join(getConfigDir(), "schedule-runs");
 
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -113,7 +117,7 @@ function assertScheduleShape(parsed: unknown, filePath: string): Schedule {
 
 export function getSchedule(name: string): Schedule | null {
   validateName(name);
-  const filePath = join(SCHEDULES_DIR, `${name}.json`);
+  const filePath = join(SCHEDULES_DIR(), `${name}.json`);
   try {
     const raw = readFileSync(filePath, "utf-8");
     return assertScheduleShape(JSON.parse(raw), filePath);
@@ -133,8 +137,8 @@ export function getSchedule(name: string): Schedule | null {
 
 export function saveSchedule(name: string, schedule: Schedule): void {
   validateName(name);
-  ensureDir(SCHEDULES_DIR);
-  const filePath = join(SCHEDULES_DIR, `${name}.json`);
+  ensureDir(SCHEDULES_DIR());
+  const filePath = join(SCHEDULES_DIR(), `${name}.json`);
   writeFileSync(filePath, `${JSON.stringify(schedule, null, 2)}\n`, {
     mode: 0o600,
   });
@@ -179,7 +183,7 @@ export function updateSchedule(
 
 export function deleteSchedule(name: string): boolean {
   validateName(name);
-  const filePath = join(SCHEDULES_DIR, `${name}.json`);
+  const filePath = join(SCHEDULES_DIR(), `${name}.json`);
   try {
     unlinkSync(filePath);
     return true;
@@ -198,9 +202,9 @@ export function deleteSchedule(name: string): boolean {
 }
 
 export function listSchedules(): Record<string, Schedule> {
-  ensureDir(SCHEDULES_DIR);
+  ensureDir(SCHEDULES_DIR());
   const result: Record<string, Schedule> = {};
-  const files = readdirSync(SCHEDULES_DIR);
+  const files = readdirSync(SCHEDULES_DIR());
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const name = file.replace(/\.json$/, "");
@@ -221,14 +225,14 @@ export function listSchedules(): Record<string, Schedule> {
 
 export function appendRun(name: string, record: RunRecord): void {
   validateName(name);
-  ensureDir(RUNS_DIR);
-  const filePath = join(RUNS_DIR, `${name}.jsonl`);
+  ensureDir(RUNS_DIR());
+  const filePath = join(RUNS_DIR(), `${name}.jsonl`);
   appendFileSync(filePath, `${JSON.stringify(record)}\n`);
 }
 
 export function getRecentRuns(name: string, limit = 10): RunRecord[] {
   validateName(name);
-  const filePath = join(RUNS_DIR, `${name}.jsonl`);
+  const filePath = join(RUNS_DIR(), `${name}.jsonl`);
   try {
     const raw = readFileSync(filePath, "utf-8");
     const lines = raw.trim().split("\n").filter(Boolean);
@@ -256,7 +260,7 @@ export function getRecentRuns(name: string, limit = 10): RunRecord[] {
 
 export function pruneRuns(name: string, maxLines = 2000): void {
   validateName(name);
-  const filePath = join(RUNS_DIR, `${name}.jsonl`);
+  const filePath = join(RUNS_DIR(), `${name}.jsonl`);
   try {
     const raw = readFileSync(filePath, "utf-8");
     const lines = raw.trim().split("\n").filter(Boolean);

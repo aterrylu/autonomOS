@@ -23,9 +23,11 @@ import {
   permissionModeFromLegacy,
   permissionModeFromStored,
 } from "@autonomos/core";
-import { CONFIG_DIR } from "./configDir.js";
+import { getConfigDir } from "./configDir.js";
 
-const TEMPLATES_DIR = join(CONFIG_DIR, "templates");
+// Per-call (not module-load) so the configDir test-escape guard applies and
+// env-based isolation set in a before-hook is honored (#272 class).
+const TEMPLATES_DIR = () => join(getConfigDir(), "templates");
 
 /** Allowed template name pattern — prevents path traversal */
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -82,10 +84,10 @@ function validateName(name: string): void {
 
 /** Ensure the templates directory exists */
 function ensureTemplatesDir(): void {
-  if (!existsSync(TEMPLATES_DIR)) {
+  if (!existsSync(TEMPLATES_DIR())) {
     // 0700: templates carry systemPrompt content — owner-only so another local
     // user can't read it. Creation-time only; existing dirs left as-is.
-    mkdirSync(TEMPLATES_DIR, { recursive: true, mode: 0o700 });
+    mkdirSync(TEMPLATES_DIR(), { recursive: true, mode: 0o700 });
   }
 }
 
@@ -96,7 +98,7 @@ function ensureTemplatesDir(): void {
  */
 export function getTemplate(name: string): AgentTemplate | null {
   validateName(name);
-  const filePath = join(TEMPLATES_DIR, `${name}.json`);
+  const filePath = join(TEMPLATES_DIR(), `${name}.json`);
   try {
     const raw = readFileSync(filePath, "utf-8");
     const parsed: unknown = JSON.parse(raw);
@@ -226,7 +228,7 @@ export function getTemplate(name: string): AgentTemplate | null {
 export function saveTemplate(name: string, template: AgentTemplate): void {
   validateName(name);
   ensureTemplatesDir();
-  const filePath = join(TEMPLATES_DIR, `${name}.json`);
+  const filePath = join(TEMPLATES_DIR(), `${name}.json`);
   writeFileSync(filePath, `${JSON.stringify(template, null, 2)}\n`, {
     mode: 0o600,
   });
@@ -239,7 +241,7 @@ export function saveTemplate(name: string, template: AgentTemplate): void {
  */
 export function deleteTemplate(name: string): boolean {
   validateName(name);
-  const filePath = join(TEMPLATES_DIR, `${name}.json`);
+  const filePath = join(TEMPLATES_DIR(), `${name}.json`);
   try {
     unlinkSync(filePath);
     return true;
@@ -263,7 +265,7 @@ export function deleteTemplate(name: string): boolean {
  */
 export function seedDefaultTemplates(): void {
   ensureTemplatesDir();
-  const existing = readdirSync(TEMPLATES_DIR).filter((f) =>
+  const existing = readdirSync(TEMPLATES_DIR()).filter((f) =>
     f.endsWith(".json"),
   );
   if (existing.length > 0) return;
@@ -331,7 +333,7 @@ export function seedDefaultTemplates(): void {
 export function listTemplates(): Record<string, AgentTemplate> {
   ensureTemplatesDir();
   const result: Record<string, AgentTemplate> = {};
-  const files = readdirSync(TEMPLATES_DIR);
+  const files = readdirSync(TEMPLATES_DIR());
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const name = file.replace(/\.json$/, "");

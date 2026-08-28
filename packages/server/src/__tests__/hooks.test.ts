@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+
+// Config-dir isolation — this suite writes REAL agent records via insertAgent.
+// Without this, the gemini fixture below lands in ~/.autonomos/agents/ and the
+// next real-server boot RESURRECTS it as a live bypass-mode agent (the
+// "gemini-test spawned itself on upgrade" incident). The configDir guard now
+// throws if a test resolves the production dir; this line is what satisfies it.
+process.env.AUTONOMOS_CONFIG_DIR = mkdtempSync(
+  join(tmpdir(), "aos-hooks-test-"),
+);
+
 import { mintAgentToken, verifyAgentToken } from "../agentCredentials.js";
 import {
   _resetCacheForTesting as _resetAgentsForTesting,

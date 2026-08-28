@@ -14,7 +14,10 @@ import { Hono } from "hono";
  * change it here in lockstep — this file is deleted with the aliases next
  * release.
  */
-process.env.AUTONOMOS_CONFIG_DIR ??= join(
+// UNCONDITIONAL assignment, not ??= — autonomOS sets AUTONOMOS_CONFIG_DIR to
+// the REAL config dir in every spawned agent's env, so the nullish-assign was
+// a no-op for worker-run suites: "isolated" in name, production in practice.
+process.env.AUTONOMOS_CONFIG_DIR = join(
   tmpdir(),
   `autonomos-alias-${randomUUID()}`,
 );

@@ -9,6 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getConfigDir } from "./configDir.js";
 
 export interface PinnedSession {
   /** The Claude Code session ID (used for --resume) */
@@ -23,16 +24,17 @@ export interface PinnedSession {
   pinnedAt: number;
 }
 
-const HOME = process.env.HOME;
-if (!HOME) throw new Error("HOME environment variable is not set");
-const CONFIG_DIR = join(HOME, ".autonomos");
-const PINNED_FILE = join(CONFIG_DIR, "pinned-sessions.json");
+// Routed through the guarded accessor (#350 review): the old join(HOME,...)
+// hardcoded the REAL dir and ignored AUTONOMOS_CONFIG_DIR entirely — a
+// pre-armed escape landmine in an (currently importer-less) module.
+const pinnedDir = () => getConfigDir();
+const PINNED_FILE = join(pinnedDir(), "pinned-sessions.json");
 
 function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
+  if (!existsSync(pinnedDir())) {
     // 0700 to match ensureConfigDir in configDir.ts — the config root is
     // owner-only. Creation-time only.
-    mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    mkdirSync(pinnedDir(), { recursive: true, mode: 0o700 });
   }
 }
 
