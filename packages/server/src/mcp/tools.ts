@@ -665,6 +665,7 @@ export const MCP_INSTRUCTIONS = [
   "### Receiving messages",
   "Messages from other agents arrive as <channel> events, each with `from` (sender name) and `from_uri` (the address to reply to).",
   'To reply: send(to: "<from_uri>", message: "your reply").',
+  "A `schedule://<name>` from_uri is NOT an agent — it names the scheduled task that fired the prompt. Schedules cannot receive replies: just do the task. To inspect or change that schedule, use get_schedule/update_schedule/delete_schedule with its name.",
 ].join("\n");
 
 /** Instructions for external MCP clients (no channel/send capability) */

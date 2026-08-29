@@ -79,7 +79,9 @@ describe("executeAgentSend (real code path)", () => {
     const call = capturedCall as { to: string; message: string; from: string };
     assert.equal(call.to, "agent://my-worker");
     assert.equal(call.message, "Run the deployment");
-    assert.equal(call.from, "scheduler");
+    // Per-schedule sender id (schedule://<name> scheme): the router renders
+    // this as "Schedule agent-route" with from_uri schedule://agent-route.
+    assert.equal(call.from, "schedule:agent-route");
   });
 
   it("records success when routeMessage returns null", async () => {
