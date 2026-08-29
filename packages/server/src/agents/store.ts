@@ -309,7 +309,11 @@ export function markActivity(
   // same-millisecond value that only lives in memory (review: a Stop landing
   // in the same ms as its PostToolUse must not leave the turn-end memory-only).
   if (existing.lastActivityAt !== undefined && ts <= existing.lastActivityAt) {
-    if (opts?.flush) return flushActivity(id, existing);
+    // Persist a memory-only value on a turn boundary — but if disk already
+    // has it, skip: re-flushing would also re-emit a no-op delta upstream
+    // (review: a same-ms Stop pushed an unchanged patch).
+    if (opts?.flush && lastActivityFlush.get(id) !== existing.lastActivityAt)
+      return flushActivity(id, existing);
     return undefined;
   }
   const next: Agent = { ...existing, lastActivityAt: ts };

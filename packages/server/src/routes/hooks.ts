@@ -535,10 +535,12 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
       const flushed = markActivity(sessionId as UUID, Date.now(), {
         flush: event === "Stop" || event === "SubagentStop",
       });
-      // Push the recency to live dashboards WHEN it persists (debounce-rate,
-      // so ≤1 delta / agent / 30s) — agent polls are suspended while the
-      // socket is up, so without this a connected client's ages freeze at
-      // page-load values (review catch).
+      // Push the recency to live dashboards WHEN it persists — one delta per
+      // TURN BOUNDARY (Stop/SubagentStop force a flush; a subagent fan-out
+      // emits one per child) plus the debounced ≥30s mid-turn cadence; an
+      // unchanged value never re-flushes or re-emits. Agent polls are
+      // suspended while the socket is up, so without this a connected
+      // client's ages freeze at page-load values (review catch).
       if (flushed) {
         emitAgentDelta({
           type: "agent.updated",
