@@ -6,6 +6,7 @@ import {
   deliverToCodex,
   disposeCodexControl,
   formatInbound,
+  setCodexActivitySink,
   setCodexInboundNotifier,
   setCodexStatusSink,
   startCodexStatusWatch,
@@ -506,6 +507,122 @@ describe("codex inbound — the delivery promise settles on terminal outcomes", 
     assert.ok(
       logs.some((l) => l.includes(enqueued)),
       `the second message must reach a LIVE controller (expected "${enqueued}"), got: ${JSON.stringify(logs)}`,
+    );
+  });
+});
+
+/**
+ * Codex has no hook relay, so its `lastActivityAt` used to freeze at spawn
+ * (Terry's "the date is the BIRTH date, not last-active" bug). The gateway's
+ * status-watch client is a NON-creator of the thread, so it never sees
+ * turn/item events — the only activity signal is the busy/idle status feed
+ * (thread/status/changed + the periodic thread/read poll). So "working" is our
+ * evidence of work: it advances activity on every observation (the poll is the
+ * mid-turn signal), and the working→idle transition forces the turn-boundary
+ * flush. Compacting is housekeeping and must NOT count.
+ */
+describe("codex activity → lastActivityAt (#351)", () => {
+  const AGENT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const ENDPOINT = "ws://127.0.0.1:1/fake";
+  let installed: FakeCodexDaemon | null = null;
+  function startDaemon(): FakeCodexDaemon {
+    installed = installFakeCodexDaemon();
+    return installed;
+  }
+  afterEach(() => {
+    _resetCodexControlForTesting();
+    installed?.restore();
+    installed = null;
+  });
+
+  it("advances activity per poll while working, then flushes at the working→idle turn boundary", async () => {
+    const daemon = startDaemon();
+    daemon.status = "active";
+    _setCodexTimingsForTesting({ statusPollMs: 5 });
+    const marks: { flush: boolean }[] = [];
+    setCodexActivitySink((_id, _ts, flush) => marks.push({ flush }));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      // Working re-emits every poll → repeated non-flush marks. This is the
+      // 10s-poll mid-turn liveness (shrunk to 5ms), our stand-in for the
+      // per-item events a non-creator subscriber never receives.
+      await waitUntil(
+        () => marks.filter((m) => !m.flush).length >= 2,
+        () => `two working activity marks (saw ${marks.length})`,
+      );
+      daemon.status = "idle"; // turn ends
+      await waitUntil(
+        () => marks.some((m) => m.flush),
+        () =>
+          `a flush at the working→idle boundary (saw ${JSON.stringify(marks)})`,
+      );
+    });
+
+    assert.ok(
+      marks.filter((m) => !m.flush).length >= 2,
+      "working advanced activity on every poll",
+    );
+    assert.equal(
+      marks.filter((m) => m.flush).length,
+      1,
+      "exactly one forced flush — the working→idle turn boundary, not idle-staying",
+    );
+  });
+
+  it("does NOT mark activity for a compacting agent (housekeeping, not work)", async () => {
+    const daemon = startDaemon();
+    daemon.status = "compacting";
+    _setCodexTimingsForTesting({
+      statusPollMs: 5,
+      compactingMaxHoldMs: 60_000,
+    });
+    const statuses: string[] = [];
+    const marks: unknown[] = [];
+    setCodexStatusSink((_id, s) => statuses.push(s));
+    setCodexActivitySink((_id, _ts, flush) => marks.push({ flush }));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      await waitUntil(
+        () => statuses.filter((s) => s === "compacting").length >= 2,
+        () => `compacting observed twice (saw ${statuses.join(",")})`,
+      );
+    });
+
+    assert.equal(
+      marks.length,
+      0,
+      "compacting must never advance lastActivityAt",
+    );
+  });
+
+  it("never marks activity for an agent that only idles — the birth-date invariant", async () => {
+    // The load-bearing invariant behind Terry's bug: a never-working codex agent
+    // (thread/started → emitStatus("idle") with prev===null, then idle→idle poll
+    // re-emits) must produce ZERO activity marks. A lifecycle idle counting as
+    // work is the exact regression — it would make lastActivityAt spuriously
+    // fresh for an agent that has done nothing.
+    const daemon = startDaemon();
+    daemon.status = "idle";
+    _setCodexTimingsForTesting({ statusPollMs: 5 });
+    const statuses: string[] = [];
+    const marks: unknown[] = [];
+    setCodexStatusSink((_id, s) => statuses.push(s));
+    setCodexActivitySink((_id, _ts, flush) => marks.push({ flush }));
+
+    await captureLogs(async () => {
+      startCodexStatusWatch(AGENT, ENDPOINT);
+      await waitUntil(
+        () => statuses.filter((s) => s === "idle").length >= 3,
+        () => `idle observed 3× (saw ${statuses.join(",")})`,
+      );
+    });
+
+    assert.equal(
+      marks.length,
+      0,
+      "a never-working (idle) agent must never advance lastActivityAt",
     );
   });
 });

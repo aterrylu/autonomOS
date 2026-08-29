@@ -133,6 +133,19 @@ export function setCodexThreadIdSink(
   threadIdSink = fn;
 }
 
+/** Advance the agent's `lastActivityAt` on genuine work (#351). Injected, like
+ *  the sinks above, to keep this module free of an autonomOS import cycle — the
+ *  markActivity + push-delta lives in gateway/index.ts. `flush` marks a turn
+ *  boundary (force persist). */
+let activitySink:
+  | ((agentId: string, ts: number, flush: boolean) => void)
+  | null = null;
+export function setCodexActivitySink(
+  fn: (agentId: string, ts: number, flush: boolean) => void,
+): void {
+  activitySink = fn;
+}
+
 /** Map a Codex thread.status.type to the dashboard's working-status vocabulary.
  *  Returns null for the transitional "notLoaded" and for missing/unreadable
  *  status — neither should overwrite a real status. An UNRECOGNIZED type (a
@@ -535,15 +548,42 @@ class CodexController {
   private emitStatus(type: string | undefined): void {
     const mapped = mapStatus(type);
     if (mapped) {
+      const prev = this.lastStatus;
       // Leaving "compacting" is what ends an episode — not a delivered message
       // and not a timer. Reset both halves so the next real compaction gets a
       // full hold and its own single notification.
-      if (mapped !== "compacting" && this.lastStatus === "compacting") {
+      if (mapped !== "compacting" && prev === "compacting") {
         this.compactingSince = null;
         this.compactingDisbelieved = false;
       }
       this.lastStatus = mapped;
       statusSink?.(this.agentId, mapped);
+      // lastActivityAt (#351): "working" per the daemon is genuine work — advance
+      // activity on every observation, INCLUDING the 10s status poll (queryIdle
+      // re-emits unconditionally), our only mid-turn signal because a non-creator
+      // subscriber never sees turn/item events. The working→idle edge is the turn
+      // boundary — flush so a finished turn's timestamp persists. compacting is
+      // housekeeping and never marks.
+      //
+      // This flush is BEST-EFFORT, not exactly-once, so this is a faithful-but-
+      // coarser analog of the CC hook path, NOT an exact mirror. It's skipped when
+      // a turn ends THROUGH a compaction (working→compacting→idle: prev is
+      // "compacting", not "working") — deliberate: the last real-work timestamp
+      // was already advanced during "working" and is truer than crediting the
+      // post-compaction idle. It's also skipped if a status push is missed for a
+      // sub-poll turn, or a reconnect clears lastStatus mid-turn. In every case
+      // the in-memory value is already correct (live API reads); only the forced
+      // PERSIST defers to the >=30s debounce — the accepted crash-loss window.
+      //
+      // CAVEAT (ADR-060): an agent parked in collaboration.wait_agent reads as
+      // active, so it shows perpetually-fresh activity while wait-idling — inside
+      // a live turn, but the inverse of CC, where a waiting agent ages via Stop.
+      // A deliberate accuracy tradeoff, flagged for Terry's sign-off (see the PR).
+      if (mapped === "working") {
+        activitySink?.(this.agentId, Date.now(), false);
+      } else if (mapped === "idle" && prev === "working") {
+        activitySink?.(this.agentId, Date.now(), true);
+      }
       return;
     }
     // null can mean "notLoaded"/missing (safe to ignore) OR a status type we
@@ -892,5 +932,6 @@ export function _resetCodexControlForTesting(): void {
   notifier = null;
   statusSink = null;
   threadIdSink = null;
+  activitySink = null;
   timings = { ...DEFAULT_TIMINGS };
 }

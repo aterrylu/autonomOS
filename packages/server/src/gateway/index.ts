@@ -11,11 +11,13 @@
  * That is the same false-ack this PR exists to remove, in its purest form.
  */
 
+import type { UUID } from "@autonomos/core";
 import { setChannelServerProbe } from "../agents/runtime.js";
-import { getAgent, patchAgent } from "../agents/store.js";
+import { getAgent, markActivity, patchAgent } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
 import { pushSystemNotification, setAgentStatus } from "../routes/hooks.js";
 import {
+  setCodexActivitySink,
   setCodexInboundNotifier,
   setCodexStatusSink,
   setCodexThreadIdSink,
@@ -35,6 +37,24 @@ export async function initGateway(): Promise<void> {
   // shows real status instead of a flat "running". CodexStatus is a subset of
   // AgentStatus, so this is type-checked end-to-end (no cast).
   setCodexStatusSink(setAgentStatus);
+
+  // Feed a Codex agent's genuine work into `lastActivityAt` (#351) — Codex has
+  // no hook relay, so its recency was frozen at spawn (Terry's "birth date, not
+  // last-active" bug). "working" (incl. the 10s status poll) advances it; the
+  // working→idle turn boundary forces the flush. markActivity owns
+  // debounce/monotonicity/unknown-id; a landed flush returns the record, which
+  // we push as a recency delta so live dashboards advance (mirrors routes/hooks.ts).
+  setCodexActivitySink((agentId, ts, flush) => {
+    const rec = markActivity(agentId as UUID, ts, { flush });
+    if (rec) {
+      emitAgentDelta({
+        type: "agent.updated",
+        id: rec.id,
+        patch: { lastActivityAt: rec.lastActivityAt },
+        version: rec.version,
+      });
+    }
+  });
 
   // Detect a Codex agent whose daemon-launched channel-server MCP subprocess
   // never connected — that agent silently has no outbound path (send + org
