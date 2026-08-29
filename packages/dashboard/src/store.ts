@@ -82,6 +82,9 @@ export interface SessionInfo {
    *  record (or a stubbed fixture) may not carry one. */
   permissionMode?: PermissionMode;
   createdAt: number;
+  /** Last genuine activity (hook/turn-driven, survives restarts) — absent on
+   *  records that predate the field. Preferred recency source. */
+  lastActivityAt?: number;
   updatedAt: number;
   /** When this session transitioned to status "exited". Only set for exited rows;
    *  missing on pre-schema records so the sidebar falls back to updatedAt. */
@@ -426,6 +429,7 @@ function agentToSession(agent: Agent, managerName?: string): SessionInfo {
     // back). Carry the server's answer, never the local default that was sent.
     permissionMode: agent.permissionMode,
     createdAt: agent.createdAt,
+    lastActivityAt: agent.lastActivityAt,
     updatedAt: agent.updatedAt,
     exitedAt: agent.exitedAt,
     exitReason: agent.exitReason,
@@ -456,7 +460,12 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
         s.id === sessions[i].id &&
         s.name === sessions[i].name &&
         s.status === sessions[i].status &&
-        s.claudeSessionId === sessions[i].claudeSessionId,
+        s.claudeSessionId === sessions[i].claudeSessionId &&
+        // Recency must not be dropped by the short-circuit: for a steadily
+        // running fleet nothing else changes, and the freshly-computed
+        // lastActivityAt would be thrown away — freezing sidebar ages at
+        // their page-load values (review catch).
+        s.lastActivityAt === sessions[i].lastActivityAt,
     );
   const prevExited = get().exitedSessions;
   const exitedUnchanged =

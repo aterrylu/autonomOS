@@ -71,6 +71,18 @@ export interface Agent {
   /** Timestamp the PTY transitioned to exited. Only set when status === "exited". */
   exitedAt?: number;
 
+  /** Last GENUINE activity — hook events (prompts, tools, stops, messages)
+   *  and Codex turn events. Process lifecycle (spawn/resume/upgrade) MUST
+   *  NEVER write this: its whole purpose is surviving restarts so the UI can
+   *  show true last-activity instead of "everything bumped to now" after an
+   *  upgrade. ABSENT on records that predate the field or have had no
+   *  activity since — readers fall back (UI: CC JSONL lastModified, then
+   *  createdAt). Never initialize at boot: absent stays absent until a real
+   *  activity event. Written via store.markActivity() only (debounced,
+   *  no version/updatedAt bump — activity is not a record mutation in the
+   *  optimistic-concurrency sense). */
+  lastActivityAt?: number;
+
   /** Provider that backs this agent's PTY. */
   provider: Provider;
 

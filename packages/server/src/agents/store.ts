@@ -287,6 +287,60 @@ function writeAgentFile(agent: Agent): void {
   renameSync(tmpPath, finalPath);
 }
 
+/** Record genuine agent activity (hook event / Codex turn) — the ONLY writer
+ *  of `lastActivityAt`. Debounced: the in-memory record updates immediately
+ *  (API reads see it), but disk flushes at most once per agent per
+ *  ACTIVITY_FLUSH_MS unless `flush` forces it (turn boundaries) — a busy
+ *  tool loop must not write a file per PostToolUse. Deliberately does NOT
+ *  bump version/updatedAt: activity is not a record mutation, and bumping
+ *  version here would churn optimistic-concurrency for every hook event.
+ *  Unknown ids no-op (a hook can outlive its record). */
+const ACTIVITY_FLUSH_MS = 30_000;
+const lastActivityFlush = new Map<UUID, number>();
+export function markActivity(
+  id: UUID,
+  ts: number = Date.now(),
+  opts?: { flush?: boolean },
+): Agent | undefined {
+  const cache = readCache();
+  const existing = cache.get(id);
+  if (!existing) return undefined;
+  // Monotonic — but a forced flush (turn boundary) must still persist a
+  // same-millisecond value that only lives in memory (review: a Stop landing
+  // in the same ms as its PostToolUse must not leave the turn-end memory-only).
+  if (existing.lastActivityAt !== undefined && ts <= existing.lastActivityAt) {
+    // Persist a memory-only value on a turn boundary — but if disk already
+    // has it, skip: re-flushing would also re-emit a no-op delta upstream
+    // (review: a same-ms Stop pushed an unchanged patch).
+    if (opts?.flush && lastActivityFlush.get(id) !== existing.lastActivityAt)
+      return flushActivity(id, existing);
+    return undefined;
+  }
+  const next: Agent = { ...existing, lastActivityAt: ts };
+  cache.set(id, next);
+  const lastFlush = lastActivityFlush.get(id) ?? 0;
+  if (opts?.flush || ts - lastFlush >= ACTIVITY_FLUSH_MS) {
+    return flushActivity(id, next);
+  }
+  return undefined;
+}
+
+/** Best-effort durability: recency must never take down the hook-ingest
+ *  pipeline (review: an ENOSPC here previously 500'd the POST and skipped
+ *  status derivation for the event). The in-memory value is already updated;
+ *  a failed flush costs durability only. Returns the record when the flush
+ *  landed — callers use that to emit a push delta. */
+function flushActivity(id: UUID, record: Agent): Agent | undefined {
+  try {
+    writeAgentFile(record);
+    lastActivityFlush.set(id, record.lastActivityAt ?? Date.now());
+    return record;
+  } catch (err) {
+    console.warn(`[agents] activity flush failed for ${id.slice(0, 8)}:`, err);
+    return undefined;
+  }
+}
+
 /** Insert or update an agent. Bumps version + updatedAt automatically.
  *  For full-record writes (e.g. from migration). For partial updates from
  *  routes, prefer patchAgent / setManager / markExited / etc. */
@@ -465,6 +519,7 @@ export function markRunning(
 /** Hard delete an agent record. Returns true if removed.
  *  Caller is responsible for handling children — see deleteAgent in routes. */
 export function deleteAgentRaw(id: UUID): boolean {
+  lastActivityFlush.delete(id);
   const cache = readCache();
   if (!cache.has(id)) return false;
   try {
@@ -576,6 +631,7 @@ export function agentsDirExists(): boolean {
 
 /** For testing — clear the in-memory cache so the next read hits disk. */
 export function _resetCacheForTesting(): void {
+  lastActivityFlush.clear();
   agentsCache = null;
   lastReadFailed = false;
 }
