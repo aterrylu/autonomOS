@@ -703,6 +703,12 @@ interface AppState {
     opts?: { isAutonomosAgent?: boolean },
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
+  /** Restart a running agent: kill the PTY, then re-attach from its record.
+   *  Composed from the two existing endpoints (there is no per-agent restart
+   *  route — only fleet-wide restart-all). */
+  restartSession: (id: string) => Promise<void>;
+  /** Reparent an agent in the org chart. `null` clears the manager. */
+  setManager: (id: string, managerName: string | null) => Promise<void>;
   openOrgChart: () => void;
   openTemplates: () => void;
   openSchedules: () => void;
@@ -1088,6 +1094,50 @@ export const useStore = create<AppState>()(
               fallback
                 ? { activePane: fallback, status: "connected" }
                 : { activePane: null, status: "disconnected" },
+            );
+          }
+          await get().fetchSessions();
+        },
+        restartSession: async (id) => {
+          // No per-agent restart endpoint exists (only restart-all), so compose
+          // kill → attach. killAttachment marks the record exited synchronously
+          // before responding, so attach won't hit the "already running" guard.
+          // Handle the two legs separately: a kill that doesn't land (409 — the
+          // agent was already dead) is fine, so proceed to attach anyway; only a
+          // failed ATTACH is a real problem (it leaves the agent stopped). No
+          // client toast channel exists yet, so a failed attach is logged loudly
+          // and the agent shows as stopped (resumable) — surfacing it in-UI is a
+          // follow-up.
+          try {
+            await agentsApi.kill(id);
+          } catch (err) {
+            console.warn(
+              `[autonomOS] restartSession: kill of ${id} did not land, continuing to attach:`,
+              apiErrorLabel(err),
+            );
+          }
+          try {
+            await agentsApi.attach(id);
+          } catch (err) {
+            console.error(
+              `[autonomOS] restartSession: attach of ${id} FAILED — agent left stopped:`,
+              apiErrorLabel(err),
+            );
+          }
+          await get().fetchSessions();
+        },
+        setManager: async (id, managerName) => {
+          // Server accepts `manager` (name) or `managerId` (uuid); null/undefined
+          // clears. Send the name to set, an explicit null managerId to clear.
+          try {
+            await agentsApi.manager(
+              id,
+              managerName ? { manager: managerName } : { managerId: null },
+            );
+          } catch (err) {
+            console.error(
+              `[autonomOS] setManager failed for ${id}:`,
+              apiErrorLabel(err),
             );
           }
           await get().fetchSessions();

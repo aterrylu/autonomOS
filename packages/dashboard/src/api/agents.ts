@@ -30,6 +30,12 @@ export const agentsApi = {
     request<Agent>("/api/agents", { method: "POST", body }),
   attach: (id: string) =>
     request<Agent>(`/api/agents/${id}/attach`, { method: "POST", body: {} }),
+  /** Reparent in the org chart. `manager` (name) or `managerId` (uuid); a null
+   *  `managerId` clears. `POST /api/agents/:id/manager`. */
+  manager: (
+    id: string,
+    body: { manager?: string; managerId?: string | null; version?: number },
+  ) => request<Agent>(`/api/agents/${id}/manager`, { method: "POST", body }),
   kill: (id: string, reason?: string) =>
     request<{ ok: boolean; id: string }>(`/api/agents/${id}/kill`, {
       method: "POST",
