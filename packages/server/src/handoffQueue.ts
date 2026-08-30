@@ -18,7 +18,6 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
@@ -211,27 +210,8 @@ export function peekNextHandoff(agentId: string): HandoffQueueItem | undefined {
   return readQueue(agentId).items[0];
 }
 
-/** Drop an agent's whole queue (e.g. when the agent is deleted). */
+/** Drop an agent's whole queue — called from deleteAgentRaw when the agent is
+ *  deleted, so no orphan file of undelivered messages is left behind. */
 export function clearHandoffQueue(agentId: string): void {
   writeQueue({ agentId, items: [] });
-}
-
-/** Agent ids that currently have at least one pending item. */
-export function agentsWithPendingHandoffs(): string[] {
-  const dir = QUEUE_DIR();
-  if (!existsSync(dir)) return [];
-  const ids: string[] = [];
-  for (const file of readdirSync(dir)) {
-    if (!file.endsWith(".json")) continue;
-    const agentId = file.replace(/\.json$/, "");
-    try {
-      if (handoffQueueCount(agentId) > 0) ids.push(agentId);
-    } catch (err) {
-      console.warn(
-        `Skipping corrupt hand-off queue "${agentId}":`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-  return ids;
 }

@@ -20,7 +20,6 @@ const {
   removeHandoffItem,
   peekNextHandoff,
   clearHandoffQueue,
-  agentsWithPendingHandoffs,
 } = await import("../handoffQueue.js");
 
 const QUEUE_DIR = join(TEST_DIR, "handoff-queues");
@@ -133,16 +132,18 @@ describe("handoff queue store", () => {
     assert.equal(handoffQueueCount(AGENT), 0);
   });
 
-  it("agentsWithPendingHandoffs lists only agents with items, skipping corrupt files", () => {
-    const a2 = randomUUID();
+  it("clearHandoffQueue drops the whole queue and its file (agent-delete cleanup)", () => {
     enqueueHandoff(AGENT, { from: "s", message: "x" });
-    enqueueHandoff(a2, { from: "s", message: "y" });
-    const listed = agentsWithPendingHandoffs().sort();
-    assert.deepEqual(listed.sort(), [AGENT, a2].sort());
+    enqueueHandoff(AGENT, { from: "s", message: "y" });
+    assert.equal(handoffQueueCount(AGENT), 2);
+    assert.ok(existsSync(queueFile(AGENT)));
 
-    // clearHandoffQueue drops one; it disappears from the list.
     clearHandoffQueue(AGENT);
-    assert.deepEqual(agentsWithPendingHandoffs(), [a2]);
+    assert.equal(handoffQueueCount(AGENT), 0);
+    assert.ok(
+      !existsSync(queueFile(AGENT)),
+      "clearing must remove the file so no orphan is left after delete",
+    );
   });
 
   it("rejects an unsafe agent id (path-traversal guard)", () => {

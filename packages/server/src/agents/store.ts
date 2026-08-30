@@ -40,6 +40,7 @@ import {
 } from "@autonomos/core";
 import { revokeAgentToken } from "../agentCredentials.js";
 import { ensureConfigDir, getConfigDir } from "../configDir.js";
+import { clearHandoffQueue } from "../handoffQueue.js";
 
 // ── Paths ──────────────────────────────────────────────────────────
 
@@ -536,6 +537,10 @@ export function deleteAgentRaw(id: UUID): boolean {
   // markExited cannot cover this: its not-found early-return fires when the
   // record is already gone.
   revokeAgentToken(id);
+  // Same rationale as the token revoke: a record that ceases to exist takes its
+  // associated state with it. Clear any hand-off queue so a deleted manual-queue
+  // agent leaves no orphan file of undelivered messages behind.
+  clearHandoffQueue(id);
   return true;
 }
 

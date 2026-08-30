@@ -9,6 +9,7 @@ import { HANDOFF_QUEUE_CAP } from "@autonomos/core";
 import {
   _resetCacheForTesting,
   buildAgent,
+  deleteAgentRaw,
   insertAgent,
 } from "../agents/store.js";
 import {
@@ -107,5 +108,20 @@ describe("routeMessage → manual-queue hand-off (Gemini)", () => {
     const err = await routeMessage("agent://Gigi", "hi me", gigi);
     assert.match(String(err), /yourself/i);
     assert.equal(listHandoffQueue(gigi).length, 0);
+  });
+
+  it("deleting the agent clears its queue — no orphan messages left on disk", async () => {
+    const gigi = seedGemini("Gigi");
+    const sender = seedGemini("Sender");
+    await routeMessage("agent://Gigi", "queued", sender);
+    assert.equal(listHandoffQueue(gigi).length, 1);
+
+    // deleteAgentRaw is the chokepoint every delete path funnels through.
+    assert.equal(deleteAgentRaw(gigi), true);
+    assert.equal(
+      listHandoffQueue(gigi).length,
+      0,
+      "the deleted agent's queued messages must be cleared, not orphaned",
+    );
   });
 });
