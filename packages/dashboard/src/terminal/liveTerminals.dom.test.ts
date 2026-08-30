@@ -597,6 +597,15 @@ describe("WebGL-recreate full-viewport refresh (blackout HARDENING, not a fix)",
     expect(refreshes).toBe(1); // still just the attach-time one
   });
 
+  it("settled-fit consumes the recreate flag for ONE more refresh, then never again", () => {
+    mountVisible("w5");
+    expect(refreshes).toBe(1); // recreate-time refresh (possibly unsettled atlas)
+    window.dispatchEvent(new Event("focus")); // handleFocus → applyFit succeeds
+    expect(refreshes).toBe(2); // settled-path refresh consumed the flag
+    window.dispatchEvent(new Event("focus"));
+    expect(refreshes).toBe(2); // flag single-use — no refresh-per-fit
+  });
+
   it("detach/re-attach cycle refreshes exactly once per recreation", () => {
     const { entry, container } = mountVisible("w4");
     entry.detach(container); // disposes webgl

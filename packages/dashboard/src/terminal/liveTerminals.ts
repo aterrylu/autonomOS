@@ -190,6 +190,9 @@ export class LiveTerminal {
    *  nothing left to park in; if a session ever "can't scroll up", look for
    *  per-frame ED3 in its stream first. */
   private repinAfterWrite = false;
+  /** Armed on WebGL (re)creation; consumed by applyFit's settled branch for
+   *  a second full-viewport refresh against the SETTLED atlas. */
+  private pendingRecreateRefresh = false;
 
   private userScrolledUp = false;
   private programmaticScroll = false;
@@ -648,6 +651,13 @@ export class LiveTerminal {
     }
     this.lastFitW = w;
     this.lastFitH = h;
+    if (this.pendingRecreateRefresh) {
+      // Renderer provably settled (plausible fit). One more viewport-only
+      // re-rasterization in case the recreate-time refresh ran against an
+      // unsettled atlas AND no resize followed to force a repaint.
+      this.pendingRecreateRefresh = false;
+      this.terminal.refresh(0, this.terminal.rows - 1);
+    }
     if (this.wsRef.current && document.hasFocus()) {
       sendResize(this.wsRef.current, this.terminal);
     }
@@ -686,16 +696,6 @@ export class LiveTerminal {
       if (!addon) return;
       this.terminal.loadAddon(addon);
       this.webglAddon = addon;
-      // HARDENING (not a fix — the fullscreen-blackout bug stays open): a
-      // freshly (re)created renderer paints only rows xterm marks dirty
-      // afterward; force a full-viewport re-rasterization from the intact
-      // buffer so any stale/blank rows a dying context left behind repaint.
-      // Client-side only — zero bytes to the PTY (NOT the ADR-087 nudge
-      // class), no re-stream/parse (NOT the pre-#316 slow-switch class),
-      // ms-scale on rare events. Cannot fire per-frame by construction:
-      // loadWebglAddon early-returns while an addon exists, so this runs
-      // only on genuine (re)creation (attach, context-loss rebuild).
-      this.terminal.refresh(0, this.terminal.rows - 1);
       addon.onContextLoss(() => {
         addon.dispose();
         if (this.webglAddon === addon) this.webglAddon = null;
@@ -714,7 +714,29 @@ export class LiveTerminal {
       });
     } catch (err) {
       console.warn("WebGL addon failed, falling back to canvas renderer:", err);
+      // A throw after loadAddon would otherwise orphan a live GL context
+      // while our field says none exists — the next visibility toggle would
+      // create a SECOND context (the very pressure that triggers context
+      // loss). Dispose whatever was created before clearing the field.
+      this.webglAddon?.dispose();
       this.webglAddon = null;
+    }
+    if (this.webglAddon) {
+      // HARDENING (not a fix — the fullscreen-blackout bug stays open): a
+      // freshly (re)created renderer paints only rows xterm marks dirty
+      // afterward; force a full-viewport re-rasterization from the intact
+      // buffer so any stale/blank rows a dying context left behind repaint.
+      // Client-side only — zero bytes to the PTY (NOT the ADR-087 nudge
+      // class), no re-stream/parse (NOT the pre-#316 slow-switch class),
+      // ms-scale on rare events. Outside the try: a refresh throw must not
+      // orphan the addon. Cannot fire per-frame: guarded by the
+      // early-return above, so this runs only on genuine (re)creation.
+      this.terminal.refresh(0, this.terminal.rows - 1);
+      // The immediate refresh can rasterize against an unsettled atlas (this
+      // file documents recreated renderers needing >1 frame to measure);
+      // applyFit's success branch consumes this flag for one more refresh
+      // once the renderer has provably settled (review suggestion).
+      this.pendingRecreateRefresh = true;
     }
   }
 
