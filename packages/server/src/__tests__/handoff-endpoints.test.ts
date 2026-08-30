@@ -81,4 +81,31 @@ describe("hand-off queue REST endpoints", () => {
     const res = await app.request(`/api/agents/${randomUUID()}/queue`);
     assert.equal(res.status, 404);
   });
+
+  it("GET /api/agents enriches a manual-queue agent with pendingHandoffCount (badge on load)", async () => {
+    // The dashboard badge needs the count on the INITIAL snapshot, not only via
+    // a later delta. This pins the REST boundary; the /ws/agents reconcile uses
+    // the same shared withPendingHandoffCount enricher (live-QA caught the WS
+    // path missing it).
+    const withQ = seedGemini();
+    enqueueHandoff(withQ, { from: "a", message: "one" });
+    enqueueHandoff(withQ, { from: "a", message: "two" });
+    const withoutQ = seedGemini();
+
+    const res = await app.request("/api/agents");
+    const agents = (await res.json()) as Array<{
+      id: string;
+      pendingHandoffCount?: number;
+    }>;
+    assert.equal(
+      agents.find((a) => a.id === withQ)?.pendingHandoffCount,
+      2,
+      "a manual-queue agent with a queue carries the count",
+    );
+    assert.equal(
+      agents.find((a) => a.id === withoutQ)?.pendingHandoffCount,
+      undefined,
+      "an empty queue adds no count",
+    );
+  });
 });

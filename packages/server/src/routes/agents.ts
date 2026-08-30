@@ -7,7 +7,6 @@
  */
 
 import {
-  type Agent,
   type AgentTreeNode,
   type ExitReason,
   isExitReason,
@@ -16,6 +15,7 @@ import {
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken } from "../agentCredentials.js";
+import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -48,7 +48,6 @@ import {
   removeHandoffItem,
 } from "../handoffQueue.js";
 import { HttpError, httpErrorResponse } from "../httpError.js";
-import { getProvider } from "../providers/index.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
 import { usageQueue } from "../usageQueue.js";
@@ -177,33 +176,6 @@ agentsRouter.onError((err, c) => {
 });
 
 // ── Read ───────────────────────────────────────────────────────────
-
-/** Enrich a manual-queue agent with its live pending hand-off count so the
- *  dashboard badge is correct on first load (live changes arrive via deltas).
- *  Non-manual-queue agents and empty queues are returned untouched. A corrupt
- *  queue file must NEVER take down the (always-on) agent list, so an unreadable
- *  queue degrades this one agent to "no badge" with a loud log — the file is
- *  left on disk for recovery, never silently deleted. Exported for the
- *  resilience test that pins the "one bad file can't 500 the list" guarantee. */
-export function withPendingHandoffCount(a: Agent): Agent {
-  if (
-    getProvider(a.provider).capabilities.messaging.inboundMethod !==
-    "manual-queue"
-  ) {
-    return a;
-  }
-  let count: number;
-  try {
-    count = handoffQueueCount(a.id);
-  } catch (err) {
-    console.error(
-      `[agents] hand-off queue for ${a.id.slice(0, 8)} is unreadable — badge omitted:`,
-      err instanceof Error ? err.message : err,
-    );
-    return a;
-  }
-  return count > 0 ? { ...a, pendingHandoffCount: count } : a;
-}
 
 agentsRouter.get("/", (c) => {
   return c.json(listAgents().map(withPendingHandoffCount));

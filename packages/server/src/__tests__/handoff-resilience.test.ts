@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { UUID } from "@autonomos/core";
+import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
   _resetCacheForTesting,
   buildAgent,
@@ -15,7 +16,6 @@ import {
   _setConfigDirForTesting,
 } from "../configDir.js";
 import { handoffQueueCount } from "../handoffQueue.js";
-import { withPendingHandoffCount } from "../routes/agents.js";
 
 // A corrupt queue file (truncated / non-JSON) must NOT take down the always-on
 // agent list: readQueue stays strict (a queue of user messages is not silently
