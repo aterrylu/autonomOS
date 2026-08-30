@@ -42,12 +42,13 @@ function seedStore() {
       { id: "mgr-b", name: "Beta" },
       // biome-ignore lint/suspicious/noExplicitAny: partial SessionInfo for test
     ] as any,
+    exitedSessions: [],
     switchPane: vi.fn(),
     killSession: vi.fn(),
     restartSession: vi.fn(),
     resumeSession: vi.fn().mockResolvedValue(undefined),
     removeSession: vi.fn().mockResolvedValue(undefined),
-    setManager: vi.fn(),
+    setManager: vi.fn().mockResolvedValue(undefined),
     // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
   } as any);
 }
@@ -218,7 +219,7 @@ describe("AgentContextMenu — inline delete confirm", () => {
 });
 
 describe("AgentContextMenu — set-manager submenu", () => {
-  it("opens a flyout on click and reparents on pick", () => {
+  it("opens a flyout on click and reparents by manager id on pick", () => {
     renderMenu(RUNNING);
     // No flyout until Set manager is opened.
     expect(screen.queryByRole("menuitem", { name: "Beta" })).toBeNull();
@@ -228,10 +229,36 @@ describe("AgentContextMenu — set-manager submenu", () => {
     expect(screen.getByRole("menuitem", { name: "Beta" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "TeamLead" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "Beta" }));
+    // Set by the candidate's id (exact), not its name.
     expect(useStore.getState().setManager).toHaveBeenCalledWith(
       "agent-1",
-      "Beta",
+      "mgr-b",
     );
+  });
+
+  it("click-open moves keyboard focus into the flyout", () => {
+    renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Set manager" }));
+    const flyout = screen.getByRole("menu", { name: /Set manager for/ });
+    expect(flyout.contains(document.activeElement)).toBe(true);
+  });
+
+  it("surfaces the reason and stays open when a pick fails", async () => {
+    useStore.setState({
+      setManager: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("Cycle: proposed manager is a descendant"),
+        ),
+      // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    } as any);
+    const { onClose } = renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Set manager" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Beta" }));
+    await screen.findByText(/Couldn't set manager: Cycle/);
+    expect(onClose).not.toHaveBeenCalled();
+    // Flyout stays open for another try.
+    expect(screen.getByRole("menuitem", { name: "Alpha" })).toBeTruthy();
   });
 
   it("Escape peels the submenu before the menu (LIFO)", () => {
@@ -271,6 +298,24 @@ describe("AgentContextMenu — set-manager submenu", () => {
     // …but the target's direct report and grandchild would form a cycle.
     expect(screen.queryByRole("menuitem", { name: "Child" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Grand" })).toBeNull();
+  });
+
+  it("excludes a descendant reached through an EXITED intermediary", () => {
+    // TeamLead → E (exited, mgr=TeamLead) → R (running, mgr=E). A live-only walk
+    // misses E, offers R, and the pick 409s. The walk must see exited records.
+    useStore.setState({
+      sessions: [
+        { id: "agent-1", name: "TeamLead" },
+        { id: "mgr-a", name: "Alpha" },
+        { id: "r", name: "R", manager: "E" },
+      ],
+      exitedSessions: [{ id: "e", name: "E", manager: "TeamLead" }],
+      // biome-ignore lint/suspicious/noExplicitAny: partial SessionInfo for test
+    } as any);
+    renderMenu(RUNNING); // target = TeamLead
+    fireEvent.click(screen.getByRole("menuitem", { name: "Set manager" }));
+    expect(screen.getByRole("menuitem", { name: "Alpha" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "R" })).toBeNull();
   });
 
   it("Clear manager clears when a manager is set", () => {

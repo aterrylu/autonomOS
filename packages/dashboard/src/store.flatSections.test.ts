@@ -287,3 +287,90 @@ describe("fetchSessions prune (pinned agent exits)", () => {
     expect(get().unpinnedOrder).toEqual(["alive"]);
   });
 });
+
+describe("restartSession re-opens the pane", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("re-targets the restarted agent's pane after kill→attach (thread #1)", async () => {
+    // The kill drops the id + retargets the active pane to a sibling; without an
+    // explicit re-open the restarted agent runs with no visible pane. Spying
+    // switchPane makes this fail if that re-open line is removed.
+    const switchSpy = vi.fn();
+    useStore.setState({
+      activePane: { type: "session", id: "a1" },
+      sessions: [sess("a1")],
+      exitedSessions: [],
+      pinnedOrder: [],
+      unpinnedOrder: ["a1"],
+      switchPane: switchSpy,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const u = typeof url === "string" ? url : "";
+        const body =
+          u.includes("/api/agents") &&
+          !u.includes("/kill") &&
+          !u.includes("/attach") &&
+          !u.includes("/tree")
+            ? [
+                {
+                  id: "a1",
+                  name: "a1",
+                  status: "running",
+                  workingDirectory: "/tmp",
+                  provider: "claude",
+                  createdAt: 1,
+                  updatedAt: 1,
+                },
+              ]
+            : {};
+        return Promise.resolve(
+          new Response(JSON.stringify(body), { status: 200 }),
+        );
+      }),
+    );
+
+    await get().restartSession("a1");
+
+    expect(switchSpy).toHaveBeenCalledWith({ type: "session", id: "a1" });
+  });
+
+  it("does NOT re-open the pane when the attach fails", async () => {
+    const switchSpy = vi.fn();
+    useStore.setState({
+      activePane: { type: "session", id: "a1" },
+      sessions: [sess("a1")],
+      exitedSessions: [],
+      pinnedOrder: [],
+      unpinnedOrder: ["a1"],
+      switchPane: switchSpy,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const u = typeof url === "string" ? url : "";
+        if (u.includes("/attach")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "boom" }), { status: 500 }),
+          );
+        }
+        const body =
+          u.includes("/api/agents") &&
+          !u.includes("/kill") &&
+          !u.includes("/tree")
+            ? []
+            : {};
+        return Promise.resolve(
+          new Response(JSON.stringify(body), { status: 200 }),
+        );
+      }),
+    );
+
+    await get().restartSession("a1");
+
+    expect(switchSpy).not.toHaveBeenCalled();
+  });
+});

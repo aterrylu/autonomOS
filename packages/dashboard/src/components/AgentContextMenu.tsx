@@ -252,22 +252,31 @@ function ManagerSubmenuItem({
   page,
   c,
   onPick,
+  onCloseAll,
 }: {
   target: AgentMenuTarget;
   candidates: SessionInfo[];
   page: PageTheme;
   c: PopColors;
-  /** Set the manager (or null to clear) and close the whole menu. */
-  onPick: (managerName: string | null) => void;
+  /** Set the manager by id (or null to clear). Rethrows the reason on failure. */
+  onPick: (managerId: string | null) => Promise<void>;
+  /** Close the whole menu (on a successful pick). */
+  onCloseAll: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [flyPos, setFlyPos] = useState<{ left: number; top: number } | null>(
     null,
   );
+  const [pickError, setPickError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const flyRef = useRef<HTMLDivElement>(null);
   const openT = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Autofocus the flyout only when opened by keyboard/click — NOT on hover, which
+  // would yank focus out of the parent menu after the dwell.
+  const focusOnOpen = useRef(false);
 
   const clearTimers = () => {
     if (openT.current) clearTimeout(openT.current);
@@ -275,16 +284,26 @@ function ManagerSubmenuItem({
     openT.current = null;
     closeT.current = null;
   };
+  // Close, and if focus is currently inside the flyout return it to the button —
+  // otherwise the unmounting item drops focus to <body> and the parent menu's
+  // onKeyDown goes dead. Used by the mouse-out timer and the escape-stack closer.
+  const closeInternal = () => {
+    if (flyRef.current?.contains(document.activeElement))
+      btnRef.current?.focus();
+    setOpen(false);
+  };
   const scheduleOpen = () => {
     clearTimers();
+    focusOnOpen.current = false;
     openT.current = setTimeout(() => setOpen(true), SUBMENU_OPEN_MS);
   };
   const scheduleClose = () => {
     clearTimers();
-    closeT.current = setTimeout(() => setOpen(false), SUBMENU_CLOSE_MS);
+    closeT.current = setTimeout(closeInternal, SUBMENU_CLOSE_MS);
   };
   const openNow = () => {
     clearTimers();
+    focusOnOpen.current = true;
     setOpen(true);
   };
   const closeNow = (refocus = false) => {
@@ -304,15 +323,25 @@ function ManagerSubmenuItem({
   );
 
   // Nest on the escape stack while open — Escape peels the submenu first (LIFO),
-  // above the parent menu's closer.
+  // above the parent menu's closer, returning focus to the button.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: register once per open; closeInternal reads only stable refs
   useEffect(() => {
     if (!open) return;
-    return pushEscapeCloser(() => setOpen(false));
+    return pushEscapeCloser(closeInternal);
+  }, [open]);
+
+  // Reset transient state when the flyout closes.
+  useEffect(() => {
+    if (!open) {
+      setPickError(null);
+      setPending(false);
+      setFlyPos(null);
+    }
   }, [open]);
 
   // Anchor the flyout beside the row; flip to the left edge near the right side,
   // and lift it up so it never runs off the bottom. Measured post-layout.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-anchor when the candidate count changes the flyout height
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-anchor when the candidate count / error row changes the flyout height
   useLayoutEffect(() => {
     if (!open || !btnRef.current) return;
     const r = btnRef.current.getBoundingClientRect();
@@ -327,18 +356,36 @@ function ManagerSubmenuItem({
       top = Math.max(pad, window.innerHeight - h - pad);
     }
     setFlyPos({ left, top });
-  }, [open, candidates.length]);
+  }, [open, candidates.length, pickError]);
 
-  // Focus the first enabled flyout item when it opens (keyboard + click paths).
+  // Focus the first enabled flyout item once it is POSITIONED (and thus visible)
+  // — a hidden/off-screen element can't take focus in a real browser. Gated to
+  // the keyboard/click open path via focusOnOpen.
   useLayoutEffect(() => {
-    if (open) {
+    if (open && flyPos && focusOnOpen.current) {
+      focusOnOpen.current = false;
       flyRef.current
         ?.querySelector<HTMLElement>(
           '[role="menuitem"]:not([aria-disabled="true"])',
         )
         ?.focus();
     }
-  }, [open]);
+  }, [open, flyPos]);
+
+  async function pick(managerId: string | null) {
+    if (pending) return;
+    setPending(true);
+    setPickError(null);
+    try {
+      await onPick(managerId);
+      onCloseAll();
+    } catch (err) {
+      // Keep the flyout open and show the reason (e.g. a 409 cycle routed
+      // through an exited intermediary the client filter can't see).
+      setPickError(err instanceof Error ? err.message : String(err));
+      setPending(false);
+    }
+  }
 
   function flyKeyDown(e: React.KeyboardEvent) {
     if (e.key === "ArrowLeft" || e.key === "Escape") {
@@ -373,9 +420,11 @@ function ManagerSubmenuItem({
         aria-haspopup="menu"
         aria-expanded={open}
         tabIndex={-1}
-        style={rowStyle({}, page, c, open)}
+        style={rowStyle({}, page, c, open || focused)}
         onMouseEnter={scheduleOpen}
         onMouseLeave={scheduleClose}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onClick={() => (open ? closeNow(true) : openNow())}
         onKeyDown={(e) => {
           if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") {
@@ -430,15 +479,27 @@ function ManagerSubmenuItem({
             boxShadow: c.shadow,
           }}
         >
+          {pickError && (
+            <div
+              style={{
+                padding: "4px 8px",
+                fontSize: 11,
+                color: c.danger,
+                whiteSpace: "normal",
+              }}
+            >
+              Couldn't set manager: {pickError}
+            </div>
+          )}
           <div style={{ maxHeight: 280, overflowY: "auto" }}>
             <ManagerRow
               label="Clear manager"
               icon="∅"
-              disabled={!target.manager}
+              disabled={pending || !target.manager}
               disabledReason="No manager set"
               page={page}
               c={c}
-              onSelect={() => onPick(null)}
+              onSelect={() => pick(null)}
             />
             {candidates.length === 0 && (
               <div
@@ -457,10 +518,11 @@ function ManagerSubmenuItem({
                 label={s.name}
                 icon="○"
                 checked={target.manager === s.name}
+                disabled={pending}
                 truncate
                 page={page}
                 c={c}
-                onSelect={() => onPick(s.name)}
+                onSelect={() => pick(s.id)}
               />
             ))}
           </div>
@@ -490,6 +552,9 @@ export function AgentContextMenu({
   const removeSession = useStore((s) => s.removeSession);
   const setManager = useStore((s) => s.setManager);
   const sessions = useStore((s) => s.sessions);
+  // Exited agents too — the cycle walk must see intermediaries the server sees
+  // (its ancestor check runs over the full cache, not just live agents).
+  const exitedSessions = useStore((s) => s.exitedSessions);
 
   const isLight = isLightBg(page.bg);
   const c = popoverColors(isLight);
@@ -529,14 +594,27 @@ export function AgentContextMenu({
     setPos({ left, top });
   }, [x, y, confirmingDelete, deleteError]);
 
-  // Move DOM focus to the first enabled item on open, so the menu is immediately
-  // keyboard-navigable and arrow keys have an anchor.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-focus the first item after the confirm swap
+  // Restore focus to whatever held it before the menu opened (usually the xterm
+  // textarea) on dismiss — otherwise focus lands on <body> and the next keystroke
+  // in this terminal-centric app goes nowhere.
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    return () => prev?.focus?.();
+  }, []);
+
+  // Move DOM focus to the first enabled item on open. In the confirm state, focus
+  // Cancel specifically — the first enabled item is otherwise Open (the process
+  // group renders above the danger block), which would make the confirm
+  // unreachable by keyboard.
   useLayoutEffect(() => {
-    const first = menuRef.current?.querySelector<HTMLElement>(
-      '[role="menuitem"]:not([aria-disabled="true"])',
-    );
-    first?.focus();
+    const root = menuRef.current;
+    if (!root) return;
+    const el = confirmingDelete
+      ? root.querySelector<HTMLElement>('[data-confirm-cancel="true"]')
+      : root.querySelector<HTMLElement>(
+          '[role="menuitem"]:not([aria-disabled="true"])',
+        );
+    el?.focus();
   }, [confirmingDelete]);
 
   // Roving focus among TOP-LEVEL items (the flyout owns its own nav and stops
@@ -648,16 +726,20 @@ export function AgentContextMenu({
   }
 
   // Manager candidates: exclude the target itself AND its descendants — the
-  // server rejects a reparent that would form a cycle (409), which would
-  // otherwise be a silent snap-back. Walk the manager graph down from the target.
+  // server rejects a reparent that would form a cycle (409). Walk the manager
+  // graph down from the target over the FULL cache (live + exited): the server's
+  // ancestor check sees exited records too, so a cycle can route through an
+  // exited intermediary (A → E(exited, mgr=A) → R) that a live-only walk misses.
+  // Candidates themselves stay live-only — a dead agent isn't a useful manager.
   let candidates: SessionInfo[] = [];
   if (canAct) {
+    const all = [...sessions, ...exitedSessions];
     const descendants = new Set<string>();
     const queue = [target.name];
     while (queue.length > 0) {
       const parent = queue.shift();
       if (parent === undefined) continue;
-      for (const s of sessions) {
+      for (const s of all) {
         if (s.manager === parent && !descendants.has(s.name)) {
           descendants.add(s.name);
           queue.push(s.name);
@@ -707,10 +789,10 @@ export function AgentContextMenu({
             candidates={candidates}
             page={page}
             c={c}
-            onPick={(name) => {
-              if (target.id) setManager(target.id, name);
-              onClose();
-            }}
+            onPick={(managerId) =>
+              target.id ? setManager(target.id, managerId) : Promise.resolve()
+            }
+            onCloseAll={onClose}
           />
         </>
       )}
@@ -744,6 +826,7 @@ export function AgentContextMenu({
                 type="button"
                 role="menuitem"
                 tabIndex={-1}
+                data-confirm-cancel="true"
                 style={{
                   border: "none",
                   background: "transparent",

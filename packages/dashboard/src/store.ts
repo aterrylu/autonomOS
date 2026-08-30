@@ -707,8 +707,9 @@ interface AppState {
    *  Composed from the two existing endpoints (there is no per-agent restart
    *  route — only fleet-wide restart-all). */
   restartSession: (id: string) => Promise<void>;
-  /** Reparent an agent in the org chart. `null` clears the manager. */
-  setManager: (id: string, managerName: string | null) => Promise<void>;
+  /** Reparent an agent in the org chart by manager id. `null` clears. Rethrows
+   *  the typed error on failure so the caller can surface the reason. */
+  setManager: (id: string, managerId: string | null) => Promise<void>;
   openOrgChart: () => void;
   openTemplates: () => void;
   openSchedules: () => void;
@@ -1116,8 +1117,10 @@ export const useStore = create<AppState>()(
               apiErrorLabel(err),
             );
           }
+          let attached = false;
           try {
             await agentsApi.attach(id);
+            attached = true;
           } catch (err) {
             console.error(
               `[autonomOS] restartSession: attach of ${id} FAILED — agent left stopped:`,
@@ -1125,20 +1128,27 @@ export const useStore = create<AppState>()(
             );
           }
           await get().fetchSessions();
+          // Re-open the pane. The kill dropped this id from `sessions` and
+          // retargeted the active pane to a live sibling (pickActiveFallback),
+          // so without this, Restart closes the terminal you were watching and
+          // jumps you to another agent while the restarted one runs with no pane.
+          // Only when the attach actually landed (else there is nothing to show).
+          if (attached) get().switchPane({ type: "session", id });
         },
-        setManager: async (id, managerName) => {
-          // Server accepts `manager` (name) or `managerId` (uuid); null/undefined
-          // clears. Send the name to set, an explicit null managerId to clear.
+        setManager: async (id, managerId) => {
+          // Set by exact id (skips the server's name resolution + running/recent
+          // tie-break); `null` clears. Rethrow like removeSession so the caller
+          // can surface the reason — the client cycle filter can't see cycles
+          // that route through an EXITED intermediary, so a 409 is still possible.
           try {
-            await agentsApi.manager(
-              id,
-              managerName ? { manager: managerName } : { managerId: null },
-            );
+            await agentsApi.manager(id, { managerId });
           } catch (err) {
             console.error(
               `[autonomOS] setManager failed for ${id}:`,
               apiErrorLabel(err),
             );
+            await get().fetchSessions();
+            throw err;
           }
           await get().fetchSessions();
         },
