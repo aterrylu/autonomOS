@@ -18,10 +18,12 @@ import {
 } from "../configDir.js";
 import {
   isSessionClientRegistered,
+  type RouteMeta,
   registerSessionClient,
   routeMessage,
   unregisterSessionClient,
 } from "../gateway/router.js";
+import { listHandoffQueue } from "../handoffQueue.js";
 
 process.env.AUTONOMOS_CONFIG_DIR = __mkdtemp(__join(__tmpdir(), "aos-iso-"));
 
@@ -239,12 +241,13 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
     unregisterSessionClient(ws);
   });
 
-  it("refuses delivery to a Gemini agent — it has NO inbound path (false-ack guard)", async () => {
-    // Gemini holds a channel-server socket for OUTBOUND send() only; its reader
-    // ignores channel notifications, so a write here reports success while the
-    // message vanishes (the ADR-064 bug class, previously still live for Gemini).
-    // readyState OPEN proves the guard fires BEFORE the send path — not via a
-    // closed socket — and it is unconditional (no running-state gate).
+  it("QUEUES a message to a Gemini agent for hand-delivery — accepts without false-writing (manual-queue)", async () => {
+    // Gemini has no live inbound path (its channel-server socket is OUTBOUND
+    // only — the reader discards channel notifications). Previously the router
+    // FAILED LOUD here (the #342 false-ack guard). Now, because gemini-cli opts
+    // into inboundMethod:"manual-queue", the router QUEUES the message for human
+    // hand-delivery instead: an ACCEPT (null) carrying a "queued" note — never a
+    // write into the socket that can't carry it, so it is still not a false-ack.
     const id = "9e310000-0000-4000-8000-00000000000c";
     seedAgent(id, "GhostGemini", "gemini-cli", false);
     const writes: string[] = [];
@@ -254,16 +257,23 @@ describe("routeMessage — a non-running Codex agent fails loudly, not silently"
     } as unknown as WSContext;
     registerSessionClient(id, ws);
 
+    const meta: RouteMeta = {};
     const err = await routeMessage(
       "agent://GhostGemini",
       "are you there?",
       SENDER,
+      meta,
     );
 
-    assert.ok(err, "must return an error, not null (null means success)");
-    assert.match(err, /gemini-cli/); // names the runtime that can't receive
-    assert.match(err, /no inbound delivery path/);
-    assert.match(err, /not delivered/i);
+    // Accepted (null), and the note is honest — queued, NOT delivered.
+    assert.equal(err, null, "a queued hand-off is an accept, not a failure");
+    assert.match(meta.note ?? "", /queued for hand-delivery/i);
+    // The message is now in the agent's hand-off queue...
+    const queued = listHandoffQueue(id);
+    assert.equal(queued.length, 1);
+    assert.match(queued[0].message, /are you there\?/);
+    // ...and NOTHING was written into the socket whose reader discards inbound
+    // (queuing must not resurrect the false-ack it replaces).
     assert.equal(
       writes.length,
       0,

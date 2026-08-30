@@ -65,7 +65,17 @@ export type GatewayWsMessage =
   // /ws endpoint and its own contract.
   | { type: "message"; payload: GatewayMessage }
   | { type: "send"; to: string; message: string; requestId: string }
-  | { type: "send_result"; requestId: string; success: boolean; error?: string }
+  | {
+      type: "send_result";
+      requestId: string;
+      success: boolean;
+      error?: string;
+      /** On success, an optional sender-facing note rendered ALONGSIDE the
+       *  accept — used by the manual-queue hand-off path to say "accepted —
+       *  queued for hand-delivery" (honest per ADR-064: accepted, not
+       *  delivered). Absent for a plain live accept. */
+      note?: string;
+    }
   | { type: "list_agents_request"; requestId: string }
   | { type: "list_agents_response"; requestId: string; agents: AgentInfo[] };
 

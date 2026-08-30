@@ -510,6 +510,10 @@ async function executeAgentSend(
     // schedule://<name>, so the receiving agent knows WHICH schedule fired —
     // and a reply attempt gets the schedule-scheme guidance instead of
     // hunting for a phantom "Scheduler" agent.
+    // A string is a NOT-delivered failure; `null` is an accept — including a
+    // manual-queue hand-off (queued for a Gemini agent), which counts as a
+    // successful delivery for the schedule run (the router set a note the
+    // scheduler doesn't surface).
     const error = await routeMsg(to, schedule.prompt, `schedule:${name}`);
     if (error) {
       onRunCompleted(name, { status: "failure", error });

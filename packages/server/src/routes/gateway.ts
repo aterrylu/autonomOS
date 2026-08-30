@@ -14,6 +14,7 @@ import type { UpgradeWebSocket } from "hono/ws";
 import { verifyAgentToken } from "../agentCredentials.js";
 import {
   getAgentList,
+  type RouteMeta,
   registerSessionClient,
   routeMessage,
   unregisterSessionClient,
@@ -114,9 +115,13 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
             // `routeMessage`'s contract — report trouble by RETURNING a string —
             // is also exactly what makes a future throw easy to introduce here
             // without anyone noticing this call is the last boundary.
+            // `meta` receives an optional sender-facing note that rides an
+            // accept (manual-queue hand-off). Its `note` is only meaningful when
+            // `error === null` (accepted); on a failure it stays unset.
+            const meta: RouteMeta = {};
             let error: string | null;
             try {
-              error = await routeMessage(msg.to, msg.message, sessionId);
+              error = await routeMessage(msg.to, msg.message, sessionId, meta);
             } catch (err) {
               const detail = err instanceof Error ? err.message : String(err);
               console.error(
@@ -130,6 +135,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
               requestId: msg.requestId,
               success: error === null,
               ...(error && { error }),
+              ...(error === null && meta.note && { note: meta.note }),
             };
             try {
               ws.send(JSON.stringify(result));

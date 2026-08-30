@@ -83,6 +83,15 @@ export interface Agent {
    *  optimistic-concurrency sense). */
   lastActivityAt?: number;
 
+  /** Count of messages QUEUED for human hand-delivery to this agent (the
+   *  dashboard pending-count badge). Only meaningful for a "manual-queue"
+   *  provider (Gemini). DERIVED from the hand-off queue store, not a persisted
+   *  record field — the server populates it when serializing an agent and emits
+   *  an `agent.updated` patch (reusing the current version, NOT bumping it —
+   *  a queue change is not a record mutation) whenever it enqueues/dequeues.
+   *  Absent/0 means an empty queue. See handoffQueue.ts. */
+  pendingHandoffCount?: number;
+
   /** Provider that backs this agent's PTY. */
   provider: Provider;
 
