@@ -160,8 +160,17 @@ export interface ProviderCapabilities {
     outbound: boolean;
     /** Agent can receive messages from other agents */
     inbound: boolean;
-    /** How inbound delivery works (if supported) */
-    inboundMethod: "channels" | "pty-injection" | "none";
+    /**
+     * How inbound delivery works.
+     * - "channels": live delivery via the agent's own MCP channel-server socket (Claude Code, Codex).
+     * - "manual-queue": the agent has no live inbound path, so a message is QUEUED
+     *   for human hand-delivery (injected into the PTY on a trigger, confirmed by a
+     *   UserPromptSubmit hook). `inbound` stays false — it cannot receive live — but
+     *   the router accepts-and-queues instead of failing loud (Gemini). See handoffQueue.ts.
+     * - "pty-injection": reserved; no provider currently uses it.
+     * - "none": no inbound path at all — the router fails loud.
+     */
+    inboundMethod: "channels" | "manual-queue" | "pty-injection" | "none";
   };
   /** Can pre-set session ID at spawn time */
   presetSessionId: boolean;

@@ -101,7 +101,15 @@ export const geminiCliProvider: AgentProvider = {
     liveStatus: { supported: true, method: "hooks" },
     mcp: { supported: true, perSession: true },
     systemPrompt: { supported: true, method: "prepend-to-prompt" },
-    messaging: { outbound: true, inbound: false, inboundMethod: "none" },
+    // inbound stays false — Gemini's interactive CLI has no live inbound path
+    // (fork ruling A: interactive-only, no A2A). But instead of failing a send
+    // loud, the gateway QUEUES it for human hand-delivery via PTY injection
+    // (manual-queue). See handoffQueue.ts + the router capability guard.
+    messaging: {
+      outbound: true,
+      inbound: false,
+      inboundMethod: "manual-queue",
+    },
     presetSessionId: false,
     sessionResume: true,
     sessionFork: false,

@@ -19,14 +19,18 @@
  */
 
 import type {
+  Agent,
   AgentInfo,
   GatewayMessage,
   GatewayWsMessage,
 } from "@autonomos/core";
+import { HANDOFF_QUEUE_CAP } from "@autonomos/core";
 import type { WSContext, WSReadyState } from "hono/ws";
 import { noteChannelServerRegistered } from "../agents/channelServerCheck.js";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
+import { emitPendingHandoffCount } from "../handoffDelivery.js";
+import { enqueueHandoff } from "../handoffQueue.js";
 import { getProvider } from "../providers/index.js";
 import { batchGetTitles } from "../titleCache.js";
 import {
@@ -107,16 +111,32 @@ export function isSessionClientRegistered(sessionId: string): boolean {
 // ── URI-based message routing ─────────────────────────────────────
 
 /**
+ * Optional out-channel for metadata that rides ALONGSIDE an accept, without
+ * disturbing routeMessage's `string | null` contract (ADR-064: `null` =
+ * accepted, a string = NOT delivered). Today its only field is `note` — a
+ * sender-facing string set by the manual-queue hand-off path ("accepted —
+ * queued for hand-delivery", honest per ADR-064). A caller that doesn't care
+ * (the scheduler, every existing test) simply omits it and sees the unchanged
+ * `string | null`; the gateway route passes one in and renders `note` on the
+ * success it sends back to the sender.
+ */
+export interface RouteMeta {
+  note?: string;
+}
+
+/**
  * Route a message by URI.
  *
  * Returns `null` only if the destination ACCEPTED the message; otherwise a
  * string explaining why it has not arrived — suitable for showing the sender
- * verbatim.
+ * verbatim. Pass `meta` to also receive an optional sender-facing `note` that
+ * accompanies an accept (manual-queue hand-off).
  */
 export async function routeMessage(
   to: string,
   message: string,
   fromSessionId: string,
+  meta?: RouteMeta,
 ): Promise<string | null> {
   const sepIndex = to.indexOf("://");
   if (sepIndex === -1) {
@@ -126,7 +146,8 @@ export async function routeMessage(
   const scheme = to.slice(0, sepIndex);
   const path = to.slice(sepIndex + 3);
 
-  if (scheme === "agent") return routeToAgent(fromSessionId, path, message);
+  if (scheme === "agent")
+    return routeToAgent(fromSessionId, path, message, meta);
 
   // `broadcast://all` was removed (ADR-064), but every agent spawned before
   // that ships still carries it in the tool list baked into its system prompt —
@@ -321,6 +342,7 @@ async function routeToAgent(
   fromSessionId: string,
   targetName: string,
   content: string,
+  meta?: RouteMeta,
 ): Promise<string | null> {
   // Codex agents receive inbound via their app-server daemon (turn/start), not
   // the channel-server WS — that path only Claude Code's channels feature
@@ -343,6 +365,40 @@ async function routeToAgent(
     );
     if (!delivery.delivered) {
       return `Message to Codex agent "${targetName}" was NOT delivered — ${delivery.reason}.`;
+    }
+    return null;
+  }
+
+  // Manual-queue path: an inbound-less provider (Gemini) can't receive a live
+  // message, so instead of failing we QUEUE it for human hand-delivery. Resolved
+  // by NAME from the store — a manual-queue agent need not (and, per "Gemini
+  // launches its MCP only on a turn", often does NOT) hold a channel-server
+  // socket, so this MUST run before resolveConnectedAgent, which requires one.
+  // The sender is told SUCCESS-with-a-note (accepted, queued) — honest per
+  // ADR-064; a full queue is a real failure instead.
+  const queueTarget = resolveManualQueueAgent(targetName);
+  if (queueTarget) {
+    if (queueTarget.id === fromSessionId) return "Cannot send to yourself.";
+    const sender = await resolveSenderIdentity(fromSessionId);
+    const enq = enqueueHandoff(queueTarget.id, {
+      from: sender.name,
+      message: content,
+    });
+    if (!enq.ok) {
+      return (
+        `Queue full — ${HANDOFF_QUEUE_CAP} undelivered messages are already ` +
+        `awaiting manual delivery to "${targetName}". Not queued; try again ` +
+        "once a human has delivered some."
+      );
+    }
+    emitPendingHandoffCount(queueTarget.id, enq.count);
+    // Accepted (null, per ADR-064) — the note rides the out-param so the
+    // sender is told it was QUEUED, not delivered live.
+    if (meta) {
+      meta.note =
+        `Accepted — queued for hand-delivery to "${targetName}" ` +
+        `(${enq.count} pending). This agent's runtime (${queueTarget.provider}) ` +
+        "has no live inbound; a human will deliver it.";
     }
     return null;
   }
@@ -447,6 +503,25 @@ function resolveRunningCodexAgent(idOrName: string): { id: string } | null {
   const byName = resolveAgentByName(idOrName);
   if (byName?.provider === "codex" && byName.status === "running")
     return byName;
+  return null;
+}
+
+/**
+ * Resolve a RUNNING agent (by id or name) whose provider uses "manual-queue"
+ * inbound — i.e. one we should queue a hand-off for rather than deliver live.
+ * Requires `running`: queuing for a dead agent is pointless (there'll be no PTY
+ * to inject into), mirroring the Codex resolver's running gate.
+ */
+function resolveManualQueueAgent(idOrName: string): Agent | null {
+  const isManualQueue = (a: Agent | undefined): a is Agent =>
+    !!a &&
+    a.status === "running" &&
+    getProvider(a.provider).capabilities.messaging.inboundMethod ===
+      "manual-queue";
+  const byId = getAgent(idOrName);
+  if (isManualQueue(byId)) return byId;
+  const byName = resolveAgentByName(idOrName);
+  if (isManualQueue(byName)) return byName;
   return null;
 }
 

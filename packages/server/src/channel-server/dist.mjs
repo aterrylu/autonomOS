@@ -777,7 +777,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       return {
-        content: [{ type: "text", text: `Accepted for delivery to ${to}` }]
+        content: [
+          {
+            type: "text",
+            text: result.note ?? `Accepted for delivery to ${to}`
+          }
+        ]
       };
     }
     case "list_agents": {
