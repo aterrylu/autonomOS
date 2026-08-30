@@ -217,9 +217,11 @@ describe("AgentContextMenu — inline delete confirm", () => {
   });
 });
 
-describe("AgentContextMenu — set-manager drill-in", () => {
-  it("drills into a candidate list and reparents on pick", () => {
+describe("AgentContextMenu — set-manager submenu", () => {
+  it("opens a flyout on click and reparents on pick", () => {
     renderMenu(RUNNING);
+    // No flyout until Set manager is opened.
+    expect(screen.queryByRole("menuitem", { name: "Beta" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "Set manager" }));
     // Candidates exclude self (TeamLead), include the others.
     expect(screen.getByRole("menuitem", { name: "Alpha" })).toBeTruthy();
@@ -230,6 +232,26 @@ describe("AgentContextMenu — set-manager drill-in", () => {
       "agent-1",
       "Beta",
     );
+  });
+
+  it("Escape peels the submenu before the menu (LIFO)", () => {
+    const { onClose } = renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Set manager" }));
+    const flyout = screen.getByRole("menu", { name: /Set manager for/ });
+    fireEvent.keyDown(flyout, { key: "Escape" });
+    // Submenu closed, but the parent menu stays open.
+    expect(screen.queryByRole("menuitem", { name: "Beta" })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("menuitem", { name: "Set manager" })).toBeTruthy();
+  });
+
+  it("marks the current manager and can open via ArrowRight/Enter", () => {
+    renderMenu({ ...RUNNING, manager: "Alpha" });
+    const smItem = screen.getByRole("menuitem", { name: "Set manager" });
+    fireEvent.keyDown(smItem, { key: "ArrowRight" });
+    // The current manager row carries a check (✓) in its accessible name.
+    expect(screen.getByRole("menuitem", { name: /Alpha/ })).toBeTruthy();
+    expect(screen.getByText("✓")).toBeTruthy();
   });
 
   it("excludes the target's descendants from candidates (no cycles)", () => {
