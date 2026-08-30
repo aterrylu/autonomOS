@@ -4,6 +4,7 @@ export * from "./types/api";
 export * from "./types/envPreset";
 export * from "./types/events";
 export * from "./types/gateway";
+export * from "./types/handoff";
 export * from "./types/permissions";
 export * from "./types/provider";
 export * from "./types/schedule";
