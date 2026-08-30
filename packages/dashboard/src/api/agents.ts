@@ -88,4 +88,9 @@ export const agentsApi = {
       `/api/agents/${id}/queue/${encodeURIComponent(itemId)}`,
       { method: "DELETE" },
     ),
+  /** Discard ALL queued messages (no delivery) — the pane's "Discard all". */
+  queueDiscardAll: (id: string) =>
+    request<{ ok: true; cleared: number }>(`/api/agents/${id}/queue`, {
+      method: "DELETE",
+    }),
 };

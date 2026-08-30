@@ -42,6 +42,7 @@ import {
   injectHandoffItem,
 } from "../handoffDelivery.js";
 import {
+  clearHandoffQueue,
   handoffQueueCount,
   listHandoffQueue,
   removeHandoffItem,
@@ -105,6 +106,17 @@ agentsRouter.delete("/:id/queue/:itemId", (c) => {
   // Push the new count so the badge updates live (reuse version — derived state).
   emitPendingHandoffCount(agent.id);
   return c.json({ ok: true, removed });
+});
+
+/** Discard ALL queued messages (no delivery) — the pane's "Discard all". */
+agentsRouter.delete("/:id/queue", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const cleared = handoffQueueCount(agent.id);
+  clearHandoffQueue(agent.id);
+  emitPendingHandoffCount(agent.id);
+  return c.json({ ok: true, cleared });
 });
 
 // Map cache-poisoned writes to a stable 503 across the whole agents

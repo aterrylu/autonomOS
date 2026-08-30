@@ -1117,6 +1117,26 @@ function SessionRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <span className="flex-1 truncate text-xs">{s.name}</span>
+          {/* Hand-off pending badge (ADR-094): messages queued for human
+              hand-delivery to this manual-queue (Gemini) agent. Gold accent
+              (theme yellow), NOT a status color — independent of the status
+              dot/label, like the env-preset pill. Absent when the queue is
+              empty. The overlay itself lives in the terminal pane. */}
+          {(s.pendingHandoffCount ?? 0) > 0 && (
+            <span
+              className="shrink-0 text-[10px] font-semibold leading-[14px]"
+              style={{
+                color: "#e6b450",
+                border: "1px solid #e6b450",
+                background: "#e6b4501f",
+                borderRadius: 999,
+                padding: "0 5px",
+              }}
+              title={`${s.pendingHandoffCount} message${s.pendingHandoffCount === 1 ? "" : "s"} queued for hand-delivery`}
+            >
+              ✉ {s.pendingHandoffCount}
+            </span>
+          )}
           {/* Recency treatment (B2 — timestamp-only fade): the AGE TEXT fades
               with age so wildly-stale sessions recede. The unread prefix stays
               full-strength (an attention signal, like the status dot/label) —

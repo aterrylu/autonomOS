@@ -2,6 +2,7 @@ import { memo, useRef } from "react";
 import { focusTerminal, useTerminal } from "../hooks/useTerminal";
 import { useStore } from "../store";
 import { CopyToast } from "./CopyToast";
+import { HandoffOverlay } from "./HandoffOverlay";
 import { UsageQueueButton } from "./UsageQueueButton";
 
 interface SessionPaneProps {
@@ -67,6 +68,9 @@ export const SessionPane = memo(function SessionPane({
         </button>
       )}
       <UsageQueueButton sessionId={sessionId} provider={provider} />
+      {/* Hand-off delivery overlay — auto-hides unless this agent has queued
+          messages; stacks beneath the usage-queue overlay by default. */}
+      <HandoffOverlay sessionId={sessionId} />
     </div>
   );
 });
