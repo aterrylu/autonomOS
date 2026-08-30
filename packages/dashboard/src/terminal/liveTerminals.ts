@@ -686,6 +686,16 @@ export class LiveTerminal {
       if (!addon) return;
       this.terminal.loadAddon(addon);
       this.webglAddon = addon;
+      // HARDENING (not a fix — the fullscreen-blackout bug stays open): a
+      // freshly (re)created renderer paints only rows xterm marks dirty
+      // afterward; force a full-viewport re-rasterization from the intact
+      // buffer so any stale/blank rows a dying context left behind repaint.
+      // Client-side only — zero bytes to the PTY (NOT the ADR-087 nudge
+      // class), no re-stream/parse (NOT the pre-#316 slow-switch class),
+      // ms-scale on rare events. Cannot fire per-frame by construction:
+      // loadWebglAddon early-returns while an addon exists, so this runs
+      // only on genuine (re)creation (attach, context-loss rebuild).
+      this.terminal.refresh(0, this.terminal.rows - 1);
       addon.onContextLoss(() => {
         addon.dispose();
         if (this.webglAddon === addon) this.webglAddon = null;
