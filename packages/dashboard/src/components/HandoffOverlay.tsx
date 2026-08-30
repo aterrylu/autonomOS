@@ -261,81 +261,112 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         className="flex flex-col"
         style={{ maxHeight: 260, overflowY: "auto" }}
       >
-        {items.map((it) => (
-          <div
-            key={it.id}
-            className="flex flex-col gap-1 px-2.5 py-2"
-            style={{ borderBottom: border }}
-          >
-            {/* Top line: sender + compact icon actions (or the delivering state). */}
-            <div className="flex items-center gap-2">
-              <span
-                className="min-w-0 flex-1 truncate text-[11px] font-semibold"
-                style={{ color: YELLOW }}
-              >
-                {it.from}
-              </span>
-              {sending.has(it.id) ? (
-                <span
-                  className="shrink-0 text-[11px]"
-                  style={{ color: YELLOW }}
-                  data-testid="handoff-sending"
-                >
-                  delivering…
-                </span>
-              ) : (
-                <div className="flex shrink-0 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => discard(it.id)}
-                    aria-label="Discard"
-                    title="Discard"
-                    className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
-                    style={{
-                      width: 22,
-                      height: 22,
-                      color: RED,
-                      border: `1px solid ${RED}40`,
-                      background: "transparent",
-                    }}
-                  >
-                    <DiscardIcon />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => send(it.id)}
-                    aria-label="Send"
-                    title="Send"
-                    className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
-                    style={{
-                      width: 22,
-                      height: 22,
-                      color: "#17110a",
-                      background: YELLOW,
-                      border: `1px solid ${YELLOW}`,
-                    }}
-                  >
-                    <SendIcon />
-                  </button>
-                </div>
-              )}
-            </div>
-            {/* The message — a multi-line preview, clamped (Terry: show more content). */}
+        {items.map((it) => {
+          // A scheduled prompt is NOT an agent — mark it so at a glance (Terry:
+          // "Schedule · <name>" vs a plain agent name), matching the sender-kind
+          // distinction the injected envelope makes.
+          const isSchedule = it.fromUri?.startsWith("schedule://") ?? false;
+          const label = isSchedule
+            ? it.fromUri?.slice("schedule://".length)
+            : it.from;
+          return (
             <div
-              className="text-xs"
-              style={{
-                color: "rgb(var(--muted-foreground))",
-                display: "-webkit-box",
-                WebkitLineClamp: PREVIEW_LINES,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-                lineHeight: 1.4,
-              }}
+              key={it.id}
+              className="flex flex-col gap-1 px-2.5 py-2"
+              style={{ borderBottom: border }}
             >
-              {it.message}
+              {/* Top line: sender + compact icon actions (or the delivering state). */}
+              <div className="flex items-center gap-2">
+                {isSchedule ? (
+                  <span className="flex min-w-0 flex-1 items-center gap-1">
+                    <span
+                      className="shrink-0 text-[10px]"
+                      style={{
+                        color: "rgb(var(--muted-foreground))",
+                        border: "1px solid rgb(var(--border))",
+                        borderRadius: 4,
+                        padding: "0 4px",
+                      }}
+                    >
+                      Schedule
+                    </span>
+                    <span
+                      className="truncate text-[11px]"
+                      style={{ color: "rgb(var(--muted-foreground))" }}
+                    >
+                      {label}
+                    </span>
+                  </span>
+                ) : (
+                  <span
+                    className="min-w-0 flex-1 truncate text-[11px] font-semibold"
+                    style={{ color: YELLOW }}
+                  >
+                    {label}
+                  </span>
+                )}
+                {sending.has(it.id) ? (
+                  <span
+                    className="shrink-0 text-[11px]"
+                    style={{ color: YELLOW }}
+                    data-testid="handoff-sending"
+                  >
+                    delivering…
+                  </span>
+                ) : (
+                  <div className="flex shrink-0 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => discard(it.id)}
+                      aria-label="Discard"
+                      title="Discard"
+                      className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
+                      style={{
+                        width: 22,
+                        height: 22,
+                        color: RED,
+                        border: `1px solid ${RED}40`,
+                        background: "transparent",
+                      }}
+                    >
+                      <DiscardIcon />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => send(it.id)}
+                      aria-label="Send"
+                      title="Send"
+                      className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
+                      style={{
+                        width: 22,
+                        height: 22,
+                        color: "#17110a",
+                        background: YELLOW,
+                        border: `1px solid ${YELLOW}`,
+                      }}
+                    >
+                      <SendIcon />
+                    </button>
+                  </div>
+                )}
+              </div>
+              {/* The message — a multi-line preview, clamped (Terry: show more content). */}
+              <div
+                className="text-xs"
+                style={{
+                  color: "rgb(var(--muted-foreground))",
+                  display: "-webkit-box",
+                  WebkitLineClamp: PREVIEW_LINES,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                  lineHeight: 1.4,
+                }}
+              >
+                {it.message}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {error && (

@@ -77,6 +77,30 @@ interface InFlight {
 // agentId → the item awaiting a receipt. At most one per agent.
 const inFlight = new Map<string, InFlight>();
 
+/**
+ * Sender-kind-aware trailing guidance, dispatched on the from_uri SCHEME
+ * (ADR-092 sender semantics). A hand-delivered paste lacks the `<channel>`
+ * framing a live inbound carries, so this line is what teaches the recipient how
+ * to treat it — and that DIFFERS by sender kind: an agent can be replied to, a
+ * scheduled prompt cannot (Terry's catch — telling a schedule-fired prompt to
+ * "reply to another agent" is wrong: it's not an agent and has no reply path).
+ * Table-driven so a new scheme falls back to the safe informational wording, not
+ * the agent reply instruction.
+ */
+function deliveryHint(fromUri: string): string {
+  const sep = fromUri.indexOf("://");
+  const scheme = sep === -1 ? "" : fromUri.slice(0, sep);
+  const name = sep === -1 ? fromUri : fromUri.slice(sep + 3);
+  switch (scheme) {
+    case "agent":
+      return `(Sent by agent ${name} via autonomOS hand-delivery — you can reply with the autonomos MCP send tool to ${fromUri}.)`;
+    case "schedule":
+      return `(This is a SCHEDULED PROMPT fired by the autonomOS schedule '${name}' — NOT from an agent, and it CANNOT be replied to. Just do the task it describes. Inspect or change the schedule with get_schedule('${name}') / update_schedule.)`;
+    default:
+      return "(Sent to you via autonomOS hand-delivery. Informational — no reply needed.)";
+  }
+}
+
 function formatForInjection(item: HandoffQueueItem): string {
   // Strip the bracketed-paste terminator + bare CR from the agent-controlled
   // fields so a crafted message can't close paste-mode early and inject raw
@@ -89,15 +113,8 @@ function formatForInjection(item: HandoffQueueItem): string {
   const body = clean(item.message);
   // The STANDARD inbound envelope (identical to a live inbound — same
   // formatInbound), so the recipient reads this as inter-agent mail, not
-  // user-pasted text. Plus an explicit reply hint: a hand-delivered paste lacks
-  // the <channel> framing a live inbound carries, so the hint is cheap insurance
-  // that the agent replies via the MCP send tool rather than treating it as user
-  // input (Terry's semantic-gap catch; ADR-094).
-  return (
-    `${formatInbound(from, uri, body)}\n\n` +
-    `(Sent to you by another agent, hand-delivered via autonomOS — reply with ` +
-    `the autonomos MCP send tool to ${uri}.)`
-  );
+  // user-pasted text; plus the sender-kind-aware guidance (ADR-094).
+  return `${formatInbound(from, uri, body)}\n\n${deliveryHint(uri)}`;
 }
 
 /** Release the in-flight lock (clearing BOTH its timers) without dequeuing. */

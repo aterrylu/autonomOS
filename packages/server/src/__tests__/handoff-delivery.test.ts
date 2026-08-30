@@ -115,6 +115,35 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     assert.equal(listHandoffQueue(id).length, 0);
   });
 
+  it("guidance is sender-kind-aware — a schedule:// sender is NOT told to reply (Terry's catch)", () => {
+    const { id, writes } = seedGemini("Gigi");
+    const enq = enqueueHandoff(id, {
+      from: "Schedule daily-standup",
+      fromUri: "schedule://daily-standup",
+      message: "run the standup",
+    });
+    assert.ok(enq.ok);
+    if (!enq.ok) return;
+    injectHandoffItem(id, enq.item.id);
+
+    const paste = writes.find((w) => w.includes("run the standup"));
+    assert.ok(paste);
+    // Envelope header stays scheme-aware...
+    assert.match(
+      paste,
+      /\[Schedule daily-standup → you via schedule:\/\/daily-standup\]/,
+    );
+    // ...but the guidance says it's a SCHEDULE that CANNOT be replied to, and
+    // points at get_schedule — never the agent MCP-reply instruction.
+    assert.match(paste, /SCHEDULED PROMPT/);
+    assert.match(paste, /CANNOT be replied to/);
+    assert.match(paste, /get_schedule\('daily-standup'\)/);
+    assert.ok(
+      !/reply with the autonomos MCP send tool/.test(paste),
+      "a schedule sender must NOT get the agent reply instruction",
+    );
+  });
+
   it("does NOT treat a UserPromptSubmit that arrives BEFORE the Enter as a receipt (finding 1)", async () => {
     const { id } = seedGemini("Gigi");
     const enq = enqueueHandoff(id, { from: "s", message: "m" });
