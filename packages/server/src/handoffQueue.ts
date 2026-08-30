@@ -8,7 +8,15 @@
  *     guard (#350) and before-hook env isolation apply;
  *   - 0600 files under a 0700 dir (queued messages are user content);
  *   - a shape guard rejects a truncated / list-wrapped write BEFORE use;
- *   - listing skips a corrupt file with a warn rather than throwing.
+ *   - writes are ATOMIC (temp file + rename) so an interrupted write can't
+ *     corrupt a live queue.
+ *
+ * `readQueue` throws on a corrupt (non-ENOENT) file rather than silently
+ * treating it as empty — losing a queue of user messages to a parse slip would
+ * be exactly the silent loss this feature exists to prevent. Callers that feed
+ * the always-on agent list (withPendingHandoffCount) MUST degrade a throw to
+ * "no badge" so one bad file can't 500 the whole fleet view; the single-agent
+ * queue endpoints surface the corruption honestly for that one agent.
  *
  * Persisted (Terry's Q2): the queue survives a restart/upgrade — an operator's
  * pending hand-offs are not lost when the server bounces.
@@ -19,6 +27,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -124,8 +133,11 @@ function readQueue(agentId: string): StoredQueue {
 
 /**
  * Persist a queue. An EMPTY queue deletes its file rather than leaving a
- * `{items:[]}` husk — so the dir holds only agents with pending messages and a
- * count derived from `readdirSync` is honest.
+ * `{items:[]}` husk — so the dir holds only agents with pending messages.
+ *
+ * ATOMIC: the JSON is written to a temp file and renamed over the target, so a
+ * crash / ENOSPC mid-write leaves the previous good file intact (or nothing)
+ * instead of a truncated file that the next read rejects as corrupt.
  */
 function writeQueue(q: StoredQueue): void {
   validateAgentId(q.agentId);
@@ -147,7 +159,9 @@ function writeQueue(q: StoredQueue): void {
     return;
   }
   ensureDir(QUEUE_DIR());
-  writeFileSync(filePath, `${JSON.stringify(q, null, 2)}\n`, { mode: 0o600 });
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify(q, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmpPath, filePath);
 }
 
 // ── Public API ──────────────────────────────────────────────────

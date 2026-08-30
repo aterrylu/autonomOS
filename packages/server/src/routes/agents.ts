@@ -36,7 +36,11 @@ import {
   setManager,
 } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
-import { injectAllHandoffs, injectHandoffItem } from "../handoffDelivery.js";
+import {
+  emitPendingHandoffCount,
+  injectAllHandoffs,
+  injectHandoffItem,
+} from "../handoffDelivery.js";
 import {
   handoffQueueCount,
   listHandoffQueue,
@@ -99,12 +103,7 @@ agentsRouter.delete("/:id/queue/:itemId", (c) => {
   const removed = removeHandoffItem(agent.id, c.req.param("itemId"));
   if (!removed) return c.json({ error: "No such queued item" }, 404);
   // Push the new count so the badge updates live (reuse version — derived state).
-  emitAgentDelta({
-    type: "agent.updated",
-    id: agent.id,
-    patch: { pendingHandoffCount: handoffQueueCount(agent.id) },
-    version: agent.version,
-  });
+  emitPendingHandoffCount(agent.id);
   return c.json({ ok: true, removed });
 });
 
@@ -169,15 +168,28 @@ agentsRouter.onError((err, c) => {
 
 /** Enrich a manual-queue agent with its live pending hand-off count so the
  *  dashboard badge is correct on first load (live changes arrive via deltas).
- *  Non-manual-queue agents and empty queues are returned untouched. */
-function withPendingHandoffCount(a: Agent): Agent {
+ *  Non-manual-queue agents and empty queues are returned untouched. A corrupt
+ *  queue file must NEVER take down the (always-on) agent list, so an unreadable
+ *  queue degrades this one agent to "no badge" with a loud log — the file is
+ *  left on disk for recovery, never silently deleted. Exported for the
+ *  resilience test that pins the "one bad file can't 500 the list" guarantee. */
+export function withPendingHandoffCount(a: Agent): Agent {
   if (
     getProvider(a.provider).capabilities.messaging.inboundMethod !==
     "manual-queue"
   ) {
     return a;
   }
-  const count = handoffQueueCount(a.id);
+  let count: number;
+  try {
+    count = handoffQueueCount(a.id);
+  } catch (err) {
+    console.error(
+      `[agents] hand-off queue for ${a.id.slice(0, 8)} is unreadable — badge omitted:`,
+      err instanceof Error ? err.message : err,
+    );
+    return a;
+  }
   return count > 0 ? { ...a, pendingHandoffCount: count } : a;
 }
 
@@ -209,7 +221,9 @@ agentsRouter.get("/:id", (c) => {
   const id = c.req.param("id");
   const agent = resolveAgent(id);
   if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
-  return c.json(agent);
+  // Enrich with the pending hand-off count too, so a single-agent fetch agrees
+  // with the list endpoint (same corrupt-file-safe helper).
+  return c.json(withPendingHandoffCount(agent));
 });
 
 // ── Create ─────────────────────────────────────────────────────────

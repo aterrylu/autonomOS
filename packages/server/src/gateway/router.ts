@@ -29,7 +29,7 @@ import type { WSContext, WSReadyState } from "hono/ws";
 import { noteChannelServerRegistered } from "../agents/channelServerCheck.js";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
 import { getAgent, listAgents, resolveAgentByName } from "../agents/store.js";
-import { emitAgentDelta } from "../events/agents.js";
+import { emitPendingHandoffCount } from "../handoffDelivery.js";
 import { enqueueHandoff } from "../handoffQueue.js";
 import { getProvider } from "../providers/index.js";
 import { batchGetTitles } from "../titleCache.js";
@@ -523,23 +523,6 @@ function resolveManualQueueAgent(idOrName: string): Agent | null {
   const byName = resolveAgentByName(idOrName);
   if (isManualQueue(byName)) return byName;
   return null;
-}
-
-/**
- * Push the new pending hand-off count to live dashboards as an `agent.updated`
- * patch. Reuses the record's CURRENT version — a queue change is derived state,
- * not a record mutation, so it must NOT bump the optimistic-concurrency version
- * (mirrors how lastActivityAt is emitted). A missing record is a no-op.
- */
-function emitPendingHandoffCount(agentId: string, count: number): void {
-  const rec = getAgent(agentId);
-  if (!rec) return;
-  emitAgentDelta({
-    type: "agent.updated",
-    id: rec.id,
-    patch: { pendingHandoffCount: count },
-    version: rec.version,
-  });
 }
 
 // ── Agent discovery ───────────────────────────────────────────────

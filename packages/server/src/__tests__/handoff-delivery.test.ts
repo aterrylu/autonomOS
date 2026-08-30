@@ -20,12 +20,18 @@ import {
 } from "../configDir.js";
 import {
   _resetHandoffDeliveryForTesting,
+  _setHandoffTimingsForTesting,
   injectAllHandoffs,
   injectHandoffItem,
   noteHandoffDelivery,
 } from "../handoffDelivery.js";
 import { enqueueHandoff, listHandoffQueue } from "../handoffQueue.js";
 import { FakePty } from "../perf/fake-pty.js";
+import { delay } from "./helpers/wait.js";
+
+const ENTER_DELAY = 5;
+/** Wait past the (shrunk) Enter delay so the receipt is ARMED. */
+const untilArmed = () => delay(ENTER_DELAY + 15);
 
 const registered: UUID[] = [];
 
@@ -65,17 +71,19 @@ beforeEach(() => {
   _setConfigDirForTesting(dir);
   _resetCacheForTesting();
   _resetHandoffDeliveryForTesting();
+  _setHandoffTimingsForTesting({ enterDelayMs: ENTER_DELAY });
 });
 afterEach(() => {
   for (const id of registered.splice(0)) _unregisterSyntheticAttachment(id);
   _resetHandoffDeliveryForTesting();
+  _setHandoffTimingsForTesting(); // restore production timings
   _resetConfigDirForTesting();
   _resetCacheForTesting();
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe("hand-off delivery — inject + hook-correlated receipt", () => {
-  it("injects into the PTY and dequeues ONLY on the UserPromptSubmit receipt", () => {
+  it("injects into the PTY and dequeues ONLY on an ARMED UserPromptSubmit receipt", async () => {
     const { id, writes } = seedGemini("Gigi");
     const enq = enqueueHandoff(id, {
       from: "TeamLead",
@@ -92,20 +100,43 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     assert.ok(paste.startsWith("\x1b[200~"), "must be a bracketed paste");
     assert.match(paste, /TeamLead/);
 
-    // The item is STILL queued — injection alone is not a receipt.
+    // Still queued — injection alone is not a receipt.
     assert.equal(listHandoffQueue(id).length, 1);
 
-    // The receipt (UserPromptSubmit) dequeues it.
+    await untilArmed(); // the Enter fires → the receipt is armed
     noteHandoffDelivery(id, "UserPromptSubmit");
     assert.equal(listHandoffQueue(id).length, 0);
   });
 
-  it("does NOT dequeue on a non-confirming event", () => {
+  it("does NOT treat a UserPromptSubmit that arrives BEFORE the Enter as a receipt (finding 1)", async () => {
     const { id } = seedGemini("Gigi");
     const enq = enqueueHandoff(id, { from: "s", message: "m" });
     assert.ok(enq.ok);
     if (!enq.ok) return;
     injectHandoffItem(id, enq.item.id);
+
+    // A stray UserPromptSubmit in the paste→Enter window (a prior turn's late
+    // hook, or the human typing) must NOT dequeue an unsubmitted message.
+    noteHandoffDelivery(id, "UserPromptSubmit");
+    assert.equal(
+      listHandoffQueue(id).length,
+      1,
+      "an unarmed receipt must not dequeue",
+    );
+
+    // Once armed, the real receipt dequeues.
+    await untilArmed();
+    noteHandoffDelivery(id, "UserPromptSubmit");
+    assert.equal(listHandoffQueue(id).length, 0);
+  });
+
+  it("does NOT dequeue on a non-confirming event", async () => {
+    const { id } = seedGemini("Gigi");
+    const enq = enqueueHandoff(id, { from: "s", message: "m" });
+    assert.ok(enq.ok);
+    if (!enq.ok) return;
+    injectHandoffItem(id, enq.item.id);
+    await untilArmed();
 
     noteHandoffDelivery(id, "PreToolUse");
     assert.equal(
@@ -113,6 +144,21 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
       1,
       "only a confirming event (UserPromptSubmit) is a receipt",
     );
+  });
+
+  it("releases the in-flight lock on SessionEnd without dequeuing (finding 5)", async () => {
+    const { id } = seedGemini("Gigi");
+    const enq = enqueueHandoff(id, { from: "s", message: "m" });
+    assert.ok(enq.ok);
+    if (!enq.ok) return;
+    injectHandoffItem(id, enq.item.id);
+    await untilArmed();
+
+    noteHandoffDelivery(id, "SessionEnd");
+    // Not delivered — the message stays queued...
+    assert.equal(listHandoffQueue(id).length, 1);
+    // ...and the lock is released, so a fresh injection is accepted again.
+    assert.deepEqual(injectHandoffItem(id, enq.item.id), { ok: true });
   });
 
   it("allows only one in-flight injection at a time", () => {
@@ -130,7 +176,7 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     );
   });
 
-  it("send-all drains the queue one at a time, each gated on its receipt", () => {
+  it("send-all drains the queue one at a time, each gated on its receipt", async () => {
     const { id, writes } = seedGemini("Gigi");
     enqueueHandoff(id, { from: "s", message: "first" });
     enqueueHandoff(id, { from: "s", message: "second" });
@@ -143,11 +189,13 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     );
     assert.equal(listHandoffQueue(id).length, 2);
 
-    noteHandoffDelivery(id, "UserPromptSubmit"); // first receipt
+    await untilArmed();
+    noteHandoffDelivery(id, "UserPromptSubmit"); // first receipt → injects second
     assert.equal(listHandoffQueue(id).length, 1);
     assert.ok(writes.some((w) => w.includes("second")));
 
-    noteHandoffDelivery(id, "UserPromptSubmit"); // second receipt
+    await untilArmed();
+    noteHandoffDelivery(id, "UserPromptSubmit"); // second receipt → empty
     assert.equal(listHandoffQueue(id).length, 0);
   });
 
