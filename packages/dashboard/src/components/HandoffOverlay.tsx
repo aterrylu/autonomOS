@@ -21,7 +21,11 @@ import { useStore } from "../store";
 const YELLOW = "#e6b450"; // the accent (matches the usage overlay + envPreset pill)
 const RED = "#ea6c73";
 const HANDLE_WIDTH = 22;
-const WIDTH = 272;
+// Wider than the first cut so each row can show a 2–3 line message preview and
+// the actions are compact icon-buttons rather than text (Terry's density note).
+const WIDTH = 340;
+/** How many lines of the message preview to show before clamping. */
+const PREVIEW_LINES = 3;
 /** Stack beneath the usage-queue overlay (defaults to top:MARGIN, height ~34) +
  *  a gap, so at defaults the two overlays read as a clean vertical pair. */
 const STACK_OFFSET = 46;
@@ -43,6 +47,45 @@ function GripIcon() {
           <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.3" />
         )),
       )}
+    </svg>
+  );
+}
+
+/** Paper-plane — the compact "deliver" affordance. */
+function SendIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M22 2 11 13" />
+      <path d="M22 2 15 22l-4-9-9-4Z" />
+    </svg>
+  );
+}
+
+/** × — the compact "discard" affordance. */
+function DiscardIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
     </svg>
   );
 }
@@ -217,59 +260,76 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         {items.map((it) => (
           <div
             key={it.id}
-            className="flex items-start gap-2 px-2.5 py-2"
+            className="flex flex-col gap-1 px-2.5 py-2"
             style={{ borderBottom: border }}
           >
-            <div className="min-w-0 flex-1">
-              <div
-                className="text-[11px] font-semibold"
+            {/* Top line: sender + compact icon actions (or the delivering state). */}
+            <div className="flex items-center gap-2">
+              <span
+                className="min-w-0 flex-1 truncate text-[11px] font-semibold"
                 style={{ color: YELLOW }}
               >
                 {it.from}
-              </div>
-              <div
-                className="truncate text-xs"
-                style={{ color: "rgb(var(--muted-foreground))" }}
-              >
-                {it.message}
-              </div>
-            </div>
-            {sending.has(it.id) ? (
-              <span
-                className="shrink-0 text-[11px]"
-                style={{ color: YELLOW }}
-                data-testid="handoff-sending"
-              >
-                delivering…
               </span>
-            ) : (
-              <div className="flex shrink-0 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => discard(it.id)}
-                  className="rounded px-2 py-0.5 text-[11px]"
-                  style={{
-                    color: RED,
-                    border: `1px solid ${RED}40`,
-                    background: "transparent",
-                  }}
+              {sending.has(it.id) ? (
+                <span
+                  className="shrink-0 text-[11px]"
+                  style={{ color: YELLOW }}
+                  data-testid="handoff-sending"
                 >
-                  Discard
-                </button>
-                <button
-                  type="button"
-                  onClick={() => send(it.id)}
-                  className="rounded px-2 py-0.5 text-[11px] font-semibold"
-                  style={{
-                    color: "#17110a",
-                    background: YELLOW,
-                    border: `1px solid ${YELLOW}`,
-                  }}
-                >
-                  Send
-                </button>
-              </div>
-            )}
+                  delivering…
+                </span>
+              ) : (
+                <div className="flex shrink-0 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => discard(it.id)}
+                    aria-label="Discard"
+                    title="Discard"
+                    className="flex items-center justify-center rounded"
+                    style={{
+                      width: 22,
+                      height: 22,
+                      color: RED,
+                      border: `1px solid ${RED}40`,
+                      background: "transparent",
+                    }}
+                  >
+                    <DiscardIcon />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => send(it.id)}
+                    aria-label="Send"
+                    title="Send"
+                    className="flex items-center justify-center rounded"
+                    style={{
+                      width: 22,
+                      height: 22,
+                      color: "#17110a",
+                      background: YELLOW,
+                      border: `1px solid ${YELLOW}`,
+                    }}
+                  >
+                    <SendIcon />
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* The message — a multi-line preview, clamped (Terry: show more content). */}
+            <div
+              className="text-xs"
+              style={{
+                color: "rgb(var(--muted-foreground))",
+                display: "-webkit-box",
+                WebkitLineClamp: PREVIEW_LINES,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                lineHeight: 1.4,
+              }}
+            >
+              {it.message}
+            </div>
           </div>
         ))}
       </div>
