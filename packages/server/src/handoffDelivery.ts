@@ -28,10 +28,11 @@
  * tomorrow all call injectHandoffItem / injectAllHandoffs.
  */
 
-import type { UUID } from "@autonomos/core";
+import type { HandoffQueueItem, UUID } from "@autonomos/core";
 import { getAttachment } from "./agents/runtime.js";
 import { getAgent } from "./agents/store.js";
 import { emitAgentDelta } from "./events/agents.js";
+import { formatInbound } from "./gateway/codexControl.js";
 import {
   handoffQueueCount,
   listHandoffQueue,
@@ -76,14 +77,27 @@ interface InFlight {
 // agentId → the item awaiting a receipt. At most one per agent.
 const inFlight = new Map<string, InFlight>();
 
-function formatForInjection(from: string, message: string): string {
+function formatForInjection(item: HandoffQueueItem): string {
   // Strip the bracketed-paste terminator + bare CR from the agent-controlled
-  // `from`/`message` so a crafted message can't close paste-mode early and
-  // inject raw keystrokes (control sequences, auto-submitting newlines) into the
-  // pane the human is watching. This content arrives over the gateway from a
-  // DIFFERENT agent — a wider door than promptDelivery's own argv (nox review).
+  // fields so a crafted message can't close paste-mode early and inject raw
+  // keystrokes (control sequences, auto-submitting newlines) into the pane the
+  // human is watching. This content arrives over the gateway from a DIFFERENT
+  // agent — a wider door than promptDelivery's own argv (nox review).
   const clean = (s: string) => s.replace(/\x1b\[201~/g, "").replace(/\r/g, "");
-  return `[${clean(from)} → you (hand-delivered)]\n${clean(message)}`;
+  const from = clean(item.from);
+  const uri = clean(item.fromUri ?? `agent://${item.from}`);
+  const body = clean(item.message);
+  // The STANDARD inbound envelope (identical to a live inbound — same
+  // formatInbound), so the recipient reads this as inter-agent mail, not
+  // user-pasted text. Plus an explicit reply hint: a hand-delivered paste lacks
+  // the <channel> framing a live inbound carries, so the hint is cheap insurance
+  // that the agent replies via the MCP send tool rather than treating it as user
+  // input (Terry's semantic-gap catch; ADR-094).
+  return (
+    `${formatInbound(from, uri, body)}\n\n` +
+    `(Sent to you by another agent, hand-delivered via autonomOS — reply with ` +
+    `the autonomos MCP send tool to ${uri}.)`
+  );
 }
 
 /** Release the in-flight lock (clearing BOTH its timers) without dequeuing. */
@@ -142,9 +156,7 @@ export function injectHandoffItem(
     return { ok: false, reason: "Agent has no live PTY to deliver into." };
 
   try {
-    pty.write(
-      `\x1b[200~${formatForInjection(item.from, item.message)}\x1b[201~`,
-    );
+    pty.write(`\x1b[200~${formatForInjection(item)}\x1b[201~`);
   } catch (err) {
     const reason = `PTY write failed: ${err instanceof Error ? err.message : err}`;
     console.error(

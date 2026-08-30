@@ -87,6 +87,7 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     const { id, writes } = seedGemini("Gigi");
     const enq = enqueueHandoff(id, {
       from: "TeamLead",
+      fromUri: "agent://TeamLead",
       message: "please review",
     });
     assert.ok(enq.ok);
@@ -94,11 +95,17 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
 
     assert.deepEqual(injectHandoffItem(id, enq.item.id), { ok: true });
 
-    // A bracketed-paste carrying the message + its provenance reached the PTY.
+    // A bracketed-paste carrying the STANDARD INBOUND ENVELOPE (not the bare
+    // body) reached the PTY, plus the reply hint — so the recipient reads it as
+    // inter-agent mail, not user-pasted text (Terry's semantic-gap fix).
     const paste = writes.find((w) => w.includes("please review"));
     assert.ok(paste, "expected a bracketed-paste write of the message");
     assert.ok(paste.startsWith("\x1b[200~"), "must be a bracketed paste");
-    assert.match(paste, /TeamLead/);
+    assert.match(paste, /\[TeamLead → you via agent:\/\/TeamLead\]/);
+    assert.match(
+      paste,
+      /reply with the autonomos MCP send tool to agent:\/\/TeamLead/,
+    );
 
     // Still queued — injection alone is not a receipt.
     assert.equal(listHandoffQueue(id).length, 1);

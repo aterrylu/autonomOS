@@ -213,30 +213,34 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         color: "rgb(var(--foreground))",
       }}
     >
-      {/* Header — grip + title + count. */}
-      <div
-        className="flex items-center gap-2 px-2 py-1.5"
-        style={{ borderBottom: border }}
+      {/* Header — the ENTIRE bar is the drag surface (not just the grip), with
+          keyboard nudge. A real <button> for native focus/keyboard semantics; a
+          visual grip signals it's draggable. Default button chrome is reset so it
+          reads as a header, not a button. */}
+      <button
+        type="button"
+        {...handleProps}
+        aria-label="Drag to reposition the hand-off queue (arrow keys to nudge)"
+        title="Drag to move"
+        data-testid="handoff-drag-handle"
+        className="flex w-full select-none items-center gap-2 px-2 py-1.5 text-left"
+        style={{
+          border: "none",
+          borderBottom: border,
+          background: "transparent",
+          color: "inherit",
+          font: "inherit",
+          cursor: dragging ? "grabbing" : "grab",
+          touchAction: "none",
+        }}
       >
-        <button
-          type="button"
-          {...handleProps}
-          aria-label="Drag to reposition the hand-off queue (arrow keys to nudge)"
-          title="Drag to move"
-          data-testid="handoff-drag-handle"
+        <span
+          aria-hidden="true"
           className="flex items-center justify-center"
-          style={{
-            width: HANDLE_WIDTH,
-            cursor: dragging ? "grabbing" : "grab",
-            touchAction: "none",
-            border: "none",
-            background: "transparent",
-            color: YELLOW,
-            opacity: 0.75,
-          }}
+          style={{ width: HANDLE_WIDTH, color: YELLOW, opacity: 0.7 }}
         >
           <GripIcon />
-        </button>
+        </span>
         <span className="text-xs font-semibold">Hand-off</span>
         <span
           className="text-[11px] leading-4"
@@ -250,7 +254,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         >
           {count}
         </span>
-      </div>
+      </button>
 
       {/* List of queued messages. */}
       <div
@@ -286,7 +290,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
                     onClick={() => discard(it.id)}
                     aria-label="Discard"
                     title="Discard"
-                    className="flex items-center justify-center rounded"
+                    className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
                     style={{
                       width: 22,
                       height: 22,
@@ -302,7 +306,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
                     onClick={() => send(it.id)}
                     aria-label="Send"
                     title="Send"
-                    className="flex items-center justify-center rounded"
+                    className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
                     style={{
                       width: 22,
                       height: 22,
@@ -354,7 +358,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
             <button
               type="button"
               onClick={() => setConfirmClear(false)}
-              className="text-[11px]"
+              className="cursor-pointer text-[11px] hover:underline"
               style={{
                 background: "none",
                 border: "none",
@@ -368,7 +372,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
               type="button"
               onClick={discardAll}
               disabled={busy}
-              className="text-[11px] font-semibold"
+              className="cursor-pointer text-[11px] font-semibold hover:underline"
               style={{
                 background: "none",
                 border: "none",
@@ -384,7 +388,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
             <button
               type="button"
               onClick={() => setConfirmClear(true)}
-              className="text-[11px]"
+              className="cursor-pointer text-[11px] hover:underline"
               style={{
                 background: "none",
                 border: "none",
@@ -398,7 +402,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
               type="button"
               onClick={sendAll}
               disabled={busy}
-              className="text-[11px] font-semibold"
+              className="cursor-pointer text-[11px] font-semibold hover:underline"
               style={{
                 background: "none",
                 border: "none",

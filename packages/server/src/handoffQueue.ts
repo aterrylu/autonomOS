@@ -184,7 +184,7 @@ export function handoffQueueCount(agentId: string): number {
  */
 export function enqueueHandoff(
   agentId: string,
-  input: { from: string; message: string },
+  input: { from: string; fromUri?: string; message: string },
 ): HandoffEnqueueResult {
   const q = readQueue(agentId);
   if (q.items.length >= HANDOFF_QUEUE_CAP) {
@@ -193,6 +193,7 @@ export function enqueueHandoff(
   const item: HandoffQueueItem = {
     id: randomUUID(),
     from: input.from,
+    ...(input.fromUri ? { fromUri: input.fromUri } : {}),
     message: input.message,
     enqueuedAt: Date.now(),
   };
