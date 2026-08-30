@@ -539,8 +539,19 @@ export function deleteAgentRaw(id: UUID): boolean {
   revokeAgentToken(id);
   // Same rationale as the token revoke: a record that ceases to exist takes its
   // associated state with it. Clear any hand-off queue so a deleted manual-queue
-  // agent leaves no orphan file of undelivered messages behind.
-  clearHandoffQueue(id);
+  // agent leaves no orphan file of undelivered messages behind. Best-effort +
+  // wrapped like the rmSync above: the record is ALREADY gone from cache + disk
+  // and the token revoked, so a throw here (unlink EACCES/EPERM, or a legacy id
+  // that fails validateAgentId) must not turn a fully-succeeded delete into a
+  // 500 that skips the route's post-delete work (nox review).
+  try {
+    clearHandoffQueue(id);
+  } catch (err) {
+    console.warn(
+      `[store] failed to clear hand-off queue for ${id.slice(0, 8)}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
   return true;
 }
 

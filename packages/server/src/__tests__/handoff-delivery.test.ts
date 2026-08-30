@@ -207,4 +207,49 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     assert.equal(injectHandoffItem(id, enq.item.id).ok, false);
     assert.equal(listHandoffQueue(id).length, 1, "the message stays queued");
   });
+
+  it("cancels the Enter timer when the lock is released — no orphaned CR on the next injection (nox review)", async () => {
+    const { id, writes } = seedGemini("Gigi");
+    const a = enqueueHandoff(id, { from: "s", message: "alpha" });
+    const b = enqueueHandoff(id, { from: "s", message: "bravo" });
+    assert.ok(a.ok && b.ok);
+    if (!a.ok || !b.ok) return;
+
+    injectHandoffItem(id, a.item.id); // A's Enter armed for +ENTER_DELAY
+    noteHandoffDelivery(id, "SessionEnd"); // releases the lock → cancels A's Enter
+    injectHandoffItem(id, b.item.id); // B injected fresh
+    await untilArmed(); // both A's (cancelled) and B's Enter windows elapse
+
+    // Only B's Enter should reach the PTY. A's orphaned timer, left armed, would
+    // submit B's paste early + unarmed and leave B stuck-but-delivered.
+    assert.equal(
+      writes.filter((w) => w === "\r").length,
+      1,
+      "A's released Enter timer must not also fire",
+    );
+    // B is properly armed, so its receipt dequeues B cleanly.
+    noteHandoffDelivery(id, "UserPromptSubmit");
+    assert.equal(listHandoffQueue(id).length, 1, "B delivered; A still queued");
+  });
+
+  it("strips the paste terminator + CR from agent content so paste-mode can't be escaped (nox review)", () => {
+    const { id, writes } = seedGemini("Gigi");
+    const enq = enqueueHandoff(id, {
+      from: "ev\x1b[201~il",
+      message: "hi\x1b[201~\rinjected",
+    });
+    assert.ok(enq.ok);
+    if (!enq.ok) return;
+    injectHandoffItem(id, enq.item.id);
+
+    const paste = writes.find((w) => w.startsWith("\x1b[200~"));
+    assert.ok(paste);
+    // Exactly ONE terminator — the wrapper's closing \x1b[201~, none from content.
+    assert.equal(
+      paste.split("\x1b[201~").length - 1,
+      1,
+      "content-embedded paste terminators must be stripped",
+    );
+    assert.ok(!paste.includes("\r"), "bare CR must be stripped from content");
+  });
 });

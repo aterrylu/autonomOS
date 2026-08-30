@@ -67,20 +67,31 @@ interface InFlight {
   /** True only once the submitting Enter has been written — see the header. */
   armed: boolean;
   timer: ReturnType<typeof setTimeout>;
+  /** The pending Enter write. Tracked on the entry so releasing the lock
+   *  cancels it — otherwise an orphaned `\r` from a released injection lands on
+   *  the NEXT injection's paste, submitting it early + unarmed (nox review). */
+  enterTimer?: ReturnType<typeof setTimeout>;
 }
 
 // agentId → the item awaiting a receipt. At most one per agent.
 const inFlight = new Map<string, InFlight>();
 
 function formatForInjection(from: string, message: string): string {
-  return `[${from} → you (hand-delivered)]\n${message}`;
+  // Strip the bracketed-paste terminator + bare CR from the agent-controlled
+  // `from`/`message` so a crafted message can't close paste-mode early and
+  // inject raw keystrokes (control sequences, auto-submitting newlines) into the
+  // pane the human is watching. This content arrives over the gateway from a
+  // DIFFERENT agent — a wider door than promptDelivery's own argv (nox review).
+  const clean = (s: string) => s.replace(/\x1b\[201~/g, "").replace(/\r/g, "");
+  return `[${clean(from)} → you (hand-delivered)]\n${clean(message)}`;
 }
 
-/** Release the in-flight lock (clearing its timer) without dequeuing. */
+/** Release the in-flight lock (clearing BOTH its timers) without dequeuing. */
 function clearInFlight(agentId: string): void {
   const f = inFlight.get(agentId);
   if (!f) return;
   clearTimeout(f.timer);
+  if (f.enterTimer) clearTimeout(f.enterTimer);
   inFlight.delete(agentId);
 }
 
@@ -163,13 +174,17 @@ export function injectHandoffItem(
   entry.timer.unref?.();
   inFlight.set(agentId, entry);
 
-  const enterTimer = setTimeout(() => {
+  entry.enterTimer = setTimeout(() => {
+    // Bail if this injection is no longer the one in flight — the lock was
+    // released (SessionEnd, a receipt) and possibly re-taken by a different
+    // item. clearInFlight also cancels this timer, so this is belt-and-suspenders
+    // against a callback already queued on the event loop (nox review).
+    if (inFlight.get(agentId)?.itemId !== itemId) return;
     try {
       pty.write("\r");
       // Arm the receipt ONLY now — the injected text is submitted at this point,
       // so its UserPromptSubmit is the next confirming event we should accept.
-      const cur = inFlight.get(agentId);
-      if (cur && cur.itemId === itemId) cur.armed = true;
+      entry.armed = true;
     } catch {
       // PTY vanished between the paste and the Enter. The message was never
       // submitted; leave the lock unarmed so no stray event is mistaken for a
@@ -180,7 +195,7 @@ export function injectHandoffItem(
       );
     }
   }, ENTER_DELAY_MS);
-  enterTimer.unref?.();
+  entry.enterTimer.unref?.();
 
   return { ok: true };
 }
@@ -213,24 +228,38 @@ export function noteHandoffDelivery(agentId: string, eventName: string): void {
   if (!CONFIRMING_EVENTS.has(eventName) || !f.armed) return;
 
   clearInFlight(agentId);
-  removeHandoffItem(agentId, f.itemId);
-  emitPendingHandoffCount(agentId);
-  console.log(
-    `[handoff] delivered item ${f.itemId.slice(0, 8)} (from ${f.from}) to ${agentId.slice(0, 8)} — confirmed by ${eventName}`,
-  );
-
-  if (f.drainAll) {
-    const next = peekNextHandoff(agentId);
-    if (next) {
-      const r = injectHandoffItem(agentId, next.id, { drainAll: true });
-      if (!r.ok) {
-        // The drain can't continue (PTY gone, etc.). Say so — remaining items
-        // stay queued but the operator's "send all" quietly stopped partway.
-        console.warn(
-          `[handoff] send-all drain to ${agentId.slice(0, 8)} stopped: ${r.reason} (${handoffQueueCount(agentId)} still queued)`,
-        );
+  // Everything below touches the filesystem (readQueue/writeQueue). A throw
+  // here (ENOSPC/EACCES on the rename, a config dir gone read-only, a file that
+  // went corrupt between enqueue and receipt) must NOT take down the hook-ingest
+  // POST — that would skip deriveStatus, compaction handling, notifications, and
+  // the agent.updated delta for this event. Best-effort, mirroring flushActivity
+  // in agents/store.ts. The lock is already released (above), so the next hook
+  // no-ops; the item reverts to "still queued" (the operator re-delivers) rather
+  // than being silently lost (nox review).
+  try {
+    removeHandoffItem(agentId, f.itemId);
+    emitPendingHandoffCount(agentId);
+    console.log(
+      `[handoff] delivered item ${f.itemId.slice(0, 8)} (from ${f.from}) to ${agentId.slice(0, 8)} — confirmed by ${eventName}`,
+    );
+    if (f.drainAll) {
+      const next = peekNextHandoff(agentId);
+      if (next) {
+        const r = injectHandoffItem(agentId, next.id, { drainAll: true });
+        if (!r.ok) {
+          // The drain can't continue (PTY gone, etc.). Say so — remaining items
+          // stay queued but the operator's "send all" quietly stopped partway.
+          console.warn(
+            `[handoff] send-all drain to ${agentId.slice(0, 8)} stopped: ${r.reason} (${handoffQueueCount(agentId)} still queued)`,
+          );
+        }
       }
     }
+  } catch (err) {
+    console.error(
+      `[handoff] dequeue after receipt for ${agentId.slice(0, 8)} failed — item may remain queued:`,
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
@@ -239,9 +268,13 @@ export function hasInFlightHandoff(agentId: string): boolean {
   return inFlight.has(agentId);
 }
 
-/** Test hook — clear all in-flight state + timers. */
+/** Test hook — clear all in-flight state + BOTH timers (the enter timer too, or
+ *  an orphaned `\r` from one case writes into the next case's captured writes). */
 export function _resetHandoffDeliveryForTesting(): void {
-  for (const f of inFlight.values()) clearTimeout(f.timer);
+  for (const f of inFlight.values()) {
+    clearTimeout(f.timer);
+    if (f.enterTimer) clearTimeout(f.enterTimer);
+  }
   inFlight.clear();
 }
 
