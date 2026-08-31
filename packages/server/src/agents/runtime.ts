@@ -51,6 +51,7 @@ import {
   cancelChannelServerCheck,
   trackChannelServerRegistration,
 } from "./channelServerCheck.js";
+import { withPendingHandoffCount } from "./handoffEnrich.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -1110,14 +1111,20 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       type: "agent.attached",
       id: persisted.id,
       // Full record: a resume can change permissionMode/envPreset/
-      // providerSessionId — a field-list would silently drop one.
-      agent: persisted,
+      // providerSessionId — a field-list would silently drop one. The dashboard
+      // applies this WHOLESALE (agentsSocket: agents.set), so it must carry the
+      // derived pendingHandoffCount too, else a reattach blanks the badge of a
+      // manual-queue agent with a pending queue until the next reconcile (nox).
+      agent: withPendingHandoffCount(persisted),
       provider: providerName,
       providerSessionId,
       version: persisted.version,
     });
   } else {
-    emitAgentDelta({ type: "agent.created", agent: persisted });
+    emitAgentDelta({
+      type: "agent.created",
+      agent: withPendingHandoffCount(persisted),
+    });
   }
 
   // PTY data → output buffer (used by terminal WS streaming)

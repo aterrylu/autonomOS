@@ -110,13 +110,24 @@ function formatForInjection(item: HandoffQueueItem): string {
   // agent — a wider door than promptDelivery's own argv (nox review).
   const clean = (s: string) => s.replace(/\x1b\[201~/g, "").replace(/\r/g, "");
   const from = clean(item.from);
-  const uri = clean(item.fromUri ?? `agent://${item.from}`);
   const body = clean(item.message);
+  // A pre-envelope queue item (the forward-compat case) may carry NO fromUri —
+  // and its `from` is often already scheme-encoded ("Schedule daily-standup").
+  // Do NOT synthesize `agent://${from}` here: that would send `deliveryHint`
+  // down the agent branch and tell the recipient to "reply to
+  // agent://Schedule daily-standup" — exactly the reply-to-a-schedule bug this
+  // envelope exists to prevent (nox). With no scheme to trust, omit the `via`
+  // and give the safe, no-reply informational hint.
+  const uri = item.fromUri ? clean(item.fromUri) : undefined;
+  const header = uri ? `[${from} → you via ${uri}]` : `[${from} → you]`;
+  const hint = uri
+    ? deliveryHint(uri)
+    : "hand-delivered via autonomOS — informational, no reply";
   // COMPACT single-line envelope (Terry: the multi-line guidance wrapped ugly):
   // the standard inbound HEADER (same `[from → you via uri]` as formatInbound)
   // and the sender-kind-aware guidance on ONE line — guidance in parens right
   // after the brackets — then the body (ADR-094).
-  return `[${from} → you via ${uri}](${deliveryHint(uri)})\n${body}`;
+  return `${header}(${hint})\n${body}`;
 }
 
 /** Release the in-flight lock (clearing BOTH its timers) without dequeuing. */
@@ -294,8 +305,12 @@ export function noteHandoffDelivery(agentId: string, eventName: string): void {
     // of them for a send-all batch (the batch confirmed as a unit).
     for (const itemId of f.itemIds) removeHandoffItem(agentId, itemId);
     emitPendingHandoffCount(agentId);
+    // Name the exact item ids this receipt retired — a single ambiguous
+    // UserPromptSubmit can retire N of them in a batch, so guard #2 (auditable
+    // dequeues) needs to say WHICH, not just how many (nox).
+    const ids = f.itemIds.map((id) => id.slice(0, 8)).join(", ");
     console.log(
-      `[handoff] delivered ${f.label} (${f.itemIds.length} message(s)) to ${agentId.slice(0, 8)} — confirmed by ${eventName}`,
+      `[handoff] delivered ${f.label} [${ids}] to ${agentId.slice(0, 8)} — confirmed by ${eventName}`,
     );
   } catch (err) {
     console.error(

@@ -75,7 +75,8 @@ agentsRouter.get("/:id/queue", (c) => {
   return c.json({ items: listHandoffQueue(agent.id) });
 });
 
-/** Deliver ALL queued messages, one at a time (each gated on its receipt). */
+/** Deliver ALL queued messages as ONE batched injection — a single paste, a
+ *  single receipt dequeues the whole batch (all-or-nothing, not one-at-a-time). */
 agentsRouter.post("/:id/queue/send-all", (c) => {
   const param = c.req.param("id");
   const agent = resolveAgent(param);

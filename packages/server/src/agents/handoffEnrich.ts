@@ -1,10 +1,12 @@
 /**
  * Enrich an agent with its derived `pendingHandoffCount` for the dashboard
- * badge. Used at EVERY serialization boundary the dashboard reads agents from —
- * the REST `GET /api/agents` list AND the `/ws/agents` reconcile snapshot — so a
- * fresh page load with a pre-existing queue shows the badge, not only after the
- * next live delta. (Live enqueue/dequeue already emit an `agent.updated` patch;
- * this covers the INITIAL snapshot those deltas predate.)
+ * badge. Applied at every boundary that ships a WHOLE agent record the dashboard
+ * installs verbatim — the REST `GET /api/agents` list, the `/ws/agents`
+ * reconcile snapshot, AND the `agent.attached`/`agent.created` deltas (applied
+ * wholesale via `agents.set`, so an un-enriched one would blank the badge). A
+ * fresh page load, or a reattach, with a pre-existing queue thus shows the badge
+ * immediately. (Live enqueue/dequeue emit a narrow `agent.updated` PATCH that
+ * carries the count directly and needs no enrichment.)
  *
  * A corrupt queue file must NEVER take down an always-on agent listing, so an
  * unreadable queue degrades that one agent to "no badge" with a loud log; the

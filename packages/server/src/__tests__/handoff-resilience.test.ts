@@ -83,4 +83,26 @@ describe("hand-off queue — corrupt-file resilience", () => {
       "a corrupt queue yields no badge, not a crash",
     );
   });
+
+  it("rejects an item whose fromUri is present but NOT a string (nox — non-string crashes the overlay)", () => {
+    const id = seedGemini();
+    mkdirSync(queueDir(), { recursive: true });
+    // A well-formed item in every field EXCEPT fromUri, which is a number. The
+    // dashboard calls it.fromUri?.startsWith(...) unconditionally, so this must
+    // be rejected at load like any other malformed item, not passed through.
+    writeFileSync(
+      join(queueDir(), `${id}.json`),
+      JSON.stringify({
+        agentId: id,
+        items: [
+          { id: "x", from: "s", message: "m", enqueuedAt: 1, fromUri: 42 },
+        ],
+      }),
+    );
+    assert.throws(
+      () => handoffQueueCount(id),
+      /malformed item/,
+      "a non-string fromUri must be rejected by the shape guard",
+    );
+  });
 });

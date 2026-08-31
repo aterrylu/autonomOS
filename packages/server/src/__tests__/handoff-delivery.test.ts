@@ -140,6 +140,35 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     );
   });
 
+  it("a legacy item with NO fromUri is NOT given an agent reply hint (nox — no synthesized agent://)", () => {
+    const { id, writes } = seedGemini("Gigi");
+    // Pre-envelope item: scheme-encoded name in `from`, no fromUri.
+    const enq = enqueueHandoff(id, {
+      from: "Schedule daily-standup",
+      message: "run the standup",
+    });
+    assert.ok(enq.ok);
+    if (!enq.ok) return;
+    injectHandoffItem(id, enq.item.id);
+
+    const paste = writes.find((w) => w.includes("run the standup"));
+    assert.ok(paste);
+    // No fabricated agent:// URI, so no "reply to another agent" instruction and
+    // no `via` clause — just the safe informational hint.
+    assert.ok(
+      !/reply with the autonomos MCP send tool/.test(paste),
+      "a fromUri-less item must NOT get the agent reply instruction",
+    );
+    assert.ok(
+      !paste.includes("agent://Schedule daily-standup"),
+      "must not synthesize an agent:// URI from a scheme-encoded name",
+    );
+    assert.match(
+      paste,
+      /\[Schedule daily-standup → you\]\(hand-delivered via autonomOS — informational, no reply\)/,
+    );
+  });
+
   it("does NOT treat a UserPromptSubmit that arrives BEFORE the Enter as a receipt (finding 1)", async () => {
     const { id } = seedGemini("Gigi");
     const enq = enqueueHandoff(id, { from: "s", message: "m" });

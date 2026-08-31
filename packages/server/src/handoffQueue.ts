@@ -88,13 +88,20 @@ function assertQueueShape(parsed: unknown, filePath: string): StoredQueue {
     );
   }
   for (const it of q.items) {
+    // `fromUri` is optional but, when present, MUST be a string: the dashboard
+    // calls `it.fromUri?.startsWith("schedule://")` unconditionally, so a number
+    // or object here throws a TypeError during render and takes the pane down —
+    // the same "malformed item can't blow up a delivery path" invariant the
+    // other fields are guarded for (nox).
+    const item = it as HandoffQueueItem;
     if (
       it === null ||
       typeof it !== "object" ||
-      typeof (it as HandoffQueueItem).id !== "string" ||
-      typeof (it as HandoffQueueItem).from !== "string" ||
-      typeof (it as HandoffQueueItem).message !== "string" ||
-      typeof (it as HandoffQueueItem).enqueuedAt !== "number"
+      typeof item.id !== "string" ||
+      typeof item.from !== "string" ||
+      typeof item.message !== "string" ||
+      typeof item.enqueuedAt !== "number" ||
+      (item.fromUri !== undefined && typeof item.fromUri !== "string")
     ) {
       throw new Error(
         `hand-off queue ${filePath} has a malformed item — refusing to load`,

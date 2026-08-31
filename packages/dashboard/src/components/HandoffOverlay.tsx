@@ -13,7 +13,7 @@
  */
 
 import type { HandoffQueueItem } from "@autonomos/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { agentsApi } from "../api/agents";
 import { MARGIN, useDraggableOverlay } from "../hooks/useDraggableOverlay";
 import { useStore } from "../store";
@@ -29,6 +29,13 @@ const PREVIEW_LINES = 3;
 /** Stack beneath the usage-queue overlay (defaults to top:MARGIN, height ~34) +
  *  a gap, so at defaults the two overlays read as a clean vertical pair. */
 const STACK_OFFSET = 46;
+/** Client-side un-wedge for a "delivering…" row. The server releases its
+ *  in-flight lock at RECEIPT_TIMEOUT_MS (90s) leaving the item QUEUED when no
+ *  UserPromptSubmit lands — but the count doesn't change, so the count-keyed
+ *  refetch never runs and the row would sit at "delivering…" forever with no
+ *  actions and no retry (nox). After this window (server timeout + margin) we
+ *  restore the row's Deliver/Discard so the operator can retry. */
+const STUCK_CLEAR_MS = 100_000;
 
 /** Two columns of dots — the conventional "drag me" grip (matches the usage
  *  overlay's affordance). */
@@ -147,6 +154,44 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Per-item un-wedge timers for the "delivering…" state (see STUCK_CLEAR_MS).
+  const stuckTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+  // useCallback so these stay stable and can be listed as effect deps without
+  // re-running the effect each render; they only touch the (stable) timer ref
+  // and stable setters.
+  const clearStuckTimer = useCallback((itemId: string) => {
+    const t = stuckTimers.current.get(itemId);
+    if (t) {
+      clearTimeout(t);
+      stuckTimers.current.delete(itemId);
+    }
+  }, []);
+  const armStuckTimer = useCallback(
+    (itemId: string) => {
+      clearStuckTimer(itemId);
+      stuckTimers.current.set(
+        itemId,
+        setTimeout(() => {
+          stuckTimers.current.delete(itemId);
+          // No receipt within the server window — un-wedge: restore this row's
+          // actions and say why. The message is still queued server-side.
+          setSending((s) => {
+            const n = new Set(s);
+            n.delete(itemId);
+            return n;
+          });
+          setError("Delivery not confirmed — still queued. You can try again.");
+        }, STUCK_CLEAR_MS),
+      );
+    },
+    [clearStuckTimer],
+  );
+  // Clear every pending timer on unmount so none fires setState after teardown.
+  const timersRef = stuckTimers.current;
+  useEffect(() => () => timersRef.forEach(clearTimeout), [timersRef]);
+
   useEffect(() => {
     if (count === 0) {
       setItems([]);
@@ -160,22 +205,29 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         if (cancelled) return;
         setItems(r.items);
         // Drop "sending" marks for items that have since left the queue (their
-        // receipt landed) — keep only ones still present + mid-send.
-        setSending(
-          (prev) =>
-            new Set(
-              [...prev].filter((id) => r.items.some((it) => it.id === id)),
-            ),
-        );
+        // receipt landed) — keep only ones still present + mid-send — and cancel
+        // the un-wedge timer for any mark we drop (its receipt landed cleanly).
+        setSending((prev) => {
+          const next = new Set(
+            [...prev].filter((id) => r.items.some((it) => it.id === id)),
+          );
+          for (const id of prev) if (!next.has(id)) clearStuckTimer(id);
+          return next;
+        });
       },
       () => {
-        /* transient — the next count delta refetches */
+        // A refetch reject with the count still N (a 500 on a corrupt queue file,
+        // a 404 for an agent the store still lists, a blip) would otherwise leave
+        // the pane showing the N badge over an EMPTY list and never retry until
+        // the count moves — for a stalled queue, never. Surface it (nox).
+        if (!cancelled)
+          setError("Couldn't load the queue — will retry on the next change.");
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [sessionId, count]);
+  }, [sessionId, count, clearStuckTimer]);
 
   // AUTO-HIDE — nothing renders until the queue is non-empty (the badge surfaces it).
   if (count === 0) return null;
@@ -183,11 +235,14 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
   const send = async (itemId: string) => {
     setError(null);
     setSending((s) => new Set(s).add(itemId));
+    armStuckTimer(itemId);
     try {
       await agentsApi.queueSend(sessionId, itemId);
       // Leave it "delivering…" — it clears when the hook receipt drops the count
-      // and the refetch removes it. A 409 (already in flight) rolls the mark back.
+      // and the refetch removes it (or the stuck-timer un-wedges it if no receipt
+      // ever lands). A 409 (already in flight) rolls the mark back.
     } catch (e) {
+      clearStuckTimer(itemId);
       setError(errMsg(e));
       setSending((s) => {
         const n = new Set(s);
@@ -213,6 +268,8 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
     try {
       await agentsApi.queueSendAll(sessionId);
       setSending(new Set(items.map((it) => it.id)));
+      // Un-wedge each row if the single batch receipt never lands.
+      for (const it of items) armStuckTimer(it.id);
     } catch (e) {
       setError(errMsg(e));
     } finally {

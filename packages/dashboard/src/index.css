@@ -28,7 +28,11 @@
      pure-black region). The usage overlay keeps its own accent-colored border
      (armed/off STATE) and adds only the glow. */
   --overlay-surface: rgb(var(--card));
-  --overlay-hairline: rgba(255, 255, 255, 0.11);
+  /* Track the theme's foreground at low alpha rather than a fixed white: in dark
+     themes --foreground is a light gray, so this stays the faint light hairline
+     Terry approved; in a LIGHT theme (daylight) --foreground is dark, so the edge
+     stays visible on a near-white panel instead of disappearing (nox). */
+  --overlay-hairline: rgb(var(--foreground) / 0.16);
   --overlay-divider: rgb(var(--border));
   --overlay-glow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(150, 172, 205, 0.06);
 }

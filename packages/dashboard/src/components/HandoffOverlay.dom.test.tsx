@@ -29,8 +29,13 @@ vi.mock("../api/agents", () => ({
 }));
 
 const ID = "gigi";
-function item(id: string, from: string, message: string): HandoffQueueItem {
-  return { id, from, message, enqueuedAt: 1 };
+function item(
+  id: string,
+  from: string,
+  message: string,
+  fromUri?: string,
+): HandoffQueueItem {
+  return { id, from, message, enqueuedAt: 1, ...(fromUri ? { fromUri } : {}) };
 }
 function setCount(n: number) {
   useStore.setState({
@@ -176,6 +181,32 @@ describe("HandoffOverlay", () => {
     expect(handle.style.outlineStyle).toBe("none");
     act(() => fireEvent.keyDown(handle, { key: "ArrowLeft" }));
     expect(handle.style.outlineStyle).toBe("solid");
+  });
+
+  it("distinguishes a schedule sender (chip + stripped name) from an agent (plain name)", async () => {
+    // The half Terry actually looked at — pin it (nox). A schedule row shows a
+    // "Schedule" chip + the scheme-stripped name; an agent row shows just the
+    // name with no chip.
+    setCount(2);
+    queueList.mockResolvedValue({
+      items: [
+        item(
+          "s",
+          "Schedule review-request",
+          "run it",
+          "schedule://review-request",
+        ),
+        item("a", "Dispatcher", "heads up", "agent://Dispatcher"),
+      ],
+    });
+    render(<HandoffOverlay sessionId={ID} />);
+    await screen.findByText("run it");
+    // Exactly one "Schedule" chip, and it labels the stripped schedule name.
+    expect(screen.getByText("Schedule")).toBeTruthy();
+    expect(screen.getByText("review-request")).toBeTruthy();
+    // The agent row renders its plain name and NO chip of its own.
+    expect(screen.getByText("Dispatcher")).toBeTruthy();
+    expect(screen.getAllByText("Schedule")).toHaveLength(1);
   });
 
   it("wears the SHARED floating-overlay E treatment (surface + hairline + glow tokens)", async () => {

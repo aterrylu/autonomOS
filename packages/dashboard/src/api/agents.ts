@@ -76,7 +76,8 @@ export const agentsApi = {
       `/api/agents/${id}/queue/${encodeURIComponent(itemId)}/send`,
       { method: "POST", body: {} },
     ),
-  /** Deliver ALL queued messages, one at a time (each gated on its receipt). */
+  /** Deliver ALL queued messages as ONE batched injection — a single paste, a
+   *  single receipt dequeues the whole batch (all-or-nothing, not one-at-a-time). */
   queueSendAll: (id: string) =>
     request<{ ok: true; remaining: number }>(
       `/api/agents/${id}/queue/send-all`,
