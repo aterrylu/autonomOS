@@ -1132,7 +1132,7 @@ function SessionRow({
                 borderRadius: 999,
                 padding: "0 5px",
               }}
-              title={`${s.pendingHandoffCount} message${s.pendingHandoffCount === 1 ? "" : "s"} queued for hand-delivery`}
+              title={`${s.pendingHandoffCount} awaiting your delivery`}
             >
               ✉ {s.pendingHandoffCount}
             </span>

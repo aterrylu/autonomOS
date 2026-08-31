@@ -58,17 +58,16 @@ afterEach(() => {
 describe("Sidebar — hand-off pending badge", () => {
   it("shows the pill ONLY for an agent with a non-empty queue", () => {
     render(<Sidebar />);
-    // gigi has 3 queued → exactly one badge, labelled by its title.
-    const badges = screen.queryAllByTitle(/queued for hand-delivery/);
+    // gigi has 3 queued → exactly one badge, labelled by its delivery-framed
+    // title ("Incoming messages" rename, ADR-094).
+    const badges = screen.queryAllByTitle(/awaiting your delivery/);
     expect(badges.length).toBe(1);
     expect(badges[0].textContent?.replace(/\s+/g, " ").trim()).toBe("✉ 3");
   });
 
-  it("singularizes the title for a single queued message", () => {
+  it("frames the title around the operator's delivery action", () => {
     useStore.setState({ sessions: [sess("solo", { pendingHandoffCount: 1 })] });
     render(<Sidebar />);
-    expect(
-      screen.getByTitle("1 message queued for hand-delivery"),
-    ).toBeTruthy();
+    expect(screen.getByTitle("1 awaiting your delivery")).toBeTruthy();
   });
 });

@@ -84,7 +84,7 @@ describe("HandoffOverlay", () => {
     );
   });
 
-  it("Send delivers one item and marks it delivering", async () => {
+  it("Deliver sends one item and marks it delivering", async () => {
     setCount(1);
     queueList.mockResolvedValue({
       items: [item("a", "TeamLead", "review this")],
@@ -92,7 +92,7 @@ describe("HandoffOverlay", () => {
     render(<HandoffOverlay sessionId={ID} />);
     await screen.findByText("review this");
 
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Deliver" }));
     await waitFor(() => expect(queueSend).toHaveBeenCalledWith(ID, "a"));
     expect(await screen.findByTestId("handoff-sending")).toBeTruthy();
   });
@@ -110,7 +110,7 @@ describe("HandoffOverlay", () => {
     await waitFor(() => expect(screen.queryByText("review this")).toBeNull());
   });
 
-  it("Send all delivers without a confirm", async () => {
+  it("Deliver all sends the batch without a confirm", async () => {
     setCount(2);
     queueList.mockResolvedValue({
       items: [item("a", "x", "one"), item("b", "y", "two")],
@@ -118,7 +118,7 @@ describe("HandoffOverlay", () => {
     render(<HandoffOverlay sessionId={ID} />);
     await screen.findByText("one");
 
-    fireEvent.click(screen.getByRole("button", { name: /Send all/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Deliver all/ }));
     await waitFor(() => expect(queueSendAll).toHaveBeenCalledWith(ID));
   });
 

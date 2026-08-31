@@ -220,7 +220,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
       <button
         type="button"
         {...handleProps}
-        aria-label="Drag to reposition the hand-off queue (arrow keys to nudge)"
+        aria-label="Drag to reposition the incoming messages panel (arrow keys to nudge)"
         title="Drag to move"
         data-testid="handoff-drag-handle"
         className="flex w-full select-none items-center gap-2 px-2 py-1.5 text-left"
@@ -241,18 +241,18 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         >
           <GripIcon />
         </span>
-        <span className="text-xs font-semibold">Hand-off</span>
-        <span
-          className="text-[11px] leading-4"
-          style={{
-            color: YELLOW,
-            border: `1px solid ${YELLOW}`,
-            background: `${YELLOW}1f`,
-            borderRadius: 999,
-            padding: "0 6px",
-          }}
-        >
-          {count}
+        {/* Name says WHAT it is; subtitle says WHAT TO DO (Terry: "Incoming
+            messages" + "N awaiting your delivery"). */}
+        <span className="flex min-w-0 flex-col">
+          <span className="text-xs font-semibold leading-tight">
+            Incoming messages
+          </span>
+          <span
+            className="text-[10px] leading-tight"
+            style={{ color: "rgb(var(--muted-foreground))" }}
+          >
+            {count} awaiting your delivery
+          </span>
         </span>
       </button>
 
@@ -334,8 +334,8 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
                     <button
                       type="button"
                       onClick={() => send(it.id)}
-                      aria-label="Send"
-                      title="Send"
+                      aria-label="Deliver"
+                      title="Deliver to this agent"
                       className="flex cursor-pointer items-center justify-center rounded transition-opacity hover:opacity-70"
                       style={{
                         width: 22,
@@ -375,7 +375,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
         </div>
       )}
 
-      {/* Footer — Send all (no confirm) · Discard all (inline confirm). */}
+      {/* Footer — Deliver all (no confirm) · Discard all (inline confirm). */}
       <div
         className="flex items-center gap-2 px-2.5 py-1.5"
         style={{ borderTop: border }}
@@ -441,7 +441,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
                 cursor: "pointer",
               }}
             >
-              Send all →
+              Deliver all →
             </button>
           </>
         )}
