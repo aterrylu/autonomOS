@@ -101,10 +101,10 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     const paste = writes.find((w) => w.includes("please review"));
     assert.ok(paste, "expected a bracketed-paste write of the message");
     assert.ok(paste.startsWith("\x1b[200~"), "must be a bracketed paste");
-    assert.match(paste, /\[TeamLead → you via agent:\/\/TeamLead\]/);
+    // Compact single-line envelope: header + guidance in parens on ONE line.
     assert.match(
       paste,
-      /reply with the autonomos MCP send tool to agent:\/\/TeamLead/,
+      /\[TeamLead → you via agent:\/\/TeamLead\]\(hand-delivered via autonomOS — reply with the autonomos MCP send tool to agent:\/\/TeamLead\)/,
     );
 
     // Still queued — injection alone is not a receipt.
@@ -128,16 +128,12 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
 
     const paste = writes.find((w) => w.includes("run the standup"));
     assert.ok(paste);
-    // Envelope header stays scheme-aware...
+    // Compact envelope with SCHEDULE-kind guidance: cannot be replied to, and
+    // NEVER the agent MCP-reply instruction.
     assert.match(
       paste,
-      /\[Schedule daily-standup → you via schedule:\/\/daily-standup\]/,
+      /\[Schedule daily-standup → you via schedule:\/\/daily-standup\]\(scheduled prompt from the autonomOS schedule 'daily-standup' — cannot be replied to, just do the task\)/,
     );
-    // ...but the guidance says it's a SCHEDULE that CANNOT be replied to, and
-    // points at get_schedule — never the agent MCP-reply instruction.
-    assert.match(paste, /SCHEDULED PROMPT/);
-    assert.match(paste, /CANNOT be replied to/);
-    assert.match(paste, /get_schedule\('daily-standup'\)/);
     assert.ok(
       !/reply with the autonomos MCP send tool/.test(paste),
       "a schedule sender must NOT get the agent reply instruction",
@@ -212,26 +208,23 @@ describe("hand-off delivery — inject + hook-correlated receipt", () => {
     );
   });
 
-  it("send-all drains the queue one at a time, each gated on its receipt", async () => {
+  it("send-all delivers the WHOLE queue as ONE batched injection, dequeued on a single receipt (Terry)", async () => {
     const { id, writes } = seedGemini("Gigi");
-    enqueueHandoff(id, { from: "s", message: "first" });
-    enqueueHandoff(id, { from: "s", message: "second" });
+    enqueueHandoff(id, { from: "s", fromUri: "agent://s", message: "first" });
+    enqueueHandoff(id, { from: "s", fromUri: "agent://s", message: "second" });
 
     assert.deepEqual(injectAllHandoffs(id), { ok: true });
-    assert.ok(writes.some((w) => w.includes("first")));
-    assert.ok(
-      !writes.some((w) => w.includes("second")),
-      "the second must not inject until the first is confirmed",
-    );
+
+    // ONE bracketed paste containing BOTH messages (not one-at-a-time).
+    const pastes = writes.filter((w) => w.startsWith("\x1b[200~"));
+    assert.equal(pastes.length, 1, "send-all is a single injection");
+    assert.match(pastes[0], /first/);
+    assert.match(pastes[0], /second/);
+    // Both stay queued until the one receipt.
     assert.equal(listHandoffQueue(id).length, 2);
 
     await untilArmed();
-    noteHandoffDelivery(id, "UserPromptSubmit"); // first receipt → injects second
-    assert.equal(listHandoffQueue(id).length, 1);
-    assert.ok(writes.some((w) => w.includes("second")));
-
-    await untilArmed();
-    noteHandoffDelivery(id, "UserPromptSubmit"); // second receipt → empty
+    noteHandoffDelivery(id, "UserPromptSubmit"); // ONE receipt dequeues the whole batch
     assert.equal(listHandoffQueue(id).length, 0);
   });
 
