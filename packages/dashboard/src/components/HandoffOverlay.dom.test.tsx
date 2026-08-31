@@ -177,4 +177,17 @@ describe("HandoffOverlay", () => {
     act(() => fireEvent.keyDown(handle, { key: "ArrowLeft" }));
     expect(handle.style.outlineStyle).toBe("solid");
   });
+
+  it("wears the SHARED floating-overlay E treatment (surface + hairline + glow tokens)", async () => {
+    setCount(1);
+    queueList.mockResolvedValue({ items: [item("a", "x", "one")] });
+    render(<HandoffOverlay sessionId={ID} />);
+    await screen.findByText("one");
+    const panel = screen.getByTestId("handoff-overlay");
+    // References the shared tokens (index.css --overlay-*) — NOT copy-pasted
+    // literals — so both floating overlays stay one family.
+    expect(panel.style.background).toBe("var(--overlay-surface)");
+    expect(panel.style.boxShadow).toBe("var(--overlay-glow)");
+    expect(panel.style.border).toContain("var(--overlay-hairline)");
+  });
 });

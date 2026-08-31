@@ -234,18 +234,24 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
     }
   };
 
-  const border = "1px solid rgb(var(--border))";
+  // Inner dividers step to the shared overlay divider token (a touch lighter
+  // than the plain --border, to sit right on the elevated E surface).
+  const border = "1px solid var(--overlay-divider)";
 
   return (
     <div
       ref={overlayRef}
       data-testid="handoff-overlay"
-      className="absolute z-10 flex flex-col overflow-hidden rounded-lg shadow-lg"
+      // Shared floating-overlay "E" treatment (see --overlay-* in index.css):
+      // elevated surface + 1px hairline + whisper glow. `shadow-lg` is dropped —
+      // the glow token IS the shadow now.
+      className="absolute z-10 flex flex-col overflow-hidden rounded-lg"
       style={{
         ...positionStyle,
         width: WIDTH,
-        background: "rgb(var(--card))",
-        border,
+        background: "var(--overlay-surface)",
+        border: "1px solid var(--overlay-hairline)",
+        boxShadow: "var(--overlay-glow)",
         color: "rgb(var(--foreground))",
       }}
     >
