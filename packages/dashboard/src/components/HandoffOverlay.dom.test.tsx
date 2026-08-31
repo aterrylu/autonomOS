@@ -137,4 +137,44 @@ describe("HandoffOverlay", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
     await waitFor(() => expect(queueDiscardAll).toHaveBeenCalledWith(ID));
   });
+
+  // The drag header is a real <button>; the drag hook .focus()es it
+  // programmatically, which fools the browser's :focus-visible heuristic into
+  // painting a ring on a MOUSE drag (Terry's cosmetic bug). We track modality
+  // ourselves — these pin both halves of ":focus-visible semantics".
+  it("does NOT paint a focus ring when the header is focused via a pointer drag", async () => {
+    setCount(1);
+    queueList.mockResolvedValue({ items: [item("a", "x", "one")] });
+    render(<HandoffOverlay sessionId={ID} />);
+    await screen.findByText("one");
+    const handle = screen.getByTestId("handoff-drag-handle");
+
+    // A drag: pointerdown flags the imminent programmatic focus as pointer-
+    // origin, so the focus it triggers must leave the ring suppressed.
+    // (Assert the longhand — jsdom re-serializes the `outline` shorthand.)
+    fireEvent.pointerDown(handle, { pointerId: 1 });
+    act(() => handle.focus());
+    expect(handle.style.outlineStyle).toBe("none");
+  });
+
+  it("DOES paint the on-brand ring for keyboard focus (a11y preserved)", async () => {
+    setCount(1);
+    queueList.mockResolvedValue({ items: [item("a", "x", "one")] });
+    render(<HandoffOverlay sessionId={ID} />);
+    await screen.findByText("one");
+    const handle = screen.getByTestId("handoff-drag-handle");
+
+    // A keyboard focus (Tab) has no pointer flag set → the ring shows so the
+    // arrow-key nudge affordance stays discoverable.
+    act(() => fireEvent.focus(handle));
+    expect(handle.style.outlineStyle).toBe("solid");
+    expect(handle.style.outlineWidth).toBe("2px");
+
+    // And an arrow nudge re-earns the ring even if focus came from a drag.
+    fireEvent.pointerDown(handle, { pointerId: 1 });
+    act(() => handle.focus()); // pointer-origin → suppressed
+    expect(handle.style.outlineStyle).toBe("none");
+    act(() => fireEvent.keyDown(handle, { key: "ArrowLeft" }));
+    expect(handle.style.outlineStyle).toBe("solid");
+  });
 });

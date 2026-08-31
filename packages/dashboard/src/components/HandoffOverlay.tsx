@@ -13,7 +13,7 @@
  */
 
 import type { HandoffQueueItem } from "@autonomos/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agentsApi } from "../api/agents";
 import { MARGIN, useDraggableOverlay } from "../hooks/useDraggableOverlay";
 import { useStore } from "../store";
@@ -104,6 +104,42 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
       top: MARGIN + STACK_OFFSET,
       right: MARGIN,
     });
+
+  // Focus-ring modality for the draggable header <button>. The drag hook
+  // preventDefaults the pointerdown (to control focus itself) then calls
+  // .focus() explicitly — a PROGRAMMATIC focus the browser's :focus-visible
+  // heuristic mistakes for keyboard focus, so it paints an unexpected ring on
+  // the first mouse drag. We track modality ourselves: a pointer-origin focus
+  // shows NO ring; a keyboard focus (Tab, or an arrow nudge) keeps the a11y
+  // ring. This is the ":focus-visible semantics" the CSS heuristic can't give
+  // us here because our own .focus() defeats it.
+  const [headerFocusRing, setHeaderFocusRing] = useState(false);
+  const headerPointerFocus = useRef(false);
+  const headerHandleProps = {
+    ...handleProps,
+    onPointerDown: (e: React.PointerEvent) => {
+      headerPointerFocus.current = true; // the hook's handler .focus()es next
+      handleProps.onPointerDown(e);
+    },
+    onFocus: () => {
+      if (headerPointerFocus.current) {
+        headerPointerFocus.current = false;
+        setHeaderFocusRing(false);
+      } else {
+        setHeaderFocusRing(true);
+      }
+    },
+    onBlur: () => {
+      headerPointerFocus.current = false;
+      setHeaderFocusRing(false);
+    },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      // Driving the panel with the keyboard re-earns the ring even if focus
+      // first arrived via a drag.
+      if (e.key.startsWith("Arrow")) setHeaderFocusRing(true);
+      handleProps.onKeyDown(e);
+    },
+  };
 
   const [items, setItems] = useState<HandoffQueueItem[]>([]);
   const [sending, setSending] = useState<ReadonlySet<string>>(new Set());
@@ -219,7 +255,7 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
           reads as a header, not a button. */}
       <button
         type="button"
-        {...handleProps}
+        {...headerHandleProps}
         aria-label="Drag to reposition the incoming messages panel (arrow keys to nudge)"
         title="Drag to move"
         data-testid="handoff-drag-handle"
@@ -232,6 +268,14 @@ export function HandoffOverlay({ sessionId }: { sessionId: string }) {
           font: "inherit",
           cursor: dragging ? "grabbing" : "grab",
           touchAction: "none",
+          // On-brand keyboard focus ring, suppressed entirely for pointer focus
+          // (longhands, not the `outline` shorthand — jsdom's CSSOM can't parse
+          // a compound shorthand with a hex color). Inset offset so it isn't
+          // clipped by the overlay's overflow-hidden rounded top.
+          outlineStyle: headerFocusRing ? "solid" : "none",
+          outlineWidth: "2px",
+          outlineColor: YELLOW,
+          outlineOffset: "-2px",
         }}
       >
         <span
