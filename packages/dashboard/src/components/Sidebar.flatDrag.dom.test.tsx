@@ -7,13 +7,24 @@ import { Sidebar } from "./Sidebar";
 
 /**
  * DOM-level drag WIRING for flat-view reorder. The reorder math is covered by
- * the reorderFlat unit tests; here we fire synthetic HTML5 drag events on the
+ * the sidebarReorder unit tests; here we fire synthetic HTML5 drag events on the
  * rendered rows to verify handleDragStart→handleDragOver→handleDrop→reorderFlat
  * is wired with the correct section + indices, and that a cross-section drop is
  * a no-op (the section-clamping guard).
+ *
+ * handleDragOver now reads the MIDPOINT of the hovered row (`dropEdgeAt` on
+ * `e.clientY` + the row's rect) to pick the above/below insertion edge. jsdom
+ * gives every element a zero rect, so we mock a fixed 20px-tall row and pass an
+ * explicit `clientY` per drag to exercise the intended half — the same edge the
+ * gold line is drawn on and the commit index is derived from.
  */
 
 const AGENT_IDS = ["a", "b", "c"];
+const ROW_TOP = 0;
+const ROW_H = 20;
+/** clientY in the row's top half (insert ABOVE) / bottom half (insert BELOW). */
+const ABOVE_Y = ROW_TOP + ROW_H * 0.25;
+const BELOW_Y = ROW_TOP + ROW_H * 0.75;
 
 function sess(id: string): SessionInfo {
   return {
@@ -74,11 +85,48 @@ function row(name: string): HTMLElement {
   return el as HTMLElement;
 }
 
+/**
+ * Fire a native drag event. jsdom's `DragEvent` ctor DROPS `clientY` passed via
+ * `fireEvent.dragOver(el, {clientY})`, so we build the event and set the coord as
+ * an own property (React reads `clientY`/`dataTransfer` off the native event) —
+ * the only way to exercise the midpoint hit-test at the DOM level.
+ */
+function fireDrag(
+  type: "dragStart" | "dragOver" | "drop",
+  el: HTMLElement,
+  opts: { dataTransfer?: unknown; clientY?: number },
+) {
+  const ev = new Event(type.toLowerCase(), { bubbles: true, cancelable: true });
+  if (opts.dataTransfer !== undefined)
+    (ev as unknown as { dataTransfer: unknown }).dataTransfer =
+      opts.dataTransfer;
+  if (opts.clientY !== undefined)
+    (ev as unknown as { clientY: number }).clientY = opts.clientY;
+  fireEvent(el, ev);
+}
+
 function renderSidebar() {
   return render(<Sidebar />);
 }
 
+beforeEach(() => {
+  // jsdom returns a zero rect for everything; give rows a fixed height so the
+  // midpoint hit-test (`dropEdgeAt`) has a real box to split.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    top: ROW_TOP,
+    height: ROW_H,
+    bottom: ROW_TOP + ROW_H,
+    left: 0,
+    right: 0,
+    width: 0,
+    x: 0,
+    y: ROW_TOP,
+    toJSON: () => ({}),
+  } as DOMRect);
+});
+
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -97,10 +145,10 @@ describe("flat-view drag wiring", () => {
     renderSidebar();
 
     const dt = makeDataTransfer();
-    // Drag 'a' (idx 0) onto 'c' (idx 2).
-    fireEvent.dragStart(row("a"), { dataTransfer: dt });
-    fireEvent.dragOver(row("c"), { dataTransfer: dt });
-    fireEvent.drop(row("c"), { dataTransfer: dt });
+    // Drag 'a' (idx 0) onto 'c' (idx 2), lower half → insert BELOW c.
+    fireDrag("dragStart", row("a"), { dataTransfer: dt });
+    fireDrag("dragOver", row("c"), { dataTransfer: dt, clientY: BELOW_Y });
+    fireDrag("drop", row("c"), { dataTransfer: dt });
 
     expect(useStore.getState().unpinnedOrder).toEqual(["b", "c", "a"]);
     expect(useStore.getState().pinnedOrder).toEqual([]);
@@ -121,9 +169,9 @@ describe("flat-view drag wiring", () => {
 
     const dt = makeDataTransfer();
     // Start dragging 'b' (unpinned) and drop onto 'a' (pinned) — must be a no-op.
-    fireEvent.dragStart(row("b"), { dataTransfer: dt });
-    fireEvent.dragOver(row("a"), { dataTransfer: dt });
-    fireEvent.drop(row("a"), { dataTransfer: dt });
+    fireDrag("dragStart", row("b"), { dataTransfer: dt });
+    fireDrag("dragOver", row("a"), { dataTransfer: dt, clientY: BELOW_Y });
+    fireDrag("drop", row("a"), { dataTransfer: dt });
 
     expect(useStore.getState().pinnedOrder).toEqual(["a"]);
     expect(useStore.getState().unpinnedOrder).toEqual(["b", "c"]);
@@ -143,10 +191,10 @@ describe("flat-view drag wiring", () => {
     renderSidebar();
 
     const dt = makeDataTransfer();
-    // Drag 'b' (pinned idx 1) onto 'a' (pinned idx 0).
-    fireEvent.dragStart(row("b"), { dataTransfer: dt });
-    fireEvent.dragOver(row("a"), { dataTransfer: dt });
-    fireEvent.drop(row("a"), { dataTransfer: dt });
+    // Drag 'b' (pinned idx 1) onto 'a' (pinned idx 0), upper half → insert ABOVE a.
+    fireDrag("dragStart", row("b"), { dataTransfer: dt });
+    fireDrag("dragOver", row("a"), { dataTransfer: dt, clientY: ABOVE_Y });
+    fireDrag("drop", row("a"), { dataTransfer: dt });
 
     expect(useStore.getState().pinnedOrder).toEqual(["b", "a"]);
     expect(useStore.getState().unpinnedOrder).toEqual(["c"]);

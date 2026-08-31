@@ -725,11 +725,6 @@ interface AppState {
   openSchedules: () => void;
   openPresets: () => void;
   toggleSidebarViewMode: () => void;
-  reorderHierarchy: (
-    groupKey: string,
-    fromIndex: number,
-    toIndex: number,
-  ) => void;
   removeSession: (id: string) => Promise<void>;
   /** Reorder within one flat-view section (drag-and-drop). Other section
    *  unchanged. Persists the frozen snapshot (prunes dead, freezes arrivals). */
@@ -1186,29 +1181,6 @@ export const useStore = create<AppState>()(
             // (otherwise the default view would win — see resolveSidebarViewMode).
             sidebarViewModeExplicit: true,
           });
-        },
-
-        reorderHierarchy: (groupKey, fromIndex, toIndex) => {
-          const prev = get().hierarchyOrder;
-          const order = prev[groupKey] ? [...prev[groupKey]] : [];
-          // If the order array is empty, it hasn't been initialized yet.
-          // The caller should pass the current name list first time.
-          if (order.length === 0) return;
-          // Bounds guard (mirrors reorderFlat): a drop with stale indices — the
-          // sibling list changed mid-drag (agent added/removed/renamed) — would
-          // otherwise splice `undefined` into the persisted order, poisoning
-          // hierarchyOrder[groupKey] with an entry matching no agent. No-op instead.
-          if (
-            fromIndex < 0 ||
-            toIndex < 0 ||
-            fromIndex >= order.length ||
-            toIndex >= order.length ||
-            fromIndex === toIndex
-          )
-            return;
-          const [moved] = order.splice(fromIndex, 1);
-          order.splice(toIndex, 0, moved);
-          set({ hierarchyOrder: { ...prev, [groupKey]: order } });
         },
 
         removeSession: async (id) => {
