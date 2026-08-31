@@ -14,19 +14,22 @@
   --accent: 28 36 51;
   --accent-foreground: 179 177 173;
 
-  /* Floating-overlay separation treatment (ADR-094, Terry's pick = variant E).
-     The SHARED surface/hairline/glow for BOTH draggable pane overlays — Incoming
-     messages + the usage-queue auto-Enter control — so the two read as one
-     component family. Consumers REFERENCE these tokens; they never copy the
-     values. Rationale: --card equals --background (10 14 20), so a plain card
-     has no edge against the pane. E lifts it three ways at once — a surface a
-     step lighter than the page, a 1px hairline, and a whisper glow — so it holds
-     against BOTH busy terminal text and a pure-black region. (The usage overlay
-     keeps its own accent-colored border, which encodes armed/off STATE, and
-     adds only the surface + glow + divider from this set.) */
-  --overlay-surface: #12171f;
+  /* Floating-overlay separation treatment (ADR-094). The SHARED edge + glow for
+     BOTH draggable pane overlays — Incoming messages + the usage-queue auto-Enter
+     control — so the two read as one component family. Consumers REFERENCE these
+     tokens; they never copy the values.
+
+     Terry's pick, refined live: keep the ORIGINAL panel color (a lighter surface
+     "makes it look really ugly"), and distinguish the panel from the pane with
+     only a 1px hairline edge + a whisper glow (A+C, not the earlier E that also
+     lightened the surface). So --overlay-surface tracks --card and
+     --overlay-divider tracks --border — the panel's fill and interior are exactly
+     as before; ONLY the edge and the glow lift it off the dark pane (and off a
+     pure-black region). The usage overlay keeps its own accent-colored border
+     (armed/off STATE) and adds only the glow. */
+  --overlay-surface: rgb(var(--card));
   --overlay-hairline: rgba(255, 255, 255, 0.11);
-  --overlay-divider: #202b3b;
+  --overlay-divider: rgb(var(--border));
   --overlay-glow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(150, 172, 205, 0.06);
 }
 
