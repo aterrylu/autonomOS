@@ -7,7 +7,6 @@
  */
 
 import {
-  type Agent,
   type AgentTreeNode,
   type ExitReason,
   isExitReason,
@@ -16,6 +15,7 @@ import {
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken } from "../agentCredentials.js";
+import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -42,12 +42,12 @@ import {
   injectHandoffItem,
 } from "../handoffDelivery.js";
 import {
+  clearHandoffQueue,
   handoffQueueCount,
   listHandoffQueue,
   removeHandoffItem,
 } from "../handoffQueue.js";
 import { HttpError, httpErrorResponse } from "../httpError.js";
-import { getProvider } from "../providers/index.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
 import { usageQueue } from "../usageQueue.js";
@@ -75,7 +75,8 @@ agentsRouter.get("/:id/queue", (c) => {
   return c.json({ items: listHandoffQueue(agent.id) });
 });
 
-/** Deliver ALL queued messages, one at a time (each gated on its receipt). */
+/** Deliver ALL queued messages as ONE batched injection — a single paste, a
+ *  single receipt dequeues the whole batch (all-or-nothing, not one-at-a-time). */
 agentsRouter.post("/:id/queue/send-all", (c) => {
   const param = c.req.param("id");
   const agent = resolveAgent(param);
@@ -105,6 +106,17 @@ agentsRouter.delete("/:id/queue/:itemId", (c) => {
   // Push the new count so the badge updates live (reuse version — derived state).
   emitPendingHandoffCount(agent.id);
   return c.json({ ok: true, removed });
+});
+
+/** Discard ALL queued messages (no delivery) — the pane's "Discard all". */
+agentsRouter.delete("/:id/queue", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const cleared = handoffQueueCount(agent.id);
+  clearHandoffQueue(agent.id);
+  emitPendingHandoffCount(agent.id);
+  return c.json({ ok: true, cleared });
 });
 
 // Map cache-poisoned writes to a stable 503 across the whole agents
@@ -165,33 +177,6 @@ agentsRouter.onError((err, c) => {
 });
 
 // ── Read ───────────────────────────────────────────────────────────
-
-/** Enrich a manual-queue agent with its live pending hand-off count so the
- *  dashboard badge is correct on first load (live changes arrive via deltas).
- *  Non-manual-queue agents and empty queues are returned untouched. A corrupt
- *  queue file must NEVER take down the (always-on) agent list, so an unreadable
- *  queue degrades this one agent to "no badge" with a loud log — the file is
- *  left on disk for recovery, never silently deleted. Exported for the
- *  resilience test that pins the "one bad file can't 500 the list" guarantee. */
-export function withPendingHandoffCount(a: Agent): Agent {
-  if (
-    getProvider(a.provider).capabilities.messaging.inboundMethod !==
-    "manual-queue"
-  ) {
-    return a;
-  }
-  let count: number;
-  try {
-    count = handoffQueueCount(a.id);
-  } catch (err) {
-    console.error(
-      `[agents] hand-off queue for ${a.id.slice(0, 8)} is unreadable — badge omitted:`,
-      err instanceof Error ? err.message : err,
-    );
-    return a;
-  }
-  return count > 0 ? { ...a, pendingHandoffCount: count } : a;
-}
 
 agentsRouter.get("/", (c) => {
   return c.json(listAgents().map(withPendingHandoffCount));

@@ -77,4 +77,20 @@ describe("UsageQueueButton", () => {
     fireEvent.click(screen.getByRole("switch"));
     expect(toggle).toHaveBeenCalledTimes(1);
   });
+
+  it("wears the SHARED overlay surface + glow, but KEEPS its accent state border", () => {
+    // The E treatment is a family trait (elevation + glow), shared with the
+    // Incoming-messages overlay via the same --overlay-* tokens. The border is
+    // NOT swapped: its color still encodes armed/off state (the #340 contract),
+    // so a shared restyle must not neutralize it.
+    setHook({ capped: true, isArmed: false });
+    render(<UsageQueueButton sessionId="s1" provider="claude-code" />);
+    const panel = screen.getByTestId("usage-queue-overlay");
+    expect(panel.style.background).toBe("var(--overlay-surface)");
+    expect(panel.style.boxShadow).toBe("var(--overlay-glow)");
+    // Off → yellow accent border preserved (state signal, not the hairline).
+    // jsdom normalizes the hex to rgb().
+    expect(panel.style.borderColor).toBe("rgb(230, 180, 80)");
+    expect(panel.style.borderWidth).toBe("1.5px");
+  });
 });

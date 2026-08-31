@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { UUID } from "@autonomos/core";
+import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
   _resetCacheForTesting,
   buildAgent,
@@ -15,7 +16,6 @@ import {
   _setConfigDirForTesting,
 } from "../configDir.js";
 import { handoffQueueCount } from "../handoffQueue.js";
-import { withPendingHandoffCount } from "../routes/agents.js";
 
 // A corrupt queue file (truncated / non-JSON) must NOT take down the always-on
 // agent list: readQueue stays strict (a queue of user messages is not silently
@@ -81,6 +81,28 @@ describe("hand-off queue — corrupt-file resilience", () => {
       (enriched as { pendingHandoffCount?: number }).pendingHandoffCount,
       undefined,
       "a corrupt queue yields no badge, not a crash",
+    );
+  });
+
+  it("rejects an item whose fromUri is present but NOT a string (nox — non-string crashes the overlay)", () => {
+    const id = seedGemini();
+    mkdirSync(queueDir(), { recursive: true });
+    // A well-formed item in every field EXCEPT fromUri, which is a number. The
+    // dashboard calls it.fromUri?.startsWith(...) unconditionally, so this must
+    // be rejected at load like any other malformed item, not passed through.
+    writeFileSync(
+      join(queueDir(), `${id}.json`),
+      JSON.stringify({
+        agentId: id,
+        items: [
+          { id: "x", from: "s", message: "m", enqueuedAt: 1, fromUri: 42 },
+        ],
+      }),
+    );
+    assert.throws(
+      () => handoffQueueCount(id),
+      /malformed item/,
+      "a non-string fromUri must be rejected by the shape guard",
     );
   });
 });

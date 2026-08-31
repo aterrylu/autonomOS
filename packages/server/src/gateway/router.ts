@@ -382,6 +382,10 @@ async function routeToAgent(
     const sender = await resolveSenderIdentity(fromSessionId);
     const enq = enqueueHandoff(queueTarget.id, {
       from: sender.name,
+      // Store the reply address so the injected message carries the standard
+      // inbound envelope ([from → you via <uri>] …) — same contract as a live
+      // inbound, so the recipient treats it as mail and can reply via MCP.
+      fromUri: sender.uri,
       message: content,
     });
     if (!enq.ok) {

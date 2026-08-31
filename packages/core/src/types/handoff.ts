@@ -20,11 +20,22 @@ export interface HandoffQueueItem {
   /** Server-generated unique id — addresses send-one / discard-one. */
   id: string;
   /**
-   * The sender's display name / `agent://` address, shown in the pane so the
-   * operator knows who the message is from. Provenance only — never a trigger.
+   * The sender's display name, shown in the pane so the operator knows who the
+   * message is from. Provenance only — never a trigger.
    */
   from: string;
-  /** The message content, injected verbatim into the PTY on delivery. */
+  /**
+   * The sender's reply address (`agent://Name`, or `schedule://name` for a
+   * scheduled prompt). Used to render the standard inbound ENVELOPE at injection
+   * (`[from → you via fromUri] …`) so a hand-delivered message reads as
+   * inter-agent mail, not user-pasted text, and the recipient can reply via the
+   * MCP send tool. Optional for forward-compat with pre-envelope queue files.
+   */
+  fromUri?: string;
+  /**
+   * The message BODY (no envelope). The pane preview shows this; the envelope is
+   * added only in what's injected into the PTY.
+   */
   message: string;
   /** When it was enqueued (epoch ms). */
   enqueuedAt: number;

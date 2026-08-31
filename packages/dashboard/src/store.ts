@@ -97,6 +97,11 @@ export interface SessionInfo {
    *  accent-highlighted pill right after the repo·branch text on the sidebar
    *  row's bottom line. See ADR-067. */
   envPreset?: string;
+  /** Count of messages queued for human hand-delivery to this (manual-queue,
+   *  e.g. Gemini) agent — drives the sidebar pending-count badge. Absent/0 = no
+   *  badge. Derived server-side; arrives on the /api/agents snapshot and via
+   *  `agent.updated` deltas. See handoffQueue (PR #355). */
+  pendingHandoffCount?: number;
 }
 
 export type ActivePane =
@@ -434,6 +439,7 @@ function agentToSession(agent: Agent, managerName?: string): SessionInfo {
     exitedAt: agent.exitedAt,
     exitReason: agent.exitReason,
     envPreset: agent.envPreset,
+    pendingHandoffCount: agent.pendingHandoffCount,
   };
 }
 
@@ -465,7 +471,11 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
         // running fleet nothing else changes, and the freshly-computed
         // lastActivityAt would be thrown away — freezing sidebar ages at
         // their page-load values (review catch).
-        s.lastActivityAt === sessions[i].lastActivityAt,
+        s.lastActivityAt === sessions[i].lastActivityAt &&
+        // Same class of bug for the hand-off badge: if only the pending count
+        // changes (a message queued/delivered while nothing else moves), the
+        // short-circuit would freeze the badge at its page-load value.
+        s.pendingHandoffCount === sessions[i].pendingHandoffCount,
     );
   const prevExited = get().exitedSessions;
   const exitedUnchanged =

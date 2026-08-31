@@ -28,14 +28,13 @@
  * tomorrow all call injectHandoffItem / injectAllHandoffs.
  */
 
-import type { UUID } from "@autonomos/core";
+import type { HandoffQueueItem, UUID } from "@autonomos/core";
 import { getAttachment } from "./agents/runtime.js";
 import { getAgent } from "./agents/store.js";
 import { emitAgentDelta } from "./events/agents.js";
 import {
   handoffQueueCount,
   listHandoffQueue,
-  peekNextHandoff,
   removeHandoffItem,
 } from "./handoffQueue.js";
 
@@ -61,9 +60,12 @@ const RELEASE_EVENTS = new Set(["SessionEnd"]);
 export type InjectResult = { ok: true } | { ok: false; reason: string };
 
 interface InFlight {
-  itemId: string;
-  from: string;
-  drainAll: boolean;
+  /** The item id(s) this injection will dequeue on its receipt: one for a
+   *  single Send, ALL of them for send-all (one batched injection, one receipt,
+   *  all-or-nothing — Terry wants send-all delivered ONCE, not drained). */
+  itemIds: string[];
+  /** Short label for logs (e.g. "item ab12" or "send-all (3)"). */
+  label: string;
   /** True only once the submitting Enter has been written — see the header. */
   armed: boolean;
   timer: ReturnType<typeof setTimeout>;
@@ -76,14 +78,56 @@ interface InFlight {
 // agentId → the item awaiting a receipt. At most one per agent.
 const inFlight = new Map<string, InFlight>();
 
-function formatForInjection(from: string, message: string): string {
+/**
+ * Sender-kind-aware trailing guidance, dispatched on the from_uri SCHEME
+ * (ADR-092 sender semantics). A hand-delivered paste lacks the `<channel>`
+ * framing a live inbound carries, so this line is what teaches the recipient how
+ * to treat it — and that DIFFERS by sender kind: an agent can be replied to, a
+ * scheduled prompt cannot (Terry's catch — telling a schedule-fired prompt to
+ * "reply to another agent" is wrong: it's not an agent and has no reply path).
+ * Table-driven so a new scheme falls back to the safe informational wording, not
+ * the agent reply instruction.
+ */
+function deliveryHint(fromUri: string): string {
+  const sep = fromUri.indexOf("://");
+  const scheme = sep === -1 ? "" : fromUri.slice(0, sep);
+  const name = sep === -1 ? fromUri : fromUri.slice(sep + 3);
+  switch (scheme) {
+    case "agent":
+      return `hand-delivered via autonomOS — reply with the autonomos MCP send tool to ${fromUri}`;
+    case "schedule":
+      return `scheduled prompt from the autonomOS schedule '${name}' — cannot be replied to, just do the task`;
+    default:
+      return "hand-delivered via autonomOS — informational, no reply";
+  }
+}
+
+function formatForInjection(item: HandoffQueueItem): string {
   // Strip the bracketed-paste terminator + bare CR from the agent-controlled
-  // `from`/`message` so a crafted message can't close paste-mode early and
-  // inject raw keystrokes (control sequences, auto-submitting newlines) into the
-  // pane the human is watching. This content arrives over the gateway from a
-  // DIFFERENT agent — a wider door than promptDelivery's own argv (nox review).
+  // fields so a crafted message can't close paste-mode early and inject raw
+  // keystrokes (control sequences, auto-submitting newlines) into the pane the
+  // human is watching. This content arrives over the gateway from a DIFFERENT
+  // agent — a wider door than promptDelivery's own argv (nox review).
   const clean = (s: string) => s.replace(/\x1b\[201~/g, "").replace(/\r/g, "");
-  return `[${clean(from)} → you (hand-delivered)]\n${clean(message)}`;
+  const from = clean(item.from);
+  const body = clean(item.message);
+  // A pre-envelope queue item (the forward-compat case) may carry NO fromUri —
+  // and its `from` is often already scheme-encoded ("Schedule daily-standup").
+  // Do NOT synthesize `agent://${from}` here: that would send `deliveryHint`
+  // down the agent branch and tell the recipient to "reply to
+  // agent://Schedule daily-standup" — exactly the reply-to-a-schedule bug this
+  // envelope exists to prevent (nox). With no scheme to trust, omit the `via`
+  // and give the safe, no-reply informational hint.
+  const uri = item.fromUri ? clean(item.fromUri) : undefined;
+  const header = uri ? `[${from} → you via ${uri}]` : `[${from} → you]`;
+  const hint = uri
+    ? deliveryHint(uri)
+    : "hand-delivered via autonomOS — informational, no reply";
+  // COMPACT single-line envelope (Terry: the multi-line guidance wrapped ugly):
+  // the standard inbound HEADER (same `[from → you via uri]` as formatInbound)
+  // and the sender-kind-aware guidance on ONE line — guidance in parens right
+  // after the brackets — then the body (ADR-094).
+  return `${header}(${hint})\n${body}`;
 }
 
 /** Release the in-flight lock (clearing BOTH its timers) without dequeuing. */
@@ -118,15 +162,18 @@ export function emitPendingHandoffCount(
 }
 
 /**
- * Inject one queued item into the agent's PTY. Returns ok:false (without
- * touching the queue) if another injection is already awaiting confirmation, the
- * item is gone, or the agent has no live PTY. The item is NOT removed here — it
- * leaves the queue only when {@link noteHandoffDelivery} sees the receipt.
+ * Inject a composed paste (one or more items' envelopes) into the agent's PTY as
+ * ONE bracketed paste + a delayed Enter. Returns ok:false (touching NOTHING) if
+ * an injection is already awaiting confirmation or the agent has no live PTY. The
+ * items are NOT removed here — they leave the queue only when
+ * {@link noteHandoffDelivery} sees the receipt (which then dequeues ALL of
+ * `itemIds` — a batch is all-or-nothing).
  */
-export function injectHandoffItem(
+function injectPaste(
   agentId: string,
-  itemId: string,
-  opts: { drainAll?: boolean } = {},
+  itemIds: string[],
+  paste: string,
+  label: string,
 ): InjectResult {
   if (inFlight.has(agentId)) {
     return {
@@ -134,40 +181,31 @@ export function injectHandoffItem(
       reason: "An injection is already awaiting confirmation for this agent.",
     };
   }
-  const item = listHandoffQueue(agentId).find((i) => i.id === itemId);
-  if (!item) return { ok: false, reason: "No such queued item." };
-
   const pty = getAttachment(agentId as UUID)?.pty;
   if (!pty)
     return { ok: false, reason: "Agent has no live PTY to deliver into." };
 
   try {
-    pty.write(
-      `\x1b[200~${formatForInjection(item.from, item.message)}\x1b[201~`,
-    );
+    pty.write(`\x1b[200~${paste}\x1b[201~`);
   } catch (err) {
     const reason = `PTY write failed: ${err instanceof Error ? err.message : err}`;
     console.error(
-      `[handoff] paste write to ${agentId.slice(0, 8)} failed for item ${itemId.slice(0, 8)} — ${reason}`,
+      `[handoff] paste write to ${agentId.slice(0, 8)} failed (${label}) — ${reason}`,
     );
     return { ok: false, reason };
   }
 
   const entry: InFlight = {
-    itemId,
-    from: item.from,
-    drainAll: opts.drainAll ?? false,
+    itemIds,
+    label,
     armed: false,
     timer: setTimeout(() => {
-      // No receipt in time — release the lock (leave the item queued) and say
-      // so: a stuck/swallowed paste is a real operational event, and for a
-      // send-all this aborts the drain, so the operator needs a signal beyond a
-      // badge that simply stops moving.
+      // No receipt in time — release the lock; the message(s) stay queued (a
+      // batch is all-or-nothing, so none are lost). A stuck/swallowed paste is a
+      // real operational event, so say so.
       inFlight.delete(agentId);
       console.warn(
-        `[handoff] no delivery receipt for item ${itemId.slice(0, 8)} to ${agentId.slice(0, 8)} within ${RECEIPT_TIMEOUT_MS}ms — lock released, message left queued${
-          entry.drainAll ? " (send-all drain aborted)" : ""
-        }`,
+        `[handoff] no delivery receipt for ${label} to ${agentId.slice(0, 8)} within ${RECEIPT_TIMEOUT_MS}ms — lock released, ${itemIds.length} message(s) left queued`,
       );
     }, RECEIPT_TIMEOUT_MS),
   };
@@ -175,23 +213,21 @@ export function injectHandoffItem(
   inFlight.set(agentId, entry);
 
   entry.enterTimer = setTimeout(() => {
-    // Bail if this injection is no longer the one in flight — the lock was
-    // released (SessionEnd, a receipt) and possibly re-taken by a different
-    // item. clearInFlight also cancels this timer, so this is belt-and-suspenders
-    // against a callback already queued on the event loop (nox review).
-    if (inFlight.get(agentId)?.itemId !== itemId) return;
+    // Bail if THIS injection is no longer the one in flight — the lock was
+    // released (SessionEnd, a receipt) and possibly re-taken. clearInFlight also
+    // cancels this timer, so this is belt-and-suspenders against a callback
+    // already queued on the event loop (nox review).
+    if (inFlight.get(agentId) !== entry) return;
     try {
       pty.write("\r");
       // Arm the receipt ONLY now — the injected text is submitted at this point,
       // so its UserPromptSubmit is the next confirming event we should accept.
       entry.armed = true;
     } catch {
-      // PTY vanished between the paste and the Enter. The message was never
-      // submitted; leave the lock unarmed so no stray event is mistaken for a
-      // receipt, and let the timeout release it. Log — a half-injected paste
-      // now sits in the TUI buffer and a retry would concatenate onto it.
+      // PTY vanished between the paste and the Enter. Leave the lock unarmed so
+      // no stray event is mistaken for a receipt; the timeout releases it.
       console.warn(
-        `[handoff] Enter write to ${agentId.slice(0, 8)} failed for item ${itemId.slice(0, 8)} — paste left unsubmitted; receipt not armed`,
+        `[handoff] Enter write to ${agentId.slice(0, 8)} failed (${label}) — paste left unsubmitted; receipt not armed`,
       );
     }
   }, ENTER_DELAY_MS);
@@ -200,19 +236,47 @@ export function injectHandoffItem(
   return { ok: true };
 }
 
-/** Begin delivering the whole queue, one item at a time (send-all). Each item
- *  is gated on its own receipt before the next is injected. */
+/**
+ * Deliver ONE queued item. The item leaves the queue only on its receipt.
+ */
+export function injectHandoffItem(
+  agentId: string,
+  itemId: string,
+): InjectResult {
+  const item = listHandoffQueue(agentId).find((i) => i.id === itemId);
+  if (!item) return { ok: false, reason: "No such queued item." };
+  return injectPaste(
+    agentId,
+    [itemId],
+    formatForInjection(item),
+    `item ${itemId.slice(0, 8)}`,
+  );
+}
+
+/**
+ * Deliver the WHOLE queue as ONE injection — every message's envelope
+ * concatenated into a single paste with one Enter, and a single receipt dequeues
+ * the whole batch (Terry: send-all should be delivered once, all-or-nothing, not
+ * drained one-at-a-time behind each other).
+ */
 export function injectAllHandoffs(agentId: string): InjectResult {
-  const next = peekNextHandoff(agentId);
-  if (!next) return { ok: false, reason: "The queue is empty." };
-  return injectHandoffItem(agentId, next.id, { drainAll: true });
+  const items = listHandoffQueue(agentId);
+  if (items.length === 0) return { ok: false, reason: "The queue is empty." };
+  const paste = items.map(formatForInjection).join("\n\n");
+  return injectPaste(
+    agentId,
+    items.map((i) => i.id),
+    paste,
+    `send-all (${items.length})`,
+  );
 }
 
 /**
  * Fed from routes/hooks.ts on every normalized hook event. On a confirming event
  * for an agent whose in-flight injection is ARMED, the item is dequeued (the
- * receipt) and — for a send-all — the next item is injected. A session-end event
- * releases the lock without dequeuing (the agent is gone).
+ * receipt), dequeuing EVERY item that injection delivered (all of a send-all
+ * batch at once). A session-end event releases the lock without dequeuing (the
+ * agent is gone).
  */
 export function noteHandoffDelivery(agentId: string, eventName: string): void {
   const f = inFlight.get(agentId);
@@ -237,27 +301,20 @@ export function noteHandoffDelivery(agentId: string, eventName: string): void {
   // no-ops; the item reverts to "still queued" (the operator re-delivers) rather
   // than being silently lost (nox review).
   try {
-    removeHandoffItem(agentId, f.itemId);
+    // Dequeue EVERY item this injection delivered — one for a single Send, all
+    // of them for a send-all batch (the batch confirmed as a unit).
+    for (const itemId of f.itemIds) removeHandoffItem(agentId, itemId);
     emitPendingHandoffCount(agentId);
+    // Name the exact item ids this receipt retired — a single ambiguous
+    // UserPromptSubmit can retire N of them in a batch, so guard #2 (auditable
+    // dequeues) needs to say WHICH, not just how many (nox).
+    const ids = f.itemIds.map((id) => id.slice(0, 8)).join(", ");
     console.log(
-      `[handoff] delivered item ${f.itemId.slice(0, 8)} (from ${f.from}) to ${agentId.slice(0, 8)} — confirmed by ${eventName}`,
+      `[handoff] delivered ${f.label} [${ids}] to ${agentId.slice(0, 8)} — confirmed by ${eventName}`,
     );
-    if (f.drainAll) {
-      const next = peekNextHandoff(agentId);
-      if (next) {
-        const r = injectHandoffItem(agentId, next.id, { drainAll: true });
-        if (!r.ok) {
-          // The drain can't continue (PTY gone, etc.). Say so — remaining items
-          // stay queued but the operator's "send all" quietly stopped partway.
-          console.warn(
-            `[handoff] send-all drain to ${agentId.slice(0, 8)} stopped: ${r.reason} (${handoffQueueCount(agentId)} still queued)`,
-          );
-        }
-      }
-    }
   } catch (err) {
     console.error(
-      `[handoff] dequeue after receipt for ${agentId.slice(0, 8)} failed — item may remain queued:`,
+      `[handoff] dequeue after receipt for ${agentId.slice(0, 8)} failed — item(s) may remain queued:`,
       err instanceof Error ? err.message : err,
     );
   }

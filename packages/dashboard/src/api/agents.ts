@@ -1,6 +1,6 @@
 /** Agents family — `/api/agents/*`. */
 
-import type { Agent, AgentTreeNode } from "@autonomos/core";
+import type { Agent, AgentTreeNode, HandoffQueueItem } from "@autonomos/core";
 import { request } from "./core";
 
 export interface SpawnAgentBody {
@@ -64,4 +64,34 @@ export const agentsApi = {
       idMap?: Record<string, string>;
       failures?: Array<{ id: string; name: string; error: string }>;
     }>("/api/agents/restart-all", { method: "POST", body: {} }),
+
+  // ── Hand-off queue (manual-queue agents, e.g. Gemini) — PR #355 server ──
+  /** List an agent's queued hand-off messages, oldest first. */
+  queueList: (id: string, opts?: { signal?: AbortSignal }) =>
+    request<{ items: HandoffQueueItem[] }>(`/api/agents/${id}/queue`, opts),
+  /** Deliver ONE queued message (PTY injection; leaves the queue on its hook
+   *  receipt). 409 `{error}` if an injection is already in flight or no PTY. */
+  queueSend: (id: string, itemId: string) =>
+    request<{ ok: true }>(
+      `/api/agents/${id}/queue/${encodeURIComponent(itemId)}/send`,
+      { method: "POST", body: {} },
+    ),
+  /** Deliver ALL queued messages as ONE batched injection — a single paste, a
+   *  single receipt dequeues the whole batch (all-or-nothing, not one-at-a-time). */
+  queueSendAll: (id: string) =>
+    request<{ ok: true; remaining: number }>(
+      `/api/agents/${id}/queue/send-all`,
+      { method: "POST", body: {} },
+    ),
+  /** Discard ONE queued message (no delivery). 404 `{error}` if it's gone. */
+  queueDiscard: (id: string, itemId: string) =>
+    request<{ ok: true; removed: HandoffQueueItem }>(
+      `/api/agents/${id}/queue/${encodeURIComponent(itemId)}`,
+      { method: "DELETE" },
+    ),
+  /** Discard ALL queued messages (no delivery) — the pane's "Discard all". */
+  queueDiscardAll: (id: string) =>
+    request<{ ok: true; cleared: number }>(`/api/agents/${id}/queue`, {
+      method: "DELETE",
+    }),
 };
