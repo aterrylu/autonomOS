@@ -512,3 +512,106 @@ describe("follow indicator (jump-to-latest pill)", () => {
     expect(backend.buf.viewportY).toBe(backend.buf.baseY);
   });
 });
+
+describe("WebGL-recreate full-viewport refresh (blackout HARDENING, not a fix)", () => {
+  let refreshes = 0;
+  let contextLossCb: (() => void) | null = null;
+  let webglDisposes = 0;
+
+  beforeEach(() => {
+    refreshes = 0;
+    contextLossCb = null;
+    webglDisposes = 0;
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    _setBackendFactoryForTesting(() => {
+      const b = makeFakeBackend();
+      // Layer a refresh counter + a WORKING webgl fake over the shared fake.
+      (b.terminal as { refresh?: (a: number, z: number) => void }).refresh =
+        () => {
+          refreshes++;
+        };
+      (b as { createWebglAddon: unknown }).createWebglAddon = () => ({
+        dispose: () => {
+          webglDisposes++;
+        },
+        onContextLoss: (cb: () => void) => {
+          contextLossCb = cb;
+          return { dispose: () => {} };
+        },
+      });
+      return b;
+    });
+    useStore.setState({ fetchSessions: vi.fn() as never });
+  });
+
+  afterEach(() => {
+    _disposeAllTerminals();
+    _setBackendFactoryForTesting(null);
+    vi.unstubAllGlobals();
+  });
+
+  function mountVisible(id: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const entry = acquireTerminal(id);
+    if (!entry) throw new Error("null entry");
+    // Context-loss rebuild is visibility-gated; make the host measurable.
+    Object.defineProperty(entry.host, "offsetWidth", {
+      configurable: true,
+      get: () => 800,
+    });
+    Object.defineProperty(entry.host, "offsetHeight", {
+      configurable: true,
+      get: () => 600,
+    });
+    entry.attach(container, null);
+    return { entry, container };
+  }
+
+  it("ATTACH path: recreating the renderer forces one full-viewport refresh", () => {
+    mountVisible("w1");
+    expect(refreshes).toBe(1);
+  });
+
+  it("CONTEXT-LOSS path: the rebuild forces another full refresh", () => {
+    mountVisible("w2");
+    expect(refreshes).toBe(1);
+    contextLossCb?.(); // GPU context died → dispose + rebuild
+    expect(webglDisposes).toBeGreaterThan(0);
+    expect(refreshes).toBe(2);
+  });
+
+  it("cannot fire per-frame: live output never triggers a refresh", () => {
+    mountVisible("w3");
+    const ws = FakeWebSocket.instances[0];
+    for (let i = 0; i < 50; i++) ws.onmessage?.({ data: `line ${i}\r\n` });
+    expect(refreshes).toBe(1); // still just the attach-time one
+  });
+
+  it("settled-fit consumes the recreate flag for ONE more refresh, then never again", () => {
+    mountVisible("w5");
+    expect(refreshes).toBe(1); // recreate-time refresh (possibly unsettled atlas)
+    window.dispatchEvent(new Event("focus")); // handleFocus → applyFit succeeds
+    expect(refreshes).toBe(2); // settled-path refresh consumed the flag
+    window.dispatchEvent(new Event("focus"));
+    expect(refreshes).toBe(2); // flag single-use — no refresh-per-fit
+  });
+
+  it("detach/re-attach cycle refreshes exactly once per recreation", () => {
+    const { entry, container } = mountVisible("w4");
+    entry.detach(container); // disposes webgl
+    const c2 = document.createElement("div");
+    document.body.appendChild(c2);
+    entry.attach(c2, null); // recreates → one more refresh
+    expect(refreshes).toBe(2);
+  });
+});

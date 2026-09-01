@@ -76,6 +76,7 @@ export interface TerminalInstance {
   selectAll(): void;
   clear(): void;
   reset(): void;
+  refresh(start: number, end: number): void;
   readonly onData: IEvent<string>;
   readonly onScroll: IEvent<number>;
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
