@@ -185,7 +185,7 @@ describe("reorderFlat", () => {
       pinnedOrder: ["p"],
       unpinnedOrder: ["a", "b", "c"],
     });
-    get().reorderFlat("unpinned", 0, 2); // move 'a' to the end
+    get().reorderFlat("unpinned", "a", null); // move 'a' to the end
     expect(get().unpinnedOrder).toEqual(["b", "c", "a"]);
     expect(get().pinnedOrder).toEqual(["p"]);
   });
@@ -196,7 +196,7 @@ describe("reorderFlat", () => {
       pinnedOrder: ["a", "b"],
       unpinnedOrder: ["c"],
     });
-    get().reorderFlat("pinned", 1, 0); // move 'b' to the front
+    get().reorderFlat("pinned", "b", "a"); // move 'b' before 'a' (to the front)
     expect(get().pinnedOrder).toEqual(["b", "a"]);
     expect(get().unpinnedOrder).toEqual(["c"]);
   });
@@ -207,8 +207,30 @@ describe("reorderFlat", () => {
       sessions: ["a", "b"],
       unpinnedOrder: ["a", "b", "c"],
     });
-    get().reorderFlat("unpinned", 0, 0); // no move, but re-freezes/prunes
+    get().reorderFlat("unpinned", "a", "b"); // land 'a' before 'b' → no move
     expect(get().unpinnedOrder).toEqual(["a", "b"]);
+  });
+
+  it("commits by KEY, so a fresh arrival mid-drag can't move the wrong agent (nox Thread-0)", () => {
+    // Frozen view at dragstart: unpinned [a,b,c,d]. The user drags 'd' to sit
+    // before 'a'. A poll lands mid-drag and a new agent 'x' spawns — it is in
+    // neither order array, so buildFlatSections prepends it to unpinned, making
+    // the LIVE list [x,a,b,c,d]. An index-based commit (the old signature) would
+    // splice index 3 of that list — 'c', off by one. Committing by key moves 'd'.
+    seed({
+      sessions: ["x", "a", "b", "c", "d"], // 'x' fresh (not in unpinnedOrder)
+      unpinnedOrder: ["a", "b", "c", "d"],
+    });
+    get().reorderFlat("unpinned", "d", "a");
+    // 'd' lands before 'a'; the fresh 'x' keeps its prepended slot; b,c untouched.
+    expect(get().unpinnedOrder).toEqual(["x", "d", "a", "b", "c"]);
+  });
+
+  it("lands at the end when beforeKey exited mid-drag", () => {
+    seed({ sessions: ["a", "b", "c"], unpinnedOrder: ["a", "b", "c"] });
+    // Anchor 'z' is not in the live list (exited) → fall back to the end.
+    get().reorderFlat("unpinned", "a", "z");
+    expect(get().unpinnedOrder).toEqual(["b", "c", "a"]);
   });
 });
 

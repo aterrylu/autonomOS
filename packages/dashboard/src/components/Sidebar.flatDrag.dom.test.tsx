@@ -8,9 +8,13 @@ import { Sidebar } from "./Sidebar";
 /**
  * DOM-level drag WIRING for flat-view reorder. The reorder math is covered by
  * the sidebarReorder unit tests; here we fire synthetic HTML5 drag events on the
- * rendered rows to verify handleDragStart→handleDragOver→handleDrop→reorderFlat
- * is wired with the correct section + indices, and that a cross-section drop is
- * a no-op (the section-clamping guard).
+ * rendered rows to verify dragStart→dragOver→drop→reorderFlat is wired with the
+ * correct section + keys, that a cross-section drop is a no-op (the
+ * section-clamping guard), and — crucially — that a drop landing in the OPENED
+ * GAP (on the sidebar container, not a row) still commits. The commit authority
+ * is the <aside> onDrop, not the row: the slide-apart ghost has
+ * pointerEvents:none, so an upper-half hover drops through it onto the container
+ * (nox 🔴). A row-target drop reaches the same handler by bubbling.
  *
  * handleDragOver now reads the MIDPOINT of the hovered row (`dropEdgeAt` on
  * `e.clientY` + the row's rect) to pick the above/below insertion edge. jsdom
@@ -152,6 +156,34 @@ describe("flat-view drag wiring", () => {
 
     expect(useStore.getState().unpinnedOrder).toEqual(["b", "c", "a"]);
     expect(useStore.getState().pinnedOrder).toEqual([]);
+  });
+
+  it("commits a drop that lands in the opened gap, not on a row (nox 🔴 dead-zone)", () => {
+    stubFetch(AGENT_IDS);
+    useStore.setState({
+      sidebarViewMode: "flat",
+      sidebarViewModeExplicit: true,
+      sessions: AGENT_IDS.map(sess),
+      exitedSessions: [],
+      agentStatuses: {},
+      pinnedOrder: [],
+      unpinnedOrder: ["a", "b", "c"],
+    });
+    renderSidebar();
+
+    const dt = makeDataTransfer();
+    // Drag 'a' down; hover 'c' UPPER half → a gap opens BEFORE 'c' and the cursor
+    // sits inside the ghost (pointerEvents:none), so the real drop lands on the
+    // sidebar container, NEVER on row('c'). Dropping on the <aside> reproduces
+    // that fall-through — the old code committed nothing here (silent cancel).
+    fireDrag("dragStart", row("a"), { dataTransfer: dt });
+    fireDrag("dragOver", row("c"), { dataTransfer: dt, clientY: ABOVE_Y });
+    const aside = row("c").closest("aside");
+    if (!aside) throw new Error("no <aside>");
+    fireDrag("drop", aside as HTMLElement, { dataTransfer: dt });
+
+    // 'a' lands BEFORE 'c', where the gap was: [b, a, c].
+    expect(useStore.getState().unpinnedOrder).toEqual(["b", "a", "c"]);
   });
 
   it("ignores a cross-section drop (pinned ↔ unpinned)", () => {

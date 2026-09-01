@@ -512,7 +512,9 @@ export function Sidebar() {
     e.preventDefault();
     const edge = dropEdgeAt(e.clientY, e.currentTarget.getBoundingClientRect());
     setDropTarget({ section, idx, edge });
-    flatAutoScroll.onDragOver(e.clientY);
+    // Auto-scroll is fed once, from the <aside> onDragOver (single source) — so
+    // it keeps working even when the cursor is over the pointerEvents:none ghost,
+    // where this per-row handler never fires.
   }
 
   function endFlatDrag() {
@@ -522,18 +524,76 @@ export function Sidebar() {
     flatAutoScroll.stop();
   }
 
-  function handleDrop(section: FlatSection, idx: number) {
-    const d = dragRef.current;
-    const dt = dropTarget;
-    if (d && d.section === section && dt) {
-      const to = flatDropIndex(d.idx, idx, dt.edge);
-      if (to !== null) reorderFlat(section, d.idx, to);
-    }
-    endFlatDrag();
+  function endHierDrag() {
+    hierDrag.current = null;
+    setFrozenTree(null);
+    setHierDropTarget(null);
+    hierAutoScroll.stop();
   }
 
-  function handleDragEnd() {
-    endFlatDrag();
+  // Commit the flat reorder from the current drag + drop-target STATE (not from
+  // an event target). The single drop authority is the <aside> onDrop, which
+  // fires for a release on a row OR in the opened gap — the slide-apart ghost
+  // has pointerEvents:none, so an upper-half hover drops through it and the drop
+  // lands on the container, not the row (nox 🔴). Commit is by KEY so a mid-drag
+  // arrival can't shift the landing slot (nox Thread-0): resolve the frozen
+  // dragKey + the key it lands BEFORE against the live list.
+  function commitFlatFromState() {
+    const d = dragRef.current;
+    const dt = dropTarget;
+    if (!d || !dt || dt.section !== d.section) return;
+    const rows = flatView[d.section];
+    const to = flatDropIndex(d.idx, dt.idx, dt.edge);
+    if (to === null) return; // no-op — landing back at origin
+    const dragKey = sessionOrderKey(rows[d.idx]);
+    const postRemoval = rows.filter((_, i) => i !== d.idx);
+    const beforeKey =
+      to < postRemoval.length ? sessionOrderKey(postRemoval[to]) : null;
+    reorderFlat(d.section, dragKey, beforeKey);
+  }
+
+  function commitHierFromState() {
+    const d = hierDrag.current;
+    const dt = hierDropTarget;
+    if (!d || !dt || dt.group !== d.group) return;
+    const to = hierDropIndex(d.idx, dt.idx, dt.edge);
+    if (to !== null) commitHierReorder(d.group, d.idx, to);
+  }
+
+  // Commit a hierarchy sibling reorder BY NAME within the full persisted order,
+  // so a stopped sibling holding a slot doesn't move the wrong agent (nox
+  // Thread-1). `from`/`to` are LIVE-sibling indices (the tree is pruned,
+  // hideStopped=true) resolved against `hierarchyOrder[gk]` which may keep
+  // stopped names. Hoisted from the inline onReorder so the <aside> drop
+  // authority can reach it too.
+  function commitHierReorder(gk: string, from: number, to: number) {
+    const liveSibs =
+      gk === "__root__"
+        ? (frozenTree ?? hierarchyTree).map((n) =>
+            (n.org.name ?? "").toLowerCase(),
+          )
+        : (() => {
+            function findChildren(
+              nodes: SidebarHierarchyNode[],
+            ): string[] | null {
+              for (const n of nodes) {
+                if ((n.org.name ?? "").toLowerCase() === gk)
+                  return n.children.map((c) =>
+                    (c.org.name ?? "").toLowerCase(),
+                  );
+                const found = findChildren(n.children);
+                if (found) return found;
+              }
+              return null;
+            }
+            return findChildren(frozenTree ?? hierarchyTree) ?? [];
+          })();
+    const existing = hierarchyOrder[gk];
+    const full = existing && existing.length > 0 ? existing : liveSibs;
+    const next = reorderLiveInFullOrder(full, liveSibs, from, to);
+    useStore.setState((prev) => ({
+      hierarchyOrder: { ...prev.hierarchyOrder, [gk]: next },
+    }));
   }
 
   function isPaneActive(pane: ActivePane): boolean {
@@ -622,8 +682,7 @@ export function Sidebar() {
           handleDragStart(e, section, i, dragPane)
         }
         onDragOver={(e, i) => handleDragOver(e, section, i)}
-        onDrop={(i) => handleDrop(section, i)}
-        onDragEnd={handleDragEnd}
+        onDragEnd={endFlatDrag}
         onClick={() => {
           switchPane(pane);
           focusTerminal(session.id);
@@ -675,15 +734,54 @@ export function Sidebar() {
       <aside
         ref={asideRef}
         className="absolute inset-y-0 left-0 z-20 flex shrink-0 flex-col overflow-y-auto md:relative"
+        onDragOver={(e) => {
+          // SINGLE drop authority for reorder. The slide-apart ghost sets
+          // pointerEvents:none, so an upper-half hover leaves the cursor over the
+          // ghost/gap where per-row dragover no longer fires; without a
+          // preventDefault here the browser sets dropEffect=none and suppresses
+          // the drop, silently cancelling the reorder at exactly the spot the gap
+          // invites (nox 🔴). Also the one place auto-scroll is fed, so it keeps
+          // running over the ghost too. Per-row dragover still owns the edge /
+          // dropTarget math; this only keeps the whole sidebar droppable.
+          if (dragRef.current) {
+            e.preventDefault();
+            flatAutoScroll.onDragOver(e.clientY);
+          } else if (hierDrag.current) {
+            e.preventDefault();
+            hierAutoScroll.onDragOver(e.clientY);
+          }
+        }}
+        onDrop={(e) => {
+          // Commit from the already-correct dropTarget/hierDropTarget STATE, so a
+          // release on a row OR in the opened gap lands identically.
+          if (dragRef.current) {
+            e.preventDefault();
+            commitFlatFromState();
+            endFlatDrag();
+          } else if (hierDrag.current) {
+            e.preventDefault();
+            commitHierFromState();
+            endHierDrag();
+          }
+        }}
         onDragLeave={(e) => {
           // Left the sidebar entirely (e.g. dragging a row body toward the
-          // terminal to open a tab/split): clear the slide-apart gap + ghost so
-          // leaving never strands an open gap. dragLeave also fires when moving
-          // between children, so confirm the pointer really exited the <aside>.
-          const to = e.relatedTarget as Node | null;
-          if (!to || !e.currentTarget.contains(to)) {
+          // terminal to open a tab/split): clear the slide-apart gap + ghost and
+          // STOP auto-scroll so it doesn't run away while the drag sits over the
+          // dockview area. dragleave also fires crossing between children, and
+          // `relatedTarget` is null on drag events in Chrome, so use a geometry
+          // test — clear only when the pointer is genuinely outside the box.
+          const r = e.currentTarget.getBoundingClientRect();
+          const outside =
+            e.clientX < r.left ||
+            e.clientX >= r.right ||
+            e.clientY < r.top ||
+            e.clientY >= r.bottom;
+          if (outside) {
             setDropTarget(null);
             setHierDropTarget(null);
+            flatAutoScroll.stop();
+            hierAutoScroll.stop();
           }
         }}
         style={{
@@ -869,62 +967,11 @@ export function Sidebar() {
                       switchPane={switchPane}
                       markNotificationsRead={markNotificationsRead}
                       openAgentMenu={openAgentMenu}
-                      onReorder={(gk, from, to) => {
-                        // `from`/`to` are LIVE-sibling indices (the tree is pruned,
-                        // hideStopped=true). The persisted hierarchyOrder[gk] may keep
-                        // STOPPED names — so reorder the LIVE entries within the full
-                        // order BY NAME, leaving stopped names put. Splicing live
-                        // indices straight into the full order moves the wrong sibling
-                        // when a parent has a stopped child (nox Thread-1).
-                        const liveSibs =
-                          gk === "__root__"
-                            ? (frozenTree ?? hierarchyTree).map((n) =>
-                                (n.org.name ?? "").toLowerCase(),
-                              )
-                            : (() => {
-                                function findChildren(
-                                  nodes: SidebarHierarchyNode[],
-                                ): string[] | null {
-                                  for (const n of nodes) {
-                                    if ((n.org.name ?? "").toLowerCase() === gk)
-                                      return n.children.map((c) =>
-                                        (c.org.name ?? "").toLowerCase(),
-                                      );
-                                    const found = findChildren(n.children);
-                                    if (found) return found;
-                                  }
-                                  return null;
-                                }
-                                return (
-                                  findChildren(frozenTree ?? hierarchyTree) ??
-                                  []
-                                );
-                              })();
-                        const existing = hierarchyOrder[gk];
-                        const full =
-                          existing && existing.length > 0 ? existing : liveSibs;
-                        const next = reorderLiveInFullOrder(
-                          full,
-                          liveSibs,
-                          from,
-                          to,
-                        );
-                        useStore.setState((prev) => ({
-                          hierarchyOrder: {
-                            ...prev.hierarchyOrder,
-                            [gk]: next,
-                          },
-                        }));
-                      }}
                       hierDrag={hierDrag}
                       hierDropTarget={hierDropTarget}
                       setHierDropTarget={setHierDropTarget}
                       onHierDragStart={() => setFrozenTree(hierarchyTree)}
-                      onHierDragEnd={() => {
-                        setFrozenTree(null);
-                        setHierDropTarget(null);
-                        hierAutoScroll.stop();
-                      }}
+                      onHierDragEnd={endHierDrag}
                       hierAutoScroll={hierAutoScroll}
                     />,
                   );
@@ -1591,7 +1638,6 @@ interface HierarchyNodeRowProps {
   switchPane: (pane: ActivePane | null) => void;
   markNotificationsRead: (sessionId: string) => Promise<void>;
   openAgentMenu: (e: React.MouseEvent, target: AgentMenuTarget) => void;
-  onReorder: (groupKey: string, fromIndex: number, toIndex: number) => void;
   /** Shared drag state across all hierarchy rows */
   hierDrag: React.MutableRefObject<{ group: string; idx: number } | null>;
   hierDropTarget: {
@@ -1880,7 +1926,6 @@ function HierarchyNodeRow({
   switchPane,
   markNotificationsRead,
   openAgentMenu,
-  onReorder,
   hierDrag,
   hierDropTarget,
   setHierDropTarget,
@@ -1966,6 +2011,9 @@ function HierarchyNodeRow({
             }}
             onDragOver={(e) => {
               // Only a same-parent drag reorders (re-parent is out of scope).
+              // Auto-scroll is fed once from the <aside> (single source); this
+              // handler only owns the edge / hierDropTarget math. The commit is
+              // the <aside> onDrop, so the opened gap is droppable (nox 🔴).
               if (hierDrag.current?.group === groupKey) {
                 e.preventDefault();
                 const edge = dropEdgeAt(
@@ -1973,25 +2021,12 @@ function HierarchyNodeRow({
                   e.currentTarget.getBoundingClientRect(),
                 );
                 setHierDropTarget({ group: groupKey, idx: indexInGroup, edge });
-                hierAutoScroll.onDragOver(e.clientY);
               }
-            }}
-            onDrop={() => {
-              const d = hierDrag.current;
-              if (d && d.group === groupKey) {
-                const edge =
-                  hierDropTarget?.group === groupKey &&
-                  hierDropTarget?.idx === indexInGroup
-                    ? hierDropTarget.edge
-                    : "above";
-                const to = hierDropIndex(d.idx, indexInGroup, edge);
-                if (to !== null) onReorder(groupKey, d.idx, to);
-              }
-              hierDrag.current = null;
-              onHierDragEnd();
             }}
             onDragEnd={() => {
-              hierDrag.current = null;
+              // A drag that ends outside the sidebar (drag-into-dockview) or is
+              // cancelled cleans up here; a real drop is committed + ended by the
+              // <aside> onDrop before this fires (endHierDrag is idempotent).
               onHierDragEnd();
             }}
             onClick={() => {
@@ -2098,7 +2133,6 @@ function HierarchyNodeRow({
                 switchPane={switchPane}
                 markNotificationsRead={markNotificationsRead}
                 openAgentMenu={openAgentMenu}
-                onReorder={onReorder}
                 hierDrag={hierDrag}
                 hierDropTarget={hierDropTarget}
                 setHierDropTarget={setHierDropTarget}
