@@ -691,14 +691,22 @@ export class LiveTerminal {
   // addon on context loss resumes live rendering.
   private loadWebglAddon(): void {
     if (this.disposed || this.webglAddon) return;
+    // `addon` hoisted out of the try (review): the dominant throw site is
+    // loadAddon()/activate() — AFTER the GL context exists but BEFORE the
+    // field is assigned — so a field-based dispose in the catch was a no-op
+    // exactly where the orphaned-context hazard lives.
+    let addon: IWebglAddon | null = null;
     try {
-      const addon = this.createWebglAddon();
+      addon = this.createWebglAddon();
       if (!addon) return;
       this.terminal.loadAddon(addon);
       this.webglAddon = addon;
-      addon.onContextLoss(() => {
-        addon.dispose();
-        if (this.webglAddon === addon) this.webglAddon = null;
+      // const alias: `addon` is a let for the catch's dispose, and let-
+      // narrowing doesn't survive into a later-invoked closure.
+      const live = addon;
+      live.onContextLoss(() => {
+        live.dispose();
+        if (this.webglAddon === live) this.webglAddon = null;
         // Rebuild on the next visible frame so rendering resumes.
         if (!this.disposed && this.isHostVisible()) {
           this.loadWebglAddon();
@@ -714,11 +722,17 @@ export class LiveTerminal {
       });
     } catch (err) {
       console.warn("WebGL addon failed, falling back to canvas renderer:", err);
-      // A throw after loadAddon would otherwise orphan a live GL context
-      // while our field says none exists — the next visibility toggle would
-      // create a SECOND context (the very pressure that triggers context
-      // loss). Dispose whatever was created before clearing the field.
-      this.webglAddon?.dispose();
+      // Dispose the LOCAL, not the field: a throw inside loadAddon/activate
+      // leaves a live GL context with the field still null — the next
+      // visibility toggle would create a SECOND context (the very pressure
+      // that triggers context loss). Inner try keeps loadWebglAddon
+      // throw-safe for attach() (dispose on a half-activated addon can
+      // itself throw; an escape here would leave the pane unfitted).
+      try {
+        addon?.dispose();
+      } catch {
+        // best effort — the context is lost either way
+      }
       this.webglAddon = null;
     }
     if (this.webglAddon) {
