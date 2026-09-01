@@ -97,6 +97,11 @@ export interface SessionInfo {
    *  accent-highlighted pill right after the repo·branch text on the sidebar
    *  row's bottom line. See ADR-067. */
   envPreset?: string;
+  /** Count of messages queued for human hand-delivery to this (manual-queue,
+   *  e.g. Gemini) agent — drives the sidebar pending-count badge. Absent/0 = no
+   *  badge. Derived server-side; arrives on the /api/agents snapshot and via
+   *  `agent.updated` deltas. See handoffQueue (PR #355). */
+  pendingHandoffCount?: number;
 }
 
 export type ActivePane =
@@ -434,6 +439,7 @@ function agentToSession(agent: Agent, managerName?: string): SessionInfo {
     exitedAt: agent.exitedAt,
     exitReason: agent.exitReason,
     envPreset: agent.envPreset,
+    pendingHandoffCount: agent.pendingHandoffCount,
   };
 }
 
@@ -465,7 +471,11 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
         // running fleet nothing else changes, and the freshly-computed
         // lastActivityAt would be thrown away — freezing sidebar ages at
         // their page-load values (review catch).
-        s.lastActivityAt === sessions[i].lastActivityAt,
+        s.lastActivityAt === sessions[i].lastActivityAt &&
+        // Same class of bug for the hand-off badge: if only the pending count
+        // changes (a message queued/delivered while nothing else moves), the
+        // short-circuit would freeze the badge at its page-load value.
+        s.pendingHandoffCount === sessions[i].pendingHandoffCount,
     );
   const prevExited = get().exitedSessions;
   const exitedUnchanged =
@@ -703,6 +713,13 @@ interface AppState {
     opts?: { isAutonomosAgent?: boolean },
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
+  /** Restart a running agent: kill the PTY, then re-attach from its record.
+   *  Composed from the two existing endpoints (there is no per-agent restart
+   *  route — only fleet-wide restart-all). */
+  restartSession: (id: string) => Promise<void>;
+  /** Reparent an agent in the org chart by manager id. `null` clears. Rethrows
+   *  the typed error on failure so the caller can surface the reason. */
+  setManager: (id: string, managerId: string | null) => Promise<void>;
   openOrgChart: () => void;
   openTemplates: () => void;
   openSchedules: () => void;
@@ -1089,6 +1106,59 @@ export const useStore = create<AppState>()(
                 ? { activePane: fallback, status: "connected" }
                 : { activePane: null, status: "disconnected" },
             );
+          }
+          await get().fetchSessions();
+        },
+        restartSession: async (id) => {
+          // No per-agent restart endpoint exists (only restart-all), so compose
+          // kill → attach. killAttachment marks the record exited synchronously
+          // before responding, so attach won't hit the "already running" guard.
+          // Handle the two legs separately: a kill that doesn't land (409 — the
+          // agent was already dead) is fine, so proceed to attach anyway; only a
+          // failed ATTACH is a real problem (it leaves the agent stopped). No
+          // client toast channel exists yet, so a failed attach is logged loudly
+          // and the agent shows as stopped (resumable) — surfacing it in-UI is a
+          // follow-up.
+          try {
+            await agentsApi.kill(id);
+          } catch (err) {
+            console.warn(
+              `[autonomOS] restartSession: kill of ${id} did not land, continuing to attach:`,
+              apiErrorLabel(err),
+            );
+          }
+          let attached = false;
+          try {
+            await agentsApi.attach(id);
+            attached = true;
+          } catch (err) {
+            console.error(
+              `[autonomOS] restartSession: attach of ${id} FAILED — agent left stopped:`,
+              apiErrorLabel(err),
+            );
+          }
+          await get().fetchSessions();
+          // Re-open the pane. The kill dropped this id from `sessions` and
+          // retargeted the active pane to a live sibling (pickActiveFallback),
+          // so without this, Restart closes the terminal you were watching and
+          // jumps you to another agent while the restarted one runs with no pane.
+          // Only when the attach actually landed (else there is nothing to show).
+          if (attached) get().switchPane({ type: "session", id });
+        },
+        setManager: async (id, managerId) => {
+          // Set by exact id (skips the server's name resolution + running/recent
+          // tie-break); `null` clears. Rethrow like removeSession so the caller
+          // can surface the reason — the client cycle filter can't see cycles
+          // that route through an EXITED intermediary, so a 409 is still possible.
+          try {
+            await agentsApi.manager(id, { managerId });
+          } catch (err) {
+            console.error(
+              `[autonomOS] setManager failed for ${id}:`,
+              apiErrorLabel(err),
+            );
+            await get().fetchSessions();
+            throw err;
           }
           await get().fetchSessions();
         },

@@ -13,6 +13,28 @@
   --border: 28 36 51;
   --accent: 28 36 51;
   --accent-foreground: 179 177 173;
+
+  /* Floating-overlay separation treatment (ADR-094). The SHARED edge + glow for
+     BOTH draggable pane overlays — Incoming messages + the usage-queue auto-Enter
+     control — so the two read as one component family. Consumers REFERENCE these
+     tokens; they never copy the values.
+
+     Terry's pick, refined live: keep the ORIGINAL panel color (a lighter surface
+     "makes it look really ugly"), and distinguish the panel from the pane with
+     only a 1px hairline edge + a whisper glow (A+C, not the earlier E that also
+     lightened the surface). So --overlay-surface tracks --card and
+     --overlay-divider tracks --border — the panel's fill and interior are exactly
+     as before; ONLY the edge and the glow lift it off the dark pane (and off a
+     pure-black region). The usage overlay keeps its own accent-colored border
+     (armed/off STATE) and adds only the glow. */
+  --overlay-surface: rgb(var(--card));
+  /* Track the theme's foreground at low alpha rather than a fixed white: in dark
+     themes --foreground is a light gray, so this stays the faint light hairline
+     Terry approved; in a LIGHT theme (daylight) --foreground is dark, so the edge
+     stays visible on a near-white panel instead of disappearing (nox). */
+  --overlay-hairline: rgb(var(--foreground) / 0.16);
+  --overlay-divider: rgb(var(--border));
+  --overlay-glow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(150, 172, 205, 0.06);
 }
 
 @theme inline {

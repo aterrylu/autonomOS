@@ -10,6 +10,7 @@ import { verifyAgentToken } from "../agentCredentials.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents, markActivity } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
+import { noteHandoffDelivery } from "../handoffDelivery.js";
 import { getProvider } from "../providers/index.js";
 
 /**
@@ -464,6 +465,12 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
     event,
     typeof body.source === "string" ? body.source : undefined,
   );
+
+  // Hand-off delivery receipt — if a queued message was just injected into this
+  // (manual-queue) agent's PTY, a UserPromptSubmit confirms it was submitted, so
+  // dequeue it now (and inject the next, for a send-all). Keyed on the same
+  // sessionId; a no-op unless an injection is in flight.
+  noteHandoffDelivery(sessionId, event);
 
   // ── Update agent status ────────────────────────────────────────────
   // Compaction is handled here (not deriveStatus) so it stays correct no

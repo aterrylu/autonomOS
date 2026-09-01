@@ -12,6 +12,7 @@
 
 import type { AgentDelta } from "@autonomos/core";
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
+import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import { listAgents } from "../agents/store.js";
 import { onAgentDelta } from "../events/agents.js";
 import { getAgentStatusSnapshot } from "../routes/hooks.js";
@@ -100,7 +101,10 @@ export function agentsRouter(upgradeWebSocket: UpgradeWebSocket) {
         try {
           const json = JSON.stringify({
             type: "reconcile" as const,
-            agents: listAgents(),
+            // Enrich with pendingHandoffCount so a fresh dashboard load shows the
+            // hand-off badge for an EXISTING queue — the sidebar reads this
+            // snapshot, not GET /api/agents, and live deltas predate the connect.
+            agents: listAgents().map(withPendingHandoffCount),
             // Activity statuses + unread counts ride the snapshot so a
             // (re)connect needs no follow-up status poll — the poll this
             // channel exists to retire.

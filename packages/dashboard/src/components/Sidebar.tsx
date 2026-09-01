@@ -21,6 +21,7 @@ import {
   THEMES,
   useStore,
 } from "../store";
+import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { Codicon } from "./Codicon";
 import {
   mergeOrgWithSessions,
@@ -232,6 +233,25 @@ export function Sidebar() {
     [sessions],
   );
   const [orgRefreshKey, setOrgRefreshKey] = useState(0);
+  // Row context menu (ADR-093). One menu at a time; opened by right-click on a
+  // SessionRow (running) or an exited Projects-panel row. Positioned at the
+  // pointer, dismissed via the escape stack / click-away inside the component.
+  const [agentMenu, setAgentMenu] = useState<{
+    target: AgentMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+  const openAgentMenu = useCallback(
+    (e: React.MouseEvent, target: AgentMenuTarget) => {
+      e.preventDefault();
+      setAgentMenu({ target, x: e.clientX, y: e.clientY });
+    },
+    [],
+  );
+  // Stable identity: the menu registers this on the ADR-065 escape stack keyed
+  // by [onClose], so a fresh function each Sidebar render would churn the
+  // registration and could invert the LIFO order against another open overlay.
+  const closeAgentMenu = useCallback(() => setAgentMenu(null), []);
   const prevFingerprintRef = useRef(sessionFingerprint);
   useEffect(() => {
     if (prevFingerprintRef.current !== sessionFingerprint) {
@@ -477,95 +497,141 @@ export function Sidebar() {
           focusTerminal(session.id);
           if (notificationCounts[session.id]) markNotificationsRead(session.id);
         }}
+        onContextMenu={(e) => openAgentMenu(e, runningTarget(session))}
       />
     );
   }
 
   return (
-    <aside
-      className="absolute inset-y-0 left-0 z-20 flex shrink-0 flex-col overflow-y-auto md:relative"
-      style={{
-        width: sidebarWidth,
-        borderRight: `1px solid ${page.border}`,
-        background: page.bg,
-      }}
-    >
-      {/* Singleton pane buttons */}
-      <SidebarNavButton
-        label="Org Chart"
-        active={activePane?.type === "orgchart"}
-        page={page}
-        onClick={openOrgChart}
-        dragPane={{ type: "orgchart", id: "orgchart" }}
-      />
-      <SidebarNavButton
-        label="Templates"
-        active={activePane?.type === "templates"}
-        page={page}
-        onClick={openTemplates}
-        dragPane={{ type: "templates", id: "templates" }}
-      />
-      <SidebarNavButton
-        label="Schedules"
-        active={activePane?.type === "schedules"}
-        page={page}
-        onClick={openSchedules}
-        dragPane={{ type: "schedules", id: "schedules" }}
-      />
-      <SidebarNavButton
-        label="Presets"
-        active={activePane?.type === "presets"}
-        page={page}
-        onClick={openPresets}
-        dragPane={{ type: "presets", id: "presets" }}
-      />
-
-      {/* Agents section header + toggle + New button */}
-      <div
-        className="flex items-center gap-1.5 px-3 py-1.5"
-        style={{ borderBottom: `1px solid ${page.border}` }}
+    <>
+      <aside
+        className="absolute inset-y-0 left-0 z-20 flex shrink-0 flex-col overflow-y-auto md:relative"
+        style={{
+          width: sidebarWidth,
+          borderRight: `1px solid ${page.border}`,
+          background: page.bg,
+        }}
       >
-        <span
-          className="text-xs font-medium uppercase flex-1"
-          style={{ color: page.statusFg }}
-        >
-          Agents
-        </span>
-        <button
-          type="button"
-          onClick={toggleSidebarViewMode}
-          className="text-[10px] cursor-pointer px-1 rounded transition-colors"
-          style={{
-            color: sidebarViewMode === "hierarchy" ? page.fg : page.statusFg,
-          }}
-          title={
-            sidebarViewMode === "flat"
-              ? "Switch to hierarchy view"
-              : "Switch to flat view"
-          }
-        >
-          <Codicon
-            name={sidebarViewMode === "flat" ? "list-tree" : "list-flat"}
-            size={12}
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => openCreateAgent()}
-          disabled={isSpawning}
-          className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: "#238636", color: "#fff" }}
-          title="New Agent"
-        >
-          + New
-        </button>
-      </div>
+        {/* Singleton pane buttons */}
+        <SidebarNavButton
+          label="Org Chart"
+          active={activePane?.type === "orgchart"}
+          page={page}
+          onClick={openOrgChart}
+          dragPane={{ type: "orgchart", id: "orgchart" }}
+        />
+        <SidebarNavButton
+          label="Templates"
+          active={activePane?.type === "templates"}
+          page={page}
+          onClick={openTemplates}
+          dragPane={{ type: "templates", id: "templates" }}
+        />
+        <SidebarNavButton
+          label="Schedules"
+          active={activePane?.type === "schedules"}
+          page={page}
+          onClick={openSchedules}
+          dragPane={{ type: "schedules", id: "schedules" }}
+        />
+        <SidebarNavButton
+          label="Presets"
+          active={activePane?.type === "presets"}
+          page={page}
+          onClick={openPresets}
+          dragPane={{ type: "presets", id: "presets" }}
+        />
 
-      {sidebarViewMode === "flat" ? (
-        /* ── Flat view: pinned section, divider, unpinned section ── */
-        <div className="py-1">
-          {flatSections.pinned.length === 0 &&
-            flatSections.unpinned.length === 0 && (
+        {/* Agents section header + toggle + New button */}
+        <div
+          className="flex items-center gap-1.5 px-3 py-1.5"
+          style={{ borderBottom: `1px solid ${page.border}` }}
+        >
+          <span
+            className="text-xs font-medium uppercase flex-1"
+            style={{ color: page.statusFg }}
+          >
+            Agents
+          </span>
+          <button
+            type="button"
+            onClick={toggleSidebarViewMode}
+            className="text-[10px] cursor-pointer px-1 rounded transition-colors"
+            style={{
+              color: sidebarViewMode === "hierarchy" ? page.fg : page.statusFg,
+            }}
+            title={
+              sidebarViewMode === "flat"
+                ? "Switch to hierarchy view"
+                : "Switch to flat view"
+            }
+          >
+            <Codicon
+              name={sidebarViewMode === "flat" ? "list-tree" : "list-flat"}
+              size={12}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={() => openCreateAgent()}
+            disabled={isSpawning}
+            className="rounded px-2 py-0.5 text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: "#238636", color: "#fff" }}
+            title="New Agent"
+          >
+            + New
+          </button>
+        </div>
+
+        {sidebarViewMode === "flat" ? (
+          /* ── Flat view: pinned section, divider, unpinned section ── */
+          <div className="py-1">
+            {flatSections.pinned.length === 0 &&
+              flatSections.unpinned.length === 0 && (
+                <p
+                  className="px-3 py-3 text-center text-xs"
+                  style={{ color: page.statusFg }}
+                >
+                  No active agents
+                </p>
+              )}
+
+            {flatSections.pinned.map((session, idx) =>
+              renderFlatItem(session, "pinned", idx),
+            )}
+
+            {/* Divider — only between two non-empty sections (no dangling line). */}
+            {flatSections.pinned.length > 0 &&
+              flatSections.unpinned.length > 0 && (
+                <div
+                  data-testid="flat-section-divider"
+                  className="mx-3 my-1.5"
+                  style={{
+                    height: 1,
+                    background: page.statusFg,
+                    opacity: 0.25,
+                  }}
+                  aria-hidden="true"
+                />
+              )}
+
+            {flatSections.unpinned.map((session, idx) =>
+              renderFlatItem(session, "unpinned", idx),
+            )}
+          </div>
+        ) : (
+          /* ── Hierarchy view ───────────────────────────────────── */
+          <div className="py-1">
+            {hierarchyDegraded && (
+              <HierarchyFallbackNotice
+                orgStatus={orgStatus}
+                sessionCount={sessions.length}
+                onSwitchToFlat={toggleSidebarViewMode}
+                page={page}
+              />
+            )}
+
+            {!hierarchyDegraded && hierarchyTree.length === 0 && (
               <p
                 className="px-3 py-3 text-center text-xs"
                 style={{ color: page.statusFg }}
@@ -574,148 +640,122 @@ export function Sidebar() {
               </p>
             )}
 
-          {flatSections.pinned.map((session, idx) =>
-            renderFlatItem(session, "pinned", idx),
-          )}
+            {!hierarchyDegraded &&
+              hierarchyTree.map((node, idx) => (
+                <HierarchyNodeRow
+                  key={
+                    node.org.name ?? node.org.claudeSessionId ?? `node-${idx}`
+                  }
+                  node={node}
+                  depth={0}
+                  groupKey="__root__"
+                  indexInGroup={idx}
+                  isLastChild={idx === hierarchyTree.length - 1}
+                  ancestorIsLast={[]}
+                  page={page}
+                  isPaneActive={isPaneActive}
+                  visiblePaneIds={visiblePaneIds}
+                  sessionMetaMap={sessionMetaMap}
+                  agentStatuses={agentStatuses}
+                  notificationCounts={notificationCounts}
+                  collapsedGroups={collapsedGroups}
+                  toggleCollapsed={toggleCollapsed}
+                  switchPane={switchPane}
+                  markNotificationsRead={markNotificationsRead}
+                  openAgentMenu={openAgentMenu}
+                  onReorder={(gk, from, to) => {
+                    // Initialize order for this group if not yet stored
+                    const existing = hierarchyOrder[gk];
+                    if (!existing || existing.length === 0) {
+                      // Determine current sibling names for this group
+                      const siblings =
+                        gk === "__root__"
+                          ? hierarchyTree.map((n) =>
+                              (n.org.name ?? "").toLowerCase(),
+                            )
+                          : (() => {
+                              // Find parent node and get its children names
+                              function findChildren(
+                                nodes: SidebarHierarchyNode[],
+                              ): string[] | null {
+                                for (const n of nodes) {
+                                  if ((n.org.name ?? "").toLowerCase() === gk)
+                                    return n.children.map((c) =>
+                                      (c.org.name ?? "").toLowerCase(),
+                                    );
+                                  const found = findChildren(n.children);
+                                  if (found) return found;
+                                }
+                                return null;
+                              }
+                              return findChildren(hierarchyTree) ?? [];
+                            })();
+                      // Set it first, then reorder
+                      const order = [...siblings];
+                      const [moved] = order.splice(from, 1);
+                      order.splice(to, 0, moved);
+                      useStore.setState((prev) => ({
+                        hierarchyOrder: { ...prev.hierarchyOrder, [gk]: order },
+                      }));
+                    } else {
+                      reorderHierarchy(gk, from, to);
+                    }
+                  }}
+                  hierDrag={hierDrag}
+                  hierDropTarget={hierDropTarget}
+                  setHierDropTarget={setHierDropTarget}
+                />
+              ))}
+          </div>
+        )}
 
-          {/* Divider — only between two non-empty sections (no dangling line). */}
-          {flatSections.pinned.length > 0 &&
-            flatSections.unpinned.length > 0 && (
-              <div
-                data-testid="flat-section-divider"
-                className="mx-3 my-1.5"
-                style={{ height: 1, background: page.statusFg, opacity: 0.25 }}
-                aria-hidden="true"
-              />
-            )}
-
-          {flatSections.unpinned.map((session, idx) =>
-            renderFlatItem(session, "unpinned", idx),
-          )}
+        {/* Projects Section */}
+        <div
+          className="flex items-center px-3 py-2"
+          style={{
+            borderTop: `1px solid ${page.border}`,
+            borderBottom: `1px solid ${page.border}`,
+          }}
+        >
+          <span
+            className="text-xs font-medium uppercase"
+            style={{ color: page.statusFg }}
+          >
+            Projects
+          </span>
         </div>
-      ) : (
-        /* ── Hierarchy view ───────────────────────────────────── */
-        <div className="py-1">
-          {hierarchyDegraded && (
-            <HierarchyFallbackNotice
-              orgStatus={orgStatus}
-              sessionCount={sessions.length}
-              onSwitchToFlat={toggleSidebarViewMode}
-              page={page}
-            />
-          )}
 
-          {!hierarchyDegraded && hierarchyTree.length === 0 && (
+        <div className="flex-1 py-1">
+          {projects.length === 0 && (
             <p
               className="px-3 py-3 text-center text-xs"
               style={{ color: page.statusFg }}
             >
-              No active agents
+              No projects found
             </p>
           )}
 
-          {!hierarchyDegraded &&
-            hierarchyTree.map((node, idx) => (
-              <HierarchyNodeRow
-                key={node.org.name ?? node.org.claudeSessionId ?? `node-${idx}`}
-                node={node}
-                depth={0}
-                groupKey="__root__"
-                indexInGroup={idx}
-                isLastChild={idx === hierarchyTree.length - 1}
-                ancestorIsLast={[]}
-                page={page}
-                isPaneActive={isPaneActive}
-                visiblePaneIds={visiblePaneIds}
-                sessionMetaMap={sessionMetaMap}
-                agentStatuses={agentStatuses}
-                notificationCounts={notificationCounts}
-                collapsedGroups={collapsedGroups}
-                toggleCollapsed={toggleCollapsed}
-                switchPane={switchPane}
-                markNotificationsRead={markNotificationsRead}
-                onReorder={(gk, from, to) => {
-                  // Initialize order for this group if not yet stored
-                  const existing = hierarchyOrder[gk];
-                  if (!existing || existing.length === 0) {
-                    // Determine current sibling names for this group
-                    const siblings =
-                      gk === "__root__"
-                        ? hierarchyTree.map((n) =>
-                            (n.org.name ?? "").toLowerCase(),
-                          )
-                        : (() => {
-                            // Find parent node and get its children names
-                            function findChildren(
-                              nodes: SidebarHierarchyNode[],
-                            ): string[] | null {
-                              for (const n of nodes) {
-                                if ((n.org.name ?? "").toLowerCase() === gk)
-                                  return n.children.map((c) =>
-                                    (c.org.name ?? "").toLowerCase(),
-                                  );
-                                const found = findChildren(n.children);
-                                if (found) return found;
-                              }
-                              return null;
-                            }
-                            return findChildren(hierarchyTree) ?? [];
-                          })();
-                    // Set it first, then reorder
-                    const order = [...siblings];
-                    const [moved] = order.splice(from, 1);
-                    order.splice(to, 0, moved);
-                    useStore.setState((prev) => ({
-                      hierarchyOrder: { ...prev.hierarchyOrder, [gk]: order },
-                    }));
-                  } else {
-                    reorderHierarchy(gk, from, to);
-                  }
-                }}
-                hierDrag={hierDrag}
-                hierDropTarget={hierDropTarget}
-                setHierDropTarget={setHierDropTarget}
-              />
-            ))}
+          {projects.map((project) => (
+            <ProjectItem
+              key={project.path}
+              project={project}
+              page={page}
+              liveSessionIds={liveSessionIds}
+              onAgentContextMenu={openAgentMenu}
+            />
+          ))}
         </div>
+      </aside>
+      {agentMenu && (
+        <AgentContextMenu
+          target={agentMenu.target}
+          x={agentMenu.x}
+          y={agentMenu.y}
+          page={page}
+          onClose={closeAgentMenu}
+        />
       )}
-
-      {/* Projects Section */}
-      <div
-        className="flex items-center px-3 py-2"
-        style={{
-          borderTop: `1px solid ${page.border}`,
-          borderBottom: `1px solid ${page.border}`,
-        }}
-      >
-        <span
-          className="text-xs font-medium uppercase"
-          style={{ color: page.statusFg }}
-        >
-          Projects
-        </span>
-      </div>
-
-      <div className="flex-1 py-1">
-        {projects.length === 0 && (
-          <p
-            className="px-3 py-3 text-center text-xs"
-            style={{ color: page.statusFg }}
-          >
-            No projects found
-          </p>
-        )}
-
-        {projects.map((project) => (
-          <ProjectItem
-            key={project.path}
-            project={project}
-            page={page}
-            liveSessionIds={liveSessionIds}
-          />
-        ))}
-      </div>
-    </aside>
+    </>
   );
 }
 
@@ -876,6 +916,9 @@ interface SessionRowProps {
   /** Toggle pin state. Presence enables the hover-reveal pin button. */
   onTogglePin?: () => void;
   onClick: () => void;
+  /** Right-click on the row. Row-scoped by design — never a document handler
+   *  (xterm owns right-click inside terminal panes, ADR-072). */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /**
@@ -922,6 +965,17 @@ function rowBoxShadow(
   );
 }
 
+/** Normalize a live session into the context-menu's target shape. */
+function runningTarget(s: SessionInfo): AgentMenuTarget {
+  return {
+    id: s.id,
+    name: s.name,
+    status: "running",
+    manager: s.manager,
+    workingDirectory: s.workingDirectory,
+  };
+}
+
 function SessionRow({
   session: s,
   pane,
@@ -945,6 +999,7 @@ function SessionRow({
   isPinned,
   onTogglePin,
   onClick,
+  onContextMenu,
 }: SessionRowProps) {
   // Prefer the persisted activity timestamp (hook/turn-driven; upgrade-proof)
   // over the CC transcript mtime — a resumed CC process touches its JSONL at
@@ -985,6 +1040,7 @@ function SessionRow({
     <div
       role="button"
       tabIndex={-1}
+      data-session-id={s.id}
       onMouseDown={(e: React.MouseEvent) => {
         if (!(e.currentTarget as HTMLElement).draggable) e.preventDefault();
       }}
@@ -1009,6 +1065,7 @@ function SessionRow({
         boxShadow: rowBoxShadow(highlight, isDropTarget, page.fg),
       }}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onKeyDown={(e) => e.key === "Enter" && onClick()}
     >
       {/* Clickable left border zone for expand/collapse */}
@@ -1060,6 +1117,26 @@ function SessionRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <span className="flex-1 truncate text-xs">{s.name}</span>
+          {/* Hand-off pending badge (ADR-094): messages queued for human
+              hand-delivery to this manual-queue (Gemini) agent. Gold accent
+              (theme yellow), NOT a status color — independent of the status
+              dot/label, like the env-preset pill. Absent when the queue is
+              empty. The overlay itself lives in the terminal pane. */}
+          {(s.pendingHandoffCount ?? 0) > 0 && (
+            <span
+              className="shrink-0 text-[10px] font-semibold leading-[14px]"
+              style={{
+                color: "#e6b450",
+                border: "1px solid #e6b450",
+                background: "#e6b4501f",
+                borderRadius: 999,
+                padding: "0 5px",
+              }}
+              title={`${s.pendingHandoffCount} awaiting your delivery`}
+            >
+              ✉ {s.pendingHandoffCount}
+            </span>
+          )}
           {/* Recency treatment (B2 — timestamp-only fade): the AGE TEXT fades
               with age so wildly-stale sessions recede. The unread prefix stays
               full-strength (an attention signal, like the status dot/label) —
@@ -1265,6 +1342,7 @@ interface HierarchyNodeRowProps {
   toggleCollapsed: (name: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   markNotificationsRead: (sessionId: string) => Promise<void>;
+  openAgentMenu: (e: React.MouseEvent, target: AgentMenuTarget) => void;
   onReorder: (groupKey: string, fromIndex: number, toIndex: number) => void;
   /** Shared drag state across all hierarchy rows */
   hierDrag: React.MutableRefObject<{ group: string; idx: number } | null>;
@@ -1388,6 +1466,7 @@ function HierarchyNodeRow({
   toggleCollapsed,
   switchPane,
   markNotificationsRead,
+  openAgentMenu,
   onReorder,
   hierDrag,
   hierDropTarget,
@@ -1497,6 +1576,7 @@ function HierarchyNodeRow({
               focusTerminal(pane.id);
               if (notificationCounts[s.id]) markNotificationsRead(s.id);
             }}
+            onContextMenu={(e) => openAgentMenu(e, runningTarget(s))}
           />
         </div>
       ) : (
@@ -1562,6 +1642,7 @@ function HierarchyNodeRow({
             toggleCollapsed={toggleCollapsed}
             switchPane={switchPane}
             markNotificationsRead={markNotificationsRead}
+            openAgentMenu={openAgentMenu}
             onReorder={onReorder}
             hierDrag={hierDrag}
             hierDropTarget={hierDropTarget}
@@ -1578,15 +1659,22 @@ interface ProjectItemProps {
   project: ProjectInfo;
   page: PageTheme;
   liveSessionIds: Set<string>;
+  onAgentContextMenu: (e: React.MouseEvent, target: AgentMenuTarget) => void;
 }
 
 const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
   liveSessionIds,
+  onAgentContextMenu,
 }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const createSession = useStore((s) => s.createSession);
+  // For the row context menu: a Projects row is a session *summary* keyed by CC
+  // session id, not a SessionInfo — resolve the agent record (for id-based
+  // actions) from the store's live/exited lists by matching either id space.
+  const sessions = useStore((s) => s.sessions);
+  const exitedSessions = useStore((s) => s.exitedSessions);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
 
@@ -1659,6 +1747,29 @@ const ProjectItem = React.memo(function ProjectItem({
                 style={{
                   color: page.fg,
                   opacity: isExited ? 0.6 : 1,
+                }}
+                onContextMenu={(e) => {
+                  // A Projects row is keyed by a CC/provider session id, so match
+                  // that id-space FIRST — falling back to the agent-id space only
+                  // if nothing matched. A blind first-match across all three
+                  // spaces could resolve to a different agent whose agent id
+                  // happens to equal this row's CC id, mis-targeting Delete.
+                  const all = [...sessions, ...exitedSessions];
+                  const rec =
+                    all.find(
+                      (x) =>
+                        x.claudeSessionId === s.sessionId ||
+                        x.providerSessionId === s.sessionId,
+                    ) ?? all.find((x) => x.id === s.sessionId);
+                  onAgentContextMenu(e, {
+                    id: rec?.id,
+                    name: rec?.name ?? s.summary,
+                    status: isLive ? "running" : "exited",
+                    manager: rec?.manager,
+                    resumeKey: s.sessionId,
+                    workingDirectory: project.path,
+                    isAutonomosAgent: s.isAutonomosAgent,
+                  });
                 }}
                 onClick={() => {
                   // Fire-and-forget; spawnSession now throws on failure and

@@ -150,11 +150,17 @@ export function UsageQueueButton({
     <div
       ref={overlayRef}
       data-testid="usage-queue-overlay"
-      className="absolute z-10 flex items-stretch overflow-hidden rounded-lg shadow-lg"
+      // Shared floating-overlay "E" family trait (see --overlay-* in index.css):
+      // the elevated surface + whisper glow it shares with the Incoming-messages
+      // overlay. It KEEPS its own 1.5px accent border — that color encodes the
+      // armed/off STATE, so it is deliberately NOT swapped for the neutral
+      // hairline. `shadow-lg` dropped; the glow token is the shadow.
+      className="absolute z-10 flex items-stretch overflow-hidden rounded-lg"
       style={{
         ...positionStyle,
         width: HANDLE_WIDTH + BAR_WIDTH,
-        background: "rgb(var(--card))",
+        background: "var(--overlay-surface)",
+        boxShadow: "var(--overlay-glow)",
         borderStyle: "solid",
         borderWidth: 1.5,
         borderColor: accent,
@@ -176,7 +182,7 @@ export function UsageQueueButton({
           cursor: dragging ? "grabbing" : "grab",
           touchAction: "none",
           border: "none",
-          borderRight: "1px solid rgb(var(--border))",
+          borderRight: "1px solid var(--overlay-divider)",
           background: "transparent",
           color: accent,
           opacity: 0.75,

@@ -15,6 +15,7 @@ import {
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken } from "../agentCredentials.js";
+import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
   killAttachment,
   restartAllAttachments,
@@ -35,6 +36,17 @@ import {
   setManager,
 } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
+import {
+  emitPendingHandoffCount,
+  injectAllHandoffs,
+  injectHandoffItem,
+} from "../handoffDelivery.js";
+import {
+  clearHandoffQueue,
+  handoffQueueCount,
+  listHandoffQueue,
+  removeHandoffItem,
+} from "../handoffQueue.js";
 import { HttpError, httpErrorResponse } from "../httpError.js";
 import { ControlPlaneNotReadyError } from "../serverState.js";
 import { getTemplate } from "../templates.js";
@@ -47,6 +59,65 @@ import {
 import { clearAgentState, clearNotifications } from "./hooks.js";
 
 export const agentsRouter = new Hono();
+
+// ── Hand-off queue (manual-queue agents, e.g. Gemini) ──────────────────
+// A message to an inbound-less agent is QUEUED for human hand-delivery. These
+// endpoints back the dashboard pane: list, deliver one, deliver all, discard.
+// Delivery is a PTY injection whose item leaves the queue only on a confirming
+// UserPromptSubmit hook (see handoffDelivery.ts) — so "send" returning ok means
+// the injection STARTED, not that it's been confirmed yet.
+
+/** List an agent's queued hand-off messages (oldest first). */
+agentsRouter.get("/:id/queue", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  return c.json({ items: listHandoffQueue(agent.id) });
+});
+
+/** Deliver ALL queued messages as ONE batched injection — a single paste, a
+ *  single receipt dequeues the whole batch (all-or-nothing, not one-at-a-time). */
+agentsRouter.post("/:id/queue/send-all", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const result = injectAllHandoffs(agent.id);
+  if (!result.ok) return c.json({ error: result.reason }, 409);
+  return c.json({ ok: true, remaining: handoffQueueCount(agent.id) });
+});
+
+/** Deliver ONE queued message by id. */
+agentsRouter.post("/:id/queue/:itemId/send", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const result = injectHandoffItem(agent.id, c.req.param("itemId"));
+  if (!result.ok) return c.json({ error: result.reason }, 409);
+  return c.json({ ok: true });
+});
+
+/** Discard ONE queued message by id (no delivery). */
+agentsRouter.delete("/:id/queue/:itemId", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const removed = removeHandoffItem(agent.id, c.req.param("itemId"));
+  if (!removed) return c.json({ error: "No such queued item" }, 404);
+  // Push the new count so the badge updates live (reuse version — derived state).
+  emitPendingHandoffCount(agent.id);
+  return c.json({ ok: true, removed });
+});
+
+/** Discard ALL queued messages (no delivery) — the pane's "Discard all". */
+agentsRouter.delete("/:id/queue", (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  const cleared = handoffQueueCount(agent.id);
+  clearHandoffQueue(agent.id);
+  emitPendingHandoffCount(agent.id);
+  return c.json({ ok: true, cleared });
+});
 
 // Map cache-poisoned writes to a stable 503 across the whole agents
 // surface. Without this, every patchAgent / setManager / insertAgent
@@ -108,7 +179,7 @@ agentsRouter.onError((err, c) => {
 // ── Read ───────────────────────────────────────────────────────────
 
 agentsRouter.get("/", (c) => {
-  return c.json(listAgents());
+  return c.json(listAgents().map(withPendingHandoffCount));
 });
 
 // Tree-shape variant for clients that can't build the tree themselves
@@ -135,7 +206,9 @@ agentsRouter.get("/:id", (c) => {
   const id = c.req.param("id");
   const agent = resolveAgent(id);
   if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
-  return c.json(agent);
+  // Enrich with the pending hand-off count too, so a single-agent fetch agrees
+  // with the list endpoint (same corrupt-file-safe helper).
+  return c.json(withPendingHandoffCount(agent));
 });
 
 // ── Create ─────────────────────────────────────────────────────────

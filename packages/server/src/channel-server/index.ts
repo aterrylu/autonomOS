@@ -380,6 +380,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const result = await requestGateway<{
         success: boolean;
         error?: string;
+        // Optional sender-facing note on a manual-queue accept ("accepted —
+        // queued for hand-delivery"). Present only when success is true.
+        note?: string;
       }>(
         wsMsg,
         requestId,
@@ -409,8 +412,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // the frame reached its channel-server socket, which is NOT a receipt that
       // the agent saw it. The sender cannot tell which provider the recipient
       // is, so the word has to be true for the weaker of the two.
+      //
+      // A manual-queue recipient (Gemini) carries a `note` — "accepted, queued
+      // for hand-delivery" — which is honest per ADR-064 (accepted, NOT
+      // delivered) and MORE informative than the generic string, so prefer it.
       return {
-        content: [{ type: "text", text: `Accepted for delivery to ${to}` }],
+        content: [
+          {
+            type: "text",
+            text: result.note ?? `Accepted for delivery to ${to}`,
+          },
+        ],
       };
     }
 
