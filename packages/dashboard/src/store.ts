@@ -725,18 +725,21 @@ interface AppState {
   openSchedules: () => void;
   openPresets: () => void;
   toggleSidebarViewMode: () => void;
-  reorderHierarchy: (
-    groupKey: string,
-    fromIndex: number,
-    toIndex: number,
-  ) => void;
   removeSession: (id: string) => Promise<void>;
   /** Reorder within one flat-view section (drag-and-drop). Other section
    *  unchanged. Persists the frozen snapshot (prunes dead, freezes arrivals). */
+  /**
+   * Move `dragKey` to sit immediately before `beforeKey` within `section`
+   * (`beforeKey: null` → the end). Commit is by KEY, not index: the caller
+   * captures the keys from the FROZEN drag snapshot, but the order is re-derived
+   * from the LIVE store at commit time, where a mid-drag arrival prepends to
+   * unpinned (buildFlatSections) and would shift every index. Resolving by key
+   * keeps indicated == committed across a poll tick (see ADR-095 / nox review).
+   */
   reorderFlat: (
     section: "pinned" | "unpinned",
-    fromIndex: number,
-    toIndex: number,
+    dragKey: string,
+    beforeKey: string | null,
   ) => void;
   /** Pin an agent → BOTTOM of the pinned section (appended). */
   pinAgent: (key: string) => void;
@@ -1188,29 +1191,6 @@ export const useStore = create<AppState>()(
           });
         },
 
-        reorderHierarchy: (groupKey, fromIndex, toIndex) => {
-          const prev = get().hierarchyOrder;
-          const order = prev[groupKey] ? [...prev[groupKey]] : [];
-          // If the order array is empty, it hasn't been initialized yet.
-          // The caller should pass the current name list first time.
-          if (order.length === 0) return;
-          // Bounds guard (mirrors reorderFlat): a drop with stale indices — the
-          // sibling list changed mid-drag (agent added/removed/renamed) — would
-          // otherwise splice `undefined` into the persisted order, poisoning
-          // hierarchyOrder[groupKey] with an entry matching no agent. No-op instead.
-          if (
-            fromIndex < 0 ||
-            toIndex < 0 ||
-            fromIndex >= order.length ||
-            toIndex >= order.length ||
-            fromIndex === toIndex
-          )
-            return;
-          const [moved] = order.splice(fromIndex, 1);
-          order.splice(toIndex, 0, moved);
-          set({ hierarchyOrder: { ...prev, [groupKey]: order } });
-        },
-
         removeSession: async (id) => {
           try {
             await agentsApi.remove(id, { force: true });
@@ -1227,20 +1207,23 @@ export const useStore = create<AppState>()(
           await get().fetchSessions();
         },
 
-        reorderFlat: (section, fromIndex, toIndex) => {
+        reorderFlat: (section, dragKey, beforeKey) => {
           const { pinnedKeys, unpinnedKeys } = frozenFlatKeys(get());
           const target = section === "pinned" ? pinnedKeys : unpinnedKeys;
-          // Out-of-range or no-op: still persist the frozen snapshot so the drag
-          // prunes dead keys and freezes arrivals rather than doing nothing.
-          if (
-            fromIndex >= 0 &&
-            toIndex >= 0 &&
-            fromIndex < target.length &&
-            toIndex < target.length &&
-            fromIndex !== toIndex
-          ) {
-            const [moved] = target.splice(fromIndex, 1);
-            target.splice(toIndex, 0, moved);
+          const from = target.indexOf(dragKey);
+          // A missing dragKey (exited mid-drag) or a no-op still persists the
+          // frozen snapshot so the drag prunes dead keys and freezes arrivals
+          // rather than doing nothing.
+          if (from !== -1) {
+            target.splice(from, 1);
+            // Insert before beforeKey; if it's null or gone (exited mid-drag),
+            // land at the end. Resolved against the just-removed live list.
+            const beforeAt = beforeKey == null ? -1 : target.indexOf(beforeKey);
+            target.splice(
+              beforeAt === -1 ? target.length : beforeAt,
+              0,
+              dragKey,
+            );
           }
           set({ pinnedOrder: pinnedKeys, unpinnedOrder: unpinnedKeys });
         },
