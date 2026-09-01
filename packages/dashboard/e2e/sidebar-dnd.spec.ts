@@ -167,15 +167,42 @@ test.describe("sidebar drag-reorder (native HTML5 DnD)", () => {
     expect(hierOrder.parent1).toEqual(["child2", "child1"]);
   });
 
-  test("hierarchy: cross-parent drop is a no-op (no re-parent)", async ({
+  test("hierarchy: a foreign-parent hover clears the gap → release is a no-op (no re-parent)", async ({
     page,
   }) => {
     await stage(page, "hierarchy");
     const before = await page.evaluate(() =>
       JSON.stringify(window.__autonomosStore.getState().hierarchyOrder),
     );
-    // Drag Child1 (under Parent1) onto Child3 (under Parent2) — different parent.
-    await nativeDrag(page, "c1", "c3", 0.5);
+    // Drag Child1: first hover a VALID sibling (Child2, same parent → a gap
+    // opens), THEN move over Child3 (a DIFFERENT parent) and release. The
+    // foreign-group hover must clear the gap so the release commits nothing —
+    // otherwise the stale same-parent gap would commit (nox review). Dropping
+    // straight onto c3 with no prior hover would pass for the wrong reason
+    // (dropTarget never set), so the intermediate valid hover is the point.
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    const src = page.locator('[data-session-id="c1"]');
+    const sib = page.locator('[data-session-id="c2"]'); // same parent
+    const foreign = page.locator('[data-session-id="c3"]'); // different parent
+    const sibBox = await sib.boundingBox();
+    const forBox = await foreign.boundingBox();
+    await src.dispatchEvent("dragstart", { dataTransfer });
+    await sib.dispatchEvent("dragover", {
+      dataTransfer,
+      clientX: sibBox!.x + sibBox!.width / 2,
+      clientY: sibBox!.y + sibBox!.height * 0.3,
+    });
+    await page.waitForTimeout(30);
+    await foreign.dispatchEvent("dragover", {
+      dataTransfer,
+      clientX: forBox!.x + forBox!.width / 2,
+      clientY: forBox!.y + forBox!.height * 0.5,
+    });
+    await page.waitForTimeout(30);
+    await foreign.dispatchEvent("drop", { dataTransfer });
+    await src.dispatchEvent("dragend", { dataTransfer });
+    await page.waitForTimeout(40);
+
     const after = await page.evaluate(() =>
       JSON.stringify(window.__autonomosStore.getState().hierarchyOrder),
     );

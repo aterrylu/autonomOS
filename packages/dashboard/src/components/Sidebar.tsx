@@ -508,7 +508,16 @@ export function Sidebar() {
   ) {
     // Only a same-section drop is a reorder; ignore hovers from the other
     // section so the cursor shows "no drop" there.
-    if (dragRef.current?.section !== section) return;
+    // A hover over the OTHER section can't be a same-section reorder. CLEAR the
+    // gap rather than leaving the last same-section gap open (nox review): the
+    // <aside> is the drop authority and commits from dropTarget, so a stale gap
+    // would let a release over the foreign section commit at a spot the cursor
+    // left. Clearing keeps the indicator honest — a visible gap always means
+    // "release commits here", its absence means "release cancels."
+    if (dragRef.current?.section !== section) {
+      setDropTarget(null);
+      return;
+    }
     e.preventDefault();
     const edge = dropEdgeAt(e.clientY, e.currentTarget.getBoundingClientRect());
     setDropTarget({ section, idx, edge });
@@ -2021,6 +2030,12 @@ function HierarchyNodeRow({
                   e.currentTarget.getBoundingClientRect(),
                 );
                 setHierDropTarget({ group: groupKey, idx: indexInGroup, edge });
+              } else if (hierDrag.current) {
+                // Foreign group (re-parent is out of scope): CLEAR the gap so a
+                // release here cancels instead of committing at a stale
+                // same-group gap the cursor has left (nox review) — the <aside>
+                // commits from hierDropTarget, so the indicator must track it.
+                setHierDropTarget(null);
               }
             }}
             onDragEnd={() => {

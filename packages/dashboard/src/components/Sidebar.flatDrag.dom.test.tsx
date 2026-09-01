@@ -186,7 +186,7 @@ describe("flat-view drag wiring", () => {
     expect(useStore.getState().unpinnedOrder).toEqual(["b", "a", "c"]);
   });
 
-  it("ignores a cross-section drop (pinned ↔ unpinned)", () => {
+  it("a foreign-section hover CLEARS the gap, so a release there cancels (nox guard)", () => {
     stubFetch(AGENT_IDS);
     useStore.setState({
       sidebarViewMode: "flat",
@@ -200,9 +200,13 @@ describe("flat-view drag wiring", () => {
     renderSidebar();
 
     const dt = makeDataTransfer();
-    // Start dragging 'b' (unpinned) and drop onto 'a' (pinned) — must be a no-op.
+    // Drag 'b' (unpinned), first hover a VALID unpinned target ('c') so a gap
+    // opens, THEN move over 'a' (pinned) — the foreign-section hover must clear
+    // the gap, so releasing there is a no-op (the <aside> commits from a now-null
+    // dropTarget). Without the guard, the stale unpinned gap would commit here.
     fireDrag("dragStart", row("b"), { dataTransfer: dt });
-    fireDrag("dragOver", row("a"), { dataTransfer: dt, clientY: BELOW_Y });
+    fireDrag("dragOver", row("c"), { dataTransfer: dt, clientY: BELOW_Y });
+    fireDrag("dragOver", row("a"), { dataTransfer: dt, clientY: BELOW_Y }); // foreign → clears
     fireDrag("drop", row("a"), { dataTransfer: dt });
 
     expect(useStore.getState().pinnedOrder).toEqual(["a"]);
