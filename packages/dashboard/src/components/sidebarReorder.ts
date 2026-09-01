@@ -16,6 +16,22 @@ export function dropEdgeAt(
 }
 
 /**
+ * The insertion BOUNDARY (a slot in 0..N boundary space) for a hover on row
+ * `overIdx`'s `edge` — `overIdx` for "above", `overIdx + 1` for "below". This is
+ * the single source of the drag GAP position: the slide-apart preview row is
+ * inserted here, and `flatDropIndex`/`hierDropIndex` commit relative to the SAME
+ * boundary, so the opened gap is exactly where the drop lands (indicated ==
+ * committed). Distinct from the committed index, which additionally accounts for
+ * the dragged row being removed first (`from < boundary ? boundary - 1 : …`).
+ */
+export function insertionBoundary(
+  overIdx: number,
+  edge: "above" | "below",
+): number {
+  return edge === "below" ? overIdx + 1 : overIdx;
+}
+
+/**
  * The `reorderFlat(from, to)` target index for a drag from `from`, hovering row
  * `overIdx` on its `edge`. Returns null for a no-op (dropping onto the boundary
  * the item already occupies).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropEdgeAt, flatDropIndex } from "./sidebarReorder";
+import { dropEdgeAt, flatDropIndex, insertionBoundary } from "./sidebarReorder";
 
 function applyReorder(arr: string[], from: number, to: number): string[] {
   const a = [...arr];
@@ -14,6 +14,26 @@ describe("dropEdgeAt", () => {
     expect(dropEdgeAt(105, rect)).toBe("above");
     expect(dropEdgeAt(135, rect)).toBe("below");
     expect(dropEdgeAt(120, rect)).toBe("below"); // exactly the midpoint
+  });
+});
+
+describe("insertionBoundary — the drag-gap slot", () => {
+  it("above hovers on the row, below hovers past it", () => {
+    expect(insertionBoundary(2, "above")).toBe(2);
+    expect(insertionBoundary(2, "below")).toBe(3);
+    expect(insertionBoundary(0, "above")).toBe(0);
+  });
+
+  it("the gap slot is where the commit lands (indicated == committed)", () => {
+    // Drag row 0 downward, hovering row 2's lower half: the gap opens at
+    // boundary 3, and the row lands at index 2 (boundary − 1, since row 0 is
+    // removed first). Same boundary drives both the preview and the commit.
+    const edge = "below";
+    const overIdx = 2;
+    const from = 0;
+    const boundary = insertionBoundary(overIdx, edge);
+    expect(boundary).toBe(3);
+    expect(flatDropIndex(from, overIdx, edge)).toBe(boundary - 1);
   });
 });
 

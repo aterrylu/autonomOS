@@ -29,7 +29,7 @@ import {
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
 import { isLightBg, recencyTimestampStyle } from "./recency";
-import { dropEdgeAt, flatDropIndex } from "./sidebarReorder";
+import { dropEdgeAt, flatDropIndex, insertionBoundary } from "./sidebarReorder";
 import {
   arrowForRow,
   digitForRow,
@@ -248,6 +248,10 @@ export function Sidebar() {
     unpinAgent,
   } = useSidebarActions();
   const page = THEMES[theme].page;
+  // Theme accent (gold) + icon style — for the slide-apart ghost preview row,
+  // which is rendered outside SessionRow (where these are read per-row).
+  const accent = THEMES[theme].terminal.yellow;
+  const agentIconStyle = useStore((s) => s.agentIconStyle);
 
   const isSpawning = status === "spawning...";
 
@@ -471,6 +475,11 @@ export function Sidebar() {
     pinned: SessionInfo[];
     unpinned: SessionInfo[];
   } | null>(null);
+  // Measured row height (px), captured from the dragged row's rect at drag-start,
+  // so the slide-apart GAP + ghost-preview match the real row height exactly
+  // (rows vary — a row with a meta line is taller). Falls back if the rect is 0
+  // (jsdom). Shared by both views.
+  const [dragRowHeight, setDragRowHeight] = useState(DRAG_ROW_HEIGHT_FALLBACK);
   const asideRef = useRef<HTMLElement | null>(null);
   const flatAutoScroll = useDragAutoScroll(asideRef);
   const hierAutoScroll = useDragAutoScroll(asideRef);
@@ -483,6 +492,10 @@ export function Sidebar() {
   ) {
     dragRef.current = { section, idx };
     setFrozenFlat(flatSections);
+    setDragRowHeight(
+      e.currentTarget.getBoundingClientRect().height ||
+        DRAG_ROW_HEIGHT_FALLBACK,
+    );
     const data = { pane };
     e.dataTransfer.setData(DRAG_TYPE, encodeDragData(data));
     e.dataTransfer.effectAllowed = "move";
@@ -531,15 +544,42 @@ export function Sidebar() {
   // Render one flat-view row within a given section. Drag handlers are bound to
   // the section so reordering stays section-local; the pin/unpin button is the
   // only way to cross sections.
+  // The flat drag geometry for a section, derived once per render from the drag
+  // refs + the hovered drop target. `boundary` is the gap slot (null unless the
+  // hover is a real move — a no-op hover on the row's own slot opens nothing);
+  // `origin` is the dragged row's index (dimmed). Rows at/below `boundary` slide
+  // down by one row height. Reads the frozen snapshot's section, so the geometry
+  // matches exactly what's on screen (FM-3 freeze).
+  function flatDragGeom(section: FlatSection): {
+    boundary: number | null;
+    origin: number | null;
+    dragged: SessionInfo | null;
+  } {
+    const rows = section === "pinned" ? flatView.pinned : flatView.unpinned;
+    const d = dragRef.current;
+    const active =
+      frozenFlat != null &&
+      d?.section === section &&
+      dropTarget?.section === section;
+    if (!active || !d) return { boundary: null, origin: null, dragged: null };
+    const committing =
+      flatDropIndex(d.idx, dropTarget.idx, dropTarget.edge) !== null;
+    return {
+      boundary: committing
+        ? insertionBoundary(dropTarget.idx, dropTarget.edge)
+        : null,
+      origin: d.idx,
+      dragged: rows[d.idx] ?? null,
+    };
+  }
+
   function renderFlatItem(
     session: SessionInfo,
     section: FlatSection,
     idx: number,
   ) {
-    const dropEdge =
-      dropTarget?.section === section && dropTarget.idx === idx
-        ? dropTarget.edge
-        : null;
+    const { origin } = flatDragGeom(section);
+    const isDragOrigin = origin === idx;
     const isPinned = section === "pinned";
     const pane: ActivePane = { type: "session", id: session.id };
     // Pin/unpin address rows by their ORDER key (claudeSessionId || id), which
@@ -555,7 +595,7 @@ export function Sidebar() {
         page={page}
         isActive={isPaneActive(pane)}
         isVisible={visiblePaneIds.has(session.id)}
-        dropEdge={dropEdge}
+        isDragOrigin={isDragOrigin}
         meta={lookupSessionMeta(sessionMetaMap, session)}
         agentState={agentStatuses[session.id]}
         notifCount={notificationCounts[session.id] ?? 0}
@@ -581,6 +621,37 @@ export function Sidebar() {
     );
   }
 
+  // Render a flat section's rows, splicing the slide-apart ghost preview into the
+  // gap at the drag boundary. The ghost sits at DOM index `boundary`, so the rows
+  // that shifted down by `slideY` leave exactly its slot open (ADR-095).
+  function renderFlatSection(section: FlatSection, rows: SessionInfo[]) {
+    const { boundary, dragged } = flatDragGeom(section);
+    const out: React.ReactNode[] = [];
+    rows.forEach((session, idx) => {
+      if (boundary === idx && dragged)
+        out.push(renderFlatGhost(section, dragged));
+      out.push(renderFlatItem(session, section, idx));
+    });
+    if (boundary === rows.length && dragged)
+      out.push(renderFlatGhost(section, dragged));
+    return out;
+  }
+
+  function renderFlatGhost(section: FlatSection, dragged: SessionInfo) {
+    return (
+      <DragGhostRow
+        key={`ghost-${section}`}
+        session={dragged}
+        status={(agentStatuses[dragged.id]?.status as AgentStatus) ?? "unknown"}
+        agentIconStyle={agentIconStyle}
+        page={page}
+        accent={accent}
+        height={dragRowHeight}
+        paddingLeft={9}
+      />
+    );
+  }
+
   // During a drag, render the sections from the FROZEN snapshot so live polls
   // can't shift rows under the cursor (FM-3). The published row order (ADR-066)
   // stays live — only the drag view freezes.
@@ -591,6 +662,17 @@ export function Sidebar() {
       <aside
         ref={asideRef}
         className="absolute inset-y-0 left-0 z-20 flex shrink-0 flex-col overflow-y-auto md:relative"
+        onDragLeave={(e) => {
+          // Left the sidebar entirely (e.g. dragging a row body toward the
+          // terminal to open a tab/split): clear the slide-apart gap + ghost so
+          // leaving never strands an open gap. dragLeave also fires when moving
+          // between children, so confirm the pointer really exited the <aside>.
+          const to = e.relatedTarget as Node | null;
+          if (!to || !e.currentTarget.contains(to)) {
+            setDropTarget(null);
+            setHierDropTarget(null);
+          }
+        }}
         style={{
           width: sidebarWidth,
           borderRight: `1px solid ${page.border}`,
@@ -680,9 +762,7 @@ export function Sidebar() {
               </p>
             )}
 
-            {flatView.pinned.map((session, idx) =>
-              renderFlatItem(session, "pinned", idx),
-            )}
+            {renderFlatSection("pinned", flatView.pinned)}
 
             {/* Divider — only between two non-empty sections (no dangling line). */}
             {flatView.pinned.length > 0 && flatView.unpinned.length > 0 && (
@@ -698,9 +778,7 @@ export function Sidebar() {
               />
             )}
 
-            {flatView.unpinned.map((session, idx) =>
-              renderFlatItem(session, "unpinned", idx),
-            )}
+            {renderFlatSection("unpinned", flatView.unpinned)}
           </div>
         ) : (
           /* ── Hierarchy view ───────────────────────────────────── */
@@ -724,83 +802,121 @@ export function Sidebar() {
             )}
 
             {!hierarchyDegraded &&
-              (frozenTree ?? hierarchyTree).map((node, idx, arr) => (
-                <HierarchyNodeRow
-                  key={
-                    node.org.name ?? node.org.claudeSessionId ?? `node-${idx}`
-                  }
-                  node={node}
-                  depth={0}
-                  groupKey="__root__"
-                  indexInGroup={idx}
-                  isLastChild={idx === arr.length - 1}
-                  ancestorIsLast={[]}
-                  page={page}
-                  isPaneActive={isPaneActive}
-                  visiblePaneIds={visiblePaneIds}
-                  sessionMetaMap={sessionMetaMap}
-                  agentStatuses={agentStatuses}
-                  notificationCounts={notificationCounts}
-                  collapsedGroups={collapsedGroups}
-                  toggleCollapsed={toggleCollapsed}
-                  switchPane={switchPane}
-                  markNotificationsRead={markNotificationsRead}
-                  openAgentMenu={openAgentMenu}
-                  onReorder={(gk, from, to) => {
-                    // `from`/`to` are LIVE-sibling indices (the tree is pruned,
-                    // hideStopped=true). The persisted hierarchyOrder[gk] may keep
-                    // STOPPED names — so reorder the LIVE entries within the full
-                    // order BY NAME, leaving stopped names put. Splicing live
-                    // indices straight into the full order moves the wrong sibling
-                    // when a parent has a stopped child (nox Thread-1).
-                    const liveSibs =
-                      gk === "__root__"
-                        ? (frozenTree ?? hierarchyTree).map((n) =>
-                            (n.org.name ?? "").toLowerCase(),
-                          )
-                        : (() => {
-                            function findChildren(
-                              nodes: SidebarHierarchyNode[],
-                            ): string[] | null {
-                              for (const n of nodes) {
-                                if ((n.org.name ?? "").toLowerCase() === gk)
-                                  return n.children.map((c) =>
-                                    (c.org.name ?? "").toLowerCase(),
-                                  );
-                                const found = findChildren(n.children);
-                                if (found) return found;
-                              }
-                              return null;
-                            }
-                            return (
-                              findChildren(frozenTree ?? hierarchyTree) ?? []
-                            );
-                          })();
-                    const existing = hierarchyOrder[gk];
-                    const full =
-                      existing && existing.length > 0 ? existing : liveSibs;
-                    const next = reorderLiveInFullOrder(
-                      full,
-                      liveSibs,
-                      from,
-                      to,
-                    );
-                    useStore.setState((prev) => ({
-                      hierarchyOrder: { ...prev.hierarchyOrder, [gk]: next },
-                    }));
-                  }}
-                  hierDrag={hierDrag}
-                  hierDropTarget={hierDropTarget}
-                  setHierDropTarget={setHierDropTarget}
-                  onHierDragStart={() => setFrozenTree(hierarchyTree)}
-                  onHierDragEnd={() => {
-                    setFrozenTree(null);
-                    setHierDropTarget(null);
-                    hierAutoScroll.stop();
-                  }}
-                  hierAutoScroll={hierAutoScroll}
-                />
-              ))}
+              (() => {
+                const rootNodes = frozenTree ?? hierarchyTree;
+                const geom = hierGroupGeom(
+                  "__root__",
+                  rootNodes,
+                  hierDrag.current,
+                  hierDropTarget,
+                );
+                const ghost = geom.dragged ? (
+                  <HierGhost
+                    key="hghost-__root__"
+                    node={geom.dragged}
+                    depth={0}
+                    page={page}
+                    accent={accent}
+                    agentIconStyle={agentIconStyle}
+                    agentStatuses={agentStatuses}
+                    height={dragRowHeight}
+                  />
+                ) : null;
+                const out: React.ReactNode[] = [];
+                rootNodes.forEach((node, idx, arr) => {
+                  if (geom.boundary === idx && ghost) out.push(ghost);
+                  out.push(
+                    <HierarchyNodeRow
+                      key={
+                        node.org.name ??
+                        node.org.claudeSessionId ??
+                        `node-${idx}`
+                      }
+                      node={node}
+                      depth={0}
+                      groupKey="__root__"
+                      indexInGroup={idx}
+                      isLastChild={idx === arr.length - 1}
+                      ancestorIsLast={[]}
+                      isDragOrigin={geom.origin === idx}
+                      page={page}
+                      accent={accent}
+                      agentIconStyle={agentIconStyle}
+                      dragRowHeight={dragRowHeight}
+                      isPaneActive={isPaneActive}
+                      visiblePaneIds={visiblePaneIds}
+                      sessionMetaMap={sessionMetaMap}
+                      agentStatuses={agentStatuses}
+                      notificationCounts={notificationCounts}
+                      collapsedGroups={collapsedGroups}
+                      toggleCollapsed={toggleCollapsed}
+                      switchPane={switchPane}
+                      markNotificationsRead={markNotificationsRead}
+                      openAgentMenu={openAgentMenu}
+                      onReorder={(gk, from, to) => {
+                        // `from`/`to` are LIVE-sibling indices (the tree is pruned,
+                        // hideStopped=true). The persisted hierarchyOrder[gk] may keep
+                        // STOPPED names — so reorder the LIVE entries within the full
+                        // order BY NAME, leaving stopped names put. Splicing live
+                        // indices straight into the full order moves the wrong sibling
+                        // when a parent has a stopped child (nox Thread-1).
+                        const liveSibs =
+                          gk === "__root__"
+                            ? (frozenTree ?? hierarchyTree).map((n) =>
+                                (n.org.name ?? "").toLowerCase(),
+                              )
+                            : (() => {
+                                function findChildren(
+                                  nodes: SidebarHierarchyNode[],
+                                ): string[] | null {
+                                  for (const n of nodes) {
+                                    if ((n.org.name ?? "").toLowerCase() === gk)
+                                      return n.children.map((c) =>
+                                        (c.org.name ?? "").toLowerCase(),
+                                      );
+                                    const found = findChildren(n.children);
+                                    if (found) return found;
+                                  }
+                                  return null;
+                                }
+                                return (
+                                  findChildren(frozenTree ?? hierarchyTree) ??
+                                  []
+                                );
+                              })();
+                        const existing = hierarchyOrder[gk];
+                        const full =
+                          existing && existing.length > 0 ? existing : liveSibs;
+                        const next = reorderLiveInFullOrder(
+                          full,
+                          liveSibs,
+                          from,
+                          to,
+                        );
+                        useStore.setState((prev) => ({
+                          hierarchyOrder: {
+                            ...prev.hierarchyOrder,
+                            [gk]: next,
+                          },
+                        }));
+                      }}
+                      hierDrag={hierDrag}
+                      hierDropTarget={hierDropTarget}
+                      setHierDropTarget={setHierDropTarget}
+                      onHierDragStart={() => setFrozenTree(hierarchyTree)}
+                      onHierDragEnd={() => {
+                        setFrozenTree(null);
+                        setHierDropTarget(null);
+                        hierAutoScroll.stop();
+                      }}
+                      hierAutoScroll={hierAutoScroll}
+                    />,
+                  );
+                });
+                if (geom.boundary === rootNodes.length && ghost)
+                  out.push(ghost);
+                return out;
+              })()}
           </div>
         )}
 
@@ -985,9 +1101,9 @@ interface SessionRowProps {
   page: PageTheme;
   isActive: boolean;
   isVisible: boolean;
-  /** Draw the gold insertion line at this row's top ("above") or bottom
-   *  ("below") edge during a drag, or null for none. */
-  dropEdge: "above" | "below" | null;
+  /** This row is the drag source — dim it while it's being moved (the vivid
+   *  copy is the ghost preview in the opened gap; ADR-095). */
+  isDragOrigin?: boolean;
   meta?: {
     summary?: string;
     projectName?: string;
@@ -1049,23 +1165,6 @@ function visibleHighlight(neutral: string) {
   };
 }
 
-/** Compose the active ring/glow with the drag insertion line (a row can be both).
- *  The line is drawn at the hovered row's TOP edge ("above") or BOTTOM edge
- *  ("below") — the same boundary the drop commits to, in the theme accent gold. */
-function rowBoxShadow(
-  highlight: { boxShadow: string } | null,
-  dropEdge: "above" | "below" | null,
-  lineColor: string,
-): string | undefined {
-  const line =
-    dropEdge === "above"
-      ? `inset 0 3px 0 ${lineColor}`
-      : dropEdge === "below"
-        ? `inset 0 -3px 0 ${lineColor}`
-        : null;
-  return [highlight?.boxShadow, line].filter(Boolean).join(", ") || undefined;
-}
-
 /** Normalize a live session into the context-menu's target shape. */
 function runningTarget(s: SessionInfo): AgentMenuTarget {
   return {
@@ -1084,7 +1183,7 @@ function SessionRow({
   page,
   isActive,
   isVisible,
-  dropEdge,
+  isDragOrigin,
   meta,
   agentState,
   notifCount,
@@ -1163,7 +1262,11 @@ function SessionRow({
         paddingRight: "12px",
         borderRadius: highlight ? "5px" : undefined,
         background: highlight ? highlight.background : "transparent",
-        boxShadow: rowBoxShadow(highlight, dropEdge, accent),
+        boxShadow: highlight?.boxShadow,
+        // Slide-apart origin dim: the row being dragged fades in place while its
+        // vivid copy is the ghost preview in the opened gap (ADR-095). Visual
+        // only — the commit math is untouched.
+        opacity: isDragOrigin ? 0.4 : undefined,
       }}
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -1422,7 +1525,14 @@ interface HierarchyNodeRowProps {
    * no branch connector to continue.
    */
   ancestorIsLast: boolean[];
+  /** This node is the drag source — dim its row (slide-apart, ADR-095). */
+  isDragOrigin?: boolean;
   page: PageTheme;
+  /** Theme accent (gold) + icon style + measured row height — for the ghost
+   *  preview this node renders in its OWN children group's gap. */
+  accent: string;
+  agentIconStyle: "provider" | "status";
+  dragRowHeight: number;
   isPaneActive: (pane: ActivePane) => boolean;
   visiblePaneIds: Set<string>;
   sessionMetaMap: Map<
@@ -1471,6 +1581,143 @@ interface HierarchyNodeRowProps {
 //
 //   SessionRow layout:  [3px border] [paddingLeft ...] [14px icon] [content]
 //   Icon center = 3 + paddingLeft + 7
+
+/** Fallback slide-apart row height (px) when a rect measures 0 (jsdom). Matches
+ *  a real single-line SessionRow: py-1 (8) + ~14/16px icon-line + border ≈ 39. */
+const DRAG_ROW_HEIGHT_FALLBACK = 39;
+
+/**
+ * The slide-apart PREVIEW row (ADR-095, replacing the gold insertion line). A
+ * ghost of the agent being dragged, shown in the gap that opens at the insertion
+ * boundary — "preview the agent row in between the place to be inserted." It is a
+ * real-height element spliced into the list at the boundary, so ordinary layout
+ * flow pushes every following row (and, in the tree, its whole subtree) down by
+ * one row — the "push the other sessions away." Its height animates 0 → measured
+ * row height on mount, so that reflow is a smooth open rather than a jump.
+ * Purely presentational — pointer-events off, aria-hidden.
+ */
+function DragGhostRow({
+  session,
+  status,
+  agentIconStyle,
+  page,
+  accent,
+  height,
+  paddingLeft,
+}: {
+  session: SessionInfo;
+  status: AgentStatus;
+  agentIconStyle: "provider" | "status";
+  page: PageTheme;
+  accent: string;
+  height: number;
+  paddingLeft: number;
+}) {
+  // Grow the gap on first mount (0 → height): the surrounding rows reflow with
+  // it, so the gap opens smoothly. A stable key keeps ONE instance as the drag
+  // moves, so it doesn't re-grow on every boundary step.
+  const [h, setH] = useState(0);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setH(height));
+    return () => cancelAnimationFrame(raf);
+  }, [height]);
+
+  return (
+    <div
+      data-testid="drag-ghost-row"
+      aria-hidden="true"
+      className="flex items-center gap-1.5"
+      style={{
+        height: h,
+        overflow: "hidden",
+        boxSizing: "border-box",
+        paddingLeft: `${paddingLeft}px`,
+        paddingRight: "12px",
+        borderRadius: 5,
+        border: `1px dashed ${accent}aa`,
+        background: `${accent}1f`,
+        opacity: h ? 1 : 0,
+        pointerEvents: "none",
+        transition: "height 140ms ease-out, opacity 140ms ease-out",
+      }}
+    >
+      {agentIconStyle === "provider" ? (
+        <ProviderAgentIcon
+          provider={session.provider}
+          status={status}
+          size={16}
+        />
+      ) : (
+        <AgentStatusIcon status={status} size={14} />
+      )}
+      <span className="flex-1 truncate text-xs" style={{ color: page.fg }}>
+        {session.name}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Slide-apart geometry for one hierarchy sibling group (shared by the root map
+ * and the recursive children map). `boundary` is the gap slot (null unless the
+ * hover is a real move; a no-op hover on the row's own slot opens nothing),
+ * `origin` the dragged sibling's index (dimmed), `dragged` the node to preview.
+ * Same `insertionBoundary`/`hierDropIndex` the commit uses, so the opened gap is
+ * exactly where the drop lands (indicated == committed).
+ */
+function hierGroupGeom(
+  groupKey: string,
+  siblings: SidebarHierarchyNode[],
+  drag: { group: string; idx: number } | null,
+  drop: { group: string; idx: number; edge: "above" | "below" } | null,
+): {
+  boundary: number | null;
+  origin: number | null;
+  dragged: SidebarHierarchyNode | null;
+} {
+  if (!drag || drag.group !== groupKey || drop?.group !== groupKey)
+    return { boundary: null, origin: null, dragged: null };
+  const committing = hierDropIndex(drag.idx, drop.idx, drop.edge) !== null;
+  return {
+    boundary: committing ? insertionBoundary(drop.idx, drop.edge) : null,
+    origin: drag.idx,
+    dragged: siblings[drag.idx] ?? null,
+  };
+}
+
+/** The slide-apart ghost preview for a hierarchy sibling, indented to its depth
+ *  so it lines up with the group whose gap it fills. */
+function HierGhost({
+  node,
+  depth,
+  page,
+  accent,
+  agentIconStyle,
+  agentStatuses,
+  height,
+}: {
+  node: SidebarHierarchyNode;
+  depth: number;
+  page: PageTheme;
+  accent: string;
+  agentIconStyle: "provider" | "status";
+  agentStatuses: Record<string, { status: string }>;
+  height: number;
+}) {
+  const s = node.session;
+  if (!s) return null;
+  return (
+    <DragGhostRow
+      session={s}
+      status={(agentStatuses[s.id]?.status as AgentStatus) ?? "unknown"}
+      agentIconStyle={agentIconStyle}
+      page={page}
+      accent={accent}
+      height={height}
+      paddingLeft={depth > 0 ? treePaddingLeft(depth) : 9}
+    />
+  );
+}
 
 /** Width of the horizontal branch arm (px) */
 const TREE_BRANCH_WIDTH = 4;
@@ -1569,7 +1816,11 @@ function HierarchyNodeRow({
   indexInGroup,
   isLastChild,
   ancestorIsLast,
+  isDragOrigin,
   page,
+  accent,
+  agentIconStyle,
+  dragRowHeight,
   isPaneActive,
   visiblePaneIds,
   sessionMetaMap,
@@ -1592,12 +1843,6 @@ function HierarchyNodeRow({
   const nodeName = node.org.name ?? "";
   const isCollapsed = collapsedGroups.has(nodeName.toLowerCase());
   const hasChildren = node.children.length > 0;
-
-  // Which edge (if any) to draw the gold insertion line on for THIS row.
-  const dropEdge =
-    hierDropTarget?.group === groupKey && hierDropTarget?.idx === indexInGroup
-      ? hierDropTarget.edge
-      : null;
 
   const lineColor = `${page.statusFg}55`;
   const rowPaddingLeft = depth > 0 ? treePaddingLeft(depth) : 9;
@@ -1647,7 +1892,7 @@ function HierarchyNodeRow({
             page={page}
             isActive={isPaneActive({ type: "session", id: s.id })}
             isVisible={visiblePaneIds.has(s.id)}
-            dropEdge={dropEdge}
+            isDragOrigin={isDragOrigin}
             meta={lookupSessionMeta(sessionMetaMap, s)}
             agentState={agentStatuses[s.id]}
             notifCount={notificationCounts[s.id] ?? 0}
@@ -1749,38 +1994,72 @@ function HierarchyNodeRow({
         </div>
       )}
 
-      {/* Children (if expanded) */}
+      {/* Children (if expanded) — with the slide-apart ghost spliced into this
+          group's gap at the drag boundary (ADR-095). */}
       {hasChildren &&
         !isCollapsed &&
-        node.children.map((child, idx) => (
-          <HierarchyNodeRow
-            key={child.org.name ?? child.org.claudeSessionId ?? `child-${idx}`}
-            node={child}
-            depth={depth + 1}
-            groupKey={nodeName.toLowerCase()}
-            indexInGroup={idx}
-            isLastChild={idx === node.children.length - 1}
-            ancestorIsLast={[...ancestorIsLast, isLastChild]}
-            page={page}
-            isPaneActive={isPaneActive}
-            visiblePaneIds={visiblePaneIds}
-            sessionMetaMap={sessionMetaMap}
-            agentStatuses={agentStatuses}
-            notificationCounts={notificationCounts}
-            collapsedGroups={collapsedGroups}
-            toggleCollapsed={toggleCollapsed}
-            switchPane={switchPane}
-            markNotificationsRead={markNotificationsRead}
-            openAgentMenu={openAgentMenu}
-            onReorder={onReorder}
-            hierDrag={hierDrag}
-            hierDropTarget={hierDropTarget}
-            setHierDropTarget={setHierDropTarget}
-            onHierDragStart={onHierDragStart}
-            onHierDragEnd={onHierDragEnd}
-            hierAutoScroll={hierAutoScroll}
-          />
-        ))}
+        (() => {
+          const childGroup = nodeName.toLowerCase();
+          const geom = hierGroupGeom(
+            childGroup,
+            node.children,
+            hierDrag.current,
+            hierDropTarget,
+          );
+          const ghost = geom.dragged ? (
+            <HierGhost
+              key={`hghost-${childGroup}`}
+              node={geom.dragged}
+              depth={depth + 1}
+              page={page}
+              accent={accent}
+              agentIconStyle={agentIconStyle}
+              agentStatuses={agentStatuses}
+              height={dragRowHeight}
+            />
+          ) : null;
+          const out: React.ReactNode[] = [];
+          node.children.forEach((child, idx) => {
+            if (geom.boundary === idx && ghost) out.push(ghost);
+            out.push(
+              <HierarchyNodeRow
+                key={
+                  child.org.name ?? child.org.claudeSessionId ?? `child-${idx}`
+                }
+                node={child}
+                depth={depth + 1}
+                groupKey={childGroup}
+                indexInGroup={idx}
+                isLastChild={idx === node.children.length - 1}
+                ancestorIsLast={[...ancestorIsLast, isLastChild]}
+                isDragOrigin={geom.origin === idx}
+                page={page}
+                accent={accent}
+                agentIconStyle={agentIconStyle}
+                dragRowHeight={dragRowHeight}
+                isPaneActive={isPaneActive}
+                visiblePaneIds={visiblePaneIds}
+                sessionMetaMap={sessionMetaMap}
+                agentStatuses={agentStatuses}
+                notificationCounts={notificationCounts}
+                collapsedGroups={collapsedGroups}
+                toggleCollapsed={toggleCollapsed}
+                switchPane={switchPane}
+                markNotificationsRead={markNotificationsRead}
+                openAgentMenu={openAgentMenu}
+                onReorder={onReorder}
+                hierDrag={hierDrag}
+                hierDropTarget={hierDropTarget}
+                setHierDropTarget={setHierDropTarget}
+                onHierDragStart={onHierDragStart}
+                onHierDragEnd={onHierDragEnd}
+                hierAutoScroll={hierAutoScroll}
+              />,
+            );
+          });
+          if (geom.boundary === node.children.length && ghost) out.push(ghost);
+          return out;
+        })()}
     </>
   );
 }
