@@ -11,6 +11,26 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.7.0] — 2026-09-01
+
+### Minor Changes
+
+- [#353](https://github.com/aterrylu/autonomOS/pull/353) `1b73ba7` — feat(dashboard): right-click context menu on agent rows (ADR-093)
+- [#355](https://github.com/aterrylu/autonomOS/pull/355) `847a11d` — feat(handoff): hand-off queue — human-mediated inbound for inbound-less agents (server)
+- [#356](https://github.com/aterrylu/autonomOS/pull/356) `c77fea2` — feat(handoff): hand-off queue dashboard — badge + minimal delivery overlay
+- [#357](https://github.com/aterrylu/autonomOS/pull/357) `d1e66a8` — feat(dashboard): sidebar drag-reorder revamp — whole-row native + slide-apart
+
+### Patch Changes
+
+- [#346](https://github.com/aterrylu/autonomOS/pull/346) `fb34e6c` — feat(dashboard): status-label muted-accent colors + working shimmer (ADR-090)
+- [#348](https://github.com/aterrylu/autonomOS/pull/348) `c54d778` — fix(codex): suppress the in-pane self-update popup that kills spawned sessions (ADR-091)
+- [#349](https://github.com/aterrylu/autonomOS/pull/349) `1dd3d13` — feat(gateway): schedule://<name> sender scheme for scheduled prompts (ADR-092)
+- [#350](https://github.com/aterrylu/autonomOS/pull/350) `5ce42c7` — fix(server): config-dir test-escape guard — tests can never touch the real ~/.autonomos
+- [#351](https://github.com/aterrylu/autonomOS/pull/351) `6276dba` — feat(agents): lastActivityAt — session recency that survives upgrades
+- [#352](https://github.com/aterrylu/autonomOS/pull/352) `15a4521` — fix(codex): advance lastActivityAt from the status feed (T2, #351)
+- [#354](https://github.com/aterrylu/autonomOS/pull/354) `72d648a` — fix(terminal): full-viewport refresh after WebGL recreate (blackout hardening)
+
+
 ## [0.6.1] — 2026-08-26
 
 ### Patch Changes
