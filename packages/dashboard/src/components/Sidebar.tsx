@@ -553,6 +553,9 @@ export function Sidebar() {
   function flatDragGeom(section: FlatSection): {
     boundary: number | null;
     origin: number | null;
+    // The hover currently resolves to the dragged row's OWN slot (a no-op): no
+    // gap opens, so the origin row itself shows the dashed preview (ADR-095).
+    originIsTarget: boolean;
     dragged: SessionInfo | null;
   } {
     const rows = section === "pinned" ? flatView.pinned : flatView.unpinned;
@@ -561,7 +564,15 @@ export function Sidebar() {
       frozenFlat != null &&
       d?.section === section &&
       dropTarget?.section === section;
-    if (!active || !d) return { boundary: null, origin: null, dragged: null };
+    if (!active || !d)
+      return {
+        boundary: null,
+        origin: null,
+        originIsTarget: false,
+        dragged: null,
+      };
+    // flatDropIndex returns null IFF the drop lands back at `from` (to === from),
+    // so `!committing` means exactly "the hover lands the row at its own slot."
     const committing =
       flatDropIndex(d.idx, dropTarget.idx, dropTarget.edge) !== null;
     return {
@@ -569,6 +580,7 @@ export function Sidebar() {
         ? insertionBoundary(dropTarget.idx, dropTarget.edge)
         : null,
       origin: d.idx,
+      originIsTarget: !committing,
       dragged: rows[d.idx] ?? null,
     };
   }
@@ -578,7 +590,7 @@ export function Sidebar() {
     section: FlatSection,
     idx: number,
   ) {
-    const { origin } = flatDragGeom(section);
+    const { origin, originIsTarget } = flatDragGeom(section);
     const isDragOrigin = origin === idx;
     const isPinned = section === "pinned";
     const pane: ActivePane = { type: "session", id: session.id };
@@ -596,6 +608,7 @@ export function Sidebar() {
         isActive={isPaneActive(pane)}
         isVisible={visiblePaneIds.has(session.id)}
         isDragOrigin={isDragOrigin}
+        isDropLandingHere={isDragOrigin && originIsTarget}
         meta={lookupSessionMeta(sessionMetaMap, session)}
         agentState={agentStatuses[session.id]}
         notifCount={notificationCounts[session.id] ?? 0}
@@ -839,6 +852,9 @@ export function Sidebar() {
                       isLastChild={idx === arr.length - 1}
                       ancestorIsLast={[]}
                       isDragOrigin={geom.origin === idx}
+                      isDropLandingHere={
+                        geom.origin === idx && geom.originIsTarget
+                      }
                       page={page}
                       accent={accent}
                       agentIconStyle={agentIconStyle}
@@ -1104,6 +1120,11 @@ interface SessionRowProps {
   /** This row is the drag source — dim it while it's being moved (the vivid
    *  copy is the ghost preview in the opened gap; ADR-095). */
   isDragOrigin?: boolean;
+  /** This row is the drag source AND the current hover lands it back at its own
+   *  slot (a no-op). No gap opens there, so the row ITSELF takes the dashed-ghost
+   *  preview styling — so there is always exactly one dashed "will land here"
+   *  marker, including 'right back where it started' (ADR-095). */
+  isDropLandingHere?: boolean;
   meta?: {
     summary?: string;
     projectName?: string;
@@ -1184,6 +1205,7 @@ function SessionRow({
   isActive,
   isVisible,
   isDragOrigin,
+  isDropLandingHere,
   meta,
   agentState,
   notifCount,
@@ -1260,13 +1282,25 @@ function SessionRow({
         borderLeft: `3px solid ${borderColor ?? "transparent"}`,
         paddingLeft: `${paddingLeft}px`,
         paddingRight: "12px",
-        borderRadius: highlight ? "5px" : undefined,
-        background: highlight ? highlight.background : "transparent",
-        boxShadow: highlight?.boxShadow,
-        // Slide-apart origin dim: the row being dragged fades in place while its
-        // vivid copy is the ghost preview in the opened gap (ADR-095). Visual
+        borderRadius: isDropLandingHere || highlight ? "5px" : undefined,
+        background: isDropLandingHere
+          ? `${accent}1f`
+          : highlight
+            ? highlight.background
+            : "transparent",
+        boxShadow: isDropLandingHere ? undefined : highlight?.boxShadow,
+        // Affordance continuity (ADR-095): when the hover lands the row back at
+        // its own slot no gap opens, so the row ITSELF becomes the preview —
+        // dashed outline + fill matching DragGhostRow, at full opacity — so there
+        // is always exactly one dashed "will land here" marker, including 'right
+        // back where it started.' An outline (not a border) draws inside the box
+        // with no reflow and coexists with the 3px tree borderLeft.
+        outline: isDropLandingHere ? `1px dashed ${accent}aa` : undefined,
+        outlineOffset: isDropLandingHere ? -1 : undefined,
+        // Slide-apart origin dim: when dragged AWAY, the source fades in place
+        // while its vivid copy is the ghost preview in the opened gap. Visual
         // only — the commit math is untouched.
-        opacity: isDragOrigin ? 0.4 : undefined,
+        opacity: isDragOrigin && !isDropLandingHere ? 0.4 : undefined,
       }}
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -1527,6 +1561,9 @@ interface HierarchyNodeRowProps {
   ancestorIsLast: boolean[];
   /** This node is the drag source — dim its row (slide-apart, ADR-095). */
   isDragOrigin?: boolean;
+  /** Drag source AND the hover lands it back at its own slot — the row itself
+   *  shows the dashed preview instead of a gap (ADR-095). */
+  isDropLandingHere?: boolean;
   page: PageTheme;
   /** Theme accent (gold) + icon style + measured row height — for the ghost
    *  preview this node renders in its OWN children group's gap. */
@@ -1673,14 +1710,25 @@ function hierGroupGeom(
 ): {
   boundary: number | null;
   origin: number | null;
+  // Hover resolves to the dragged sibling's OWN slot (a no-op) — the origin row
+  // itself shows the dashed preview instead of a gap (ADR-095).
+  originIsTarget: boolean;
   dragged: SidebarHierarchyNode | null;
 } {
   if (!drag || drag.group !== groupKey || drop?.group !== groupKey)
-    return { boundary: null, origin: null, dragged: null };
+    return {
+      boundary: null,
+      origin: null,
+      originIsTarget: false,
+      dragged: null,
+    };
+  // hierDropIndex returns null IFF the drop lands back at `from`, so `!committing`
+  // means exactly "the hover lands the sibling at its own slot."
   const committing = hierDropIndex(drag.idx, drop.idx, drop.edge) !== null;
   return {
     boundary: committing ? insertionBoundary(drop.idx, drop.edge) : null,
     origin: drag.idx,
+    originIsTarget: !committing,
     dragged: siblings[drag.idx] ?? null,
   };
 }
@@ -1817,6 +1865,7 @@ function HierarchyNodeRow({
   isLastChild,
   ancestorIsLast,
   isDragOrigin,
+  isDropLandingHere,
   page,
   accent,
   agentIconStyle,
@@ -1893,6 +1942,7 @@ function HierarchyNodeRow({
             isActive={isPaneActive({ type: "session", id: s.id })}
             isVisible={visiblePaneIds.has(s.id)}
             isDragOrigin={isDragOrigin}
+            isDropLandingHere={isDropLandingHere}
             meta={lookupSessionMeta(sessionMetaMap, s)}
             agentState={agentStatuses[s.id]}
             notifCount={notificationCounts[s.id] ?? 0}
@@ -2033,6 +2083,7 @@ function HierarchyNodeRow({
                 isLastChild={idx === node.children.length - 1}
                 ancestorIsLast={[...ancestorIsLast, isLastChild]}
                 isDragOrigin={geom.origin === idx}
+                isDropLandingHere={geom.origin === idx && geom.originIsTarget}
                 page={page}
                 accent={accent}
                 agentIconStyle={agentIconStyle}
