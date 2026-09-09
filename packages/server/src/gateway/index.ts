@@ -15,7 +15,11 @@ import type { UUID } from "@autonomos/core";
 import { setChannelServerProbe } from "../agents/runtime.js";
 import { getAgent, markActivity, patchAgent } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
-import { pushSystemNotification, setAgentStatus } from "../routes/hooks.js";
+import {
+  noteAgentTurnComplete,
+  pushSystemNotification,
+  setAgentStatus,
+} from "../routes/hooks.js";
 import {
   setCodexActivitySink,
   setCodexInboundNotifier,
@@ -23,6 +27,48 @@ import {
   setCodexThreadIdSink,
 } from "./codexControl.js";
 import { isSessionClientRegistered } from "./router.js";
+
+/**
+ * The Codex activity sink: fed by codexControl on every observed status. Two
+ * jobs, both keyed off the working→idle turn boundary (`flush`):
+ *   1. lastActivityAt (#351) — advance recency on "working", persist on the
+ *      turn boundary. `markActivity` owns debounce/monotonicity/unknown-id.
+ *   2. unread (#num) badge — a completed turn is Codex's "Stop" analog. Codex
+ *      fires no hooks, so this is the ONLY place its turns can bump the unread
+ *      count; it feeds the same notification/unread path CC's Stop hook uses.
+ * Named + exported so the flush-gating is unit-testable (a mid-turn "working"
+ * observation must NOT bump unread; only the turn boundary does).
+ */
+export function handleCodexActivity(
+  agentId: string,
+  ts: number,
+  flush: boolean,
+): void {
+  const rec = markActivity(agentId as UUID, ts, { flush });
+  if (rec) {
+    emitAgentDelta({
+      type: "agent.updated",
+      id: rec.id,
+      patch: { lastActivityAt: rec.lastActivityAt },
+      version: rec.version,
+    });
+  }
+  // Isolated: this runs synchronously under the Codex app-server WS message
+  // callback, so an unread-append bug must never propagate out and take down
+  // status processing for the agent. The leaves are already guarded
+  // (emitAgentDelta wraps subscribers; markActivity self-guards) — this makes
+  // the isolation of the widened surface explicit.
+  if (flush) {
+    try {
+      noteAgentTurnComplete(agentId);
+    } catch (err) {
+      console.warn(
+        `[gateway] unread bump for Codex ${agentId.slice(0, 8)} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
 
 export async function initGateway(): Promise<void> {
   // Surface persistent Codex inbound-delivery failures to the dashboard
@@ -38,23 +84,10 @@ export async function initGateway(): Promise<void> {
   // AgentStatus, so this is type-checked end-to-end (no cast).
   setCodexStatusSink(setAgentStatus);
 
-  // Feed a Codex agent's genuine work into `lastActivityAt` (#351) — Codex has
-  // no hook relay, so its recency was frozen at spawn (Terry's "birth date, not
-  // last-active" bug). "working" (incl. the 10s status poll) advances it; the
-  // working→idle turn boundary forces the flush. markActivity owns
-  // debounce/monotonicity/unknown-id; a landed flush returns the record, which
-  // we push as a recency delta so live dashboards advance (mirrors routes/hooks.ts).
-  setCodexActivitySink((agentId, ts, flush) => {
-    const rec = markActivity(agentId as UUID, ts, { flush });
-    if (rec) {
-      emitAgentDelta({
-        type: "agent.updated",
-        id: rec.id,
-        patch: { lastActivityAt: rec.lastActivityAt },
-        version: rec.version,
-      });
-    }
-  });
+  // Feed a Codex agent's genuine work into recency (#351) + the unread badge —
+  // Codex has no hook relay, so both were blind (recency frozen at spawn, unread
+  // stuck at 0). See handleCodexActivity for the mechanism.
+  setCodexActivitySink(handleCodexActivity);
 
   // Detect a Codex agent whose daemon-launched channel-server MCP subprocess
   // never connected — that agent silently has no outbound path (send + org

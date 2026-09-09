@@ -244,6 +244,40 @@ export function retractSystemNotification(
   return true;
 }
 
+/**
+ * Record a COMPLETED AGENT TURN as an unread notification, for providers with no
+ * hook relay (Codex): they never fire the `Stop` hook that CC/Gemini use to bump
+ * the unread (#num) badge, so their turns went uncounted. The caller (the Codex
+ * activity sink in gateway/index.ts) invokes this on the working→idle turn
+ * boundary — Codex's `Stop` analog. It feeds the SAME notification/unread path a
+ * `Stop` hook does (appendNotification → getUnreadCount → emitStatusDelta), so
+ * the badge increments live and `markRead` (on pane-view) clears it — NOT a
+ * parallel counter. Content-less like CC's own `Stop` notification; surfacing the
+ * agent's message text in the panel is a separate, queued enhancement.
+ *
+ * LIVE-PUSH INVARIANT: `emitStatusDelta` intentionally stays silent for a session
+ * with no `agentStates` entry (it must not emit deltas for a session that never
+ * reported status). The count is always correct on the next poll/reconcile
+ * regardless, but for the LIVE badge push the caller must have set the agent's
+ * status first. The Codex sink satisfies this for free — a working→idle flush is
+ * only reachable AFTER a "working" observation, and that "working" already
+ * created the entry via `setAgentStatus`. A future caller for a status-less
+ * session would still get a correct count, just no live push.
+ *
+ * Best-effort, matching the sink's own semantics (#352): one notification per
+ * working→idle turn boundary. Under-counts are possible — deliberately — when a
+ * turn ends through a compaction or its idle edge is missed (a coarser analog of
+ * CC's exact per-Stop count). A repeated `idle` cannot re-fire (the sink dedups
+ * on its prev-status), so a stable turn is counted exactly once.
+ */
+export function noteAgentTurnComplete(sessionId: string): void {
+  appendNotification(sessionId, {
+    event: "Stop",
+    timestamp: Date.now(),
+    read: false,
+  });
+}
+
 // ── Agent status helpers ─────────────────────────────────────────────
 
 export function getAgentState(sessionId: string): AgentState {
