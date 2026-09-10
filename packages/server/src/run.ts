@@ -30,7 +30,6 @@ import {
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
-import { deprecatedAlias } from "./deprecation.js";
 import { installErrorHandling } from "./httpError.js";
 import {
   assertUsableSocketPath,
@@ -53,7 +52,6 @@ import { gatewayRouter } from "./routes/gateway.js";
 import {
   agentStatusRouter,
   hooksIngestRouter,
-  hooksReadRouter,
   notificationsRouter,
 } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
@@ -324,7 +322,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // cannot hold a token cookie before authenticating. Old path aliased one
   // release.
   app.post("/api/auth", authHandler);
-  app.post("/auth", deprecatedAlias("/auth", "/api/auth"), authHandler);
 
   const requireAuth: MiddlewareHandler = async (c, next) => {
     // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
@@ -407,12 +404,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   internalApp.route("/api/hooks", hooksIngestRouter);
   app.route("/api/agent-status", agentStatusRouter);
   app.route("/api/notifications", notificationsRouter);
-  // The wildcard middleware also matches the bare /api/hooks path.
-  app.use(
-    "/api/hooks/*",
-    deprecatedAlias("/api/hooks", "/api/agent-status + /api/notifications"),
-  );
-  app.route("/api/hooks", hooksReadRouter);
 
   // REST API (behind auth)
   app.route("/api/projects", projectRouter);
@@ -427,14 +418,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // :name router or the param route shadows them (verified — Hono resolves
   // same-base mounts in registration order). "status"/"settings" are also
   // reserved as schedule names at create (validation.ts) so a schedule can
-  // never claim those keys. /api/scheduler is the one-release alias.
+  // never claim those keys.
   app.route("/api/schedules", schedulerRouter);
   app.route("/api/schedules", scheduleRouter);
-  app.use(
-    "/api/scheduler/*",
-    deprecatedAlias("/api/scheduler", "/api/schedules/{status,settings}"),
-  );
-  app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
   app.route("/api/plugins/codex-usage", codexUsageRouter);
   app.route("/api/usage-queue", usageQueueRouter);

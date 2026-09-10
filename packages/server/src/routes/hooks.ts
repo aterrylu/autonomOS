@@ -760,11 +760,3 @@ agentStatusRouter.get("/", statusMapHandler);
 export const notificationsRouter = new Hono();
 notificationsRouter.get("/", notificationFeedHandler);
 notificationsRouter.post("/:sessionId/read", markReadHandler);
-
-/** ONE-RELEASE compat alias: the pre-rename `/api/hooks` read shape.
- *  Same handlers as above — the alias cannot drift. Removed next release
- *  along with the `deprecatedAlias` wrapper at its mount. */
-export const hooksReadRouter = new Hono();
-hooksReadRouter.get("/notifications", notificationFeedHandler);
-hooksReadRouter.post("/:sessionId/read", markReadHandler);
-hooksReadRouter.get("/", statusMapHandler);
