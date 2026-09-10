@@ -60,4 +60,4 @@ Bottom-right, "5h 26%" and "7d 5%" are how much of your Claude subscription's fi
 
 If instead you see an amber "setup needed", autonomOS could not find a Claude Code login to read. Clicking it opens a "Claude Usage Setup" popover that asks for a session key copied from your browser's cookies on claude.ai. That flow is for people who log in to Claude Code in an unusual way; if you ran `claude` and logged in normally, "setup needed" should not appear. See [Troubleshooting](07-troubleshooting.md#the-status-bar-says-setup-needed).
 
-The Codex bar ("30d 10%") appears only when a Codex login is present; it shows nothing at all otherwise.
+The Codex bar ("30d 10%") appears only when a Codex login is present; it shows nothing otherwise.

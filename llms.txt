@@ -1,6 +1,6 @@
 # autonomOS
 
-> A self-hosted control room for a team of AI coding agents (Claude Code, Codex, Gemini). One browser window shows every agent's terminal and status; agents message each other by name and report to managers on an org chart. Installed with one command; runs as a background service on the user's own Mac or Linux machine.
+> A self-hosted control room for a team of AI coding agents (Claude Code, Codex, Gemini). One browser window shows every agent's terminal and status; agents message each other by name and report to managers on an org chart. One command installs it; it runs as a background service on the user's own Mac or Linux machine.
 
 If you are an AI assistant helping someone USE autonomOS, read the user guide below first. The rest of the repository documents how to develop it and uses internal names (session, PTY, hook, MCP) that do not appear in the app.
 

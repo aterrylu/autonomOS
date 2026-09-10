@@ -22,17 +22,17 @@ Every part of the window, what it shows, and what the words mean. Read top to bo
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The left column is where you find agents. The right area is where you talk to them. The bottom bar tells you about the server and your usage.
+The left column is where you find agents; the right area is where you talk to them. The bottom bar tells you about the server and your usage.
 
 ## Top bar
 
-"☰" hides and shows the left column (also ⌘B). "autonomOS" is just the name.
+"☰" hides and shows the left column (also ⌘B). "autonomOS" is the name, nothing more.
 
 ## Left column
 
 ### The four pages
 
-"Org Chart", "Templates", "Schedules", "Presets" each open as a tab on the right. They are covered in [Working as a team](05-working-as-a-team.md). The org chart is the one you will use most: who reports to whom, each with its status.
+"Org Chart", "Templates", "Schedules", "Presets" each open as a tab on the right. [Working as a team](05-working-as-a-team.md) covers them. The org chart is the one you will use most: who reports to whom, each with its status.
 
 ### Agents
 
@@ -47,7 +47,7 @@ Each row has two lines:
 
 - **Icon.** The runtime's logo (Claude, Codex, Gemini) with a small status ring, or a plain status icon if you chose "Status only" in Settings. A spinner means it is busy.
 - **Name.** What you named it.
-- **Unread.** "1 unread" in red: it finished a turn or received a message while you were looking at something else. Opens the agent to clear it.
+- **Unread.** "1 unread" in red: it finished a turn or received a message while you were looking at something else. Open the agent to clear it.
 - **Age.** "now", "3m", "2h": how long since it last did anything. Fades as it gets older.
 - **Folder · branch.** Second line, left: the folder it works in and, if that folder is a git repository, the branch.
 - **Preset.** A gold pill with a preset name appears here if the agent runs on a model override.
@@ -74,7 +74,7 @@ Click a row to open that agent's terminal. Right-click for "Open", "Restart", "K
 
 ### Projects
 
-Every folder in which Claude Code has been run on this machine, with a count of past conversations in each. This is read from Claude Code's own records, so it includes folders you used before autonomOS existed and folders made by other tools. Expand a folder to see its past conversations; click one to bring it back as an agent with its history. Click "+" on a folder to start a new agent there.
+Every folder in which Claude Code has been run on this machine, with a count of past conversations in each. autonomOS reads this from Claude Code's own records, so it includes folders you used before autonomOS existed and folders made by other tools. Expand a folder to see its past conversations; click one to bring it back as an agent with its history. Click "+" on a folder to start a new agent there.
 
 Agents you kill also land here, under their folder, so you can resume them later.
 
@@ -82,9 +82,9 @@ Agents you kill also land here, under their folder, so you can resume them later
 
 Each agent, and each of the four pages, opens as a tab across the top of the right-hand area. Click tabs to switch; close one with its "✕". Closing a tab does not stop the agent.
 
-To see two things at once, drag a tab to the left, right, top, or bottom edge of the area and drop it; it becomes its own pane. Drag the divider between panes to resize. Panes that are not selected are dimmed slightly. Your arrangement is remembered in this browser.
+To see two things at once, drag a tab to the left, right, top, or bottom edge of the area and drop it; it becomes its own pane. Drag the divider between panes to resize. Panes that are not selected are dimmed slightly. This browser remembers your arrangement.
 
-An agent's terminal is a real terminal: scroll with the trackpad or Shift+PageUp to read history. When you are scrolled up and new output arrives, a small "Jump to latest" button appears over the pane; click it, or just type, to follow the bottom again.
+An agent's terminal is a real terminal: scroll with the trackpad or Shift+PageUp to read history. When you are scrolled up and new output arrives, a small "Jump to latest" button appears over the pane; click it, or type anything, to follow the bottom again.
 
 ## Status bar
 
@@ -93,9 +93,9 @@ Left to right:
 - **Green badge with a computer name.** This is the Settings button; the name is the machine running autonomOS. Click it to open [Settings](06-permissions-and-settings.md#the-settings-panel).
 - **"● Connected".** The browser can reach the server. "Checking..." while it verifies; "Disconnected" if the server went away, in which case it reconnects on its own.
 - **"New release available (v0.6.1 → v0.7.0)".** Appears only when a newer version exists. Hover for the command; see [Updating](02-install.md#updating).
-- **"5h 26%" and "7d 5%".** How much of your Claude subscription's five-hour and seven-day limits are used, read from your Claude Code login. Click for details and reset times. Amber "setup needed" means it could not find the login; see [Troubleshooting](07-troubleshooting.md#the-status-bar-says-setup-needed).
+- **"5h 26%" and "7d 5%".** How much of your Claude subscription's five-hour and seven-day limits you have used, which autonomOS reads from your Claude Code login. Click for details and reset times. Amber "setup needed" means it could not find the login; see [Troubleshooting](07-troubleshooting.md#the-status-bar-says-setup-needed).
 - **"30d 10%" with the Codex logo.** The same for Codex, shown only if Codex is logged in.
-- **🔔.** Notifications: messages agents sent to you (not to each other). "Mark all read" clears them; "Load more" pages back. The counts on agent rows are separate and clear when you open the agent.
+- **🔔.** Notifications: messages agents sent to you (not to each other), plus anything autonomOS itself needs to flag about a run. "Mark all read" clears them; "Load more" pages back. The counts on agent rows are separate and clear when you open the agent.
 
 ## Keyboard shortcuts
 
@@ -114,4 +114,4 @@ Everything else you type goes to the agent's terminal, exactly as in Claude Code
 
 ## Themes and the app
 
-Settings → "Theme" cycles "Midnight", "Daylight", "Void". The dashboard can be installed as an app from your browser's install option (Chrome: the icon at the right of the address bar; Safari: File → Add to Dock); it then opens in its own window and can show desktop notifications when an agent messages you.
+Settings → "Theme" cycles "Midnight", "Daylight", "Void". You can install the dashboard as an app from your browser's install option (Chrome: the icon at the right of the address bar; Safari: File → Add to Dock); it then opens in its own window and can show desktop notifications when an agent messages you.

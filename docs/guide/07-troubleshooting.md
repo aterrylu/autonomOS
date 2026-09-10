@@ -47,7 +47,7 @@ The token you pasted does not match the one the server is using. Copy it again f
 
 ## "Cannot reach server — check that it is running"
 
-The browser cannot reach autonomOS at all.
+The browser cannot reach autonomOS.
 
 ```bash
 autonomos status
@@ -63,7 +63,7 @@ The server went away while you had the page open, usually because it restarted. 
 
 ## An agent's row says "Needs input" and nothing is happening
 
-That is the agent waiting for you. Click the row and answer the question in its terminal, typically by pressing a number and Enter. Managers waiting on that agent wait too, so answer promptly. See [Working as a team](05-working-as-a-team.md#needs-input).
+That is the agent waiting for you. Click the row and answer the question in its terminal, typically by pressing a number and Enter. Managers waiting on that agent wait too, so do not leave it waiting. See [Working as a team](05-working-as-a-team.md#needs-input).
 
 ## An agent's terminal says "[autonomos · offline]"
 
@@ -83,7 +83,7 @@ autonomOS could not find a Claude Code login to read your usage from. It looks i
 
 ## The "Projects" list is full of folders I don't recognise
 
-That list is every folder Claude Code has ever been run in on this machine, including ones created by tools and tests. It is read from Claude Code's own history, not from autonomOS, and it is harmless. Use the search in the "Create New Agent" form's folder list, or "Custom...", to get to the folder you want.
+That list is every folder Claude Code has ever been run in on this machine, including ones created by tools and tests. autonomOS reads it from Claude Code's own history, and it is harmless. Use the search in the "Create New Agent" form's folder list, or "Custom...", to get to the folder you want.
 
 ## The agent is working in the wrong folder
 
@@ -91,7 +91,7 @@ Check the second line of its row in the left column: it shows the folder name (a
 
 ## The dashboard is broken after an update or a crash
 
-If the page shows "The dashboard hit an error", click "Reset layout & reload". That clears only the arrangement of tabs and panes; agents, theme, and settings stay. If it happens again, the page offers "Clear all saved data & reload", which also resets theme and sidebar preferences. Agents are never affected by either.
+If the page shows "The dashboard hit an error", click "Reset layout & reload". That clears only the arrangement of tabs and panes; agents, theme, and settings stay. If it happens again, the page offers "Clear all saved data & reload", which also resets theme and sidebar preferences. Neither one affects agents.
 
 ## I want to start over completely
 

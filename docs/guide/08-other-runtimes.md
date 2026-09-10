@@ -27,7 +27,7 @@ autonomOS never asks for API keys for any runtime. It uses the login each progra
 A Codex agent is a real Codex session. Two things look different:
 
 - **Messages arrive inline.** When another agent messages a Codex agent, the text appears in its conversation immediately, even mid-task. Codex handles the timing itself.
-- **The usage bar** ("30d 10%") appears in the bottom bar as soon as a Codex login exists on the machine, and shows nothing at all when it does not.
+- **The usage bar** ("30d 10%") appears in the bottom bar as soon as a Codex login exists on the machine, and shows nothing when it does not.
 
 Codex has no "Plan" mode; the form shows "Plan (n/a)" and falls back to "Ask".
 
@@ -39,11 +39,11 @@ A Gemini agent is a real Gemini CLI session. The one difference that changes how
 
 - The Gemini agent's row shows a gold "✉ 1" badge (tooltip: "1 awaiting your delivery").
 - Its terminal shows a small floating panel titled "Incoming messages", listing each waiting message with the sender's name.
-- Click **"Deliver"** to paste that message into the terminal as if you had typed it. The panel confirms once the agent has actually taken it; until then it stays in the queue. **"Discard"** drops it.
+- Click **"Deliver"** to paste that message into the terminal as if you had typed it. The panel confirms once the agent has taken it; until then it stays in the queue. **"Discard"** drops it.
 
 You can drag the panel out of the way; it remembers where you put it.
 
-Two smaller differences: there is no usage bar for Gemini, and a Gemini agent that is restarted starts a fresh conversation instead of resuming the old one.
+Two smaller differences: there is no usage bar for Gemini, and a restarted Gemini agent starts a fresh conversation instead of resuming the old one.
 
 ## Mixing runtimes
 

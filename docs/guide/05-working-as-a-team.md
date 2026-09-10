@@ -1,6 +1,6 @@
 # Working as a team
 
-How agents create each other, message each other, report to each other, and run on a schedule. Everything here is done by talking to an agent in plain language; there is nothing to configure.
+How agents create each other, message each other, report to each other, and run on a schedule. You do everything here by talking to an agent in plain language; there is nothing to configure.
 
 ## The shape of a team
 
@@ -36,7 +36,7 @@ The whole thing takes a minute or two. The agent that creates a helper chooses t
 
 ## Messages between agents
 
-Agents address each other by name. When one sends, autonomOS delivers straight into the other's terminal, and the sender is told whether the message was actually accepted. There is no mailbox to check and no broadcast; every message has exactly one recipient.
+Agents address each other by name. When one sends, autonomOS delivers straight into the other's terminal and tells the sender whether the message was accepted. There is no mailbox to check and no broadcast; every message has exactly one recipient.
 
 Seen from your side:
 
@@ -59,13 +59,13 @@ Do you want to proceed?
   3. No
 ```
 
-Type the number and press Enter, or just press Enter for the highlighted option. Option 2, where offered, is Claude Code's own "don't ask again" and is remembered for that folder from then on, for any agent working there. Nothing else moves until you answer, including a manager waiting on that agent's report.
+Type the number and press Enter, or press Enter alone for the highlighted option. Option 2, where offered, is Claude Code's own "don't ask again"; Claude Code remembers it for that folder from then on, for any agent working there. Nothing else moves until you answer, including a manager waiting on that agent's report.
 
 ## The org chart
 
 Click "Org Chart" at the top of the left column. Each agent is a card with its runtime icon, its name, its template, and its current status. Lines connect managers to their reports. With one agent the chart is one card.
 
-The chart is derived from who created whom, and from any manager an agent sets explicitly. To change it, ask an agent: "Make Reviewer report to Team Lead." To see it as text, ask any agent to describe the org chart.
+autonomOS derives the chart from who created whom, and from any manager an agent sets explicitly. To change it, ask an agent: "Make Reviewer report to Team Lead." To see it as text, ask any agent to describe the org chart.
 
 If the chart cannot be drawn for a moment while agents are starting, the left column shows "Hierarchy syncing" and offers "Show flat" to list agents without nesting.
 
@@ -79,19 +79,19 @@ Each card shows how many agents are currently running from that template.
 
 ## Schedules
 
-Click "Schedules". A schedule sends a prompt to a running agent at a set time, once or on a repeat. You do not fill in a form; you ask an agent, and the page shows what it set up. The empty state gives examples:
+Click "Schedules". A schedule sends a prompt to a running agent at a set time, once or on a repeat. There is no form; you ask an agent, and the page shows what it set up. The empty state gives examples:
 
 - "Set up a daily GitHub summary at 9am"
 - "Schedule a weekly dependency audit"
 - "Run a PR review check every 30 minutes"
 
-Say any of those to an agent and a card appears on the page with the schedule, its next run, and a run history. The agent the schedule targets has to be running when it fires; if it is not, that run is recorded as failed and the next one tries again. The page's "Max runs" number is how many schedules may run at once.
+Say any of those to an agent and a card appears on the page with the schedule, its next run, and a run history. The agent the schedule targets has to be running when it fires; if it is not, autonomOS records that run as failed and the next one tries again. The page's "Max runs" number is how many schedules may run at once.
 
 Each card has "Run now" and "Delete". To pause or change a schedule, ask an agent.
 
 ## Presets
 
-Click "Presets". A preset lets an agent run on a different model provider, for example a Kimi model, while still using the Claude Code program and everything in this guide. Creating one is a two-step process: an agent (or you, with "+ New") defines the preset, then **you** paste the provider's API key into the preset's card on this page. Agents cannot see or set the key. When you create an agent, the preset appears in the form's "Model Override" field.
+Click "Presets". A preset lets an agent run on a different model provider, for example a Kimi model, while still using the Claude Code program and everything in this guide. Creating one takes two steps: an agent (or you, with "+ New") defines the preset, then **you** paste the provider's API key into the preset's card on this page. Agents cannot see or set the key. When you create an agent, the preset appears in the form's "Model Override" field.
 
 Most people never need this page.
 

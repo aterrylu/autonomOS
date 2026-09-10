@@ -14,7 +14,7 @@ Words as the app uses them, plus a few that only appear in the code or the devel
 
 **Daemon, service.** The autonomOS server running in the background, started at login by macOS (launchd) or Linux (systemd). `autonomos status` tells you if it is up.
 
-**Dashboard.** The web page. Bookmark it; the address is printed at install time, normally `http://localhost:3000`.
+**Dashboard.** The web page. Bookmark it; the installer prints the address, normally `http://localhost:3000`.
 
 **Deliver.** In the "Incoming messages" panel, the button that pastes a queued message into a Gemini agent's terminal, because Gemini cannot receive messages on its own.
 
@@ -22,13 +22,13 @@ Words as the app uses them, plus a few that only appear in the code or the devel
 
 **Env preset, preset, Model Override.** A named set of environment variables that make an agent run on a different model provider through the same Claude Code program. Created on the "Presets" page; chosen in the form's "Model Override" field.
 
-**Hooks, hook telemetry.** Developer term. Claude Code calls autonomOS at each step (tool started, tool finished, waiting for input, and so on); those calls are what the status labels are made from. You never configure them.
+**Hooks, hook telemetry.** Developer term. Claude Code calls autonomOS at each step (tool started, tool finished, waiting for input, and so on); autonomOS builds the status labels from those calls. You never configure them.
 
 **Incoming messages, hand-off queue.** The panel that appears on a Gemini agent's terminal when another agent has sent it something. You click "Deliver" to hand it over.
 
 **Manager, report.** The org-chart relationship. An agent that creates another becomes its manager; the new one is its report. Work goes down the tree, results come back up.
 
-**MCP tools.** Developer term. The small set of team actions every agent is given: list agents, send a message, create an agent, set a manager, create a schedule, and a few more. You never call them; you ask an agent in plain language and it does.
+**MCP tools.** Developer term. The small set of team actions autonomOS gives every agent: list agents, send a message, create an agent, set a manager, create a schedule, and a few more. You never call them; you ask an agent in plain language and it does.
 
 **Needs input.** The amber status meaning the agent is waiting for you to answer something in its terminal. Click the row, read the question, answer.
 
@@ -42,7 +42,7 @@ Words as the app uses them, plus a few that only appear in the code or the devel
 
 **Schedule.** A recurring or one-time task that sends a prompt to a running agent at a set time. Created by asking an agent; listed on the "Schedules" page.
 
-**Send, message.** One agent writing to another by name. Delivery is confirmed: the sender is told only when the other agent has actually accepted the message.
+**Send, message.** One agent writing to another by name. Delivery is confirmed: autonomOS tells the sender only when the other agent has accepted the message.
 
 **Session.** The code's word for an agent. Also Claude Code's word for one conversation, which is why the "Projects" list counts "sessions".
 

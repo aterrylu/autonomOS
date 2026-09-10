@@ -31,7 +31,7 @@ It downloads autonomOS, checks the download, sets it up as a background service 
 
 It also opens the dashboard in your browser. If it did not, open the "Dashboard" address yourself.
 
-If instead you see "⚠️ autonomOS installed, but the daemon isn't responding yet", go to [Troubleshooting](07-troubleshooting.md#the-installer-says-the-daemon-isnt-responding). The usual cause is Claude Code not being installed.
+If instead you see "⚠️ autonomOS installed, but the daemon isn't responding yet", go to [Troubleshooting](07-troubleshooting.md#the-installer-says-the-daemon-isnt-responding). The usual cause is that Claude Code is not installed.
 
 ## 2. Log in
 
@@ -71,7 +71,7 @@ You are now using autonomOS. Everything else is more of this: more agents, agent
 
 ## Where to go next
 
-- The form you just filled in, field by field: [Your first agent](03-your-first-agent.md)
+- The form you filled in, field by field: [Your first agent](03-your-first-agent.md)
 - What every part of the screen means: [Reading the dashboard](04-reading-the-dashboard.md)
 - Ask the Dispatcher to spawn a helper and watch them coordinate: [Working as a team](05-working-as-a-team.md)
 

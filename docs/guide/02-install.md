@@ -33,7 +33,7 @@ Everything the service writes at runtime lives in one folder, `~/.autonomos/`: y
 
 ### If the installer warns about PATH
 
-If you see "⚠️ ~/.local/bin is not on your PATH", the `autonomos` command will not be found until you add that folder to your shell. The installer prints the exact line to add to `~/.zshrc` or `~/.bashrc`. Add it, open a new terminal, and `autonomos status` will work. The service itself is unaffected; only the command is.
+If you see "⚠️ ~/.local/bin is not on your PATH", your shell cannot find the `autonomos` command until you add that folder to its PATH. The installer prints the exact line to add to `~/.zshrc` or `~/.bashrc`. Add it, open a new terminal, and `autonomos status` will work. The service itself is unaffected; only the command is.
 
 ### Pinning a version
 
@@ -60,7 +60,7 @@ autonomos version       # print the installed version
 autonomos help          # the full list
 ```
 
-Stopping the service does not delete anything. Agents that were running are recorded, and the next start brings them back where they were.
+Stopping the service does not delete anything. autonomOS records which agents were running, and the next start brings them back where they were.
 
 ## Updating
 
@@ -70,7 +70,7 @@ The dashboard shows a small badge in the bottom bar when a newer release exists:
 autonomos upgrade
 ```
 
-This downloads the new release, verifies it, swaps it in, restarts the service, and checks that the new version actually starts. If it does not, it puts the old version back on its own. Your agents, token, and settings are untouched, and agents that were running come back.
+This downloads the new release, verifies it, swaps it in, restarts the service, and checks that the new version starts. If it does not, it puts the old version back on its own. Your agents, token, and settings are untouched, and agents that were running come back.
 
 If an upgrade works but you want the previous version anyway:
 
@@ -80,7 +80,7 @@ autonomos rollback
 
 Re-running the one-line installer is also a supported way to upgrade.
 
-The daily check for new releases can be turned off in Settings ("Update Check"). The dashboard itself never contacts GitHub; the server does, once a day.
+You can turn off the daily check for new releases in Settings ("Update Check"). The dashboard itself never contacts GitHub; the server does, once a day.
 
 ## Uninstalling
 
@@ -96,7 +96,7 @@ rm -rf ~/.local/share/autonomos ~/.local/bin/autonomos
 rm -rf ~/.autonomos        # your token, agent records, settings, logs
 ```
 
-Removing `~/.autonomos` is what makes the next install truly fresh. It does not touch Claude Code or its login.
+Removing `~/.autonomos` is what makes the next install fresh. It does not touch Claude Code or its login.
 
 ## Running it on another machine
 

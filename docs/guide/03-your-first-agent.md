@@ -6,13 +6,13 @@ The "Create New Agent" form, field by field, and what happens after you click "C
 
 The form opens by itself the first time you log in with no agents. After that, click "+ New" next to "Agents" in the left column, or click "+" next to a folder under "Projects" to start an agent in that folder.
 
-The heading reads "Create New Agent" with the line "Configure and spawn a new coding agent" under it. "Spawn" just means start.
+The heading reads "Create New Agent" with the line "Configure and spawn a new coding agent" under it. "Spawn" means start.
 
 ## Name
 
 "Display name for this agent." Required. This is how the agent appears everywhere: in the left column, in the org chart, and in messages between agents. It is also how other agents address it, so keep it short and distinct. "Dispatcher", "Reviewer", "Scout" are good names. Two running agents cannot share a name; the form refuses the duplicate.
 
-The name is filled in from the template you pick until you type your own.
+The form fills in the name from the template you pick until you type your own.
 
 ## Template
 
@@ -28,7 +28,7 @@ The name is filled in from the template you pick until you type your own.
 
 ## Runtime
 
-"Which coding agent CLI to use." The program that actually runs: "Claude Code", "Codex CLI", or "Gemini CLI". Each card lists what that runtime can do inside autonomOS:
+"Which coding agent CLI to use." The program the agent runs on: "Claude Code", "Codex CLI", or "Gemini CLI". Each card lists what that runtime can do inside autonomOS:
 
 - "Message other agents"
 - "Receive agent messages"
@@ -48,7 +48,7 @@ Claude Code has all four and is marked "Recommended with full support". Gemini s
 | **Plan** | "Read-only investigation — the agent plans but does not act." Good for "look at this and tell me what you would do". Not available for Codex. |
 | **Bypass** | "Skips all permission prompts. Full autonomy." The agent never asks. Only for work you would let run unattended in a folder you can afford to have changed. |
 
-One thing the form does not say: "Ask" means *whatever Claude Code's own default is on this machine*. If you have changed Claude Code's default permission mode in its settings, "Ask" inherits that. The terminal's bottom line tells you the truth: it reads "auto mode on" when edits are being auto-accepted. See [Permissions and settings](06-permissions-and-settings.md).
+One thing the form does not say: "Ask" means *whatever Claude Code's own default is on this machine*. If you have changed Claude Code's default permission mode in its settings, "Ask" inherits that. The terminal's bottom line tells you the truth: it reads "auto mode on" when Claude Code is auto-accepting edits. See [Permissions and settings](06-permissions-and-settings.md).
 
 ## Model Override
 

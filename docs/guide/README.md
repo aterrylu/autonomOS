@@ -26,8 +26,8 @@ If someone pointed you at this repository to help them use autonomOS, start with
 
 Facts you can rely on from this guide:
 
-- Each page is self-contained. Quoted strings in double quotes are the exact text shown in the app or printed by the installer, so you can tell the user what to look for.
-- Commands are in code blocks and are meant to be pasted as written. The only command a user runs regularly is `autonomos` with a subcommand; everything else happens in the browser.
+- Each page is self-contained. Quoted strings in double quotes are the exact text the app shows or the installer prints, so you can tell the user what to look for.
+- Commands are in code blocks; paste them as written. The only command a user runs regularly is `autonomos` with a subcommand; everything else happens in the browser.
 - The app calls them **agents**. The code calls the same thing a session. Use "agent" with the user.
 - autonomOS never needs an API key. It uses the Claude Code login that is already on the machine. Do not tell the user to create or paste an Anthropic API key.
 - Do not run `autonomos install-service`, `autonomos uninstall-service`, or `autonomos stop` unless the user asked for that specific outcome. They change what runs at login on the user's machine.
