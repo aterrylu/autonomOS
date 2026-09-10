@@ -81,8 +81,24 @@ fi
 # heard of. Fail HERE, before anything is downloaded, with the prerequisite
 # named. SKIP_CLAUDE_CHECK=1 skips (same convention as SKIP_NODE_CHECK) for
 # operators who install the server first and Claude Code second, eyes open.
+# Mirrors the server's own binary resolution (providers/shared.ts
+# BINARY_DIRS), which probes these dirs BEFORE falling back to PATH — a
+# plain `command -v` would refuse installs on boxes where the daemon boots
+# fine (claude in ~/.local/bin but not on the installing shell's PATH).
+# nvm versioned bins are the one gap; one is on PATH whenever nvm is
+# loaded, which it must be for the node check above to have passed.
+claude_available() {
+  command -v claude >/dev/null 2>&1 && return 0
+  for d in "$HOME/.local/bin" "$HOME/.bun/bin" "$HOME/.npm-global/bin" \
+           "$HOME/.cargo/bin" "$HOME/.volta/bin" \
+           /usr/local/bin /opt/homebrew/bin /snap/bin /usr/bin; do
+    [[ -x "$d/claude" ]] && return 0
+  done
+  return 1
+}
+
 if [[ "${SKIP_CLAUDE_CHECK:-0}" != "1" ]]; then
-  if ! command -v claude >/dev/null 2>&1; then
+  if ! claude_available; then
     cat >&2 <<'EOF'
 Error: Claude Code is required and was not found on PATH.
 

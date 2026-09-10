@@ -20,7 +20,7 @@
 //   - token → $configDir/token, which the server writes on first boot.
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "@autonomos/server/configDir.js";
 import {
@@ -28,36 +28,50 @@ import {
   isPortResponsive,
   readPidFile,
 } from "@autonomos/server/pid-file.js";
+import { BOOT_ERROR_LOG } from "./service-templates.js";
 
 const POLL_INTERVAL_MS = 500;
 const TIMEOUT_MS = 12_000;
 
 /**
- * Best-effort "likely cause" for a daemon that never became responsive —
- * the newcomer-facing half of the F2 fix (the installer's claude pre-flight
- * is the other). A boot-time crash (e.g. Claude Code missing → provider
- * validation process.exit(1)) lands its stderr in the supervisor's backstop
- * log BEFORE the rotating logger attaches, and under Restart=always the
- * daemon crash-loops silently. Surface the tail of whichever log has
- * content so the failure text NAMES the cause instead of burying it.
- * Exported for tests; never throws (cosmetics must not change the verdict).
+ * Best-effort boot-failure context for a daemon that never became
+ * responsive — the newcomer-facing half of the F2 fix (the installer's
+ * claude pre-flight is the other). Which log holds the story varies:
+ * run.ts attaches the rotating logger BEFORE provider validation, so the
+ * motivating crash ("Claude Code CLI not found" → exit(1)) lands in the
+ * ROTATING autonomos.log off-TTY (logger.ts echoes stderr to the
+ * supervisor sink only on a TTY); the supervisor's backstop
+ * (autonomos.boot.error.log) holds only PRE-logger failures (module-load
+ * crashes, node-pty ABI). The backstop is also append-only and NEVER
+ * rotated, so without a freshness gate one ancient crash would shadow
+ * every future timeout's real cause. Hence: candidates are mtime-sorted,
+ * freshest first, and anything older than `freshWithinMs` is skipped —
+ * stale history is worse than no hint. Exported for tests; never throws
+ * (cosmetics must not change the verdict).
  */
-export function bootFailureHint(configDir = getConfigDir()): string[] {
+export function bootFailureHint(
+  configDir = getConfigDir(),
+  freshWithinMs = 15 * 60 * 1000,
+): string[] {
   try {
-    const candidates = [
-      join(configDir, "logs", "autonomos.boot.error.log"),
+    const cutoff = Date.now() - freshWithinMs;
+    const fresh = [
+      join(configDir, "logs", BOOT_ERROR_LOG),
       join(configDir, "logs", "autonomos.log"),
-    ];
-    for (const file of candidates) {
-      if (!existsSync(file)) continue;
-      const lines = readFileSync(file, "utf-8")
+    ]
+      .filter(existsSync)
+      .map((f) => ({ f, mtime: statSync(f).mtimeMs }))
+      .filter((c) => c.mtime >= cutoff)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const { f } of fresh) {
+      const lines = readFileSync(f, "utf-8")
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean)
         .slice(-6);
       if (lines.length > 0) {
         return [
-          `    Likely cause (from ${file}):`,
+          `    The daemon's last log lines (${f}):`,
           ...lines.map((l) => `      ${l}`),
         ];
       }

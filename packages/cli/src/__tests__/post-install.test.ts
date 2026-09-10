@@ -137,14 +137,13 @@ describe("verifyAndReportInstall", () => {
     assert.match(out, /autonomos logs/);
   });
 
-  it("timeout report NAMES the boot failure from the backstop log (F2)", async () => {
-    // The crash-loop case the claude pre-flight exists for: the server's
-    // provider validation exit(1) lands in the supervisor's backstop log
-    // before the rotating logger attaches. The timeout report must surface
-    // it — a newcomer should read WHY, not "check the logs".
+  it("timeout report surfaces the ROTATING log — where the motivating crash actually lands (F2)", async () => {
+    // run.ts attaches the rotating logger BEFORE provider validation, so
+    // "Claude Code CLI not found" lands in autonomos.log off-TTY — NOT the
+    // backstop. The report must surface it; a newcomer reads WHY.
     mkdirSync(join(TEST_DIR, "logs"), { recursive: true });
     writeFileSync(
-      join(TEST_DIR, "logs", "autonomos.boot.error.log"),
+      join(TEST_DIR, "logs", "autonomos.log"),
       "Claude Code CLI not found on PATH (checked: claude)\n",
     );
     const ok = await verifyAndReportInstall(
@@ -153,8 +152,48 @@ describe("verifyAndReportInstall", () => {
     );
     assert.equal(ok, false);
     const out = logs.join("\n");
-    assert.match(out, /Likely cause/);
+    assert.match(out, /last log lines/);
     assert.match(out, /Claude Code CLI not found/);
+  });
+
+  it("a STALE backstop log cannot shadow the fresh rotating log (mtime gate)", async () => {
+    const { bootFailureHint } = await import("../lib/post-install.js");
+    const { utimesSync } = await import("node:fs");
+    const dir = join(TEST_DIR, `stale-${Date.now()}`);
+    mkdirSync(join(dir, "logs"), { recursive: true });
+    // Ancient pre-logger crash: node-pty ABI text from weeks ago.
+    const backstop = join(dir, "logs", "autonomos.boot.error.log");
+    writeFileSync(backstop, "Error: node-pty ABI mismatch (ancient history)\n");
+    const old = (Date.now() - 30 * 24 * 3600 * 1000) / 1000;
+    utimesSync(backstop, old, old);
+    // Fresh rotating log holds the CURRENT boot's complaint.
+    writeFileSync(
+      join(dir, "logs", "autonomos.log"),
+      "Claude Code CLI not found on PATH\n",
+    );
+    const hint = bootFailureHint(dir).join("\n");
+    assert.match(hint, /Claude Code CLI not found/);
+    assert.ok(
+      !hint.includes("node-pty"),
+      "stale backstop content must not be presented as the current cause",
+    );
+  });
+
+  it("a fresh backstop (pre-logger crash) wins over an older rotating log", async () => {
+    const { bootFailureHint } = await import("../lib/post-install.js");
+    const { utimesSync } = await import("node:fs");
+    const dir = join(TEST_DIR, `backstop-${Date.now()}`);
+    mkdirSync(join(dir, "logs"), { recursive: true });
+    const rotating = join(dir, "logs", "autonomos.log");
+    writeFileSync(rotating, "routine startup lines from the previous boot\n");
+    const older = (Date.now() - 10 * 60 * 1000) / 1000;
+    utimesSync(rotating, older, older);
+    writeFileSync(
+      join(dir, "logs", "autonomos.boot.error.log"),
+      "Cannot find module 'node-pty' (pre-logger crash)\n",
+    );
+    const hint = bootFailureHint(dir).join("\n");
+    assert.match(hint, /Cannot find module/);
   });
 
   it("bootFailureHint is empty (not a crash) when no logs exist", async () => {
