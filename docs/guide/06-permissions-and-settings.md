@@ -8,7 +8,7 @@ Every agent has one of four modes, chosen in the "Create New Agent" form and sho
 
 | Mode | Claude Code | Codex | Gemini |
 |---|---|---|---|
-| **Ask** | "Prompts on each tool use" | "Asks on request (approval_policy: on-request)" | "Prompts on each tool use" |
+| **Ask** | "Defers to Claude Code's own default (no flag passed) — your ~/.claude/settings.json defaultMode may change it (e.g. acceptEdits)" | "Asks on request (approval_policy: on-request)" | "Prompts on each tool use" |
 | **Accept edits** | "Auto-accepts edits (acceptEdits)" | "Runs commands, asks only on failure (on-failure)" | "Auto-accepts edits (auto_edit)" |
 | **Plan** | "Read-only plan mode" | "Not supported — falls back to Ask" | "Read-only plan mode" |
 | **Bypass** | "Skips all prompts (--dangerously-skip-permissions)" | "No approvals (approval_policy: never)" | "Auto-approves everything (yolo)" |

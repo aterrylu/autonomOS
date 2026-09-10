@@ -12,7 +12,7 @@ What the installer does, how to manage the background service, how to update, an
 | Codex CLI (optional) | `codex --version` | Only if you want Codex agents. See [Other runtimes](08-other-runtimes.md). |
 | Gemini CLI (optional) | `gemini --version` | Only if you want Gemini agents. See [Other runtimes](08-other-runtimes.md). |
 
-The installer checks Node but does not check for Claude Code. Without Claude Code the service starts and stops immediately; see [Troubleshooting](07-troubleshooting.md#the-installer-says-the-daemon-isnt-responding).
+The installer checks for both Node and Claude Code before it downloads anything. Without Claude Code it stops with "Error: Claude Code is required and was not found on PATH." and a three-step fix (install it, run `claude` once to log in, re-run the installer). The server refuses to start without Claude Code, so there is no point installing around it; if you must, `SKIP_CLAUDE_CHECK=1` in front of the command skips the check and the service will crash-loop until Claude Code exists.
 
 ## The one-line installer
 
@@ -22,7 +22,7 @@ curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 
 Step by step, it:
 
-1. Detects your operating system and CPU.
+1. Detects your operating system and CPU, and checks that Node 20+ and Claude Code are present.
 2. Downloads the matching autonomOS bundle from the latest GitHub release and verifies its checksum. You will see "[install] ✓ Checksum OK".
 3. Puts the bundle in `~/.local/share/autonomos/` and a small `autonomos` command in `~/.local/bin/`.
 4. Registers a background service: a launchd agent on macOS, a systemd user service on Linux. On Linux it also enables "lingering" so the service survives logging out.

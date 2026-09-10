@@ -31,7 +31,7 @@ It downloads autonomOS, checks the download, sets it up as a background service 
 
 It also opens the dashboard in your browser. If it did not, open the "Dashboard" address yourself.
 
-If instead you see "⚠️ autonomOS installed, but the daemon isn't responding yet", go to [Troubleshooting](07-troubleshooting.md#the-installer-says-the-daemon-isnt-responding). The usual cause is that Claude Code is not installed.
+If the installer stops early with "Error: Claude Code is required and was not found on PATH.", it has not downloaded anything yet: install Claude Code, run `claude` once to log in, and run the installer again. If it gets further and ends with "⚠️ autonomOS installed, but the daemon isn't responding yet", go to [Troubleshooting](07-troubleshooting.md#the-installer-says-the-daemon-isnt-responding); that message now prints the daemon's last log lines under it, which usually name the cause.
 
 ## 2. Log in
 
