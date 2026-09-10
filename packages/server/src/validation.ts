@@ -210,6 +210,14 @@ export const restSetManagerSchema = z.object({
   version: z.number().optional(),
 });
 
+/** `PATCH /:id` — rename. Body-`version` optimistic concurrency (ADR-095's
+ *  removed-PATCH note re-adds it on this convention). Name is required and
+ *  non-empty; the route trims + namesake-guards it. */
+export const restRenameSchema = z.object({
+  name: z.string().min(1, "Name cannot be empty"),
+  version: z.number().optional(),
+});
+
 /** MCP `get_org_chart`. */
 export const orgChartShape = {
   includeExited: z

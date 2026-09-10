@@ -31,6 +31,7 @@ import {
   getAgent,
   getAgentByProviderSessionId,
   listAgents,
+  patchAgent,
   resolveAgent,
   resolveAgentByName,
   setManager,
@@ -54,6 +55,7 @@ import { usageQueue } from "../usageQueue.js";
 import {
   parseBody,
   restCreateAgentSchema,
+  restRenameSchema,
   restSetManagerSchema,
 } from "../validation.js";
 import { clearAgentState, clearNotifications } from "./hooks.js";
@@ -416,10 +418,65 @@ agentsRouter.post("/", async (c) => {
   }
 });
 
-// `PATCH /:id` (rename / template / project) was removed: zero callers, zero
-// tests, and it carried the surface's only header-based optimistic concurrency
-// (`If-Match`, vs. the body `version` everything else uses). A future rename /
-// reparent UI re-adds it on the body-`version` convention.
+// ── Rename ─────────────────────────────────────────────────────────
+//
+// `PATCH /:id` was removed once (zero callers) and is re-added here on the body
+// `version` optimistic-concurrency convention (not the old `If-Match` header),
+// for the right-click Rename feature (ADR-095 follow-up). Rename mutates only the
+// record `name`; the caller (store.renameSession) then restarts the agent so the
+// resume argv carries the new `--name`. NOTE (customTitle caveat): the new name
+// is authoritative for the sidebar/record, but `--name` does not rewrite a CC
+// session's own in-session `/rename` `customTitle` in the JSONL — so a session
+// renamed inside Claude keeps that title on the Projects tab + name-lookups.
+agentsRouter.patch("/:id", async (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+
+  const body = await parseBody(c, restRenameSchema);
+  const name = body.name.trim();
+  if (!name) return c.json({ error: "Name cannot be empty" }, 400);
+
+  // Namesake guard (mirrors spawnAgent's): reject a name already held by ANOTHER
+  // running agent, so the collision surfaces as a clean 409 here rather than
+  // later when the restart's attach re-spawns (and leaves the agent stopped).
+  const needle = name.toLowerCase();
+  for (const a of listAgents()) {
+    if (
+      a.id !== agent.id &&
+      a.status === "running" &&
+      a.name.toLowerCase() === needle
+    ) {
+      return c.json(
+        {
+          error: `An active agent named "${name}" is already running. Choose a different name.`,
+        },
+        409,
+      );
+    }
+  }
+
+  const result = patchAgent(agent.id, { name }, body.version);
+  if (result === undefined) {
+    return c.json({ error: `Agent "${param}" not found` }, 404);
+  }
+  if (result === "stale") {
+    return c.json(
+      {
+        error: "Version mismatch — refresh and retry",
+        currentVersion: getAgent(agent.id)?.version,
+      },
+      409,
+    );
+  }
+  emitAgentDelta({
+    type: "agent.updated",
+    id: result.id,
+    patch: { name: result.name },
+    version: result.version,
+  });
+  return c.json(result);
+});
 
 // ── Set manager ────────────────────────────────────────────────────
 
