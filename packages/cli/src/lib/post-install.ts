@@ -20,7 +20,7 @@
 //   - token → $configDir/token, which the server writes on first boot.
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "@autonomos/server/configDir.js";
 import {
@@ -28,9 +28,59 @@ import {
   isPortResponsive,
   readPidFile,
 } from "@autonomos/server/pid-file.js";
+import { BOOT_ERROR_LOG } from "./service-templates.js";
 
 const POLL_INTERVAL_MS = 500;
 const TIMEOUT_MS = 12_000;
+
+/**
+ * Best-effort boot-failure context for a daemon that never became
+ * responsive — the newcomer-facing half of the F2 fix (the installer's
+ * claude pre-flight is the other). Which log holds the story varies:
+ * run.ts attaches the rotating logger BEFORE provider validation, so the
+ * motivating crash ("Claude Code CLI not found" → exit(1)) lands in the
+ * ROTATING autonomos.log off-TTY (logger.ts echoes stderr to the
+ * supervisor sink only on a TTY); the supervisor's backstop
+ * (autonomos.boot.error.log) holds only PRE-logger failures (module-load
+ * crashes, node-pty ABI). The backstop is also append-only and NEVER
+ * rotated, so without a freshness gate one ancient crash would shadow
+ * every future timeout's real cause. Hence: candidates are mtime-sorted,
+ * freshest first, and anything older than `freshWithinMs` is skipped —
+ * stale history is worse than no hint. Exported for tests; never throws
+ * (cosmetics must not change the verdict).
+ */
+export function bootFailureHint(
+  configDir = getConfigDir(),
+  freshWithinMs = 15 * 60 * 1000,
+): string[] {
+  try {
+    const cutoff = Date.now() - freshWithinMs;
+    const fresh = [
+      join(configDir, "logs", BOOT_ERROR_LOG),
+      join(configDir, "logs", "autonomos.log"),
+    ]
+      .filter(existsSync)
+      .map((f) => ({ f, mtime: statSync(f).mtimeMs }))
+      .filter((c) => c.mtime >= cutoff)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const { f } of fresh) {
+      const lines = readFileSync(f, "utf-8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .slice(-6);
+      if (lines.length > 0) {
+        return [
+          `    The daemon's last log lines (${f}):`,
+          ...lines.map((l) => `      ${l}`),
+        ];
+      }
+    }
+  } catch {
+    // Unreadable logs must not turn a timeout report into a crash.
+  }
+  return [];
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -117,6 +167,7 @@ export async function verifyAndReportInstall(
       "⚠️  The daemon didn't become responsive within " +
         `${Math.round(timeoutMs / 1000)}s.`,
     );
+    for (const line of bootFailureHint()) console.warn(line);
     console.warn("    Check:  autonomos status   and   autonomos logs");
     return false;
   }
