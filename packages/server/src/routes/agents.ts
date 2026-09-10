@@ -79,12 +79,19 @@ agentsRouter.get("/:id/self", (c) => {
   const agents = listAgents();
   const me = agents.find((a) => a.id === id);
   if (!me) return c.json({ error: "not found" }, 404);
+  // Field names + semantics mirror the statusline's legacy /api/agents
+  // derivation (getAutonomosMeta): `manager` is a display NAME, and
+  // exited reports don't count — records persist until deleted, so a
+  // manager that reaped short-lived workers must not read ↓N forever.
   return c.json({
     name: me.name,
-    managerName: me.managerId
+    manager: me.managerId
       ? (agents.find((a) => a.id === me.managerId)?.name ?? null)
       : null,
-    directReports: agents.filter((a) => a.managerId === me.id).length,
+    project: me.project ?? null,
+    directReports: agents.filter(
+      (a) => a.managerId === me.id && a.status !== "exited",
+    ).length,
     permissionMode: me.permissionMode,
     status: me.status,
   });

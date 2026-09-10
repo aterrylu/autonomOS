@@ -145,14 +145,15 @@ async function getSelfMeta(sessionId, serverUrl, agentToken) {
   try {
     const res = await fetch(`${serverUrl}/api/agents/${sessionId}/self`, {
       headers: { "X-Agent-Token": agentToken },
-      signal: AbortSignal.timeout(1500),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const me = await res.json();
     if (!me || typeof me !== "object") return null;
     return {
-      name: sanitize(me.name),
-      managerName: me.managerName ? sanitize(me.managerName) : null,
+      name: sanitize(me.name) ?? "Agent",
+      manager: me.manager ? sanitize(me.manager) : null,
+      project: me.project ? sanitize(me.project) : null,
       directReports: Number(me.directReports) || 0,
     };
   } catch {
@@ -397,4 +398,5 @@ export {
   formatDuration,
   formatHierarchy,
   getAutonomosMeta,
+  getSelfMeta,
 };

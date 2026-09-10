@@ -33,15 +33,59 @@ describe("GET /api/agents/:id/self — per-agent-token statusline metadata (#297
 
   it("returns own hierarchy view with a valid per-agent token", async () => {
     const mgr = fix(B);
-    fix(A, { managerId: mgr.id });
+    fix(A, { managerId: mgr.id, project: "autonomOS" });
     const res = await agentsRouter.request(`/${A}/self`, {
       headers: { "X-Agent-Token": mintAgentToken(A) },
     });
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.name, `sl-01`);
-    assert.equal(body.managerName, `sl-02`);
+    assert.equal(body.manager, `sl-02`);
+    assert.equal(body.project, "autonomOS");
     assert.equal(body.directReports, 0);
+  });
+
+  it("directReports excludes exited agents (records persist until deleted)", async () => {
+    const mgr = fix(A);
+    fix(B, { managerId: mgr.id });
+    fix("0000b111-0000-4000-8000-0000000000ee", {
+      managerId: mgr.id,
+      status: "exited",
+    });
+    const res = await agentsRouter.request(`/${A}/self`, {
+      headers: { "X-Agent-Token": mintAgentToken(A) },
+    });
+    assert.equal((await res.json()).directReports, 1);
+  });
+
+  it("route payload → getSelfMeta → formatHierarchy renders ↑manager (SHAPE contract)", async () => {
+    // The shape drift class: getSelfMeta once returned `managerName` while
+    // formatHierarchy reads `ctx.manager`, so a managed worker rendered a
+    // wrong-but-plausible "standalone". This feeds the REAL route payload
+    // through the REAL script path so neither side can drift alone.
+    const mgr = fix(B);
+    fix(A, { managerId: mgr.id });
+    const routeRes = await agentsRouter.request(`/${A}/self`, {
+      headers: { "X-Agent-Token": mintAgentToken(A) },
+    });
+    const payload = await routeRes.json();
+
+    const sl = await import("../providers/statusline.mjs");
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(payload))) as typeof fetch;
+    try {
+      const meta = await sl.getSelfMeta(A, "http://stub", "tok");
+      assert.ok(meta, "getSelfMeta must parse the route payload");
+      const line: string = sl.formatHierarchy(meta);
+      assert.match(line, /↑sl-02/, "manager arrow must render");
+      assert.ok(
+        !line.includes("standalone"),
+        "managed agent is not standalone",
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   it("401s without a token, and with ANOTHER agent's token (no cross-agent reads)", async () => {
