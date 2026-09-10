@@ -42,10 +42,36 @@ completeness; the **release engineer** does everything else.
   through the documented deploy/install paths are fine — that is what they do.
 - Squash-merge only; never `--admin`; resolve all review threads before merge.
 
-## Phase 0 — pre-cut validation on forge
+## Phase 0 — pre-cut validation on forge (MANDATORY for every cut)
 
-Validate **current main** on forge BEFORE cutting. Do not migrate or adopt
-anything pre-cut — validation uses whatever install shape forge already has.
+**Every cut — patch releases included — deploys and tests the actual
+CANDIDATE as a running instance before Terry's go. No shape-aware skipping,
+no "the delta is small" exemptions** (Terry's standing rule, 2026-08-26:
+"every time before we cut a release we need to actually deploy and test
+it"). Green CI is necessary, never sufficient — the candidate must RUN.
+Two tiers; pick deliberately and say which you ran in the report:
+
+- **Default — isolated candidate instance** (what recent cycles ran):
+  fresh clone at the candidate SHA on forge, own config dir, own port
+  (never 3100), boot clean via ITS rotating log (`<cfg>/logs/autonomos.log`),
+  exercise the release's changed surface plus a spawn, browser pass against
+  `http://forge:<candidate-port>`, tear it down by exact PID, and prove the
+  live install untouched before/after. Forge's live daemon and agents are
+  never restarted.
+- **Deeper tier — deploy over the live install** (only when the delta
+  warrants exercising live-install behaviors: resume-across-restart,
+  migration/upgrade paths, supervisor-unit changes): the shape-aware deploy
+  below. This RESTARTS the live forge daemon — its agents restart and
+  resume (expected, ADR-049) — so use it knowingly, not by default. The
+  smoke list below (live log, live `/api/system/version`, forge `.env`
+  token, `http://forge:3100` browser pass) belongs to THIS tier.
+
+The report to Terry states what ran and why that coverage is sufficient
+for the delta — he judges coverage, not just "green".
+
+For the deeper tier, validate **current main** on forge BEFORE cutting. Do
+not migrate or adopt anything pre-cut — validation uses whatever install
+shape forge already has.
 **Check the shape first** (`cat <tree>/install.json` on forge, or note that
 `/api/system/version` reports `installMode`), then deploy main by the matching
 path:
