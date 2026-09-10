@@ -16,7 +16,7 @@ import { setChannelServerProbe } from "../agents/runtime.js";
 import { getAgent, markActivity, patchAgent } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
-  noteAgentTurnComplete,
+  noteAgentMessage,
   pushSystemNotification,
   setAgentStatus,
 } from "../routes/hooks.js";
@@ -26,18 +26,34 @@ import {
   setCodexStatusSink,
   setCodexThreadIdSink,
 } from "./codexControl.js";
+import {
+  type CodexAgentReply,
+  readLastCodexAgentMessage,
+} from "./codexRollout.js";
 import { isSessionClientRegistered } from "./router.js";
+
+// Seam: the rollout reader is swappable so handleCodexActivity's flush behavior
+// is unit-testable without a real rollout on disk.
+let readAgentMessage: (threadId: string) => CodexAgentReply | null =
+  readLastCodexAgentMessage;
+/** Test hook — override the Codex agent-message reader; null restores default. */
+export function _setCodexAgentMessageReaderForTesting(
+  fn: ((threadId: string) => CodexAgentReply | null) | null,
+): void {
+  readAgentMessage = fn ?? readLastCodexAgentMessage;
+}
 
 /**
  * The Codex activity sink: fed by codexControl on every observed status. Two
  * jobs, both keyed off the working→idle turn boundary (`flush`):
  *   1. lastActivityAt (#351) — advance recency on "working", persist on the
  *      turn boundary. `markActivity` owns debounce/monotonicity/unknown-id.
- *   2. unread (#num) badge — a completed turn is Codex's "Stop" analog. Codex
- *      fires no hooks, so this is the ONLY place its turns can bump the unread
- *      count; it feeds the same notification/unread path CC's Stop hook uses.
+ *   2. unread (#num) badge — a completed turn appends the agent's REPLY (read off
+ *      the rollout) as a user-facing "AgentMessage" notification, so a Codex turn
+ *      both counts AND shows in the bell panel with content (F3 — supersedes the
+ *      earlier content-less Stop bump, which the panel filtered out).
  * Named + exported so the flush-gating is unit-testable (a mid-turn "working"
- * observation must NOT bump unread; only the turn boundary does).
+ * observation must NOT append; only the turn boundary does).
  */
 export function handleCodexActivity(
   agentId: string,
@@ -53,21 +69,59 @@ export function handleCodexActivity(
       version: rec.version,
     });
   }
+  // The working→idle flush IS a completed Codex turn. Read the agent's reply off
+  // its rollout and append it as a user-facing AgentMessage notification so the
+  // turn counts + shows with content.
+  //
+  // DEDUP is load-bearing (not an optimization): the working→idle edge fires once
+  // per turn, but if the daemon reports idle BEFORE Codex flushes this turn's
+  // reply, the reader returns the PREVIOUS turn's reply (still the newest on
+  // disk) — which we already surfaced. Re-appending would post a stale duplicate
+  // as new (worse than a miss). We dedup on the reply's TIMESTAMP, not its text,
+  // so a genuinely-repeated reply (a cron Codex agent answering "Done." each run)
+  // STILL counts — only a stale re-read of the same rollout line is skipped
+  // (nox). When a real turn produces no readable reply yet, nothing is appended
+  // (bounded best-effort under-count, logged below so it's observable).
+  //
   // Isolated: this runs synchronously under the Codex app-server WS message
-  // callback, so an unread-append bug must never propagate out and take down
-  // status processing for the agent. The leaves are already guarded
-  // (emitAgentDelta wraps subscribers; markActivity self-guards) — this makes
-  // the isolation of the widened surface explicit.
+  // callback, so a bug here must never propagate out and take down status
+  // processing for the agent. The leaves are already guarded (emitAgentDelta
+  // wraps subscribers; markActivity self-guards); this wraps the widened surface.
   if (flush) {
     try {
-      noteAgentTurnComplete(agentId);
+      const threadId = getAgent(agentId as UUID)?.providerThreadId;
+      const reply = threadId ? readAgentMessage(threadId) : null;
+      if (reply && reply.ts !== lastReplyTsByAgent.get(agentId)) {
+        lastReplyTsByAgent.set(agentId, reply.ts);
+        noteAgentMessage(agentId, reply.message);
+      } else if (threadId && !reply) {
+        // Observable breadcrumb for "badge lower than turn count": a turn ended
+        // but no reply was readable (not flushed yet / no rollout).
+        console.log(
+          `[gateway] Codex ${agentId.slice(0, 8)} turn ended with no readable reply yet — not counted`,
+        );
+      }
     } catch (err) {
       console.warn(
-        `[gateway] unread bump for Codex ${agentId.slice(0, 8)} failed:`,
+        `[gateway] Codex turn-complete notification for ${agentId.slice(0, 8)} failed:`,
         err instanceof Error ? err.message : err,
       );
     }
   }
+}
+
+// agentId → the TIMESTAMP of the last reply we surfaced, so a flush that races
+// the rollout write can't re-post the previous turn's reply (see above). Keyed on
+// ts (occurrence identity), so an identical-text reply from a genuinely new turn
+// still counts. One tiny string per Codex agent ever seen — bounded by fleet
+// size, negligible; keyed on ts, it also can't wrongly suppress a post-clear
+// reply (a new turn carries a new ts). A teardown-prune is a fine follow-up but
+// not worth a store↔gateway import cycle here.
+const lastReplyTsByAgent = new Map<string, string>();
+
+/** Test hook — clear the per-agent dedup memory between cases. */
+export function _resetCodexUnreadDedupForTesting(): void {
+  lastReplyTsByAgent.clear();
 }
 
 export async function initGateway(): Promise<void> {
