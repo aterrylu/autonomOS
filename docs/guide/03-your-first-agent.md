@@ -70,7 +70,7 @@ The button reads "Creating..." for a moment, then:
 
 1. A tab opens on the right named after the agent, containing a terminal.
 2. Claude Code starts in that terminal. You see its normal startup banner: its version, the model, the folder, and a line or two of tips. If Claude Code is configured on this machine with extra tools, you may also see a note like "N MCP servers need authentication · run /mcp". That comes from your own Claude Code setup, not from autonomOS, and you can ignore it.
-3. The bottom line of the terminal is autonomOS's status line. It shows the folder, cost so far, the model, and the permission mode. In the current release it may read "[autonomos · offline]" even though everything is working; this is a known display bug, not a connection problem.
+3. The bottom line of the terminal is autonomOS's status line. It shows the agent's name and its place in the team ("standalone", or its manager and how many agents report to it), then the folder, cost so far, the model, and the permission mode. If it reads "[autonomos · offline]" the agent cannot reach the server; see [Troubleshooting](07-troubleshooting.md).
 4. In the left column, the agent's row appears under "Agents" with the status "Ready".
 
 If Claude Code asks whether you trust the folder, or warns about loading "development channels", autonomOS answers those for you within a second. That is the "Auto-Trust" setting, on by default.

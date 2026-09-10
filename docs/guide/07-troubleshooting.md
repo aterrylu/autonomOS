@@ -67,7 +67,7 @@ That is the agent waiting for you. Click the row and answer the question in its 
 
 ## An agent's terminal says "[autonomos · offline]"
 
-The autonomOS status line at the bottom of an agent's terminal reads "offline" even though messages and status work. In the current release this is a display bug affecting every Claude Code agent, not a connection problem. Ignore it. It is being fixed.
+The status line at the bottom of an agent's terminal could not reach the autonomOS server. Two common causes. The agent was started before you upgraded autonomOS: its credentials are issued when the server starts, so agents from before an upgrade keep showing "offline" until you restart them (right-click the row, "Restart"). Or the server is down: check with `autonomos status`. When the line is healthy it shows the agent's name and its place in the team, for example "[Dispatcher · standalone]". Messages and the dashboard's status labels do not depend on this line.
 
 ## An agent's terminal says "N MCP servers need authentication"
 
