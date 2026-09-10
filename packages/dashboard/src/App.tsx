@@ -80,9 +80,10 @@ function LoginPage() {
           className="text-xs text-center leading-relaxed"
           style={{ color: page.statusFg, opacity: 0.7 }}
         >
-          Find your token in the server console output
+          Find your token in the install output, or run
           <br />
-          or in <code className="font-mono">~/.autonomos/token</code>
+          <code className="font-mono">cat ~/.autonomos/token</code> in a
+          terminal
         </p>
         <input
           type="password"

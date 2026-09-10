@@ -229,8 +229,8 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
             className="px-3 py-8 text-center text-xs"
             style={{ color: page.statusFg }}
           >
-            No notifications yet. Agents will appear here when they send
-            messages via --brief.
+            No notifications yet. When an agent sends you a message, it appears
+            here.
           </div>
         )}
 

@@ -29,7 +29,7 @@ Two paths that share a common core:
 autonomOS/
 ├── packages/
 │   ├── dashboard/          # Web UI — observability & control
-│   │   └── src/layout/         # Binary tree split-pane system
+│   │   └── src/layout/         # dockview tabs + split panes (ADR-047, the only layout engine)
 │   ├── server/             # Hono + node-pty — API, WebSocket, PTY management
 │   │   ├── src/gateway/        # URI-based message router + platform adapters
 │   │   ├── src/channel-server/ # Standalone MCP subprocess (server:autonomos)
@@ -54,7 +54,7 @@ Every spawned session gets `--settings` with inline hook entries for all 13 Clau
 **Events:** SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, Notification, PermissionRequest, SubagentStart, SubagentStop, PreCompact, PostCompact, SessionEnd
 
 ### Session Spawning Flags
-Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), and optionally `--dangerously-skip-permissions` (autonomous mode), `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
+Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enables SendUserMessage), `--append-system-prompt` (autonomOS context + MCP tool descriptions), `--settings` (hook relay), the agent's permission-mode flags (ADR-045 + ADR-061 — `ask` emits no flag, `bypass` emits `--dangerously-skip-permissions`), and optionally `--dangerously-load-development-channels` / `--channels`, and `--mcp-config` (channel server subprocess).
 
 ### Auto-Trust
 `attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Configurable via settings panel toggle (default: ON).
@@ -66,10 +66,10 @@ Agents communicate through the gateway using one scheme: **`agent://name`**. The
 
 ### MCP Tool Architecture
 Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
-- **HTTP MCP server** (`mcp.ts`) — for external clients (Claude Desktop, CI)
+- **HTTP MCP server** (`mcp.ts`) — served on the internal Unix control socket (`$configDir/control.sock`), NOT the public port (ADR-055); reachable only by same-user processes on the box, and still token-gated
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
-Both servers expose: `create_agent`, `list_agents`, `kill_agent`. The channel server also has `send` (requires gateway WebSocket).
+Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`. The channel server also has `send` (requires gateway WebSocket).
 
 ### Base Context Injection
 Every autonomOS-spawned session gets `--append-system-prompt` with:
