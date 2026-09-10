@@ -72,6 +72,51 @@ EOF
   fi
 fi
 
+# ── claude pre-flight ─────────────────────────────────────────────────────
+# Claude Code is the daemon's REQUIRED default provider: the server refuses
+# to boot without it (run.ts provider validation, process.exit(1)), and
+# under the supervisor's Restart=always + no start-limit that becomes an
+# infinite crash-loop whose only symptom is post-install's "daemon didn't
+# become responsive" — the real cause buried in a log a newcomer has never
+# heard of. Fail HERE, before anything is downloaded, with the prerequisite
+# named. SKIP_CLAUDE_CHECK=1 skips (same convention as SKIP_NODE_CHECK) for
+# operators who install the server first and Claude Code second, eyes open.
+# Mirrors the server's own binary resolution (providers/shared.ts
+# BINARY_DIRS), which probes these dirs BEFORE falling back to PATH — a
+# plain `command -v` would refuse installs on boxes where the daemon boots
+# fine (claude in ~/.local/bin but not on the installing shell's PATH).
+# nvm versioned bins are the one gap; one is on PATH whenever nvm is
+# loaded, which it must be for the node check above to have passed.
+claude_available() {
+  command -v claude >/dev/null 2>&1 && return 0
+  for d in "$HOME/.local/bin" "$HOME/.bun/bin" "$HOME/.npm-global/bin" \
+           "$HOME/.cargo/bin" "$HOME/.volta/bin" \
+           /usr/local/bin /opt/homebrew/bin /snap/bin /usr/bin; do
+    [[ -x "$d/claude" ]] && return 0
+  done
+  return 1
+}
+
+if [[ "${SKIP_CLAUDE_CHECK:-0}" != "1" ]]; then
+  if ! claude_available; then
+    cat >&2 <<'EOF'
+Error: Claude Code is required and was not found on PATH.
+
+autonomOS spawns and manages Claude Code sessions — the server will not
+start without the `claude` CLI installed (and logged in):
+
+  1. Install it:   https://claude.com/claude-code
+                   (npm: npm install -g @anthropic-ai/claude-code)
+  2. Log in once:  run `claude` and complete the login
+  3. Re-run this installer.
+
+Installing the server first anyway (e.g. claude arrives later)? Re-run with:
+  SKIP_CLAUDE_CHECK=1 — the daemon will crash-loop until claude exists.
+EOF
+    exit 1
+  fi
+fi
+
 # ── download ──────────────────────────────────────────────────────────────
 TARBALL="autonomos-${PLATFORM}.tar.gz"
 TMP=$(mktemp -d)
