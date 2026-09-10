@@ -374,14 +374,7 @@ function EmptyState({ page }: { page: PageTheme }) {
         No schedules yet
       </span>
       <div className="text-[11px] leading-relaxed max-w-sm opacity-80">
-        Schedules are created by agents using the{" "}
-        <code
-          className="text-[10px] px-1 py-0.5 rounded"
-          style={{ background: "rgba(255,255,255,0.06)" }}
-        >
-          create_schedule
-        </code>{" "}
-        tool. Ask any running agent:
+        Schedules are created by agents, not by hand. Ask any running agent:
       </div>
       <div className="flex flex-col gap-1 text-[11px] italic opacity-60">
         <span>&ldquo;Set up a daily GitHub summary at 9am&rdquo;</span>

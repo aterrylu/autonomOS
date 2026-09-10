@@ -45,7 +45,11 @@ describe("HierarchyPanel", () => {
     stubTreeFetch(() => Promise.resolve(new Response("[]", { status: 200 })));
     render(<HierarchyPanel />);
     expect(await screen.findByText(/no agents running/i)).toBeInTheDocument();
-    expect(screen.getByText(/set_manager\(\)/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/managers and their reports appear here/i),
+    ).toHaveTextContent(
+      "Create an agent, then ask it to spawn helpers — managers and their reports appear here",
+    );
   });
 
   it("shows an error state with retry copy when the server returns non-ok", async () => {
