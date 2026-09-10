@@ -22,7 +22,7 @@ Open a new terminal window and try again. The service itself is fine; only the c
 
 The exact text is "⚠️ autonomOS installed, but the daemon isn't responding yet." followed by "The daemon's last log lines (…)" and a few lines from the log, then "Check: autonomos status and autonomos logs". The service started and stopped within 12 seconds, and those log lines usually say why. The two usual reasons:
 
-1. **Claude Code is not installed.** The installer checks for it before downloading, so this only happens if that check was skipped or Claude Code was removed afterwards. The log says "Claude Code CLI not found". Install Claude Code, log in to it once, then `autonomos restart`.
+1. **Claude Code is not installed.** The installer checks for it before downloading, so this only happens if that check was skipped or Claude Code was removed afterwards. The log line starts "claude binary not found". Install Claude Code, log in to it once, then `autonomos restart`.
 2. **Something else is using the port.** The log says so. Restart after freeing the port, or see the developer docs for changing it.
 
 If the printed lines do not explain it, the full log does:
