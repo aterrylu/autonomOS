@@ -22,6 +22,8 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const FETCH_TIMEOUT_MS = 200;
 const GIT_TIMEOUT_MS = 100;
@@ -108,6 +110,54 @@ function sanitize(s) {
   // that's confusing but safe. Then strip any remaining C0 control chars.
   // biome-ignore lint/suspicious/noControlCharactersInRegex: deliberately matching ANSI/control chars to strip them
   return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]?/g, "").replace(/[\x00-\x1f\x7f]/g, "");
+}
+
+/**
+ * Per-agent credential, the #297 contract: the server writes
+ * <configDir>/agent-tokens/<sessionId> at spawn (0600) and the PTY env
+ * carries AUTONOMOS_CONFIG_DIR + AUTONOMOS_SESSION_ID (non-secret) to derive
+ * the path; AUTONOMOS_AGENT_TOKEN is the env fallback where a provider
+ * injects it. Session id is validated before use as a path segment.
+ */
+function readAgentToken(sessionId) {
+  const configDir = process.env.AUTONOMOS_CONFIG_DIR;
+  const valid =
+    typeof sessionId === "string" &&
+    /^[A-Za-z0-9._-]+$/.test(sessionId) &&
+    !sessionId.includes("..");
+  if (configDir && valid) {
+    try {
+      return readFileSync(join(configDir, "agent-tokens", sessionId), "utf8").trim();
+    } catch {
+      // fall through to env
+    }
+  }
+  return process.env.AUTONOMOS_AGENT_TOKEN;
+}
+
+/**
+ * Self-metadata via the agent-token-scoped endpoint — the spawned-agent
+ * path (#297: no server token in the PTY env). Returns the same meta shape
+ * as getAutonomosMeta.
+ */
+async function getSelfMeta(sessionId, serverUrl, agentToken) {
+  if (!agentToken) return null;
+  try {
+    const res = await fetch(`${serverUrl}/api/agents/${sessionId}/self`, {
+      headers: { "X-Agent-Token": agentToken },
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return null;
+    const me = await res.json();
+    if (!me || typeof me !== "object") return null;
+    return {
+      name: sanitize(me.name),
+      managerName: me.managerName ? sanitize(me.managerName) : null,
+      directReports: Number(me.directReports) || 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function getAutonomosMeta(sessionId, serverUrl, token) {
@@ -297,7 +347,12 @@ async function main() {
 
   const sessionId = process.env.AUTONOMOS_SESSION_ID;
   const serverUrl = process.env.AUTONOMOS_SERVER;
+  // Legacy/standalone: a server token in the env still works (externally
+  // configured setups). Spawned agents have NONE since #297 — they carry
+  // the PER-AGENT credential instead (token file, env fallback), consumed
+  // by the /api/agents/:id/self endpoint.
   const token = process.env.AUTONOMOS_TOKEN;
+  const agentToken = readAgentToken(sessionId);
 
   // Invoked outside autonomOS (env not injected) → no hierarchy to render
   if (!sessionId || !serverUrl) {
@@ -306,7 +361,9 @@ async function main() {
     return;
   }
 
-  const meta = await getAutonomosMeta(sessionId, serverUrl, token);
+  const meta = token
+    ? await getAutonomosMeta(sessionId, serverUrl, token)
+    : await getSelfMeta(sessionId, serverUrl, agentToken);
 
   if (!meta) {
     // Env vars present but server unreachable / session not yet persisted —

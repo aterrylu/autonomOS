@@ -334,6 +334,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // too. Removing it means there is no unauthenticated POST anywhere on the
     // public surface; the browser already sends the token for /read.
     if (c.req.method === "GET" && c.req.path === "/api/host") return next();
+    // Agent SELF metadata (statusline, #297 follow-up): the PTY env carries
+    // no server token by design, so this one narrow GET is authenticated by
+    // the PER-AGENT token INSIDE the route (verifyAgentToken 401s there —
+    // deny-by-default is preserved, just enforced at the route).
+    if (
+      c.req.method === "GET" &&
+      /^\/api\/agents\/[A-Za-z0-9-]+\/self$/.test(c.req.path)
+    )
+      return next();
     // The login endpoint itself — a browser cannot present the cookie it is
     // asking for. Token verification happens inside the handler.
     if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
