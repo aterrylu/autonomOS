@@ -98,6 +98,7 @@ function useSidebarData() {
       theme: s.theme,
       sessions: s.sessions,
       projects: s.projects,
+      expandedProjects: s.expandedProjects,
       activePane: s.activePane,
       pinnedOrder: s.pinnedOrder,
       unpinnedOrder: s.unpinnedOrder,
@@ -127,6 +128,7 @@ function useSidebarActions() {
       openPresets: s.openPresets,
       openCreateAgent: s.openCreateAgent,
       toggleSidebarViewMode: s.toggleSidebarViewMode,
+      collapseAllProjects: s.collapseAllProjects,
     })),
   );
 }
@@ -223,6 +225,7 @@ export function Sidebar() {
     theme,
     sessions,
     projects,
+    expandedProjects,
     activePane,
     pinnedOrder,
     unpinnedOrder,
@@ -246,6 +249,7 @@ export function Sidebar() {
     reorderFlat,
     pinAgent,
     unpinAgent,
+    collapseAllProjects,
   } = useSidebarActions();
   const page = THEMES[theme].page;
   // Theme accent (gold) + icon style — for the slide-apart ghost preview row,
@@ -994,18 +998,52 @@ export function Sidebar() {
 
         {/* Projects Section */}
         <div
-          className="flex items-center px-3 py-2"
+          className="flex items-center gap-2 px-3 py-2"
           style={{
             borderTop: `1px solid ${page.border}`,
             borderBottom: `1px solid ${page.border}`,
           }}
         >
           <span
-            className="text-xs font-medium uppercase"
+            className="text-xs font-medium uppercase flex-1"
             style={{ color: page.statusFg }}
           >
             Projects
           </span>
+          {projects.length > 0 && (
+            <span
+              className="text-[10px] tabular-nums shrink-0"
+              style={{ color: page.statusFg }}
+              title={`${projects.length} projects · ${projects.reduce((n, p) => n + p.sessions.length, 0)} sessions`}
+            >
+              {projects.length}·
+              {projects.reduce((n, p) => n + p.sessions.length, 0)}
+            </span>
+          )}
+          {projects.some((p) => expandedProjects[p.path]) && (
+            <button
+              type="button"
+              onClick={() => collapseAllProjects()}
+              title="Collapse all projects"
+              className="shrink-0 cursor-pointer leading-none rounded px-1 py-0.5 transition-colors"
+              style={{ color: page.statusFg }}
+              aria-label="Collapse all projects"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 9l4-4 4 4M4 13l4-4 4 4" />
+              </svg>
+            </button>
+          )}
         </div>
 
         <div className="flex-1 py-1">
@@ -2173,7 +2211,12 @@ interface ProjectItemProps {
   onAgentContextMenu: (e: React.MouseEvent, target: AgentMenuTarget) => void;
 }
 
-const ProjectItem = React.memo(function ProjectItem({
+/** One session row's derived state. `live` = ours + running (a subordinate
+ *  jump-to-live chip); `stopped` = ours + exited (adoptable with config);
+ *  `external` = not managed (the adoptable star). */
+type RowState = "live" | "stopped" | "external";
+
+export const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
   liveSessionIds,
@@ -2181,15 +2224,26 @@ const ProjectItem = React.memo(function ProjectItem({
 }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const createSession = useStore((s) => s.createSession);
-  // For the row context menu: a Projects row is a session *summary* keyed by CC
-  // session id, not a SessionInfo — resolve the agent record (for id-based
-  // actions) from the store's live/exited lists by matching either id space.
+  const switchPane = useStore((s) => s.switchPane);
+  // For the row context menu + the live-age fix: a Projects row is a session
+  // *summary* keyed by CC/provider session id, not a SessionInfo — resolve the
+  // agent record from the store's live/exited lists by matching either id space.
   const sessions = useStore((s) => s.sessions);
   const exitedSessions = useStore((s) => s.exitedSessions);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
 
-  const [expanded, setExpanded] = useState(false);
+  // Expand state lives in the store so it survives the Sidebar's unmount-on-
+  // collapse (a per-mount useState reset every open — the old bug #8).
+  const expanded = useStore((s) => s.expandedProjects[project.path] ?? false);
+  const toggleProjectExpanded = useStore((s) => s.toggleProjectExpanded);
+
+  const accent = THEMES[useStore((s) => s.theme)].terminal.yellow;
+
+  // The "+" quick-spawn must spawn in the project's OWN provider (bug #2 — it
+  // used to always create a Claude agent). Newest session's provider wins for a
+  // mixed project; a homogeneous project is unambiguous.
+  const projectProvider = project.sessions[0]?.provider;
 
   return (
     <div>
@@ -2197,19 +2251,20 @@ const ProjectItem = React.memo(function ProjectItem({
         <button
           type="button"
           className="flex flex-1 items-center gap-2 px-3 py-1.5 cursor-pointer text-left min-w-0"
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => toggleProjectExpanded(project.path)}
+          aria-expanded={expanded}
         >
           <span
-            className="text-[10px] shrink-0"
+            className="text-[9px] shrink-0"
             style={{ color: page.statusFg }}
           >
-            {expanded ? "▼" : "▶"}
+            {expanded ? "▾" : "▸"}
           </span>
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}
           </span>
           <span
-            className="shrink-0 text-[10px]"
+            className="shrink-0 text-[10px] tabular-nums"
             style={{ color: page.statusFg }}
           >
             {project.sessions.length}
@@ -2217,16 +2272,17 @@ const ProjectItem = React.memo(function ProjectItem({
         </button>
         <button
           type="button"
-          disabled={isBusy}
-          className="shrink-0 rounded px-1.5 mr-2 text-xs opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer disabled:opacity-50"
-          style={{ color: "#238636" }}
+          disabled={isBusy || !projectProvider}
+          className="shrink-0 rounded px-1.5 mr-2 text-sm leading-none opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer disabled:opacity-50"
+          style={{ color: page.statusFg }}
           title={`New session in ${project.name}`}
-          // Fire-and-forget: spawnSession now throws on failure (so panels with
-          // an error UI can show the reason) and already records it in `status`.
-          // This quick-spawn button has no inline error surface, so swallow the
-          // rejection here only to keep it from becoming unhandled.
+          // Fire-and-forget: spawnSession throws on failure and records it in
+          // `status`; this button has no inline error surface, so swallow the
+          // rejection only to keep it from becoming unhandled.
           onClick={() => {
-            createSession(project.path).catch(() => {});
+            createSession(project.path, {
+              provider: projectProvider,
+            }).catch(() => {});
           }}
         >
           +
@@ -2234,44 +2290,64 @@ const ProjectItem = React.memo(function ProjectItem({
       </div>
 
       {expanded && (
-        <div className="pl-4">
+        <div>
           {project.sessions.map((s) => {
+            const all = [...sessions, ...exitedSessions];
+            const rec =
+              all.find(
+                (x) =>
+                  x.claudeSessionId === s.sessionId ||
+                  x.providerSessionId === s.sessionId,
+              ) ?? all.find((x) => x.id === s.sessionId);
             const isLive = liveSessionIds.has(s.sessionId);
-            const isExited = s.autonomosStatus === "exited" && !isLive;
+            const state: RowState = isLive
+              ? "live"
+              : s.autonomosStatus === "exited"
+                ? "stopped"
+                : "external";
+            // Live/managed rows get their age from the live record's activity
+            // (hook-driven, 3s) rather than the 30s projects poll's file mtime,
+            // which lagged and disagreed with the live dot (bugs #5/#6).
+            const age = formatAge(
+              isLive ? (rec?.lastActivityAt ?? s.lastModified) : s.lastModified,
+            );
+            const iconStatus: AgentStatus = isLive
+              ? ((rec?.status as AgentStatus) ?? "running")
+              : "unknown";
 
-            let dotColor = "transparent";
-            let tooltip = "Resume this session";
-            if (isLive) {
-              dotColor = "#238636";
-              tooltip = "Switch to live session";
-            } else if (isExited) {
-              dotColor = "#848d97";
-              tooltip = "Resume autonomOS agent with full config";
-            }
+            const onOpen = () => {
+              // A live row IS our running agent — jump straight to its pane
+              // (subordinate chip, decision C). Otherwise resume/adopt it.
+              if (isLive && rec) {
+                switchPane({ type: "session", id: rec.id });
+                return;
+              }
+              resumeSession(s.sessionId, project.path, s.summary, {
+                isAutonomosAgent: s.isAutonomosAgent,
+              }).catch(() => {});
+            };
 
             return (
               <button
                 type="button"
                 key={s.sessionId}
                 disabled={isBusy}
-                className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
+                className="group/row flex w-full items-center gap-2.5 py-1.5 pl-5 pr-3 text-left cursor-pointer disabled:opacity-50"
                 style={{
-                  color: page.fg,
-                  opacity: isExited ? 0.6 : 1,
+                  // Distinct "archive" treatment (decision A): the shared row
+                  // vocabulary but quieter than the live fleet above. Live/ours
+                  // rows are the most subordinate — dormant externals read as the
+                  // adoptable stars.
+                  opacity:
+                    state === "live" ? 0.72 : state === "stopped" ? 0.82 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = `${page.fg}0a`;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
                 }}
                 onContextMenu={(e) => {
-                  // A Projects row is keyed by a CC/provider session id, so match
-                  // that id-space FIRST — falling back to the agent-id space only
-                  // if nothing matched. A blind first-match across all three
-                  // spaces could resolve to a different agent whose agent id
-                  // happens to equal this row's CC id, mis-targeting Delete.
-                  const all = [...sessions, ...exitedSessions];
-                  const rec =
-                    all.find(
-                      (x) =>
-                        x.claudeSessionId === s.sessionId ||
-                        x.providerSessionId === s.sessionId,
-                    ) ?? all.find((x) => x.id === s.sessionId);
                   onAgentContextMenu(e, {
                     id: rec?.id,
                     name: rec?.name ?? s.summary,
@@ -2282,51 +2358,76 @@ const ProjectItem = React.memo(function ProjectItem({
                     isAutonomosAgent: s.isAutonomosAgent,
                   });
                 }}
-                onClick={() => {
-                  // Fire-and-forget; spawnSession now throws on failure and
-                  // records it in `status`. Swallow here (no inline error UI on
-                  // this row) only to avoid an unhandled rejection.
-                  resumeSession(s.sessionId, project.path, s.summary, {
-                    isAutonomosAgent: s.isAutonomosAgent,
-                  }).catch(() => {});
-                }}
-                title={tooltip}
+                onClick={onOpen}
+                title={
+                  state === "live"
+                    ? "Jump to the live agent"
+                    : state === "stopped"
+                      ? "Resume this autonomOS agent with its full config"
+                      : "Resume this session as a new managed agent"
+                }
               >
                 <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full mt-1"
-                  style={{ background: dotColor }}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1">
-                    <p className="truncate flex-1">{s.summary}</p>
-                    {isExited && (
-                      <span
-                        className="shrink-0 text-[10px]"
-                        title={`autonomOS agent${s.template ? ` (${s.template})` : ""}`}
-                      >
-                        stopped
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    className="flex items-center gap-2 mt-0.5"
+                  className="shrink-0"
+                  style={{ opacity: state === "external" ? 0.9 : 0.6 }}
+                >
+                  <ProviderAgentIcon
+                    provider={s.provider}
+                    status={iconStatus}
+                    size={15}
+                  />
+                </span>
+                <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                  <span
+                    className="truncate text-xs"
+                    style={{
+                      color: state === "external" ? page.fg : page.statusFg,
+                    }}
+                  >
+                    {s.summary}
+                  </span>
+                  <span
+                    className="flex items-center gap-1.5 text-[10px] tabular-nums"
                     style={{ color: page.statusFg }}
                   >
-                    {s.isAutonomosAgent && (
-                      <span className="text-[10px]">
-                        {s.template ?? "agent"}
-                      </span>
-                    )}
                     {s.gitBranch && (
-                      <span className="text-[10px] truncate max-w-[120px]">
-                        {s.gitBranch}
-                      </span>
+                      <>
+                        <span className="truncate max-w-[120px]">
+                          {s.gitBranch}
+                        </span>
+                        <span style={{ opacity: 0.5 }}>·</span>
+                      </>
                     )}
-                    <span className="text-[10px]">
-                      {formatAge(s.lastModified)}
-                    </span>
-                  </div>
+                    <span>{age}</span>
+                  </span>
                 </div>
+                {state === "live" ? (
+                  // Ours + running: a subordinate jump-to-live chip (decision C).
+                  <span
+                    className="shrink-0 flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold"
+                    style={{ color: page.statusFg, background: `${page.fg}0f` }}
+                  >
+                    Live
+                    <span aria-hidden="true">↗</span>
+                  </span>
+                ) : state === "stopped" ? (
+                  // Ours + exited: a persistent state indicator; click resumes.
+                  <span
+                    className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold"
+                    style={{ color: page.statusFg, background: `${page.fg}0d` }}
+                  >
+                    Stopped
+                  </span>
+                ) : (
+                  // External + dormant: the adoptable star — a hover-revealed
+                  // Resume affordance in the theme accent.
+                  <span
+                    className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold opacity-0 transition-opacity group-hover/row:opacity-100"
+                    style={{ color: accent, background: `${accent}1f` }}
+                  >
+                    Resume
+                  </span>
+                )}
               </button>
             );
           })}

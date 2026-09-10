@@ -55,9 +55,10 @@ interface ProjectJson {
   lastActive: number;
   sessions: {
     sessionId: string;
+    provider: string;
     summary: string;
-    customTitle?: string;
     isAutonomosAgent?: boolean;
+    originator?: string;
   }[];
 }
 
@@ -86,15 +87,16 @@ describe("GET /api/projects — grouping & shaping", () => {
     assert.equal(autonomos.sessions.length, 2, "both sessions grouped");
   });
 
-  it("groups sessions with no cwd under an 'Unknown' project", async () => {
+  it("names a cwd-less session's project 'Unknown' (keyed per session, bug #7)", async () => {
     const app = setup([{ sessionId: "a", customTitle: "A" }]);
 
     const res = await app.request("/api/projects");
     const projects = (await res.json()) as ProjectJson[];
 
     assert.equal(projects.length, 1);
-    assert.equal(projects[0].path, "unknown");
     assert.equal(projects[0].name, "Unknown");
+    // Keyed per-session (unknown:<id>) so unrelated cwd-less sessions don't merge.
+    assert.ok(projects[0].path.startsWith("unknown:"));
   });
 
   it("sorts sessions newest-first within a project", async () => {
@@ -169,8 +171,10 @@ describe("GET /api/projects — title resolution", () => {
     const res = await app.request("/api/projects");
     const projects = (await res.json()) as ProjectJson[];
 
+    // The resolved title lives in `summary` (the redundant, misnamed
+    // `customTitle` wire field is gone). Every CC row carries provider.
     assert.equal(projects[0].sessions[0].summary, "My Custom Title");
-    assert.equal(projects[0].sessions[0].customTitle, "My Custom Title");
+    assert.equal(projects[0].sessions[0].provider, "claude-code");
   });
 
   it("falls back to the SDK summary when no custom title exists", async () => {
@@ -189,7 +193,6 @@ describe("GET /api/projects — title resolution", () => {
     const projects = (await res.json()) as ProjectJson[];
 
     assert.equal(projects[0].sessions[0].summary, "fallback summary");
-    assert.equal(projects[0].sessions[0].customTitle, undefined);
   });
 });
 
@@ -243,5 +246,64 @@ describe("GET /api/projects — agent enrichment & errors", () => {
     const body = (await res.json()) as { error: string; detail: string };
     assert.match(body.error, /Failed to list Claude Code sessions/);
     assert.equal(body.detail, "SDK exploded");
+  });
+});
+
+describe("GET /api/projects — provider + Codex seam + cwd-less", () => {
+  it("tags every Claude Code row with provider:claude-code", async () => {
+    const app = setup([
+      { sessionId: "a", cwd: `${HOME}/workspace/p`, summary: "s" },
+    ]);
+    const projects = (await (
+      await app.request("/api/projects")
+    ).json()) as ProjectJson[];
+    assert.equal(projects[0].sessions[0].provider, "claude-code");
+  });
+
+  it("merges Codex rows from the discovery seam into their cwd group", async () => {
+    _setDepsForTesting({
+      listSessions: async () =>
+        fakeSessions([
+          { sessionId: "cc1", cwd: `${HOME}/workspace/p`, summary: "cc" },
+        ]),
+      listCodexSessions: async () => [
+        {
+          cwd: `${HOME}/workspace/p`,
+          session: {
+            sessionId: "cx1",
+            provider: "codex",
+            summary: "Codex session · derived",
+            lastModified: 1_700_000_005_000,
+            originator: "external",
+          },
+        },
+      ],
+    });
+    const app = createApp();
+    const projects = (await (
+      await app.request("/api/projects")
+    ).json()) as ProjectJson[];
+    // Same cwd → one project, both providers present.
+    const p = projects.find((x) => x.name === "p");
+    assert.ok(p, "expected a project named 'p'");
+    assert.equal(p.sessions.length, 2);
+    assert.deepEqual(p.sessions.map((s) => s.provider).sort(), [
+      "claude-code",
+      "codex",
+    ]);
+    const codex = p.sessions.find((s) => s.provider === "codex");
+    assert.equal(codex?.originator, "external");
+  });
+
+  it("does NOT merge cwd-less sessions into one Unknown project (bug #7)", async () => {
+    const app = setup([
+      { sessionId: "a", summary: "a" }, // no cwd
+      { sessionId: "b", summary: "b" }, // no cwd
+    ]);
+    const projects = (await (
+      await app.request("/api/projects")
+    ).json()) as ProjectJson[];
+    const unknowns = projects.filter((x) => x.name === "Unknown");
+    assert.equal(unknowns.length, 2); // separate groups, not merged into one
   });
 });
