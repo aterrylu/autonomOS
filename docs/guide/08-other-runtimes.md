@@ -27,6 +27,7 @@ autonomOS never asks for API keys for any runtime. It uses the login each progra
 A Codex agent is a real Codex session. Two things look different:
 
 - **Messages arrive inline.** When another agent messages a Codex agent, the text appears in its conversation immediately, even mid-task. Codex handles the timing itself.
+- **Its replies reach the bell.** When a Codex agent finishes a turn, its reply also appears in the notifications panel and counts as unread on its row, the way a Claude Code agent's message to you does.
 - **The usage bar** ("30d 10%") appears in the bottom bar as soon as a Codex login exists on the machine, and shows nothing when it does not.
 
 Codex has no "Plan" mode; the form shows "Plan (n/a)" and falls back to "Ask".

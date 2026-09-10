@@ -47,7 +47,7 @@ Each row has two lines:
 
 - **Icon.** The runtime's logo (Claude, Codex, Gemini) with a small status ring, or a plain status icon if you chose "Status only" in Settings. A spinner means it is busy.
 - **Name.** What you named it.
-- **Unread.** "1 unread" in red: it finished a turn or received a message while you were looking at something else. Open the agent to clear it.
+- **Unread.** "1 unread" in red: while you were looking at something else, it sent you a message, asked for permission, or autonomOS flagged something about it. A finished turn on its own does not count. Open the agent to clear it.
 - **Age.** "now", "3m", "2h": how long since it last did anything. Fades as it gets older.
 - **Folder · branch.** Second line, left: the folder it works in and, if that folder is a git repository, the branch.
 - **Preset.** A gold pill with a preset name appears here if the agent runs on a model override.
@@ -95,7 +95,7 @@ Left to right:
 - **"New release available (v0.6.1 → v0.7.0)".** Appears only when a newer version exists. Hover for the command; see [Updating](02-install.md#updating).
 - **"5h 26%" and "7d 5%".** How much of your Claude subscription's five-hour and seven-day limits you have used, which autonomOS reads from your Claude Code login. Click for details and reset times. Amber "setup needed" means it could not find the login; see [Troubleshooting](07-troubleshooting.md#the-status-bar-says-setup-needed).
 - **"30d 10%" with the Codex logo.** The same for Codex, shown only if Codex is logged in.
-- **🔔.** Notifications: messages agents sent to you (not to each other), plus anything autonomOS itself needs to flag about a run. "Mark all read" clears them; "Load more" pages back. The counts on agent rows are separate and clear when you open the agent.
+- **🔔.** Notifications: messages agents sent to you (not to each other), permission requests, and anything autonomOS itself needs to flag about a run, for every agent. An agent row's unread count is the same list narrowed to that agent. "Mark all read" clears the panel; opening an agent clears its row.
 
 ## Keyboard shortcuts
 

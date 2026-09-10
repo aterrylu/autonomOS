@@ -52,6 +52,6 @@ Words as the app uses them, plus a few that only appear in the code or the devel
 
 **Token.** The password for the dashboard, generated at install, stored in `~/.autonomos/token`. Every browser that opens the dashboard needs it once.
 
-**Unread.** The count on an agent's row of things that happened while you were looking elsewhere: it finished a turn, or it sent you a message. Clears when you open the agent.
+**Unread.** The count on an agent's row of things addressed to you while you were looking elsewhere: a message, a permission request, or something autonomOS flagged. A finished turn on its own does not count. The bell shows the same items for every agent. Clears when you open the agent.
 
 **Worktree.** A git term you may see in agent messages: a second copy of a repository checked out to a different branch, so two agents can work on the same project without colliding. autonomOS does not create these; agents sometimes do.

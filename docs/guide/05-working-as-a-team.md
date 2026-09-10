@@ -41,7 +41,7 @@ Agents address each other by name. When one sends, autonomOS delivers straight i
 Seen from your side:
 
 - In the recipient's terminal, an incoming message looks like "← autonomos: [Sender → you via agent://Sender] …". The agent reads it as part of its conversation and usually acts on it.
-- The recipient's row gets an unread count if you were looking elsewhere.
+- The recipient's row shows "Working" while it handles the message. Agent-to-agent messages do not add to your unread counts; only messages to you do.
 - You can ask any agent to message any other: "Tell Reviewer the branch is ready." You do not type addresses yourself.
 
 Gemini agents cannot receive messages directly. For them, messages wait in an "Incoming messages" panel on the agent's terminal until you click "Deliver". See [Other runtimes](08-other-runtimes.md#gemini).

@@ -79,7 +79,7 @@ If Claude Code asks whether you trust the folder, or warns about loading "develo
 
 Click in the terminal and type. This is a real Claude Code session, so everything you know from Claude Code applies: slash commands, `/model`, pasting, Shift+Tab to cycle permission modes, Ctrl+C to interrupt.
 
-While it works, the row on the left shows "Working" with a spinner, or "Running <tool name>" when it is using a tool. When it finishes, the row shows "Idle" and, if you are looking at a different agent at the time, "1 unread".
+While it works, the row on the left shows "Working" with a spinner, or "Running <tool name>" when it is using a tool. When it finishes, the row shows "Idle". If it sends you a message or asks for permission while you are looking at a different agent, the row also shows "1 unread".
 
 When the agent needs you, the row turns amber and reads "Needs input". Click the row and answer in the terminal. That is the single most useful habit in autonomOS; [Working as a team](05-working-as-a-team.md#needs-input) explains it.
 
