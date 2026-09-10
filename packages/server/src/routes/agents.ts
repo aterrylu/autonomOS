@@ -14,7 +14,7 @@ import {
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
-import { revokeAgentToken } from "../agentCredentials.js";
+import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
 import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
   killAttachment,
@@ -66,6 +66,36 @@ export const agentsRouter = new Hono();
 // Delivery is a PTY injection whose item leaves the queue only on a confirming
 // UserPromptSubmit hook (see handoffDelivery.ts) — so "send" returning ok means
 // the injection STARTED, not that it's been confirmed yet.
+
+/** Per-agent SELF metadata for the statusline (#297 follow-up). The PTY env
+ *  deliberately carries NO server token, so this route authenticates with
+ *  the PER-AGENT token (file-delivered at spawn) — and grants exactly one
+ *  thing: the agent's own hierarchy view. requireAuth exempts this path
+ *  shape; the deny-by-default lives HERE via verifyAgentToken. */
+agentsRouter.get("/:id/self", (c) => {
+  const id = c.req.param("id");
+  if (!verifyAgentToken(id, c.req.header("X-Agent-Token")))
+    return c.json({ error: "unauthorized" }, 401);
+  const agents = listAgents();
+  const me = agents.find((a) => a.id === id);
+  if (!me) return c.json({ error: "not found" }, 404);
+  // Field names + semantics mirror the statusline's legacy /api/agents
+  // derivation (getAutonomosMeta): `manager` is a display NAME, and
+  // exited reports don't count — records persist until deleted, so a
+  // manager that reaped short-lived workers must not read ↓N forever.
+  return c.json({
+    name: me.name,
+    manager: me.managerId
+      ? (agents.find((a) => a.id === me.managerId)?.name ?? null)
+      : null,
+    project: me.project ?? null,
+    directReports: agents.filter(
+      (a) => a.managerId === me.id && a.status !== "exited",
+    ).length,
+    permissionMode: me.permissionMode,
+    status: me.status,
+  });
+});
 
 /** List an agent's queued hand-off messages (oldest first). */
 agentsRouter.get("/:id/queue", (c) => {
