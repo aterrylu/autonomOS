@@ -82,8 +82,8 @@ function LoginPage() {
         >
           Find your token in the install output, or run
           <br />
-          <code className="font-mono">cat ~/.autonomos/token</code> in a
-          terminal
+          <code className="font-mono">cat ~/.autonomos/token</code> on the
+          machine running autonomOS
         </p>
         <input
           type="password"

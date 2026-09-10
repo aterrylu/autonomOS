@@ -69,7 +69,7 @@ Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
 - **HTTP MCP server** (`mcp.ts`) — served on the internal Unix control socket (`$configDir/control.sock`), NOT the public port (ADR-055); reachable only by same-user processes on the box, and still token-gated
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
-Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`. The channel server also has `send` (requires gateway WebSocket).
+Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`, `list_env_presets`, `create_env_preset`, `update_env_preset`, `delete_env_preset`. The channel server also has `send` (requires gateway WebSocket).
 
 ### Base Context Injection
 Every autonomOS-spawned session gets `--append-system-prompt` with:

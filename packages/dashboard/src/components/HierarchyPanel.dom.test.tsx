@@ -47,7 +47,9 @@ describe("HierarchyPanel", () => {
     expect(await screen.findByText(/no agents running/i)).toBeInTheDocument();
     expect(
       screen.getByText(/managers and their reports appear here/i),
-    ).toBeInTheDocument();
+    ).toHaveTextContent(
+      "Create an agent, then ask it to spawn helpers — managers and their reports appear here",
+    );
   });
 
   it("shows an error state with retry copy when the server returns non-ok", async () => {

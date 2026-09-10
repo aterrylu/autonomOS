@@ -551,7 +551,7 @@ function RuntimeCard({
             </a>
           </div>
           <div className="text-[10px]" style={{ color: page.statusFg }}>
-            After installing, restart autonomOS (autonomos restart)
+            After installing, reopen this panel (or reload the page)
           </div>
         </div>
       )}
