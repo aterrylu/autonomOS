@@ -229,8 +229,8 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
             className="px-3 py-8 text-center text-xs"
             style={{ color: page.statusFg }}
           >
-            No notifications yet. Agent messages, permission requests, and
-            alerts will appear here.
+            No notifications yet. Messages agents send you, and anything
+            autonomOS needs to flag about a run, appear here.
           </div>
         )}
 

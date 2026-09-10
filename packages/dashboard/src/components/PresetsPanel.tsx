@@ -877,15 +877,10 @@ function EmptyState({ page }: { page: PageTheme }) {
         No presets yet
       </span>
       <div className="text-[11px] leading-relaxed max-w-sm opacity-80">
-        Presets override an agent's model backend via environment variables. Add
-        one with New preset, or ask an agent to create one via the{" "}
-        <code
-          className="text-[10px] px-1 py-0.5 rounded"
-          style={{ background: "rgba(255,255,255,0.06)" }}
-        >
-          create_env_preset
-        </code>{" "}
-        tool — then paste the API key here.
+        A preset runs an agent on a different model backend (for example Kimi)
+        by setting environment variables at spawn. Click{" "}
+        <span className="font-medium">+ New</span> to add one, or ask any
+        running agent to create one — then paste the API key here.
       </div>
     </div>
   );
@@ -923,7 +918,7 @@ export function PresetsPanel() {
             Presets
           </h2>
           <p className="text-[11px] mt-0.5" style={{ color: page.statusFg }}>
-            Model-override env presets &middot; paste API keys here
+            Run agents on another model backend &middot; paste API keys here
           </p>
         </div>
         <button
