@@ -3,6 +3,7 @@ import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
 import {
   acquireTerminal,
+  disposeTerminal,
   getLiveTerminal,
   type LiveTerminal,
 } from "../terminal/liveTerminals";
@@ -91,6 +92,17 @@ export function useTerminal(
   const isActive =
     activePane?.type === "session" && activePane.id === sessionId;
 
+  // Bumped when this session's PTY is replaced under a stable id (restart /
+  // rename-restart). It's in the attach effect's deps so the pane re-acquires a
+  // fresh terminal even when the pane was already focused (switchPane(sameId) is
+  // a no-op, so nothing else would remount it). See store.reloadTerminal.
+  const reloadNonce = useStore((s) => s.terminalReloadNonce[sessionId] ?? 0);
+  // Tracks the nonce this mount last acted on. Initialized to the current value,
+  // so it differs ONLY when the nonce is bumped WHILE mounted (restart-while-
+  // focused) — never on a fresh mount / switch-back, which must reuse the cached
+  // terminal (ADR-072 keep-alive), not dispose it.
+  const prevNonceRef = useRef(reloadNonce);
+
   // Auto-clear unread notifications whenever this session is active and has unreads
   const markRead = useStore((s) => s.markNotificationsRead);
   const unreadCount = useStore((s) => s.notificationCounts[sessionId] ?? 0);
@@ -104,6 +116,17 @@ export function useTerminal(
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    // Race-proof reload: on a nonce bump the PTY under this id was replaced, so
+    // force-drop any lingering cached terminal before acquiring — closing the
+    // window where the kill's 4010 hasn't uncached the old one yet (it would
+    // otherwise be a cache HIT and re-attach the dead terminal). Guarded to fire
+    // ONLY on a bump-while-mounted; a fresh mount / switch-back keeps the cache
+    // hit so keep-alive still re-streams nothing (ADR-072).
+    if (prevNonceRef.current !== reloadNonce) {
+      prevNonceRef.current = reloadNonce;
+      disposeTerminal(sessionId);
+    }
 
     const entry = acquireTerminal(sessionId);
     if (!entry) {
@@ -133,7 +156,7 @@ export function useTerminal(
       // mount's pill.
       entry.detach(container);
     };
-  }, [sessionId, setStatus, containerRef, handleClipboardCopy]);
+  }, [sessionId, setStatus, containerRef, handleClipboardCopy, reloadNonce]);
 
   // Focus terminal when it becomes the active session
   useEffect(() => {
