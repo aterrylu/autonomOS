@@ -52,7 +52,7 @@ autonomos status        # is the service running, and on which port?
 autonomos logs          # last 50 lines of the server log
 autonomos logs -f       # follow the log live (Ctrl-C to stop)
 autonomos restart       # stop and start the service
-autonomos stop          # stop it; it stays stopped until you start it again
+autonomos stop          # stop the background service (autonomos restart brings it back)
 autonomos start         # run the server in the foreground (for a quick test; the service is the normal way)
 autonomos upgrade       # update to the latest release
 autonomos rollback      # go back to the version you had before the last upgrade
@@ -100,7 +100,7 @@ Removing `~/.autonomos` is what makes the next install fresh. It does not touch 
 
 ## Running it on another machine
 
-autonomOS is a server, so it can live on an always-on box you own, such as a home server or a small VPS, and you use it from any browser. That setup is a git checkout managed by the same `upgrade` and `rollback` commands:
+autonomOS is a server, so it can live on an always-on box you own, such as a home server or a small VPS, and you use it from any browser. That setup is a git checkout managed by the same `upgrade` and `rollback` commands. The machine needs `git` and [bun](https://bun.sh) as well as Node 20+ and Claude Code:
 
 ```bash
 git clone https://github.com/aterrylu/autonomOS && cd autonomOS
