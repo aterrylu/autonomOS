@@ -647,6 +647,12 @@ interface AppState {
   projects: ProjectInfo[];
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
+  /** Bumped per session id when its PTY is replaced under a STABLE id (restart /
+   *  rename-restart). `useTerminal`'s attach effect depends on it, so the pane
+   *  deterministically re-acquires a fresh terminal — a restart while the pane is
+   *  already focused otherwise keeps the killed session's dead terminal, because
+   *  `switchPane(sameId)` is a no-op and the ended terminal never reconnects. */
+  terminalReloadNonce: Record<string, number>;
   /** Agent status per session ID (from hook events) */
   agentStatuses: Record<
     string,
@@ -717,6 +723,10 @@ interface AppState {
    *  Composed from the two existing endpoints (there is no per-agent restart
    *  route — only fleet-wide restart-all). */
   restartSession: (id: string) => Promise<void>;
+  /** Force the pane for `id` to drop its current terminal and re-acquire a fresh
+   *  one (reconnecting to a newly-attached PTY under the same id). Deterministic —
+   *  does not depend on `activePane` changing. */
+  reloadTerminal: (sessionId: string) => void;
   /** Reparent an agent in the org chart by manager id. `null` clears. Rethrows
    *  the typed error on failure so the caller can surface the reason. */
   setManager: (id: string, managerId: string | null) => Promise<void>;
@@ -833,6 +843,7 @@ export const useStore = create<AppState>()(
         sessionsInitialFetchDone: false,
         projects: [],
         notificationCounts: {},
+        terminalReloadNonce: {},
         agentStatuses: {},
         sidebarOpen: true,
         shortcutHelpOpen: false,
@@ -1146,8 +1157,27 @@ export const useStore = create<AppState>()(
           // so without this, Restart closes the terminal you were watching and
           // jumps you to another agent while the restarted one runs with no pane.
           // Only when the attach actually landed (else there is nothing to show).
-          if (attached) get().switchPane({ type: "session", id });
+          if (attached) {
+            get().switchPane({ type: "session", id });
+            // Deterministically reconnect the pane's terminal to the NEW PTY. The
+            // kill closed the old socket (4010) → the live terminal is marked
+            // `ended` + uncached but stays glued to the pane showing final output;
+            // switchPane above is a NO-OP when the pane was already focused (the
+            // restart-while-focused case Terry hit), so nothing would remount and
+            // the dead terminal would linger. Bumping the reload nonce re-runs
+            // useTerminal's attach effect, which disposes the ended terminal and
+            // acquires a fresh one bound to the restarted PTY — regardless of
+            // whether activePane changed (the retarget-away is a race).
+            get().reloadTerminal(id);
+          }
         },
+        reloadTerminal: (sessionId) =>
+          set((s) => ({
+            terminalReloadNonce: {
+              ...s.terminalReloadNonce,
+              [sessionId]: (s.terminalReloadNonce[sessionId] ?? 0) + 1,
+            },
+          })),
         setManager: async (id, managerId) => {
           // Set by exact id (skips the server's name resolution + running/recent
           // tie-break); `null` clears. Rethrow like removeSession so the caller
