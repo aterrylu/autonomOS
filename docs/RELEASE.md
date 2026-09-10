@@ -42,7 +42,19 @@ completeness; the **release engineer** does everything else.
   through the documented deploy/install paths are fine — that is what they do.
 - Squash-merge only; never `--admin`; resolve all review threads before merge.
 
-## Phase 0 — pre-cut validation on forge
+## Phase 0 — pre-cut validation on forge (MANDATORY for every cut)
+
+**Every cut — patch releases included — deploys and tests the actual
+CANDIDATE as a running instance before Terry's go. No shape-aware skipping,
+no "the delta is small" exemptions** (Terry's standing rule, 2026-08-26:
+"every time before we cut a release we need to actually deploy and test
+it"). Green CI is necessary, never sufficient — the candidate must RUN.
+When forge's live install must not be disturbed (it usually must not), use
+an **isolated candidate instance**: fresh clone at the candidate SHA, own
+config dir, own port, boot clean via its rotating log, exercise the
+release's changed surface, tear it down, and prove the live install
+untouched. The report to Terry states what ran and why that coverage is
+sufficient for the delta — he judges coverage, not just "green".
 
 Validate **current main** on forge BEFORE cutting. Do not migrate or adopt
 anything pre-cut — validation uses whatever install shape forge already has.
