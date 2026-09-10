@@ -119,6 +119,25 @@ describe("core permission helpers", () => {
     // Codex is the only provider that can't represent plan.
     assert.deepEqual(PERMISSION_MODE_INFO.plan.unsupportedBy, ["codex"]);
   });
+
+  it("the ask/Claude explainer is HONEST about the no-flag → CC-default behavior (F4)", () => {
+    // ADR-061: "ask" passes NO flag to Claude Code, so CC's own
+    // ~/.claude/settings.json defaultMode governs — the explainer must not
+    // promise prompting it can't guarantee. Pin the honesty so it can't silently
+    // regress to "Prompts on each tool use".
+    const claudeAsk = PERMISSION_MODE_INFO.ask.perProvider["claude-code"];
+    assert.match(claudeAsk, /default/i, "must name CC's own default");
+    assert.match(
+      claudeAsk,
+      /settings\.json|~\/\.claude/,
+      "must point at the user's Claude Code settings as the override source",
+    );
+    // Gemini/Codex DO get an explicit flag, so their ask copy stays enforcing.
+    assert.doesNotMatch(
+      PERMISSION_MODE_INFO.ask.perProvider["gemini-cli"],
+      /default/i,
+    );
+  });
 });
 
 describe("claude-code permission mapping", () => {

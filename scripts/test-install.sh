@@ -225,6 +225,55 @@ assert_real_daemon_untouched() {
   esac
 }
 
+# ── claude pre-flight (F2): installer must FAIL, naming the prerequisite ─
+# A minimal PATH carrying node + core tools but NO claude. The pre-flight
+# must exit non-zero BEFORE downloading anything, and its message must name
+# Claude Code — the newcomer's actual missing prerequisite — not a generic
+# "daemon didn't become responsive". Also assert SKIP_CLAUDE_CHECK=1 gets
+# past the check (it should then fail later on the missing BUNDLE_URL fetch
+# or proceed — we only assert the check itself is skippable, so we stop it
+# early with an invalid BUNDLE_URL and just require the claude error GONE).
+echo "==> claude pre-flight: install.sh refuses without claude"
+NODE_DIR="$(dirname "$(command -v node)")"
+# Belt-and-braces: SKIP_INSTALL_SERVICE + an unresolvable BUNDLE_URL make
+# this invocation harmless even if the pre-flight unexpectedly PASSES (it
+# then dies at download, touching no supervisor). The pre-flight passing on
+# a dev box is not hypothetical: claude commonly lives in the node bin dir
+# or ~/.local/bin, both probed by claude_available() — never let this step's
+# safety rest on the guard it exists to test.
+set +e
+PREFLIGHT_OUT=$(env PATH="$NODE_DIR:/usr/bin:/bin" INSTALL_PREFIX="$TEST_PREFIX-preflight" \
+  SKIP_INSTALL_SERVICE=1 BUNDLE_URL="file:///nonexistent-preflight-test" \
+  bash "$ROOT/scripts/install.sh" 2>&1)
+PREFLIGHT_RC=$?
+set -e
+[[ "$PREFLIGHT_RC" -ne 0 ]] || { echo "✗ install.sh succeeded without claude"; exit 1; }
+if command -v claude >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/claude" ]]; then
+  # Dev box where claude is genuinely resolvable via claude_available()'s
+  # dir probes even off this minimal PATH: the refusal legitimately does
+  # not fire; the run died at the unresolvable BUNDLE_URL (asserted above
+  # via rc!=0). CI runners have no claude outside the mktemp stub, so the
+  # refusal-text assertions still run there — where they are meaningful.
+  echo "==> (claude resolvable on this box — refusal-text assertions skipped, rc!=0 asserted)"
+else
+  echo "$PREFLIGHT_OUT" | grep -q "Claude Code is required" || {
+    echo "✗ Pre-flight failure does not name Claude Code:"; echo "$PREFLIGHT_OUT" | tail -5; exit 1;
+  }
+  echo "$PREFLIGHT_OUT" | grep -q "SKIP_CLAUDE_CHECK" || {
+    echo "✗ Pre-flight failure does not mention the skip hatch"; exit 1;
+  }
+fi
+set +e
+SKIP_OUT=$(env PATH="$NODE_DIR:/usr/bin:/bin" INSTALL_PREFIX="$TEST_PREFIX-preflight" \
+  SKIP_CLAUDE_CHECK=1 BUNDLE_URL="file:///nonexistent-preflight-test" \
+  bash "$ROOT/scripts/install.sh" 2>&1)
+set -e
+echo "$SKIP_OUT" | grep -q "Claude Code is required" && {
+  echo "✗ SKIP_CLAUDE_CHECK=1 did not skip the check"; exit 1;
+}
+rm -rf "$TEST_PREFIX-preflight"
+echo "==> ✓ claude pre-flight refuses clearly; skip hatch works"
+
 # ── install ──────────────────────────────────────────────────────────────
 
 echo "==> Running install.sh hermetically"

@@ -35,3 +35,8 @@ export function getAutonomosMeta(
   serverUrl: string,
   token?: string,
 ): Promise<AutonomosMeta | null>;
+export function getSelfMeta(
+  sessionId: string,
+  serverUrl: string,
+  agentToken?: string,
+): Promise<AutonomosMeta | null>;
