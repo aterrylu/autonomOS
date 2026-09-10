@@ -1,0 +1,30 @@
+# autonomOS
+
+> A self-hosted control room for a team of AI coding agents (Claude Code, Codex, Gemini). One browser window shows every agent's terminal and status; agents message each other by name and report to managers on an org chart. One command installs it; it runs as a background service on the user's own Mac or Linux machine.
+
+If you are an AI assistant helping someone USE autonomOS, read the user guide below first. The rest of the repository documents how to develop it and uses internal names (session, PTY, hook, MCP) that do not appear in the app.
+
+## User guide (start here)
+
+- [Index and notes for AI assistants](docs/guide/README.md): what the app is, page list, what never to run on the user's behalf
+- [Start here](docs/guide/01-start-here.md): prerequisites, the one-line install, login, first agent, first message
+- [Installing](docs/guide/02-install.md): what the installer does, the `autonomos` command, updating, uninstalling
+- [Your first agent](docs/guide/03-your-first-agent.md): the "Create New Agent" form field by field
+- [Reading the dashboard](docs/guide/04-reading-the-dashboard.md): every part of the window, the status vocabulary, shortcuts
+- [Working as a team](docs/guide/05-working-as-a-team.md): agents creating agents, messages, "Needs input", org chart, templates, schedules, presets
+- [Permissions and settings](docs/guide/06-permissions-and-settings.md): the four permission modes per runtime, every Settings control
+- [Troubleshooting](docs/guide/07-troubleshooting.md): install failures, lost token, "Needs input", known display issues
+- [Other runtimes](docs/guide/08-other-runtimes.md): Codex and Gemini differences, hand-delivering messages to Gemini
+- [Glossary](docs/guide/09-glossary.md): app terms, and the developer terms an assistant may encounter
+
+## Developer documentation
+
+- [README](README.md): overview, capability matrix, architecture
+- [CONTRIBUTING](CONTRIBUTING.md): building from source, the development loop
+- [CLAUDE.md](CLAUDE.md): the agent/developer guide to the codebase and its key systems
+- [Features](docs/FEATURES.md), [Decisions](docs/DECISIONS.md), [Roadmap](docs/ROADMAP.md), [Research](docs/RESEARCH.md)
+
+## Optional
+
+- [Release process](docs/RELEASE.md)
+- [Testing](docs/TESTING.md)
