@@ -225,6 +225,39 @@ assert_real_daemon_untouched() {
   esac
 }
 
+# ── claude pre-flight (F2): installer must FAIL, naming the prerequisite ─
+# A minimal PATH carrying node + core tools but NO claude. The pre-flight
+# must exit non-zero BEFORE downloading anything, and its message must name
+# Claude Code — the newcomer's actual missing prerequisite — not a generic
+# "daemon didn't become responsive". Also assert SKIP_CLAUDE_CHECK=1 gets
+# past the check (it should then fail later on the missing BUNDLE_URL fetch
+# or proceed — we only assert the check itself is skippable, so we stop it
+# early with an invalid BUNDLE_URL and just require the claude error GONE).
+echo "==> claude pre-flight: install.sh refuses without claude"
+NODE_DIR="$(dirname "$(command -v node)")"
+set +e
+PREFLIGHT_OUT=$(env PATH="$NODE_DIR:/usr/bin:/bin" INSTALL_PREFIX="$TEST_PREFIX-preflight" \
+  bash "$ROOT/scripts/install.sh" 2>&1)
+PREFLIGHT_RC=$?
+set -e
+[[ "$PREFLIGHT_RC" -ne 0 ]] || { echo "✗ install.sh succeeded without claude"; exit 1; }
+echo "$PREFLIGHT_OUT" | grep -q "Claude Code is required" || {
+  echo "✗ Pre-flight failure does not name Claude Code:"; echo "$PREFLIGHT_OUT" | tail -5; exit 1;
+}
+echo "$PREFLIGHT_OUT" | grep -q "SKIP_CLAUDE_CHECK" || {
+  echo "✗ Pre-flight failure does not mention the skip hatch"; exit 1;
+}
+set +e
+SKIP_OUT=$(env PATH="$NODE_DIR:/usr/bin:/bin" INSTALL_PREFIX="$TEST_PREFIX-preflight" \
+  SKIP_CLAUDE_CHECK=1 BUNDLE_URL="file:///nonexistent-preflight-test" \
+  bash "$ROOT/scripts/install.sh" 2>&1)
+set -e
+echo "$SKIP_OUT" | grep -q "Claude Code is required" && {
+  echo "✗ SKIP_CLAUDE_CHECK=1 did not skip the check"; exit 1;
+}
+rm -rf "$TEST_PREFIX-preflight"
+echo "==> ✓ claude pre-flight refuses clearly; skip hatch works"
+
 # ── install ──────────────────────────────────────────────────────────────
 
 echo "==> Running install.sh hermetically"

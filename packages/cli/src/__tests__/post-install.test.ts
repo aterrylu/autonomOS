@@ -136,4 +136,31 @@ describe("verifyAndReportInstall", () => {
     assert.match(out, /didn't become responsive/);
     assert.match(out, /autonomos logs/);
   });
+
+  it("timeout report NAMES the boot failure from the backstop log (F2)", async () => {
+    // The crash-loop case the claude pre-flight exists for: the server's
+    // provider validation exit(1) lands in the supervisor's backstop log
+    // before the rotating logger attaches. The timeout report must surface
+    // it — a newcomer should read WHY, not "check the logs".
+    mkdirSync(join(TEST_DIR, "logs"), { recursive: true });
+    writeFileSync(
+      join(TEST_DIR, "logs", "autonomos.boot.error.log"),
+      "Claude Code CLI not found on PATH (checked: claude)\n",
+    );
+    const ok = await verifyAndReportInstall(
+      { open: false },
+      { timeoutMs: 300, pollMs: 50 },
+    );
+    assert.equal(ok, false);
+    const out = logs.join("\n");
+    assert.match(out, /Likely cause/);
+    assert.match(out, /Claude Code CLI not found/);
+  });
+
+  it("bootFailureHint is empty (not a crash) when no logs exist", async () => {
+    const { bootFailureHint } = await import("../lib/post-install.js");
+    const empty = join(TEST_DIR, `no-logs-${Date.now()}`);
+    mkdirSync(empty, { recursive: true });
+    assert.deepEqual(bootFailureHint(empty), []);
+  });
 });

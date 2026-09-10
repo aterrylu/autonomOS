@@ -32,6 +32,42 @@ import {
 const POLL_INTERVAL_MS = 500;
 const TIMEOUT_MS = 12_000;
 
+/**
+ * Best-effort "likely cause" for a daemon that never became responsive —
+ * the newcomer-facing half of the F2 fix (the installer's claude pre-flight
+ * is the other). A boot-time crash (e.g. Claude Code missing → provider
+ * validation process.exit(1)) lands its stderr in the supervisor's backstop
+ * log BEFORE the rotating logger attaches, and under Restart=always the
+ * daemon crash-loops silently. Surface the tail of whichever log has
+ * content so the failure text NAMES the cause instead of burying it.
+ * Exported for tests; never throws (cosmetics must not change the verdict).
+ */
+export function bootFailureHint(configDir = getConfigDir()): string[] {
+  try {
+    const candidates = [
+      join(configDir, "logs", "autonomos.boot.error.log"),
+      join(configDir, "logs", "autonomos.log"),
+    ];
+    for (const file of candidates) {
+      if (!existsSync(file)) continue;
+      const lines = readFileSync(file, "utf-8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .slice(-6);
+      if (lines.length > 0) {
+        return [
+          `    Likely cause (from ${file}):`,
+          ...lines.map((l) => `      ${l}`),
+        ];
+      }
+    }
+  } catch {
+    // Unreadable logs must not turn a timeout report into a crash.
+  }
+  return [];
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -117,6 +153,7 @@ export async function verifyAndReportInstall(
       "⚠️  The daemon didn't become responsive within " +
         `${Math.round(timeoutMs / 1000)}s.`,
     );
+    for (const line of bootFailureHint()) console.warn(line);
     console.warn("    Check:  autonomos status   and   autonomos logs");
     return false;
   }
