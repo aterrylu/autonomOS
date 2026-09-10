@@ -229,8 +229,8 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
             className="px-3 py-8 text-center text-xs"
             style={{ color: page.statusFg }}
           >
-            No notifications yet. Agents will appear here when they send
-            messages via --brief.
+            No notifications yet. Agent messages, permission requests, and
+            alerts will appear here.
           </div>
         )}
 
@@ -260,6 +260,19 @@ export function NotificationPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+// Plain-language body for the events F3 now surfaces that carry no message text,
+// so a de-phantomed row is never a bare name+timestamp.
+function fallbackBody(event: string): string | undefined {
+  switch (event) {
+    case "PermissionRequest":
+      return "Needs your permission to continue";
+    case "Notification":
+      return "Notification";
+    default:
+      return undefined;
+  }
+}
+
 function NotificationRow({
   notification: n,
   page,
@@ -270,6 +283,11 @@ function NotificationRow({
   onClick: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+
+  // Every entry gets a body line: message-carrying events (SendUserMessage,
+  // AgentMessage, SystemWarning, most Notifications) show their text; the rest
+  // fall back to plain language.
+  const body = n.message ?? fallbackBody(n.event);
 
   return (
     <div
@@ -352,7 +370,7 @@ function NotificationRow({
           )}
         </div>
 
-        {n.message && (
+        {body && (
           // biome-ignore lint/a11y/noStaticElementInteractions: expand toggle
           // biome-ignore lint/a11y/useKeyWithClickEvents: expand toggle
           <div
@@ -363,7 +381,7 @@ function NotificationRow({
               setExpanded(!expanded);
             }}
           >
-            {n.message}
+            {body}
           </div>
         )}
       </button>

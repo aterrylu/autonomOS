@@ -508,13 +508,15 @@ describe("hooks — notifications", () => {
     clearNotifications(sid);
   });
 
-  it("Stop event creates a notification", async () => {
+  it("Stop event does NOT create a notification (F3: a turn-end is activity, not user-facing)", async () => {
     const res = await postHookEvent(sid, { hook_event_name: "Stop" });
     const body = await res.json();
     assert.equal(body.ok, true);
     const bulk = await hooksReadRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
-    assert.equal(data[sid]?.unread, 1);
+    // A bare Stop no longer inflates the unread badge — the sidebar count and the
+    // bell panel now agree by reading the same user-facing predicate.
+    assert.equal(data[sid]?.unread ?? 0, 0);
   });
 
   it("Notification event creates a notification", async () => {
