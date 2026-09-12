@@ -122,13 +122,28 @@ async function expectLaunchedWith(
   assert.equal(
     seen.flags,
     want,
-    `${label} — expected the flags for "${mode}" (observed "${seen.flags}")`,
+    `${label} — expected the flags for "${mode}" (observed "${seen.flags}"). ` +
+      `Server log tail:\n${logTail(server)}`,
   );
   assert.ok(
     seen.spawns >= minSpawns,
     `${label} — expected at least ${minSpawns} spawn(s) of this agent, saw ${seen.spawns}. ` +
-      `Fewer means the operation under test never relaunched it, so this assertion proved nothing.`,
+      `Fewer means the operation under test never relaunched it, so this assertion proved nothing. ` +
+      `Server log tail:\n${logTail(server)}`,
   );
+}
+
+/**
+ * Last chunk of the booted server's stdout+stderr, for assertion messages.
+ * The three CI flakes of the restart-all suite were undiagnosable from the
+ * failure alone — the TAP output carried only "saw 1 spawn" while the story
+ * (which agent exited, when, and why restart-all skipped it) lived in the
+ * server child's log that nothing surfaced. Every timing-sensitive assertion
+ * in this file appends this so the NEXT flake ships its own forensics.
+ */
+function logTail(server: BootedServer, chars = 2000): string {
+  const logs = server.logs();
+  return logs.length > chars ? `…${logs.slice(-chars)}` : logs;
 }
 
 describe("permission mode — process and record agree across a resume", {
@@ -343,47 +358,151 @@ describe("restart-all preserves per-agent permission modes", {
     const modeOf = async (id: string) =>
       (await authedJson<AgentRecord>(server, `/api/agents/${id}`)).body
         .permissionMode;
+    const statusOf = async (id: string) =>
+      (
+        await authedJson<AgentRecord & { status: string }>(
+          server,
+          `/api/agents/${id}`,
+        )
+      ).body.status;
 
-    const supervised = await mk("fleet-ask");
-    const permissive = await mk("fleet-auto", "auto");
-    await sleep(6000);
-    assert.equal(await modeOf(supervised.id), "ask");
-    assert.equal(await modeOf(permissive.id), "auto");
+    // ENVIRONMENT-RETRY WRAPPER (the fix for a 3×-in-one-day CI flake).
+    //
+    // The scenario needs both REAL claude processes to survive from spawn to
+    // restart-all's live-map snapshot. When one dies at boot first (confirmed
+    // mechanism at the time of writing: CC ≥2.1.26x flipped the trust dialog
+    // default to "No, exit", so auto-trust's Enter exits the session when it
+    // lands — timing-dependent, hence flaky; any future boot-death has the
+    // same shape), restart-all CORRECTLY skips it (it restarts live agents,
+    // and an exited agent has left `live`), and the old fixed-sleep version
+    // burned a 45s poll to fail with "saw 1 spawn" — measuring the runner
+    // environment, not the product. Reproduced deterministically with a fake
+    // `claude` killed pre-restart: record flips to "exited", restart-all
+    // returns failures: [] with the dead id absent from idMap, spawn count
+    // stays 1.
+    //
+    // `idMap` is the race-free classifier the old version never read: it is
+    // the snapshot's own output, so an id missing from it while the record
+    // still says "running" means restart-all DROPPED a live agent — the real
+    // bug this test exists to catch, and it still fails hard. Missing while
+    // the record says exited/crashed means the runner killed the agent before
+    // the snapshot — environment, never a restart-all verdict — so the
+    // attempt is discarded and a FRESH pair is spawned (bounded; agents are
+    // per-attempt so a dead attempt's records can't satisfy anything).
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; ; attempt++) {
+      const supervised = await mk(`fleet-ask-${attempt}`);
+      const permissive = await mk(`fleet-auto-${attempt}`, "auto");
 
-    const { status } = await authedJson(server, "/api/agents/restart-all", {
-      method: "POST",
-    });
-    assert.equal(status, 200);
+      // Settle-gate, not a timer: wait for both spawn argv lines (the
+      // pre-restart baseline the minSpawns: 2 below builds on).
+      await expectLaunchedWith(
+        server,
+        supervised.id,
+        "ask",
+        `attempt ${attempt}: pre-restart supervised argv`,
+      );
+      await expectLaunchedWith(
+        server,
+        permissive.id,
+        "auto",
+        `attempt ${attempt}: pre-restart permissive argv`,
+      );
+      assert.equal(await modeOf(supervised.id), "ask");
+      assert.equal(await modeOf(permissive.id), "auto");
 
-    // Records first — the guarantee itself.
-    await sleep(8000);
-    assert.equal(
-      await modeOf(supervised.id),
-      "ask",
-      "restart-all must not ELEVATE a supervised agent",
-    );
-    assert.equal(
-      await modeOf(permissive.id),
-      "auto",
-      "restart-all must not DEMOTE a more permissive agent",
-    );
+      const { status, body: restart } = await authedJson<{
+        idMap: Record<string, string>;
+        failures: Array<{ id: string; name: string; error: string }>;
+      }>(server, "/api/agents/restart-all", { method: "POST" });
+      assert.equal(status, 200);
 
-    // Then the argv of the RESPAWNED processes. minSpawns: 2 is what makes this
-    // real: it fails if restart-all skipped the agent, rather than quietly
-    // re-reading the original spawn line.
-    await expectLaunchedWith(
-      server,
-      permissive.id,
-      "auto",
-      "the respawned permissive agent must still be launched with acceptEdits",
-      { minSpawns: 2 },
-    );
-    await expectLaunchedWith(
-      server,
-      supervised.id,
-      "ask",
-      "the respawned supervised agent must still be launched with no permission flag",
-      { minSpawns: 2 },
-    );
+      const missing = [supervised, permissive].filter(
+        (a) => !(a.id in restart.idMap),
+      );
+      if (missing.length > 0) {
+        for (const a of missing) {
+          // A respawn that was TRIED and failed is a product outcome, never
+          // environment noise — and the sets are disjoint by construction:
+          // an agent the environment killed at boot left `live` before the
+          // snapshot, so it is never in `toRestart` and can never appear in
+          // `failures`. Check it first so a real respawn failure fails HERE
+          // with its error, instead of burning retries and blaming the
+          // runner.
+          const failed = restart.failures.find((f) => f.id === a.id);
+          assert.equal(
+            failed,
+            undefined,
+            `restart-all TRIED and failed to respawn ${a.name}: ` +
+              `${failed?.error} — a product bug, not runner noise. ` +
+              `Server log tail:\n${logTail(server)}`,
+          );
+          // A live agent absent from the snapshot's output = dropped by the
+          // product. Only an agent the environment already killed may be
+          // missing without failing the test.
+          assert.notEqual(
+            await statusOf(a.id),
+            "running",
+            `restart-all returned without restarting ${a.name}, whose record ` +
+              `still says "running" — a LIVE agent was dropped (product bug, ` +
+              `not runner noise). failures=${JSON.stringify(restart.failures)} ` +
+              `Server log tail:\n${logTail(server)}`,
+          );
+        }
+        assert.ok(
+          attempt < MAX_ATTEMPTS,
+          `the claude process of ${missing.map((a) => a.name).join(", ")} died ` +
+            `before restart-all's snapshot on ${attempt} consecutive attempts — ` +
+            `the runner is killing agents at boot, so the restart-all contract ` +
+            `was never exercised. Not a restart-all verdict. ` +
+            `Server log tail:\n${logTail(server)}`,
+        );
+        // Surfaced in the TAP stream so a CI run that needed retries says so
+        // even when it ultimately passes — a rising retry rate is the early
+        // warning that the runner environment is degrading again.
+        console.warn(
+          `[mixed-fleet] attempt ${attempt} discarded (environment): ` +
+            `${missing.map((a) => a.name).join(", ")} exited before the ` +
+            `restart-all snapshot; retrying with a fresh pair`,
+        );
+        continue;
+      }
+      assert.deepEqual(
+        restart.failures,
+        [],
+        `restart-all reported respawn failures. Server log tail:\n${logTail(server)}`,
+      );
+
+      // Records first — the guarantee itself.
+      assert.equal(
+        await modeOf(supervised.id),
+        "ask",
+        "restart-all must not ELEVATE a supervised agent",
+      );
+      assert.equal(
+        await modeOf(permissive.id),
+        "auto",
+        "restart-all must not DEMOTE a more permissive agent",
+      );
+
+      // Then the argv of the RESPAWNED processes. minSpawns: 2 is what makes
+      // this real: it fails if restart-all skipped the agent, rather than
+      // quietly re-reading the original spawn line.
+      await expectLaunchedWith(
+        server,
+        permissive.id,
+        "auto",
+        "the respawned permissive agent must still be launched with acceptEdits",
+        { minSpawns: 2 },
+      );
+      await expectLaunchedWith(
+        server,
+        supervised.id,
+        "ask",
+        "the respawned supervised agent must still be launched with no permission flag",
+        { minSpawns: 2 },
+      );
+      return;
+    }
   });
 });
