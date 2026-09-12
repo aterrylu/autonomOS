@@ -11,6 +11,36 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.7.0] — 2026-09-12
+
+### Minor Changes
+
+- [#353](https://github.com/aterrylu/autonomOS/pull/353) `1b73ba7` — feat(dashboard): right-click context menu on agent rows (ADR-093)
+- [#355](https://github.com/aterrylu/autonomOS/pull/355) `847a11d` — feat(handoff): hand-off queue — human-mediated inbound for inbound-less agents (server)
+- [#356](https://github.com/aterrylu/autonomOS/pull/356) `c77fea2` — feat(handoff): hand-off queue dashboard — badge + minimal delivery overlay
+- [#357](https://github.com/aterrylu/autonomOS/pull/357) `d1e66a8` — feat(dashboard): sidebar drag-reorder revamp — whole-row native + slide-apart
+- [#360](https://github.com/aterrylu/autonomOS/pull/360) `93a1a9a` — feat(server)!: delete route compat aliases + scheduler sender courtesy (executes ADR-084/092)
+
+### Patch Changes
+
+- [#346](https://github.com/aterrylu/autonomOS/pull/346) `fb34e6c` — feat(dashboard): status-label muted-accent colors + working shimmer (ADR-090)
+- [#348](https://github.com/aterrylu/autonomOS/pull/348) `c54d778` — fix(codex): suppress the in-pane self-update popup that kills spawned sessions (ADR-091)
+- [#349](https://github.com/aterrylu/autonomOS/pull/349) `1dd3d13` — feat(gateway): schedule://<name> sender scheme for scheduled prompts (ADR-092)
+- [#350](https://github.com/aterrylu/autonomOS/pull/350) `5ce42c7` — fix(server): config-dir test-escape guard — tests can never touch the real ~/.autonomos
+- [#351](https://github.com/aterrylu/autonomOS/pull/351) `6276dba` — feat(agents): lastActivityAt — session recency that survives upgrades
+- [#352](https://github.com/aterrylu/autonomOS/pull/352) `15a4521` — fix(codex): advance lastActivityAt from the status feed (T2, #351)
+- [#354](https://github.com/aterrylu/autonomOS/pull/354) `72d648a` — fix(terminal): full-viewport refresh after WebGL recreate (blackout hardening)
+- [#358](https://github.com/aterrylu/autonomOS/pull/358) `94df064` — fix(codex): count completed Codex turns in the unread (#num) badge
+- [#363](https://github.com/aterrylu/autonomOS/pull/363) `5131cdc` — fix(permissions): honest "Ask" explainer — Claude Code's own default governs
+- [#364](https://github.com/aterrylu/autonomOS/pull/364) `84a7e98` — fix(statusline): authenticate with the per-agent token (offline since #297)
+- [#365](https://github.com/aterrylu/autonomOS/pull/365) `f7f34e7` — fix(dashboard): first-run copy — drop tool names and stale claims from user-facing text
+- [#366](https://github.com/aterrylu/autonomOS/pull/366) `106f737` — fix(install): claude pre-flight + boot-cause surfacing in the post-install report (F2)
+- [#368](https://github.com/aterrylu/autonomOS/pull/368) `c8dcb89` — fix(notifications): unread badge == bell panel; codex turns show with content (F3)
+- [#373](https://github.com/aterrylu/autonomOS/pull/373) `8158f97` — test(server): de-flake restart-all permission-mode test (idMap classification + env retry)
+- [#374](https://github.com/aterrylu/autonomOS/pull/374) `0082260` — fix(auto-trust): survive CC ≥2.1.26x default-No trust dialog — pre-trust at spawn + verified dismissal
+- [#375](https://github.com/aterrylu/autonomOS/pull/375) `48406e3` — fix(codex-usage): Pro 5x plan — Codex-CLI labels for known lanes, graceful render for unknown ones
+
+
 ## [0.6.1] — 2026-08-26
 
 ### Patch Changes
