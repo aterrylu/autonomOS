@@ -395,6 +395,33 @@ export function pickActiveFallback(
   return next ? { type: "session", id: next } : null;
 }
 
+/**
+ * Session ids currently mid-restart (kill → attach under the SAME id). A restart
+ * transiently marks the record `exited` between the two legs, and every
+ * snapshot-driven teardown keys off "not in the live set": `applyAgentsSnapshot`
+ * would retarget the active pane away (pickActiveFallback), DockviewLayout's
+ * `pruneDead` would drop the panel, and the terminal's WS 4010 (session-end)
+ * handler would `switchPane(null)` — the last is the one that actually routed
+ * Terry to the empty state on restart. While an id sits here, all those teardown
+ * paths skip it, so the pane stays put through the restart and the fresh
+ * terminal reconnects in place. Membership is held a beat past the flow
+ * (RESTART_PANE_GUARD_MS) to outlast a poll response already in flight when the
+ * kill landed (agentsPoll is 5s). It is a module-level Set, not store state,
+ * precisely because NOTHING should re-render on it — it only gates teardown
+ * checks. A real Kill still retargets synchronously (killSession sets activePane
+ * directly, ungated).
+ */
+export const restartingIds = new Set<string>();
+
+/**
+ * How long to keep an id in `restartingIds` after its restart flow completes.
+ * Must exceed the agents poll interval (5s) so a poll captured during the
+ * transient-exited window can't land after the guard drops and re-clear the
+ * pane. Inert while the session is genuinely running (the teardown checks are
+ * only consulted when a snapshot omits the id), so erring long is harmless.
+ */
+export const RESTART_PANE_GUARD_MS = 6000;
+
 // ── Snapshot appliers (the poll → store bridge) ────────────────────────
 //
 // One function per polled resource, called from TWO places that must not
@@ -510,8 +537,15 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
 
     // If the pane we're viewing just died, fall back to a live sibling from its
     // group (or any live session) instead of blanking the dock. Compute this
-    // BEFORE reconcile, which may dissolve the group.
-    if (activePane?.type === "session" && !liveIds.has(activePane.id)) {
+    // BEFORE reconcile, which may dissolve the group. EXCEPT while that id is
+    // mid-restart: the "death" is the kill leg of a kill→attach, the pane is
+    // meant to stay put, and a late in-flight poll must not retarget it away
+    // after restartSession already re-opened it (see restartingIds).
+    if (
+      activePane?.type === "session" &&
+      !liveIds.has(activePane.id) &&
+      !restartingIds.has(activePane.id)
+    ) {
       const fallback = pickActiveFallback(
         activePane.id,
         dvWorkspaces,
@@ -1133,42 +1167,63 @@ export const useStore = create<AppState>()(
           // client toast channel exists yet, so a failed attach is logged loudly
           // and the agent shows as stopped (resumable) — surfacing it in-UI is a
           // follow-up.
+          //
+          // Guard the pane against snapshot-driven teardown for the whole flow
+          // (and a beat past it): between the kill and the attach the record is
+          // `exited`, and the WS 4010 handler, applyAgentsSnapshot's fallback, and
+          // DockviewLayout's pruneDead would each tear the pane down on a snapshot
+          // that catches it there — including a poll already in flight that lands
+          // late, after the re-open below. See restartingIds / RESTART_PANE_GUARD_MS.
+          restartingIds.add(id);
           try {
-            await agentsApi.kill(id);
-          } catch (err) {
-            console.warn(
-              `[autonomOS] restartSession: kill of ${id} did not land, continuing to attach:`,
-              apiErrorLabel(err),
-            );
-          }
-          let attached = false;
-          try {
-            await agentsApi.attach(id);
-            attached = true;
-          } catch (err) {
-            console.error(
-              `[autonomOS] restartSession: attach of ${id} FAILED — agent left stopped:`,
-              apiErrorLabel(err),
-            );
-          }
-          await get().fetchSessions();
-          // Re-open the pane. The kill dropped this id from `sessions` and
-          // retargeted the active pane to a live sibling (pickActiveFallback),
-          // so without this, Restart closes the terminal you were watching and
-          // jumps you to another agent while the restarted one runs with no pane.
-          // Only when the attach actually landed (else there is nothing to show).
-          if (attached) {
-            get().switchPane({ type: "session", id });
-            // Deterministically reconnect the pane's terminal to the NEW PTY. The
-            // kill closed the old socket (4010) → the live terminal is marked
-            // `ended` + uncached but stays glued to the pane showing final output;
-            // switchPane above is a NO-OP when the pane was already focused (the
-            // restart-while-focused case Terry hit), so nothing would remount and
-            // the dead terminal would linger. Bumping the reload nonce re-runs
-            // useTerminal's attach effect, which disposes the ended terminal and
-            // acquires a fresh one bound to the restarted PTY — regardless of
-            // whether activePane changed (the retarget-away is a race).
-            get().reloadTerminal(id);
+            try {
+              await agentsApi.kill(id);
+            } catch (err) {
+              console.warn(
+                `[autonomOS] restartSession: kill of ${id} did not land, continuing to attach:`,
+                apiErrorLabel(err),
+              );
+            }
+            let attached = false;
+            try {
+              await agentsApi.attach(id);
+              attached = true;
+            } catch (err) {
+              console.error(
+                `[autonomOS] restartSession: attach of ${id} FAILED — agent left stopped:`,
+                apiErrorLabel(err),
+              );
+            }
+            await get().fetchSessions();
+            // Re-open the pane. The kill dropped this id from `sessions` and
+            // retargeted the active pane to a live sibling (pickActiveFallback),
+            // so without this, Restart closes the terminal you were watching and
+            // jumps you to another agent while the restarted one runs with no pane.
+            // Only when the attach actually landed (else there is nothing to show).
+            if (attached) {
+              get().switchPane({ type: "session", id });
+              // Deterministically reconnect the pane's terminal to the NEW PTY.
+              // The kill closed the old socket (4010) → the live terminal is
+              // marked `ended` + uncached but stays glued to the pane showing
+              // final output; switchPane above is a NO-OP when the pane was
+              // already focused (the restart-while-focused case Terry hit), so
+              // nothing would remount and the dead terminal would linger. Bumping
+              // the reload nonce re-runs useTerminal's attach effect, which
+              // disposes the ended terminal and acquires a fresh one bound to the
+              // restarted PTY — regardless of whether activePane changed.
+              get().reloadTerminal(id);
+            } else {
+              // Attach genuinely failed — the agent IS stopped, so let the next
+              // snapshot retarget the pane normally. Drop the guard now rather
+              // than pinning a dead pane for the full drain window.
+              restartingIds.delete(id);
+            }
+          } finally {
+            // Hold the guard a beat past the flow so a poll response that was in
+            // flight during the transient-exited window can't land late and
+            // retarget the pane after the re-open. Cleared early above on attach
+            // failure; a redundant delete here is harmless.
+            setTimeout(() => restartingIds.delete(id), RESTART_PANE_GUARD_MS);
           }
         },
         reloadTerminal: (sessionId) =>

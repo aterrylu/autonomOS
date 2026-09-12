@@ -8,7 +8,13 @@ import {
   type DockviewTheme,
 } from "dockview-react";
 import { useCallback, useEffect, useRef } from "react";
-import { type ActivePane, THEMES, type ThemeName, useStore } from "../../store";
+import {
+  type ActivePane,
+  restartingIds,
+  THEMES,
+  type ThemeName,
+  useStore,
+} from "../../store";
 import { DRAG_TYPE, decodeDragData } from "../DragContext";
 import { PaneContent, type PaneParams } from "./PaneContent";
 import { paneFromPanel, SINGLETON_TYPES } from "./paneId";
@@ -218,7 +224,13 @@ export function DockviewLayout() {
               const live = new Set(st.sessions.map((s) => s.id));
               for (const panel of [...api.panels]) {
                 const id = panel.id;
-                if (!SINGLETON_TYPES.has(id) && !live.has(id))
+                // Keep a mid-restart panel: its session is transiently `exited`
+                // (kill leg of a restart), not gone (see restartingIds).
+                if (
+                  !SINGLETON_TYPES.has(id) &&
+                  !live.has(id) &&
+                  !restartingIds.has(id)
+                )
                   api.removePanel(panel);
               }
             }
@@ -259,7 +271,11 @@ export function DockviewLayout() {
     try {
       for (const panel of [...api.panels]) {
         const id = panel.id;
-        if (!SINGLETON_TYPES.has(id) && !live.has(id)) api.removePanel(panel);
+        // Keep a mid-restart panel: its session is transiently `exited` (the
+        // kill leg of a kill→attach), not actually gone — pruning it here would
+        // blank the pane the user is watching restart (see restartingIds).
+        if (!SINGLETON_TYPES.has(id) && !live.has(id) && !restartingIds.has(id))
+          api.removePanel(panel);
       }
     } finally {
       suppressWriteback.current = false;

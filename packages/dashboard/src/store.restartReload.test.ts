@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "./api/agents";
-import { useStore } from "./store";
+import {
+  applyAgentsSnapshot,
+  RESTART_PANE_GUARD_MS,
+  restartingIds,
+  useStore,
+} from "./store";
 
 // restartSession composes kill → attach → fetchSessions → switchPane, and now
 // also bumps the per-session terminal-reload nonce so the pane deterministically
@@ -22,7 +27,10 @@ beforeEach(() => {
     // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
   } as any);
 });
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  restartingIds.clear();
+  vi.clearAllMocks();
+});
 
 describe("reloadTerminal", () => {
   it("bumps the per-session nonce (0 → 1 → 2), isolated per id", () => {
@@ -55,5 +63,70 @@ describe("restartSession — terminal reconnect", () => {
     expect(useStore.getState().terminalReloadNonce.a1 ?? 0).toBe(0);
     // Nor does it re-open a pane onto a stopped agent.
     expect(useStore.getState().switchPane).not.toHaveBeenCalled();
+  });
+});
+
+// The pane must survive the kill→attach gap. A restart transiently marks the
+// record `exited`, and BOTH snapshot-driven teardown paths key off "not live":
+// applyAgentsSnapshot's fallback (tested here) and DockviewLayout's pruneDead
+// (verified in the real browser). restartingIds gates both so a poll response
+// captured mid-restart — landing LATE, after restartSession re-opened the pane —
+// can't retarget it away. This was the actual hole behind Terry's "restarting
+// closes the pane" report; the earlier reloadNonce fix only covered the pane
+// that stayed OPEN.
+describe("restart pane guard (restartingIds)", () => {
+  /** Seed a single running pane the snapshot will then omit ("it died"). */
+  function seedRunningPane() {
+    useStore.setState({
+      activePane: { type: "session", id: "a1" },
+      sessions: [{ id: "a1", name: "a1", status: "running" }],
+      exitedSessions: [],
+      dvWorkspaces: {},
+      dvPaneWorkspace: {},
+      pinnedOrder: [],
+      unpinnedOrder: [],
+      sessionsInitialFetchDone: true,
+      // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    } as any);
+  }
+
+  it("KEEPS the active pane when a snapshot omits a mid-restart id", () => {
+    seedRunningPane();
+    restartingIds.add("a1");
+    // The transient-exited snapshot (a1 absent) must NOT retarget the pane.
+    applyAgentsSnapshot([]);
+    expect(useStore.getState().activePane).toEqual({
+      type: "session",
+      id: "a1",
+    });
+  });
+
+  it("control: retargets a dead pane away when NOT mid-restart", () => {
+    seedRunningPane();
+    // a1 is genuinely gone (not restarting) → fall back (null: no live sibling).
+    applyAgentsSnapshot([]);
+    expect(useStore.getState().activePane).toBeNull();
+  });
+
+  it("restartSession arms the guard for the flow, then drops it after the drain", async () => {
+    vi.useFakeTimers();
+    try {
+      await useStore.getState().restartSession("a1");
+      // Held immediately after the flow so a late in-flight poll is still gated.
+      expect(restartingIds.has("a1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(RESTART_PANE_GUARD_MS);
+      expect(restartingIds.has("a1")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the guard early on attach failure (the pane SHOULD retarget)", async () => {
+    (agentsApi.attach as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("attach failed"),
+    );
+    await useStore.getState().restartSession("a1");
+    // Agent is genuinely stopped — don't pin a dead pane for the drain window.
+    expect(restartingIds.has("a1")).toBe(false);
   });
 });
