@@ -29,6 +29,10 @@ Running several coding-CLI agents today means a grid of terminal tabs you babysi
 - **Coordination you can watch** — normalized hook telemetry streams every agent's live status as they work and message each other.
 - **Browser-native and always-on** — it runs as a self-hosted daemon, so the fleet is reachable from any browser or PWA and keeps working after you close your laptop. (The hosting is a byproduct; the orchestration is the point.)
 
+## New here?
+
+If you want to **use** autonomOS rather than build it, the [User Guide](docs/guide/README.md) is written for you: a five-minute [Start here](docs/guide/01-start-here.md), then the form, the screen, teams, and troubleshooting, with the exact words the app uses. It is also the right entry point for an AI assistant helping you (see [`llms.txt`](llms.txt)). Everything below this section is for people changing the code.
+
 ## Install
 
 One line — installs the server as an OS-native daemon and prints your dashboard URL:

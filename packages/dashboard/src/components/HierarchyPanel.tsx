@@ -414,7 +414,8 @@ function HierarchyContent({
       >
         <span>No agents running</span>
         <span className="text-xs opacity-60">
-          Spawn agents and use set_manager() to build the hierarchy
+          Create an agent, then ask it to spawn helpers — managers and their
+          reports appear here
         </span>
       </div>
     );

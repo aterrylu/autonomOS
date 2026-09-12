@@ -551,7 +551,7 @@ function RuntimeCard({
             </a>
           </div>
           <div className="text-[10px]" style={{ color: page.statusFg }}>
-            Restart server after installing
+            After installing, reopen this panel (or reload the page)
           </div>
         </div>
       )}
@@ -582,7 +582,7 @@ function RuntimeCard({
               className="text-[10px] mt-1 px-1.5 py-0.5 rounded"
               style={{ background: "rgba(230,180,80,0.15)", color: "#e6b450" }}
             >
-              Hooks require one-time setup
+              Live status needs a one-time setup for this runtime
             </div>
           )}
           {provider.recommended && (

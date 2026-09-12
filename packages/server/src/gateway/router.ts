@@ -221,17 +221,6 @@ async function resolveConnectedAgent(
   return null;
 }
 
-/** Display names for system (non-agent) senders. These arrive as literal
- *  sender ids, not UUIDs, so without this map they hit the unknown-id branch
- *  below and render as a sliced pseudo-UUID ("Agent schedule").
- *
- *  "scheduler" is legacy: the scheduler now sends per-schedule ids
- *  (`schedule:<name>` → schedule://<name>, see resolveSenderIdentity), but the
- *  literal is kept so anything still passing it renders sanely. */
-const SYSTEM_SENDER_NAMES: Record<string, string> = {
-  scheduler: "Scheduler",
-};
-
 /** Sender ids of the form `schedule:<name>` identify the SCHEDULE that fired
  *  a prompt, not an agent. Mirrors the `agent:<name>` convention schedule
  *  TARGETS already use. */
@@ -263,8 +252,6 @@ async function resolveSenderIdentity(
 
 /** Resolve the display name for an agent id (enriched via titleCache) */
 async function resolveAgentName(agentId: string): Promise<string> {
-  const systemName = SYSTEM_SENDER_NAMES[agentId];
-  if (systemName) return systemName;
   const agent = getAgent(agentId);
   if (!agent) return `Agent ${agentId.slice(0, 8)}`;
 
@@ -409,21 +396,6 @@ async function routeToAgent(
 
   const resolved = await resolveConnectedAgent(targetName);
   if (!resolved) {
-    // Replying to a SYSTEM sender is a predictable mistake: a scheduled
-    // prompt's from_uri reads agent://Scheduler, which looks addressable.
-    // Name what it actually is instead of returning the generic not-found,
-    // which sends the agent hunting through list_agents for a peer that has
-    // never existed. Checked only AFTER real resolution fails, so an actual
-    // agent named "Scheduler" (discouraged) still receives its messages.
-    const systemName = Object.values(SYSTEM_SENDER_NAMES).find(
-      (n) => n.toLowerCase() === targetName.toLowerCase(),
-    );
-    if (systemName) {
-      return (
-        `"${systemName}" is not an agent — it is the autonomOS cron scheduler, a system sender. ` +
-        "Scheduled prompts need no reply: just do the task they describe; the operator sees your work in your own session."
-      );
-    }
     console.log(`[gateway] agent "${targetName}" not found or not connected`);
     return `Agent "${targetName}" not found or not connected. Use list_agents to see available agents.`;
   }
