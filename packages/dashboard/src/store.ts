@@ -645,6 +645,10 @@ interface AppState {
    *  first-run flow re-fires only on a fresh tab or page reload. */
   sessionsInitialFetchDone: boolean;
   projects: ProjectInfo[];
+  /** Which project paths are expanded in the Projects panel. In the store (not
+   *  per-mount) + persisted, so the Sidebar's unmount-on-collapse and a reload
+   *  don't reset it — the old per-mount reset was bug #8. */
+  expandedProjects: Record<string, boolean>;
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
   /** Agent status per session ID (from hook events) */
@@ -725,6 +729,10 @@ interface AppState {
   openSchedules: () => void;
   openPresets: () => void;
   toggleSidebarViewMode: () => void;
+  /** Toggle one project's expanded state in the Projects panel (persisted). */
+  toggleProjectExpanded: (path: string) => void;
+  /** Collapse every project in the Projects panel (the header's collapse-all). */
+  collapseAllProjects: () => void;
   removeSession: (id: string) => Promise<void>;
   /** Reorder within one flat-view section (drag-and-drop). Other section
    *  unchanged. Persists the frozen snapshot (prunes dead, freezes arrivals). */
@@ -832,6 +840,7 @@ export const useStore = create<AppState>()(
         exitedSessions: [],
         sessionsInitialFetchDone: false,
         projects: [],
+        expandedProjects: {},
         notificationCounts: {},
         agentStatuses: {},
         sidebarOpen: true,
@@ -1181,6 +1190,16 @@ export const useStore = create<AppState>()(
           get().switchPane({ type: "presets", id: "presets" });
         },
 
+        toggleProjectExpanded: (path) =>
+          set((s) => ({
+            expandedProjects: {
+              ...s.expandedProjects,
+              [path]: !s.expandedProjects[path],
+            },
+          })),
+
+        collapseAllProjects: () => set({ expandedProjects: {} }),
+
         toggleSidebarViewMode: () => {
           set({
             sidebarViewMode:
@@ -1290,6 +1309,7 @@ export const useStore = create<AppState>()(
         unpinnedOrder: state.unpinnedOrder,
         hierarchyOrder: state.hierarchyOrder,
         projects: state.projects,
+        expandedProjects: state.expandedProjects,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Record<string, unknown>;
