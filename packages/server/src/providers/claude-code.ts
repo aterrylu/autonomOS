@@ -104,16 +104,20 @@ const DOWN_ARROW = "\x1b[B";
  *     stdin-attach race: if only the Down lands, the dialog re-renders with
  *     ❯ on Yes, the needle re-render triggers a retry, and the retry
  *     re-reads the highlight and sends a bare Enter.
- *   - ❯ on "Yes" (either variant, or after our Down landed) → Enter.
- *   - no ❯ marker at all → the legacy dialog shape, whose default was Yes:
- *     bare Enter (the pre-variant behavior, unchanged).
+ *   - ❯ on "Yes" (the legacy default, or after our Down landed) → Enter.
+ *   - NEITHER highlight matched → null: do not answer. A bare Enter is only
+ *     ever written on positive ❯Yes evidence, because it is the one key
+ *     that exits a default-No dialog — a stray ❯ elsewhere in scrollback,
+ *     a mid-paint frame, or a redesigned dialog must all fail toward
+ *     stuck-but-alive (operator-recoverable), never toward exited.
  */
-function trustKeysFor(buffer: string): string[] {
+function trustKeysFor(buffer: string): string[] | null {
   const norm = despace(buffer);
-  return norm.lastIndexOf(TRUST_NO_SELECTED_NORM) >
-    norm.lastIndexOf(TRUST_YES_SELECTED_NORM)
-    ? [DOWN_ARROW, "\r"]
-    : ["\r"];
+  const lastNo = norm.lastIndexOf(TRUST_NO_SELECTED_NORM);
+  const lastYes = norm.lastIndexOf(TRUST_YES_SELECTED_NORM);
+  if (lastNo > lastYes) return [DOWN_ARROW, "\r"];
+  if (lastYes >= 0) return ["\r"];
+  return null;
 }
 const CHANNELS_NEEDLES = [
   "WARNING: Loading development channels",
@@ -316,7 +320,7 @@ export const claudeCodeProvider: AgentProvider = {
   },
 
   prepareSpawn(options: ResolvedSpawnOptions): void {
-    preTrustWorkdir(options.cwd, join(homedir(), ".claude.json"));
+    preTrustWorkdir(options.cwd, claudeJsonPath());
   },
 
   attachStartupWatcher(
@@ -367,7 +371,21 @@ export const claudeCodeProvider: AgentProvider = {
 };
 
 /**
- * Pre-trust the working directory in CC's OWN config (`~/.claude.json`:
+ * Where CC keeps `.claude.json` for the sessions WE spawn: under
+ * `CLAUDE_CONFIG_DIR` when set (the child inherits the server's env via
+ * buildBaseEnv, so server-side resolution matches what the child will read),
+ * else the home default — the same precedence `readAccountIdentity` in
+ * oauthUsage.ts documents. Hardcoding `~/.claude.json` made pre-trust a
+ * silent no-op under a relocated config: we mutated a file nothing reads
+ * while the dialog rendered anyway. Exported for tests.
+ */
+export function claudeJsonPath(): string {
+  const cfg = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return cfg ? join(cfg, ".claude.json") : join(homedir(), ".claude.json");
+}
+
+/**
+ * Pre-trust the working directory in CC's OWN config (`.claude.json`:
  * `projects[<realpath cwd>].hasTrustDialogAccepted: true` — byte-identical to
  * what CC records when a user picks "Yes, I trust this folder"), so the trust
  * dialog never renders for the spawn.
@@ -568,7 +586,7 @@ export function attachStartupWatcherCore(
   /** The answer keys for a dialog, decided at SEND time from the latest
    *  highlight evidence — a retry after a partially-landed Down re-reads the
    *  ❯ position, which is what makes the two-key answer self-correcting. */
-  function keysFor(id: string): string[] {
+  function keysFor(id: string): string[] | null {
     return id === "trust" ? trustKeysFor(buf) : ["\r"];
   }
 
@@ -576,6 +594,25 @@ export function attachStartupWatcherCore(
     d.attempts++;
     d.freshBuf = "";
     const keys = keysFor(id);
+    if (keys === null) {
+      // No answer is safe to give right now (no matched highlight — a
+      // mid-paint frame, or an unrecognized layout). Spend the attempt on
+      // waiting: the next attempt re-reads the buffer, and exhaustion ends
+      // in the loud give-up rather than a blind Enter.
+      if (d.attempts < maxAttempts) {
+        d.checkTimer = setTimeout(() => {
+          d.checkTimer = null;
+          if (!disposed) sendAndScheduleCheck(id, d);
+        }, retryDelayMs);
+        return;
+      }
+      console.warn(
+        `[auto-trust] ${label} "${id}" dialog never showed a recognizable highlight after ${d.attempts} attempts — NOT auto-answering (a blind Enter exits a default-No dialog)`,
+      );
+      d.settled = true;
+      maybeFinish();
+      return;
+    }
     if (!writeKey(keys[0])) {
       cleanup();
       return;
@@ -667,9 +704,18 @@ export function attachStartupWatcherCore(
             return;
           }
           // Selection reset under us, or the Down never visibly landed —
-          // never confirm blind. Retry re-reads the highlight and re-sends.
+          // never confirm blind. Retry re-reads the highlight and re-sends,
+          // FLOORED at retryDelayMs: a ❯No frame here can also be a routine
+          // full repaint of the unchanged dialog while our Down sat
+          // swallowed pre-attach (Ink rewrites whole frames), and an
+          // immediate retry would burn the whole attempt budget inside the
+          // 100-500ms stdin-attach window. A repaint must cost time, not
+          // attempts-per-poll.
           if (d.attempts < maxAttempts) {
-            sendAndScheduleCheck(id, d);
+            d.checkTimer = setTimeout(() => {
+              d.checkTimer = null;
+              if (!disposed) sendAndScheduleCheck(id, d);
+            }, retryDelayMs);
             return;
           }
           console.warn(
@@ -726,7 +772,20 @@ export function attachStartupWatcherCore(
         trust.deferTimer = setTimeout(() => {
           trust.deferTimer = null;
           if (disposed || trust.engaged || trust.settled) return;
-          engage("trust");
+          // A trust dialog with NO highlight marker is a layout this watcher
+          // does not understand (CC swapped the glyph, or renders selection
+          // as reverse-video). The only blind answer available is a bare
+          // Enter — the one key that EXITS the session on a default-No
+          // dialog. Stuck-but-alive is operator-recoverable; exited is not.
+          // So: don't answer, say so loudly, and let pre-trust (the primary
+          // mechanism) or the operator handle it. This line is the tripwire
+          // that turns the next CC dialog redesign into a log grep instead
+          // of silent fleet deaths.
+          console.warn(
+            `[auto-trust] ${label} trust dialog visible but no ❯ highlight marker ever rendered — unrecognized layout, NOT auto-answering (a blind Enter exits a default-No dialog)`,
+          );
+          trust.settled = true;
+          maybeFinish();
         }, retryDelayMs);
       }
     }

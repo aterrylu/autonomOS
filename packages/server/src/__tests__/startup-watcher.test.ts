@@ -242,13 +242,30 @@ describe("startup watcher — needle-driven retry", () => {
     attachStartupWatcherCore(pty, OPTS, { expectChannels: false, ...FAST });
 
     // The \r is stripped by the watcher's ANSI/control filter, rejoining the
-    // needle text exactly as real CC TUI output does.
-    pty.emit("\x1b[1m\x1b[32mYes, I trust\r this folder\x1b[0m");
+    // needle text exactly as real CC TUI output does. The styled ❯Yes
+    // highlight is what authorizes the Enter — see the unrecognized-layout
+    // test for the no-highlight contract.
+    pty.emit("\x1b[1m\x1b[32m❯ Yes, I trust\r this folder\x1b[0m");
     await waitFor(
       () => pty.watcherCount === 0,
       "ANSI-wrapped needle dismissed",
     );
     assert.deepEqual(pty.written, ["\r"], "ANSI-wrapped needle still detected");
+  });
+
+  it("UNRECOGNIZED LAYOUT: a trust dialog with no ❯ highlight is never answered", async () => {
+    // If CC redesigns the dialog (new glyph, reverse-video selection), the
+    // only blind answer available is a bare Enter — the key that EXITS a
+    // default-No dialog. Stuck-but-alive is operator-recoverable; exited is
+    // not. The watcher must refuse to answer and settle loudly.
+    const pty = new FakePty();
+    attachStartupWatcherCore(pty, OPTS, { expectChannels: false, ...FAST });
+
+    pty.emit(
+      "Do you trust the files in this folder?\nYes, I trust this folder\nNo, exit",
+    );
+    await waitFor(() => pty.watcherCount === 0, "settled without answering");
+    assert.deepEqual(pty.written, [], "no keystroke on an unrecognized layout");
   });
 
   it("PTY write throwing marks the pty dead and disposes cleanly", async () => {

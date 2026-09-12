@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { preTrustWorkdir } from "../providers/claude-code.js";
+import { claudeJsonPath, preTrustWorkdir } from "../providers/claude-code.js";
 
 /**
  * Spawn-side trust pre-seeding (the PREVENTION half of auto-trust).
@@ -112,5 +112,30 @@ describe("preTrustWorkdir — CC config pre-seeding", () => {
       "trust recorded under the REAL path, the key CC looks up",
     );
     assert.ok(!(linkDir in out.projects), "no entry under the symlink path");
+  });
+});
+
+describe("claudeJsonPath — CLAUDE_CONFIG_DIR precedence", () => {
+  // Hardcoding ~/.claude.json made pre-trust a silent no-op under a
+  // relocated CC config: we mutated a file nothing reads while the child
+  // (which inherits the server env) read CLAUDE_CONFIG_DIR/.claude.json and
+  // rendered the dialog anyway.
+  it("resolves under CLAUDE_CONFIG_DIR when set, home default otherwise", () => {
+    const prev = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = "/tmp/relocated-cc";
+      assert.equal(claudeJsonPath(), "/tmp/relocated-cc/.claude.json");
+      process.env.CLAUDE_CONFIG_DIR = "   ";
+      assert.ok(
+        claudeJsonPath().endsWith("/.claude.json") &&
+          !claudeJsonPath().includes("relocated"),
+        "blank value falls back to the home default",
+      );
+      delete process.env.CLAUDE_CONFIG_DIR;
+      assert.ok(claudeJsonPath().endsWith("/.claude.json"));
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev;
+    }
   });
 });
