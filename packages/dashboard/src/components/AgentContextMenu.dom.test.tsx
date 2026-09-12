@@ -46,6 +46,7 @@ function seedStore() {
     switchPane: vi.fn(),
     killSession: vi.fn(),
     restartSession: vi.fn(),
+    renameSession: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(undefined),
     removeSession: vi.fn().mockResolvedValue(undefined),
     setManager: vi.fn().mockResolvedValue(undefined),
@@ -71,10 +72,17 @@ afterEach(() => vi.clearAllMocks());
 
 describe("AgentContextMenu — item sets per status", () => {
   // Accessible names exclude the aria-hidden icon glyph, so query by name.
-  it("running target shows Open, Restart, Kill, Set manager, Delete…", () => {
+  it("running target shows Open, Rename…, Restart, Kill, Set manager, Delete…", () => {
     renderMenu(RUNNING);
     const menu = within(screen.getByRole("menu"));
-    for (const name of ["Open", "Restart", "Kill", "Set manager", "Delete…"]) {
+    for (const name of [
+      "Open",
+      "Rename…",
+      "Restart",
+      "Kill",
+      "Set manager",
+      "Delete…",
+    ]) {
       expect(menu.getByRole("menuitem", { name })).toBeTruthy();
     }
     // No Resume in the running menu.
@@ -89,6 +97,8 @@ describe("AgentContextMenu — item sets per status", () => {
     }
     expect(menu.queryByRole("menuitem", { name: "Kill" })).toBeNull();
     expect(menu.queryByRole("menuitem", { name: "Restart" })).toBeNull();
+    // Rename is running-only (it restarts under the new name) — resume first.
+    expect(menu.queryByRole("menuitem", { name: "Rename…" })).toBeNull();
   });
 
   it("exited target WITHOUT an agent record is Resume-only (no delete/set-manager)", () => {
@@ -215,6 +225,78 @@ describe("AgentContextMenu — inline delete confirm", () => {
     expect(onClose).not.toHaveBeenCalled();
     // The confirm stays open so the user can retry or cancel.
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeTruthy();
+  });
+});
+
+describe("AgentContextMenu — inline rename", () => {
+  it("Rename… opens a pre-filled input + restart warning; submit renames and closes", async () => {
+    const { onClose } = renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    // Menu body swaps to the rename form — the restart warning shows at decision time.
+    expect(
+      screen.getByText(
+        "Renaming restarts this session — the conversation resumes.",
+      ),
+    ).toBeTruthy();
+    const input = screen.getByLabelText("New agent name") as HTMLInputElement;
+    // Pre-filled with the current name so the user edits rather than retypes.
+    expect(input.value).toBe("TeamLead");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    expect(useStore.getState().renameSession).toHaveBeenCalledWith(
+      "agent-1",
+      "Renamed",
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("Cancel returns to the menu without renaming", () => {
+    renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(useStore.getState().renameSession).not.toHaveBeenCalled();
+    // Back to the normal menu.
+    expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
+  });
+
+  it("an empty or UNCHANGED name is a no-op (never a bare restart)", () => {
+    const { onClose } = renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    // Submit the pre-filled (unchanged) name → cancels, no rename/restart.
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    expect(useStore.getState().renameSession).not.toHaveBeenCalled();
+    // Now blank it and submit → still a no-op.
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    fireEvent.change(screen.getByLabelText("New agent name"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    expect(useStore.getState().renameSession).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the form open and shows the reason when rename FAILS", async () => {
+    // renameSession rethrows the namesake 409 / stale error BEFORE any teardown.
+    useStore.setState({
+      renameSession: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('An active agent named "Renamed" is already running.'),
+        ),
+      // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    } as any);
+    const { onClose } = renderMenu(RUNNING);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename…" }));
+    fireEvent.change(screen.getByLabelText("New agent name"), {
+      target: { value: "Renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await screen.findByText(
+      'Rename failed: An active agent named "Renamed" is already running.',
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    // The form stays open so the user can fix the name and retry.
+    expect(screen.getByLabelText("New agent name")).toBeTruthy();
   });
 });
 
