@@ -1,6 +1,6 @@
 # Agent memory for autonomOS — evaluation (2026-09-11)
 
-**Status:** decision-ready, nothing built. Commissioned by Terry ("a memory system where all or each agents have access to; our custom system, or some OSS or paid agent memory system"). Companion files: [`landscape.md`](landscape.md) (per-system facts with sources) and [`hands-on.md`](hands-on.md) (spikes run in an isolated scratchpad against Terry's real memory corpus).
+**Status:** decision-ready, nothing built. **Update 2026-09-12:** Terry locked scope (fleet + per-agent), storage (`$configDir/memory`) and direct attributed writes, and replaced the Phase 0 bridge with a coexistence question — see [`coexistence.md`](coexistence.md), which recommends redirecting Claude Code's native memory into our store (option A1) and adds a `projects/<project>/` scope. Commissioned by Terry ("a memory system where all or each agents have access to; our custom system, or some OSS or paid agent memory system"). Companion files: [`landscape.md`](landscape.md) (per-system facts with sources) and [`hands-on.md`](hands-on.md) (spikes run in an isolated scratchpad against Terry's real memory corpus).
 
 **One-paragraph answer.** Build the custom path: a markdown-first memory store under `$configDir/memory/` with two scopes (per-agent by *name*, and fleet-shared), indexed by SQLite FTS5, exposed through two or three MCP tools on the channel server that already exists, and injected as a digest at spawn through the one system-prompt chokepoint all three providers share. Do not adopt a memory platform. Every platform's differentiator is LLM extraction on write, which our spikes show is the expensive and fragile part (paraphrase, duplicates, missed contradictions) and which our agents already do better themselves at write time. Retrieval, the part a platform would make easy, is a solved ~120-line problem at our corpus size: plain keyword search hit the right file in the top 3 on 8 of 8 realistic queries over Terry's 134 existing memory files. The cheapest first step needs no new store at all: bridge Claude Code's existing per-repo memory to Codex and Gemini agents read-only, and put it on the dashboard.
 
@@ -110,7 +110,9 @@ Memory is a capability every agent in the fleet gets. An agent can write a false
 
 **Recommendation: custom, markdown-first, in `$configDir/memory/`, exposed via the channel server and the system-prompt chokepoint.** Start with a zero-store bridge that answers the most urgent gap (Codex and Gemini are memory-blind) in a day.
 
-### Phase 0 — Bridge what already exists (S, no new store)
+### Phase 0 — Bridge what already exists (S, no new store) — **superseded 2026-09-12**
+
+> Terry declined this phase: it assumes Claude Code is installed and used. Replaced by the coexistence decision in [`coexistence.md`](coexistence.md). Kept for the record.
 
 1. **Read-only Memory pane** over Claude Code's auto-memory dir for the agent's repo (`~/.claude/projects/<slug>/memory/`), reusing `titleCache`'s `cwdToDirName`. This is the roadmap's "Memory state viewer", scoped down. Shows the index, each file, author session, `modified`, and flags orphans.
 2. **Inject the `MEMORY.md` index into Codex and Gemini system prompts** at `buildSystemPrompt`, behind a setting (default on for non-Claude providers), so all three providers read the same fleet knowledge. Codex/Gemini can then `Read` the topic files directly since they run in the same cwd.

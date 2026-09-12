@@ -41,7 +41,9 @@ Document all research findings here. Link sources. Include your assessment of re
 
 **Relevance: HIGH** — resolves the roadmap's `state/` protocol and "Memory state viewer" items with one design, and gives Codex/Gemini agents parity with Claude Code.
 
-Full analysis: [`docs/research/agent-memory/`](research/agent-memory/) — README (evaluation + phased proposal + questionnaire), landscape (profiles + sources), hands-on (spike data).
+**Addendum (2026-09-12):** Terry locked scope/storage/writes and replaced the Phase 0 bridge with a coexistence question. Verified that an inline `--settings` `autoMemoryDirectory` redirects a spawned CC session's memory read+write; recommended option A1 — Claude Code's native memory becomes a *client* of the autonomOS store (`projects/<project>/` ≈ CC's per-repo dir), complete without CC, reversible by dropping one key. See `coexistence.md`.
+
+Full analysis: [`docs/research/agent-memory/`](research/agent-memory/) — README (evaluation + phased proposal + questionnaire), coexistence (CC-native relationship options + rec), landscape (profiles + sources), hands-on (spike data).
 
 ### Cron Scheduler & Automation UIs (2026-04-11)
 
