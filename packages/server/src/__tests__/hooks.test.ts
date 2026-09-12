@@ -20,11 +20,11 @@ import {
   insertAgent,
 } from "../agents/store.js";
 import {
+  agentStatusRouter,
   clearAgentState,
   clearNotifications,
   getAgentState,
   hooksIngestRouter,
-  hooksReadRouter,
 } from "../routes/hooks.js";
 
 // Helper: simulate a hook event POST. Ingest now requires the per-agent token
@@ -512,7 +512,7 @@ describe("hooks — notifications", () => {
     const res = await postHookEvent(sid, { hook_event_name: "Stop" });
     const body = await res.json();
     assert.equal(body.ok, true);
-    const bulk = await hooksReadRouter.request("/", { method: "GET" });
+    const bulk = await agentStatusRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     // A bare Stop no longer inflates the unread badge — the sidebar count and the
     // bell panel now agree by reading the same user-facing predicate.
@@ -524,7 +524,7 @@ describe("hooks — notifications", () => {
     await postHookEvent(sid, { hook_event_name: "UserPromptSubmit" });
     clearNotifications(sid);
     await postHookEvent(sid, { hook_event_name: "Notification" });
-    const bulk = await hooksReadRouter.request("/", { method: "GET" });
+    const bulk = await agentStatusRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread, 1);
   });
@@ -534,7 +534,7 @@ describe("hooks — notifications", () => {
       hook_event_name: "PreToolUse",
       tool_name: "Bash",
     });
-    const bulk = await hooksReadRouter.request("/", { method: "GET" });
+    const bulk = await agentStatusRouter.request("/", { method: "GET" });
     const data = (await bulk.json()) as Record<string, { unread: number }>;
     assert.equal(data[sid]?.unread ?? 0, 0);
   });

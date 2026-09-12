@@ -693,9 +693,8 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
 //
 // PR C renamed the mounts: `GET /api/agent-status` (status map) and
 // `/api/notifications` (feed + read-marking) — names that say what they
-// serve instead of how it's produced. `hooksReadRouter` below is the
-// ONE-RELEASE compat alias preserving the old `/api/hooks` read shape;
-// both routers share these handlers, so the alias cannot drift.
+// serve instead of how it's produced. The one-release `/api/hooks` read
+// alias that shared these handlers was removed after its window (ADR-084).
 
 // Bulk notifications across all sessions (for notification panel)
 const notificationFeedHandler = (c: Context) => {
@@ -760,11 +759,3 @@ agentStatusRouter.get("/", statusMapHandler);
 export const notificationsRouter = new Hono();
 notificationsRouter.get("/", notificationFeedHandler);
 notificationsRouter.post("/:sessionId/read", markReadHandler);
-
-/** ONE-RELEASE compat alias: the pre-rename `/api/hooks` read shape.
- *  Same handlers as above — the alias cannot drift. Removed next release
- *  along with the `deprecatedAlias` wrapper at its mount. */
-export const hooksReadRouter = new Hono();
-hooksReadRouter.get("/notifications", notificationFeedHandler);
-hooksReadRouter.post("/:sessionId/read", markReadHandler);
-hooksReadRouter.get("/", statusMapHandler);
