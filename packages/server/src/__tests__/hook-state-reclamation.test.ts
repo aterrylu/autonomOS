@@ -24,7 +24,8 @@ import {
 const { deleteAgent } = await import("../agents/runtime.js");
 const {
   hooksIngestRouter,
-  hooksReadRouter,
+  agentStatusRouter,
+  notificationsRouter,
   pushSystemNotification,
   setAgentStatus,
 } = await import("../routes/hooks.js");
@@ -59,13 +60,13 @@ afterEach(() => {
 
 /** Ids carrying a status entry on the bulk status map. */
 async function statusIds(): Promise<string[]> {
-  const res = await hooksReadRouter.request("/", { method: "GET" });
+  const res = await agentStatusRouter.request("/", { method: "GET" });
   return Object.keys((await res.json()) as Record<string, unknown>);
 }
 
 /** Ids appearing in the notification feed. */
 async function notifiedIds(): Promise<string[]> {
-  const res = await hooksReadRouter.request("/notifications", {
+  const res = await notificationsRouter.request("/", {
     method: "GET",
   });
   const body = (await res.json()) as {

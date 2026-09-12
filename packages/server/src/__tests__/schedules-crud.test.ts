@@ -119,6 +119,20 @@ describe("schedules CRUD", () => {
 
   // ── createSchedule ─────────────────────────────────────────
 
+  describe("reserved names (scheduler-control routes own these paths)", () => {
+    // Recovered from route-rename-aliases.test.ts when the aliases died —
+    // this invariant is NOT alias behavior: /api/schedules/{status,settings}
+    // are the scheduler-control routes, and a schedule with either name
+    // would be unreachable over REST (first-registered mount wins).
+    it("rejects 'status' and 'settings' as schedule names", () => {
+      for (const name of ["status", "settings"]) {
+        const err = validateScheduleInput({ name });
+        assert.ok(err?.includes("reserved"), `${name}: ${err}`);
+      }
+      assert.equal(validateScheduleInput({ name: "normal-name" }), null);
+    });
+  });
+
   describe("createSchedule", () => {
     it("creates a schedule file on disk", () => {
       const config = makeConfig({ name: "my-schedule" });

@@ -106,7 +106,7 @@ Tool definitions live in `packages/server/src/mcp/tools.ts` — shared between:
 - **HTTP MCP server** (`mcp.ts`) — served on the internal Unix control socket (`$configDir/control.sock`), NOT the public port (ADR-055). Reachable only by same-user processes on the box; a remote client would need a tunnel or a local forwarder. Still requires the auth token.
 - **Channel MCP server** (`channel-server/`) — for autonomOS-spawned CC sessions
 
-Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`. The channel server also has `send` (requires gateway WebSocket).
+Both servers expose: `create_agent`, `list_agents`, `kill_agent`, `set_manager`, `get_org_chart`, `list_templates`, `create_template`, `self_exit`, `create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`, `list_env_presets`, `create_env_preset`, `update_env_preset`, `delete_env_preset`. The channel server also has `send` (requires gateway WebSocket).
 
 ### Cron Scheduler (`scheduler.ts` + `schedules.ts`)
 Native timer-based scheduling using Croner v10. Each enabled schedule gets its own `Cron` instance (no polling). Schedules stored as individual JSON files in `~/.autonomos/schedules/<name>.json` (config + state). Run history as append-only JSONL in `~/.autonomos/schedule-runs/<name>.jsonl` (auto-pruned at 2000 lines).

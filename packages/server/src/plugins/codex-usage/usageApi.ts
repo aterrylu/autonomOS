@@ -15,6 +15,7 @@
  * can never discard the primary/secondary mapping.
  */
 
+import { limitDescription, limitDisplayName, limitId } from "./limitLabels.js";
 import type {
   CodexCredits,
   CodexNamedLimit,
@@ -42,10 +43,15 @@ const defaultFetcher: CodexUsageFetcher = (url, init) => fetch(url, init);
 
 // ── Raw response shape (snake_case, all optional — lossy by design) ──────────
 
+/** Every numeric field may arrive as a numeric STRING — the endpoint started
+ *  stringifying `credits.balance` on the 2026 Pro plans and the same
+ *  serializer produces the windows, so all three go through {@link parseNumber}. */
+type RawNumber = number | string | null;
+
 interface RawWindow {
-  used_percent?: number;
-  reset_at?: number; // epoch seconds
-  limit_window_seconds?: number;
+  used_percent?: RawNumber;
+  reset_at?: RawNumber; // epoch seconds
+  limit_window_seconds?: RawNumber;
 }
 
 interface RawRateLimit {
@@ -54,15 +60,19 @@ interface RawRateLimit {
 }
 
 interface RawAdditionalLimit {
-  limit_name?: string;
-  metered_feature?: string;
+  limit_name?: string | null;
+  metered_feature?: string | null;
   rate_limit?: RawRateLimit | null;
+  /** The ordinary model a reserve lane stands in for ("gpt-5.6-luna"). */
+  normal_model_slug?: string | null;
 }
 
 interface RawCredits {
   has_credits?: boolean;
   unlimited?: boolean;
-  balance?: number | null;
+  /** Numeric, or a numeric STRING — the endpoint started sending `"0"` on the
+   *  2026 Pro plans (codexbar decodes both, CreditDetails). */
+  balance?: RawNumber;
 }
 
 export interface CodexUsageRaw {
@@ -87,16 +97,32 @@ export interface MappedCodexUsage {
 export function mapWindow(
   raw: RawWindow | null | undefined,
 ): CodexUsageWindow | null {
-  if (!raw || typeof raw.used_percent !== "number") return null;
-  const windowMinutes =
-    typeof raw.limit_window_seconds === "number"
-      ? Math.round(raw.limit_window_seconds / 60)
-      : 0;
+  if (!raw || typeof raw !== "object") return null;
+  const usedPercent = parseNumber(raw.used_percent);
+  if (usedPercent === null) {
+    // A window object is PRESENT but its utilization isn't a number — that
+    // drops a lane (or hides the whole bar), so say so once rather than
+    // silently. Lossy stays lossy; it just stops being invisible.
+    warnOnce(
+      `window used_percent unparseable: ${JSON.stringify(raw.used_percent)}`,
+    );
+    return null;
+  }
+  const seconds = parseNumber(raw.limit_window_seconds);
+  const windowMinutes = seconds === null ? 0 : Math.round(seconds / 60);
+  const resetAt = parseNumber(raw.reset_at);
   const resetsAt =
-    typeof raw.reset_at === "number"
-      ? new Date(raw.reset_at * 1000).toISOString()
-      : null;
-  return { usedPercent: raw.used_percent, windowMinutes, resetsAt };
+    resetAt === null ? null : new Date(resetAt * 1000).toISOString();
+  return { usedPercent, windowMinutes, resetsAt };
+}
+
+/** Raw values already warned about this process — the endpoint is polled
+ *  every minute, so a persistent oddity would otherwise log every poll. */
+const warned = new Set<string>();
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(`[codex-usage] ${message}`);
 }
 
 /** Map raw credit fields → CodexCredits. Shared with the rollout scanner, whose
@@ -108,28 +134,68 @@ export function mapCredits(
   return {
     hasCredits: raw.has_credits === true,
     unlimited: raw.unlimited === true,
-    balance: typeof raw.balance === "number" ? raw.balance : null,
+    balance: parseBalance(raw.balance),
   };
+}
+
+/** Balance: parsed like any other number, but an unparseable NON-empty value
+ *  is logged once — with `has_credits: true` the panel then shows "Available"
+ *  and the user can't otherwise tell the figure was dropped. */
+function parseBalance(raw: RawNumber | undefined): number | null {
+  const n = parseNumber(raw);
+  if (n === null && typeof raw === "string" && raw.trim() !== "") {
+    warnOnce(`credit balance unparseable: ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
+/** A finite number, or a non-empty string that parses to one; anything else
+ *  (null, "", "abc", booleans, objects) → null. Exported for tests. */
+export function parseNumber(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 /** Map the per-model `additional_rate_limits[]`. Lossy per element: a malformed
  *  entry is skipped, never throwing away its valid siblings. Entries with no
- *  usable window on either side are dropped (nothing to render). */
+ *  usable window on either side are dropped (nothing to render) — that is the
+ *  ONE reason a lane is ever skipped; its NAME is never a reason. Names go
+ *  through {@link limitDisplayName}: known lanes get the Codex CLI's wording,
+ *  UNKNOWN lanes are prettified and kept (see limitLabels.ts).
+ *  Ids are de-duplicated with a numeric suffix rather than dropping the later
+ *  entry, so two lanes sharing a metered feature both still render. */
 function mapAdditionalLimits(
   raw: RawAdditionalLimit[] | null | undefined,
 ): CodexNamedLimit[] {
   if (!Array.isArray(raw)) return [];
   const out: CodexNamedLimit[] = [];
+  const usedIds = new Set<string>();
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
     const primary = mapWindow(entry.rate_limit?.primary_window);
     const secondary = mapWindow(entry.rate_limit?.secondary_window);
     if (!primary && !secondary) continue;
-    const name =
-      entry.limit_name?.trim() || entry.metered_feature?.trim() || "Limit";
-    out.push({
-      name,
+    const identity = {
+      limitName: entry.limit_name,
       meteredFeature: entry.metered_feature,
+      normalModelSlug: entry.normal_model_slug,
+    };
+    const base = limitId(identity) ?? `codex-limit-${out.length + 1}`;
+    let id = base;
+    for (let n = 2; usedIds.has(id); n++) id = `${base}-${n}`;
+    usedIds.add(id);
+    out.push({
+      id,
+      name: limitDisplayName(identity),
+      description: limitDescription(identity),
+      meteredFeature:
+        typeof entry.metered_feature === "string"
+          ? entry.metered_feature.trim() || undefined
+          : undefined,
       primary,
       secondary,
     });

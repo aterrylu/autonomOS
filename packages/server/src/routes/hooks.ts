@@ -126,8 +126,13 @@ function restoredStatus(baseline: AgentStatus | undefined): AgentStatus {
   return STALE_ON_RESTORE.has(baseline) ? "working" : baseline;
 }
 
-/** Events that generate a user-visible notification badge */
-const NOTIFY_EVENTS = new Set(["Notification", "Stop", "PermissionRequest"]);
+/** Hook events that generate a user-facing notification. Deliberately EXCLUDES
+ *  `Stop`: a raw turn-end is ACTIVITY (already surfaced by the working/idle
+ *  status + lastActivityAt), not a notification. Counting it inflated the
+ *  sidebar unread badge while the bell panel — which filtered Stop out — showed
+ *  nothing, so the two disagreed (F3). Codex's turn-complete is handled
+ *  separately: it appends the agent's actual message (see noteAgentMessage). */
+const NOTIFY_EVENTS = new Set(["Notification", "PermissionRequest"]);
 
 // ── Notification helpers ─────────────────────────────────────────────
 
@@ -135,8 +140,24 @@ export function getNotifications(sessionId: string): SessionNotification[] {
   return notifications.get(sessionId) ?? [];
 }
 
+/**
+ * A notification is USER-FACING — it counts toward the unread (#num) badge AND
+ * shows in the bell panel — unless it's a raw turn-end `Stop`. ONE predicate for
+ * BOTH surfaces is the whole fix for F3: the sidebar count can no longer diverge
+ * from the panel, because both read this. (Deny-list, not allow-list, so a new
+ * user-facing event type is surfaced everywhere by default; only bare Stop —
+ * pure activity — is withheld. Belt-and-suspenders: `Stop` is no longer appended
+ * either, so this also cleans up any legacy in-memory Stop from before a
+ * restart.)
+ */
+export function isUserFacingNotification(n: SessionNotification): boolean {
+  return n.event !== "Stop";
+}
+
 export function getUnreadCount(sessionId: string): number {
-  return getNotifications(sessionId).filter((n) => !n.read).length;
+  return getNotifications(sessionId).filter(
+    (n) => !n.read && isUserFacingNotification(n),
+  ).length;
 }
 
 /**
@@ -245,34 +266,32 @@ export function retractSystemNotification(
 }
 
 /**
- * Record a COMPLETED AGENT TURN as an unread notification, for providers with no
- * hook relay (Codex): they never fire the `Stop` hook that CC/Gemini use to bump
- * the unread (#num) badge, so their turns went uncounted. The caller (the Codex
- * activity sink in gateway/index.ts) invokes this on the working→idle turn
- * boundary — Codex's `Stop` analog. It feeds the SAME notification/unread path a
- * `Stop` hook does (appendNotification → getUnreadCount → emitStatusDelta), so
- * the badge increments live and `markRead` (on pane-view) clears it — NOT a
- * parallel counter. Content-less like CC's own `Stop` notification; surfacing the
- * agent's message text in the panel is a separate, queued enhancement.
+ * Record a completed Codex turn as an AGENT MESSAGE notification — the agent's
+ * actual reply text — so it BOTH counts toward the unread (#num) badge AND shows
+ * in the bell panel with content, exactly like a Claude Code `SendUserMessage`.
+ * Codex has no hook relay, so the caller (the Codex activity sink in
+ * gateway/index.ts) reads the reply off the agent's rollout at the working→idle
+ * turn boundary and passes it here. This supersedes the earlier content-less
+ * `Stop` bump (#358): a raw Stop counted on the sidebar but was filtered from the
+ * panel (F3) — an agent MESSAGE is user-facing on both surfaces.
  *
- * LIVE-PUSH INVARIANT: `emitStatusDelta` intentionally stays silent for a session
- * with no `agentStates` entry (it must not emit deltas for a session that never
- * reported status). The count is always correct on the next poll/reconcile
- * regardless, but for the LIVE badge push the caller must have set the agent's
- * status first. The Codex sink satisfies this for free — a working→idle flush is
- * only reachable AFTER a "working" observation, and that "working" already
- * created the entry via `setAgentStatus`. A future caller for a status-less
- * session would still get a correct count, just no live push.
+ * LIVE-PUSH INVARIANT: `emitStatusDelta` (called by appendNotification) stays
+ * silent for a session with no `agentStates` entry — it must not emit deltas for
+ * a session that never reported status. The count is correct on the next
+ * poll/reconcile regardless, but for the LIVE badge push the caller must have set
+ * the agent's status first. The Codex sink satisfies this for free: a
+ * working→idle flush only happens AFTER a "working" observation, which already
+ * created the entry via `setAgentStatus`.
  *
- * Best-effort, matching the sink's own semantics (#352): one notification per
- * working→idle turn boundary. Under-counts are possible — deliberately — when a
- * turn ends through a compaction or its idle edge is missed (a coarser analog of
- * CC's exact per-Stop count). A repeated `idle` cannot re-fire (the sink dedups
- * on its prev-status), so a stable turn is counted exactly once.
+ * Best-effort (#352 sink semantics): one per working→idle boundary; under-counts
+ * possible (turn ends through compaction, or a missed idle edge, or the reply not
+ * yet flushed to the rollout). A repeated `idle` can't re-fire (the sink dedups
+ * on prev-status), so a stable turn is counted exactly once.
  */
-export function noteAgentTurnComplete(sessionId: string): void {
+export function noteAgentMessage(sessionId: string, message: string): void {
   appendNotification(sessionId, {
-    event: "Stop",
+    event: "AgentMessage",
+    message,
     timestamp: Date.now(),
     read: false,
   });
@@ -674,9 +693,8 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
 //
 // PR C renamed the mounts: `GET /api/agent-status` (status map) and
 // `/api/notifications` (feed + read-marking) — names that say what they
-// serve instead of how it's produced. `hooksReadRouter` below is the
-// ONE-RELEASE compat alias preserving the old `/api/hooks` read shape;
-// both routers share these handlers, so the alias cannot drift.
+// serve instead of how it's produced. The one-release `/api/hooks` read
+// alias that shared these handlers was removed after its window (ADR-084).
 
 // Bulk notifications across all sessions (for notification panel)
 const notificationFeedHandler = (c: Context) => {
@@ -691,11 +709,12 @@ const notificationFeedHandler = (c: Context) => {
   for (const [sessionId, items] of notifications) {
     const name = sessionNames.get(sessionId) ?? sessionId.slice(0, 8);
     for (const n of items) {
-      // Show SendUserMessage (actual agent messages from --brief) and
-      // SystemWarning (server-originated alerts, e.g. prompt re-delivery).
-      // Other events (Stop, Notification, PermissionRequest) are system noise.
-      if (n.event !== "SendUserMessage" && n.event !== "SystemWarning")
-        continue;
+      // Show every USER-FACING notification — agent messages (SendUserMessage /
+      // codex AgentMessage), SystemWarnings, Notifications, and PermissionRequests
+      // (a permission ask must never be a phantom count with an empty panel). The
+      // SAME predicate gates getUnreadCount, so this panel and the sidebar badge
+      // can't disagree (F3). Only a raw turn-end Stop is withheld as activity.
+      if (!isUserFacingNotification(n)) continue;
       all.push({ ...n, sessionId, sessionName: name });
       if (!n.read) totalUnread++;
     }
@@ -740,11 +759,3 @@ agentStatusRouter.get("/", statusMapHandler);
 export const notificationsRouter = new Hono();
 notificationsRouter.get("/", notificationFeedHandler);
 notificationsRouter.post("/:sessionId/read", markReadHandler);
-
-/** ONE-RELEASE compat alias: the pre-rename `/api/hooks` read shape.
- *  Same handlers as above — the alias cannot drift. Removed next release
- *  along with the `deprecatedAlias` wrapper at its mount. */
-export const hooksReadRouter = new Hono();
-hooksReadRouter.get("/notifications", notificationFeedHandler);
-hooksReadRouter.post("/:sessionId/read", markReadHandler);
-hooksReadRouter.get("/", statusMapHandler);

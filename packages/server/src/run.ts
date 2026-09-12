@@ -30,7 +30,6 @@ import {
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
-import { deprecatedAlias } from "./deprecation.js";
 import { installErrorHandling } from "./httpError.js";
 import {
   assertUsableSocketPath,
@@ -53,7 +52,6 @@ import { gatewayRouter } from "./routes/gateway.js";
 import {
   agentStatusRouter,
   hooksIngestRouter,
-  hooksReadRouter,
   notificationsRouter,
 } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
@@ -321,10 +319,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   };
   // PR C: /api/auth is the real path (the ONE endpoint that used to live
   // outside /api). It needs an explicit requireAuth exemption below — you
-  // cannot hold a token cookie before authenticating. Old path aliased one
-  // release.
+  // cannot hold a token cookie before authenticating. The old /auth alias
+  // was removed after its one-release window (ADR-084).
   app.post("/api/auth", authHandler);
-  app.post("/auth", deprecatedAlias("/auth", "/api/auth"), authHandler);
 
   const requireAuth: MiddlewareHandler = async (c, next) => {
     // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
@@ -334,6 +331,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // too. Removing it means there is no unauthenticated POST anywhere on the
     // public surface; the browser already sends the token for /read.
     if (c.req.method === "GET" && c.req.path === "/api/host") return next();
+    // Agent SELF metadata (statusline, #297 follow-up): the PTY env carries
+    // no server token by design, so this one narrow GET is authenticated by
+    // the PER-AGENT token INSIDE the route (verifyAgentToken 401s there —
+    // deny-by-default is preserved, just enforced at the route).
+    if (
+      c.req.method === "GET" &&
+      /^\/api\/agents\/[A-Za-z0-9-]+\/self$/.test(c.req.path)
+    )
+      return next();
     // The login endpoint itself — a browser cannot present the cookie it is
     // asking for. Token verification happens inside the handler.
     if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
@@ -394,16 +400,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Hook INGEST is internal-only (unchanged — the relay curls post here).
   // The READ surface renamed in PR C to say what it serves: the status map
   // at /api/agent-status, the feed + read-marking at /api/notifications.
-  // /api/hooks (read) is the one-release alias.
+
   internalApp.route("/api/hooks", hooksIngestRouter);
   app.route("/api/agent-status", agentStatusRouter);
   app.route("/api/notifications", notificationsRouter);
-  // The wildcard middleware also matches the bare /api/hooks path.
-  app.use(
-    "/api/hooks/*",
-    deprecatedAlias("/api/hooks", "/api/agent-status + /api/notifications"),
-  );
-  app.route("/api/hooks", hooksReadRouter);
 
   // REST API (behind auth)
   app.route("/api/projects", projectRouter);
@@ -418,14 +418,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // :name router or the param route shadows them (verified — Hono resolves
   // same-base mounts in registration order). "status"/"settings" are also
   // reserved as schedule names at create (validation.ts) so a schedule can
-  // never claim those keys. /api/scheduler is the one-release alias.
+  // never claim those keys.
   app.route("/api/schedules", schedulerRouter);
   app.route("/api/schedules", scheduleRouter);
-  app.use(
-    "/api/scheduler/*",
-    deprecatedAlias("/api/scheduler", "/api/schedules/{status,settings}"),
-  );
-  app.route("/api/scheduler", schedulerRouter);
   app.route("/api/plugins/claude-usage", claudeUsageRouter);
   app.route("/api/plugins/codex-usage", codexUsageRouter);
   app.route("/api/usage-queue", usageQueueRouter);

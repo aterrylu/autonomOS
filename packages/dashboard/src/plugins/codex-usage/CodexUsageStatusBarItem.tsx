@@ -23,8 +23,13 @@ function Divider({ color }: { color: string }) {
   );
 }
 
+/** Widest a named-limit label may grow in the bar before it ellipsizes — an
+ *  unknown future lane with a long name must not push the bar's neighbors. */
+const NAMED_LABEL_MAX_WIDTH = 120;
+
 /** Inline "<label> <pct>%" for one window, colored by utilization. `name`
- * overrides the window-length label, for a named limit that shows its own. */
+ * overrides the window-length label, for a named limit that shows its own;
+ * a named label is capped in width and ellipsized (full text in the title). */
 function WindowLabel({
   window,
   name,
@@ -35,8 +40,23 @@ function WindowLabel({
   const pct = Math.round(window.usedPercent);
   const label = name ?? (windowLabel(window.windowMinutes) || "usage");
   return (
-    <span title={`${label}: ${pct}% used`}>
-      <span style={{ fontSize: 10, opacity: 0.85 }}>{label}</span>{" "}
+    <span
+      title={`${label}: ${pct}% used`}
+      className="inline-flex items-baseline gap-1"
+    >
+      <span
+        className={name ? "truncate" : undefined}
+        style={{
+          fontSize: 10,
+          opacity: 0.85,
+          // inline-block so max-width applies regardless of the wrapper's
+          // display (max-width is ignored on a non-replaced inline element).
+          display: "inline-block",
+          maxWidth: name ? NAMED_LABEL_MAX_WIDTH : undefined,
+        }}
+      >
+        {label}
+      </span>
       <span style={{ color: utilizationColor(pct) }}>{pct}%</span>
     </span>
   );
