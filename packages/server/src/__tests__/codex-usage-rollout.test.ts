@@ -129,4 +129,18 @@ describe("codex rolloutScanner — mapRolloutWindow", () => {
     assert.equal(mapRolloutWindow(null), null);
     assert.equal(mapRolloutWindow({ window_minutes: 5 }), null);
   });
+
+  it("tolerates numeric STRINGS like the live path — the fallback has no second chance", () => {
+    const w = mapRolloutWindow({
+      used_percent: "34" as never,
+      window_minutes: "10080" as never,
+      resets_at: "1784531445" as never,
+    });
+    assert.deepEqual(w, {
+      usedPercent: 34,
+      windowMinutes: 10_080,
+      resetsAt: new Date(1_784_531_445_000).toISOString(),
+    });
+    assert.equal(mapRolloutWindow({ used_percent: "abc" as never }), null);
+  });
 });

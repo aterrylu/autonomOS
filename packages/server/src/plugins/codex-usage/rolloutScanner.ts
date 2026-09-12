@@ -21,18 +21,21 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { codexHome } from "./codexHome.js";
 import type { CodexCredits, CodexUsageWindow } from "./types.js";
-import { mapCredits } from "./usageApi.js";
+import { mapCredits, parseNumber } from "./usageApi.js";
 
 /** How many recent rollout files to inspect for the freshest snapshot. Rate
  *  limits are account-global, so a handful of the most-recent threads is plenty
  *  to find the latest event without walking the entire history. */
 const MAX_FILES_SCANNED = 8;
 
-/** Raw rollout window shape (snake_case, epoch-seconds reset). */
+/** Raw rollout window shape (snake_case, epoch-seconds reset). Numeric fields
+ *  may arrive as numeric STRINGS, same as the live endpoint (see usageApi.ts
+ *  `parseNumber`) — the fallback is the path with no second chance, so it
+ *  tolerates the same quoting the live path does. */
 interface RolloutWindow {
-  used_percent?: number;
-  window_minutes?: number;
-  resets_at?: number;
+  used_percent?: number | string | null;
+  window_minutes?: number | string | null;
+  resets_at?: number | string | null;
 }
 
 interface RolloutRateLimits {
@@ -60,16 +63,15 @@ export interface RolloutSnapshot {
 export function mapRolloutWindow(
   raw: RolloutWindow | null | undefined,
 ): CodexUsageWindow | null {
-  if (!raw || typeof raw.used_percent !== "number") return null;
-  const resetsAt =
-    typeof raw.resets_at === "number"
-      ? new Date(raw.resets_at * 1000).toISOString()
-      : null;
+  if (!raw || typeof raw !== "object") return null;
+  const usedPercent = parseNumber(raw.used_percent);
+  if (usedPercent === null) return null;
+  const minutes = parseNumber(raw.window_minutes);
+  const resetAt = parseNumber(raw.resets_at);
   return {
-    usedPercent: raw.used_percent,
-    windowMinutes:
-      typeof raw.window_minutes === "number" ? raw.window_minutes : 0,
-    resetsAt,
+    usedPercent,
+    windowMinutes: minutes ?? 0,
+    resetsAt: resetAt === null ? null : new Date(resetAt * 1000).toISOString(),
   };
 }
 
