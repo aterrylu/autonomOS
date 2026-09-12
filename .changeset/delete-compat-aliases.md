@@ -1,5 +1,5 @@
 ---
-"@autonomos/server": patch
+"@autonomos/server": minor
 ---
 
 feat(server)!: remove the one-release route compat aliases (executes ADR-084/ADR-092's recorded plan)

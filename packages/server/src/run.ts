@@ -319,8 +319,8 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   };
   // PR C: /api/auth is the real path (the ONE endpoint that used to live
   // outside /api). It needs an explicit requireAuth exemption below — you
-  // cannot hold a token cookie before authenticating. Old path aliased one
-  // release.
+  // cannot hold a token cookie before authenticating. The old /auth alias
+  // was removed after its one-release window (ADR-084).
   app.post("/api/auth", authHandler);
 
   const requireAuth: MiddlewareHandler = async (c, next) => {
@@ -400,7 +400,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Hook INGEST is internal-only (unchanged — the relay curls post here).
   // The READ surface renamed in PR C to say what it serves: the status map
   // at /api/agent-status, the feed + read-marking at /api/notifications.
-  // /api/hooks (read) is the one-release alias.
+
   internalApp.route("/api/hooks", hooksIngestRouter);
   app.route("/api/agent-status", agentStatusRouter);
   app.route("/api/notifications", notificationsRouter);
