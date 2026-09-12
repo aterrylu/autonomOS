@@ -158,12 +158,21 @@ export function useTerminal(
     };
   }, [sessionId, setStatus, containerRef, handleClipboardCopy, reloadNonce]);
 
-  // Focus terminal when it becomes the active session
+  // Focus the terminal when it becomes the active session — AND after a reload
+  // (restart) of the already-active pane. The reload nonce is a dep because a
+  // restart-while-focused replaces the terminal without `isActive` changing, so
+  // without it the freshly-acquired terminal would render but keep no keyboard
+  // focus — the user would have to click back in (Terry's re-test). The acquire
+  // effect above shares the same nonce dep and runs first, so the new terminal
+  // is mounted by the time this focuses it. reloadNonce is an intentional re-run
+  // TRIGGER (the terminal underneath was replaced by a restart), not a value
+  // read in the body — exactly the case exhaustive-deps can't model.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadNonce is an intentional re-run trigger, not read in the body.
   useEffect(() => {
     if (isActive) {
       getLiveTerminal(sessionId)?.terminal.focus();
     }
-  }, [isActive, sessionId]);
+  }, [isActive, sessionId, reloadNonce]);
 
   // Update theme on the live terminal
   useEffect(() => {
