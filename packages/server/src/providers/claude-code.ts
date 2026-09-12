@@ -73,16 +73,25 @@ const TRUST_NEEDLES = [
   "Itrustthisfolder",
 ];
 
-// Highlight (selection) markers for the trust dialog, matched on
-// ANSI-stripped text where the TUI may drop spaces. CC ≥2.1.26x renders a
+// Highlight (selection) markers for the trust dialog. CC ≥2.1.26x renders a
 // "Quick safety check" variant whose DEFAULT selection is "❯ No, exit" — a
 // bare Enter there exits the session (verified by PTY probe on 2.1.269), so
 // the watcher must read where the ❯ sits before it confirms anything.
-const TRUST_NO_SELECTED = ["❯ No, exit", "❯No,exit"];
-const TRUST_YES_SELECTED = [
-  "❯ Yes, I trust this folder",
-  "❯Yes,Itrustthisfolder",
-];
+//
+// Matching is on WHITESPACE-NORMALIZED text (all spaces removed): the real
+// render interleaves cursor-positioning CSI with the glyphs (e.g.
+// `❯\x1b[4GNo, exit`), so after ANSI stripping the spacing around ❯ and
+// inside the label is arbitrary — a literal-spacing needle silently never
+// matches, and "no highlight found" degrades to the fatal bare Enter. That
+// exact miss shipped once: the fakes used the assumed spacing, so unit tests
+// were green while CI's real dialog exited every agent.
+const TRUST_NO_SELECTED_NORM = "❯No,exit";
+const TRUST_YES_SELECTED_NORM = "❯Yes,Itrustthisfolder";
+
+/** All whitespace removed — the normal form highlight needles match on. */
+function despace(s: string): string {
+  return s.replace(/\s+/g, "");
+}
 
 const DOWN_ARROW = "\x1b[B";
 
@@ -100,9 +109,9 @@ const DOWN_ARROW = "\x1b[B";
  *     bare Enter (the pre-variant behavior, unchanged).
  */
 function trustKeysFor(buffer: string): string[] {
-  const last = (needles: string[]) =>
-    Math.max(...needles.map((n) => buffer.lastIndexOf(n)));
-  return last(TRUST_NO_SELECTED) > last(TRUST_YES_SELECTED)
+  const norm = despace(buffer);
+  return norm.lastIndexOf(TRUST_NO_SELECTED_NORM) >
+    norm.lastIndexOf(TRUST_YES_SELECTED_NORM)
     ? [DOWN_ARROW, "\r"]
     : ["\r"];
 }
@@ -637,12 +646,9 @@ export function attachStartupWatcherCore(
         d.checkTimer = setTimeout(() => {
           d.checkTimer = null;
           if (disposed) return;
-          const lastYes = Math.max(
-            ...TRUST_YES_SELECTED.map((n) => d.freshBuf.lastIndexOf(n)),
-          );
-          const lastNo = Math.max(
-            ...TRUST_NO_SELECTED.map((n) => d.freshBuf.lastIndexOf(n)),
-          );
+          const norm = despace(d.freshBuf);
+          const lastYes = norm.lastIndexOf(TRUST_YES_SELECTED_NORM);
+          const lastNo = norm.lastIndexOf(TRUST_NO_SELECTED_NORM);
           if (lastYes >= 0 && lastYes > lastNo) {
             if (!writeKey("\r")) {
               cleanup();

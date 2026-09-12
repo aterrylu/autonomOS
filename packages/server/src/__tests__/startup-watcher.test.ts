@@ -424,6 +424,34 @@ describe("startup watcher — default-No trust dialog + verified dismissal", () 
     );
   });
 
+  it("REAL RENDER BYTES: highlight detection survives CC's actual CSI-interleaved frames", async () => {
+    // Fixtures below are VERBATIM raw captures from claude 2.1.269 (cursor
+    // positioning interleaved with glyphs). The first shipped version of the
+    // highlight needles assumed clean spacing, matched nothing on these, and
+    // degraded to the fatal bare Enter — while spacing-matched fakes kept
+    // the suite green. Real bytes are the only honest fixture.
+    const RAW_DEFAULT_NO =
+      "Yes, I trust this folder\n\x1b[1C\x1b[4A\x1b[38;5;153m\u276f\x1b[4GNo, exit\n\x1b[1C\x1b[1B\x1b[39m \x1b[4GYes, I trust this folder";
+    const RAW_YES_SELECTED =
+      "\x1b[4GNo, exit\n\x1b[1C\x1b[1B\x1b[38;5;153m\u276f\x1b[4GYes, I trust this folder\x1b[39m";
+    const pty = new FakePty();
+    let sawDown = false;
+    pty.onWrite = (data) => {
+      if (data === DOWN) {
+        sawDown = true;
+        setTimeout(() => pty.emit(RAW_YES_SELECTED), 2);
+        return;
+      }
+      assert.ok(sawDown, "bare Enter on the raw default-No frame is the kill");
+      setTimeout(() => pty.emit(WELCOME), 2);
+    };
+    attachStartupWatcherCore(pty, OPTS, { expectChannels: false, ...FAST });
+
+    pty.emit(RAW_DEFAULT_NO);
+    await waitFor(() => pty.watcherCount === 0, "raw frames dismissed");
+    assert.deepEqual(pty.written, [DOWN, "\r"]);
+  });
+
   it("REMOUNT RACE: selection resetting to No after Down blocks the Enter", async () => {
     const pty = new FakePty();
     let attempt2Enters = 0;
