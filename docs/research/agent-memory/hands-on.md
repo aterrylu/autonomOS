@@ -112,6 +112,60 @@ The current guide describes **Letta Code** (an `npm` CLI coding agent) plus an *
 3. **Provider-neutral access via MCP is trivial for every option** — but each extra tool in the list is a Codex/Gemini approval prompt unless pre-approved, which argues for 2–3 tools, not 23.
 4. **Letta is out** as a memory backend for external agents; the OSS server that would have made that possible is EOL.
 
-## Cleanup
+## 8. Second round (2026-09-12): verbatim modes and two more boots
+
+Run for [`external.md`](external.md), same isolation as above.
+
+### 8a. mem0 `infer=False` (raw mode)
+
+Three rules added with `infer=False`, `agent_id="MemoryResearch"`, `metadata={scope, author}`; Ollama embedder; no LLM call.
+
+| Metric | Value |
+|---|---|
+| add latency | 0.72 s first (embedder warm-up), then 0.03–0.07 s |
+| Stored text | byte-identical to the input, metadata preserved |
+| `search("which port must I never bind?")` | right rule first, score 0.559, 0.02 s |
+
+The paraphrase, duplication and missed-contradiction behaviour in §3 is therefore a property of `infer=True`, chosen per write, not of mem0.
+
+### 8b. cognee 1.5.4 + cognee-mcp 0.5.5, fully local
+
+Config: Ollama LLM `qwen2:7b`, Ollama embedder, SQLite + LanceDB + Kuzu defaults.
+
+| Step | Result |
+|---|---|
+| `add` ×3 | 0.71 s. But `add` first runs an LLM connection test (30 s timeout) — a cold 7B failed it until `COGNEE_SKIP_CONNECTION_TEST=true` |
+| Ollama endpoint | the Ollama provider posts to `<LLM_ENDPOINT>/api/generate`; an OpenAI-style `/v1` endpoint produced a retry storm of 404s |
+| `search(CHUNKS)` before `cognify` | `NoDataError: No data found` — **nothing is searchable until cognify** |
+| `cognify` | 14.5 s for three one-line facts on the 7B, with one 500 from a 30 s structured-output timeout on the way |
+| `search(GRAPH_COMPLETION)` | 34.8 s; answer is an LLM paraphrase: *"The port that must never be bound, tunneled, or served from elsewhere is local port 3100."* |
+| `search(CHUNKS)` | 24 s in the first run (returned graph index objects); 2.2 s in a second run, which returned the string `"Got it."` — an LLM one-liner, not chunk text |
+| Data footprint | 4.6 MB for three facts (Kuzu + LanceDB + SQLite) |
+
+Verbatim chunk retrieval evidently needs cognee's lower-level retrievers (`CHUNKS_LEXICAL` per its source) rather than the top-level `search`; I stopped after two attempts rather than debug further.
+
+### 8c. Honcho 3.1.2 self-hosted (api + pgvector + redis)
+
+Compose from the repo's example with `deriver`/`mcp` removed and ports moved to `18000/15432/16379`; `DERIVER_ENABLED=false`; embeddings via Ollama's OpenAI-compatible `/v1` (`EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=http://host.docker.internal:11435/v1`, 768 dims).
+
+| Metric | Value |
+|---|---|
+| `docker compose up --build` | 26 s; api image 0.66 GB |
+| First boot | **failed**: schema is created at 1536 dims (OpenAI default) and startup validation refuses a 768-dim embedder until `python scripts/configure_embeddings.py --yes` runs inside the api container (`uv` is not on the image PATH; the venv's `python` is) |
+| RSS after boot | api 262 MB, postgres 34 MB, redis 12 MB |
+| Create workspace + 3 peers + 4 conclusions (batch) | 201, 1.53 s; conclusions come back with `level: "explicit"`, `observer_id`, `observed_id`, verbatim `content` |
+| `conclusions/query` without filters | **422** — *"observer and observed must be specified for semantic search"* |
+| query "which port must I never bind?" (observer=MemoryResearch, observed=fleet) | right rule first, 0.06 s |
+| query **"3100"** (same filters) | right rule first, 0.03 s — exact-token recall works via embeddings alone (no BM25 on conclusions) |
+| query "port" (observer=ReleaseRollout, observed=fleet) | empty — another agent cannot see MemoryResearch's fleet fact without naming the observer |
+| `conclusions/list` with `observed_id=fleet` | 3 rows (unranked) — the fleet-wide fallback |
+
+Reading: the strongest self-host boot of the round and the only backend with native attribution, but fleet-wide *search* is pair-scoped by design; a shim must fan out or adopt a convention peer.
+
+### Cleanup (round 2)
+
+Honcho stack and its built image removed (`compose down -v`), cognee data left in the scratchpad, Ollama stopped by PID again. Nothing outside the scratchpad changed except the same 274 MB embedding model.
+
+## Cleanup (round 1)
 
 The isolated Ollama was stopped by PID, the Letta container and its 1.1 GB image were removed, and the scratchpad venv is session-local. The only residue is the pulled `nomic-embed-text` model in `~/.ollama/models` (274 MB), removable with `ollama rm nomic-embed-text`.
