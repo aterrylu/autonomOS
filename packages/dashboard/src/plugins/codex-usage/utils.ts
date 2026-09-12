@@ -49,8 +49,10 @@ const PLAN_DISPLAY_NAMES: Record<string, string> = {
   prolite: "Pro 5x",
 };
 
-/** Plan-id words spelled in caps ("k12" → "K12"). */
-const PLAN_UPPERCASE_WORDS = new Set(["cbp", "k12"]);
+/** Plan-id words spelled in caps ("k12" → "K12", "gpt" → "GPT"). Mirrors the
+ *  server's lane prettifier (limitLabels.ts) so the two never disagree on a
+ *  shared token. */
+const PLAN_UPPERCASE_WORDS = new Set(["cbp", "gpt", "k12"]);
 
 /**
  * Human plan name for the panel pill. Known ids map to their marketing name;
@@ -67,11 +69,15 @@ export function formatPlan(plan?: string | null): string | null {
   if (Object.hasOwn(PLAN_DISPLAY_NAMES, key)) return PLAN_DISPLAY_NAMES[key];
   const words = raw.split(/[-_\s]+/).filter(Boolean);
   if (words.length === 0) return raw;
+  // Same joining rule as the server's prettifyLimitName: a version token
+  // stays attached to its prefix ("gpt-5" → "GPT-5", not "GPT 5").
   return words
     .map((w) => {
       const lower = w.toLowerCase();
       if (PLAN_UPPERCASE_WORDS.has(lower)) return lower.toUpperCase();
       return w.charAt(0).toUpperCase() + w.slice(1);
     })
-    .join(" ");
+    .reduce((acc, w, i) =>
+      i === 0 ? w : /^\d/.test(w) ? `${acc}-${w}` : `${acc} ${w}`,
+    );
 }

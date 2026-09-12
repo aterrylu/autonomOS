@@ -104,7 +104,7 @@ function NamedLimit({
       style={{ borderTop: `1px solid ${page.border}` }}
       data-testid="codex-named-limit"
     >
-      <div className="mb-2 min-w-0">
+      <div className="mb-2">
         <div
           className="font-medium truncate"
           style={{ color: page.fg }}

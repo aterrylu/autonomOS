@@ -40,7 +40,8 @@ describe("codex-usage formatPlan (known marketing names, unknown ids never hidde
   it("FUTURE-SAFETY: renders an unknown plan id word-split and capitalized", () => {
     expect(formatPlan("free_workspace")).toBe("Free Workspace");
     expect(formatPlan("k12")).toBe("K12");
-    expect(formatPlan("ultra-max_2027")).toBe("Ultra Max 2027");
+    expect(formatPlan("ultra-max_2027")).toBe("Ultra Max-2027");
+    expect(formatPlan("gpt-5")).toBe("GPT-5"); // agrees with the lane prettifier
     expect(formatPlan("free")).toBe("Free");
   });
 

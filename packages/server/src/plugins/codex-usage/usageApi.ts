@@ -162,9 +162,10 @@ export function parseNumber(raw: unknown): number | null {
 
 /** Map the per-model `additional_rate_limits[]`. Lossy per element: a malformed
  *  entry is skipped, never throwing away its valid siblings. Entries with no
- *  usable window on either side are dropped (nothing to render). Names go
+ *  usable window on either side are dropped (nothing to render) — that is the
+ *  ONE reason a lane is ever skipped; its NAME is never a reason. Names go
  *  through {@link limitDisplayName}: known lanes get the Codex CLI's wording,
- *  UNKNOWN lanes are prettified and kept — never dropped (see limitLabels.ts).
+ *  UNKNOWN lanes are prettified and kept (see limitLabels.ts).
  *  Ids are de-duplicated with a numeric suffix rather than dropping the later
  *  entry, so two lanes sharing a metered feature both still render. */
 function mapAdditionalLimits(
