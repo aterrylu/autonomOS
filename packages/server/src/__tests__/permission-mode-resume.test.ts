@@ -422,6 +422,21 @@ describe("restart-all preserves per-agent permission modes", {
       );
       if (missing.length > 0) {
         for (const a of missing) {
+          // A respawn that was TRIED and failed is a product outcome, never
+          // environment noise — and the sets are disjoint by construction:
+          // an agent the environment killed at boot left `live` before the
+          // snapshot, so it is never in `toRestart` and can never appear in
+          // `failures`. Check it first so a real respawn failure fails HERE
+          // with its error, instead of burning retries and blaming the
+          // runner.
+          const failed = restart.failures.find((f) => f.id === a.id);
+          assert.equal(
+            failed,
+            undefined,
+            `restart-all TRIED and failed to respawn ${a.name}: ` +
+              `${failed?.error} — a product bug, not runner noise. ` +
+              `Server log tail:\n${logTail(server)}`,
+          );
           // A live agent absent from the snapshot's output = dropped by the
           // product. Only an agent the environment already killed may be
           // missing without failing the test.
