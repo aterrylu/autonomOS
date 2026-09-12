@@ -560,11 +560,20 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
     }
 
     // Drop dead members from bound workspaces so surviving members don't
-    // trigger a full teardown/rebuild on every click (see helper).
+    // trigger a full teardown/rebuild on every click (see helper). This is the
+    // FOURTH teardown path keyed off "id not live" (nox caught it): a mid-restart
+    // id must be skipped here too, else the transient-exited snapshot dissolves a
+    // drag-composed split's workspace binding while the guard keeps its panels
+    // alive — the panels then survive but the binding does not, and the next
+    // click on either member takes syncToActive's `ws === undefined` branch and
+    // collapses the split permanently (persisted state, so it never comes back).
     const reconciled = reconcileDeadWorkspaces(
       dvWorkspaces,
       dvPaneWorkspace,
-      (paneId) => !SINGLETON_TYPES.has(paneId) && !liveIds.has(paneId),
+      (paneId) =>
+        !SINGLETON_TYPES.has(paneId) &&
+        !liveIds.has(paneId) &&
+        !restartingIds.has(paneId),
     );
     if (reconciled)
       set({
