@@ -75,6 +75,26 @@ export interface AgentProvider {
   ): void;
 
   /**
+   * Optional: side-effect setup BEFORE the PTY process is spawned, called only
+   * when the auto-trust setting is enabled. The motivating case is claude-code
+   * pre-trusting the working directory in CC's own config so the trust dialog
+   * never renders — dismissing it with keystrokes proved race-prone (the
+   * ≥2.1.26x dialog defaults to "No, exit", and an Ink remount can reset the
+   * selection between keys). MUST be best-effort: implementations swallow
+   * their own errors; a failure here must never block a spawn — the startup
+   * watcher remains the fallback for whatever still renders.
+   *
+   * `env` is the CHILD's fully-layered environment (base env + global
+   * customEnvVars + per-agent preset), not the server's process.env — the
+   * layers can legally relocate provider config (e.g. CLAUDE_CONFIG_DIR),
+   * and setup must act on what the child will actually read.
+   */
+  prepareSpawn?(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string>,
+  ): void;
+
+  /**
    * Optional: does a RESUMABLE session actually exist on disk for these options?
    *
    * The runtime calls this on the resume path BEFORE building args. When it

@@ -926,6 +926,20 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
   );
 
+  // Pre-spawn setup under the same gate as the startup watcher — both are
+  // halves of the auto-trust feature (prevent the dialog; else dismiss it).
+  if (getSettings().autoTrust !== false && provider.prepareSpawn) {
+    try {
+      provider.prepareSpawn(resolved, env);
+    } catch (err) {
+      // Best-effort by contract; the watcher is the fallback path.
+      console.warn(
+        `[runtime] prepareSpawn failed for ${resolved.agentName}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   const cols = params.cols ?? 120;
   const rows = params.rows ?? 40;
   let pty: IPty;
