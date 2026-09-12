@@ -13,23 +13,23 @@ import "../test/setup-dom";
  */
 // vi.mock is hoisted above imports, so the mocks it references must be built in
 // vi.hoisted (which runs first) rather than as plain top-level consts.
-const { acquireTerminal, disposeTerminal, getLiveTerminal, focusSpy } =
+const { acquireTerminal, disposeTerminal, getLiveTerminal, focusTerminal } =
   vi.hoisted(() => {
-    // One shared focus spy across every terminal so the focus-after-reload
-    // assertion doesn't chase a per-call throwaway.
-    const focusSpy = vi.fn();
     const fakeEntry = () => ({
       attach: vi.fn(),
       detach: vi.fn(),
       bindFollowIndicator: vi.fn(),
       jumpToLatest: vi.fn(),
-      terminal: { focus: focusSpy, options: {} },
+      terminal: { focus: vi.fn(), options: {} },
     });
     return {
       acquireTerminal: vi.fn(() => fakeEntry()),
       disposeTerminal: vi.fn(),
       getLiveTerminal: vi.fn(() => fakeEntry()),
-      focusSpy,
+      // The reconnect-focus goes through focusTerminal (which polls until the
+      // xterm textarea is visible before focusing — the real-browser fix). The
+      // dom test verifies the WIRING; the actual focus lands in a real browser.
+      focusTerminal: vi.fn(),
     };
   });
 
@@ -37,7 +37,7 @@ vi.mock("../terminal/liveTerminals", () => ({
   acquireTerminal,
   disposeTerminal,
   getLiveTerminal,
-  focusTerminal: vi.fn(),
+  focusTerminal,
   handleKeyEvent: vi.fn(),
 }));
 
@@ -107,13 +107,14 @@ describe("useTerminal — terminal-reload nonce", () => {
       // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
     } as any);
     render(<Harness id="a1" />);
-    focusSpy.mockClear();
+    focusTerminal.mockClear();
     act(() => {
       useStore.getState().reloadTerminal("a1");
     });
-    // Without the reloadNonce dep on the focus effect, the fresh terminal would
-    // render but hold no keyboard focus — the user would have to click back in.
-    expect(focusSpy).toHaveBeenCalled();
+    // Goes through focusTerminal, which polls until the fresh xterm textarea is
+    // visible before focusing (the real-browser fix). Without the reloadNonce dep
+    // the effect never re-fires, so the reconnected pane keeps no keyboard focus.
+    expect(focusTerminal).toHaveBeenCalledWith("a1");
   });
 
   it("does NOT steal focus on a reload of a NON-active pane", () => {
@@ -122,10 +123,10 @@ describe("useTerminal — terminal-reload nonce", () => {
       // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
     } as any);
     render(<Harness id="a1" />);
-    focusSpy.mockClear();
+    focusTerminal.mockClear();
     act(() => {
       useStore.getState().reloadTerminal("a1");
     });
-    expect(focusSpy).not.toHaveBeenCalled();
+    expect(focusTerminal).not.toHaveBeenCalled();
   });
 });
