@@ -3,8 +3,15 @@
  * CC-specific CLI flags, env vars, and startup handling.
  */
 
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import {
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   type AgentProvider,
   DEFAULT_PERMISSION_MODE,
@@ -52,14 +59,53 @@ const HOOK_EVENTS = [
 ] as const;
 
 // ── Auto-trust: ANSI stripping + prompt needles ───────────────
+// The CSI prefix class includes the private-parameter markers <=>? — without
+// them, sequences like `\x1b[>0q` (DECRQM/mode chatter CC emits around
+// dialogs) strip only partially and leak fragments ("0q", "4m") into the
+// needle buffer. Those fragments once counted as "fresh output" and
+// false-settled a dialog that was still on screen.
 const ANSI_RE =
-  /\x1b[[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
+  /\x1b[[\]()#;?<=>]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
 
 const TRUST_NEEDLES = [
   "Yes,Itrustthisfolder",
   "Yes, I trust this folder",
   "Itrustthisfolder",
 ];
+
+// Highlight (selection) markers for the trust dialog, matched on
+// ANSI-stripped text where the TUI may drop spaces. CC ≥2.1.26x renders a
+// "Quick safety check" variant whose DEFAULT selection is "❯ No, exit" — a
+// bare Enter there exits the session (verified by PTY probe on 2.1.269), so
+// the watcher must read where the ❯ sits before it confirms anything.
+const TRUST_NO_SELECTED = ["❯ No, exit", "❯No,exit"];
+const TRUST_YES_SELECTED = [
+  "❯ Yes, I trust this folder",
+  "❯Yes,Itrustthisfolder",
+];
+
+const DOWN_ARROW = "\x1b[B";
+
+/**
+ * Keystrokes that confirm "Yes, I trust this folder" given the LATEST
+ * highlight evidence in the stripped buffer:
+ *
+ *   - ❯ on "No, exit" (the ≥2.1.26x default) → Down moves the highlight to
+ *     Yes, then Enter confirms. Down is also self-correcting under the
+ *     stdin-attach race: if only the Down lands, the dialog re-renders with
+ *     ❯ on Yes, the needle re-render triggers a retry, and the retry
+ *     re-reads the highlight and sends a bare Enter.
+ *   - ❯ on "Yes" (either variant, or after our Down landed) → Enter.
+ *   - no ❯ marker at all → the legacy dialog shape, whose default was Yes:
+ *     bare Enter (the pre-variant behavior, unchanged).
+ */
+function trustKeysFor(buffer: string): string[] {
+  const last = (needles: string[]) =>
+    Math.max(...needles.map((n) => buffer.lastIndexOf(n)));
+  return last(TRUST_NO_SELECTED) > last(TRUST_YES_SELECTED)
+    ? [DOWN_ARROW, "\r"]
+    : ["\r"];
+}
 const CHANNELS_NEEDLES = [
   "WARNING: Loading development channels",
   "WARNING:Loadingdevelopmentchannels",
@@ -260,6 +306,10 @@ export const claudeCodeProvider: AgentProvider = {
     return env;
   },
 
+  prepareSpawn(options: ResolvedSpawnOptions): void {
+    preTrustWorkdir(options.cwd, join(homedir(), ".claude.json"));
+  },
+
   attachStartupWatcher(
     pty: PtyHandle,
     options: ResolvedSpawnOptions,
@@ -307,12 +357,97 @@ export const claudeCodeProvider: AgentProvider = {
   },
 };
 
+/**
+ * Pre-trust the working directory in CC's OWN config (`~/.claude.json`:
+ * `projects[<realpath cwd>].hasTrustDialogAccepted: true` — byte-identical to
+ * what CC records when a user picks "Yes, I trust this folder"), so the trust
+ * dialog never renders for the spawn.
+ *
+ * WHY prevention instead of dismissal: CC ≥2.1.26x defaults the dialog to
+ * "❯ No, exit", where a confirming Enter EXITS the session — and dismissing
+ * it by keystroke is race-prone in a way no sequencing fully closes: an Ink
+ * re-mount (e.g. the resize nudge a terminal attach fires) resets the
+ * selection to the default BETWEEN our Down and Enter, observed live killing
+ * an agent 0.7s after spawn. Writing the config before the process exists has
+ * no such window. The startup watcher stays as the fallback for whatever
+ * still renders (config unwritable, unknown layout, the channels dialog).
+ *
+ * Best-effort by contract: every failure path returns silently (missing file
+ * = fresh CC install whose onboarding owns creating it; parse failure = not
+ * ours to repair) — a spawn must never be blocked here. The write is
+ * tmp+rename in the same directory so CC never reads a torn file; CC's own
+ * rewrites can still race us (last writer wins), in which case the dialog
+ * shows and the watcher handles it.
+ *
+ * Exported for tests, which drive it against a temp config path.
+ */
+export function preTrustWorkdir(cwd: string, claudeJsonPath: string): void {
+  let raw: string;
+  try {
+    raw = readFileSync(claudeJsonPath, "utf8");
+  } catch {
+    return; // no CC config yet — onboarding owns it
+  }
+  let config: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    config = parsed as Record<string, unknown>;
+  } catch {
+    return; // malformed — not ours to repair
+  }
+
+  // CC keys projects by RESOLVED path (macOS /var/... → /private/var/...).
+  let real = cwd;
+  try {
+    real = realpathSync(cwd);
+  } catch {
+    // keep the raw cwd — a not-yet-existing dir can't render a dialog anyway
+  }
+
+  const projects =
+    config.projects && typeof config.projects === "object"
+      ? (config.projects as Record<string, unknown>)
+      : {};
+  const entry =
+    projects[real] && typeof projects[real] === "object"
+      ? (projects[real] as Record<string, unknown>)
+      : {};
+  // Idempotent: any existing value (a deliberate decline included) is kept.
+  if ("hasTrustDialogAccepted" in entry) return;
+
+  entry.hasTrustDialogAccepted = true;
+  projects[real] = entry;
+  config.projects = projects;
+
+  try {
+    const tmp = join(
+      dirname(claudeJsonPath),
+      `.claude.json.autonomos-${process.pid}.tmp`,
+    );
+    writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
+    renameSync(tmp, claudeJsonPath);
+  } catch (err) {
+    console.warn(
+      "[auto-trust] pre-trust write failed (the startup watcher remains the fallback):",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 export interface StartupWatcherConfig {
   expectChannels: boolean;
-  /** How long to wait after an Enter before checking whether it landed. */
+  /** How long to wait after an Enter before checking whether it landed.
+   *  Also the length of the post-dismissal confirmation window. */
   retryDelayMs?: number;
-  /** Max Enters per dialog before giving up. */
+  /** Max keystroke attempts per dialog before giving up. */
   maxAttempts?: number;
+  /** Gap between the keys of a multi-key answer (Down, then Enter). */
+  interKeyDelayMs?: number;
+  /** Minimum ANSI-stripped chars of fresh output that may count as a
+   *  dismissal. A real dialog dismissal is a screen transition (hundreds of
+   *  chars); stripped-CSI residue from a repaint is a handful. */
+  minDismissEvidenceChars?: number;
   /** Hard deadline for the whole watcher. */
   timeoutMs?: number;
   /** Fired exactly once when the watcher reaches ANY terminal state (all
@@ -325,18 +460,27 @@ export interface StartupWatcherConfig {
 
 /**
  * Auto-trust core — dismisses CC's startup dialogs (trust folder / dev
- * channels) with needle-driven retry.
+ * channels) with needle-driven, selection-aware retry.
  *
  * CC's TUI takes 100-500ms after first paint to attach its stdin handler, so
- * an Enter written too early is silently dropped — and a dialog that is never
- * dismissed blocks the argv-queued starting prompt forever. Instead of blind
- * staggered writes, each Enter is verified: if the SAME needle re-renders in
- * output produced after the write — or the PTY stays completely silent, which
- * means the write was swallowed pre-attach — send again, up to maxAttempts.
- * Fresh output without the needle is the dialog actually closing.
+ * a key written too early is silently dropped — and a dialog that is never
+ * dismissed blocks the argv-queued starting prompt forever. Two hazards shape
+ * the protocol, both live-probed on CC 2.1.267/2.1.269:
  *
- * Exported separately from the provider so tests can drive it with a fake PTY
- * and fast timings.
+ *   1. The ≥2.1.26x trust dialog DEFAULTS to "❯ No, exit" — a bare Enter that
+ *      lands EXITS the session. The answer keys are therefore decided from
+ *      the latest ❯ highlight in the buffer (Down+Enter when it sits on No,
+ *      Enter when on Yes or for the legacy no-marker dialog), re-read on
+ *      every retry so a partially-landed Down self-corrects.
+ *   2. "Fresh output without the needle" is NOT proof of dismissal: repaint
+ *      residue is a handful of stripped chars while a real dismissal is a
+ *      screen transition, so sub-floor output re-arms a retry — and even a
+ *      plausible transition is only believed after a confirmation window in
+ *      which the needle stays absent.
+ *
+ * Silence after a write means it was swallowed pre-attach: retry, up to
+ * maxAttempts. Exported separately from the provider so tests can drive it
+ * with a fake PTY and fast timings.
  */
 /** Default hard deadline for the whole watcher. Exported because
  *  promptDelivery's SETTLE_FALLBACK_MS must stay ABOVE it — the fallback
@@ -353,6 +497,8 @@ export function attachStartupWatcherCore(
 ): void {
   const retryDelayMs = config.retryDelayMs ?? 500;
   const maxAttempts = config.maxAttempts ?? 5;
+  const interKeyDelayMs = config.interKeyDelayMs ?? 150;
+  const minDismissEvidenceChars = config.minDismissEvidenceChars ?? 24;
   const timeoutMs = config.timeoutMs ?? DEFAULT_STARTUP_WATCHER_TIMEOUT_MS;
   const label = `${options.agentName} (${options.sessionId.slice(0, 8)})`;
 
@@ -363,15 +509,18 @@ export function attachStartupWatcherCore(
   const expected = config.expectChannels ? ["trust", "channels"] : ["trust"];
 
   interface DialogState {
-    /** Needle seen — Enter sent, awaiting confirmation it landed. */
+    /** Needle seen — keys sent, awaiting confirmation they landed. */
     engaged: boolean;
     /** No further action will be taken — confirmed gone, or gave up after
      *  maxAttempts. NOT a claim the dialog was actually dismissed. */
     settled: boolean;
     attempts: number;
-    /** ANSI-stripped output received since the last Enter. */
+    /** ANSI-stripped output received since the last keystroke (or since the
+     *  confirmation window opened). */
     freshBuf: string;
     checkTimer: NodeJS.Timeout | null;
+    /** Paint-order grace: armed when the needle is visible but no ❯ yet. */
+    deferTimer: NodeJS.Timeout | null;
   }
   const dialogs = new Map<string, DialogState>(
     expected.map((id) => [
@@ -382,6 +531,7 @@ export function attachStartupWatcherCore(
         attempts: 0,
         freshBuf: "",
         checkTimer: null,
+        deferTimer: null,
       },
     ]),
   );
@@ -391,10 +541,10 @@ export function attachStartupWatcherCore(
   let disposed = false;
   let ptyDead = false;
 
-  function writeEnter(): boolean {
+  function writeKey(key: string): boolean {
     if (ptyDead) return false;
     try {
-      pty.write("\r");
+      pty.write(key);
       return true;
     } catch (err) {
       ptyDead = true;
@@ -406,37 +556,127 @@ export function attachStartupWatcherCore(
     }
   }
 
+  /** The answer keys for a dialog, decided at SEND time from the latest
+   *  highlight evidence — a retry after a partially-landed Down re-reads the
+   *  ❯ position, which is what makes the two-key answer self-correcting. */
+  function keysFor(id: string): string[] {
+    return id === "trust" ? trustKeysFor(buf) : ["\r"];
+  }
+
   function sendAndScheduleCheck(id: string, d: DialogState): void {
     d.attempts++;
     d.freshBuf = "";
-    if (!writeEnter()) {
+    const keys = keysFor(id);
+    if (!writeKey(keys[0])) {
       cleanup();
       return;
     }
-    d.checkTimer = setTimeout(() => {
-      d.checkTimer = null;
-      if (disposed) return;
-      const stillVisible = needles[id].some((n) => d.freshBuf.includes(n));
-      // Zero fresh output means the TUI never reacted — the Enter was most
-      // likely swallowed before the stdin handler attached. Retry that too.
-      const silent = d.freshBuf.length === 0;
-      const notDismissed = stillVisible || silent;
-      if (notDismissed && d.attempts < maxAttempts) {
-        sendAndScheduleCheck(id, d);
-        return;
-      }
-      if (notDismissed) {
-        console.warn(
-          `[auto-trust] ${label} "${id}" dialog not confirmed dismissed after ${d.attempts} attempts — giving up`,
-        );
-      } else if (d.attempts > 1) {
-        console.log(
-          `[auto-trust] ${label} "${id}" dismissed after ${d.attempts} attempts`,
-        );
-      }
-      d.settled = true;
-      maybeFinish();
-    }, retryDelayMs);
+    const scheduleCheck = () => {
+      d.checkTimer = setTimeout(() => {
+        d.checkTimer = null;
+        if (disposed) return;
+        const stillVisible = needles[id].some((n) => d.freshBuf.includes(n));
+        // Zero fresh output means the TUI never reacted — the keys were most
+        // likely swallowed before the stdin handler attached. Retry that too.
+        const silent = d.freshBuf.length === 0;
+        // Fresh output BELOW the evidence floor is a repaint's residue, not a
+        // dismissal — a dialog closing is a screen transition worth hundreds
+        // of stripped chars. Counting any needle-free byte as "dismissed" is
+        // the false-settle that left agents stuck on the ≥2.1.26x trust
+        // dialog while the watcher reported success.
+        const inconclusive = d.freshBuf.length < minDismissEvidenceChars;
+        if (stillVisible || silent || inconclusive) {
+          if (d.attempts < maxAttempts) {
+            sendAndScheduleCheck(id, d);
+            return;
+          }
+          console.warn(
+            `[auto-trust] ${label} "${id}" dialog not confirmed dismissed after ${d.attempts} attempts — giving up`,
+          );
+          d.settled = true;
+          maybeFinish();
+          return;
+        }
+        // Looks dismissed — hold a confirmation window before believing it.
+        // A late repaint re-rendering the needle here means the transition we
+        // saw was something else (a banner, another dialog) and the dialog is
+        // still up; positive confirmation is the needle STAYING absent.
+        d.freshBuf = "";
+        d.checkTimer = setTimeout(() => {
+          d.checkTimer = null;
+          if (disposed) return;
+          const reappeared = needles[id].some((n) => d.freshBuf.includes(n));
+          if (reappeared && d.attempts < maxAttempts) {
+            sendAndScheduleCheck(id, d);
+            return;
+          }
+          if (reappeared) {
+            console.warn(
+              `[auto-trust] ${label} "${id}" dialog re-rendered after a presumed dismissal — giving up after ${d.attempts} attempts`,
+            );
+          } else if (d.attempts > 1) {
+            console.log(
+              `[auto-trust] ${label} "${id}" dismissed after ${d.attempts} attempts`,
+            );
+          }
+          d.settled = true;
+          maybeFinish();
+        }, retryDelayMs);
+      }, retryDelayMs);
+    };
+    if (keys.length > 1) {
+      // Two-key answer (Down, then Enter). The confirming Enter is GATED on
+      // fresh evidence that the highlight is on Yes RIGHT NOW — a blind
+      // delay proved fatal: an Ink re-mount (e.g. the resize nudge fired by
+      // a terminal attach) resets the selection to the default "No, exit"
+      // between the keys, and the Enter then exits the session (observed
+      // live, 0.7s after spawn). "Latest highlight" means the ❯Yes render
+      // must be NEWER than any ❯No render in the post-Down output.
+      const started = Date.now();
+      const awaitYesThenEnter = () => {
+        d.checkTimer = setTimeout(() => {
+          d.checkTimer = null;
+          if (disposed) return;
+          const lastYes = Math.max(
+            ...TRUST_YES_SELECTED.map((n) => d.freshBuf.lastIndexOf(n)),
+          );
+          const lastNo = Math.max(
+            ...TRUST_NO_SELECTED.map((n) => d.freshBuf.lastIndexOf(n)),
+          );
+          if (lastYes >= 0 && lastYes > lastNo) {
+            if (!writeKey("\r")) {
+              cleanup();
+              return;
+            }
+            // Judge dismissal on output AFTER the confirming key — the
+            // selection re-render answering the Down legitimately contains
+            // the needle and must not read as "dialog still up".
+            d.freshBuf = "";
+            scheduleCheck();
+            return;
+          }
+          const remounted = lastNo >= 0 && lastNo > lastYes;
+          if (!remounted && Date.now() - started < retryDelayMs * 2) {
+            awaitYesThenEnter(); // still waiting for the Down's re-render
+            return;
+          }
+          // Selection reset under us, or the Down never visibly landed —
+          // never confirm blind. Retry re-reads the highlight and re-sends.
+          if (d.attempts < maxAttempts) {
+            sendAndScheduleCheck(id, d);
+            return;
+          }
+          console.warn(
+            `[auto-trust] ${label} "${id}" dialog selection never confirmed on Yes after ${d.attempts} attempts — giving up`,
+          );
+          d.settled = true;
+          maybeFinish();
+        }, interKeyDelayMs);
+      };
+      awaitYesThenEnter();
+    } else {
+      scheduleCheck();
+    }
   }
 
   function engage(id: string): void {
@@ -465,7 +705,24 @@ export function attachStartupWatcherCore(
 
     const trust = dialogs.get("trust");
     if (trust && !trust.engaged && TRUST_NEEDLES.some((n) => buf.includes(n))) {
-      engage("trust");
+      // Paint-order guard: the needle text can arrive a frame before the ❯
+      // highlight marker. Deciding keys highlight-blind would fall back to a
+      // bare Enter — fatal on the default-No dialog if it lands. Wait for a
+      // ❯ (every real dialog variant renders one); a short grace deadline
+      // covers a hypothetical marker-less dialog.
+      if (buf.includes("❯")) {
+        if (trust.deferTimer) {
+          clearTimeout(trust.deferTimer);
+          trust.deferTimer = null;
+        }
+        engage("trust");
+      } else if (!trust.deferTimer) {
+        trust.deferTimer = setTimeout(() => {
+          trust.deferTimer = null;
+          if (disposed || trust.engaged || trust.settled) return;
+          engage("trust");
+        }, retryDelayMs);
+      }
     }
 
     const ch = dialogs.get("channels");
@@ -498,6 +755,7 @@ export function attachStartupWatcherCore(
     clearTimeout(timer);
     for (const d of dialogs.values()) {
       if (d.checkTimer) clearTimeout(d.checkTimer);
+      if (d.deferTimer) clearTimeout(d.deferTimer);
     }
     disposable.dispose();
     // cleanup() is the watcher's single terminal point (all-settled, hard
