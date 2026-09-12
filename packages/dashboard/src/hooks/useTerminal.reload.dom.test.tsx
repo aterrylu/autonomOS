@@ -13,20 +13,25 @@ import "../test/setup-dom";
  */
 // vi.mock is hoisted above imports, so the mocks it references must be built in
 // vi.hoisted (which runs first) rather than as plain top-level consts.
-const { acquireTerminal, disposeTerminal, getLiveTerminal } = vi.hoisted(() => {
-  const fakeEntry = () => ({
-    attach: vi.fn(),
-    detach: vi.fn(),
-    bindFollowIndicator: vi.fn(),
-    jumpToLatest: vi.fn(),
-    terminal: { focus: vi.fn(), options: {} },
+const { acquireTerminal, disposeTerminal, getLiveTerminal, focusSpy } =
+  vi.hoisted(() => {
+    // One shared focus spy across every terminal so the focus-after-reload
+    // assertion doesn't chase a per-call throwaway.
+    const focusSpy = vi.fn();
+    const fakeEntry = () => ({
+      attach: vi.fn(),
+      detach: vi.fn(),
+      bindFollowIndicator: vi.fn(),
+      jumpToLatest: vi.fn(),
+      terminal: { focus: focusSpy, options: {} },
+    });
+    return {
+      acquireTerminal: vi.fn(() => fakeEntry()),
+      disposeTerminal: vi.fn(),
+      getLiveTerminal: vi.fn(() => fakeEntry()),
+      focusSpy,
+    };
   });
-  return {
-    acquireTerminal: vi.fn(() => fakeEntry()),
-    disposeTerminal: vi.fn(),
-    getLiveTerminal: vi.fn(() => fakeEntry()),
-  };
-});
 
 vi.mock("../terminal/liveTerminals", () => ({
   acquireTerminal,
@@ -93,5 +98,34 @@ describe("useTerminal — terminal-reload nonce", () => {
     render(<Harness id="a1" />); // fresh mount sees the current nonce as its baseline
     expect(disposeTerminal).not.toHaveBeenCalled();
     expect(acquireTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-focuses the reconnected terminal when its pane WAS active (Terry's re-test)", () => {
+    // The restarted pane is the focused one.
+    useStore.setState({
+      activePane: { type: "session", id: "a1" },
+      // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    } as any);
+    render(<Harness id="a1" />);
+    focusSpy.mockClear();
+    act(() => {
+      useStore.getState().reloadTerminal("a1");
+    });
+    // Without the reloadNonce dep on the focus effect, the fresh terminal would
+    // render but hold no keyboard focus — the user would have to click back in.
+    expect(focusSpy).toHaveBeenCalled();
+  });
+
+  it("does NOT steal focus on a reload of a NON-active pane", () => {
+    useStore.setState({
+      activePane: { type: "session", id: "someone-else" },
+      // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    } as any);
+    render(<Harness id="a1" />);
+    focusSpy.mockClear();
+    act(() => {
+      useStore.getState().reloadTerminal("a1");
+    });
+    expect(focusSpy).not.toHaveBeenCalled();
   });
 });
