@@ -77,6 +77,49 @@ describe("CodexUsageStatusBarItem", () => {
     expect(container.textContent).toContain("71%");
   });
 
+  it("surfaces a named lane in the bar by its display name when it exceeds the headline", async () => {
+    // Pro 5x shape: weekly-only headline; Luna Reserve hotter than it.
+    stubUsage({
+      ...liveData,
+      secondary: null,
+      primary: { usedPercent: 10, windowMinutes: 10_080, resetsAt: null },
+      additionalLimits: [
+        {
+          id: "codex-base-model-inference",
+          name: "Luna Reserve",
+          description: "Fallback lane",
+          primary: { usedPercent: 63, windowMinutes: 10_080, resetsAt: null },
+          secondary: null,
+        },
+      ],
+    });
+    const { container } = await renderSettled();
+    expect(container.textContent).toContain("Luna Reserve");
+    expect(container.textContent).toContain("63%");
+    expect(container.textContent).not.toContain("gpt-reserve");
+  });
+
+  it("FUTURE-SAFETY: an unmapped lane with a long name is capped in width, not dropped", async () => {
+    const longName = "GPT-12-Hyperextended-Codex-Model-Preview-Lane-Name";
+    stubUsage({
+      ...liveData,
+      additionalLimits: [
+        {
+          id: "codex-long",
+          name: longName,
+          primary: { usedPercent: 99, windowMinutes: 300, resetsAt: null },
+          secondary: null,
+        },
+      ],
+    });
+    const { container } = await renderSettled();
+    const label = container.querySelector(`[title="${longName}: 99% used"]`);
+    expect(label).not.toBeNull();
+    const text = label?.querySelector(".truncate") as HTMLElement | null;
+    expect(text?.style.maxWidth).toBe("120px");
+    expect(container.textContent).toContain("99%");
+  });
+
   it("renders nothing while the first poll is still loading", async () => {
     // A fetch that never resolves → data stays null → item stays hidden.
     vi.stubGlobal(
