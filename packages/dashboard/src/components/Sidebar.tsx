@@ -2332,15 +2332,15 @@ export const ProjectItem = React.memo(function ProjectItem({
                 type="button"
                 key={s.sessionId}
                 disabled={isBusy}
-                className="group/row flex w-full items-center gap-2.5 py-1.5 pl-5 pr-3 text-left cursor-pointer disabled:opacity-50"
-                style={{
-                  // Distinct "archive" treatment (decision A): the shared row
-                  // vocabulary but quieter than the live fleet above. Live/ours
-                  // rows are the most subordinate — dormant externals read as the
-                  // adoptable stars.
-                  opacity:
-                    state === "live" ? 0.72 : state === "stopped" ? 0.82 : 1,
-                }}
+                // Terry's gate pick: a Projects row MIRRORS a live agent row
+                // (SessionRow) — same height, spacing, icon size, and two-line
+                // anatomy (name + age on line 1, branch + a trailing state slot
+                // on line 2). The earlier "quieter archive" treatment (row/icon
+                // opacity dimming + muted name color + rounded-full pills) was
+                // TRIED and REVERSED at this gate (ADR-098): visual kinship with
+                // the fleet above IS the design, not distinction from it.
+                className="group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer"
+                style={{ paddingLeft: "20px", paddingRight: "12px" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = `${page.fg}0a`;
                 }}
@@ -2367,67 +2367,53 @@ export const ProjectItem = React.memo(function ProjectItem({
                       : "Resume this session as a new managed agent"
                 }
               >
-                <span
-                  className="shrink-0"
-                  style={{ opacity: state === "external" ? 0.9 : 0.6 }}
-                >
-                  <ProviderAgentIcon
-                    provider={s.provider}
-                    status={iconStatus}
-                    size={15}
-                  />
-                </span>
-                <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                  <span
-                    className="truncate text-xs"
-                    style={{
-                      color: state === "external" ? page.fg : page.statusFg,
-                    }}
-                  >
-                    {s.summary}
-                  </span>
-                  <span
-                    className="flex items-center gap-1.5 text-[10px] tabular-nums"
+                <ProviderAgentIcon
+                  provider={s.provider}
+                  status={iconStatus}
+                  size={16}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1">
+                    <span className="flex-1 truncate text-xs">{s.summary}</span>
+                    <span
+                      className="shrink-0 text-[10px]"
+                      style={{ color: page.statusFg }}
+                    >
+                      {age}
+                    </span>
+                  </div>
+                  <div
+                    className="flex items-center text-[10px]"
                     style={{ color: page.statusFg }}
                   >
                     {s.gitBranch && (
-                      <>
-                        <span className="truncate max-w-[120px]">
-                          {s.gitBranch}
-                        </span>
-                        <span style={{ opacity: 0.5 }}>·</span>
-                      </>
+                      <span className="min-w-0 truncate">{s.gitBranch}</span>
                     )}
-                    <span>{age}</span>
-                  </span>
+                    {state === "live" ? (
+                      // Row-click jumps to the live agent; a subtle trailing ↗
+                      // marks it as a link rather than a resume. No status dot.
+                      <span
+                        className="ml-auto shrink-0 pl-1.5"
+                        role="img"
+                        aria-label="Jump to the live agent"
+                      >
+                        ↗
+                      </span>
+                    ) : state === "stopped" ? (
+                      <span className="ml-auto shrink-0 pl-1.5">Stopped</span>
+                    ) : (
+                      // External + dormant: hover-revealed Resume, theme accent —
+                      // occupies the same trailing slot SessionRow uses for its
+                      // status label.
+                      <span
+                        className="ml-auto shrink-0 pl-1.5 font-medium opacity-0 transition-opacity group-hover/row:opacity-100"
+                        style={{ color: accent }}
+                      >
+                        Resume
+                      </span>
+                    )}
+                  </div>
                 </div>
-                {state === "live" ? (
-                  // Ours + running: a subordinate jump-to-live chip (decision C).
-                  <span
-                    className="shrink-0 flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold"
-                    style={{ color: page.statusFg, background: `${page.fg}0f` }}
-                  >
-                    Live
-                    <span aria-hidden="true">↗</span>
-                  </span>
-                ) : state === "stopped" ? (
-                  // Ours + exited: a persistent state indicator; click resumes.
-                  <span
-                    className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold"
-                    style={{ color: page.statusFg, background: `${page.fg}0d` }}
-                  >
-                    Stopped
-                  </span>
-                ) : (
-                  // External + dormant: the adoptable star — a hover-revealed
-                  // Resume affordance in the theme accent.
-                  <span
-                    className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold opacity-0 transition-opacity group-hover/row:opacity-100"
-                    style={{ color: accent, background: `${accent}1f` }}
-                  >
-                    Resume
-                  </span>
-                )}
               </button>
             );
           })}

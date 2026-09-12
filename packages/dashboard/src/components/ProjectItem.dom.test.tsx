@@ -7,10 +7,12 @@ import { THEMES, useStore } from "../store";
 import { ProjectItem } from "./Sidebar";
 
 /**
- * The redesigned Projects row's three states + decision-C behavior:
- *   live (ours + running)  → a "Live ↗" chip; click JUMPS to the live pane.
- *   stopped (ours + exited)→ a "Stopped" indicator; click resumes.
- *   external (unmanaged)   → a "Resume" affordance; click resumes/adopts.
+ * The Projects row mirrors a live agent row (ADR-098 gate pick). Three states,
+ * distinguished only by the trailing slot (the same slot SessionRow uses for its
+ * status label) — no archive dimming, no loud pills:
+ *   live (ours + running)  → a subtle ↗ jump hint; click JUMPS to the live pane.
+ *   stopped (ours + exited)→ a "Stopped" label; click resumes.
+ *   external (unmanaged)   → a hover-revealed "Resume"; click resumes/adopts.
  * The row is keyed by CC/provider session id, not an agent id.
  */
 const page = THEMES.midnight.page;
@@ -87,11 +89,13 @@ beforeEach(seed);
 afterEach(() => vi.clearAllMocks());
 
 describe("ProjectItem — redesigned rows", () => {
-  it("a LIVE row shows a Live chip and JUMPS to the pane (not resume)", () => {
+  it("a LIVE row marks itself a jump link and JUMPS to the pane (not resume)", () => {
     renderItem();
     const row = screen.getByText("live session").closest("button");
     if (!row) throw new Error("no row");
-    expect(within(row).getByText("Live")).toBeTruthy();
+    // Agent-row parity (ADR-098): no loud "Live" pill — the trailing slot holds a
+    // subtle ↗ jump hint (labelled) and the whole row click jumps.
+    expect(within(row).getByLabelText("Jump to the live agent")).toBeTruthy();
     fireEvent.click(row);
     expect(useStore.getState().switchPane).toHaveBeenCalledWith({
       type: "session",
