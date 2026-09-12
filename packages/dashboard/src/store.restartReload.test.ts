@@ -108,6 +108,59 @@ describe("restart pane guard (restartingIds)", () => {
     expect(useStore.getState().activePane).toBeNull();
   });
 
+  // The FOURTH teardown path (nox): reconcileDeadWorkspaces dissolves a drag-
+  // composed split's binding when a member leaves the live set. A live sibling b1
+  // keeps the group's panels alive, but dropping a1 from the 2-member group would
+  // dissolve the binding (≤1 survivor) — so the guard must skip a mid-restart a1
+  // here too, or the split silently unbinds and the next click collapses it.
+  const liveSibling = {
+    schemaVersion: 1,
+    id: "b1",
+    name: "b1",
+    managerId: null,
+    workingDirectory: "/x",
+    permissionMode: "ask",
+    status: "running",
+    provider: "claude-code",
+    providerSessionId: "b1",
+    startedAt: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    version: 1,
+    lastActivityAt: 0,
+  };
+  /** a1 + b1 bound into a drag-composed split workspace ws1. */
+  function seedSplit() {
+    useStore.setState({
+      activePane: { type: "session", id: "a1" },
+      sessions: [{ id: "a1", name: "a1", status: "running" }],
+      exitedSessions: [],
+      dvWorkspaces: { ws1: { paneIds: ["a1", "b1"], serialized: {} } },
+      dvPaneWorkspace: { a1: "ws1", b1: "ws1" },
+      pinnedOrder: [],
+      unpinnedOrder: [],
+      sessionsInitialFetchDone: true,
+      // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    } as any);
+  }
+
+  it("KEEPS a mid-restart pane's split binding (b1 live, a1 omitted)", () => {
+    seedSplit();
+    restartingIds.add("a1");
+    applyAgentsSnapshot([liveSibling] as never);
+    const st = useStore.getState();
+    expect(st.dvWorkspaces.ws1?.paneIds).toEqual(["a1", "b1"]);
+    expect(st.dvPaneWorkspace.a1).toBe("ws1");
+  });
+
+  it("control: dissolves the split binding when the dropped member is NOT restarting", () => {
+    seedSplit();
+    applyAgentsSnapshot([liveSibling] as never);
+    const st = useStore.getState();
+    expect(st.dvWorkspaces.ws1).toBeUndefined();
+    expect(st.dvPaneWorkspace.a1).toBeUndefined();
+  });
+
   it("restartSession arms the guard for the flow, then drops it after the drain", async () => {
     vi.useFakeTimers();
     try {
