@@ -21,10 +21,15 @@ export interface CodexUsageWindow {
 /** A named limit beyond the primary/secondary pair — a per-model or per-feature
  *  lane (e.g. Codex Spark). Kept open-ended for forward compatibility. */
 export interface CodexNamedLimit {
-  /** Stable id when the source provides one (e.g. "codex-spark"). */
+  /** Stable id derived from the metered feature / limit name
+   *  ("codex-base-model-inference"); mirrors codexbar's slug rule. */
   id?: string;
-  /** Human label (e.g. "Codex Spark 5-hour"); falls back to id/feature. */
+  /** Display label: the Codex CLI's wording for known lanes ("Luna Reserve"),
+   *  a lightly prettified copy of the API's name for unknown ones — an unknown
+   *  lane is never dropped (limitLabels.ts). */
   name: string;
+  /** One-line explainer under the label; generic for unknown lanes. */
+  description?: string;
   /** The metered feature this limit governs, when reported. */
   meteredFeature?: string;
   primary: CodexUsageWindow | null;

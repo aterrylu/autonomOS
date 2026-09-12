@@ -13,6 +13,7 @@ export interface CodexUsageWindow {
 export interface CodexNamedLimit {
   id?: string;
   name: string;
+  description?: string;
   meteredFeature?: string;
   primary: CodexUsageWindow | null;
   secondary: CodexUsageWindow | null;
