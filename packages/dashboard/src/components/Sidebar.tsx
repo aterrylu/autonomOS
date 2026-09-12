@@ -2316,6 +2316,11 @@ export const ProjectItem = React.memo(function ProjectItem({
               : "unknown";
 
             const onOpen = () => {
+              // No-op while a spawn/resume is already in flight — SessionRow has
+              // no disabled state (agent-row parity), so the row stays visually
+              // live and just guards here instead of dimming via `disabled`
+              // (nox: a kept `disabled` with no dim reads as a dead click).
+              if (isBusy) return;
               // A live row IS our running agent — jump straight to its pane
               // (subordinate chip, decision C). Otherwise resume/adopt it.
               if (isLive && rec) {
@@ -2331,7 +2336,6 @@ export const ProjectItem = React.memo(function ProjectItem({
               <button
                 type="button"
                 key={s.sessionId}
-                disabled={isBusy}
                 // Terry's gate pick: a Projects row MIRRORS a live agent row
                 // (SessionRow) — same height, spacing, icon size, and two-line
                 // anatomy (name + age on line 1, branch + a trailing state slot
