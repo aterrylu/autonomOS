@@ -930,7 +930,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // halves of the auto-trust feature (prevent the dialog; else dismiss it).
   if (getSettings().autoTrust !== false && provider.prepareSpawn) {
     try {
-      provider.prepareSpawn(resolved);
+      provider.prepareSpawn(resolved, env);
     } catch (err) {
       // Best-effort by contract; the watcher is the fallback path.
       console.warn(

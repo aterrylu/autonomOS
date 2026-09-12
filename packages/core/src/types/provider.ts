@@ -83,8 +83,16 @@ export interface AgentProvider {
    * selection between keys). MUST be best-effort: implementations swallow
    * their own errors; a failure here must never block a spawn — the startup
    * watcher remains the fallback for whatever still renders.
+   *
+   * `env` is the CHILD's fully-layered environment (base env + global
+   * customEnvVars + per-agent preset), not the server's process.env — the
+   * layers can legally relocate provider config (e.g. CLAUDE_CONFIG_DIR),
+   * and setup must act on what the child will actually read.
    */
-  prepareSpawn?(options: ResolvedSpawnOptions): void;
+  prepareSpawn?(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string>,
+  ): void;
 
   /**
    * Optional: does a RESUMABLE session actually exist on disk for these options?

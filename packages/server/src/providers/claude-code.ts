@@ -319,8 +319,11 @@ export const claudeCodeProvider: AgentProvider = {
     return env;
   },
 
-  prepareSpawn(options: ResolvedSpawnOptions): void {
-    preTrustWorkdir(options.cwd, claudeJsonPath());
+  prepareSpawn(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string>,
+  ): void {
+    preTrustWorkdir(options.cwd, claudeJsonPath(env));
   },
 
   attachStartupWatcher(
@@ -371,16 +374,19 @@ export const claudeCodeProvider: AgentProvider = {
 };
 
 /**
- * Where CC keeps `.claude.json` for the sessions WE spawn: under
- * `CLAUDE_CONFIG_DIR` when set (the child inherits the server's env via
- * buildBaseEnv, so server-side resolution matches what the child will read),
- * else the home default — the same precedence `readAccountIdentity` in
- * oauthUsage.ts documents. Hardcoding `~/.claude.json` made pre-trust a
- * silent no-op under a relocated config: we mutated a file nothing reads
- * while the dialog rendered anyway. Exported for tests.
+ * Where CC keeps `.claude.json` for the session about to spawn: under
+ * `CLAUDE_CONFIG_DIR` when set IN THE CHILD'S resolved env (base env +
+ * customEnvVars + preset — any layer can legally relocate it; it is not a
+ * RESERVED_ENV_KEY), else the home default — the same precedence
+ * `readAccountIdentity` in oauthUsage.ts documents. Resolving from the
+ * server's own process.env (or worse, hardcoding `~/.claude.json`) made
+ * pre-trust a silent no-op under a relocated config: we mutated a file the
+ * child never reads while the dialog rendered anyway. Exported for tests.
  */
-export function claudeJsonPath(): string {
-  const cfg = process.env.CLAUDE_CONFIG_DIR?.trim();
+export function claudeJsonPath(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const cfg = env.CLAUDE_CONFIG_DIR?.trim();
   return cfg ? join(cfg, ".claude.json") : join(homedir(), ".claude.json");
 }
 
@@ -546,8 +552,6 @@ export function attachStartupWatcherCore(
      *  confirmation window opened). */
     freshBuf: string;
     checkTimer: NodeJS.Timeout | null;
-    /** Paint-order grace: armed when the needle is visible but no ❯ yet. */
-    deferTimer: NodeJS.Timeout | null;
   }
   const dialogs = new Map<string, DialogState>(
     expected.map((id) => [
@@ -558,7 +562,6 @@ export function attachStartupWatcherCore(
         attempts: 0,
         freshBuf: "",
         checkTimer: null,
-        deferTimer: null,
       },
     ]),
   );
@@ -757,37 +760,17 @@ export function attachStartupWatcherCore(
 
     const trust = dialogs.get("trust");
     if (trust && !trust.engaged && TRUST_NEEDLES.some((n) => buf.includes(n))) {
-      // Paint-order guard: the needle text can arrive a frame before the ❯
-      // highlight marker. Deciding keys highlight-blind would fall back to a
-      // bare Enter — fatal on the default-No dialog if it lands. Wait for a
-      // ❯ (every real dialog variant renders one); a short grace deadline
-      // covers a hypothetical marker-less dialog.
-      if (buf.includes("❯")) {
-        if (trust.deferTimer) {
-          clearTimeout(trust.deferTimer);
-          trust.deferTimer = null;
-        }
-        engage("trust");
-      } else if (!trust.deferTimer) {
-        trust.deferTimer = setTimeout(() => {
-          trust.deferTimer = null;
-          if (disposed || trust.engaged || trust.settled) return;
-          // A trust dialog with NO highlight marker is a layout this watcher
-          // does not understand (CC swapped the glyph, or renders selection
-          // as reverse-video). The only blind answer available is a bare
-          // Enter — the one key that EXITS the session on a default-No
-          // dialog. Stuck-but-alive is operator-recoverable; exited is not.
-          // So: don't answer, say so loudly, and let pre-trust (the primary
-          // mechanism) or the operator handle it. This line is the tripwire
-          // that turns the next CC dialog redesign into a log grep instead
-          // of silent fleet deaths.
-          console.warn(
-            `[auto-trust] ${label} trust dialog visible but no ❯ highlight marker ever rendered — unrecognized layout, NOT auto-answering (a blind Enter exits a default-No dialog)`,
-          );
-          trust.settled = true;
-          maybeFinish();
-        }, retryDelayMs);
-      }
+      // Engage on the needle alone — the paint-order problem (option text a
+      // frame before the ❯ highlight) is handled by ONE policy downstream:
+      // trustKeysFor returns null until a highlight actually matches, and a
+      // null attempt waits rather than writes. The marker therefore gets
+      // the full attempt budget (maxAttempts × retryDelayMs) to appear, and
+      // a layout that never shows one ends in the loud not-answering
+      // give-up — the tripwire that turns the next CC dialog redesign into
+      // a log grep instead of silent fleet deaths. (An earlier one-shot
+      // grace timer gave the marker only 500ms and could re-warn on every
+      // subsequent frame; collapsed here on review.)
+      engage("trust");
     }
 
     const ch = dialogs.get("channels");
@@ -820,7 +803,6 @@ export function attachStartupWatcherCore(
     clearTimeout(timer);
     for (const d of dialogs.values()) {
       if (d.checkTimer) clearTimeout(d.checkTimer);
-      if (d.deferTimer) clearTimeout(d.deferTimer);
     }
     disposable.dispose();
     // cleanup() is the watcher's single terminal point (all-settled, hard
