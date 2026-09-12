@@ -133,6 +133,23 @@ describe("claudeJsonPath — CLAUDE_CONFIG_DIR precedence", () => {
       );
       delete process.env.CLAUDE_CONFIG_DIR;
       assert.ok(claudeJsonPath().endsWith("/.claude.json"));
+
+      // The parameter is the substance: prepareSpawn passes the CHILD's
+      // layered env, which can relocate CC's config for the child only.
+      assert.equal(
+        claudeJsonPath({ CLAUDE_CONFIG_DIR: "/tmp/child-cc" }),
+        "/tmp/child-cc/.claude.json",
+        "resolves from the CHILD env, not the server process",
+      );
+      // The inverse is the one that matters: a server-side value must NOT
+      // leak into a child env that doesn't carry the key — a reverted
+      // process.env-reading body fails exactly here.
+      process.env.CLAUDE_CONFIG_DIR = "/tmp/server-cc";
+      assert.ok(
+        claudeJsonPath({}).endsWith("/.claude.json") &&
+          !claudeJsonPath({}).includes("server-cc"),
+        "server env must not win over the child env",
+      );
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;
