@@ -38,3 +38,40 @@ export function windowTitle(windowMinutes: number): string {
   if (windowMinutes < 43200) return "Weekly"; // 7d
   return "Monthly"; // 30d+
 }
+
+/** ChatGPT plan ids whose marketing name isn't derivable from the id. Ported
+ *  from codexbar (CodexPlanFormatting.swift): the $200 tier is "Pro 20x", the
+ *  $100 tier (`prolite`) is "Pro 5x". Keyed by the id with separators stripped,
+ *  so every spelling of one plan (`prolite` / `pro_lite` / `pro-lite`) is one
+ *  row here rather than three that can drift apart. */
+const PLAN_DISPLAY_NAMES: Record<string, string> = {
+  pro: "Pro 20x",
+  prolite: "Pro 5x",
+};
+
+/** Plan-id words spelled in caps ("k12" → "K12"). */
+const PLAN_UPPERCASE_WORDS = new Set(["cbp", "k12"]);
+
+/**
+ * Human plan name for the panel pill. Known ids map to their marketing name;
+ * an UNKNOWN id is never hidden — it renders word-split and capitalized
+ * ("free_workspace" → "Free Workspace") so a plan OpenAI adds tomorrow still
+ * shows something readable. Null when there's no plan at all.
+ */
+export function formatPlan(plan?: string | null): string | null {
+  const raw = plan?.trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase().replace(/[-_\s]+/g, "");
+  // Own-property check: a plain-object index would hand back `constructor`
+  // (a function) or `__proto__` (an object) for an adversarial plan id.
+  if (Object.hasOwn(PLAN_DISPLAY_NAMES, key)) return PLAN_DISPLAY_NAMES[key];
+  const words = raw.split(/[-_\s]+/).filter(Boolean);
+  if (words.length === 0) return raw;
+  return words
+    .map((w) => {
+      const lower = w.toLowerCase();
+      if (PLAN_UPPERCASE_WORDS.has(lower)) return lower.toUpperCase();
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(" ");
+}

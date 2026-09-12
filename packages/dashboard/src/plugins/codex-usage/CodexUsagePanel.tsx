@@ -8,6 +8,7 @@ import {
   isCodexCredentialError,
 } from "./types";
 import {
+  formatPlan,
   timeAgo,
   timeUntilReset,
   utilizationColor,
@@ -16,11 +17,6 @@ import {
 } from "./utils";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
-
-function formatPlan(plan?: string | null): string | null {
-  if (!plan) return null;
-  return plan.charAt(0).toUpperCase() + plan.slice(1);
-}
 
 function ProgressBar({ pct }: { pct: number }) {
   const color = utilizationColor(pct);
@@ -91,7 +87,10 @@ function WindowDetail({
 }
 
 /** A per-model / per-feature limit (Codex `additional_rate_limits`). Renders
- *  whichever of its windows are present, shortest first. */
+ *  whichever of its windows are present, shortest first. The label is the
+ *  server's display name (Codex CLI wording for known lanes, prettified raw
+ *  for unknown ones) with its one-line explainer beneath; both are single-line
+ *  with ellipsis so a long future name can't break the panel's width. */
 function NamedLimit({
   limit,
   page,
@@ -103,9 +102,25 @@ function NamedLimit({
     <div
       className="mt-1 pt-2"
       style={{ borderTop: `1px solid ${page.border}` }}
+      data-testid="codex-named-limit"
     >
-      <div className="mb-2 font-medium" style={{ color: page.statusFg }}>
-        {limit.name}
+      <div className="mb-2 min-w-0">
+        <div
+          className="font-medium truncate"
+          style={{ color: page.fg }}
+          title={limit.name}
+        >
+          {limit.name}
+        </div>
+        {limit.description && (
+          <div
+            className="truncate"
+            style={{ color: page.statusFg, fontSize: 11 }}
+            title={limit.description}
+          >
+            {limit.description}
+          </div>
+        )}
       </div>
       {orderedWindows(limit.secondary, limit.primary).map((w) => (
         <WindowDetail
@@ -155,7 +170,10 @@ export function CodexUsagePanel({
   return (
     <div
       ref={panelRef}
-      className="absolute bottom-full right-0 mb-1 min-w-[320px] rounded-md p-3 text-xs shadow-lg"
+      // max-w is load-bearing: the lane rows are `truncate` (nowrap), and on an
+      // absolutely-positioned box nowrap RAISES the preferred width — without
+      // this cap a long name would widen the popover instead of ellipsizing.
+      className="absolute bottom-full right-0 mb-1 min-w-[320px] max-w-[380px] rounded-md p-3 text-xs shadow-lg"
       style={{
         background: page.bg,
         border: `1px solid ${page.border}`,

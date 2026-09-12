@@ -41,7 +41,7 @@ interface RolloutRateLimits {
   credits?: {
     has_credits?: boolean;
     unlimited?: boolean;
-    balance?: number | null;
+    balance?: number | string | null; // same serializer as the live endpoint
   } | null;
   plan_type?: string | null;
 }
