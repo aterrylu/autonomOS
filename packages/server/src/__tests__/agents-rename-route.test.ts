@@ -19,6 +19,7 @@ process.env.AUTONOMOS_CONFIG_DIR = DIR;
 let app: Hono;
 let aId: string;
 let bId: string;
+let gId: string;
 
 async function renameReq(id: string, body: unknown) {
   const res = await app.request(`/api/agents/${id}`, {
@@ -46,11 +47,23 @@ describe("PATCH /api/agents/:id — rename", () => {
       );
     aId = mk("rename-a").id; // buildAgent defaults status: "running"
     bId = mk("rename-b").id;
+    // rename-b must be LIVE for the namesake guard to fire — the guard mirrors
+    // spawnAgent's `status === "running" && isAgentLive(id)`, so a persisted
+    // running status ALONE no longer blocks (see the not-live test below).
+    const runtime = await import("../agents/runtime.js");
+    const { FakePty } = await import("../perf/fake-pty.js");
+    runtime._registerSyntheticAttachment(bId, new FakePty().asIPty());
+    // A running-but-NOT-live namesake: a record whose persisted status is
+    // "running" but which has no live PTY (crash-recovered before reconcile, or
+    // a PTY that died before markExited). It must NOT block a rename.
+    gId = mk("ghost-running").id;
     const { agentsRouter } = await import("../routes/agents.js");
     app = new Hono();
     app.route("/api/agents", agentsRouter);
   });
   after(async () => {
+    const runtime = await import("../agents/runtime.js");
+    runtime._unregisterSyntheticAttachment(bId);
     const { rmSync } = await import("node:fs");
     rmSync(DIR, { recursive: true, force: true });
   });
@@ -85,6 +98,16 @@ describe("PATCH /api/agents/:id — rename", () => {
     // The rename did NOT land — the record keeps its previous name.
     const store = await import("../agents/store.js");
     assert.equal(store.getAgent(aId)?.name, "spaced");
+  });
+
+  it("does NOT 409 for a running-but-NOT-live namesake (mirrors spawnAgent, nox)", async () => {
+    // gId ("ghost-running") is status:"running" in the store but has no live PTY.
+    // spawnAgent would happily accept the name, so the rename guard must too —
+    // else a crash-recovered record 409s a rename for a name that isn't taken.
+    const res = await renameReq(aId, { name: "ghost-running" });
+    assert.equal(res.status, 200, JSON.stringify(res.json));
+    const store = await import("../agents/store.js");
+    assert.equal(store.getAgent(aId)?.name, "ghost-running");
   });
 
   it("409s a stale version", async () => {

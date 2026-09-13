@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
 import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
 import {
+  isAgentLive,
   killAttachment,
   restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
@@ -437,14 +438,20 @@ agentsRouter.patch("/:id", async (c) => {
   const name = body.name.trim();
   if (!name) return c.json({ error: "Name cannot be empty" }, 400);
 
-  // Namesake guard (mirrors spawnAgent's): reject a name already held by ANOTHER
-  // running agent, so the collision surfaces as a clean 409 here rather than
-  // later when the restart's attach re-spawns (and leaves the agent stopped).
+  // Namesake guard: reject a name already held by ANOTHER running agent, so the
+  // collision surfaces as a clean 409 here rather than later when the restart's
+  // attach re-spawns (and leaves the agent stopped). Mirrors spawnAgent's guard
+  // EXACTLY — `status === "running"` AND a live PTY (`isAgentLive`) — so the two
+  // never disagree: a crash-recovered record (or one whose PTY died before
+  // `markExited` landed) can carry a persisted `running` status with no live PTY,
+  // and blocking on that would 409 a rename for a name spawnAgent would accept
+  // (a confusing error naming a dead agent). (nox review.)
   const needle = name.toLowerCase();
   for (const a of listAgents()) {
     if (
       a.id !== agent.id &&
       a.status === "running" &&
+      isAgentLive(a.id) &&
       a.name.toLowerCase() === needle
     ) {
       return c.json(
