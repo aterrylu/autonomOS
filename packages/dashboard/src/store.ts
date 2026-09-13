@@ -717,6 +717,10 @@ interface AppState {
    *  Composed from the two existing endpoints (there is no per-agent restart
    *  route — only fleet-wide restart-all). */
   restartSession: (id: string) => Promise<void>;
+  /** Rename an agent (record name), then restart so the resume argv carries the
+   *  new `--name`. Rethrows a rename failure (namesake 409 / stale version)
+   *  BEFORE anything is torn down, so the caller can surface it. */
+  renameSession: (id: string, name: string) => Promise<void>;
   /** Reparent an agent in the org chart by manager id. `null` clears. Rethrows
    *  the typed error on failure so the caller can surface the reason. */
   setManager: (id: string, managerId: string | null) => Promise<void>;
@@ -1147,6 +1151,21 @@ export const useStore = create<AppState>()(
           // jumps you to another agent while the restarted one runs with no pane.
           // Only when the attach actually landed (else there is nothing to show).
           if (attached) get().switchPane({ type: "session", id });
+        },
+        renameSession: async (id, name) => {
+          const trimmed = name.trim();
+          if (!trimmed) throw new Error("Name cannot be empty");
+          // Patch the record name FIRST and let it throw (namesake 409 / stale
+          // version) so the menu surfaces the reason BEFORE anything is torn
+          // down — nothing is killed unless the rename lands. THEN restart: the
+          // record is now authoritative, and attach re-reads `agent.name`, so the
+          // resumed session boots with the new `--name`. Restart reuses the
+          // kill→attach→refocus compose (incl. the #353 pane re-open); a failed
+          // attach there leaves the renamed agent stopped (resumable), logged
+          // there — not surfaced as a rename failure, because the rename itself
+          // already succeeded.
+          await agentsApi.rename(id, trimmed);
+          await get().restartSession(id);
         },
         setManager: async (id, managerId) => {
           // Set by exact id (skips the server's name resolution + running/recent

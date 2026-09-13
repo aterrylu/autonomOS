@@ -543,11 +543,17 @@ export function AgentContextMenu({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Rename mode: swaps the whole menu body for a name input + restart warning.
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [pos, setPos] = useState({ left: x, top: y });
 
   const switchPane = useStore((s) => s.switchPane);
   const killSession = useStore((s) => s.killSession);
   const restartSession = useStore((s) => s.restartSession);
+  const renameSession = useStore((s) => s.renameSession);
   const resumeSession = useStore((s) => s.resumeSession);
   const removeSession = useStore((s) => s.removeSession);
   const setManager = useStore((s) => s.setManager);
@@ -563,6 +569,46 @@ export function AgentContextMenu({
   // (the parent mounts this component only when the menu is open), so the
   // cleanup returned by pushEscapeCloser fires exactly on close/unmount.
   useEffect(() => pushEscapeCloser(onClose), [onClose]);
+
+  // While in rename mode, push a SECOND closer so Escape peels rename mode first
+  // (LIFO) — back to the menu — and only a second Escape closes the menu, matching
+  // the submenu's nested-escape behavior.
+  useEffect(() => {
+    if (!renaming) return;
+    return pushEscapeCloser(() => {
+      setRenaming(false);
+      setRenameError(null);
+    });
+  }, [renaming]);
+
+  function cancelRename() {
+    setRenaming(false);
+    setRenameError(null);
+  }
+
+  async function submitRename() {
+    const name = renameValue.trim();
+    if (renameBusy) return;
+    if (!name || name === target.name) {
+      cancelRename(); // empty or unchanged → treat as cancel, never a no-op restart
+      return;
+    }
+    if (!target.id) {
+      onClose();
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      // renameSession patches the record name (rethrows namesake 409 / stale
+      // BEFORE any teardown), then restarts so the resume carries the new --name.
+      await renameSession(target.id, name);
+      onClose();
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : String(err));
+      setRenameBusy(false); // keep the form open with the reason
+    }
+  }
 
   // Click-away: a capture-phase pointerdown outside the menu closes it. Scoped
   // to this menu's lifetime — not a standing document listener. The flyout is a
@@ -592,7 +638,7 @@ export function AgentContextMenu({
     if (top + height > window.innerHeight - pad)
       top = Math.max(pad, window.innerHeight - height - pad);
     setPos({ left, top });
-  }, [x, y, confirmingDelete, deleteError]);
+  }, [x, y, confirmingDelete, deleteError, renaming, renameError]);
 
   // Restore focus to whatever held it before the menu opened (usually the xterm
   // textarea) on dismiss — otherwise focus lands on <body> and the next keystroke
@@ -609,13 +655,17 @@ export function AgentContextMenu({
   useLayoutEffect(() => {
     const root = menuRef.current;
     if (!root) return;
-    const el = confirmingDelete
-      ? root.querySelector<HTMLElement>('[data-confirm-cancel="true"]')
-      : root.querySelector<HTMLElement>(
-          '[role="menuitem"]:not([aria-disabled="true"])',
-        );
+    const el = renaming
+      ? root.querySelector<HTMLElement>('[data-rename-input="true"]')
+      : confirmingDelete
+        ? root.querySelector<HTMLElement>('[data-confirm-cancel="true"]')
+        : root.querySelector<HTMLElement>(
+            '[role="menuitem"]:not([aria-disabled="true"])',
+          );
     el?.focus();
-  }, [confirmingDelete]);
+    // Select the pre-filled name so typing replaces it immediately.
+    if (el instanceof HTMLInputElement) el.select();
+  }, [confirmingDelete, renaming]);
 
   // Roving focus among TOP-LEVEL items (the flyout owns its own nav and stops
   // propagation, so its items are excluded here). Escape closes the menu, but
@@ -663,6 +713,20 @@ export function AgentContextMenu({
             focusTerminal(target.id);
           }
           onClose();
+        },
+      },
+      {
+        key: "rename",
+        label: "Rename…",
+        icon: "✎",
+        group: "process",
+        disabled: !canAct,
+        disabledReason: "No autonomOS record for this session",
+        // Opens rename mode (swaps the menu body); does NOT close the menu.
+        onSelect: () => {
+          setRenameValue(target.name);
+          setRenameError(null);
+          setRenaming(true);
         },
       },
       {
@@ -778,114 +842,206 @@ export function AgentContextMenu({
       style={shell}
       onKeyDown={onKeyDown}
     >
-      {process.map((it) => (
-        <MenuItemButton key={it.key} it={it} page={page} c={c} />
-      ))}
-      {canAct && (
-        <>
-          {divider}
-          <ManagerSubmenuItem
-            target={target}
-            candidates={candidates}
-            page={page}
-            c={c}
-            onPick={(managerId) =>
-              target.id ? setManager(target.id, managerId) : Promise.resolve()
-            }
-            onCloseAll={onClose}
-          />
-        </>
-      )}
-      {danger.length > 0 && (
+      {renaming ? (
         <div
           style={{
-            margin: "4px 3px 0",
-            padding: "3px 0",
-            borderRadius: 5,
-            background: c.dangerTint,
-            border: `1px solid ${c.dangerRing}`,
+            padding: "6px 8px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 7,
           }}
         >
-          {confirmingDelete ? (
-            <div
+          <input
+            data-rename-input="true"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              // Keep the menu's roving-arrow / Escape handler out of the text
+              // field, and drive submit/cancel from here. Escape is ALSO peeled
+              // by the nested escape-closer (LIFO); handling it here is a belt-
+              // and-braces so a focused input always cancels rename first.
+              e.stopPropagation();
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void submitRename();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelRename();
+              }
+            }}
+            placeholder="Agent name"
+            aria-label="New agent name"
+            spellCheck={false}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "5px 8px",
+              fontSize: 12.5,
+              borderRadius: 5,
+              border: `1px solid ${c.border}`,
+              background: page.bg,
+              color: page.fg,
+              outline: "none",
+            }}
+          />
+          <div
+            style={{
+              fontSize: 11,
+              lineHeight: 1.4,
+              color: renameError ? c.danger : page.statusFg,
+            }}
+          >
+            {renameError
+              ? `Rename failed: ${renameError}`
+              : "Renaming restarts this session — the conversation resumes."}
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <button
+              type="button"
+              data-rename-cancel="true"
+              onClick={cancelRename}
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "4px 8px",
+                border: "none",
+                background: "transparent",
+                color: page.statusFg,
+                cursor: "pointer",
                 fontSize: 11.5,
-                whiteSpace: "nowrap",
               }}
             >
-              <span style={{ flex: "1 1 auto", color: c.danger }}>
-                {deleteError
-                  ? `Delete failed: ${deleteError}`
-                  : "Delete permanently?"}
-              </span>
-              <button
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                data-confirm-cancel="true"
-                style={{
-                  border: "none",
-                  background: "transparent",
-                  color: page.statusFg,
-                  cursor: "pointer",
-                  fontSize: 11,
-                }}
-                onClick={() => {
-                  setConfirmingDelete(false);
-                  setDeleteError(null);
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                aria-disabled={deleting ? "true" : undefined}
-                style={{
-                  border: "none",
-                  background: "transparent",
-                  color: c.danger,
-                  cursor: deleting ? "default" : "pointer",
-                  opacity: deleting ? 0.5 : 1,
-                  fontSize: 11,
-                  fontWeight: 650,
-                }}
-                // Await the delete: removeSession rethrows the typed ApiError, so
-                // on failure we keep this confirm open and show the reason rather
-                // than closing as if it worked. onClose only on success.
-                onClick={async () => {
-                  if (!target.id) {
-                    onClose();
-                    return;
-                  }
-                  if (deleting) return;
-                  setDeleting(true);
-                  setDeleteError(null);
-                  try {
-                    await removeSession(target.id);
-                    onClose();
-                  } catch (err) {
-                    setDeleteError(
-                      err instanceof Error ? err.message : String(err),
-                    );
-                    setDeleting(false);
-                  }
-                }}
-              >
-                {deleting ? "Deleting…" : "Delete"}
-              </button>
-            </div>
-          ) : (
-            danger.map((it) => (
-              <MenuItemButton key={it.key} it={it} page={page} c={c} />
-            ))
-          )}
+              Cancel
+            </button>
+            <button
+              type="button"
+              aria-disabled={renameBusy ? "true" : undefined}
+              onClick={() => void submitRename()}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: page.fg,
+                cursor: renameBusy ? "default" : "pointer",
+                opacity: renameBusy ? 0.5 : 1,
+                fontSize: 11.5,
+                fontWeight: 650,
+              }}
+            >
+              {renameBusy ? "Renaming…" : "Rename"}
+            </button>
+          </div>
         </div>
+      ) : (
+        <>
+          {process.map((it) => (
+            <MenuItemButton key={it.key} it={it} page={page} c={c} />
+          ))}
+          {canAct && (
+            <>
+              {divider}
+              <ManagerSubmenuItem
+                target={target}
+                candidates={candidates}
+                page={page}
+                c={c}
+                onPick={(managerId) =>
+                  target.id
+                    ? setManager(target.id, managerId)
+                    : Promise.resolve()
+                }
+                onCloseAll={onClose}
+              />
+            </>
+          )}
+          {danger.length > 0 && (
+            <div
+              style={{
+                margin: "4px 3px 0",
+                padding: "3px 0",
+                borderRadius: 5,
+                background: c.dangerTint,
+                border: `1px solid ${c.dangerRing}`,
+              }}
+            >
+              {confirmingDelete ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "4px 8px",
+                    fontSize: 11.5,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span style={{ flex: "1 1 auto", color: c.danger }}>
+                    {deleteError
+                      ? `Delete failed: ${deleteError}`
+                      : "Delete permanently?"}
+                  </span>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    data-confirm-cancel="true"
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: page.statusFg,
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                    onClick={() => {
+                      setConfirmingDelete(false);
+                      setDeleteError(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    aria-disabled={deleting ? "true" : undefined}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: c.danger,
+                      cursor: deleting ? "default" : "pointer",
+                      opacity: deleting ? 0.5 : 1,
+                      fontSize: 11,
+                      fontWeight: 650,
+                    }}
+                    // Await the delete: removeSession rethrows the typed ApiError, so
+                    // on failure we keep this confirm open and show the reason rather
+                    // than closing as if it worked. onClose only on success.
+                    onClick={async () => {
+                      if (!target.id) {
+                        onClose();
+                        return;
+                      }
+                      if (deleting) return;
+                      setDeleting(true);
+                      setDeleteError(null);
+                      try {
+                        await removeSession(target.id);
+                        onClose();
+                      } catch (err) {
+                        setDeleteError(
+                          err instanceof Error ? err.message : String(err),
+                        );
+                        setDeleting(false);
+                      }
+                    }}
+                  >
+                    {deleting ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+              ) : (
+                danger.map((it) => (
+                  <MenuItemButton key={it.key} it={it} page={page} c={c} />
+                ))
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

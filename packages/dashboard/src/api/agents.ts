@@ -36,6 +36,14 @@ export const agentsApi = {
     id: string,
     body: { manager?: string; managerId?: string | null; version?: number },
   ) => request<Agent>(`/api/agents/${id}/manager`, { method: "POST", body }),
+  /** Rename an agent's record. `PATCH /api/agents/:id` with body `version`
+   *  optimistic concurrency. The caller then restarts so the resume argv carries
+   *  the new `--name`. 409 on a namesake collision or a stale version. */
+  rename: (id: string, name: string, version?: number) =>
+    request<Agent>(`/api/agents/${id}`, {
+      method: "PATCH",
+      body: version !== undefined ? { name, version } : { name },
+    }),
   kill: (id: string, reason?: string) =>
     request<{ ok: boolean; id: string }>(`/api/agents/${id}/kill`, {
       method: "POST",

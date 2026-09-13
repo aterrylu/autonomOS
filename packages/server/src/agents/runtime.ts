@@ -195,6 +195,15 @@ export function getLiveAgentIds(): UUID[] {
   return Array.from(live.keys());
 }
 
+/** True iff `agentId` has a live PTY attachment right now. The read-only form
+ *  of `spawnAgent`'s namesake `live.has(a.id)` guard, exported so other guards
+ *  (the rename route) can mirror it exactly instead of trusting a persisted
+ *  `status === "running"` that a crash-recovered/died-without-markExited record
+ *  can carry with no live PTY behind it. */
+export function isAgentLive(agentId: UUID): boolean {
+  return live.has(agentId);
+}
+
 /**
  * PERF/TEST ONLY — register a synthetic attachment backed by a caller-supplied
  * PTY (typically a FakePty from `perf/fake-pty.ts`) so the real terminal WS
