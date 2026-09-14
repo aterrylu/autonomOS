@@ -2232,6 +2232,10 @@ export const ProjectItem = React.memo(function ProjectItem({
   const exitedSessions = useStore((s) => s.exitedSessions);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
+  // The SAME live status feed the Agents-tab rows read (GET /api/agent-status),
+  // so a live Projects row shows the real corner dot (green idle / blue working
+  // / amber needs-input) instead of a blank circle — Terry's #369 refinement.
+  const agentStatuses = useStore((s) => s.agentStatuses);
 
   // Expand state lives in the store so it survives the Sidebar's unmount-on-
   // collapse (a per-mount useState reset every open — the old bug #8).
@@ -2311,8 +2315,19 @@ export const ProjectItem = React.memo(function ProjectItem({
             const age = formatAge(
               isLive ? (rec?.lastActivityAt ?? s.lastModified) : s.lastModified,
             );
+            // Live rows carry their REAL fine-grained status from the live feed
+            // (idle/working/needs-input → the colored corner dot), exactly like
+            // the Agents tab — NOT the coarse record `status: "running"` that
+            // renders as a blank circle. Dead rows read "unknown" so the icon
+            // shows no active dot (they're also grayed below).
+            // The prop type is the coarse AgentStatus, but StatusCorner's
+            // statusCategory() reads the fine runtime value (idle/working/
+            // needs-input) — so cast it through exactly like SessionRow does.
+            const liveStatus = rec?.id
+              ? (agentStatuses[rec.id]?.status as AgentStatus | undefined)
+              : undefined;
             const iconStatus: AgentStatus = isLive
-              ? ((rec?.status as AgentStatus) ?? "running")
+              ? (liveStatus ?? (rec?.status as AgentStatus) ?? "running")
               : "unknown";
 
             const onOpen = () => {
@@ -2336,14 +2351,20 @@ export const ProjectItem = React.memo(function ProjectItem({
               <button
                 type="button"
                 key={s.sessionId}
-                // Terry's gate pick: a Projects row MIRRORS a live agent row
-                // (SessionRow) — same height, spacing, icon size, and two-line
-                // anatomy (name + age on line 1, branch + a trailing state slot
-                // on line 2). The earlier "quieter archive" treatment (row/icon
-                // opacity dimming + muted name color + rounded-full pills) was
-                // TRIED and REVERSED at this gate (ADR-098): visual kinship with
-                // the fleet above IS the design, not distinction from it.
-                className="group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer"
+                // Terry's gate pick + refinement: a Projects row MIRRORS a live
+                // agent row (SessionRow) — same height, spacing, icon size, and
+                // two-line anatomy (name + age on line 1, branch + a trailing
+                // state slot on line 2). State differentiation is SELECTIVE: a
+                // LIVE row is full-strength and carries its real status dot (see
+                // iconStatus), while a DEAD row (stopped/external) is grayed out
+                // — dimmed at rest, restored on hover so its Resume stays legible.
+                // (The rounded-full pills from the first archive look are still
+                // gone; only the dead-row dimming returns. ADR-098.)
+                className={`group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer${
+                  state === "live"
+                    ? ""
+                    : " opacity-60 transition-opacity hover:opacity-100"
+                }`}
                 style={{ paddingLeft: "20px", paddingRight: "12px" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = `${page.fg}0a`;

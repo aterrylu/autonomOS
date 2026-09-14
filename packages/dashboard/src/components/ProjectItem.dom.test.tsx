@@ -65,6 +65,9 @@ function seed() {
     status: "idle",
     theme: "midnight",
     agentIconStyle: "provider",
+    // The live feed the live row reads for its real status dot (Terry's #369
+    // refinement) — "working" → the blue corner dot, not a blank circle.
+    agentStatuses: { "live-1": { status: "working" } },
     expandedProjects: { "/repo/autonomOS": true },
     switchPane: vi.fn(),
     resumeSession: vi.fn().mockResolvedValue(undefined),
@@ -123,6 +126,19 @@ describe("ProjectItem — redesigned rows", () => {
     const row = screen.getByText("stopped session").closest("button");
     if (!row) throw new Error("no row");
     expect(within(row).getByText("Stopped")).toBeTruthy();
+  });
+
+  it("grays out DEAD rows (external/stopped) but keeps LIVE rows full-strength (#369 refinement)", () => {
+    renderItem();
+    const live = screen.getByText("live session").closest("button");
+    const ext = screen.getByText("external session").closest("button");
+    const stop = screen.getByText("stopped session").closest("button");
+    // Live = full-strength (no dim); dead = grayed (dimmed at rest, restored on
+    // hover). Same parity skeleton for all three.
+    expect(live?.className).not.toMatch(/opacity-60/);
+    expect(ext?.className).toMatch(/opacity-60/);
+    expect(ext?.className).toMatch(/hover:opacity-100/);
+    expect(stop?.className).toMatch(/opacity-60/);
   });
 
   it("collapsing routes through the store, not per-mount state (bug #8)", () => {
