@@ -2286,11 +2286,31 @@ export const ProjectItem = React.memo(function ProjectItem({
           onClick={() => toggleProjectExpanded(project.path)}
           aria-expanded={expanded}
         >
+          {/* Rotating chevron (Terry's #369 pick A): one control that rotates
+              90° on expand — the universal disclosure convention, replacing the
+              tiny ▾/▸ glyph-swap that read as two unrelated marks. */}
           <span
-            className="text-[9px] shrink-0"
-            style={{ color: page.statusFg }}
+            className="shrink-0 flex items-center justify-center transition-transform duration-150"
+            style={{
+              width: 14,
+              color: page.statusFg,
+              transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+            }}
+            aria-hidden="true"
           >
-            {expanded ? "▾" : "▸"}
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6 4l4 4-4 4" />
+            </svg>
           </span>
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}

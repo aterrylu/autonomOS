@@ -1313,12 +1313,13 @@ export const useStore = create<AppState>()(
           get().switchPane({ type: "presets", id: "presets" });
         },
 
+        // ACCORDION (Terry's #369 pick B): opening a project collapses the
+        // others, so at most one project's sessions occupy the sidebar's scarce
+        // vertical space at a time. Clicking the open one closes it (none open).
+        // `expandedProjects` therefore holds 0 or 1 `true` entry.
         toggleProjectExpanded: (path) =>
           set((s) => ({
-            expandedProjects: {
-              ...s.expandedProjects,
-              [path]: !s.expandedProjects[path],
-            },
+            expandedProjects: s.expandedProjects[path] ? {} : { [path]: true },
           })),
 
         collapseAllProjects: () => set({ expandedProjects: {} }),
