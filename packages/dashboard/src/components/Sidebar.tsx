@@ -1031,16 +1031,9 @@ export function Sidebar() {
           >
             Projects
           </span>
-          {projects.length > 0 && (
-            <span
-              className="text-[10px] tabular-nums shrink-0"
-              style={{ color: page.statusFg }}
-              title={`${projects.length} projects · ${projects.reduce((n, p) => n + p.sessions.length, 0)} sessions`}
-            >
-              {projects.length}·
-              {projects.reduce((n, p) => n + p.sessions.length, 0)}
-            </span>
-          )}
+          {/* The projects·sessions header count was removed at Terry's gate
+              ("what is 16·53 next to the projects? get rid of that, keep it
+              clean"); the per-project row count + collapse-all stay. */}
           {projects.some((p) => expandedProjects[p.path]) && (
             <button
               type="button"
