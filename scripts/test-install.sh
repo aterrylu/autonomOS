@@ -514,11 +514,17 @@ BRIDGE="$TEST_PREFIX/share/autonomos/channel-server/dist.mjs"
 [[ -f "$BRIDGE" ]] || { echo "✗ packed bridge missing at $BRIDGE"; exit 1; }
 BRIDGE_DIR=$(mktemp -d)
 cp "$BRIDGE" "$BRIDGE_DIR/dist.mjs"
+# perl alarm = portable hard bound (GNU `timeout` is absent on the macOS
+# runners; perl is already a dependency of this script). Without it, a
+# bridge that BOOTS but never answers initialize hangs this substitution
+# forever: the reconnect timer keeps node's event loop alive after head
+# exits, and $(…) waits on the whole pipeline (nox).
 BRIDGE_OUT=$( (echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ci\",\"version\":\"1.0\"}}}"; sleep 5) | \
   env AUTONOMOS_SERVER_URL="ws+unix:///nonexistent-ci.sock:/ws/gateway" \
       AUTONOMOS_API_URL="http://127.0.0.1:1" AUTONOMOS_SESSION_ID=ci \
       AUTONOMOS_AGENT_NAME=ci AUTONOMOS_CONFIG_DIR="$BRIDGE_DIR" AUTONOMOS_TOKEN=ci \
-      node "$BRIDGE_DIR/dist.mjs" 2>"$BRIDGE_DIR/stderr" | head -1 || true)
+      perl -e 'alarm 25; $SIG{ALRM} = sub { kill 9, $pid if $pid; exit 0 }; $pid = open(my $fh, "-|", @ARGV) or exit 1; while (<$fh>) { print; last if /jsonrpc/ } kill 9, $pid; exit 0' \
+      node "$BRIDGE_DIR/dist.mjs" 2>"$BRIDGE_DIR/stderr" || true)
 if ! echo "$BRIDGE_OUT" | grep -q "\"serverInfo\""; then
   echo "✗ Packed bridge did not answer initialize (the #376 class):"
   tail -5 "$BRIDGE_DIR/stderr"
