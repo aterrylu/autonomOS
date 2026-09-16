@@ -501,6 +501,39 @@ echo "$UP_TO_DATE_OUT" | grep -q "Already on the latest" || {
 echo "==> ✓ Up-to-date no-op OK"
 assert_real_daemon_untouched "up-to-date upgrade no-op"
 
+# ── channel-server bridge is self-contained in the PACKED artifact (#376) ─
+# v0.6.1 shipped dist.mjs with external dep imports and no resolvable
+# node_modules → every agent's MCP died fleet-wide on bundle installs while
+# the daemon looked healthy. The unit test guards the committed artifact;
+# THIS step guards the artifact as actually packed + installed by the
+# tarball, executed from a node_modules-free dir, requiring a real MCP
+# initialize response. Gateway socket deliberately nonexistent — initialize
+# must answer without it.
+echo "==> channel-server bridge answers MCP initialize from the installed bundle"
+BRIDGE="$TEST_PREFIX/share/autonomos/channel-server/dist.mjs"
+[[ -f "$BRIDGE" ]] || { echo "✗ packed bridge missing at $BRIDGE"; exit 1; }
+BRIDGE_DIR=$(mktemp -d)
+cp "$BRIDGE" "$BRIDGE_DIR/dist.mjs"
+# perl alarm = portable hard bound (GNU `timeout` is absent on the macOS
+# runners; perl is already a dependency of this script). Without it, a
+# bridge that BOOTS but never answers initialize hangs this substitution
+# forever: the reconnect timer keeps node's event loop alive after head
+# exits, and $(…) waits on the whole pipeline (nox).
+BRIDGE_OUT=$( (echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ci\",\"version\":\"1.0\"}}}"; sleep 5) | \
+  env AUTONOMOS_SERVER_URL="ws+unix:///nonexistent-ci.sock:/ws/gateway" \
+      AUTONOMOS_API_URL="http://127.0.0.1:1" AUTONOMOS_SESSION_ID=ci \
+      AUTONOMOS_AGENT_NAME=ci AUTONOMOS_CONFIG_DIR="$BRIDGE_DIR" AUTONOMOS_TOKEN=ci \
+      perl -e 'alarm 25; $SIG{ALRM} = sub { kill 9, $pid if $pid; exit 0 }; $pid = open(my $fh, "-|", @ARGV) or exit 1; while (<$fh>) { print; last if /jsonrpc/ } kill 9, $pid; exit 0' \
+      node "$BRIDGE_DIR/dist.mjs" 2>"$BRIDGE_DIR/stderr" || true)
+if ! echo "$BRIDGE_OUT" | grep -q "\"serverInfo\""; then
+  echo "✗ Packed bridge did not answer initialize (the #376 class):"
+  tail -5 "$BRIDGE_DIR/stderr"
+  exit 1
+fi
+rm -rf "$BRIDGE_DIR"
+echo "==> ✓ Packed channel-server bridge is self-contained"
+
+
 # ── supervisor-unit drift heal on the up-to-date path (ADR-080) ──────────
 # Stage a supervised-install shape under the FAKE home: install-service
 # --no-activate writes the unit file (no launchctl/systemctl), then a

@@ -71,7 +71,19 @@ build:
 	@$(BUN) install
 	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
-	@bunx esbuild packages/server/src/channel-server/index.ts --bundle --platform=node --format=esm --outfile=packages/server/src/channel-server/dist.mjs --packages=external --log-level=warning
+	@# Deps INLINED (no --packages=external): the release tarball carries no
+	@# node_modules resolvable from channel-server/, so external specifiers
+	@# crashed the bridge with ERR_MODULE_NOT_FOUND before the MCP initialize
+	@# response — every agent's autonomos MCP dead fleet-wide on bundle
+	@# installs while the daemon (whose own bundle inlines the same deps)
+	@# looked healthy (#376). Only ws's OPTIONAL native accelerators stay
+	@# external: ws require()s bufferutil/utf-8-validate in try/catch and
+	@# falls back to its JS implementations when absent — inlining them would
+	@# fail the build; leaving them external is ws's supported shape.
+	@# The createRequire banner is load-bearing: inlined CJS deps (ws) call
+	@# require() for node builtins, and esbuild's ESM output otherwise shims
+	@# require to a throw ("Dynamic require of events is not supported").
+	@bunx esbuild packages/server/src/channel-server/index.ts --bundle --platform=node --format=esm --outfile=packages/server/src/channel-server/dist.mjs --external:bufferutil --external:utf-8-validate --banner:js="import { createRequire as __csCreateRequire } from 'node:module'; const require = __csCreateRequire(import.meta.url);" --log-level=warning
 	@echo "Removing any stale embedded dashboard (hosted server serves packages/dashboard/dist; _embedded_dashboard is a binary-build artifact only)..."
 	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
