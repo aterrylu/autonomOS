@@ -109,6 +109,14 @@ Then smoke, on forge over ssh:
 - auth note: forge's `.env` sets `AUTONOMOS_TOKEN`, which outranks
   `~/.autonomos/token` — use the `.env` value for API probes.
 
+**Permanent checklist item (#376): "MCP tools work from a spawned agent on
+a BUNDLE-shape install."** The channel-server bridge is a separately-packed
+artifact — source-mode installs resolve its deps against the repo and hide
+bundle-only breakage, which is exactly how v0.6.1 shipped with a
+fleet-dead MCP for every bundle user. The unit + install-CI tests guard the
+artifact; Phase 0 verifies the end shape when a bundle-shape instance is in
+the validation mix.
+
 Browser pass on `http://forge:3100` (Playwright or by hand): login, sidebar
 statuses, terminal render + switch + switch-back (keep-alive), mod+K switcher
 over a focused terminal, notifications panel, Presets tab, settings popover.
