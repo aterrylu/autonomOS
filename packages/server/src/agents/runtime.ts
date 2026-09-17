@@ -254,15 +254,28 @@ export function expandPath(path: string): string {
 }
 
 /**
- * Whether a spawn attempted to resume a prior session — which ARMS the onExit
- * safety net (respawn fresh on an immediate crash). This is tied to the field
- * each provider actually resumes from AND to that provider's loop-breaker:
+ * Whether a spawn attempted a resume that should ARM the onExit DESTRUCTIVE
+ * safety net (reset providerSessionId + clear providerThreadId, respawn fresh on
+ * an immediate crash). The invariant (ADR-100, extending ADR-049): the net arms
+ * ONLY behind a pre-flight that PROVES the resume target is the culprit —
+ * `resumeSessionId && hasResumeHook`.
  *
- *  - Codex resumes via `providerThreadId`; the safety net clears it on the
- *    fresh respawn, so the respawn is no longer "attempting resume" → no loop.
- *  - Claude Code resumes via `resumeSessionId`, but ONLY when it has the
- *    `hasResumableSession` pre-flight (`hasResumeHook`) — which clears
- *    `resumeSessionId` on the regenerated-id respawn, so that loop also breaks.
+ *  - Claude Code resumes via `resumeSessionId`, gated by the
+ *    `hasResumableSession` pre-flight (`hasResumeHook`), which CLEARS
+ *    `resumeSessionId` before spawn when nothing is resumable on disk. So by the
+ *    time CC can arm, a session provably existed but resume still crashed →
+ *    force-fresh loses little (the never-conversed/corrupt case) AND the cleared
+ *    field breaks the respawn loop.
+ *  - Codex resumes via `providerThreadId` but declares NO pre-flight hook — it
+ *    cannot prove on disk whether a thread is bad. A bare `providerThreadId`
+ *    therefore does NOT arm the net: a codex process exits 1 for many reasons
+ *    unrelated to the thread, and force-freshing would clear a perfectly
+ *    resumable providerThreadId, severing the only link to the (still-on-disk)
+ *    rollout — losing the conversation (the release-gating bug this fixes). A
+ *    Codex resume-crash instead falls through to markExited("crashed") with the
+ *    thread INTACT = retained crash-but-resumable. No loop: retain is terminal,
+ *    no respawn. (Auto-recovery of a provably-bad Codex thread is possible future
+ *    work — a rollout-read pre-flight analog to hasResumableSession; see ADR-100.)
  *
  * The hook guard is load-bearing: `resumeSessionId` is set on EVERY respawn
  * (provider-agnostic) and only ever cleared by the pre-flight. A provider with
@@ -295,8 +308,34 @@ export function resumeSafetyNetArmed(opts: {
   isAdopt?: boolean;
 }): boolean {
   if (opts.isAdopt) return false;
+  // Arm ONLY behind a pre-flight-gated resume (ADR-100); a bare `providerThreadId`
+  // does NOT arm the destructive net. Full rationale in the doc comment above.
+  return !!opts.resumeSessionId && opts.hasResumeHook;
+}
+
+/**
+ * The ACTIVE notification for a crashed agent whose conversation is RETAINED and
+ * resumable (ADR-100). The Codex crash-net now retains the thread instead of
+ * force-freshing it (see resumeSafetyNetArmed), but the normal exit path emits
+ * only a passive `agent.exited` status delta — so a corrupt-thread re-crash
+ * reached the notification feed with NO actionable signal. This restores parity
+ * with the sibling exit paths (the adopt-failure notice + the old force-fresh
+ * notice). Returns null when no notice applies: a self-exit (`reason` not
+ * "crashed"), or an agent with no retained provider thread (e.g. Claude Code,
+ * whose crash behavior is unchanged). Pure + exported so the decision is
+ * unit-tested without driving a real PTY onExit.
+ */
+export function retainedThreadCrashNotice(opts: {
+  reason: ExitReason;
+  hasProviderThread: boolean;
+  agentName: string;
+  providerDisplayName: string;
+}): string | null {
+  if (opts.reason !== "crashed" || !opts.hasProviderThread) return null;
   return (
-    !!opts.providerThreadId || (!!opts.resumeSessionId && opts.hasResumeHook)
+    `${opts.agentName}'s ${opts.providerDisplayName} session crashed — its ` +
+    "conversation is retained and can be resumed. If resuming keeps crashing, " +
+    "the thread may be corrupt; start a fresh session."
   );
 }
 
@@ -1154,12 +1193,15 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   pty.onData((data: string) => appendToOutputBuffer(managed, data));
 
   const spawnedAt = Date.now();
-  // Whether this spawn attempted to resume a prior session — Claude Code's
-  // `--resume <sessionId>` OR Codex's `codex resume <threadId>` — which arms the
-  // onExit safety net below. Reads the POST-pre-flight value: if the resume
-  // check above already cleared resumeSessionId, no resume was attempted and the
-  // net won't fire. See resumeSafetyNetArmed for why the resumeSessionId arm is
-  // gated on the provider owning a pre-flight hook (loop-breaker correctness).
+  // Whether this spawn attempted a resume that ARMS the onExit DESTRUCTIVE net
+  // below. Only a pre-flight-gated resume arms it (ADR-100): Claude Code's
+  // `--resume <sessionId>` once its hasResumableSession pre-flight passed.
+  // Codex's `codex resume <threadId>` deliberately does NOT arm it — with no
+  // pre-flight to prove the thread is the culprit, a Codex resume-crash retains
+  // its thread as crash-but-resumable rather than having it cleared. Reads the
+  // POST-pre-flight value: if the resume check above already cleared
+  // resumeSessionId, no resume was attempted and the net won't fire. See
+  // resumeSafetyNetArmed for why arming is gated on a pre-flight hook.
   // An adopt never arms the net (see resumeSafetyNetArmed for why) — a resume
   // can still fail after a passing pre-flight: the session may be open in the
   // user's terminal, or the JSONL truncated or version-mismatched.
@@ -1208,9 +1250,15 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     cancelChannelServerCheck(persisted.id);
 
     if (lifetime < 5_000 && exitCode !== 0) {
+      // A thread-carrying resume (Codex) that dies immediately is usually
+      // environmental/upstream, NOT a bad argv (ADR-100) — and its thread is
+      // retained (resumable), so don't mis-attribute it to a bad flag.
+      const wasThreadResume = !!resolved.providerThreadId;
       console.error(
         `[runtime] ${persisted.id.slice(0, 8)} died immediately (${lifetime}ms), code=${exitCode}` +
-          ` — likely a bad flag. Args: ${logArgs.join(" ")}`,
+          (wasThreadResume
+            ? ` — thread-resume crash; thread retained (resumable), likely environmental not a bad flag. Args: ${logArgs.join(" ")}`
+            : ` — likely a bad flag. Args: ${logArgs.join(" ")}`),
       );
     } else if (exitCode !== 0 || signal) {
       console.warn(
@@ -1218,20 +1266,24 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       );
     }
 
-    // Resume-failure safety net (provider-agnostic, ADR-049): a spawn that
-    // attempted a resume — Claude `--resume <id>` or Codex `codex resume
-    // <threadId>` — and died immediately almost certainly hit a missing/invalid
-    // session on disk. Respawn FRESH so the agent recovers instead of being
-    // marked crashed (and vanishing from the dashboard).
+    // Resume-failure safety net (ADR-049, narrowed by ADR-100): a spawn that
+    // attempted a PRE-FLIGHT-GATED resume and died immediately almost certainly
+    // hit a session that exists on disk but won't resume (e.g. corrupt). Respawn
+    // FRESH so the agent recovers instead of being marked crashed (and vanishing
+    // from the dashboard). Arming is gated by resumeSafetyNetArmed: today only
+    // Claude Code reaches here (its hasResumableSession pre-flight proved a
+    // session existed). Codex does NOT — a bare providerThreadId no longer arms
+    // the net, so a Codex resume-crash falls through to markExited("crashed")
+    // with its thread INTACT (crash-but-resumable), rather than having a good
+    // conversation cleared. See resumeSafetyNetArmed / ADR-100.
     //
-    // Force-fresh for ANY provider by (a) regenerating providerSessionId so
-    // Claude's pre-flight check finds no JSONL for the new id and emits a fresh
-    // `--session-id`, and (b) clearing providerThreadId so Codex takes the plain
-    // `--remote` path. Without (a), a Claude resume that crashed for a reason
-    // OTHER than a missing file (e.g. a corrupt session) would re-resume the
-    // same broken id every boot — a crash loop. With B's pre-flight in place,
-    // the common "never conversed" case never reaches here; this catches the
-    // residual "session existed but resume still failed" case.
+    // Force-fresh by (a) regenerating providerSessionId so Claude's pre-flight
+    // finds no JSONL for the new id and emits a fresh `--session-id`, and (b)
+    // clearing providerThreadId. Without (a), a Claude resume that crashed for a
+    // reason OTHER than a missing file would re-resume the same broken id every
+    // boot — a crash loop. With the pre-flight in place, the common "never
+    // conversed" case never reaches here; this catches the residual "session
+    // existed but resume still failed" case.
     if (
       !shuttingDown &&
       attemptedResume &&
@@ -1242,7 +1294,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       disposeCodexControl(persisted.id);
       // One write resets both identity fields: a new providerSessionId (Claude's
       // pre-flight finds no JSONL for it → fresh `--session-id`) and a cleared
-      // providerThreadId (Codex → fresh `--remote`).
+      // providerThreadId. The thread clear is now reachable only for a
+      // pre-flight-gated resume (Claude has no thread; a future thread-provider
+      // that earns a pre-flight would want its provably-bad thread cleared too) —
+      // NOT for Codex, which no longer arms the net (ADR-100).
       markRunning(persisted.id, {
         providerSessionId: crypto.randomUUID(),
         providerThreadId: undefined,
@@ -1304,6 +1359,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             ? `The external ${provider.displayName} session ${providerSessionId.slice(0, 8)} ended right after resuming — if the pane looks empty, the session may still be open in another terminal. Close it there and resume again.`
             : `Couldn't resume the external ${provider.displayName} session ${providerSessionId.slice(0, 8)} — it may still be open in another terminal. Close it there and resume again.`,
         );
+      }
+      // A crashed agent that still carries a providerThreadId (Codex) keeps its
+      // conversation (ADR-100) — surface it ACTIVELY, not only via the passive
+      // agent.exited delta below. Without this an environmental crash, and worse
+      // a corrupt-thread re-crash, reached the notification feed with no
+      // actionable signal (silent-failure review). markExited retains the thread,
+      // so reading it before/after is equivalent; existence-guarded like the
+      // adopt push above. Codex is never adopted, so this never double-notifies.
+      const stillPresent = getAgent(persisted.id);
+      const retainNotice = retainedThreadCrashNotice({
+        reason,
+        hasProviderThread: !!stillPresent?.providerThreadId,
+        agentName: persisted.name,
+        providerDisplayName: provider.displayName,
+      });
+      if (retainNotice && stillPresent) {
+        pushSystemNotification(persisted.id, retainNotice);
       }
       const updated = markExited(persisted.id, reason);
       live.delete(persisted.id);

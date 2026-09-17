@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ResolvedSpawnOptions } from "@autonomos/core";
-import { resumeSafetyNetArmed } from "../agents/runtime.js";
+import {
+  resumeSafetyNetArmed,
+  retainedThreadCrashNotice,
+} from "../agents/runtime.js";
 import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
@@ -147,11 +150,14 @@ describe("claudeCodeProvider.buildArgs — resume vs fresh fallback", () => {
   });
 });
 
-describe("provider parity — only claude-code needs the resume pre-flight", () => {
-  it("codex does NOT implement hasResumableSession (self-handles via thread id)", () => {
-    // Codex's buildArgs already degrades to a fresh `--remote` thread when no
-    // providerThreadId is present, so the runtime's unconditional behavior is
-    // correct for it — no pre-flight hook required.
+describe("provider parity — the pre-flight hook is claude-code-only", () => {
+  it("codex does NOT implement hasResumableSession (no pre-flight hook)", () => {
+    // Codex cannot prove on disk whether a thread is resumable before spawn, so
+    // it declares no pre-flight hook. Post-ADR-100 that absence is exactly why
+    // the destructive onExit net does NOT arm for a Codex resume-crash: with no
+    // proof the thread is the culprit, the crash retains the thread (resumable)
+    // rather than force-freshing it away. buildArgs still degrades to a fresh
+    // `--remote` thread when no providerThreadId is present.
     assert.equal(codexProvider.hasResumableSession, undefined);
   });
 
@@ -173,19 +179,30 @@ describe("provider parity — only claude-code needs the resume pre-flight", () 
 });
 
 /**
- * resumeSafetyNetArmed decides whether the onExit fresh-respawn net fires. The
- * subtlety is the loop-breaker: `resumeSessionId` is set on EVERY respawn
- * (provider-agnostic), so arming on it alone would make a provider WITHOUT a
- * pre-flight hook (Codex) re-fire forever on a persistent non-resume crash —
- * the regression this gating prevents. Codex must arm only via providerThreadId
- * (which the net clears); Claude Code arms via resumeSessionId only because its
- * pre-flight clears that field on the regenerated-id respawn.
+ * resumeSafetyNetArmed decides whether the onExit DESTRUCTIVE fresh-respawn net
+ * fires (reset providerSessionId + clear providerThreadId, respawn fresh).
+ *
+ * The invariant (ADR-100, extending ADR-049): the net arms ONLY behind a
+ * pre-flight that PROVES the resume target is the culprit — i.e.
+ * `resumeSessionId && hasResumeHook`. Claude Code's `hasResumableSession`
+ * pre-flight clears `resumeSessionId` when nothing is resumable on disk, so by
+ * the time CC can arm we KNOW a session existed but resume still crashed →
+ * force-fresh loses little (the never-conversed/corrupt case, ADR-049).
+ *
+ * A BARE `providerThreadId` (Codex — which has NO pre-flight hook) must NOT arm
+ * the net. A codex process exits 1 for many reasons unrelated to the thread;
+ * force-freshing there would clear a perfectly resumable providerThreadId,
+ * severing the only link to the (still-on-disk) rollout and losing the
+ * conversation — the release-gating bug. Instead a Codex resume-crash falls
+ * through to markExited("crashed") with the thread INTACT = retained
+ * crash-but-resumable (the retain half is pinned in
+ * codex-crash-retains-thread.test.ts). No loop: retain is terminal, no respawn.
  */
-describe("resumeSafetyNetArmed — onExit net loop-breaker", () => {
+describe("resumeSafetyNetArmed — destructive net only behind a pre-flight", () => {
   const SID = "55555555-5555-4555-8555-555555555555";
   const TID = "66666666-6666-4666-8666-666666666666";
 
-  it("Claude Code: armed on a real --resume (has pre-flight hook)", () => {
+  it("Claude Code: armed on a real --resume (pre-flight proved the session exists)", () => {
     assert.equal(
       resumeSafetyNetArmed({ resumeSessionId: SID, hasResumeHook: true }),
       true,
@@ -200,20 +217,23 @@ describe("resumeSafetyNetArmed — onExit net loop-breaker", () => {
     );
   });
 
-  it("Codex: armed via threadId even though resumeSessionId is always set", () => {
+  it("Codex: NOT armed by a bare providerThreadId — no pre-flight, so retain the thread (ADR-100)", () => {
+    // THE FIX. Previously a bare threadId armed the net, which then cleared the
+    // thread and force-respawned fresh — destroying a resumable conversation on
+    // ANY immediate crash (the release-gating bug Terry hit). With no pre-flight
+    // to prove the thread is the culprit, the destructive net must NOT arm; the
+    // crash falls through to a retained, resumable "crashed" record instead.
     assert.equal(
       resumeSafetyNetArmed({
         resumeSessionId: SID,
         providerThreadId: TID,
         hasResumeHook: false,
       }),
-      true,
+      false,
     );
   });
 
-  it("Codex: NOT armed after the net cleared the threadId (loop broken)", () => {
-    // REGRESSION GUARD: a bare resumeSessionId + no hook must NOT keep the net
-    // armed, or a Codex agent crashing for a non-resume reason loops forever.
+  it("Codex: NOT armed with no thread id either (fresh spawn / already-cleared)", () => {
     assert.equal(
       resumeSafetyNetArmed({
         resumeSessionId: SID,
@@ -224,10 +244,65 @@ describe("resumeSafetyNetArmed — onExit net loop-breaker", () => {
     );
   });
 
-  it("Codex: NOT armed on a fresh first spawn (no threadId, no hook)", () => {
+  it("a future thread-provider WITH a pre-flight hook still arms (the gate is the pre-flight, not 'no threads')", () => {
+    // Guards against re-reading the fix as "Codex/threads never arm" instead of
+    // "no arming without a pre-flight." A hypothetical provider carrying BOTH a
+    // resumeSessionId+hook AND a threadId arms via the proven resume path, and
+    // the net's providerThreadId clear is then correct for it too.
     assert.equal(
-      resumeSafetyNetArmed({ resumeSessionId: SID, hasResumeHook: false }),
-      false,
+      resumeSafetyNetArmed({
+        resumeSessionId: SID,
+        providerThreadId: TID,
+        hasResumeHook: true,
+      }),
+      true,
+    );
+  });
+});
+
+/**
+ * retainedThreadCrashNotice — the ACTIVE notice for a crashed agent whose thread
+ * is retained (ADR-100). Since the fix routes Codex resume-crashes onto the
+ * normal exit path (which emitted only a passive status delta), this restores an
+ * actionable signal. Pinned as a pure function so the notify DECISION is covered
+ * without driving a real PTY onExit (the ADR's no-live-PTY constraint).
+ */
+describe("retainedThreadCrashNotice — active signal for a retained crash", () => {
+  it("a crashed agent WITH a retained thread gets an actionable, resumable notice", () => {
+    const msg = retainedThreadCrashNotice({
+      reason: "crashed",
+      hasProviderThread: true,
+      agentName: "codex-worker-a",
+      providerDisplayName: "Codex",
+    });
+    assert.ok(msg, "a notice is produced");
+    assert.match(msg ?? "", /codex-worker-a/);
+    assert.match(msg ?? "", /Codex/);
+    assert.match(msg ?? "", /resumed/i);
+    assert.match(msg ?? "", /corrupt/i); // the actionable re-crash hint
+  });
+
+  it("a self-exit produces NO notice (only crashes signal)", () => {
+    assert.equal(
+      retainedThreadCrashNotice({
+        reason: "self_exited",
+        hasProviderThread: true,
+        agentName: "codex-worker-a",
+        providerDisplayName: "Codex",
+      }),
+      null,
+    );
+  });
+
+  it("a crash with NO retained thread produces no notice (Claude Code unchanged)", () => {
+    assert.equal(
+      retainedThreadCrashNotice({
+        reason: "crashed",
+        hasProviderThread: false,
+        agentName: "cc-worker",
+        providerDisplayName: "Claude Code",
+      }),
+      null,
     );
   });
 });
