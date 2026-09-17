@@ -323,14 +323,25 @@ describe("external-cc-resume — safety net is vetoed for adopt", () => {
     );
   });
 
-  it("isAdopt vetoes even a Codex-style threadId arm", () => {
-    // providerThreadId alone normally arms the net unconditionally; the adopt
-    // veto must win over every other arming reason, not just the CC one.
+  it("isAdopt vetoes even a thread-carrying pre-flight arm", () => {
+    // Post-ADR-100 a bare providerThreadId no longer arms — but a pre-flight
+    // (hasResumeHook) still does. The adopt veto must beat that arm even with a
+    // threadId also present, so an adopted record is never force-freshed into an
+    // empty session. Non-vacuous: without isAdopt these inputs arm (true).
     assert.equal(
       resumeSafetyNetArmed({
         resumeSessionId: SID,
         providerThreadId: TID,
-        hasResumeHook: false,
+        hasResumeHook: true,
+      }),
+      true,
+      "sanity: the same inputs arm without the veto",
+    );
+    assert.equal(
+      resumeSafetyNetArmed({
+        resumeSessionId: SID,
+        providerThreadId: TID,
+        hasResumeHook: true,
         isAdopt: true,
       }),
       false,

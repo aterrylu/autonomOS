@@ -478,8 +478,11 @@ export function markExited(id: UUID, reason: ExitReason): Agent | undefined {
 
 /** Mark an agent as running (resume / re-attach). Clears exit metadata.
  *  `providerThreadId` is included so the resume-failure recovery path can reset
- *  a dead Codex thread in the same write that resets the session id (a patch
- *  value of `undefined` is dropped by saveAgent's JSON.stringify, clearing it). */
+ *  a dead thread in the same write that resets the session id (a patch value of
+ *  `undefined` is dropped by saveAgent's JSON.stringify, clearing it). Post
+ *  ADR-100 that force-fresh path no longer fires for Codex, so the clear is
+ *  reachable only for a future pre-flight thread-provider — NOT for Codex, whose
+ *  crash retains its thread as resumable. */
 export function markRunning(
   id: UUID,
   patch: Partial<
