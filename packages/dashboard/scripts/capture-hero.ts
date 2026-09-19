@@ -787,8 +787,16 @@ function jsonlTreeHas(root: string, needle: string): boolean {
   return false;
 }
 
-const codexProducedOutput = (fakeHome: string): boolean =>
-  jsonlTreeHas(join(fakeHome, ".codex", "sessions"), "agent_message");
+// A coarse "did codex produce a visible reply?" gate for the hero capture.
+// codex 0.15x writes the reply as a response_item/message/assistant line whose
+// content is `output_text`; older codex (≤0.144) used `agent_message`. Match
+// either. The STRUCTURED, canonical parser for this shape is
+// `extractAssistantReply` (packages/server/src/gateway/codexRollout.ts) — this
+// substring heuristic must track it, so re-check both on any codex schema bump.
+const codexProducedOutput = (fakeHome: string): boolean => {
+  const dir = join(fakeHome, ".codex", "sessions");
+  return jsonlTreeHas(dir, "output_text") || jsonlTreeHas(dir, "agent_message");
+};
 const claudeProducedOutput = (fakeHome: string): boolean =>
   jsonlTreeHas(join(fakeHome, ".claude", "projects"), '"type":"assistant"');
 

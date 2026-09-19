@@ -11,8 +11,11 @@
  * (this is a file read for a NOTIFICATION, not any thread RPC or delivery gate).
  *
  * Rollout layout (mirrors rolloutScanner): {codexHome}/sessions/YYYY/MM/DD/
- * rollout-<ISO>-<threadId>.jsonl. The agent's reply is an `event_msg` line whose
- * payload is `{ type: "agent_message", message: "<text>" }`.
+ * rollout-<ISO>-<threadId>.jsonl. The agent's reply is (codex 0.15x) a
+ * `response_item` line whose payload is `{ type: "message", role: "assistant",
+ * content: [{ type: "output_text", text }] }`; older codex (≤0.144) wrote an
+ * `event_msg` line with `{ type: "agent_message", message }`. Both are handled
+ * by `extractAssistantReply`, the single source of truth for the reply shape.
  *
  * Best-effort by contract: ANY failure (no rollout yet, not-yet-flushed, a
  * garbled tail line, an I/O error) returns null. The caller runs inside the
@@ -137,9 +140,99 @@ export interface CodexAgentReply {
   ts: string;
 }
 
+/** Text of one content item. Codex 0.15x carries the reply as
+ *  `content: [{ type: "output_text", text }]`; we take any item exposing a
+ *  string `text` so a future content-item kind still yields its text. */
+function contentItemText(item: unknown): string {
+  if (
+    item &&
+    typeof item === "object" &&
+    typeof (item as { text?: unknown }).text === "string"
+  ) {
+    return (item as { text: string }).text;
+  }
+  return "";
+}
+
+/**
+ * Extract an assistant reply (message + occurrence ts) from ONE parsed rollout
+ * line, or null if the line isn't an assistant reply.
+ *
+ * The single source of truth for STRUCTURED codex-reply parsing — any other
+ * reader that needs the reply text (e.g. the future codex-discovery scanner,
+ * currently parked) MUST reuse this rather than re-encode the shape. Re-encoding
+ * is exactly what broke the unread badge: F3 was written against
+ * `event_msg/agent_message`, a shape codex had already dropped by the time it
+ * shipped, so every read returned null and no turn ever counted. (One coarse
+ * exception, deliberately NOT a structured parse: `capture-hero.ts`'s
+ * `codexProducedOutput` does a substring "did codex speak?" gate — it tracks the
+ * same two shapes and must be updated alongside this on a codex schema bump.)
+ * Two shapes handled, newest first:
+ *   - 0.15x+ : { type:"response_item", payload:{ type:"message",
+ *               role:"assistant", content:[{ type:"output_text", text }] } }
+ *   - ≤0.144 : { type:"event_msg", payload:{ type:"agent_message", message } }
+ *
+ * `ts` is the line's top-level `timestamp` (occurrence identity for dedup), or a
+ * synthetic `line:<i>:<path>` when absent so dedup never collapses two reads.
+ */
+export function extractAssistantReply(
+  obj: unknown,
+  lineIndex: number,
+  path: string,
+): CodexAgentReply | null {
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as {
+    type?: string;
+    timestamp?: unknown;
+    payload?: {
+      type?: string;
+      role?: string;
+      message?: unknown;
+      content?: unknown;
+    };
+  };
+  const p = o.payload;
+  if (!p) return null;
+
+  let text: string | null = null;
+  // NEW (0.15x): response_item / message / assistant, text in content[].
+  if (
+    o.type === "response_item" &&
+    p.type === "message" &&
+    p.role === "assistant"
+  ) {
+    if (Array.isArray(p.content)) {
+      const joined = p.content.map(contentItemText).join("");
+      if (joined.length > 0) text = joined;
+    } else if (typeof p.content === "string" && p.content.length > 0) {
+      text = p.content;
+    }
+  }
+  // OLD (≤0.144): event_msg / agent_message / message string. Back-compat for
+  // older codex versions and rollouts already on disk.
+  else if (
+    o.type === "event_msg" &&
+    p.type === "agent_message" &&
+    typeof p.message === "string" &&
+    p.message.length > 0
+  ) {
+    text = p.message;
+  }
+
+  if (text === null) return null;
+  const message =
+    text.length > MAX_MESSAGE_CHARS
+      ? `${text.slice(0, MAX_MESSAGE_CHARS)}…`
+      : text;
+  const ts =
+    typeof o.timestamp === "string" ? o.timestamp : `line:${lineIndex}:${path}`;
+  return { message, ts };
+}
+
 /**
  * The agent's last reply (message + occurrence timestamp) from the thread's
- * rollout, truncated, or null. Never throws.
+ * rollout, truncated, or null. Scans the tail newest-first and returns the last
+ * assistant reply (the final answer). Never throws.
  */
 export function readLastCodexAgentMessage(
   threadId: string,
@@ -158,29 +251,8 @@ export function readLastCodexAgentMessage(
     } catch {
       continue; // a partial/garbled tail line — keep scanning upward
     }
-    const obj = parsed as {
-      type?: string;
-      timestamp?: unknown;
-      payload?: { type?: string; message?: unknown };
-    };
-    const p = obj?.payload;
-    if (
-      obj?.type === "event_msg" &&
-      p?.type === "agent_message" &&
-      typeof p.message === "string" &&
-      p.message.length > 0
-    ) {
-      const message =
-        p.message.length > MAX_MESSAGE_CHARS
-          ? `${p.message.slice(0, MAX_MESSAGE_CHARS)}…`
-          : p.message;
-      // ts identifies this occurrence; fall back to the line index if a rollout
-      // ever lacks a timestamp (they don't in practice) so dedup never collapses
-      // two distinct reads to an undefined key.
-      const ts =
-        typeof obj.timestamp === "string" ? obj.timestamp : `line:${i}:${path}`;
-      return { message, ts };
-    }
+    const reply = extractAssistantReply(parsed, i, path);
+    if (reply) return reply;
   }
   return null;
 }
