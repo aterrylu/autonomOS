@@ -158,12 +158,16 @@ function contentItemText(item: unknown): string {
  * Extract an assistant reply (message + occurrence ts) from ONE parsed rollout
  * line, or null if the line isn't an assistant reply.
  *
- * THE single source of truth for the codex reply shape — any other rollout
- * reader (e.g. the future codex-discovery scanner, currently parked) MUST reuse
- * this rather than re-encode the shape. Re-encoding is exactly what broke the
- * unread badge: F3 was written against `event_msg/agent_message`, a shape codex
- * had already dropped by the time it shipped, so every read returned null and no
- * turn ever counted. Two shapes handled, newest first:
+ * The single source of truth for STRUCTURED codex-reply parsing — any other
+ * reader that needs the reply text (e.g. the future codex-discovery scanner,
+ * currently parked) MUST reuse this rather than re-encode the shape. Re-encoding
+ * is exactly what broke the unread badge: F3 was written against
+ * `event_msg/agent_message`, a shape codex had already dropped by the time it
+ * shipped, so every read returned null and no turn ever counted. (One coarse
+ * exception, deliberately NOT a structured parse: `capture-hero.ts`'s
+ * `codexProducedOutput` does a substring "did codex speak?" gate — it tracks the
+ * same two shapes and must be updated alongside this on a codex schema bump.)
+ * Two shapes handled, newest first:
  *   - 0.15x+ : { type:"response_item", payload:{ type:"message",
  *               role:"assistant", content:[{ type:"output_text", text }] } }
  *   - ≤0.144 : { type:"event_msg", payload:{ type:"agent_message", message } }
