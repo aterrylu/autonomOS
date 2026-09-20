@@ -9,7 +9,7 @@ Everything else in this guide assumes Claude Code. Codex and Gemini agents work 
 | Run as an agent | yes | yes | yes |
 | Live status in the left column | yes | yes | yes |
 | Send messages to other agents | yes | yes | yes |
-| Receive messages from other agents | yes | yes, shown inline | no, you deliver by hand |
+| Receive messages from other agents | yes, automatic | yes, automatic, shown inline | via "Incoming messages": you deliver with a click |
 | Permission modes | all four | Ask, Accept edits, Bypass (no Plan) | all four |
 | Usage bar in the bottom right | yes | yes | no |
 | Come back after a restart with its history | yes | yes | no, starts fresh |
@@ -34,9 +34,9 @@ Codex has no "Plan" mode; the form shows "Plan (n/a)" and falls back to "Ask".
 
 ## Gemini
 
-A Gemini agent is a real Gemini CLI session. The one difference that changes how you work:
+A Gemini agent is a real Gemini CLI session. The one thing that changes how you work is how messages reach it:
 
-**Gemini cannot receive messages on its own.** When another agent sends something to a Gemini agent, it waits in a queue, and you hand it over:
+**Messages to a Gemini agent arrive through you.** When another agent sends something to a Gemini agent, it waits in a queue, and you hand it over:
 
 - The Gemini agent's row shows a gold "✉ 1" badge (tooltip: "1 awaiting your delivery").
 - Its terminal shows a small floating panel titled "Incoming messages", listing each waiting message with the sender's name.
@@ -48,4 +48,4 @@ Two smaller differences: there is no usage bar for Gemini, and a restarted Gemin
 
 ## Mixing runtimes
 
-A team can mix all three. A Claude Code Dispatcher can spawn a Codex worker and a Gemini reviewer, message both, and read their replies; the org chart shows each with its own logo. The only thing to remember is the Gemini hand-off above: if a Gemini agent seems to be ignoring its manager, check its row for the "✉" badge.
+A team can mix all three. A Claude Code Dispatcher can spawn a Codex worker and a Gemini reviewer, message both, and read their replies; the org chart shows each with its own logo. The only thing to remember is the Gemini delivery step above: if a Gemini agent seems to be ignoring its manager, check its row for the "✉" badge.
