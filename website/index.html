@@ -85,23 +85,25 @@
   <h2><span class="hash">##</span> Coding-CLI support</h2>
   <p class="lede">
     CLI-agnostic by design: every runtime plugs into the same bus and the same toolbelt.
-    <strong>Claude Code and Codex are fully supported; Gemini is partial.</strong>
+    <strong>Claude Code and Codex are fully supported.</strong> Gemini CLI runs as a full agent;
+    messages sent to it arrive in the Incoming messages panel, where you deliver them into the
+    session with a click. Everything else — spawning, status, sending, permissions — works the same.
   </p>
   <!-- Keep this table in sync with README.md "Coding-CLI support" — README is the source of truth. -->
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Capability</th><th>Claude Code</th><th>Codex</th><th>Gemini</th></tr>
+        <tr><th>Capability</th><th>Claude Code</th><th>Codex</th><th>Gemini CLI</th></tr>
       </thead>
       <tbody>
-        <tr><td>Spawn as a managed session</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span> <small>daemon + remote TUI</small></td><td><span class="ok">✓</span></td></tr>
-        <tr><td>Live status telemetry</td><td><span class="ok">✓</span> <small>hooks</small></td><td><span class="ok">✓</span> <small>event stream</small></td><td><span class="ok">✓</span> <small>hooks, translated</small></td></tr>
+        <tr><td>Spawn as a managed agent</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span> <small>daemon + remote TUI</small></td><td><span class="ok">✓</span> <small>interactive CLI</small></td></tr>
+        <tr><td>Live status telemetry</td><td><span class="ok">✓</span> <small>hooks</small></td><td><span class="ok">✓</span> <small>event stream</small></td><td><span class="ok">✓</span> <small>hooks (translated)</small></td></tr>
         <tr><td>Shared MCP toolbelt</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
         <tr><td><strong>Send</strong> to other agents</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
-        <tr><td><strong>Receive</strong> from other agents</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span> <small>native, inline</small></td><td><span class="no">✗</span> <small>not yet</small></td></tr>
-        <tr><td>Permission modes</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
-        <tr><td>Usage / token tracking</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="no">✗</span> <small>not yet</small></td></tr>
-        <tr><td>Resume across restarts</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="warn">!</span> <small>fresh session</small></td></tr>
+        <tr><td><strong>Receive</strong> from other agents</td><td><span class="ok">✓</span> <small>automatic</small></td><td><span class="ok">✓</span> <small>automatic, inline in the TUI</small></td><td>via Incoming messages <small>— you deliver with a click</small></td></tr>
+        <tr><td>Permission modes</td><td><span class="ok">✓</span> <small>all four</small></td><td><span class="ok">✓</span> <small>no Plan mode</small></td><td><span class="ok">✓</span> <small>all four</small></td></tr>
+        <tr><td>Usage bar in the dashboard</td><td><span class="ok">✓</span> <small>5h / 7d</small></td><td><span class="ok">✓</span></td><td><span class="no">✗</span></td></tr>
+        <tr><td>Resume across restarts</td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td><span class="no">✗</span> <small>starts a fresh session</small></td></tr>
       </tbody>
     </table>
   </div>
