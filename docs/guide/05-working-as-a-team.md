@@ -44,7 +44,7 @@ Seen from your side:
 - The recipient's row shows "Working" while it handles the message. Agent-to-agent messages do not add to your unread counts; only messages to you do.
 - You can ask any agent to message any other: "Tell Reviewer the branch is ready." You do not type addresses yourself.
 
-Gemini agents cannot receive messages directly. For them, messages wait in an "Incoming messages" panel on the agent's terminal until you click "Deliver". See [Other runtimes](08-other-runtimes.md#gemini).
+Messages to a Gemini agent arrive through you: they wait in an "Incoming messages" panel on the agent's terminal until you click "Deliver". See [Other runtimes](08-other-runtimes.md#gemini).
 
 ## Needs input
 
