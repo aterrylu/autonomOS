@@ -73,7 +73,7 @@ autonomos uninstall-service  # remove the service; your data in ~/.autonomos sta
 
 ## Coding-CLI support
 
-autonomOS is CLI-agnostic by design: every runtime plugs into the same message bus and the same MCP toolbelt, so coordination is written once and works across all of them. **Claude Code and Codex are fully supported.** **Gemini CLI runs as a full agent with one difference: it cannot receive messages on its own.** Messages sent to a Gemini agent wait in the dashboard's **Incoming messages** panel until you deliver them with a click; everything else — spawning, status, sending, permissions — works the same.
+autonomOS is CLI-agnostic by design: every runtime plugs into the same message bus and the same MCP toolbelt, so coordination is written once and works across all of them. **Claude Code and Codex are fully supported.** **Gemini CLI runs as a full agent;** messages sent to it arrive in the **Incoming messages** panel, where you deliver them into the session with a click. Everything else — spawning, status, sending, permissions — works the same.
 
 | Capability | Claude Code | Codex | Gemini CLI |
 |---|:---:|:---:|:---:|
@@ -81,12 +81,12 @@ autonomOS is CLI-agnostic by design: every runtime plugs into the same message b
 | Live status telemetry | ✅ hooks | ✅ event stream | ✅ hooks *(translated)* |
 | Shared MCP toolbelt | ✅ | ✅ | ✅ |
 | **Send** to other agents | ✅ | ✅ | ✅ |
-| **Receive** from other agents | ✅ automatic | ✅ automatic, *inline in the TUI* | ⚠️ **you deliver** — queued in "Incoming messages" |
+| **Receive** from other agents | ✅ automatic | ✅ automatic, *inline in the TUI* | via **Incoming messages** — you deliver with a click |
 | Permission modes | ✅ all four | ✅ *(no Plan mode)* | ✅ all four |
 | Usage bar in the dashboard | ✅ 5h / 7d | ✅ | ❌ |
 | Resume across restarts | ✅ | ✅ | ❌ starts a fresh session |
 
-**How it works.** Three pieces make cross-CLI coordination possible. The **message bus** is a URI router: address any agent as `agent://name` and the gateway delivers to the right session, acknowledging the send only once the destination has accepted it — hiding a per-runtime delivery path (Claude Code over a WebSocket channel; Codex injected into its `app-server` daemon so messages render *inline* in the live TUI) behind one uniform address space. **Incoming messages** is the human-in-the-loop path for a runtime with no live inbound (Gemini CLI today): the message is accepted and queued, the agent's row shows a "✉" badge, and a small panel on its terminal lets you deliver or discard each one; the queue is persisted, capped at ten, and only clears an item once the agent has actually taken it. The **shared MCP** is a single set of tools — `create_agent`, `send`, `set_manager`, `get_org_chart`, schedules, presets — injected into every agent in its provider-native way, so a Claude Code agent and a Codex agent call the *same* `send()` with identical schemas. Adding a runtime is implementing one provider interface, not re-plumbing the bus.
+**How it works.** Three pieces make cross-CLI coordination possible. The **message bus** is a URI router: address any agent as `agent://name` and the gateway delivers to the right session, acknowledging the send only once the destination has accepted it — hiding a per-runtime delivery path (Claude Code over a WebSocket channel; Codex injected into its `app-server` daemon so messages render *inline* in the live TUI) behind one uniform address space. **Incoming messages** is the delivery path for Gemini CLI: the message is accepted and queued, the agent's row shows a "✉" badge, and a small panel on its terminal lets you deliver or discard each one; the queue is persisted, capped at ten, and only clears an item once the agent has actually taken it. The **shared MCP** is a single set of tools — `create_agent`, `send`, `set_manager`, `get_org_chart`, schedules, presets — injected into every agent in its provider-native way, so a Claude Code agent and a Codex agent call the *same* `send()` with identical schemas. Adding a runtime is implementing one provider interface, not re-plumbing the bus.
 
 ## What's inside
 
@@ -96,7 +96,7 @@ autonomOS is CLI-agnostic by design: every runtime plugs into the same message b
 | **Live agent status** | Ready / Working / Running *tool* / Idle / Needs input / Error, derived from hook telemetry. Muted status colors with a shimmer on active work, a recency fade on each row's timestamp, and an unread badge that matches the notification bell. |
 | **Agent rows you can work** | Right-click any row: Open · Restart · Rename · Kill · Set manager · Delete. Drag rows to reorder, pin the ones you watch. Hierarchy view nests reports under their manager. |
 | **Org chart** | A hierarchy view of managers and reports — see who delegated what to whom. |
-| **Multi-agent messaging** | URI-based gateway (`agent://name`) with delivery-confirmed sends; **Incoming messages** for runtimes that cannot receive on their own; scheduled prompts arrive from a `schedule://<name>` sender so agents know a timer, not a peer, spoke. |
+| **Multi-agent messaging** | URI-based gateway (`agent://name`) with delivery-confirmed sends; **Incoming messages** for delivering queued messages into a Gemini agent with a click; scheduled prompts arrive from a `schedule://<name>` sender so agents know a timer, not a peer, spoke. |
 | **Cron scheduler** | Native timer-based scheduling — agents create their own recurring or one-time jobs; the dashboard monitors them. |
 | **Session management** | Create, resume, restart-all, kill, auto-reconnect, output replay, and auto-persist across server restarts and upgrades. |
 | **Usage** | Your Claude 5-hour and 7-day limits and your Codex usage in the status bar, read from the logins already on the machine; a per-terminal queue that presses Enter for you when a limit resets. |

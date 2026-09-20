@@ -16,7 +16,7 @@ Words as the app uses them, plus a few that only appear in the code or the devel
 
 **Dashboard.** The web page. Bookmark it; the installer prints the address, normally `http://localhost:3000`.
 
-**Deliver.** In the "Incoming messages" panel, the button that pastes a queued message into a Gemini agent's terminal, because Gemini cannot receive messages on its own.
+**Deliver.** In the "Incoming messages" panel, the button that pastes a queued message into a Gemini agent's terminal.
 
 **Dispatcher.** The built-in template for an agent that breaks work into tasks and hands them to other agents. The recommended first agent.
 
