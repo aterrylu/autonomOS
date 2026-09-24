@@ -51,7 +51,7 @@ import {
   cancelChannelServerCheck,
   trackChannelServerRegistration,
 } from "./channelServerCheck.js";
-import { withPendingHandoffCount } from "./handoffEnrich.js";
+import { enrichAgent } from "./enrich.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -1177,7 +1177,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       // applies this WHOLESALE (agentsSocket: agents.set), so it must carry the
       // derived pendingHandoffCount too, else a reattach blanks the badge of a
       // manual-queue agent with a pending queue until the next reconcile (nox).
-      agent: withPendingHandoffCount(persisted),
+      agent: enrichAgent(persisted),
       provider: providerName,
       providerSessionId,
       version: persisted.version,
@@ -1185,7 +1185,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   } else {
     emitAgentDelta({
       type: "agent.created",
-      agent: withPendingHandoffCount(persisted),
+      agent: enrichAgent(persisted),
     });
   }
 
