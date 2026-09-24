@@ -31,9 +31,16 @@ let runtime: Runtime;
 let creds: Creds;
 let FakePty: typeof import("../perf/fake-pty.js").FakePty;
 const registered: string[] = [];
+const created: string[] = [];
 
-function mkAgent(name: string, workingDirectory = "/tmp") {
-  return store.insertAgent(
+// Every fixture defaults to a cwd that does not exist: if a sweep wrongly
+// respawns one, spawnAgent fails fast on the cwd check instead of launching a
+// real `claude` inside a unit test (nox review on #401).
+function mkAgent(
+  name: string,
+  workingDirectory = `/nonexistent-aos-${randomUUID()}`,
+) {
+  const agent = store.insertAgent(
     store.buildAgent({
       id: randomUUID(),
       name,
@@ -43,6 +50,19 @@ function mkAgent(name: string, workingDirectory = "/tmp") {
       permissionMode: "ask",
     }),
   ); // buildAgent defaults status: "running"
+  created.push(agent.id);
+  return agent;
+}
+
+/** Retire every fixture so no later test's snapshot carries a stale
+ *  "running" record from an earlier one. */
+function retireAll() {
+  for (const id of registered.splice(0))
+    runtime._unregisterSyntheticAttachment(id as never);
+  for (const id of created.splice(0)) {
+    if (store.getAgent(id)?.status === "running")
+      store.markExited(id, "user_killed");
+  }
 }
 
 function makeLive(id: string) {
@@ -59,13 +79,11 @@ describe("boot resume sweep never crashes a live agent", () => {
   });
 
   beforeEach(() => {
-    for (const id of registered.splice(0))
-      runtime._unregisterSyntheticAttachment(id as never);
+    retireAll();
   });
 
   after(async () => {
-    for (const id of registered.splice(0))
-      runtime._unregisterSyntheticAttachment(id as never);
+    retireAll();
     const { rmSync } = await import("node:fs");
     rmSync(DIR, { recursive: true, force: true });
   });
@@ -94,7 +112,17 @@ describe("boot resume sweep never crashes a live agent", () => {
   });
 
   it("an agent created after the snapshot is not swept up", async () => {
+    // A live agent in the snapshot keeps it non-empty (an empty snapshot
+    // returns before the loop, which would make this test vacuous) while
+    // being harmless to the sweep: it is skipped, never respawned.
+    const early = mkAgent(`early-${randomUUID().slice(0, 6)}`);
+    makeLive(early.id);
     const snapshot = runtime.snapshotResumableAgents();
+    assert.deepEqual(
+      snapshot.map((s) => s.id),
+      [early.id],
+      "precondition: the snapshot is exactly the live early agent (earlier fixtures retired)",
+    );
     // Created after the snapshot, not live: stands in for a spawn that raced
     // the boot sweep. With a nonexistent cwd, a wrongful respawn fails fast and
     // would show as status "exited".
@@ -114,8 +142,6 @@ describe("boot resume sweep never crashes a live agent", () => {
       "running",
       "an agent created after the snapshot must be left alone by the sweep",
     );
-    // Clean up so later tests' default snapshot doesn't carry it.
-    store.markExited(late.id, "user_killed");
   });
 
   it("markCrashedUnlessLive leaves a live agent running and token intact", () => {
