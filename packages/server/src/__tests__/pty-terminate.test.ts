@@ -87,7 +87,9 @@ async function groupEmpty(pgid: number, withinMs = 500): Promise<boolean> {
   return group(pgid).length === 0;
 }
 
-describe("terminatePty", { timeout: 10_000 }, () => {
+// A hang guard for the WHOLE suite (node:test applies a describe timeout to
+// the suite, not per test): several cases deliberately wait out the 2s SIGKILL.
+describe("terminatePty", { timeout: 30_000 }, () => {
   it("ends a gemini-shaped wrapper that leader-only SIGHUP cannot", async () => {
     const pty = await start(STUBS.gemini);
     assert.equal(group(pty.pid).length, 2, "precondition: wrapper + child");
