@@ -550,8 +550,12 @@ export function UsagePanel({
         />
       )}
 
-      {/* Model-specific windows */}
-      {(data.sevenDayOpus || data.sevenDaySonnet) && (
+      {/* Model-specific windows — the fixed Opus/Sonnet slots plus any named
+          window from the response's limits[] (a model-scoped weekly, or a
+          limit kind this build doesn't know yet — shown, never dropped). */}
+      {(data.sevenDayOpus ||
+        data.sevenDaySonnet ||
+        (data.extraWindows?.length ?? 0) > 0) && (
         <div
           className="mt-1 pt-2 mb-2"
           style={{ borderTop: `1px solid ${page.border}` }}
@@ -575,6 +579,21 @@ export function UsagePanel({
               statusFg={page.statusFg}
             />
           )}
+          {data.extraWindows?.map((w) => (
+            <WindowDetail
+              key={w.id}
+              label={w.span ? w.label.slice(0, -(w.span.length + 1)) : w.label}
+              description={
+                w.span === "7d"
+                  ? "7-day window"
+                  : w.span === "5h"
+                    ? "5-hour window"
+                    : ""
+              }
+              window={w}
+              statusFg={page.statusFg}
+            />
+          ))}
         </div>
       )}
 
