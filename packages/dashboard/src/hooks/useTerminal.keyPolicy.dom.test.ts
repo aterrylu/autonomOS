@@ -136,3 +136,23 @@ describe("handleKeyEvent — non-mac (mod = Ctrl)", () => {
     ).toBe(true);
   });
 });
+
+describe("handleKeyEvent — send sink (connection accounting)", () => {
+  it("routes a mod-key 'send' binding through the owner's sink, not straight to the socket", () => {
+    // The LiveTerminal passes its accounting input path as the sink, so a
+    // mod+Backspace (kill-line) typed into a dead pane is COUNTED like any
+    // other keystroke instead of vanishing on a non-OPEN socket.
+    const ref = wsRef();
+    const sink = vi.fn();
+    handleKeyEvent(
+      key({ key: "Backspace", ctrlKey: true }),
+      fakeTerminal(),
+      ref,
+      sink,
+    );
+    expect(sink).toHaveBeenCalledWith("\x15");
+    expect(
+      (ref.current as unknown as { send: ReturnType<typeof vi.fn> }).send,
+    ).not.toHaveBeenCalled();
+  });
+});

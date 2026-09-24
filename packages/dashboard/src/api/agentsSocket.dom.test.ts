@@ -245,6 +245,19 @@ describe("agentsSocket reconnect baseline", () => {
     expect(FakeWebSocket.instances.length).toBeGreaterThan(afterOffline);
   });
 
+  it("unsubscribing tells health listeners (they must not keep a stale 'connected')", () => {
+    const seen: string[] = [];
+    const off = agentsSocket.onHealthChange((h) => seen.push(h));
+    try {
+      const unsub = agentsSocket.subscribe(() => {});
+      FakeWebSocket.instances[0].open();
+      unsub();
+      expect(seen).toEqual(["connected", "connecting"]);
+    } finally {
+      off();
+    }
+  });
+
   it("lastHeardAt tracks the latest frame, heartbeats included", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws1 = FakeWebSocket.instances[0];

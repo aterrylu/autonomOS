@@ -10,6 +10,8 @@ interface PtyBinding {
   /** The PTY instance this socket streams from. A restart reuses the session
    *  id with a NEW PTY, so exit bookkeeping must key on the instance. */
   pty: IPty;
+  /** Protocol-level liveness pinger (see startLivenessPing). */
+  stopPing?: () => void;
   /** Present when the client identified itself (see {@link parseFence}). */
   fence?: { key: string; gen: number; dropped: number };
 }
@@ -44,6 +46,86 @@ function parseFence(
   if (!Number.isSafeInteger(n) || n < 0) return undefined;
   return { key: `${sessionId}\u0000${client}`, gen: n };
 }
+
+// ── Server-side liveness: protocol-level ping ──────────────────────────
+// The input fence (above) only catches late keystrokes that arrive AFTER the
+// replacement socket opened. On a recovering half-open link the OLD socket's
+// queued keys can win that race — the replacement waits on the dashboard's
+// own recovery, a handshake and a replay. So the server declares a silent
+// socket dead ITSELF and destroys it: a later retransmit then hits a closed
+// TCP socket and never reaches the PTY.
+//
+// WebSocket ping/pong control frames, not a message: browsers answer them
+// automatically (on the network thread — throttled background tabs still
+// pong) and they are invisible to the page, so an older dashboard is
+// unaffected. The deadline (7s, checked every 2s → dead at 7–9s) sits below
+// the dashboard's 12s stale window, so by the time the dashboard gives up on
+// a socket the server has already killed it.
+export const TERMINAL_PING_MS = 2_000;
+export const TERMINAL_DEAD_AFTER_MS = 7_000;
+
+interface RawWs {
+  ping(): void;
+  terminate(): void;
+  on(event: "pong", cb: () => void): void;
+}
+
+function isRawWs(x: unknown): x is RawWs {
+  const r = x as Partial<RawWs> | null;
+  return (
+    !!r &&
+    typeof r.ping === "function" &&
+    typeof r.terminate === "function" &&
+    typeof r.on === "function"
+  );
+}
+
+function startLivenessPing(
+  raw: unknown,
+  sessionId: string,
+  opts = { pingMs: TERMINAL_PING_MS, deadAfterMs: TERMINAL_DEAD_AFTER_MS },
+): (() => void) | undefined {
+  if (!isRawWs(raw)) return undefined;
+  let lastPong = Date.now();
+  let lastTick = Date.now();
+  raw.on("pong", () => {
+    lastPong = Date.now();
+  });
+  const timer = setInterval(() => {
+    const now = Date.now();
+    // Our own event loop stalled (a paused process, a long sync block): we
+    // weren't pinging, so missing pongs are OUR fault — grant a fresh
+    // deadline instead of killing a healthy socket.
+    if (now - lastTick > opts.pingMs * 2) lastPong = now;
+    lastTick = now;
+    if (now - lastPong > opts.deadAfterMs) {
+      clearInterval(timer);
+      console.warn(
+        `[terminal] session ${sessionId.slice(0, 8)}: no pong for ${now - lastPong}ms — terminating the socket (half-open link)`,
+      );
+      raw.terminate();
+      return;
+    }
+    try {
+      raw.ping();
+    } catch {
+      // socket already closing — close handling cleans up
+    }
+  }, opts.pingMs);
+  return () => clearInterval(timer);
+}
+
+/** Test hook: the same pinger with fast timings. */
+export function _startLivenessPingForTesting(
+  raw: unknown,
+  opts: { pingMs: number; deadAfterMs: number },
+): (() => void) | undefined {
+  return startLivenessPing(raw, "test-session", opts);
+}
+
+/** OSC 7777 — private use; the dashboard registers a handler for it. Keep in
+ *  sync with REPLAY_END_OSC in dashboard/src/terminal/connectionWatch.ts. */
+export const REPLAY_END_MARK = "\x1b]7777;autonomos-replay-end\x07";
 
 /** Test hook — the fence map is module state. */
 export function _resetTerminalFenceForTesting(): void {
@@ -277,6 +359,7 @@ const MAX_ROWS = 200;
 export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
     const sessionId = c.req.param("sessionId")!;
+    const wantsReplayMark = c.req.query("replayMark") === "1";
     const fence = parseFence(
       sessionId,
       c.req.query("client"),
@@ -299,6 +382,21 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
             ws.send(frame);
           } catch {
             // Client disconnected during replay
+            return;
+          }
+        }
+        // End-of-replay marker, for clients that asked (?replayMark=1).
+        // Parsing the replayed scrollback makes xterm re-answer every
+        // terminal query in it; the client drops those replies until THIS
+        // sequence is parsed — the exact end of the replay, so live query
+        // replies right after it (a fresh agent's startup capability probes)
+        // still get through. An OSC with an unregistered number: any terminal
+        // that doesn't handle it ignores it silently. Opt-in so an older
+        // dashboard never receives it.
+        if (wantsReplayMark) {
+          try {
+            ws.send(REPLAY_END_MARK);
+          } catch {
             return;
           }
         }
@@ -330,6 +428,7 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           pty,
           disposable,
           closeStream: forwarder.close,
+          stopPing: startLivenessPing(ws.raw, sessionId),
           ...(fence ? { fence: { ...fence, dropped: 0 } } : {}),
         });
 
@@ -374,6 +473,26 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
             ? event.data
             : new TextDecoder().decode(event.data as ArrayBuffer);
 
+        // Fenced: a newer socket from the same client has taken over, so this
+        // is input the client already abandoned. Drop it (never a late
+        // burst) and close the socket; the client's handlers for it are
+        // superseded-guarded and ignore the close.
+        const f = binding.fence;
+        if (f && (latestGen.get(f.key)?.gen ?? -1) > f.gen) {
+          f.dropped += msg.length;
+          if (f.dropped === msg.length) {
+            console.warn(
+              `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped late input on a superseded socket (gen ${f.gen})`,
+            );
+          }
+          try {
+            ws.close(4011, "Superseded by a newer connection");
+          } catch {
+            // already closing
+          }
+          return;
+        }
+
         // Handle resize messages (JSON with type: "resize")
         if (msg.startsWith("{")) {
           let parsed: Record<string, unknown> | null = null;
@@ -406,29 +525,11 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           }
         }
 
-        // Fenced: a newer socket from the same client has taken over, so this
-        // is input the client already abandoned. Drop it (never a late
-        // burst) and close the socket; the client's handlers for it are
-        // superseded-guarded and ignore the close.
-        const f = binding.fence;
-        if (f && (latestGen.get(f.key)?.gen ?? -1) > f.gen) {
-          f.dropped += msg.length;
-          if (f.dropped === msg.length) {
-            console.warn(
-              `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped late input on a superseded socket (gen ${f.gen})`,
-            );
-          }
-          try {
-            ws.close(4011, "Superseded by a newer connection");
-          } catch {
-            // already closing
-          }
-          return;
-        }
-
         try {
-          managed.lastInputAt = Date.now();
           managed.pty.write(msg);
+          // After the write: a throw (PTY fd just died) must not make /io
+          // report "the agent received your key".
+          managed.lastInputAt = Date.now();
         } catch (err) {
           console.error(
             `PTY write failed for session ${binding.sessionId}:`,
@@ -454,6 +555,7 @@ function cleanupBinding(ws: WSContext): void {
   if (!binding) return;
   binding.disposable.dispose();
   binding.closeStream?.();
+  binding.stopPing?.();
   bindings.delete(ws);
   // Remove from its PTY's client tracking
   ptyClients.get(binding.pty)?.delete(ws);

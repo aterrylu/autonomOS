@@ -1,5 +1,5 @@
 import { agentsSocket, type TransportHealth } from "../api/agentsSocket";
-import { request } from "../api/core";
+import { ApiError, request } from "../api/core";
 import { isReservedChord } from "../shortcuts/registry";
 import { matchTerminalKey } from "../shortcuts/terminalKeymap";
 import { restartingIds, THEMES, useStore } from "../store";
@@ -11,9 +11,12 @@ import {
   type IoProbe,
   isCountableInput,
   isTerminalReply,
+  isUserInput,
   PANE_OK,
   type PaneConnection,
-  REPLAY_REPLY_WINDOW_MS,
+  REPLAY_END_OSC,
+  REPLAY_REPLY_CAP_MS,
+  REPLAY_REPLY_CAP_UNCONFIRMED_MS,
   SILENT_CHIP_PROVIDERS,
   TERMINAL_CLIENT_ID,
   WATCHDOG_MS,
@@ -45,6 +48,10 @@ import { createXtermBackend } from "./xterm-backend";
 // visibility path always used), so hidden terminals hold no GPU context.
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+/** /io probe back-off after a failure, and how many failures cut the pane
+ *  loose (the server can't vouch for an unanswered key). */
+const PROBE_RETRY_MS = 5_000;
+const MAX_PROBE_FAILURES = 3;
 const MAX_RETRY_DELAY = 10000;
 
 /** Cap on live cached terminals. Each holds a scrollback buffer (10k lines)
@@ -177,20 +184,20 @@ export function _disposeAllTerminals(): void {
 let watchInstalled = false;
 let transportHealth: TransportHealth = "connecting";
 const WATCH_TICK_MS = 1_000;
+/** Socket generations are PAGE-wide, never per instance: the server fences
+ *  by session + page client id, so a re-created pane (LRU eviction, a session
+ *  restarted) starting over at 1 would sit BELOW a stale binding from before
+ *  and have its healthy socket's input fenced. */
+let nextGen = 0;
+/** Learned from the first end-of-replay marker: this server sends one, so a
+ *  replay's reply window can safely wait for it (see REPLAY_REPLY_CAP_MS). */
+let serverSendsReplayMark = false;
 
 function installConnectionWatch(): void {
   if (watchInstalled) return;
   watchInstalled = true;
   transportHealth = agentsSocket.getSnapshot().health;
-  agentsSocket.onHealthChange((h) => {
-    const prev = transportHealth;
-    transportHealth = h;
-    if (h === "reconnecting" || h === "disconnected") {
-      for (const entry of cache.values()) entry.transportLost();
-    } else if (h === "connected" && prev !== "connected") {
-      for (const entry of cache.values()) entry.transportRecovered();
-    }
-  });
+  agentsSocket.onHealthChange(applyTransportHealth);
   setInterval(() => {
     const now = Date.now();
     for (const entry of cache.values()) entry.watchdogTick(now);
@@ -203,15 +210,38 @@ export function _watchdogTickForTesting(now: number): void {
   for (const entry of cache.values()) entry.watchdogTick(now);
 }
 
-/** Test hook: drive the transport-health listener without a real socket. */
-export function _setTransportHealthForTesting(h: TransportHealth): void {
+function applyTransportHealth(h: TransportHealth): void {
   const prev = transportHealth;
   transportHealth = h;
+  const each = (fn: (e: LiveTerminal) => void) => {
+    // Per-entry isolation: one pane throwing (e.g. `new WebSocket` inside
+    // connect()) must not leave the remaining panes un-cut.
+    for (const entry of [...cache.values()]) {
+      try {
+        fn(entry);
+      } catch (err) {
+        console.warn(
+          `[terminal] session ${entry.sessionId.slice(0, 8)}: transport ${h} handling threw:`,
+          err,
+        );
+      }
+    }
+  };
   if (h === "reconnecting" || h === "disconnected") {
-    for (const entry of cache.values()) entry.transportLost();
+    each((e) => e.transportLost());
   } else if (h === "connected" && prev !== "connected") {
-    for (const entry of cache.values()) entry.transportRecovered();
+    each((e) => e.transportRecovered());
   }
+}
+
+/** Test hook: forget that this page has seen a replay-end marker. */
+export function _resetReplayMarkForTesting(): void {
+  serverSendsReplayMark = false;
+}
+
+/** Test hook: drive the transport-health listener without a real socket. */
+export function _setTransportHealthForTesting(h: TransportHealth): void {
+  applyTransportHealth(h);
 }
 
 export class LiveTerminal {
@@ -260,11 +290,20 @@ export class LiveTerminal {
   /** Pane connection chip sink (per mount, like onFollowChange). */
   private onConnectionChange: ((c: PaneConnection) => void) | null = null;
   private connection: PaneConnection = PANE_OK;
-  /** Socket generation for the server's superseded-socket input fence. */
+  /** This pane's current socket generation (from the page-wide counter). */
   private gen = 0;
-  /** When an unanswered countable keystroke was sent; null = disarmed. */
+  /** When an unanswered keystroke was sent; null = disarmed. */
   private armedAt: number | null = null;
+  /** Whether that keystroke should visibly produce output. Only then can a
+   *  silent agent be blamed; any key can still prove the SOCKET dead. */
+  private armedCountable = false;
   private probing = false;
+  private probeFailures = 0;
+  private nextProbeAt = 0;
+  /** The dropped-keys notice is waiting for a pane to show it on. */
+  private noticePending = false;
+  /** Terminal replies dropped during the current replay (debug breadcrumb). */
+  private droppedReplies = 0;
   /** Countable keystrokes sent since the last byte back — they may be
    *  stranded if this socket is abandoned. */
   private unconfirmedKeys = 0;
@@ -273,7 +312,7 @@ export class LiveTerminal {
   private droppedKeys = 0;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Until this time, terminal query replies are replay artifacts — drop
-   *  them (see REPLAY_REPLY_WINDOW_MS). */
+   *  them (see REPLAY_END_OSC). */
   private replayUntil = 0;
 
   private userScrolledUp = false;
@@ -349,7 +388,9 @@ export class LiveTerminal {
   private installLifecycle(): void {
     installConnectionWatch();
     this.terminal.attachCustomKeyEventHandler((event) =>
-      handleKeyEvent(event, this.terminal, this.wsRef),
+      handleKeyEvent(event, this.terminal, this.wsRef, (data) =>
+        this.sendInput(data),
+      ),
     );
     this.terminal.registerLinkProvider(new UrlLinkProvider(this.terminal));
     // ED3 = erase scrollback. Never consumed (xterm's own handling proceeds);
@@ -378,23 +419,19 @@ export class LiveTerminal {
     this.terminal.onData((data) => {
       // xterm answering a query it parsed in the REPLAYED scrollback is not
       // input — sending it would type "1;2c" into the agent's prompt.
-      if (Date.now() < this.replayUntil && isTerminalReply(data)) return;
-      const countable = isCountableInput(data);
-      if (this.wsRef.current?.readyState === WebSocket.OPEN) {
-        this.wsRef.current.send(data);
-        if (countable) {
-          this.unconfirmedKeys++;
-          this.armedAt ??= Date.now();
-        }
-      } else if (countable) {
-        // Input stays live while reconnecting (Terry's call), but a key the
-        // socket can't carry is DROPPED — counted and shown, never buffered
-        // for a late burst.
-        this.droppedKeys++;
-        if (this.connection.kind === "lost") {
-          this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
-        }
+      if (Date.now() < this.replayUntil && isTerminalReply(data)) {
+        this.droppedReplies++;
+        return;
       }
+      this.sendInput(data);
+    });
+    // End of the replay: the server's OSC 7777 marker was just PARSED — every
+    // replayed query has been answered (and dropped) by now, so live replies
+    // from here on are real.
+    this.terminal.parser.registerOscHandler(REPLAY_END_OSC, () => {
+      serverSendsReplayMark = true;
+      this.endReplayWindow();
+      return true; // consumed; nothing to render
     });
 
     this.handleVisibility = () => {
@@ -555,10 +592,59 @@ export class LiveTerminal {
     cb?.(this.userScrolledUp);
   }
 
-  /** Bind (or clear) the mount's pane-connection chip; fires immediately. */
+  /** Every byte the user sends goes through here (xterm onData AND the
+   *  mod-key bindings), so no input path can bypass the accounting. */
+  private sendInput(data: string): void {
+    const user = isUserInput(data);
+    if (this.wsRef.current?.readyState === WebSocket.OPEN) {
+      this.wsRef.current.send(data);
+      if (user) {
+        this.unconfirmedKeys++;
+        if (this.armedAt === null) {
+          this.armedAt = Date.now();
+          this.armedCountable = isCountableInput(data);
+        } else if (isCountableInput(data)) {
+          this.armedCountable = true;
+        }
+      }
+    } else if (user) {
+      // Input stays live while reconnecting (Terry's call), but a key the
+      // socket can't carry is DROPPED — counted and shown, never buffered for
+      // a late burst. Esc / Ctrl+C count too: an interrupt that didn't land
+      // is the one the user most needs to know about.
+      this.droppedKeys++;
+      if (this.connection.kind === "lost") {
+        this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
+      }
+    }
+  }
+
+  private endReplayWindow(): void {
+    this.replayUntil = 0;
+    if (this.droppedReplies > 0) {
+      console.debug(
+        `[terminal] session ${this.sessionId.slice(0, 8)}: dropped ${this.droppedReplies} terminal repl${this.droppedReplies === 1 ? "y" : "ies"} provoked by the scrollback replay`,
+      );
+    }
+    this.droppedReplies = 0;
+  }
+
+  /** Bind (or clear) the mount's pane-connection chip; fires immediately. A
+   *  dropped-keys notice that arrived while no pane showed it starts its
+   *  dismiss timer only now — it must be SEEN, not just emitted. */
   bindConnectionIndicator(cb: ((c: PaneConnection) => void) | null): void {
     this.onConnectionChange = cb;
     cb?.(this.connection);
+    if (cb && this.noticePending) this.startNoticeTimer();
+  }
+
+  private startNoticeTimer(): void {
+    this.noticePending = false;
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => {
+      this.noticeTimer = null;
+      if (this.connection.kind === "ok") this.setConnection(PANE_OK);
+    }, DROPPED_NOTICE_MS);
   }
 
   private setConnection(c: PaneConnection): void {
@@ -573,7 +659,7 @@ export class LiveTerminal {
     if (this.disposed || this.ended) return;
     this.droppedKeys += this.unconfirmedKeys;
     this.unconfirmedKeys = 0;
-    this.armedAt = null;
+    this.disarm();
     this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
     this.retryDelay = 1000;
     this.connect();
@@ -608,11 +694,19 @@ export class LiveTerminal {
       !this.isAttached() ||
       transportHealth !== "connected" ||
       this.connection.kind !== "ok" ||
-      now - this.armedAt < WATCHDOG_MS
+      now - this.armedAt < WATCHDOG_MS ||
+      now < this.nextProbeAt
     ) {
       return;
     }
     void this.probeIo(this.armedAt);
+  }
+
+  private disarm(): void {
+    this.armedAt = null;
+    this.armedCountable = false;
+    this.probeFailures = 0;
+    this.nextProbeAt = 0;
   }
 
   private async probeIo(armedAt: number): Promise<void> {
@@ -625,9 +719,31 @@ export class LiveTerminal {
         `/api/agents/${encodeURIComponent(this.sessionId)}/io`,
         { fresh: true, signal: controller.signal },
       );
-    } catch {
-      // Unreachable/404/timeout: the transport heartbeat or the session-end
-      // path owns those outcomes. Stay armed; the next tick retries.
+    } catch (err) {
+      if (this.armedAt !== armedAt || this.disposed || this.ended) return;
+      // 404: no live PTY (session ending — its 4010 is on the way) or a
+      // server too old to have /io. Nothing to judge; stand down.
+      if (err instanceof ApiError && err.status === 404) {
+        this.disarm();
+        return;
+      }
+      // Anything else (401, 5xx, timeout) with the transport still "healthy":
+      // the server can't vouch for our unanswered key. Back off, say so, and
+      // after a few tries cut the pane loose — a reconnect is cheap and its
+      // own failure is visible, whereas waiting forever is not.
+      this.probeFailures++;
+      this.nextProbeAt = Date.now() + PROBE_RETRY_MS;
+      if (this.probeFailures === 1) {
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: /io probe failed (${err instanceof ApiError ? (err.status ?? err.code) : String(err)}); retrying`,
+        );
+      }
+      if (this.probeFailures >= MAX_PROBE_FAILURES) {
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: input unanswered and the server can't confirm it after ${this.probeFailures} probes — reconnecting the pane`,
+        );
+        this.forceReconnect();
+      }
       return;
     } finally {
       clearTimeout(timeout);
@@ -635,6 +751,7 @@ export class LiveTerminal {
     }
     // A byte (or a reconnect) landed while we asked — already answered.
     if (this.armedAt !== armedAt || this.disposed || this.ended) return;
+    this.probeFailures = 0;
     const verdict = classifyIoProbe(io, Date.now() - armedAt);
     if (verdict === "socket-dead") {
       console.warn(
@@ -646,12 +763,18 @@ export class LiveTerminal {
     const provider = useStore
       .getState()
       .sessions.find((x) => x.id === this.sessionId)?.provider;
-    if (provider && SILENT_CHIP_PROVIDERS.has(provider)) {
+    if (
+      this.armedCountable &&
+      provider &&
+      SILENT_CHIP_PROVIDERS.has(provider)
+    ) {
       this.setConnection({ kind: "silent", since: armedAt });
     } else {
-      // Unmeasured provider: no chip, and stop re-probing until the next
-      // byte re-arms us.
-      this.armedAt = null;
+      // The server has the key but it can't prove the agent stuck (an arrow
+      // at a boundary legitimately prints nothing; an unmeasured provider may
+      // go quiet mid-turn). No chip; stop re-probing until the next byte
+      // re-arms us.
+      this.disarm();
     }
   }
 
@@ -711,9 +834,9 @@ export class LiveTerminal {
     // this pane has already replaced (routes/terminal.ts). Query params, not
     // a socket message: an unknown message would be typed into the agent by
     // an older server.
-    this.gen++;
+    this.gen = ++nextGen;
     const ws = new WebSocket(
-      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}`,
+      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1`,
     );
 
     ws.onopen = () => {
@@ -731,7 +854,12 @@ export class LiveTerminal {
       this.everConnected = true;
       // The full-scrollback replay starts now (first connect too — a page
       // reload replays exactly the same way).
-      this.replayUntil = Date.now() + REPLAY_REPLY_WINDOW_MS;
+      this.droppedReplies = 0;
+      this.replayUntil =
+        Date.now() +
+        (serverSendsReplayMark
+          ? REPLAY_REPLY_CAP_MS
+          : REPLAY_REPLY_CAP_UNCONFIRMED_MS);
       // Follow-state resets ONLY once the socket actually opened (reset +
       // full replay re-pin the bottom). Resetting at connect START would
       // dismiss the pill during a FAILED reconnect attempt while the
@@ -746,17 +874,19 @@ export class LiveTerminal {
       // Healthy again. Keys that couldn't be carried stay visible for a
       // moment ("N keystrokes may not have been sent") rather than vanishing
       // with the chip.
-      this.armedAt = null;
+      this.disarm();
       this.unconfirmedKeys = 0;
       const dropped = this.droppedKeys;
       this.droppedKeys = 0;
       this.setConnection({ kind: "ok", droppedKeys: dropped });
-      if (this.noticeTimer) clearTimeout(this.noticeTimer);
+      if (this.noticeTimer) {
+        clearTimeout(this.noticeTimer);
+        this.noticeTimer = null;
+      }
+      this.noticePending = false;
       if (dropped > 0) {
-        this.noticeTimer = setTimeout(() => {
-          this.noticeTimer = null;
-          if (this.connection.kind === "ok") this.setConnection(PANE_OK);
-        }, DROPPED_NOTICE_MS);
+        if (this.onConnectionChange) this.startNoticeTimer();
+        else this.noticePending = true; // shown on the next attach
       }
       // The reconnect-path repaint nudge is RETAINED — this is where it was
       // born (#16: "fixes cursor-below-rendering after buffer replay"): the
@@ -776,7 +906,7 @@ export class LiveTerminal {
       // Any byte back answers every keystroke so far — including a busy
       // agent's spinner repaint, which is why a long tool run never trips
       // the watchdog.
-      this.armedAt = null;
+      this.disarm();
       this.unconfirmedKeys = 0;
       if (this.connection.kind === "silent") this.setConnection(PANE_OK);
       try {
@@ -844,6 +974,14 @@ export class LiveTerminal {
         store.fetchSessions();
         return;
       }
+      if (event.code === 4011) {
+        // The server fenced THIS (current) socket as superseded — it should
+        // only ever fence an older generation. Reconnect as for any drop,
+        // but leave a breadcrumb: the generation bookkeeping disagreed.
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: current socket (gen ${this.gen}) was fenced as superseded by the server`,
+        );
+      }
       this.consecutiveDrops++;
       if (this.consecutiveDrops > 0 && this.consecutiveDrops % 10 === 0) {
         // A detached cached terminal retries invisibly — leave a breadcrumb
@@ -858,7 +996,7 @@ export class LiveTerminal {
       // carried keys and then closed still stranded them.
       this.droppedKeys += this.unconfirmedKeys;
       this.unconfirmedKeys = 0;
-      this.armedAt = null;
+      this.disarm();
       this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
       this.reconnectTimer = setTimeout(() => {
         this.retryDelay = Math.min(this.retryDelay * 2, MAX_RETRY_DELAY);
@@ -1209,6 +1347,9 @@ export function handleKeyEvent(
   event: KeyboardEvent,
   terminal: TerminalInstance,
   wsRef: { current: WebSocket | null },
+  /** The owning LiveTerminal's input path, so mod-key sends are counted
+   *  like typed ones. Absent (tests, legacy callers): direct send. */
+  send?: (data: string) => void,
 ): boolean {
   if (event.type !== "keydown") return true;
 
@@ -1226,6 +1367,10 @@ export function handleKeyEvent(
     return true;
 
   const sendToWs = (data: string) => {
+    if (send) {
+      send(data);
+      return;
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(data);
     }

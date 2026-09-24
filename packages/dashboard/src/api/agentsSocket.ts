@@ -361,19 +361,21 @@ export const agentsSocket = {
           clearTimeout(retryTimer);
           retryTimer = null;
         }
-        ws?.close();
+        // Detach BEFORE closing, so the superseded guard below holds by
+        // construction rather than by onclose happening to be async.
+        const closing = ws;
         ws = null;
+        closing?.close();
         // The closed socket's onclose is superseded-guarded (ws is already
         // null ≠ socket), so IT won't reset the baseline — do it here, or a
         // resubscribe would treat this stale snapshot as live before the new
         // connection's reconcile lands.
         everOpened = false;
-        commit({
-          connected: false,
-          health: "connecting",
-          agents: null,
-          statuses: new Map(),
-        });
+        commit({ connected: false, agents: null, statuses: new Map() });
+        // Through setHealth, not commit: onHealthChange listeners (the status
+        // bar, the terminal cache's transport view) must hear this too, or
+        // they keep a stale "connected" while no socket exists.
+        setHealth("connecting");
       }
     };
   },

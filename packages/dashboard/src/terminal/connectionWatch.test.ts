@@ -3,7 +3,9 @@ import { describePaneConnection } from "../components/PaneConnectionChip";
 import {
   classifyIoProbe,
   isCountableInput,
+  isMouseReport,
   isTerminalReply,
+  isUserInput,
 } from "./connectionWatch";
 
 describe("isCountableInput — which keys must visibly produce output", () => {
@@ -124,5 +126,26 @@ describe("isTerminalReply — xterm's automatic answers, never keystrokes", () =
     ]) {
       expect(isTerminalReply(k), JSON.stringify(k)).toBe(false);
     }
+  });
+});
+
+describe("isUserInput — what counts as a keystroke the user needs to hear about", () => {
+  it("keys, Esc and Ctrl+C count; replies, focus reports and mouse reports don't", () => {
+    for (const k of ["a", "\r", "\x1b", "\x03", "\x1b[A", "\x15"]) {
+      expect(isUserInput(k), JSON.stringify(k)).toBe(true);
+    }
+    for (const k of [
+      "\x1b[?1;2c",
+      "\x1b[I",
+      "\x1b[O",
+      "\x1b[<0;50;20M", // SGR press — measured: a click sent these
+      "\x1b[<0;50;20m", // SGR release
+      "\x1b[<64;10;5M", // wheel
+      "\x1b[M !!", // legacy X10
+    ]) {
+      expect(isUserInput(k), JSON.stringify(k)).toBe(false);
+    }
+    expect(isMouseReport("\x1b[<0;50;20M")).toBe(true);
+    expect(isMouseReport("\x1b[A")).toBe(false);
   });
 });

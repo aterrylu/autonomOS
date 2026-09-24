@@ -109,16 +109,26 @@ export function classifyIoProbe(
 }
 
 /**
- * How long after a socket opens that terminal QUERY REPLIES are dropped. On
- * every open the server replays the session's whole scrollback, and xterm
- * answers every query it parses in that history — device attributes,
- * cursor position, mode and color reports — through onData, exactly as if
- * the user typed them. Measured on a rig: after a reconnect, gemini-cli's
- * prompt filled with "1;2c1;2c1;2c" (DA1 replies). Pre-existing on any
- * reconnect or page reload; frequent now that a stale transport
- * force-reconnects every pane.
+ * Replayed-scrollback replies. On every socket open the server replays the
+ * session's whole scrollback, and xterm answers every query it parses in that
+ * history — device attributes, cursor position, mode and color reports —
+ * through onData, exactly as if the user typed them. Measured on a rig:
+ * after a reconnect, gemini-cli's prompt filled with "1;2c1;2c1;2c" (DA1
+ * replies). Pre-existing on any reconnect or page reload; frequent now that a
+ * stale transport force-reconnects every pane.
+ *
+ * So replies are dropped from each open until the server's end-of-replay
+ * marker (OSC {@link REPLAY_END_OSC}, requested with `?replayMark=1`) is
+ * PARSED — the exact end of the replay, however long xterm takes to chew
+ * through it (large replays are parsed in time slices, and background tabs
+ * throttle those). Live query replies right after it — a fresh agent's
+ * startup capability probes — go through untouched. The caps only bound a
+ * server that never sends the marker: short until this page has seen one,
+ * generous after (the dashboard is served by its own server, so they match).
  */
-export const REPLAY_REPLY_WINDOW_MS = 2_000;
+export const REPLAY_END_OSC = 7777;
+export const REPLAY_REPLY_CAP_MS = 60_000;
+export const REPLAY_REPLY_CAP_UNCONFIRMED_MS = 5_000;
 
 /**
  * Is `data` a terminal's automatic answer to a query, rather than something a
@@ -145,6 +155,37 @@ export function isTerminalReply(data: string): boolean {
     /^\x1b\](?:1[0-2]|4;\d+);rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)$/.test(data) ||
     // DCS replies (XTVERSION, DECRQSS): ESC P … ESC \
     /^\x1bP[\s\S]*\x1b\\$/.test(data)
+  );
+}
+
+/**
+ * Input the USER produced (as opposed to the terminal answering on its own):
+ * everything except query replies and focus in/out reports. This is what the
+ * accounting counts and what arms the watchdog's socket-dead check — Esc and
+ * Ctrl+C included (an interrupt that never landed must not go unnoticed),
+ * even though only {@link isCountableInput} keys can blame a silent agent.
+ */
+export function isUserInput(data: string): boolean {
+  return (
+    data.length > 0 &&
+    data !== "\x1b[I" &&
+    data !== "\x1b[O" &&
+    !isTerminalReply(data) &&
+    !isMouseReport(data)
+  );
+}
+
+/**
+ * Mouse reports a TUI that enabled mouse tracking receives on every click or
+ * wheel (Claude Code does): SGR `ESC[<b;x;yM|m` and legacy X10 `ESC[M` + 3
+ * bytes. Still SENT like any input — but they are not keystrokes, so they
+ * neither count toward "N keystrokes not sent" (measured: one click added 3
+ * to the count) nor arm the watchdog (a click often, legitimately, prints
+ * nothing).
+ */
+export function isMouseReport(data: string): boolean {
+  return (
+    /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(data) || /^\x1b\[M[\s\S]{3}$/.test(data)
   );
 }
 

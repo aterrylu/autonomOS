@@ -71,11 +71,6 @@ export const agentsRouter = new Hono();
 // UserPromptSubmit hook (see handoffDelivery.ts) — so "send" returning ok means
 // the injection STARTED, not that it's been confirmed yet.
 
-/** Per-agent SELF metadata for the statusline (#297 follow-up). The PTY env
- *  deliberately carries NO server token, so this route authenticates with
- *  the PER-AGENT token (file-delivered at spawn) — and grants exactly one
- *  thing: the agent's own hierarchy view. requireAuth exempts this path
- *  shape; the deny-by-default lives HERE via verifyAgentToken. */
 /** Terminal I/O recency for the dashboard's per-pane input watchdog: how long
  *  ago the PTY last received a terminal-socket keystroke and last produced
  *  output. AGES, not timestamps — the dashboard compares them against its own
@@ -92,6 +87,11 @@ agentsRouter.get("/:id/io", (c) => {
   });
 });
 
+/** Per-agent SELF metadata for the statusline (#297 follow-up). The PTY env
+ *  deliberately carries NO server token, so this route authenticates with
+ *  the PER-AGENT token (file-delivered at spawn) — and grants exactly one
+ *  thing: the agent's own hierarchy view. requireAuth exempts this path
+ *  shape; the deny-by-default lives HERE via verifyAgentToken. */
 agentsRouter.get("/:id/self", (c) => {
   const id = c.req.param("id");
   if (!verifyAgentToken(id, c.req.header("X-Agent-Token")))

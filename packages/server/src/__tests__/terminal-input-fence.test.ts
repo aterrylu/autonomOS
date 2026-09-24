@@ -21,9 +21,12 @@ import { Hono } from "hono";
 // Config-dir isolation (test-escape guard).
 process.env.AUTONOMOS_CONFIG_DIR = mkdtempSync(join(tmpdir(), "aos-fence-"));
 
-const { terminalRouter, _resetTerminalFenceForTesting } = await import(
-  "../routes/terminal.js"
-);
+const {
+  terminalRouter,
+  _resetTerminalFenceForTesting,
+  _startLivenessPingForTesting,
+  REPLAY_END_MARK,
+} = await import("../routes/terminal.js");
 const { _registerSyntheticAttachment } = await import("../agents/runtime.js");
 const { agentsRouter } = await import("../routes/agents.js");
 const { FakePty } = await import("../perf/fake-pty.js");
@@ -74,11 +77,20 @@ function session(id: string) {
   return { pty, writes };
 }
 
-async function open(sessionId: string, query = ""): Promise<WebSocket> {
+async function open(
+  sessionId: string,
+  query = "",
+  onMessage?: (d: string) => void,
+): Promise<WebSocket> {
   const ws = new WebSocket(
     `ws://127.0.0.1:${port}/ws/terminal/${sessionId}${query}`,
   );
   opened.push(ws);
+  if (onMessage) {
+    ws.addEventListener("message", (ev) =>
+      onMessage(typeof ev.data === "string" ? ev.data : ""),
+    );
+  }
   await new Promise<void>((r, j) => {
     ws.addEventListener("open", () => r(), { once: true });
     ws.addEventListener("error", () => j(new Error("ws error")), {
@@ -208,5 +220,140 @@ describe("GET /api/agents/:id/io", () => {
       "/00000000-0000-4000-8000-00000000dead/io",
     );
     assert.equal(res.status, 404);
+  });
+});
+
+describe("fence ordering + input stamping", () => {
+  it("a resize on a superseded socket is ignored too (stale dimensions)", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe006";
+    const { pty } = session(id);
+    const g1 = await open(id, `?client=${CLIENT}&gen=1`);
+    const g2 = await open(id, `?client=${CLIENT}&gen=2`);
+    g2.send(JSON.stringify({ type: "resize", cols: 150, rows: 40 }));
+    await settle();
+    g1.send(JSON.stringify({ type: "resize", cols: 60, rows: 20 }));
+    await settle();
+    assert.equal(pty.cols, 150, "the superseded socket's resize must not win");
+  });
+
+  it("a PTY write that throws does not stamp input as received", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe007";
+    const { pty } = session(id);
+    pty.write = () => {
+      throw new Error("EIO: pty closed");
+    };
+    const ws = await open(id, `?client=${CLIENT}&gen=1`);
+    ws.send("k");
+    await settle();
+    const io = (await (await agentsRouter.request(`/${id}/io`)).json()) as {
+      inputAgeMs: number | null;
+    };
+    assert.equal(io.inputAgeMs, null);
+  });
+});
+
+describe("end-of-replay marker", () => {
+  it("is sent right after the replay, only to clients that ask (?replayMark=1)", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe020";
+    const { pty } = session(id);
+    pty.emit("SCROLLBACK");
+    const got: string[] = [];
+    await open(id, `?client=${CLIENT}&gen=1&replayMark=1`, (d) => got.push(d));
+    await settle();
+    assert.ok(got.join("").includes("SCROLLBACK"), "replay arrived");
+    assert.equal(got.at(-1), REPLAY_END_MARK, "marker follows the replay");
+    assert.ok(
+      got.join("").indexOf("SCROLLBACK") <
+        got.join("").indexOf(REPLAY_END_MARK),
+    );
+
+    const plain: string[] = [];
+    await open(id, "", (d) => plain.push(d)); // an older dashboard
+    await settle();
+    assert.ok(!plain.join("").includes(REPLAY_END_MARK), "never unsolicited");
+  });
+
+  it("uses an OSC form a terminal that doesn't know it will ignore", () => {
+    assert.match(REPLAY_END_MARK, /^\x1b\]7777;[^\x07]*\x07$/);
+  });
+});
+
+describe("server-side liveness ping", () => {
+  function fakeRaw() {
+    const r = {
+      pings: 0,
+      terminated: false,
+      pongCb: null as null | (() => void),
+      ping() {
+        r.pings++;
+      },
+      terminate() {
+        r.terminated = true;
+      },
+      on(_e: "pong", cb: () => void) {
+        r.pongCb = cb;
+      },
+    };
+    return r;
+  }
+
+  it("terminates a socket that stops answering pings (half-open), within the deadline", async () => {
+    const raw = fakeRaw();
+    const stop = _startLivenessPingForTesting(raw, {
+      pingMs: 20,
+      deadAfterMs: 70,
+    });
+    await sleep(60);
+    assert.equal(raw.terminated, false, "not yet");
+    assert.ok(raw.pings >= 2, "pinging");
+    await sleep(80);
+    assert.equal(raw.terminated, true, "no pong past the deadline → dead");
+    stop?.();
+  });
+
+  it("keeps a socket that answers", async () => {
+    const raw = fakeRaw();
+    const pong = setInterval(() => raw.pongCb?.(), 15);
+    const stop = _startLivenessPingForTesting(raw, {
+      pingMs: 20,
+      deadAfterMs: 70,
+    });
+    await sleep(200);
+    assert.equal(raw.terminated, false);
+    clearInterval(pong);
+    stop?.();
+  });
+
+  it("after OUR OWN event loop stalled, grants a fresh deadline instead of killing at once — then still kills a link that stays silent", async () => {
+    const raw = fakeRaw();
+    const stop = _startLivenessPingForTesting(raw, {
+      pingMs: 20,
+      deadAfterMs: 70,
+    });
+    raw.pongCb?.();
+    await sleep(30);
+    // The server process stalls (a SIGSTOP / long sync task) well past the
+    // deadline. No pongs arrive afterwards either, so the only thing that can
+    // save the socket on the first tick after the stall is the grace.
+    const until = Date.now() + 150;
+    while (Date.now() < until) {
+      // busy-wait: no timers run
+    }
+    await sleep(25); // ~one ping tick after the stall
+    assert.equal(
+      raw.terminated,
+      false,
+      "missing pongs during OUR stall are our fault — no instant kill",
+    );
+    await sleep(120); // a fresh deadline passes with the link still silent
+    assert.equal(raw.terminated, true, "a genuinely dead link still dies");
+    stop?.();
+  });
+
+  it("ignores a context without a raw ws (defensive: no crash, no pinger)", () => {
+    assert.equal(
+      _startLivenessPingForTesting(undefined, { pingMs: 20, deadAfterMs: 70 }),
+      undefined,
+    );
   });
 });

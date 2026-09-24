@@ -7,6 +7,7 @@ import type { PaneConnection } from "./connectionWatch";
 import {
   _disposeAllTerminals,
   _liveTerminalCount,
+  _resetReplayMarkForTesting,
   _setBackendFactoryForTesting,
   _setTransportHealthForTesting,
   _watchdogTickForTesting,
@@ -68,6 +69,7 @@ function makeFakeBackend(): TerminalBackend & {
   const buf = { baseY: 0, viewportY: 0, getLine: () => null };
   let onScrollCb: (n: number) => void = () => {};
   let onDataCb: (d: string) => void = () => {};
+  const oscHandlers = new Map<number, (data: string) => boolean>();
   let csiJHandler: ((params: number[]) => boolean) | null = null;
   const element = document.createElement("div");
   const terminal = {
@@ -85,6 +87,10 @@ function makeFakeBackend(): TerminalBackend & {
         cb: (params: number[]) => boolean,
       ) => {
         if (id.final === "J") csiJHandler = cb;
+        return { dispose: () => {} };
+      },
+      registerOscHandler: (ident: number, cb: (data: string) => boolean) => {
+        oscHandlers.set(ident, cb);
         return { dispose: () => {} };
       },
     },
@@ -147,6 +153,8 @@ function makeFakeBackend(): TerminalBackend & {
     fireScroll: (n: number) => onScrollCb(n),
     /** Simulate the user typing into the xterm (its onData). */
     type: (d: string) => onDataCb(d),
+    /** Simulate xterm PARSING an OSC sequence (e.g. the replay-end mark). */
+    parseOsc: (ident: number, data = "") => oscHandlers.get(ident)?.(data),
   };
   return backend as TerminalBackend & {
     disposed: boolean;
@@ -155,6 +163,7 @@ function makeFakeBackend(): TerminalBackend & {
     buf: { baseY: number; viewportY: number };
     fireScroll: (n: number) => void;
     type: (d: string) => void;
+    parseOsc: (ident: number, data?: string) => boolean | undefined;
   };
 }
 
@@ -668,6 +677,7 @@ describe("pane connection watch", () => {
   let backends: ReturnType<typeof makeFakeBackend>[];
   let states: PaneConnection[];
   let ioReply: { inputAgeMs: number | null; outputAgeMs: number | null };
+  let ioStatus = 200;
   let fetchCalls: string[];
 
   beforeEach(() => {
@@ -686,12 +696,13 @@ describe("pane connection watch", () => {
         disconnect() {}
       },
     );
+    ioStatus = 200;
     vi.stubGlobal(
       "fetch",
       vi.fn((url: unknown) => {
         fetchCalls.push(String(url));
         return Promise.resolve(
-          new Response(JSON.stringify(ioReply), { status: 200 }),
+          new Response(JSON.stringify(ioReply), { status: ioStatus }),
         );
       }),
     );
@@ -735,27 +746,69 @@ describe("pane connection watch", () => {
     for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1);
   };
 
-  it("tags every terminal socket with a stable client id and a rising generation", () => {
+  it("tags every terminal socket with a stable client id, a rising generation, and the replay-mark opt-in", () => {
     const { entry } = mount();
     const u1 = new URL(FakeWebSocket.instances[0].url);
-    expect(u1.searchParams.get("gen")).toBe("1");
+    const g1 = Number(u1.searchParams.get("gen"));
     const client = u1.searchParams.get("client");
     expect(client).toMatch(/^[A-Za-z0-9-]{8,64}$/);
+    expect(u1.searchParams.get("replayMark")).toBe("1");
     entry.forceReconnect();
     const u2 = new URL(FakeWebSocket.instances[1].url);
-    expect(u2.searchParams.get("gen")).toBe("2");
+    expect(Number(u2.searchParams.get("gen"))).toBeGreaterThan(g1);
     expect(u2.searchParams.get("client")).toBe(client);
   });
 
-  it("keys typed while the socket can't carry them are counted, never buffered for a late burst", () => {
+  it("a RE-CREATED pane for the same session never reuses a lower generation (both reviewers' bug)", () => {
+    // The server fences by session + page client id and keeps the highest
+    // generation while ANY socket from it stays bound — a half-open one can
+    // stay bound for hours. A per-instance counter restarting at 1 would sit
+    // below that and have its healthy socket's input fenced.
+    const { entry } = mount();
+    entry.forceReconnect();
+    entry.forceReconnect();
+    const before = Number(
+      new URL(FakeWebSocket.instances.at(-1)!.url).searchParams.get("gen"),
+    );
+    disposeTerminal("p1"); // LRU eviction / session restart
+    mount("p1");
+    const after = Number(
+      new URL(FakeWebSocket.instances.at(-1)!.url).searchParams.get("gen"),
+    );
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("every user key the socket can't carry is counted — Esc/Ctrl+C included — never buffered for a late burst", () => {
     const { ws, backend } = mount();
     ws().readyState = FakeWebSocket.CONNECTING; // reconnecting
     backend.type("a");
-    backend.type("b");
-    backend.type("\x1b[A"); // an arrow is not a countable keystroke
+    backend.type("\x1b"); // Esc — Claude Code's interrupt
+    backend.type("\x03"); // Ctrl+C
+    backend.type("\x1b[I"); // a focus report is not the user's keystroke
     expect(ws().sent).toEqual([]); // nothing queued for later
     ws().onopen?.();
-    expect(last()).toEqual({ kind: "ok", droppedKeys: 2 });
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 3 });
+  });
+
+  it("an unanswered Esc arms the socket-dead check (but can never blame a silent agent)", async () => {
+    const { backend } = mount();
+    const t0 = Date.now();
+    backend.type("\x1b"); // interrupt into a pane whose socket is dead
+    ioReply = { inputAgeMs: null, outputAgeMs: 300 }; // server never got it
+    vi.setSystemTime(t0 + 5_500);
+    _watchdogTickForTesting(t0 + 5_500);
+    await flush();
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 1 });
+  });
+
+  it("an Esc the server DID receive, with no output, disarms quietly (no 'not responding' for a non-printing key)", async () => {
+    const { backend } = mount();
+    const t0 = Date.now();
+    backend.type("\x1b");
+    vi.setSystemTime(t0 + 5_500);
+    _watchdogTickForTesting(t0 + 5_500);
+    await flush();
+    expect(states.some((c) => c.kind === "silent")).toBe(false);
   });
 
   it("transport lost → every pane abandons its socket and counts unanswered keys; recovery reconnects and shows the notice, which then clears", () => {
@@ -792,25 +845,108 @@ describe("pane connection watch", () => {
     expect(last()).toEqual({ kind: "lost", droppedKeys: 2 });
   });
 
-  it("terminal query replies provoked by the scrollback REPLAY are never sent to the agent; typed keys are", () => {
+  it("replies provoked by the scrollback REPLAY are dropped until the server's end-of-replay marker is PARSED; live replies after it go through", () => {
+    _resetReplayMarkForTesting();
     const { ws, backend } = mount(); // mount() fires onopen → replay window
     backend.type("\x1b[?1;2c"); // xterm answering a DA1 query in the replay
     backend.type("\x1b[12;40R"); // …and a CPR
     backend.type("k"); // a real keystroke in the same window
     expect(ws().sent).toEqual(["k"]);
-    // After the window, a live app's query gets its reply through.
-    vi.advanceTimersByTime(2_100);
+    // Slow replay parse (big buffer, throttled tab): still inside, no leak.
+    vi.advanceTimersByTime(3_000);
+    backend.type("\x1b[?1;2c");
+    expect(ws().sent).toEqual(["k"]);
+    // The marker is parsed → the replay is over → a LIVE app's query (a
+    // fresh agent's startup probe) gets its reply immediately.
+    expect(backend.parseOsc(7777)).toBe(true);
     backend.type("\x1b[?1;2c");
     expect(ws().sent).toEqual(["k", "\x1b[?1;2c"]);
   });
 
   it("the replay window re-arms on EVERY open, reconnects included", () => {
     const { entry, ws, backend } = mount();
-    vi.advanceTimersByTime(5_000); // first window long gone
+    backend.parseOsc(7777);
     entry.forceReconnect();
     ws().onopen?.();
     backend.type("\x1b[?1;2c");
     expect(ws().sent).toEqual([]);
+  });
+
+  it("a server that never sends the marker: the window still closes (short cap before one has ever been seen)", () => {
+    _resetReplayMarkForTesting();
+    const { ws, backend } = mount();
+    vi.advanceTimersByTime(5_100);
+    backend.type("\x1b[?1;2c");
+    expect(ws().sent).toEqual(["\x1b[?1;2c"]);
+  });
+
+  it("/io 404 (session ending, or a server without /io) stands down — no retry loop", async () => {
+    const { backend } = mount();
+    ioStatus = 404;
+    const t0 = Date.now();
+    backend.type("h");
+    for (const dt of [5_500, 6_500, 12_000, 20_000]) {
+      vi.setSystemTime(t0 + dt);
+      _watchdogTickForTesting(t0 + dt);
+      await flush();
+    }
+    expect(fetchCalls).toHaveLength(1);
+    expect(states.some((c) => c.kind !== "ok")).toBe(false);
+  });
+
+  it("/io failing (401/5xx) backs off 5s, and after 3 failures the pane is cut loose — never an endless silent loop", async () => {
+    const { backend } = mount();
+    ioStatus = 500;
+    const t0 = Date.now();
+    backend.type("h");
+    let now = t0 + 5_500;
+    vi.setSystemTime(now);
+    _watchdogTickForTesting(now);
+    await flush();
+    expect(fetchCalls).toHaveLength(1);
+    // 1s later: backing off, no second request.
+    now += 1_000;
+    vi.setSystemTime(now);
+    _watchdogTickForTesting(now);
+    await flush();
+    expect(fetchCalls).toHaveLength(1);
+    for (let i = 0; i < 2; i++) {
+      now += 5_100;
+      vi.setSystemTime(now);
+      _watchdogTickForTesting(now);
+      await flush();
+    }
+    expect(fetchCalls).toHaveLength(3);
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 1 });
+    expect(FakeWebSocket.instances).toHaveLength(2); // reconnected
+  });
+
+  it("a dropped-keys notice emitted while the pane was hidden waits to be SEEN before its 8s timer starts", () => {
+    const { entry, ws, backend } = mount();
+    ws().readyState = FakeWebSocket.CONNECTING;
+    backend.type("a");
+    entry.detach(); // user switched away
+    ws().onopen?.(); // reconnects in the background
+    vi.advanceTimersByTime(30_000); // long after 8s
+    const seen: PaneConnection[] = [];
+    entry.attach(
+      document.body.appendChild(document.createElement("div")),
+      null,
+    );
+    entry.bindConnectionIndicator((c) => seen.push(c));
+    expect(seen.at(-1)).toEqual({ kind: "ok", droppedKeys: 1 }); // still there
+    vi.advanceTimersByTime(8_100);
+    expect(seen.at(-1)).toEqual({ kind: "ok", droppedKeys: 0 });
+  });
+
+  it("mod-key bindings go through the same accounting (no bypass of the dropped count)", () => {
+    const { ws } = mount();
+    ws().readyState = FakeWebSocket.CONNECTING;
+    const entry = getLiveTerminal("p1")!;
+    // The private input path every sender now shares.
+    (entry as unknown as { sendInput(d: string): void }).sendInput("\x15");
+    ws().onopen?.();
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 1 });
   });
 
   it("a byte back within 5s answers the keystroke — no probe at all", async () => {
