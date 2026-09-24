@@ -116,7 +116,12 @@ export function UpdatesSettingsSection({
               >
                 <span className="flex min-w-0 flex-col">
                   <span className="flex items-center gap-1.5">
-                    <span>Before v{s.fromVersion}</span>
+                    <span>
+                      Saved on v{s.fromVersion}
+                      {s.toVersion && (
+                        <span style={label}> · before v{s.toVersion}</span>
+                      )}
+                    </span>
                     {i === 0 && (
                       <span
                         className="rounded px-1 text-[9px]"

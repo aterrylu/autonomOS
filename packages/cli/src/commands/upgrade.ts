@@ -168,13 +168,17 @@ async function runSourceUpgradeFlow(
 
   const snapshot = takeSnapshot(currentVersion, flags.targetVersion, report);
   if (!snapshot) return 1;
+  let touched = false;
   report("fetching", { from: currentVersion });
   const result = await performSourceUpgrade({
     repoRoot,
     installInfo: install.info,
     currentVersion,
     targetVersion: flags.targetVersion,
-    onPhase: (p) => report(p),
+    onPhase: (p) => {
+      touched = true; // "building" follows the checkout
+      report(p);
+    },
   });
 
   if (result.status === "up-to-date") {
@@ -187,7 +191,14 @@ async function runSourceUpgradeFlow(
     return 0;
   }
   if (result.status === "error") {
-    report("failed", { message: result.message });
+    // Failed before the install step (release missing, download or checksum
+    // failed): nothing on disk changed, so the snapshot would only be a
+    // duplicate Restore row. Past that step, keep it — the swap may have run.
+    if (!touched) deleteSnapshot(snapshot.id);
+    report("failed", {
+      message: result.message,
+      ...(!touched && { snapshotId: undefined }),
+    });
     console.error(`✗ Upgrade failed: ${result.message}`);
     return 1;
   }
@@ -330,6 +341,7 @@ export async function runUpgradeCommand(
   const currentVersion = getServerVersion();
   const snapshot = takeSnapshot(currentVersion, flags.targetVersion, report);
   if (!snapshot) return 1;
+  let touched = false;
   console.log(`Current version: ${currentVersion}`);
   console.log(
     flags.targetVersion
@@ -345,7 +357,10 @@ export async function runUpgradeCommand(
     targetVersion: flags.targetVersion,
     releaseApiBase: overrides.releaseApiBase,
     releaseRepo: overrides.releaseRepo,
-    onPhase: (p) => report(p),
+    onPhase: (p) => {
+      if (p === "installing") touched = true;
+      report(p);
+    },
   });
 
   if (result.status === "up-to-date") {
@@ -357,7 +372,14 @@ export async function runUpgradeCommand(
     return 0;
   }
   if (result.status === "error") {
-    report("failed", { message: result.message });
+    // Failed before the install step (release missing, download or checksum
+    // failed): nothing on disk changed, so the snapshot would only be a
+    // duplicate Restore row. Past that step, keep it — the swap may have run.
+    if (!touched) deleteSnapshot(snapshot.id);
+    report("failed", {
+      message: result.message,
+      ...(!touched && { snapshotId: undefined }),
+    });
     console.error(`✗ Upgrade failed: ${result.message}`);
     return 1;
   }

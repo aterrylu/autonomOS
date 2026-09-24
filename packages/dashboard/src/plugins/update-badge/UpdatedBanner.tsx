@@ -18,7 +18,14 @@ import { systemApi, type UpgradeStatusRecord } from "../../api/system";
 import { THEMES, useStore } from "../../store";
 import { AMBER, GREEN } from "./UpdateDialog";
 import { useUpdateBus } from "./updateBus";
-import { joinNames, takeUpdatedFlag, type UpdatedFlag } from "./updateFlow";
+import {
+  joinNames,
+  readUpdateAck,
+  resurfacedFlag,
+  takeUpdatedFlag,
+  type UpdatedFlag,
+  writeUpdateAck,
+} from "./updateFlow";
 
 /** Mutable so tests can shrink the waits. */
 export const verifyTiming = {
@@ -37,6 +44,13 @@ function useVerification(flag: UpdatedFlag | null): Verify {
   const [v, setV] = useState<Verify>(() =>
     flag && flag.kind !== "rollback" ? { kind: "waiting" } : { kind: "none" },
   );
+  // A flag can arrive after mount (the durable resurface path below), so
+  // start waiting then too; the poll resolves it on its first tick.
+  const hasUpgradeFlag = flag !== null && flag.kind !== "rollback";
+  useEffect(() => {
+    if (hasUpgradeFlag)
+      setV((cur) => (cur.kind === "none" ? { kind: "waiting" } : cur));
+  }, [hasUpgradeFlag]);
   const waiting = v.kind === "waiting";
   const to = flag?.updatedTo;
 
@@ -110,6 +124,26 @@ export function UpdatedBanner() {
   const theme = useStore((s) => s.theme);
   const requestRestore = useUpdateBus((s) => s.requestRestore);
   const page = THEMES[theme].page;
+
+  // No flag from this tab's own update → ask the server whether an update
+  // with unacknowledged verification problems is what's running now.
+  const [hadSessionFlag] = useState(() => flag !== null);
+  useEffect(() => {
+    if (hadSessionFlag) return;
+    let alive = true;
+    systemApi
+      .upgradeState({ signal: AbortSignal.timeout(5_000) })
+      .then((s) => {
+        const f = resurfacedFlag(s, readUpdateAck());
+        if (alive && f) setFlag(f);
+      })
+      .catch(() => {
+        // Best effort: the next load asks again.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [hadSessionFlag]);
 
   if (!flag) return null;
 
@@ -207,7 +241,14 @@ export function UpdatedBanner() {
             aria-label="Dismiss"
             className="cursor-pointer px-1 text-base leading-none hover:brightness-125"
             style={{ color: page.statusFg }}
-            onClick={() => setFlag(null)}
+            onClick={() => {
+              // Dismissing a problem report acknowledges it for this browser;
+              // otherwise it resurfaces on every load while that update runs.
+              if (verify.kind === "done" && problems.length > 0) {
+                writeUpdateAck(verify.record.startedAt);
+              }
+              setFlag(null);
+            }}
           >
             ×
           </button>

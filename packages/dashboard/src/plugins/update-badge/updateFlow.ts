@@ -9,6 +9,7 @@ import type {
   InstallMode,
   ReleaseNote,
   UpgradePhase,
+  UpgradeState,
   UpgradeStatusRecord,
 } from "../../api/system";
 
@@ -262,4 +263,47 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ── durable "agents need attention" warning ──────────────────────────────
+//
+// The sessionStorage flag above only reaches the tab that ran the update, and
+// only if it is still open when verification lands (~20s after the restart).
+// A reload, a second tab or a closed laptop would otherwise lose the one
+// warning that offers Restore. So the server's status record is the durable
+// source: while the running version came from an update whose verification
+// found problems, the banner resurfaces until this browser dismisses it.
+
+const ACK_KEY = "autonomos:update-ack";
+
+/** The `startedAt` of the update whose problems this browser dismissed. */
+export function readUpdateAck(): string | null {
+  try {
+    return localStorage.getItem(ACK_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function writeUpdateAck(startedAt: string): void {
+  try {
+    localStorage.setItem(ACK_KEY, startedAt);
+  } catch {
+    // Storage disabled: the warning simply comes back on the next load.
+  }
+}
+
+/** A banner flag for an update with unacknowledged verification problems. */
+export function resurfacedFlag(
+  state: Pick<UpgradeState, "current" | "status">,
+  ackedStartedAt: string | null,
+): UpdatedFlag | null {
+  const r = state.status;
+  if (!r || r.kind === "rollback" || r.phase !== "done") return null;
+  // Only while that update is what's running — after a Restore or a newer
+  // update the problems no longer describe this install.
+  if (r.to !== state.current) return null;
+  if (!r.verification || r.verification.problems.length === 0) return null;
+  if (ackedStartedAt === r.startedAt) return null;
+  return { kind: "upgrade", updatedTo: r.to, interruptedNames: [] };
 }

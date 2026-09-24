@@ -87,8 +87,10 @@ describe("UpdatesSettingsSection", () => {
     const onRestore = await renderSection();
     const rows = screen.getAllByTestId("settings-snapshot");
     expect(
-      rows.map((r) => r.textContent?.match(/Before v[\d.]+/)?.[0]),
-    ).toEqual(["Before v0.7.0", "Before v0.6.1", "Before v0.6.0"]);
+      rows.map((r) => r.textContent?.match(/Saved on v[\d.]+/)?.[0]),
+    ).toEqual(["Saved on v0.7.0", "Saved on v0.6.1", "Saved on v0.6.0"]);
+    // What each snapshot preceded — the label says which state it holds.
+    expect(rows[0].textContent).toContain("Saved on v0.7.0 · before v0.7.1");
     expect(rows.map((r) => r.getAttribute("data-restorable"))).toEqual([
       "false",
       "true",

@@ -47,6 +47,7 @@ beforeEach(() => {
   verifyTiming.pollMs = 10;
   verifyTiming.maxWaitMs = 2_000;
   sessionStorage.clear();
+  localStorage.clear();
   useStore.setState({ sessions: [] });
   status = null;
   fetchMock = vi.fn((url: string) =>
@@ -83,10 +84,64 @@ async function renderWith(flag: UpdatedFlag) {
 }
 
 describe("UpdatedBanner", () => {
-  it("renders nothing without the post-update flag", () => {
-    render(<UpdatedBanner />);
+  it("renders nothing without the post-update flag when no update has problems", async () => {
+    status = doneRecord({
+      verification: { checkedAt: "x", checked: 2, problems: [] },
+    });
+    await act(async () => {
+      render(<UpdatedBanner />);
+    });
     expect(screen.queryByTestId("updated-banner")).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe("durable problem warning (no flag: reload, second tab)", () => {
+    const withProblem = () =>
+      doneRecord({
+        verification: {
+          checkedAt: "x",
+          checked: 2,
+          problems: [
+            { id: "a1", name: "qa-codex", issue: "It didn't come back" },
+          ],
+        },
+      });
+
+    it("resurfaces the amber banner with Restore from the server record", async () => {
+      status = withProblem();
+      await act(async () => {
+        render(<UpdatedBanner />);
+      });
+      const banner = await screen.findByTestId("updated-banner");
+      await vi.waitFor(() =>
+        expect(banner.getAttribute("data-tone")).toBe("attention"),
+      );
+      expect(banner.textContent).toContain("qa-codex");
+      expect(screen.getByTestId("banner-restore")).toBeTruthy();
+    });
+
+    it("stays dismissed in this browser once dismissed", async () => {
+      status = withProblem();
+      const first = render(<UpdatedBanner />);
+      const banner = await screen.findByTestId("updated-banner");
+      await vi.waitFor(() =>
+        expect(banner.getAttribute("data-tone")).toBe("attention"),
+      );
+      fireEvent.click(screen.getByLabelText("Dismiss"));
+      expect(screen.queryByTestId("updated-banner")).toBeNull();
+      first.unmount();
+      await act(async () => {
+        render(<UpdatedBanner />);
+      });
+      expect(screen.queryByTestId("updated-banner")).toBeNull();
+    });
+
+    it("does not resurface once a different version is running (restored)", async () => {
+      status = { ...withProblem(), to: "0.7.99" };
+      await act(async () => {
+        render(<UpdatedBanner />);
+      });
+      expect(screen.queryByTestId("updated-banner")).toBeNull();
+    });
   });
 
   it("shows 'Verifying agents…' until the check lands, then a green all-verified line", async () => {

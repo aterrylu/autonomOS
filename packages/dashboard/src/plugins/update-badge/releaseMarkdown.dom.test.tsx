@@ -133,4 +133,15 @@ describe("safeHref", () => {
     expect(safeHref("/relative")).toBeNull();
     expect(safeHref("//evil.example/x")).toBeNull();
   });
+  it("keeps a newline inside a paragraph as a line break, like GitHub", () => {
+    const { container } = render(
+      <ReleaseMarkdown
+        body={"**Install:** one\n**Download:** two\n\nNext para"}
+      />,
+    );
+    const paras = container.querySelectorAll("p");
+    expect(paras).toHaveLength(2);
+    expect(paras[0].querySelectorAll("br")).toHaveLength(1);
+    expect(paras[0].textContent).toBe("Install: oneDownload: two");
+  });
 });

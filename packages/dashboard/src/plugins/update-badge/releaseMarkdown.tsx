@@ -17,7 +17,7 @@
  * http(s) URLs. HTML comments are dropped (GitHub hides them too).
  */
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 /** The href to use for `raw`, or null when it must NOT become a link. */
 export function safeHref(raw: string): string | null {
@@ -114,7 +114,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 
 type Block =
   | { kind: "heading"; level: 1 | 2 | 3; text: string }
-  | { kind: "para"; text: string }
+  | { kind: "para"; lines: string[] }
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "rule" }
   | { kind: "code"; text: string };
@@ -138,7 +138,10 @@ export function parseBlocks(src: string): Block[] {
   let list: { ordered: boolean; items: string[] } | null = null;
 
   const flush = () => {
-    if (para.length) blocks.push({ kind: "para", text: para.join(" ") });
+    // GitHub renders release bodies like comments: a newline inside a
+    // paragraph is a line break, not a space. Keep the lines so the in-app
+    // notes read the same as the release page.
+    if (para.length) blocks.push({ kind: "para", lines: [...para] });
     para = [];
     if (list) blocks.push({ kind: "list", ...list });
     list = null;
@@ -218,7 +221,15 @@ export function ReleaseMarkdown({ body }: { body: string }) {
           case "para":
             return (
               <p key={key} className="my-1.5">
-                {renderInline(b.text, key)}
+                {b.lines.map((line, j) => {
+                  const lk = `${key}-l${j}`;
+                  return (
+                    <Fragment key={lk}>
+                      {j > 0 && <br />}
+                      {renderInline(line, lk)}
+                    </Fragment>
+                  );
+                })}
               </p>
             );
           case "list": {
