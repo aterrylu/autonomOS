@@ -160,7 +160,9 @@ export function createSnapshot(
     },
   );
   renameSync(staging, join(root, id));
-  pruneSnapshots(configDir);
+  // No pruning here: a snapshot is taken before anyone knows whether the run
+  // will change anything, and pruning now would evict a real snapshot for
+  // every no-op or failed attempt. Callers prune once something changed.
   return manifest;
 }
 
@@ -184,8 +186,13 @@ export function listSnapshots(configDir = getConfigDir()): SnapshotManifest[] {
 export function pruneSnapshots(
   configDir = getConfigDir(),
   keep = SNAPSHOT_RETENTION,
+  /** Ids never removed by this prune (e.g. the snapshot a Restore just used). */
+  protect: readonly string[] = [],
 ): void {
-  for (const s of listSnapshots(configDir).slice(keep)) {
+  const all = listSnapshots(configDir);
+  const kept = new Set(all.slice(0, keep).map((s) => s.id));
+  for (const s of all) {
+    if (kept.has(s.id) || protect.includes(s.id)) continue;
     rmSync(join(snapshotsDir(configDir), s.id), {
       recursive: true,
       force: true,
@@ -206,28 +213,93 @@ export function snapshotForVersion(
 /**
  * Restore a snapshot's entries over the live state. The CALLER must have
  * stopped the daemon first — a running daemon would keep writing the records
- * being replaced. Displaced live entries are moved aside (not deleted) until
- * the swap completes, then removed; entries absent from the snapshot are left
- * alone (they didn't exist at snapshot time and nothing reads them on old
- * code, e.g. a directory a newer version introduced).
+ * being replaced.
+ *
+ * Nothing is destroyed and nothing is left half-done:
+ *   1. The live state is first saved as its OWN snapshot (from `liveVersion`),
+ *      so what the newer version wrote — agents created since, schedules,
+ *      env-preset keys — stays recoverable, and swapping forward again pairs
+ *      with it. If that save fails, nothing is restored.
+ *   2. Every entry is copied into a staging dir. A copy failure here leaves
+ *      the live state untouched.
+ *   3. Entries are swapped in by rename (same filesystem). If a rename fails,
+ *      the swaps already made are undone; the error names anything that could
+ *      not be put back and where its original is.
+ * Entries absent from the snapshot are left alone (they didn't exist at
+ * snapshot time and nothing reads them on old code).
  */
 export function restoreSnapshot(
   id: string,
+  liveVersion: string,
   configDir = getConfigDir(),
-): SnapshotManifest {
+): { restored: SnapshotManifest; saved: SnapshotManifest } {
   const src = join(snapshotsDir(configDir), id);
   const manifest = JSON.parse(
     readFileSync(join(src, "manifest.json"), "utf-8"),
   ) as SnapshotManifest;
-  const trash = join(configDir, `.restore-displaced-${Date.now()}`);
-  mkdirSync(trash, { mode: 0o700 });
-  for (const e of manifest.entries) {
-    const live = join(configDir, e);
-    if (existsSync(live)) renameSync(live, join(trash, e));
-    cpSync(join(src, e), live, { recursive: true, preserveTimestamps: true });
+
+  const saved = createSnapshot(liveVersion, manifest.fromVersion, configDir);
+
+  const tag = Date.now();
+  const stage = join(configDir, `.restore-staging-${tag}`);
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(stage, { mode: 0o700 });
+  try {
+    for (const e of manifest.entries) {
+      cpSync(join(src, e), join(stage, e), {
+        recursive: true,
+        preserveTimestamps: true,
+      });
+    }
+  } catch (err) {
+    rmSync(stage, { recursive: true, force: true });
+    throw new Error(
+      `couldn't read snapshot ${id} (${err instanceof Error ? err.message : err}) — live state was left as it was`,
+    );
   }
-  rmSync(trash, { recursive: true, force: true });
-  return manifest;
+
+  const displaced = join(configDir, `.restore-displaced-${tag}`);
+  mkdirSync(displaced, { mode: 0o700 });
+  const swapped: { entry: string; hadLive: boolean }[] = [];
+  try {
+    for (const e of manifest.entries) {
+      const live = join(configDir, e);
+      const hadLive = existsSync(live);
+      if (hadLive) renameSync(live, join(displaced, e));
+      swapped.push({ entry: e, hadLive });
+      renameSync(join(stage, e), live);
+    }
+  } catch (err) {
+    const stuck: string[] = [];
+    for (const { entry, hadLive } of swapped.reverse()) {
+      const live = join(configDir, entry);
+      try {
+        // Staged copy already went live → take it out again.
+        if (!existsSync(join(stage, entry))) {
+          rmSync(live, { recursive: true, force: true });
+        }
+        if (hadLive) renameSync(join(displaced, entry), live);
+      } catch {
+        stuck.push(entry);
+      }
+    }
+    rmSync(stage, { recursive: true, force: true });
+    const why = err instanceof Error ? err.message : String(err);
+    if (stuck.length === 0) {
+      rmSync(displaced, { recursive: true, force: true });
+      throw new Error(
+        `restoring snapshot ${id} failed (${why}) — live state was put back as it was`,
+      );
+    }
+    throw new Error(
+      `restoring snapshot ${id} failed (${why}) and ${stuck.join(", ")} could not be put back — the originals are in ${displaced}, and a full copy is in snapshots/${saved.id}/`,
+    );
+  }
+  rmSync(stage, { recursive: true, force: true });
+  // The displaced copies are redundant with `saved`.
+  rmSync(displaced, { recursive: true, force: true });
+  pruneSnapshots(configDir, SNAPSHOT_RETENTION, [id, saved.id]);
+  return { restored: manifest, saved };
 }
 
 /** Remove one snapshot (used when an upgrade turns out to be a no-op). */

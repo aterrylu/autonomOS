@@ -1249,8 +1249,9 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
               </dd>
               <dt style={dt}>Won't carry back</dt>
               <dd>
-                Agents created or changed after the update. Their conversations
-                stay on disk — reopen them from Projects.
+                Changes made since the update — agents, schedules, presets,
+                settings. They aren't lost: today's setup is saved as its own
+                snapshot first, and rolling forward again restores it.
               </dd>
             </>
           )}

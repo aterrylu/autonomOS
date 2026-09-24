@@ -61,6 +61,25 @@ export const TERMINAL_PHASES: ReadonlySet<UpgradePhase> = new Set([
   "up_to_date",
 ]);
 
+/** A non-terminal record older than this is a job that died without a final
+ *  write, not a live run (a long source build can take minutes per phase). */
+export const IN_FLIGHT_STALE_MS = 15 * 60 * 1000;
+/** The job writes "snapshotting" within seconds of starting; a record still
+ *  at "launching" after this means the job never started at all. */
+export const LAUNCH_STALE_MS = 2 * 60 * 1000;
+
+export function isUpgradeInFlight(
+  rec: UpgradeStatusRecord | null,
+  now = Date.now(),
+): boolean {
+  if (!rec || TERMINAL_PHASES.has(rec.phase)) return false;
+  const age = now - Date.parse(rec.updatedAt);
+  if (!Number.isFinite(age)) return false;
+  return (
+    age < (rec.phase === "launching" ? LAUNCH_STALE_MS : IN_FLIGHT_STALE_MS)
+  );
+}
+
 export function upgradeStatusPath(configDir = getConfigDir()): string {
   return join(configDir, "upgrade-status.json");
 }

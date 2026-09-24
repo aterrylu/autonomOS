@@ -26,6 +26,7 @@ import {
   createSnapshot,
   deleteSnapshot,
   listSnapshots,
+  pruneSnapshots,
   restoreSnapshot,
   SNAPSHOT_RETENTION,
   snapshotForVersion,
@@ -104,20 +105,29 @@ describe("createSnapshot", () => {
     );
   });
 
-  it(`keeps the last ${SNAPSHOT_RETENTION}`, () => {
+  it(`creating never prunes; pruning keeps the last ${SNAPSHOT_RETENTION} plus protected ids`, () => {
     seedState();
+    const made = [];
     for (let i = 0; i < SNAPSHOT_RETENTION + 2; i++) {
-      createSnapshot(
-        `0.6.${i}`,
-        null,
-        cfg,
-        new Date(Date.UTC(2026, 0, 1, 0, i)),
+      made.push(
+        createSnapshot(
+          `0.6.${i}`,
+          null,
+          cfg,
+          new Date(Date.UTC(2026, 0, 1, 0, i)),
+        ),
       );
     }
+    // A snapshot is taken before anyone knows the run will change anything;
+    // pruning at creation evicted a real snapshot per no-op/failed attempt.
+    assert.equal(listSnapshots(cfg).length, SNAPSHOT_RETENTION + 2);
+
+    pruneSnapshots(cfg, SNAPSHOT_RETENTION, [made[0].id]);
     const kept = listSnapshots(cfg).map((s) => s.fromVersion);
-    assert.equal(kept.length, SNAPSHOT_RETENTION);
+    assert.equal(kept.length, SNAPSHOT_RETENTION + 1);
     assert.equal(kept[0], `0.6.${SNAPSHOT_RETENTION + 1}`, "newest first");
-    assert.ok(!kept.includes("0.6.0"), "oldest pruned");
+    assert.ok(kept.includes("0.6.0"), "the protected oldest survives");
+    assert.ok(!kept.includes("0.6.1"), "the unprotected overflow is pruned");
   });
 
   it("a half-written (staging) snapshot is never listed or offered", () => {
@@ -140,7 +150,7 @@ describe("restoreSnapshot", () => {
       ),
     );
     mkdirSync(join(cfg, "new-feature-dir"));
-    restoreSnapshot(m.id, cfg);
+    const { saved } = restoreSnapshot(m.id, "0.7.0", cfg);
     const back = JSON.parse(
       readFileSync(join(cfg, "agents", "a1.json"), "utf-8"),
     );
@@ -152,7 +162,57 @@ describe("restoreSnapshot", () => {
     );
     assert.equal(statSync(join(cfg, "token")).mode & 0o777, 0o600);
     assert.ok(
-      !readdirSync(cfg).some((d) => d.startsWith(".restore-displaced")),
+      !readdirSync(cfg).some((d) => d.startsWith(".restore-")),
+      "no debris",
+    );
+
+    // Nothing the newer version wrote is destroyed: it is saved as its own
+    // snapshot, which is what rolling forward again pairs with.
+    assert.equal(saved.fromVersion, "0.7.0");
+    assert.equal(saved.toVersion, "0.6.1");
+    assert.equal(snapshotForVersion("0.7.0", cfg)?.id, saved.id);
+    const newer = JSON.parse(
+      readFileSync(
+        join(snapshotsDir(cfg), saved.id, "agents", "a1.json"),
+        "utf-8",
+      ),
+    );
+    assert.equal(
+      newer.schemaVersion,
+      2,
+      "the newer record is kept, not deleted",
+    );
+  });
+
+  it("a snapshot that can't be read leaves live state exactly as it was", () => {
+    seedState();
+    const m = createSnapshot("0.6.1", "0.7.0", cfg);
+    writeFileSync(join(cfg, "settings.json"), '{"after":"update"}');
+    writeFileSync(
+      join(cfg, "agents", "a1.json"),
+      JSON.stringify(agentRecord("a1", { schemaVersion: 2 })),
+    );
+    // Damage the snapshot: an entry the manifest lists (after "agents" in
+    // entry order, so agents was already staged when this fails) is missing.
+    rmSync(join(snapshotsDir(cfg), m.id, "token"), { force: true });
+    assert.throws(
+      () => restoreSnapshot(m.id, "0.7.0", cfg),
+      /live state was left as it was/,
+    );
+    assert.equal(
+      readFileSync(join(cfg, "settings.json"), "utf-8"),
+      '{"after":"update"}',
+      "nothing was swapped in",
+    );
+    assert.equal(
+      JSON.parse(readFileSync(join(cfg, "agents", "a1.json"), "utf-8"))
+        .schemaVersion,
+      2,
+      "the already-staged agents entry was NOT swapped in",
+    );
+    assert.equal(readFileSync(join(cfg, "token"), "utf-8"), "tok");
+    assert.ok(
+      !readdirSync(cfg).some((d) => d.startsWith(".restore-")),
       "no debris",
     );
   });

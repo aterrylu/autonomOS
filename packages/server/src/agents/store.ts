@@ -49,9 +49,6 @@ import { clearHandoffQueue } from "../handoffQueue.js";
  *  these records (the guard below) instead of misreading them. */
 export const AGENT_SCHEMA_VERSION = 1;
 
-/** Record files skipped because a newer version wrote them (surfaced in logs). */
-export const newerSchemaSkipped: string[] = [];
-
 export function getAgentsDir(): string {
   return join(getConfigDir(), "agents");
 }
@@ -145,7 +142,6 @@ function loadFromDisk(): Map<UUID, Agent> {
           `[agents] ${entry} was written by a newer autonomOS (schemaVersion ${(data as { schemaVersion: number }).schemaVersion} > ${AGENT_SCHEMA_VERSION}) — NOT loaded. ` +
             "Restore the pre-update snapshot with `autonomos rollback`, or update autonomOS again.",
         );
-        newerSchemaSkipped.push(entry);
         continue;
       }
       // Backfill `provider` for agent files that predate the field so the

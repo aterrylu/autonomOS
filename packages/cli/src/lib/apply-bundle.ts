@@ -135,6 +135,9 @@ export async function restartDaemonAfterSwap(
      * restart the stale loaded definition). No-op difference on Linux.
      */
     reloadUnit?: boolean;
+    /** Called once the supervisor accepted the restart, as the health gate
+     *  starts (the in-app flow reports its "health_check" phase here). */
+    onRestarted?: () => void;
   } = {},
 ): Promise<RestartOutcome> {
   const svc = findInstalledService();
@@ -167,6 +170,7 @@ export async function restartDaemonAfterSwap(
       }
       return { kind: "restart-failed" };
     }
+    opts.onRestarted?.();
     const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs);
     return healthy ? { kind: "verified" } : { kind: "not-verified" };
   }

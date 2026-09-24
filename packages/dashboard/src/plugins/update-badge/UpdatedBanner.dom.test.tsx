@@ -94,6 +94,19 @@ describe("UpdatedBanner", () => {
     expect(screen.queryByTestId("updated-banner")).toBeNull();
   });
 
+  it("an agent check that never reports back is amber, not an all-clear", async () => {
+    verifyTiming.maxWaitMs = 40;
+    status = doneRecord(); // snapshot taken, verification never written
+    const banner = await renderWith({
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+    });
+    await vi.waitFor(() =>
+      expect(banner.textContent).toContain("didn't report back"),
+    );
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+  });
+
   describe("durable problem warning (no flag: reload, second tab)", () => {
     const withProblem = () =>
       doneRecord({

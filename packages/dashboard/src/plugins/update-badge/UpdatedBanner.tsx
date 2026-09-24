@@ -154,7 +154,9 @@ export function UpdatedBanner() {
 
   const problems =
     verify.kind === "done" ? (verify.record.verification?.problems ?? []) : [];
-  const tone = problems.length > 0 ? AMBER : GREEN;
+  // A check that never reported back is not an "all good" either.
+  const attention = problems.length > 0 || verify.kind === "timeout";
+  const tone = attention ? AMBER : GREEN;
 
   let headline: string;
   let details: (string | false)[] = [];
@@ -203,11 +205,11 @@ export function UpdatedBanner() {
         color: page.fg,
       }}
       data-testid="updated-banner"
-      data-tone={tone === AMBER ? "attention" : "ok"}
+      data-tone={attention ? "attention" : "ok"}
     >
       <output className="flex min-h-8 items-center justify-between gap-3 px-4 py-1.5">
         <span className="flex items-center gap-2">
-          <Icon path={problems.length > 0 ? WARN : CHECK} color={tone} />
+          <Icon path={attention ? WARN : CHECK} color={tone} />
           <span>
             <span className="font-semibold">{headline}</span>
             {detailText && ` ${detailText}`}

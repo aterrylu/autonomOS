@@ -20,10 +20,15 @@ import {
 } from "@autonomos/server/snapshots.js";
 import { findInstalledService, stopService } from "./service-control.js";
 
-async function stopDaemonForRestore(): Promise<void> {
+/** Stop the daemon and wait for it to be gone. Returns the pid that is
+ *  still alive when it didn't stop — restoring under a live daemon would let
+ *  it re-persist its in-memory records over the restored ones. */
+async function stopDaemonForRestore(): Promise<number | null> {
   const svc = findInstalledService();
   if (svc) {
-    stopService(svc); // failure = already stopped; the restore proceeds either way
+    // A failed stop is judged by the liveness wait below, not the exit code
+    // (stopping an already-stopped unit also "fails").
+    stopService(svc);
   } else {
     const pid = readPidFile();
     if (pid && isPidAlive(pid.pid)) {
@@ -37,25 +42,29 @@ async function stopDaemonForRestore(): Promise<void> {
   // Give the daemon a moment to finish its shutdown writes before we swap
   // state under it.
   const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  for (;;) {
     const pid = readPidFile();
-    if (!pid || !isPidAlive(pid.pid)) return;
+    if (!pid || !isPidAlive(pid.pid)) return null;
+    if (Date.now() >= deadline) return pid.pid;
     await new Promise((r) => setTimeout(r, 250));
   }
 }
 
 export type StateRestoreResult =
-  | { restored: true; snapshot: SnapshotManifest }
+  | { restored: true; snapshot: SnapshotManifest; saved: SnapshotManifest }
   | { restored: false; reason: string };
 
 /**
  * Stop the daemon and restore the snapshot that pairs with `version` (the
- * newest one taken FROM it), or the explicit `snapshotId`. With no matching
- * snapshot (installs updated before snapshots existed) the rollback is
- * code-only and the caller says so — never silently.
+ * newest one taken FROM it), or the explicit `snapshotId`. The live state —
+ * written by `liveVersion` — is saved as its own snapshot first, so nothing
+ * the newer version wrote is lost. With no matching snapshot (installs
+ * updated before snapshots existed) the rollback is code-only and the caller
+ * says so — never silently.
  */
 export async function restoreStateFor(
   version: string,
+  liveVersion: string,
   snapshotId?: string,
 ): Promise<StateRestoreResult> {
   const snap = snapshotId ? { id: snapshotId } : snapshotForVersion(version);
@@ -65,9 +74,16 @@ export async function restoreStateFor(
       reason: `no snapshot was taken when v${version} was left (it predates snapshots) — agent records are left as they are`,
     };
   }
-  await stopDaemonForRestore();
+  const alive = await stopDaemonForRestore();
+  if (alive !== null) {
+    return {
+      restored: false,
+      reason: `the daemon (pid ${alive}) didn't stop, so its state was not touched`,
+    };
+  }
   try {
-    return { restored: true, snapshot: restoreSnapshot(snap.id) };
+    const { restored, saved } = restoreSnapshot(snap.id, liveVersion);
+    return { restored: true, snapshot: restored, saved };
   } catch (err) {
     return {
       restored: false,

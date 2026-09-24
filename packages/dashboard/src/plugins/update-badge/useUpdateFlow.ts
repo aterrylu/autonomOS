@@ -151,6 +151,18 @@ export function useUpdateFlow(enabled: boolean) {
           setView("closed");
           return;
         default:
+          // Non-terminal but no longer live: the job died without a final
+          // write (or never started). Say so instead of following it forever.
+          if (!isLiveRun(rec)) {
+            setRecord({
+              ...rec,
+              phase: "failed",
+              message: `The ${rec.kind === "rollback" ? "restore" : "update"} job stopped reporting at "${rec.phase}". It may have died on the host — check autonomos status there.`,
+            });
+            setTracking("none");
+            setReconnectStart(null);
+            setView("failed");
+          }
           return;
       }
     },
@@ -213,7 +225,9 @@ export function useUpdateFlow(enabled: boolean) {
         if (isOurs(rec)) handleRecord(rec, s.current);
       } catch (err) {
         if (!alive) return;
-        if (is401(err) && tracking === "running") {
+        // Signed out (token rotated) while armed or running: stop polling a
+        // session that will never answer, and say why.
+        if (is401(err)) {
           setTracking("none");
           setView("authRejected");
           return;

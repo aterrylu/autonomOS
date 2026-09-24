@@ -22,7 +22,7 @@
 // the two writers never race on the file (read-merge-write, atomic).
 
 import { listAgents } from "./agents/store.js";
-import { listSnapshots } from "./snapshots.js";
+import { listSnapshots, type SnapshotAgent } from "./snapshots.js";
 import {
   advanceUpgradeStatus,
   readUpgradeStatus,
@@ -33,7 +33,7 @@ import { getServerVersion } from "./version.js";
 
 /** Pure comparison — exported for tests. */
 export function verifyAgainstBaseline(
-  baseline: ReturnType<typeof listSnapshots>[number]["agents"],
+  baseline: SnapshotAgent[],
   live: ReturnType<typeof listAgents>,
 ): UpgradeVerification["problems"] {
   const byId = new Map(live.map((a) => [a.id, a]));
@@ -100,7 +100,12 @@ export function startPostUpgradeVerification(): void {
     const rec = readUpgradeStatus(path);
     if (!rec || rec.verification) return void clearInterval(poll);
     if (rec.phase !== "done") {
-      if (Date.now() > deadline) clearInterval(poll);
+      if (Date.now() > deadline) {
+        clearInterval(poll);
+        console.warn(
+          `[upgrade] post-update verification skipped: the update job never reported done (last phase: ${rec.phase})`,
+        );
+      }
       return;
     }
     clearInterval(poll);

@@ -65,11 +65,12 @@ type Deps = {
   launch?: (target: string) => LaunchResult;
   now?: () => number;
 };
-let deps: Required<Deps> = {
+const DEFAULT_DEPS: Required<Deps> = {
   busy: listBusyAgents,
   launch: (t) => launchUpgradeJob(t),
   now: () => Date.now(),
 };
+let deps: Required<Deps> = { ...DEFAULT_DEPS };
 
 /** One scheduler step. Exported for tests (drive time explicitly). */
 export function tickArmedUpgrade(): LaunchResult | null {
@@ -126,9 +127,5 @@ export function _setSchedulerDepsForTesting(d: Deps): void {
 }
 export function _resetSchedulerForTesting(): void {
   disarmUpgrade();
-  deps = {
-    busy: listBusyAgents,
-    launch: (t) => launchUpgradeJob(t),
-    now: () => Date.now(),
-  };
+  deps = { ...DEFAULT_DEPS };
 }

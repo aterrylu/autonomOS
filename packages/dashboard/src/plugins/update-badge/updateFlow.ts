@@ -20,14 +20,19 @@ export const TERMINAL_PHASES: ReadonlySet<UpgradePhase> = new Set([
   "up_to_date",
 ]);
 
-/** Mirrors the server's IN_FLIGHT_STALE_MS: a non-terminal record older than
- *  this is a job that died without a final write, not a live run. */
+/** Mirror the server's isUpgradeInFlight bounds: a non-terminal record older
+ *  than this is a job that died without a final write, not a live run — and
+ *  one still at "launching" after LAUNCH_STALE_MS never started at all. */
 export const IN_FLIGHT_STALE_MS = 15 * 60 * 1000;
+export const LAUNCH_STALE_MS = 2 * 60 * 1000;
 
 export function isLiveRun(rec: UpgradeStatusRecord | null): boolean {
   if (!rec || TERMINAL_PHASES.has(rec.phase)) return false;
-  const t = Date.parse(rec.updatedAt);
-  return Number.isFinite(t) && Date.now() - t < IN_FLIGHT_STALE_MS;
+  const age = Date.now() - Date.parse(rec.updatedAt);
+  if (!Number.isFinite(age)) return false;
+  return (
+    age < (rec.phase === "launching" ? LAUNCH_STALE_MS : IN_FLIGHT_STALE_MS)
+  );
 }
 
 /** Numeric semver-ish compare ("0.10.0" > "0.9.3"); pre-release tags sort

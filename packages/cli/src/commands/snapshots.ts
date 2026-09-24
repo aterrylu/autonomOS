@@ -9,6 +9,8 @@ import { join } from "node:path";
 import {
   createSnapshot,
   listSnapshots,
+  pruneSnapshots,
+  SNAPSHOT_RETENTION,
   snapshotsDir,
 } from "@autonomos/server/snapshots.js";
 import { getServerVersion } from "@autonomos/server/version.js";
@@ -22,6 +24,8 @@ export async function runSnapshotsCommand(
     // running version's state, taken by the running version's own code.
     try {
       const m = createSnapshot(getServerVersion(), null);
+      // install.sh swaps a bundle in right after this, so it counts.
+      pruneSnapshots(undefined, SNAPSHOT_RETENTION, [m.id]);
       console.log(join(snapshotsDir(), m.id));
       return 0;
     } catch (err) {

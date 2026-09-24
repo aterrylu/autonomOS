@@ -36,7 +36,7 @@ import {
   IDLE_WINDOW_MS,
   listBusyAgents,
 } from "../upgradeScheduler.js";
-import { readUpgradeStatus, TERMINAL_PHASES } from "../upgradeStatus.js";
+import { isUpgradeInFlight, readUpgradeStatus } from "../upgradeStatus.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();
@@ -91,11 +91,8 @@ systemRouter.get("/releases", (c) => {
 // A run is "in flight" while its record is non-terminal and fresh. The
 // staleness bound keeps a job that died without a final write (machine
 // lost power mid-update) from wedging the button forever.
-const IN_FLIGHT_STALE_MS = 15 * 60 * 1000;
 function upgradeInFlight(): boolean {
-  const rec = readUpgradeStatus();
-  if (!rec || TERMINAL_PHASES.has(rec.phase)) return false;
-  return Date.now() - Date.parse(rec.updatedAt) < IN_FLIGHT_STALE_MS;
+  return isUpgradeInFlight(readUpgradeStatus());
 }
 
 systemRouter.get("/upgrade", (c) => {
@@ -199,10 +196,19 @@ function rollbackTarget(): {
         : readBundleVersion(`${install.bundleDir}.previous`);
     if (!version || version === "unknown") return null;
     return { version, snapshotId: snapshotForVersion(version)?.id ?? null };
-  } catch {
+  } catch (err) {
+    // Dev checkouts land here by design; a corrupt install.json also does,
+    // and would otherwise read as "nothing to restore" with no trace.
+    if (!warnedRollbackTarget) {
+      warnedRollbackTarget = true;
+      console.warn(
+        `[upgrade] no Restore target: ${err instanceof Error ? err.message : err}`,
+      );
+    }
     return null;
   }
 }
+let warnedRollbackTarget = false;
 
 systemRouter.get("/snapshots", (c) => {
   return c.json({

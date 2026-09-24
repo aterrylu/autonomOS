@@ -29,6 +29,8 @@ import { getConfigDir } from "./configDir.js";
 import { upgradeStatusPath, writeUpgradeStatus } from "./upgradeStatus.js";
 import { getServerVersion } from "./version.js";
 
+type ProcLike = Pick<NodeJS.Process, "execPath" | "execArgv" | "argv" | "env">;
+
 export type Supervisor =
   | { kind: "systemd" }
   | { kind: "launchd"; label: string }
@@ -135,7 +137,7 @@ type LaunchOpts = {
   supervisor?: Supervisor;
   run?: Runner;
   configDir?: string;
-  proc?: Pick<NodeJS.Process, "execPath" | "execArgv" | "argv" | "env">;
+  proc?: ProcLike;
 };
 
 /** The in-app update: `autonomos upgrade --version=<target>` out of band. */
@@ -170,7 +172,7 @@ function launchJob(
     supervisor?: Supervisor;
     run?: Runner;
     configDir?: string;
-    proc?: Pick<NodeJS.Process, "execPath" | "execArgv" | "argv" | "env">;
+    proc?: ProcLike;
   } = {},
 ): LaunchResult {
   const supervisor = opts.supervisor ?? detectSupervisor();
@@ -185,19 +187,45 @@ function launchJob(
     };
   }
 
-  const now = new Date().toISOString();
-  writeUpgradeStatus(
-    {
-      phase: "launching",
+  try {
+    const now = new Date().toISOString();
+    writeUpgradeStatus(
+      {
+        phase: "launching",
+        kind,
+        from: getServerVersion(),
+        to: targetVersion,
+        startedAt: now,
+        updatedAt: now,
+      },
+      statusFile,
+    );
+    return startJob(supervisor, verbArgs, kind, targetVersion, statusFile, {
+      run,
+      configDir,
+      proc: opts.proc,
+    });
+  } catch (err) {
+    // A throw here (status/plist write, spawn) must still end on a record,
+    // or the dashboard would follow a job that never started.
+    return fail(
+      statusFile,
+      `couldn't start the ${kind === "rollback" ? "restore" : "update"} job: ${err instanceof Error ? err.message : err}`,
       kind,
-      from: getServerVersion(),
-      to: targetVersion,
-      startedAt: now,
-      updatedAt: now,
-    },
-    statusFile,
-  );
+      targetVersion,
+    );
+  }
+}
 
+function startJob(
+  supervisor: Exclude<Supervisor, { kind: "none" }>,
+  verbArgs: readonly string[],
+  kind: "upgrade" | "rollback",
+  targetVersion: string | null,
+  statusFile: string,
+  opts: { run: Runner; configDir: string; proc?: ProcLike },
+): LaunchResult {
+  const { run, configDir } = opts;
   const plan = buildLaunchPlan(verbArgs, statusFile, opts.proc);
   const stamp = Date.now();
 
@@ -217,7 +245,12 @@ function launchJob(
     ];
     const r = run("systemd-run", args);
     if (r.status !== 0) {
-      return fail(statusFile, `systemd-run failed: ${r.stderr.trim()}`);
+      return fail(
+        statusFile,
+        `systemd-run failed: ${r.stderr.trim()}`,
+        kind,
+        targetVersion,
+      );
     }
     return { ok: true };
   }
@@ -253,23 +286,41 @@ function launchJob(
   run("launchctl", ["bootout", `gui/${uid}/${label}`]);
   const r = run("launchctl", ["bootstrap", `gui/${uid}`, plistPath]);
   if (r.status !== 0) {
-    return fail(statusFile, `launchctl bootstrap failed: ${r.stderr.trim()}`);
+    return fail(
+      statusFile,
+      `launchctl bootstrap failed: ${r.stderr.trim()}`,
+      kind,
+      targetVersion,
+    );
   }
   return { ok: true };
 }
 
-function fail(statusFile: string, message: string): LaunchResult {
+function fail(
+  statusFile: string,
+  message: string,
+  kind: "upgrade" | "rollback",
+  to: string | null,
+): LaunchResult {
   const now = new Date().toISOString();
-  writeUpgradeStatus(
-    {
-      phase: "failed",
-      from: getServerVersion(),
-      to: null,
-      message,
-      startedAt: now,
-      updatedAt: now,
-    },
-    statusFile,
-  );
+  try {
+    writeUpgradeStatus(
+      {
+        phase: "failed",
+        kind,
+        from: getServerVersion(),
+        to,
+        message,
+        startedAt: now,
+        updatedAt: now,
+      },
+      statusFile,
+    );
+  } catch (err) {
+    // The caller still gets the failure in its HTTP response.
+    console.error(
+      `[upgrade] could not record the launch failure: ${err instanceof Error ? err.message : err}`,
+    );
+  }
   return { ok: false, message };
 }

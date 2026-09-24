@@ -17,30 +17,27 @@ import {
 } from "@autonomos/server/installInfo.js";
 import { performSourceRollback } from "@autonomos/server/sourceUpgrade.js";
 import { performRollback } from "@autonomos/server/upgrade.js";
-import { advanceUpgradeStatus } from "@autonomos/server/upgradeStatus.js";
 import { restartDaemonAfterSwap } from "../lib/apply-bundle.js";
 import { restoreStateFor } from "../lib/state-pair.js";
+import {
+  makeReporter,
+  type Reporter,
+  statusFileArg,
+  withTerminalStatus,
+} from "../lib/status-report.js";
 
 export async function runRollbackCommand(
   argv: readonly string[] = [],
 ): Promise<number> {
   // --status-file: the in-app Restore (ADR-101) runs this same command as an
   // out-of-band job and follows it through the status file.
-  const statusFile = argv
-    .find((a) => a.startsWith("--status-file="))
-    ?.slice("--status-file=".length);
-  const report = (
-    phase: "restarting" | "done" | "failed",
-    extra: { message?: string; from?: string; to?: string } = {},
-  ) => {
-    if (!statusFile) return;
-    try {
-      advanceUpgradeStatus(statusFile, { phase, kind: "rollback", ...extra });
-    } catch {
-      // progress is cosmetic
-    }
-  };
+  const statusFile = statusFileArg(argv);
+  return withTerminalStatus(statusFile, { kind: "rollback" }, () =>
+    rollbackCommand(makeReporter(statusFile, { kind: "rollback" })),
+  );
+}
 
+async function rollbackCommand(report: Reporter): Promise<number> {
   let install: ResolvedInstall;
   try {
     install = resolveInstall();
@@ -72,10 +69,10 @@ export async function runRollbackCommand(
 
   // Code and state move together: restore the snapshot taken when this
   // version was left (daemon stopped first), then restart onto both.
-  const state = await restoreStateFor(result.to);
+  const state = await restoreStateFor(result.to, result.from);
   console.log(
     state.restored
-      ? `✓ Restored agent state from snapshots/${state.snapshot.id}.`
+      ? `✓ Restored agent state from snapshots/${state.snapshot.id}. The v${result.from} state was saved as snapshots/${state.saved.id} (rolling forward again restores it).`
       : `⚠️  Agent state not restored: ${state.reason}.`,
   );
   report("restarting", { from: result.from, to: result.to });

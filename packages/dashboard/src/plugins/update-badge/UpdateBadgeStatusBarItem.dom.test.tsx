@@ -418,6 +418,35 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
     expect(screen.queryByTestId("update-badge-armed")).toBeNull();
   });
 
+  it("a run that stops reporting ends on the failed screen instead of spinning forever", async () => {
+    let posted = false;
+    installServer({
+      "POST /api/system/upgrade": () => {
+        posted = true;
+        return json({ ok: true, launched: true });
+      },
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          status: posted
+            ? {
+                phase: "launching",
+                from: "0.6.1",
+                to: "0.7.0",
+                startedAt: "2026-09-23T10:00:00.000Z",
+                // The job never wrote again: older than the launch bound.
+                updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+              }
+            : null,
+        }),
+    });
+    await openToCheck();
+    fireEvent.click(await screen.findByTestId("update-start"));
+    expect(
+      await screen.findByText(/stopped reporting at "launching"/),
+    ).toBeInTheDocument();
+  });
+
   it("shows the terminal instructions when the daemon isn't supervised", async () => {
     installServer({
       "GET /api/system/upgrade": () =>

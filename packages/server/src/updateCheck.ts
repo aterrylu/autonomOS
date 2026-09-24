@@ -216,9 +216,17 @@ async function fetchReleaseNotes(
       return null;
     }
     const parsed = await resp.json();
-    if (!Array.isArray(parsed)) return null;
+    if (!Array.isArray(parsed)) {
+      console.warn("[update-check] release notes: unexpected response shape");
+      return null;
+    }
     list = parsed as GitHubRelease[];
-  } catch {
+  } catch (err) {
+    // The dialog falls back to "notes unavailable, view on GitHub" — the
+    // update itself is never blocked on notes. Leave a trace for diagnosis.
+    console.warn(
+      `[update-check] release notes unavailable: ${err instanceof Error ? err.message : err}`,
+    );
     return null;
   }
   const notes: ReleaseNote[] = [];

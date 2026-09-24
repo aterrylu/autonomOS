@@ -33,6 +33,8 @@ import {
 import {
   createSnapshot,
   deleteSnapshot,
+  pruneSnapshots,
+  SNAPSHOT_RETENTION,
   type SnapshotManifest,
 } from "@autonomos/server/snapshots.js";
 import {
@@ -46,10 +48,6 @@ import {
   performUpgrade,
   resolveReleaseOverrides,
 } from "@autonomos/server/upgrade.js";
-import {
-  advanceUpgradeStatus,
-  type UpgradePhase,
-} from "@autonomos/server/upgradeStatus.js";
 import { getServerVersion } from "@autonomos/server/version.js";
 import {
   expectedVersionAfterSwap,
@@ -57,6 +55,12 @@ import {
   syncSupervisorUnit,
 } from "../lib/apply-bundle.js";
 import { restoreStateFor } from "../lib/state-pair.js";
+import {
+  makeReporter,
+  type Reporter,
+  statusFileArg,
+  withTerminalStatus,
+} from "../lib/status-report.js";
 
 /**
  * Snapshot agent state BEFORE anything changes (ADR-101). Fail-safe: no
@@ -93,31 +97,6 @@ type UpgradeFlags = {
    */
   statusFile: string | undefined;
 };
-
-type Reporter = (
-  phase: UpgradePhase,
-  extra?: {
-    to?: string | null;
-    message?: string;
-    from?: string;
-    snapshotId?: string;
-  },
-) => void;
-
-function makeReporter(statusFile: string | undefined): Reporter {
-  return (phase, extra = {}) => {
-    if (!statusFile) return;
-    try {
-      advanceUpgradeStatus(statusFile, { phase, ...extra });
-    } catch (err) {
-      // Progress is cosmetic: a status-file write failure must never change
-      // the upgrade's outcome. Say so in the job log, keep going.
-      console.warn(
-        `[upgrade] could not write status file: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-  };
-}
 
 function parseFlags(argv: readonly string[]): UpgradeFlags {
   let targetVersion: string | undefined;
@@ -203,6 +182,10 @@ async function runSourceUpgradeFlow(
     return 1;
   }
 
+  // Something changed on disk: only now is this snapshot worth a retention
+  // slot (pruning at creation evicted a real one per no-op or failed try).
+  pruneSnapshots(undefined, SNAPSHOT_RETENTION, [snapshot.id]);
+
   if (result.direction === "downgrade") {
     console.log(`⚠️  DOWNGRADED ${result.from} → ${result.to} (as requested).`);
   } else {
@@ -219,6 +202,7 @@ async function runSourceUpgradeFlow(
   const { reloadUnit } = syncSupervisorUnit({ restartFollows: true });
   const outcome = await restartDaemonAfterSwap(result.to, undefined, {
     reloadUnit,
+    onRestarted: () => report("health_check"),
   });
   if (outcome.kind === "restart-failed") {
     report("failed", {
@@ -276,7 +260,7 @@ async function runSourceUpgradeFlow(
     return 1;
   }
   // Code is back; now the STATE that pairs with it (daemon stopped first).
-  const state = await restoreStateFor(rollback.to, snapshot.id);
+  const state = await restoreStateFor(rollback.to, result.to, snapshot.id);
   console.error(
     state.restored
       ? `✓ Restored agent state from snapshots/${state.snapshot.id}.`
@@ -306,6 +290,12 @@ async function runSourceUpgradeFlow(
 export async function runUpgradeCommand(
   argv: readonly string[] = [],
 ): Promise<number> {
+  return withTerminalStatus(statusFileArg(argv), { kind: "upgrade" }, () =>
+    upgradeCommand(argv),
+  );
+}
+
+async function upgradeCommand(argv: readonly string[]): Promise<number> {
   let flags: UpgradeFlags;
   try {
     flags = parseFlags(argv);
@@ -384,6 +374,10 @@ export async function runUpgradeCommand(
     return 1;
   }
 
+  // Something changed on disk: only now is this snapshot worth a retention
+  // slot (pruning at creation evicted a real one per no-op or failed try).
+  pruneSnapshots(undefined, SNAPSHOT_RETENTION, [snapshot.id]);
+
   if (result.direction === "downgrade") {
     console.log(`⚠️  DOWNGRADED ${result.from} → ${result.to} (as requested).`);
   } else {
@@ -401,7 +395,7 @@ export async function runUpgradeCommand(
   const outcome = await restartDaemonAfterSwap(
     expectedVersionAfterSwap(install.bundleDir, result.to),
     undefined,
-    { reloadUnit },
+    { reloadUnit, onRestarted: () => report("health_check") },
   );
   if (outcome.kind === "restart-failed") {
     report("failed", {
@@ -446,7 +440,7 @@ export async function runUpgradeCommand(
     return 1;
   }
   // Code is back; now the STATE that pairs with it (daemon stopped first).
-  const state = await restoreStateFor(rollback.to, snapshot.id);
+  const state = await restoreStateFor(rollback.to, result.to, snapshot.id);
   console.error(
     state.restored
       ? `✓ Restored agent state from snapshots/${state.snapshot.id}.`
