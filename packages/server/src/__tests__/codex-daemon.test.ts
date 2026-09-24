@@ -276,7 +276,7 @@ describe("codex daemon topology", () => {
       ]);
     });
 
-    it("RESUMES the prior conversation when a threadId was captured", () => {
+    it("RESUMES the prior conversation when a threadId was captured — with NO permission overrides", () => {
       const args = codexProvider.buildArgs(
         baseOptions({
           sidecarEndpoint: ENDPOINT,
@@ -284,8 +284,12 @@ describe("codex daemon topology", () => {
           providerThreadId: "thread-abc-123",
         }),
       );
-      // `codex resume <id> --remote <ep>` reattaches the persisted conversation
-      // instead of `--remote` alone (which forks a fresh empty thread).
+      // `codex resume <id> --remote <ep>` reattaches the persisted conversation.
+      // NO -s / approval_policy / bypass flag: codex 0.154 rejects any
+      // permission override on a remote resume ("Permission overrides are not
+      // supported when resuming a remote task", exit 1 — every Codex agent died
+      // on every restart). This test used to pin the bypass flag here, i.e. it
+      // pinned the bug. A resumed thread keeps its creation-time policy.
       assert.deepEqual(args, [
         "resume",
         "thread-abc-123",
@@ -293,8 +297,40 @@ describe("codex daemon topology", () => {
         ENDPOINT,
         "-c",
         "check_for_update_on_startup=false",
-        "--dangerously-bypass-approvals-and-sandbox",
       ]);
+    });
+
+    for (const mode of ["ask", "auto", "plan", "bypass"] as const) {
+      it(`resume carries no permission override in ${mode} mode`, () => {
+        const args = codexProvider.buildArgs(
+          baseOptions({
+            sidecarEndpoint: ENDPOINT,
+            permissionMode: mode,
+            providerThreadId: "thread-xyz",
+          }),
+        );
+        assert.ok(!args.includes("-s"), "no sandbox override");
+        assert.ok(
+          !args.some((a) => a.startsWith("approval_policy=")),
+          "no approval override",
+        );
+        assert.ok(
+          !args.includes("--dangerously-bypass-approvals-and-sandbox"),
+          "no bypass override",
+        );
+      });
+    }
+
+    it("a FRESH spawn still sets the thread's permissions (overrides stay on create)", () => {
+      const ask = codexProvider.buildArgs(
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "ask" }),
+      );
+      assert.ok(ask.includes("-s") && ask.includes("danger-full-access"));
+      assert.ok(ask.includes('approval_policy="on-request"'));
+      const bypass = codexProvider.buildArgs(
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "bypass" }),
+      );
+      assert.ok(bypass.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
     it("does NOT use the resume form on a first spawn (no threadId yet)", () => {

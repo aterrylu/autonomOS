@@ -30,6 +30,7 @@ import {
   type SidecarSpec,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
+import { codexThreadHasRollout } from "../gateway/codexRollout.js";
 import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
@@ -252,6 +253,26 @@ export const codexProvider: AgentProvider = {
     };
   },
 
+  // Thread-resume pre-flight: resume only if codex actually SAVED this thread.
+  // A never-prompted agent's thread has no rollout (written lazily on the first
+  // turn) → start fresh instead of a doomed "No saved session found" resume.
+  hasResumableThread(options: ResolvedSpawnOptions): boolean {
+    return (
+      !!options.providerThreadId &&
+      codexThreadHasRollout(options.providerThreadId)
+    );
+  },
+
+  // A resumed thread keeps the policy it was created with (codex rejects
+  // overrides on a remote resume), so a mode change whose Codex policy differs
+  // cannot take effect on resume.
+  resumeCannotApplyModeChange(
+    from: PermissionMode,
+    to: PermissionMode,
+  ): boolean {
+    return codexApprovalPolicy(from) !== codexApprovalPolicy(to);
+  },
+
   buildArgs(options: ResolvedSpawnOptions): string[] {
     // Daemon model: the visible TUI is a thin client of the sidecar daemon.
     if (options.sidecarEndpoint) {
@@ -270,6 +291,17 @@ export const codexProvider: AgentProvider = {
           ]
         : ["--remote", options.sidecarEndpoint];
       args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
+      // RESUME: pass NO permission overrides. Codex rejects them on a remote
+      // resume ("Permission overrides are not supported when resuming a remote
+      // task", exit 1) — every Codex agent died on every restart. It isn't needed
+      // either: a resumed thread keeps the approval/sandbox policy it was created
+      // with (verified per mode via the recorded turn_context, and it ignores the
+      // daemon's -c on resume). A mode CHANGE on resume therefore can't apply —
+      // see resumeCannotApplyModeChange below and the runtime's handling.
+      if (options.providerThreadId) {
+        if (options.prompt) args.push(options.prompt);
+        return args;
+      }
       // The TUI creates/owns the thread, so ITS sandbox/approval flags govern the
       // thread (the daemon-side -c is necessary but not sufficient — both layers
       // must say danger-full-access or Codex falls back to workspace-write and

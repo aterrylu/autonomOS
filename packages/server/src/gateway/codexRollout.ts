@@ -104,6 +104,15 @@ function findRolloutPath(threadId: string): string | null {
   return bestPath;
 }
 
+/** Whether codex has SAVED anything for this thread — i.e. a rollout file
+ *  exists. Codex writes the rollout lazily on the thread's first turn, so a
+ *  thread created by a never-prompted agent has none and `codex resume <id>`
+ *  fails with "No saved session found". Used by the Codex resume pre-flight.
+ *  Never throws. */
+export function codexThreadHasRollout(threadId: string): boolean {
+  return findRolloutPath(threadId) !== null;
+}
+
 /** Read the last `TAIL_BYTES` of a file as UTF-8, or null on any error. The
  *  leading (possibly mid-line) fragment is fine — the line scan tolerates it. */
 function readTail(path: string): string | null {
