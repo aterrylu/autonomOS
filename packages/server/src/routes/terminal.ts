@@ -1,5 +1,5 @@
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
-import type { IDisposable } from "node-pty";
+import type { IDisposable, IPty } from "node-pty";
 import { getAttachment as getSession } from "../agents/runtime.js";
 
 interface PtyBinding {
@@ -7,6 +7,9 @@ interface PtyBinding {
   disposable: IDisposable;
   /** Tears down the coalescing flush timer (no-op when coalescing is off). */
   closeStream?: () => void;
+  /** The PTY instance this socket streams from. A restart reuses the session
+   *  id with a NEW PTY, so exit bookkeeping must key on the instance. */
+  pty: IPty;
 }
 
 const bindings = new WeakMap<WSContext, PtyBinding>();
@@ -204,11 +207,18 @@ export function buildReplayFrames(
   return frames;
 }
 
-/** Track all WebSocket clients per session so we can notify on PTY exit */
-const sessionClients = new Map<string, Set<WSContext>>();
+/** WebSocket clients per PTY INSTANCE, so a PTY's exit notifies only its own
+ *  viewers. Keyed by the instance, not the session id: a restart (kill →
+ *  attach) reuses the id with a NEW PTY, and the old PTY's exit fires ~1s after
+ *  the kill, when the restarted pane's socket is already bound to the new PTY.
+ *  Keyed by id, that late exit closed the new viewer with 4010 and the pane
+ *  showed stale output until a remount (#362, Terry's live gate). */
+const ptyClients = new WeakMap<IPty, Set<WSContext>>();
 
-/** Sessions that already have an onExit handler registered */
-const exitHandlerRegistered = new Set<string>();
+/** PTY instances that already have an onExit handler registered. Per instance
+ *  for the same reason: keyed by id, a new PTY that connected before the old
+ *  one's exit fired never got a handler of its own. */
+const exitHandlerRegistered = new WeakSet<IPty>();
 
 const MIN_COLS = 2;
 const MAX_COLS = 500;
@@ -266,22 +276,23 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         });
         const disposable = managed.pty.onData(forwarder.onData);
 
+        const pty = managed.pty;
         bindings.set(ws, {
           sessionId,
+          pty,
           disposable,
           closeStream: forwarder.close,
         });
 
-        // Track this client for PTY exit notification
-        if (!sessionClients.has(sessionId))
-          sessionClients.set(sessionId, new Set());
-        sessionClients.get(sessionId)!.add(ws);
+        // Track this client for exit notification of THIS PTY instance
+        if (!ptyClients.has(pty)) ptyClients.set(pty, new Set());
+        ptyClients.get(pty)!.add(ws);
 
-        // Register onExit once per session to avoid duplicate handlers
-        if (!exitHandlerRegistered.has(sessionId)) {
-          exitHandlerRegistered.add(sessionId);
-          managed.pty.onExit(() => {
-            const tracked = sessionClients.get(sessionId);
+        // Register onExit once per PTY instance to avoid duplicate handlers
+        if (!exitHandlerRegistered.has(pty)) {
+          exitHandlerRegistered.add(pty);
+          pty.onExit(() => {
+            const tracked = ptyClients.get(pty);
             if (tracked) {
               for (const client of tracked) {
                 // Flush any coalesced tail while the socket is still OPEN — the
@@ -297,8 +308,7 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
                 }
               }
             }
-            sessionClients.delete(sessionId);
-            exitHandlerRegistered.delete(sessionId);
+            ptyClients.delete(pty);
           });
         }
       },
@@ -375,6 +385,6 @@ function cleanupBinding(ws: WSContext): void {
   binding.disposable.dispose();
   binding.closeStream?.();
   bindings.delete(ws);
-  // Remove from session client tracking
-  sessionClients.get(binding.sessionId)?.delete(ws);
+  // Remove from its PTY's client tracking
+  ptyClients.get(binding.pty)?.delete(ws);
 }
