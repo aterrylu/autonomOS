@@ -306,6 +306,49 @@ describe("getRateLimits — spend meter only for spend-metered accounts", () => 
     }
   });
 
+  it("a Max org on a pasted session key keeps the #387 diagnosis, not a spend meter (parity with OAuth)", async () => {
+    writeFileSync(
+      join(TEST_DIR, "settings.json"),
+      JSON.stringify({
+        autoDetectClaudeAccount: false,
+        claudeSessionKey: "sk-ant-sid01-max",
+      }),
+    );
+    try {
+      const d = await getRateLimits(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.includes("/bootstrap")
+            ? {
+                account: {
+                  memberships: [
+                    {
+                      organization: {
+                        uuid: "org-max-0001",
+                        capabilities: ["chat", "claude_max"],
+                      },
+                    },
+                  ],
+                },
+              }
+            : {
+                five_hour: null,
+                seven_day: null,
+                extra_usage: { monthly_limit: 5000, used_credits: 1200 },
+              },
+      }));
+      assert.equal(
+        d.spendLimit,
+        undefined,
+        "a Max org never shows a spend meter",
+      );
+      assert.equal(d.diagnosis?.code, "no_rolling_limits");
+    } finally {
+      rmSync(join(TEST_DIR, "settings.json"), { force: true });
+    }
+  });
+
   it("Terry's Max payload is unchanged: windows, no spend meter", async () => {
     serve(MAX_HOME);
     const d = await getRateLimits();

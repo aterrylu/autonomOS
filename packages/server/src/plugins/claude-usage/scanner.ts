@@ -192,7 +192,25 @@ const CACHE_TTL_429 = 5 * 60_000;
  * old account's org — making the NEW key's very first read query the wrong
  * org, 403, and report a valid key as "expired" (in the one read the user is
  * watching after a paste). */
-let cachedOrgId: { orgId: string; fp: string } | null = null;
+let cachedOrgId: {
+  orgId: string;
+  fp: string;
+  /** The chosen org's bootstrap capabilities, when bootstrap resolved it (a
+   *  pasted full cookie with lastActiveOrg carries none). */
+  caps?: string[];
+} | null = null;
+
+/** Capabilities that mark a claude.ai WINDOW plan (Pro / Max). The same
+ *  vocabulary selectUsageOrg already relies on ("claude_max"). */
+const WINDOW_PLAN_CAPS = new Set(["claude_max", "claude_pro"]);
+
+/** True when the org behind this session key is a Pro/Max window plan — the
+ *  session-key twin of the OAuth path's subscriptionType guard: a windowless
+ *  answer there is a #387 fault to diagnose, not a spend meter to show. */
+function isWindowPlanOrg(fp: string): boolean {
+  const caps = cachedOrgId?.fp === fp ? cachedOrgId.caps : undefined;
+  return caps?.some((c) => WINDOW_PLAN_CAPS.has(c)) ?? false;
+}
 
 /**
  * Dev/QA usage override. When set, {@link getRateLimits} returns this snapshot
@@ -445,7 +463,9 @@ export async function fetchOrgId(
         );
         return { orgId: null, status: "no_org" };
       }
-      cachedOrgId = { orgId, fp };
+      const caps = memberships.find((m) => m.organization?.uuid === orgId)
+        ?.organization?.capabilities;
+      cachedOrgId = { orgId, fp, caps };
       return { orgId, status: "ok" };
     })();
     bootstrapFetchLog.success();
@@ -992,8 +1012,10 @@ async function fetchCookieRateLimits(
     fetchedAt: new Date().toISOString(),
   };
   // A spend-metered account on a pasted session key gets its spend meter too
-  // (the web body omits extra_usage.is_enabled, hence `web`).
-  if (!hasWindows(data)) {
+  // (the web body omits extra_usage.is_enabled, hence `web`) — but not a
+  // Pro/Max org, whose windowless answer keeps the #387 diagnosis (the same
+  // guard the OAuth path applies via subscriptionType).
+  if (!hasWindows(data) && !isWindowPlanOrg(fp)) {
     const spend = mapSpendLimit(body as unknown as OAuthUsageRaw, {
       web: true,
     });
