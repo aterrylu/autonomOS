@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
 import { enrichAgent } from "../agents/enrich.js";
 import {
+  getAttachment,
   isAgentLive,
   killAttachment,
   restartAllAttachments,
@@ -75,6 +76,22 @@ export const agentsRouter = new Hono();
  *  the PER-AGENT token (file-delivered at spawn) — and grants exactly one
  *  thing: the agent's own hierarchy view. requireAuth exempts this path
  *  shape; the deny-by-default lives HERE via verifyAgentToken. */
+/** Terminal I/O recency for the dashboard's per-pane input watchdog: how long
+ *  ago the PTY last received a terminal-socket keystroke and last produced
+ *  output. AGES, not timestamps — the dashboard compares them against its own
+ *  "keystroke sent N ms ago", and ages survive browser/server clock skew.
+ *  `null` = never. 404 when the agent has no live PTY. */
+agentsRouter.get("/:id/io", (c) => {
+  const managed = getAttachment(c.req.param("id") as UUID);
+  if (!managed) return c.json({ error: "not live" }, 404);
+  const now = Date.now();
+  const age = (t: number | undefined) => (t === undefined ? null : now - t);
+  return c.json({
+    inputAgeMs: age(managed.lastInputAt),
+    outputAgeMs: age(managed.lastOutputAt),
+  });
+});
+
 agentsRouter.get("/:id/self", (c) => {
   const id = c.req.param("id");
   if (!verifyAgentToken(id, c.req.header("X-Agent-Token")))

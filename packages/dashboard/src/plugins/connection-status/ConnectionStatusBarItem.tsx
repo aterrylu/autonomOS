@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { agentsSocket, type TransportHealth } from "../../api/agentsSocket";
 import { ApiError, request } from "../../api/core";
 import { THEMES, useStore } from "../../store";
 
@@ -19,10 +20,20 @@ const FAILURES_BEFORE_DISCONNECTED = 2;
 // Don't let a hung request stall a poll cycle — abort and treat as a failure.
 const PROBE_TIMEOUT_MS = 4_000;
 
-function useServerHealth(): ServerHealth {
+/**
+ * FALLBACK health: an HTTP poll of /api/host. Authoritative only until the
+ * /ws/agents push socket has opened once this page load — after that the
+ * socket's 5s heartbeat is the source of truth (see useTransportHealth),
+ * because this poll's 20s cadence + 2-failure debounce took up to ~30s to
+ * notice a dead server and could never notice a stuck agent. Kept for the
+ * case where the socket can never open (a proxy that refuses WS upgrades),
+ * so the indicator still reflects reachability.
+ */
+function useServerHealth(enabled: boolean): ServerHealth {
   const [health, setHealth] = useState<ServerHealth>("checking");
 
   useEffect(() => {
+    if (!enabled) return;
     let mounted = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
@@ -99,37 +110,93 @@ function useServerHealth(): ServerHealth {
       mounted = false;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [enabled]);
 
   return health;
 }
 
-function classify(health: ServerHealth): {
-  color: string;
-  label: string;
-  pulse: boolean;
-} {
-  switch (health) {
+/** The push socket's health, plus seconds since its last frame (re-read every
+ *  second while not connected, so "last heard Ns ago" counts up). Observes
+ *  via onHealthChange, which does NOT start the socket — the push bridge
+ *  owns its lifecycle. */
+function useTransportHealth(): { health: TransportHealth; silentSec: number } {
+  const [health, setHealth] = useState<TransportHealth>(
+    () => agentsSocket.getSnapshot().health,
+  );
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    setHealth(agentsSocket.getSnapshot().health);
+    return agentsSocket.onHealthChange(setHealth);
+  }, []);
+
+  const counting = health === "reconnecting" || health === "disconnected";
+  useEffect(() => {
+    if (!counting) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [counting]);
+
+  const last = agentsSocket.lastHeardAt();
+  // Date.now() on the transition render, not the `now` state: that state was
+  // set when counting last stopped (or at mount), so the first "Reconnecting"
+  // frame would read "last heard 0s ago" until the interval's first tick.
+  const at = counting ? Math.max(now, Date.now()) : now;
+  const silentSec = last > 0 ? Math.max(0, Math.round((at - last) / 1000)) : 0;
+  return { health, silentSec };
+}
+
+const GREEN = "#3fb950";
+const AMBER = "#d29922";
+const RED = "#ea6c73";
+
+export function classify(
+  transport: TransportHealth,
+  poll: ServerHealth,
+  silentSec: number,
+): { color: string; label: string; pulse: boolean } {
+  switch (transport) {
     case "connected":
-      return { color: "#3fb950", label: "Connected", pulse: false };
-    case "checking":
-      return { color: "#d29922", label: "Checking...", pulse: true };
+      return { color: GREEN, label: "Connected", pulse: false };
+    case "reconnecting":
+      return {
+        color: AMBER,
+        label: `Reconnecting… last heard ${silentSec}s ago`,
+        pulse: true,
+      };
+    case "disconnected":
+      return { color: RED, label: "Disconnected · retrying", pulse: false };
     default:
-      return { color: "#ea6c73", label: "Disconnected", pulse: false };
+      // "connecting": the socket has never opened this page load — the HTTP
+      // poll is the only evidence we have.
+      switch (poll) {
+        case "connected":
+          return { color: GREEN, label: "Connected", pulse: false };
+        case "checking":
+          return { color: AMBER, label: "Checking...", pulse: true };
+        default:
+          return { color: RED, label: "Disconnected", pulse: false };
+      }
   }
 }
 
 export function ConnectionStatusBarItem() {
-  const health = useServerHealth();
+  const { health: transport, silentSec } = useTransportHealth();
+  const poll = useServerHealth(transport === "connecting");
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const { color, label, pulse } = classify(health);
+  const { color, label, pulse } = classify(transport, poll, silentSec);
 
   return (
     <span
       className="flex items-center gap-1.5"
       style={{ color: page.statusFg }}
-      title={`Server: ${label}`}
+      title={
+        transport === "disconnected"
+          ? `Server: no response for ${silentSec}s — retrying`
+          : `Server: ${label}`
+      }
     >
       <span
         className="inline-block rounded-full"

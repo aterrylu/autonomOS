@@ -10,9 +10,45 @@ interface PtyBinding {
   /** The PTY instance this socket streams from. A restart reuses the session
    *  id with a NEW PTY, so exit bookkeeping must key on the instance. */
   pty: IPty;
+  /** Present when the client identified itself (see {@link parseFence}). */
+  fence?: { key: string; gen: number; dropped: number };
 }
 
 const bindings = new WeakMap<WSContext, PtyBinding>();
+
+// ── Superseded-socket input fence ──────────────────────────────────────
+// A dashboard that loses its link force-reconnects a pane on a NEW socket.
+// Keystrokes it had already sent on the OLD, half-open socket sit in the
+// network (or the client kernel's retransmit queue) and are delivered when the
+// link recovers — measured on a paused-proxy rig: the abandoned socket's
+// "STRANDED" text reached the agent after recovery, a silent late burst that
+// can double-submit a prompt the user already retyped. The browser can't
+// discard them (close() on a half-open socket just sits in CLOSING).
+//
+// So the client tags each terminal socket with a per-page `client` id and a
+// per-pane monotonically increasing `gen` (URL query — deliberately NOT a
+// message on the socket: an unknown JSON message falls through to pty.write,
+// so a new control message would be typed into the agent on an older server).
+// Once a newer generation from the same client has opened, input arriving on
+// an older one is dropped and that socket is closed. Untagged sockets (older
+// dashboards, scripts) are never fenced.
+const latestGen = new Map<string, { gen: number; open: number }>();
+
+function parseFence(
+  sessionId: string,
+  client: string | undefined,
+  gen: string | undefined,
+): { key: string; gen: number } | undefined {
+  if (!client || !gen || !/^[A-Za-z0-9-]{8,64}$/.test(client)) return undefined;
+  const n = Number(gen);
+  if (!Number.isSafeInteger(n) || n < 0) return undefined;
+  return { key: `${sessionId}\u0000${client}`, gen: n };
+}
+
+/** Test hook — the fence map is module state. */
+export function _resetTerminalFenceForTesting(): void {
+  latestGen.clear();
+}
 
 // ── Frame coalescing (improvement #1, flag-gated) ──────────────────────
 // On `main` the live stream does one `ws.send()` per PTY chunk. Claude Code's
@@ -241,6 +277,11 @@ const MAX_ROWS = 200;
 export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
     const sessionId = c.req.param("sessionId")!;
+    const fence = parseFence(
+      sessionId,
+      c.req.query("client"),
+      c.req.query("gen"),
+    );
 
     return {
       onOpen(_event, ws) {
@@ -277,11 +318,19 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         const disposable = managed.pty.onData(forwarder.onData);
 
         const pty = managed.pty;
+        if (fence) {
+          const e = latestGen.get(fence.key);
+          latestGen.set(fence.key, {
+            gen: Math.max(e?.gen ?? -1, fence.gen),
+            open: (e?.open ?? 0) + 1,
+          });
+        }
         bindings.set(ws, {
           sessionId,
           pty,
           disposable,
           closeStream: forwarder.close,
+          ...(fence ? { fence: { ...fence, dropped: 0 } } : {}),
         });
 
         // Track this client for exit notification of THIS PTY instance
@@ -357,7 +406,28 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           }
         }
 
+        // Fenced: a newer socket from the same client has taken over, so this
+        // is input the client already abandoned. Drop it (never a late
+        // burst) and close the socket; the client's handlers for it are
+        // superseded-guarded and ignore the close.
+        const f = binding.fence;
+        if (f && (latestGen.get(f.key)?.gen ?? -1) > f.gen) {
+          f.dropped += msg.length;
+          if (f.dropped === msg.length) {
+            console.warn(
+              `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped late input on a superseded socket (gen ${f.gen})`,
+            );
+          }
+          try {
+            ws.close(4011, "Superseded by a newer connection");
+          } catch {
+            // already closing
+          }
+          return;
+        }
+
         try {
+          managed.lastInputAt = Date.now();
           managed.pty.write(msg);
         } catch (err) {
           console.error(
@@ -387,4 +457,14 @@ function cleanupBinding(ws: WSContext): void {
   bindings.delete(ws);
   // Remove from its PTY's client tracking
   ptyClients.get(binding.pty)?.delete(ws);
+  // A client's fence entry retires only when NONE of its sockets remain bound
+  // (a page reload mints a new client id, so entries would otherwise
+  // accumulate). Retiring when just the newest closes would un-fence an
+  // older half-open socket whose late input is still in flight.
+  const f = binding.fence;
+  const e = f ? latestGen.get(f.key) : undefined;
+  if (f && e) {
+    if (e.open <= 1) latestGen.delete(f.key);
+    else latestGen.set(f.key, { gen: e.gen, open: e.open - 1 });
+  }
 }

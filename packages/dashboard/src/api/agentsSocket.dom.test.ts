@@ -12,29 +12,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsSocket } from "./agentsSocket";
 
 class FakeWebSocket {
+  // EVERY constant the code compares against must exist on the fake: a
+  // missing CONNECTING makes `readyState === WebSocket.CONNECTING` compare
+  // undefined === undefined — vacuously true.
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
   static instances: FakeWebSocket[] = [];
   url: string;
+  readyState = FakeWebSocket.CONNECTING;
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   closed = false;
+  /** Model a HALF-OPEN link: close() never completes — measured in Chrome,
+   *  the socket sits in CLOSING and onclose never fires. */
+  halfOpen = false;
   constructor(url: string) {
     this.url = url;
     FakeWebSocket.instances.push(this);
   }
   close(): void {
     this.closed = true;
+    if (this.halfOpen) {
+      this.readyState = FakeWebSocket.CLOSING;
+      return;
+    }
+    this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.();
   }
   // Test drivers
   open(): void {
+    this.readyState = FakeWebSocket.OPEN;
     this.onopen?.();
   }
   frame(delta: unknown): void {
     this.onmessage?.({ data: JSON.stringify(delta) });
   }
   drop(): void {
+    this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.();
   }
 }
@@ -67,6 +85,8 @@ let unsubscribe: (() => void) | null = null;
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Backoff jitter is Math.random — pin it so retry timing is deterministic.
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
   FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
 });
@@ -74,6 +94,7 @@ afterEach(() => {
   unsubscribe?.();
   unsubscribe = null;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -110,35 +131,127 @@ describe("agentsSocket reconnect baseline", () => {
     expect(agentsSocket.getSnapshot().agents?.has("a1")).toBe(false);
   });
 
-  it("watchdog force-closes a half-open socket (open, frameless past the stale window)", () => {
+  it("watchdog abandons a half-open socket within the 12s stale window and reconnects WITHOUT waiting for onclose", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws1 = FakeWebSocket.instances[0];
+    ws1.halfOpen = true; // close() will never complete
     ws1.open();
     ws1.frame({ type: "reconcile", agents: [agent("a1")], statuses: {} });
-    expect(agentsSocket.getSnapshot().connected).toBe(true);
+    expect(agentsSocket.getSnapshot().health).toBe("connected");
 
-    // The server heartbeats every 30s; a socket silent past ~2.5 beats is
-    // half-open (VPN drop / sleep-wake) and must be torn down so polls
-    // resume — advancing past the stale window with NO frames does that.
-    vi.advanceTimersByTime(100_000);
+    // 11s of silence: still inside the window (2 missed 5s beats + slack).
+    vi.advanceTimersByTime(11_000);
+    expect(ws1.closed).toBe(false);
+    expect(agentsSocket.getSnapshot().health).toBe("connected");
+
+    vi.advanceTimersByTime(2_000);
     expect(ws1.closed).toBe(true);
-    expect(agentsSocket.getSnapshot().connected).toBe(false);
-    expect(agentsSocket.getSnapshot().agents).toBeNull(); // baseline reset too
+    const snap = agentsSocket.getSnapshot();
+    expect(snap.health).toBe("reconnecting");
+    expect(snap.connected).toBe(false);
+    expect(snap.agents).toBeNull(); // baseline reset too
+    // The regression pin: a replacement socket exists even though ws1's
+    // onclose never fired (the old code waited for it — forever, on a
+    // half-open link).
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
-  it("heartbeat frames keep a healthy socket alive through the watchdog", () => {
+  it("heartbeat frames at the 5s cadence keep a healthy socket alive", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws1 = FakeWebSocket.instances[0];
     ws1.open();
     ws1.frame({ type: "reconcile", agents: [agent("a1")], statuses: {} });
 
-    // Simulate the 30s server heartbeat for 3 minutes of wall time.
-    for (let i = 0; i < 6; i++) {
-      vi.advanceTimersByTime(30_000);
+    for (let i = 0; i < 36; i++) {
+      vi.advanceTimersByTime(5_000);
       ws1.frame({ type: "ping", ts: i });
     }
     expect(ws1.closed).toBe(false);
-    expect(agentsSocket.getSnapshot().connected).toBe(true);
+    expect(agentsSocket.getSnapshot().health).toBe("connected");
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("health: connecting → connected → reconnecting → disconnected (30s silent) → connected", () => {
+    const seen: string[] = [];
+    const off = agentsSocket.onHealthChange((h) => seen.push(h));
+    try {
+      unsubscribe = agentsSocket.subscribe(() => {});
+      expect(agentsSocket.getSnapshot().health).toBe("connecting");
+      const ws1 = FakeWebSocket.instances[0];
+      ws1.open();
+      ws1.drop(); // a real close
+      expect(agentsSocket.getSnapshot().health).toBe("reconnecting");
+      // Every retry fails to open; 30s after the last frame → disconnected.
+      vi.advanceTimersByTime(31_000);
+      expect(agentsSocket.getSnapshot().health).toBe("disconnected");
+      // The CURRENT attempt — earlier retries may already have been
+      // abandoned by the handshake timeout (their onopen is superseded).
+      const latest = FakeWebSocket.instances.filter((w) => !w.closed).at(-1)!;
+      latest.open();
+      expect(agentsSocket.getSnapshot().health).toBe("connected");
+      expect(seen).toEqual([
+        "connected",
+        "reconnecting",
+        "disconnected",
+        "connected",
+      ]);
+    } finally {
+      off();
+    }
+  });
+
+  it("a failure BEFORE the first open stays 'connecting' (never claims we lost something we never had)", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    FakeWebSocket.instances[0].drop();
+    expect(agentsSocket.getSnapshot().health).toBe("connecting");
+  });
+
+  it("a hung handshake is abandoned after the connect timeout and retried", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.halfOpen = true;
+    // Never opens, never errors: the upgrade hung on a half-open path.
+    vi.advanceTimersByTime(7_000);
+    expect(ws1.closed).toBe(false);
+    vi.advanceTimersByTime(2_000);
+    expect(ws1.closed).toBe(true);
+    vi.advanceTimersByTime(2_000); // backoff (1s ±30%)
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("an OPEN socket is never mistaken for a hung handshake", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.open();
+    for (let i = 0; i < 4; i++) {
+      vi.advanceTimersByTime(5_000);
+      ws1.frame({ type: "ping", ts: i });
+    }
+    expect(ws1.closed).toBe(false);
+  });
+
+  it("the browser's offline event marks reconnecting immediately; online retries at once", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.halfOpen = true;
+    ws1.open();
+    window.dispatchEvent(new Event("offline"));
+    expect(agentsSocket.getSnapshot().health).toBe("reconnecting");
+    const afterOffline = FakeWebSocket.instances.length;
+    // The replacement attempt fails while offline…
+    FakeWebSocket.instances.at(-1)!.drop();
+    // …and `online` retries NOW, not after the backoff.
+    window.dispatchEvent(new Event("online"));
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(afterOffline);
+  });
+
+  it("lastHeardAt tracks the latest frame, heartbeats included", () => {
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.open();
+    vi.advanceTimersByTime(4_000);
+    ws1.frame({ type: "ping", ts: 1 });
+    expect(agentsSocket.lastHeardAt()).toBe(Date.now());
   });
 
   it("a reconcile WITHOUT a statuses field keeps current statuses instead of wiping them", () => {
