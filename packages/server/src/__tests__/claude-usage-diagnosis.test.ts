@@ -440,6 +440,15 @@ describe("credentialDiagnosis — missing login", () => {
       }).code,
       "credentials_malformed",
     );
+    // …and its summary names the keychain, not "the credentials file".
+    assert.match(
+      diagnoseMissingLogin({
+        platform: "darwin",
+        failures: [{ source: "keychain", exitCode: 0, parseFailed: true }],
+        auth: noAuth,
+      }).summary,
+      /macOS keychain/,
+    );
   });
 
   it("Bedrock / Vertex / API-key auth say there is no subscription usage", () => {

@@ -162,11 +162,13 @@ export function diagnoseMissingLogin(input: {
       hint: 'Open Keychain Access, find the "Claude Code-credentials" item, and allow access for the autonomOS server — or run autonomOS from a logged-in user session.',
     };
   }
-  if (file?.parseFailed || keychain?.parseFailed) {
+  if (keychain?.parseFailed || file?.parseFailed) {
+    // Name the store that actually held the unreadable blob.
     return {
       code: "credentials_malformed",
-      summary:
-        "The Claude Code credentials file exists but couldn't be parsed.",
+      summary: keychain?.parseFailed
+        ? "The Claude Code login in the macOS keychain exists but couldn't be parsed."
+        : "The Claude Code credentials file exists but couldn't be parsed.",
       hint: RELOGIN,
     };
   }
