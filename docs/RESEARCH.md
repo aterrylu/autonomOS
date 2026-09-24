@@ -25,7 +25,9 @@ Document all research findings here. Link sources. Include your assessment of re
 
 ## Findings
 
-### Agent Memory Systems (2026-09-11)
+### Agent Memory Systems (2026-09-11) — PAUSED 2026-09-23
+
+**Paused by Terry:** no reliable integration point reaches all three CLIs (Gemini gets no channel-server MCP tools today). Kept as reference; no build.
 
 **What:** Decision-ready evaluation of adding an agent memory system to autonomOS — per-agent (identity-keyed), fleet-shared, or both — across OSS platforms (mem0, Letta, Zep/Graphiti, cognee, Supermemory, Honcho, Memori), framework modules (LangGraph/langmem, LlamaIndex), embedded stores (sqlite-vec, LanceDB), markdown+MCP prior art (OpenClaw, basic-memory, Engram, claude-mem), the three CLIs' native memory (Claude Code auto-memory, Codex Memories, Gemini tiers), and a custom path. Includes hands-on spikes in an isolated scratchpad and a read-only codebase seam survey.
 
