@@ -78,7 +78,8 @@ const SUPPRESS_UPDATE_PROMPT_ARGS = ["-c", "check_for_update_on_startup=false"];
  *
  * Codex's two-axis model (approval + sandbox) is effectively one axis here:
  * the sandbox is always `danger-full-access` (autonomOS is the trust boundary).
- * Codex has no plan mode and no auto tier — both clamp to on-request (Ask). The clamp
+ * autonomOS doesn't wire up Codex's plan mode or its auto review yet — both clamp
+ * to on-request (Ask). The clamp
  * warning lives in daemonConfigArgs (called once per spawn) so it doesn't
  * double-log across the daemon + TUI layers.
  */
@@ -114,7 +115,7 @@ function codexApprovalPolicy(
  *     declares `readOnlyHint: true` (see the annotated read-only tools in
  *     mcp/tools.ts) is auto-approved even under `writes`. So a supervised agent
  *     still gets asked before kill_agent / delete_* but not before list_agents.
- * `plan` has no Codex equivalent and is clamped to ask-equivalent behavior here,
+ * `plan` and `auto` aren't wired up for Codex yet and are clamped to ask-equivalent behavior here,
  * consistent with codexApprovalPolicy.
  */
 function codexMcpApprovalMode(
@@ -124,7 +125,7 @@ function codexMcpApprovalMode(
     case "bypass":
       return "approve";
     default:
-      // "ask" plus the clamped "plan" AND "auto" (Codex has no auto tier — ADR-104:
+      // "ask" plus the clamped "plan" AND "auto" (not wired up yet — ADR-104:
       // auto is clamped to Ask on BOTH axes, so "behaves like Ask" is true for
       // MCP tools too): prompt for mutations, auto-approve read-only tools.
       return "writes";
@@ -159,10 +160,11 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
   // Codex approval_policy (bypass→never, ask/plan/auto→
   // on-request). The TUI flag in buildArgs is the primary control; this
   // daemon-side policy backs it for gateway-injected turns that share the
-  // same thread. Codex has no plan mode — warn once here when we clamp it.
+  // same thread. Codex's plan mode and auto review aren't wired up yet — warn
+  // once here when we clamp to on-request.
   if (options.permissionMode === "plan" || options.permissionMode === "auto") {
     console.warn(
-      `[codex] permission mode '${options.permissionMode}' has no Codex equivalent — clamping to ` +
+      `[codex] permission mode '${options.permissionMode}' isn't wired up for Codex yet — clamping to ` +
         "'ask' (approval_policy=on-request). Sandbox stays " +
         "danger-full-access (autonomOS is the trust boundary). NOTE: the " +
         `agent's record still says '${options.permissionMode}' — it reflects what was requested, ` +
@@ -257,13 +259,16 @@ export const codexProvider: AgentProvider = {
     };
   },
 
-  // Codex has no plan mode and no auto tier: both behave like Ask (on-request).
-  // Surfaced to the user at spawn so the clamp is never silent.
+  // Codex HAS both (codex 0.154: a Plan collaboration mode, and automatic
+  // approval review via approvals_reviewer=auto_review), but autonomOS doesn't
+  // wire either up yet, so both behave like Ask (on-request). Surfaced to the
+  // user at spawn so the clamp is never silent — and never claims Codex lacks
+  // the feature.
   clampedModeNotice(mode: PermissionMode): string | undefined {
     if (mode === "auto")
-      return "Codex has no auto tier — this agent behaves like Ask. Pick Bypass for no approvals.";
+      return "Codex's auto review isn't wired up in autonomOS yet, so this agent behaves like Ask. Pick Bypass for no approvals.";
     if (mode === "plan")
-      return "Codex has no plan mode — this agent behaves like Ask.";
+      return "Codex's plan mode isn't wired up in autonomOS yet, so this agent behaves like Ask.";
     return undefined;
   },
 

@@ -13,10 +13,11 @@
  *     `default` is our `ask`)
  *   - Codex:       `approval_policy=on-request|on-failure|never` (sandbox is
  *     always `danger-full-access` — autonomOS is the trust boundary, so Codex's
- *     OS sandbox is infra-locked, not a user choice). Codex has no plan mode.
+ *     OS sandbox is infra-locked, not a user choice). Codex's Plan
+ *     collaboration mode and auto review exist but aren't wired up here.
  *
- * See ADR-045. The mapping is intentionally lossy where a provider lacks a mode
- * (Codex `plan`); those gaps are disabled in the UI and clamped + warned at the
+ * See ADR-045. The mapping is intentionally lossy where autonomOS doesn't wire
+ * up a provider's mode (Codex `plan` and `auto`); those gaps are disabled in the UI and clamped + warned at the
  * spawn boundary rather than silently mis-mapped.
  */
 
@@ -164,11 +165,12 @@ export const PERMISSION_MODE_INFO: Record<
     perProvider: {
       "claude-code": "Auto-accepts edits (acceptEdits)",
       "gemini-cli": "Auto-accepts edits (auto_edit)",
-      // Codex has NO auto tier: codex 0.15x accepts only on-request | never
-      // (on-failure was removed and is silently coerced to on-request). Clamped
-      // to Ask for commands, like `plan` — pick Bypass for no approvals.
+      // Codex DOES have an auto tier — automatic approval review
+      // (`approvals_reviewer=auto_review`, `--approve-for-me`, codex 0.154) —
+      // but autonomOS doesn't wire it up yet, so auto is clamped to Ask
+      // (on-request), like `plan`. Pick Bypass for no approvals.
       codex:
-        "Not supported — behaves like Ask for commands (Codex has no auto tier); pick Bypass for no approvals",
+        "Not wired up yet — Codex's auto review isn't supported in autonomOS, so this behaves like Ask; pick Bypass for no approvals",
     },
     unsupportedBy: ["codex"],
   },
@@ -179,7 +181,8 @@ export const PERMISSION_MODE_INFO: Record<
     perProvider: {
       "claude-code": "Read-only plan mode",
       "gemini-cli": "Read-only plan mode",
-      codex: "Not supported — behaves like Ask (Codex has no plan mode)",
+      codex:
+        "Not wired up yet — Codex's plan mode isn't supported in autonomOS, so this behaves like Ask",
     },
     unsupportedBy: ["codex"],
   },
