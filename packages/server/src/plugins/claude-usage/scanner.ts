@@ -22,7 +22,9 @@ import { createEdgeLogger } from "./edgeLog.js";
 import {
   getOAuthToken,
   getOAuthUsage,
+  invalidateOAuthTokenMemo,
   mapOAuthUsage,
+  markOAuthTokenRejected,
   type OAuthToken,
   type OAuthUsageRaw,
   readAccountIdentity,
@@ -243,6 +245,7 @@ export function getSessionCookie(): string | null {
 
 /** Clear cached data — call after settings change */
 export function invalidateCache(): void {
+  invalidateOAuthTokenMemo();
   cached = null;
   cachedOrgId = null;
   lastGood = null;
@@ -467,7 +470,9 @@ export async function getRateLimits(
     // rewrite of .credentials.json. While OAuth is the ACTIVE source, a single
     // miss must therefore not switch to the key (it would flash a different
     // account's numbers and flap back on the next poll) — absence has to be
-    // observed twice in a row. When OAuth was NOT serving (fresh boot,
+    // observed twice in a row, 30s apart. The token read is memoized (a miss
+    // for 10s), so two polls can share one physical read; the 30s time gate is
+    // what guarantees a second, fresh read. When OAuth was NOT serving (fresh boot,
     // key-only setup), there is nothing to flap from and the fallback is
     // immediate, as before.
     let missingConfirmed = false;
@@ -562,7 +567,7 @@ function cachedFor(fp: string): RateLimitData | null {
  * fingerprint of the access token so an account switch (new token) misses cache.
  */
 async function computeOAuthRateLimits(): Promise<RateLimitData> {
-  const token = getOAuthToken();
+  const token = await getOAuthToken();
   if (!token) {
     return {
       ...errorResult(
@@ -590,7 +595,7 @@ async function fetchOAuthRateLimits(
   if (hit) return hit;
 
   // Reuse the token already read above — getOAuthUsage must not re-read the
-  // keychain/file (double blocking sync read) nor risk fetching with a token
+  // keychain/file (a second spawn) nor risk fetching with a token
   // that differs from the one the cache fingerprint was computed from.
   const result = await getOAuthUsage(token);
 
@@ -604,6 +609,9 @@ async function fetchOAuthRateLimits(
     };
   }
   if (result.status === "unauthorized") {
+    // Re-read the keychain/file soon — Claude Code may have rotated the
+    // token since we memoized it. A READ only; never a refresh.
+    markOAuthTokenRejected();
     return {
       ...errorResult(
         "Claude rejected the Claude Code login token. Run a Claude Code session to refresh it, or paste a session key.",

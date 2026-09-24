@@ -11,9 +11,16 @@ const TEST_DIR = join(tmpdir(), `autonomos-test-oauth-${randomUUID()}`);
 process.env.CLAUDE_CONFIG_DIR = TEST_DIR;
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
-const { mapOAuthUsage, readOAuthToken, fetchOAuthUsage } = await import(
-  "../plugins/claude-usage/oauthUsage.js"
-);
+const {
+  mapOAuthUsage,
+  readOAuthToken,
+  fetchOAuthUsage,
+  getOAuthToken,
+  getLastCredentialFailure,
+  invalidateOAuthTokenMemo,
+  __setKeychainExecForTests,
+  __setTokenMemoTtlForTests,
+} = await import("../plugins/claude-usage/oauthUsage.js");
 
 type OAuthFetcher = Parameters<typeof fetchOAuthUsage>[0];
 type OAuthTokenReader = Parameters<typeof fetchOAuthUsage>[1];
@@ -83,15 +90,15 @@ describe("oauthUsage — readOAuthToken (token-reader precedence)", () => {
     else process.env.USER = savedUser;
   });
 
-  it("prefers CLAUDE_CODE_OAUTH_TOKEN (source 'env', never-stale)", () => {
+  it("prefers CLAUDE_CODE_OAUTH_TOKEN (source 'env', never-stale)", async () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-oauth-token";
-    const tok = readOAuthToken();
+    const tok = await readOAuthToken();
     assert.equal(tok?.accessToken, "env-oauth-token");
     assert.equal(tok?.source, "env");
     assert.equal(tok?.expiresAt, Number.POSITIVE_INFINITY);
   });
 
-  it("falls back to the on-disk credentials file (source 'file')", () => {
+  it("falls back to the on-disk credentials file (source 'file')", async () => {
     // Drop USER so the macOS keychain read short-circuits to null and the file
     // path is exercised deterministically on any platform.
     delete process.env.USER;
@@ -105,17 +112,17 @@ describe("oauthUsage — readOAuthToken (token-reader precedence)", () => {
         },
       }),
     );
-    const tok = readOAuthToken();
+    const tok = await readOAuthToken();
     assert.equal(tok?.accessToken, "file-token");
     assert.equal(tok?.source, "file");
     assert.equal(tok?.expiresAt, 1893456000000);
     assert.equal(tok?.subscriptionType, "max");
   });
 
-  it("returns null when no token is available anywhere", () => {
+  it("returns null when no token is available anywhere", async () => {
     delete process.env.USER; // no keychain
     // No file written, no env token.
-    assert.equal(readOAuthToken(), null);
+    assert.equal(await readOAuthToken(), null);
   });
 });
 
@@ -207,5 +214,258 @@ describe("oauthUsage — fetchOAuthUsage (fetcher + token seams)", () => {
       throw new Error("network down");
     }, futureToken);
     assert.equal(result.status, "unavailable");
+  });
+});
+
+describe("oauthUsage — getOAuthToken memo (one keychain read per TTL)", () => {
+  let savedUser: string | undefined;
+  let spawns = 0;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const blob = (accessToken: string, expiresAt = Date.now() + 3_600_000) =>
+    JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } });
+  /** A fake `security` that answers with `next()` after a short async delay —
+   * async like the real execFile, so concurrent callers genuinely overlap. */
+  const fakeKeychain = (next: () => string) =>
+    __setKeychainExecForTests(async () => {
+      spawns += 1;
+      await sleep(5);
+      return { stdout: next() };
+    });
+
+  beforeEach(() => {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    savedUser = process.env.USER;
+    process.env.USER = "memo-test-user";
+    spawns = 0;
+  });
+  afterEach(() => {
+    __setKeychainExecForTests(null);
+    __setTokenMemoTtlForTests(null);
+    if (savedUser === undefined) delete process.env.USER;
+    else process.env.USER = savedUser;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("concurrent polls share ONE read, and memo hits spawn nothing", async () => {
+    fakeKeychain(() => blob("tok-1"));
+    const toks = await Promise.all(
+      Array.from({ length: 10 }, () => getOAuthToken()),
+    );
+    assert.ok(toks.every((t) => t?.accessToken === "tok-1"));
+    for (let i = 0; i < 5; i++) await getOAuthToken();
+    assert.equal(spawns, 1);
+  });
+
+  it("re-reads once the hit TTL has elapsed", async () => {
+    __setTokenMemoTtlForTests({ hitMs: 20, missMs: 20 });
+    let n = 0;
+    fakeKeychain(() => blob(`tok-${++n}`));
+    assert.equal((await getOAuthToken())?.accessToken, "tok-1");
+    assert.equal((await getOAuthToken())?.accessToken, "tok-1");
+    await sleep(30);
+    assert.equal((await getOAuthToken())?.accessToken, "tok-2");
+    assert.equal(spawns, 2);
+  });
+
+  it("re-reads an EXPIRED token on the miss TTL — not the hit TTL, and not every poll", async () => {
+    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 60 });
+    let n = 0;
+    fakeKeychain(() =>
+      ++n === 1 ? blob("old", Date.now() + 10) : blob("rotated"),
+    );
+    assert.equal((await getOAuthToken())?.accessToken, "old");
+    await sleep(20); // expired, but read <60ms ago: no re-spawn per poll
+    await getOAuthToken();
+    await getOAuthToken();
+    assert.equal(spawns, 1);
+    await sleep(60); // miss TTL elapsed → re-read picks up the rotation
+    assert.equal((await getOAuthToken())?.accessToken, "rotated");
+    assert.equal(spawns, 2);
+  });
+
+  it("a hung `security` read settles at the deadline and does not wedge later reads", async () => {
+    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 10, deadlineMs: 30 });
+    let n = 0;
+    __setKeychainExecForTests(() => {
+      spawns += 1;
+      return ++n === 1
+        ? new Promise(() => {}) // never settles
+        : Promise.resolve({ stdout: blob("after-hang") });
+    });
+    assert.equal(await getOAuthToken(), null);
+    const f = getLastCredentialFailure();
+    assert.ok(f?.source === "keychain" && f.timedOut);
+    await sleep(15);
+    assert.equal((await getOAuthToken())?.accessToken, "after-hang");
+  });
+
+  it("memoizes a miss only for the shorter miss TTL", async () => {
+    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 20 });
+    __setKeychainExecForTests(async () => {
+      spawns += 1;
+      throw Object.assign(new Error("not found"), { code: 44, stderr: "" });
+    });
+    assert.equal(await getOAuthToken(), null);
+    assert.equal(await getOAuthToken(), null);
+    assert.equal(spawns, 1);
+    await sleep(30);
+    await getOAuthToken();
+    assert.equal(spawns, 2);
+  });
+
+  it("invalidateOAuthTokenMemo forces the next read", async () => {
+    let n = 0;
+    fakeKeychain(() => blob(`tok-${++n}`));
+    await getOAuthToken();
+    invalidateOAuthTokenMemo();
+    assert.equal((await getOAuthToken())?.accessToken, "tok-2");
+  });
+
+  it("a read in flight across an invalidation cannot repopulate the memo", async () => {
+    let n = 0;
+    fakeKeychain(() => blob(`tok-${++n}`));
+    const inFlight = getOAuthToken(); // read #1 starts
+    invalidateOAuthTokenMemo(); // …and is superseded before it lands
+    await inFlight;
+    assert.equal((await getOAuthToken())?.accessToken, "tok-2");
+    assert.equal(spawns, 2);
+  });
+});
+
+describe("oauthUsage — getLastCredentialFailure (why there is no token)", () => {
+  let savedUser: string | undefined;
+  beforeEach(() => {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    savedUser = process.env.USER;
+    process.env.USER = "diag-test-user";
+  });
+  afterEach(() => {
+    __setKeychainExecForTests(null);
+    if (savedUser === undefined) delete process.env.USER;
+    else process.env.USER = savedUser;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("keeps the `security` exit code + stderr (exit 44 = item not found)", async () => {
+    __setKeychainExecForTests(async () => {
+      throw Object.assign(new Error("exit 44"), {
+        code: 44,
+        stderr:
+          "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\n",
+      });
+    });
+    assert.equal(await readOAuthToken(), null);
+    assert.deepEqual(getLastCredentialFailure(), {
+      source: "keychain",
+      exitCode: 44,
+      signal: null,
+      errno: null,
+      stderr:
+        "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.",
+      timedOut: false,
+      parseFailed: false,
+    });
+  });
+
+  it("reports a timeout (locked keychain) distinctly from a nonzero exit", async () => {
+    __setKeychainExecForTests(async () => {
+      throw Object.assign(new Error("timed out"), {
+        killed: true,
+        signal: "SIGTERM",
+        code: null,
+      });
+    });
+    await readOAuthToken();
+    const f = getLastCredentialFailure();
+    assert.equal(f?.source, "keychain");
+    assert.ok(f?.source === "keychain" && f.timedOut && f.exitCode === null);
+  });
+
+  it("keeps a spawn-level error code (`security` binary missing → ENOENT)", async () => {
+    __setKeychainExecForTests(async () => {
+      throw Object.assign(new Error("spawn security ENOENT"), {
+        code: "ENOENT",
+      });
+    });
+    await readOAuthToken();
+    const f = getLastCredentialFailure();
+    assert.ok(f?.source === "keychain" && f.errno === "ENOENT");
+    assert.ok(f?.source === "keychain" && f.exitCode === null);
+  });
+
+  it("blames the KEYCHAIN (not a missing file) when its entry is unparseable", async () => {
+    __setKeychainExecForTests(async () => ({ stdout: "not-json" }));
+    await readOAuthToken();
+    const f = getLastCredentialFailure();
+    assert.equal(f?.source, "keychain");
+    assert.ok(f?.source === "keychain" && f.parseFailed);
+  });
+
+  it("an incomplete keychain blob falls through to the file store", async () => {
+    __setKeychainExecForTests(async () => ({
+      stdout: JSON.stringify({ claudeAiOauth: { accessToken: "no-expiry" } }),
+    }));
+    mkdirSync(TEST_DIR, { recursive: true });
+    writeFileSync(
+      CREDENTIALS_FILE,
+      JSON.stringify({
+        claudeAiOauth: { accessToken: "from-file", expiresAt: 1893456000000 },
+      }),
+    );
+    const tok = await readOAuthToken();
+    assert.equal(tok?.accessToken, "from-file");
+    assert.equal(getLastCredentialFailure(), null);
+  });
+
+  it("the env override clears an earlier failure", async () => {
+    __setKeychainExecForTests(async () => {
+      throw Object.assign(new Error("x"), { code: 44, stderr: "" });
+    });
+    await readOAuthToken();
+    assert.notEqual(getLastCredentialFailure(), null);
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-tok";
+    try {
+      assert.equal((await readOAuthToken())?.source, "env");
+      assert.equal(getLastCredentialFailure(), null);
+    } finally {
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    }
+  });
+
+  it("with no keychain applicable, reports the file store's errno", async () => {
+    delete process.env.USER; // keychain not applicable
+    await readOAuthToken();
+    assert.deepEqual(getLastCredentialFailure(), {
+      source: "file",
+      errno: "ENOENT",
+      parseFailed: false,
+    });
+  });
+
+  it("reports a present-but-malformed credentials file as parseFailed", async () => {
+    delete process.env.USER;
+    mkdirSync(TEST_DIR, { recursive: true });
+    writeFileSync(CREDENTIALS_FILE, "{not json");
+    await readOAuthToken();
+    assert.deepEqual(getLastCredentialFailure(), {
+      source: "file",
+      errno: null,
+      parseFailed: true,
+    });
+  });
+
+  it("clears the failure after a successful read", async () => {
+    __setKeychainExecForTests(async () => {
+      throw Object.assign(new Error("x"), { code: 36, stderr: "denied" });
+    });
+    await readOAuthToken();
+    assert.notEqual(getLastCredentialFailure(), null);
+    __setKeychainExecForTests(async () => ({
+      stdout: JSON.stringify({
+        claudeAiOauth: { accessToken: "ok", expiresAt: Date.now() + 60_000 },
+      }),
+    }));
+    assert.equal((await readOAuthToken())?.accessToken, "ok");
+    assert.equal(getLastCredentialFailure(), null);
   });
 });
