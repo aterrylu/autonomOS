@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { type IPty, spawn } from "node-pty";
 import {
   PTY_KILL_AFTER_MS,
@@ -33,6 +33,19 @@ const STUBS = {
   polite: `console.log("READY"); ${IDLE}`,
 };
 
+// Every PTY a test starts, so a failing (or mutation-tested) case can't leak
+// its process group or hold the runner open.
+const started: IPty[] = [];
+afterEach(() => {
+  for (const pty of started.splice(0)) {
+    try {
+      process.kill(-pty.pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+});
+
 async function start(body: string): Promise<IPty> {
   const pty = spawn(process.execPath, ["-e", body], {
     name: "xterm",
@@ -40,6 +53,7 @@ async function start(body: string): Promise<IPty> {
     rows: 24,
     env: process.env as Record<string, string>,
   });
+  started.push(pty);
   await new Promise<void>((resolve) => {
     const sub = pty.onData((d) => {
       if (d.includes("READY")) {
@@ -72,7 +86,7 @@ async function groupEmpty(pgid: number, withinMs = 500): Promise<boolean> {
   return group(pgid).length === 0;
 }
 
-describe("terminatePty", () => {
+describe("terminatePty", { timeout: 10_000 }, () => {
   it("ends a gemini-shaped wrapper that leader-only SIGHUP cannot", async () => {
     const pty = await start(STUBS.gemini);
     assert.equal(group(pty.pid).length, 2, "precondition: wrapper + child");

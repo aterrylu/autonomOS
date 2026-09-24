@@ -16,7 +16,7 @@
  * restart / shutdown.
  *
  * PID-reuse safety: nothing is signalled once the PTY's onExit has fired —
- * every pending escalation is cancelled on exit. After the leader is reaped its
+ * every pending escalation stage is cancelled on exit. After the leader is reaped its
  * pid can be reused, and a later `-pid` could name an unrelated group.
  */
 
@@ -48,11 +48,9 @@ export function terminatePty(
     killAfterMs = PTY_KILL_AFTER_MS,
     signal = (pid, sig) => process.kill(pid, sig),
   } = opts;
-  let exited = false;
   const timers: NodeJS.Timeout[] = [];
 
   const send = (sig: NodeJS.Signals): void => {
-    if (exited) return;
     try {
       signal(-pty.pid, sig);
     } catch (err) {
@@ -75,7 +73,8 @@ export function terminatePty(
 
   const done = new Promise<void>((resolve) => {
     const sub = pty.onExit(() => {
-      exited = true;
+      // Cancelling the pending stages IS the PID-reuse guard: after this no
+      // signal is ever sent to this pid or group.
       for (const t of timers) clearTimeout(t);
       sub.dispose();
       resolve();
