@@ -68,9 +68,11 @@ function launchedPermission(
   let flags = "never-spawned";
   let spawns = 0;
   for (const chunk of server.logs().split("[runtime] spawning:").slice(1)) {
-    // Permission flags are pushed first in claude's argv and the session id
-    // immediately after, so a short window holds both without risking a match
-    // against later, unrelated log output.
+    // The line opens with "(agent <id>)" and the permission flags are pushed
+    // first in claude's argv, so a short window holds both without risking a
+    // match against later, unrelated log output. Match the explicit agent id,
+    // not the session id: since ADR-111 a not-resumable reattach runs under a
+    // regenerated session id, so the argv's id is no longer the agent's.
     const head = chunk.slice(0, 400);
     if (!head.includes(agentId)) continue;
     spawns++;

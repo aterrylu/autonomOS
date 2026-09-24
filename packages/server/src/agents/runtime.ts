@@ -1261,8 +1261,12 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   }
 
   const logArgs = args.map(redactArgForLog);
+  // Name the agent explicitly: since ADR-111 a not-resumable reattach runs
+  // under a REGENERATED session id, so the argv alone no longer identifies
+  // which agent a spawn belongs to (log readers and permission-mode-resume's
+  // launchedPermission() attribute spawns by agent id).
   console.log(
-    `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
+    `[runtime] spawning: (agent ${agent.id}) ${binary} ${logArgs.join(" ")}` +
       (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
   );
 
