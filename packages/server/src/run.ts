@@ -28,6 +28,7 @@ import {
   shutdownAllAttachments,
   snapshotResumableAgents,
 } from "./agents/runtime.js";
+import { stopAllSidecars } from "./agents/sidecar.js";
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -70,6 +71,7 @@ import {
   setInternalSocketPath,
   setServerPort,
 } from "./serverState.js";
+import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
@@ -750,23 +752,27 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // Clean up all PTY processes on shutdown. Agents stay in persistence as
   // "running" so they auto-resume on next boot.
-  const shutdown = (): void => {
-    console.log(
-      "Shutting down — killing PTYs (agents will resume on next start)...",
-    );
-    stopScheduler();
-    shutdownAllAttachments();
-    // Release the pid file (claimed via acquireOwnership at startup),
-    // per ADR-029.
-    removePidFile();
-    // Unlink the control socket. A Unix socket file outlives its process, and
-    // a leftover one makes the next boot's bind fail EADDRINUSE — the next
-    // start recovers via the stale-socket probe, but only after logging a
-    // warning that implies an unclean shutdown. Clean up when we can.
-    internalServer.close();
-    removeControlSocket(controlSocketPath);
-    process.exit(0);
+  const exitProcess = (): void => {
+    try {
+      // Release the pid file (claimed via acquireOwnership at startup),
+      // per ADR-029.
+      removePidFile();
+      // Unlink the control socket. A Unix socket file outlives its process, and
+      // a leftover one makes the next boot's bind fail EADDRINUSE — the next
+      // start recovers via the stale-socket probe, but only after logging a
+      // warning that implies an unclean shutdown. Clean up when we can.
+      internalServer.close();
+      removeControlSocket(controlSocketPath);
+    } finally {
+      process.exit(0);
+    }
   };
+  const shutdown = createShutdownHandler({
+    stopWork: stopScheduler,
+    teardownAgents: shutdownAllAttachments,
+    awaitDaemons: () => stopAllSidecars(),
+    exitProcess,
+  });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
