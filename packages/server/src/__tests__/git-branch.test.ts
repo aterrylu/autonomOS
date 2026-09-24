@@ -157,10 +157,12 @@ describe("enrichAgent — every provider gets project · branch", () => {
     assert.equal(enrichAgent(codexAgentIn(repo)).gitBranch, "main");
   });
 
-  it("a CODEX agent in a non-git dir carries no gitBranch (row shows just the folder)", () => {
+  it('a CODEX agent in a non-git dir carries gitBranch "" (row shows just the folder)', () => {
     const plain = join(root, "plain-folder");
     mkdirSync(plain, { recursive: true });
-    assert.equal(enrichAgent(codexAgentIn(plain)).gitBranch, undefined);
+    // "" (not absent): the snapshot must say "no branch" the same way the live
+    // patch does, or a reload falls back to a stale CC JSONL branch.
+    assert.equal(enrichAgent(codexAgentIn(plain)).gitBranch, "");
   });
 
   it("enrichment never mutates the record (derived, not persisted)", () => {

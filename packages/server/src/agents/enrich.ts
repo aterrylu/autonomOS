@@ -13,6 +13,9 @@ import { withPendingHandoffCount } from "./handoffEnrich.js";
 
 export function enrichAgent(a: Agent): Agent {
   const enriched = withPendingHandoffCount(a);
-  const gitBranch = cachedGitBranch(a.workingDirectory);
-  return gitBranch ? { ...enriched, gitBranch } : enriched;
+  // Always SAY something: "" = "looked, no branch" (non-git, detached,
+  // unreadable). Omitting it made the snapshot disagree with the live patch
+  // (which sends ""), so after a reload a Claude row fell back to its stale
+  // JSONL branch — the exact case "" exists to prevent (nox).
+  return { ...enriched, gitBranch: cachedGitBranch(a.workingDirectory) ?? "" };
 }
