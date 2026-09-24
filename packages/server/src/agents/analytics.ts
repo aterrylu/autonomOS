@@ -19,6 +19,7 @@
 
 import { execFile } from "node:child_process";
 import type { AgentAnalytics } from "@autonomos/core";
+import { gitEnv } from "../sourceUpgrade.js";
 
 const SERVER_STARTED_AT = Date.now();
 const DAY_MS = 86_400_000;
@@ -171,7 +172,9 @@ function readBranch(cwd: string): Promise<string | null> {
     execFile(
       "git",
       ["-C", cwd, "branch", "--show-current"],
-      { timeout: 2000, encoding: "utf8" },
+      // Scrubbed env: an inherited GIT_DIR (the server started from a hook or
+      // a git alias) would otherwise answer for the OUTER repo, not `cwd`.
+      { timeout: 2000, encoding: "utf8", env: gitEnv() },
       (err, stdout) => {
         const b = err ? "" : String(stdout).trim();
         resolve(b || null);

@@ -252,8 +252,17 @@ describe("agent analytics — wired into the real taps", () => {
     assert.equal((await getAgentAnalytics(ID, {})).crashes, 1);
   });
 
-  it("reads the git branch of the agent's directory (and null outside a repo)", async () => {
-    const r = await getAgentAnalytics(ID, { workingDirectory: dir });
-    assert.equal(r.branch, null); // a bare temp dir is not a repo
+  it("reads the git branch of the agent's directory (and null outside a repo) — even with an inherited GIT_DIR", async () => {
+    // A hook (or a git alias) exports GIT_DIR; unscrubbed, `git -C <dir>`
+    // answers for THAT repo instead of the agent's directory.
+    const saved = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(process.cwd(), "..", "..", ".git");
+    try {
+      const r = await getAgentAnalytics(ID, { workingDirectory: dir });
+      assert.equal(r.branch, null); // a bare temp dir is not a repo
+    } finally {
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
+    }
   });
 });
