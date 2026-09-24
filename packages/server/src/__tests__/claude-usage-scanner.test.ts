@@ -30,8 +30,12 @@ const {
   __expireCacheForTests,
   __setOAuthMissConfirmMsForTests,
 } = await import("../plugins/claude-usage/scanner.js");
-const { __setOAuthTokenReaderForTests, __setOAuthFetcherForTests } =
-  await import("../plugins/claude-usage/oauthUsage.js");
+const {
+  __setOAuthTokenReaderForTests,
+  __setOAuthFetcherForTests,
+  __setKeychainExecForTests,
+  __setTokenMemoTtlForTests,
+} = await import("../plugins/claude-usage/oauthUsage.js");
 type UsageFetcher = Parameters<typeof getRateLimits>[0];
 
 const SETTINGS_FILE = join(TEST_DIR, "settings.json");
@@ -1025,5 +1029,74 @@ describe("claude-usage — fallback marker + org-id fingerprint", () => {
     await getRateLimits(fetcher);
     assert.equal(bootstraps.length, 2, "second key must re-resolve its org");
     assert.match(bootstraps[1], /NEWKEY/);
+  });
+});
+
+describe("claude-usage scanner — memoized token read (real reader, fake keychain)", () => {
+  let savedUser: string | undefined;
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    invalidateCache();
+    __setOAuthTokenReaderForTests(null); // exercise the REAL reader + memo
+    savedUser = process.env.USER;
+    process.env.USER = "scanner-memo-user";
+  });
+  afterEach(() => {
+    invalidateCache();
+    __setKeychainExecForTests(null);
+    __setTokenMemoTtlForTests(null);
+    __setOAuthFetcherForTests(null);
+    if (savedUser === undefined) delete process.env.USER;
+    else process.env.USER = savedUser;
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("a cached usage answer costs no keychain read; a 401 re-reads within the miss TTL", async () => {
+    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 40 });
+    let spawns = 0;
+    let current = "tok-old";
+    __setKeychainExecForTests(async () => {
+      spawns += 1;
+      return {
+        stdout: JSON.stringify({
+          claudeAiOauth: {
+            accessToken: current,
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      };
+    });
+    const seen: string[] = [];
+    __setOAuthFetcherForTests(async (_url, init) => {
+      const tok = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(tok);
+      return tok === "tok-old"
+        ? { ok: false, status: 401, json: async () => ({}) }
+        : {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              five_hour: { utilization: 5, resets_at: "2026-01-01T00:00:00Z" },
+            }),
+          };
+    });
+
+    const first = await getRateLimits();
+    assert.equal(first.errorKind, "unauthorized");
+    current = "tok-rotated"; // Claude Code rotated its token meanwhile
+
+    // Right after a 401 the rejected token is NOT re-read on every poll…
+    assert.equal((await getRateLimits()).errorKind, "unauthorized");
+    assert.equal(spawns, 1);
+    // …but it is re-read once the miss TTL elapses, picking up the rotation.
+    await new Promise((r) => setTimeout(r, 50));
+    const second = await getRateLimits();
+    assert.equal(second.error, undefined);
+    assert.equal(second.fiveHour?.utilization, 5);
+    assert.deepEqual(seen, ["tok-old", "tok-old", "tok-rotated"]);
+
+    // Served from the usage cache now: no further keychain spawns.
+    for (let i = 0; i < 5; i++) await getRateLimits();
+    assert.equal(spawns, 2);
   });
 });
