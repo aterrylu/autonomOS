@@ -200,6 +200,14 @@ let shuttingDown = false;
  *  spawn racing that window would start a daemon the process then exits
  *  under — the orphan the wait exists to prevent. */
 let serverStopping = false;
+/** Terminate an agent's PTY process group (see ptyTerminate), labelled for the log. */
+function stopAgentPty(agentId: UUID, pty: IPty): Promise<void> {
+  const name = getAgent(agentId)?.name;
+  return terminatePty(pty, {
+    label: `${name ?? "agent"} (${agentId.slice(0, 8)})`,
+  });
+}
+
 /** A restart-all is between its kill pass and its last respawn. */
 let restartInFlight = false;
 
@@ -1362,7 +1370,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // neither is orphaned, then surface the race rather than crashing on a
     // non-null assertion.
     void sidecar?.dispose();
-    void terminatePty(pty);
+    void stopAgentPty(agent.id, pty);
     throw new Error(
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
@@ -1722,7 +1730,7 @@ export function killAttachment(
 ): boolean {
   const managed = live.get(agentId);
   if (!managed) return false;
-  void terminatePty(managed.pty);
+  void stopAgentPty(agentId, managed.pty);
   // Sidecar daemon is a separate process — kill it alongside the PTY.
   void managed.sidecar?.dispose();
   disposeCodexControl(agentId);
@@ -1749,7 +1757,7 @@ export function deleteAgent(agentId: UUID): boolean {
   const wasLive = live.has(agentId);
   if (wasLive) {
     const managed = live.get(agentId)!;
-    void terminatePty(managed.pty);
+    void stopAgentPty(agentId, managed.pty);
     void managed.sidecar?.dispose();
     live.delete(agentId);
   }
@@ -1785,7 +1793,7 @@ export function shutdownAllAttachments(): void {
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [agentId, managed] of live) {
-    void terminatePty(managed.pty);
+    void stopAgentPty(agentId, managed.pty);
     // Dispose the Codex control client HERE, on the shutdown PATH, rather than
     // leaving it to process exit. Its queue may hold inbound that the sender was
     // told would be retried automatically (ADR-064) — a promise this shutdown is
@@ -2015,8 +2023,8 @@ async function restartAll(): Promise<{
   // during the wait (they stayed "running").
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
-  for (const [, managed] of live) {
-    ptyExits.push(terminatePty(managed.pty));
+  for (const [id, managed] of live) {
+    ptyExits.push(stopAgentPty(id, managed.pty));
     // Dispose the sidecar daemon too — it won't die with the PTY.
     if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
   }

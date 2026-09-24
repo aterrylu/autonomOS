@@ -20,6 +20,7 @@
  * pid can be reused, and a later `-pid` could name an unrelated group.
  */
 
+import { execFileSync } from "node:child_process";
 import type { IPty } from "node-pty";
 
 export const PTY_TERM_AFTER_MS = 250;
@@ -32,6 +33,24 @@ export interface TerminatePtyOptions {
   killAfterMs?: number;
   /** Injected for tests; defaults to process.kill. */
   signal?: SignalFn;
+  /** Names the agent in the kill log line. */
+  label?: string;
+}
+
+/**
+ * How many processes are in the group right now (ps), or undefined if it
+ * can't be read. Logged at kill time so the operator can see what a group
+ * kill took with it beyond the agent CLI — backgrounded dev servers,
+ * `tail -f`, MCP servers.
+ */
+function groupSize(pgid: number): number | undefined {
+  try {
+    return execFileSync("ps", ["-axo", "pgid="], { encoding: "utf8" })
+      .split("\n")
+      .filter((l) => Number(l.trim()) === pgid).length;
+  } catch {
+    return undefined;
+  }
 }
 
 type TerminablePty = Pick<IPty, "pid" | "onExit" | "kill">;
@@ -122,6 +141,14 @@ function escalate(
     });
   });
 
+  if (opts.label && process.platform !== "win32") {
+    const n = groupSize(pty.pid);
+    if (n !== undefined && n > 1) {
+      console.log(
+        `[pty] stopping ${opts.label}: its process group has ${n} processes (the agent CLI + ${n - 1} more — MCP servers, anything it backgrounded)`,
+      );
+    }
+  }
   send("SIGHUP");
   for (const [ms, sig] of [
     [termAfterMs, "SIGTERM"],
