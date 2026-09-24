@@ -480,7 +480,12 @@ export function applyAgentsSnapshot(agents: Agent[]): void {
         // Same class of bug for the hand-off badge: if only the pending count
         // changes (a message queued/delivered while nothing else moves), the
         // short-circuit would freeze the badge at its page-load value.
-        s.pendingHandoffCount === sessions[i].pendingHandoffCount,
+        s.pendingHandoffCount === sessions[i].pendingHandoffCount &&
+        // …and for the row's branch: a mid-session checkout arrives as a
+        // branch-only agent.updated patch, which this short-circuit would
+        // otherwise discard (found empirically — the server emitted the
+        // patch, the open page never updated).
+        s.gitBranch === sessions[i].gitBranch,
     );
   const prevExited = get().exitedSessions;
   const exitedUnchanged =
