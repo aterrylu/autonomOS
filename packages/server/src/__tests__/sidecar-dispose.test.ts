@@ -61,12 +61,21 @@ describe("Sidecar.dispose()", () => {
     assert.ok(Date.now() - t0 < SIDECAR_KILL_AFTER_MS);
   });
 
-  it("is idempotent — repeat calls return the first call's promise", async () => {
-    const sc = await startStub(HONORS_SIGTERM);
+  it("is idempotent — repeat calls signal the daemon once", async () => {
+    // Shutdown disposes each daemon twice (the agent teardown, then the
+    // registry sweep); each extra call must not re-signal or re-arm SIGKILL.
+    const sc = await startStub(
+      `process.on("SIGTERM", () => console.log("TERM")); ${IGNORES_SIGTERM}`,
+    );
+    let out = "";
+    sc.proc.stdout?.on("data", (c: Buffer) => {
+      out += c.toString();
+    });
     const first = sc.dispose();
-    assert.equal(sc.dispose(), first);
+    sc.dispose();
+    sc.dispose();
     await first;
-    assert.equal(sc.dispose(), first);
+    assert.equal(out.split("TERM").length - 1, 1);
   });
 
   it("a daemon that fails to spawn never enters the registry", async () => {

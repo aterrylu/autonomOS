@@ -98,11 +98,12 @@ describe("server stopping", () => {
     assert.throws(() => process.kill(daemonPid, 0), { code: "ESRCH" });
   });
 
-  it("a new spawn is refused with SERVER_STOPPING (503)", async () => {
+  it("a new spawn is refused with SERVER_STOPPING (503) before it starts a daemon", async () => {
     await assert.rejects(
       spawnAgent({ workingDirectory: cwd, provider: NAME as never }),
       isStopping,
     );
+    assert.deepEqual(runningSidecarPids(), []);
   });
 
   it("boot resume leaves 'running' agents running for the next boot — not crashed", async () => {

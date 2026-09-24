@@ -1900,6 +1900,8 @@ export async function resumeActiveAgents(
       confirmResumeSurvived(a);
       resumed++;
     } catch (err) {
+      // Shutdown began mid-boot: leave this and every remaining agent
+      // "running" so they resume on the next boot, not "crashed".
       if (serverStopping) break;
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
