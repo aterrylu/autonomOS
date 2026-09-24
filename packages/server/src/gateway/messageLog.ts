@@ -20,39 +20,17 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type {
+  AgentMessageStats,
+  LoggedMessage,
+  PeerCount,
+} from "@autonomos/core";
 import { emitAgentDelta } from "../events/agents.js";
 
 export const PREVIEW_MAX = 60;
 export const FULL_MAX = 400;
 /** Recent messages kept per agent (sent + received). */
 export const RING_SIZE = 50;
-
-export interface LoggedMessage {
-  id: string;
-  from: string | null;
-  fromName: string;
-  to: string;
-  toName: string;
-  /** Sanitized, capped at FULL_MAX. */
-  text: string;
-  ts: number;
-}
-
-export interface PeerCount {
-  id: string | null;
-  name: string;
-  sent: number;
-  received: number;
-}
-
-export interface AgentMessageStats {
-  sent: number;
-  received: number;
-  /** Busiest first. */
-  peers: PeerCount[];
-  /** Newest first. */
-  recent: LoggedMessage[];
-}
 
 // ANSI CSI/OSC sequences (colors, cursor moves, hyperlinks).
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
