@@ -34,6 +34,7 @@ import {
   getOAuthUsage,
   invalidateOAuthTokenMemo,
   mapOAuthUsage,
+  mapSpendLimit,
   markOAuthTokenRejected,
   type OAuthToken,
   type OAuthUsageRaw,
@@ -44,6 +45,32 @@ import {
 export interface RateLimitWindow {
   utilization: number;
   resetsAt: string;
+}
+
+/**
+ * Money spent against a spend limit, for accounts metered by spend instead of
+ * rolling windows (usage-based Enterprise). Informational ONLY: it never feeds
+ * the usage queue (see normalizeClaudeUsage) — a spend limit clears only when
+ * an admin raises it or the billing period rolls over, not on its own.
+ */
+export interface SpendLimit {
+  /** Spent this billing period, in major units (dollars). */
+  used: number;
+  /** The limit that applies to you, major units; null when none is set. */
+  limit: number | null;
+  /** used ÷ limit × 100 (can exceed 100); null when no limit is set. */
+  percent: number | null;
+  /** ISO 4217 code from the response (default USD). */
+  currency: string;
+  /** When the period resets, when the response says; null = "next billing period". */
+  resetsAt: string | null;
+  /** Response block it came from. `extra_usage` matches codexbar's Enterprise
+   *  fixtures; `spend` is inferred from Terry's Max payload (limit shape unseen). */
+  source: "extra_usage" | "spend";
+  /** set = a readable limit; none = no limit field at all; unreadable = a
+   *  limit field we couldn't use (0, negative, unknown shape, other currency).
+   *  Only "none" may be described to the user as "no spend limit is set". */
+  limitStatus: "set" | "none" | "unreadable";
 }
 
 /** A usage window beyond the four fixed slots — a model-scoped weekly the
@@ -96,6 +123,9 @@ export interface RateLimitData {
    *  Optional: snapshots cached or simulated before this field existed. */
   extraWindows?: NamedRateWindow[];
   extraUsage: ExtraUsage | null;
+  /** Set ONLY for spend-metered accounts (no rolling window at all). Team or
+   *  Pro with usage credits keep their windows and never get this. */
+  spendLimit?: SpendLimit;
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
@@ -493,6 +523,11 @@ export function __resetDiagnosisLogForTests(): void {
   lastLoggedDiagnosis = null;
 }
 
+/** Something to show: a window, or a spend meter on a spend-metered account. */
+function hasNumbers(data: RateLimitData): boolean {
+  return hasWindows(data) || Boolean(data.spendLimit);
+}
+
 function hasWindows(data: RateLimitData): boolean {
   return Boolean(
     data.fiveHour ||
@@ -522,7 +557,7 @@ function finalizeAnswer(data: RateLimitData): RateLimitData {
           errorKind: answer.errorKind,
         }),
       };
-    } else if (!answer.needsSetup && !hasWindows(answer)) {
+    } else if (!answer.needsSetup && !hasNumbers(answer)) {
       answer = {
         ...answer,
         diagnosis: diagnoseNoWindows({
@@ -539,10 +574,10 @@ function finalizeAnswer(data: RateLimitData): RateLimitData {
   const key = answer.diagnosis
     ? `${answer.diagnosis.code}|${answer.diagnosis.summary}`
     : null;
-  const healthy = hasWindows(answer) && !answer.error;
+  const healthy = hasNumbers(answer) && !answer.error;
   if (key !== lastLoggedDiagnosis) {
     if (answer.diagnosis) {
-      const state = hasWindows(answer) ? "usage stale" : "usage unavailable";
+      const state = hasNumbers(answer) ? "usage stale" : "usage unavailable";
       console.warn(
         `[claude-usage] ${state} (${answer.diagnosis.code}): ${answer.diagnosis.summary} Hint: ${answer.diagnosis.hint}`,
       );
@@ -826,23 +861,32 @@ async function fetchOAuthRateLimits(
   };
   // The literal "n/a" case: the call worked but carried no rolling window
   // (neither the flat fields nor `limits[]`). Say why, with the plan label and
-  // spend signals the response itself has.
+  // spend signals the response itself has — unless it is a spend-metered
+  // account, whose spend meter is the number to show.
   if (!hasWindows(data)) {
     const raw = result.data;
-    data.diagnosis = diagnoseNoWindows({
-      plan: {
-        ...readClaudeConfigHints().plan,
-        subscriptionType: token.subscriptionType,
-      },
-      spend: {
-        spendEnabled: raw.spend?.enabled === true,
-        hasSpendLimit:
-          (raw.spend?.limit !== null && raw.spend?.limit !== undefined) ||
-          (raw.extra_usage?.is_enabled === true &&
-            typeof raw.extra_usage.monthly_limit === "number"),
-        hasLimitsArray: Array.isArray(raw.limits) && raw.limits.length > 0,
-      },
-    });
+    // Pro and Max are window plans; a no-window answer there is a fault to
+    // diagnose (#387), not a spend meter to show.
+    const windowPlan = /^(pro|max)$/i.test(token.subscriptionType ?? "");
+    const spend = windowPlan ? null : mapSpendLimit(raw);
+    if (spend) {
+      data.spendLimit = spend;
+    } else {
+      data.diagnosis = diagnoseNoWindows({
+        plan: {
+          ...readClaudeConfigHints().plan,
+          subscriptionType: token.subscriptionType,
+        },
+        spend: {
+          spendEnabled: raw.spend?.enabled === true,
+          hasSpendLimit:
+            (raw.spend?.limit !== null && raw.spend?.limit !== undefined) ||
+            (raw.extra_usage?.is_enabled === true &&
+              typeof raw.extra_usage.monthly_limit === "number"),
+          hasLimitsArray: Array.isArray(raw.limits) && raw.limits.length > 0,
+        },
+      });
+    }
   }
 
   lastGood = { data, fp };
@@ -947,6 +991,14 @@ async function fetchCookieRateLimits(
     account: {},
     fetchedAt: new Date().toISOString(),
   };
+  // A spend-metered account on a pasted session key gets its spend meter too
+  // (the web body omits extra_usage.is_enabled, hence `web`).
+  if (!hasWindows(data)) {
+    const spend = mapSpendLimit(body as unknown as OAuthUsageRaw, {
+      web: true,
+    });
+    if (spend) data.spendLimit = spend;
+  }
 
   lastGood = { data, fp };
   cached = { data, expiresAt: now + CACHE_TTL, fp };

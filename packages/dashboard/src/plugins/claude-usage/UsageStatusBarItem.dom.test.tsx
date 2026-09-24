@@ -233,3 +233,104 @@ describe("UsageStatusBarItem — windows (adjacent regression)", () => {
     expect(container.textContent).toContain("88%");
   });
 });
+
+describe("UsageStatusBarItem — Enterprise spend item (text | % | bar)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.removeItem("claude-usage-spend-display");
+  });
+
+  const enterprise = (used: number, limit: number | null): RateLimitData => ({
+    ...base,
+    credentialSource: "oauth",
+    spendLimit: {
+      used,
+      limit,
+      percent: limit === null ? null : (used * 100) / limit,
+      currency: "USD",
+      resetsAt: null,
+      source: "extra_usage",
+      limitStatus: limit === null ? "none" : "set",
+    },
+  });
+
+  it("defaults to text: gray $620, and never the bare 'no windows'", async () => {
+    stub(enterprise(620, 1000));
+    const { getByTestId, container } = await renderSettled();
+    expect(getByTestId("claude-spend-item").textContent).toBe("$620");
+    expect(container.textContent).not.toContain("no windows");
+    expect(getByTestId("claude-spend-item").getAttribute("title")).toContain(
+      "$620 of your $1,000 spend limit (62%)",
+    );
+  });
+
+  it("text near the limit shows the limit in amber", async () => {
+    stub(enterprise(930, 1000));
+    const { getByTestId } = await renderSettled();
+    const item = getByTestId("claude-spend-item");
+    expect(item.textContent).toBe("$930 / $1,000");
+    expect(item.style.color).toBe("rgb(230, 180, 80)");
+  });
+
+  it("percent style shows 112% over the limit", async () => {
+    localStorage.setItem("claude-usage-spend-display", "percent");
+    stub(enterprise(1120, 1000));
+    const { getByTestId } = await renderSettled();
+    expect(getByTestId("claude-spend-item").textContent).toContain("112%");
+  });
+
+  it("bar style over the limit shows the over marker", async () => {
+    localStorage.setItem("claude-usage-spend-display", "bar");
+    stub(enterprise(1120, 1000));
+    const { getByLabelText } = await renderSettled();
+    expect(getByLabelText("over the spend limit")).toBeTruthy();
+  });
+
+  it("no limit: % style falls back to the total and the tooltip says why", async () => {
+    localStorage.setItem("claude-usage-spend-display", "percent");
+    stub(enterprise(41, null));
+    const { getByTestId } = await renderSettled();
+    const item = getByTestId("claude-spend-item");
+    expect(item.textContent).toBe("$41");
+    expect(item.getAttribute("title")).toMatch(/no percentage/);
+  });
+
+  it("the panel's display row picks the spend style and remembers it", async () => {
+    stub(enterprise(620, 1000));
+    const { getAllByRole, getByTestId, getByText } = await renderSettled();
+    await act(async () => {
+      fireEvent.click(getAllByRole("button")[0]);
+    });
+    expect(getByTestId("claude-spend-detail").textContent).toContain(
+      "$620 of $1,000",
+    );
+    expect(getByTestId("claude-spend-detail").textContent).toContain(
+      "62% of your limit used",
+    );
+    expect(getByTestId("spend-display-picker")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(getByText("%"));
+    });
+    expect(localStorage.getItem("claude-usage-spend-display")).toBe("percent");
+    expect(getByTestId("claude-spend-item").textContent).toContain("62%");
+  });
+
+  it("Team with credits keeps only 5h/7d on the bar — no $ item, no spend picker", async () => {
+    stub({
+      ...base,
+      credentialSource: "oauth",
+      fiveHour: { utilization: 38, resetsAt: "2026-09-24T12:00:00Z" },
+      sevenDay: { utilization: 61, resetsAt: "2026-09-29T00:00:00Z" },
+      extraUsage: {
+        isEnabled: true,
+        monthlyLimit: 5000,
+        usedCredits: 1200,
+        utilization: 24,
+      },
+    });
+    const { queryByTestId, container } = await renderSettled();
+    expect(queryByTestId("claude-spend-item")).toBeNull();
+    expect(container.textContent).toContain("38%");
+    expect(container.textContent).not.toContain("$");
+  });
+});
