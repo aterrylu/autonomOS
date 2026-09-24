@@ -368,6 +368,56 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
     expect(armed.textContent).toContain("Update to v0.7.0 waiting on 3 agents");
   });
 
+  it("keeps polling while armed: follows the agents going idle, then the launch", async () => {
+    // Live QA regression: the armed poll returned before rescheduling, so the
+    // pill froze on its first answer and the launch was never picked up.
+    let phase: "pre" | "busy" | "idle" | "launched" = "pre";
+    const armedRec = {
+      target: "0.7.0",
+      armedAt: "2026-09-23T10:00:00Z",
+      idleSince: null as string | null,
+    };
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          busy:
+            phase === "pre" || phase === "busy"
+              ? [{ id: "a", name: "api-refactor", status: "working" }]
+              : [],
+          armed:
+            phase === "pre" || phase === "launched"
+              ? null
+              : {
+                  ...armedRec,
+                  idleSince: phase === "idle" ? "2026-09-23T10:01:00Z" : null,
+                },
+          status: phase === "launched" ? record("downloading") : null,
+        }),
+      "POST /api/system/upgrade": () => {
+        phase = "busy";
+        return json({ ok: true, armed: armedRec });
+      },
+    });
+    await openToCheck();
+    fireEvent.click(await screen.findByTestId("update-start"));
+    const armed = await screen.findByTestId("update-badge-armed");
+    await waitFor(() =>
+      expect(armed.textContent).toContain("waiting on 1 agent"),
+    );
+
+    phase = "idle";
+    await waitFor(() =>
+      expect(screen.getByTestId("update-badge-armed").textContent).toContain(
+        "starting shortly",
+      ),
+    );
+
+    phase = "launched";
+    expect(await screen.findByTestId("update-steps")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-badge-armed")).toBeNull();
+  });
+
   it("shows the terminal instructions when the daemon isn't supervised", async () => {
     installServer({
       "GET /api/system/upgrade": () =>

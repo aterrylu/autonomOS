@@ -198,12 +198,17 @@ export function useUpdateFlow(enabled: boolean) {
         if (tracking === "armed") {
           if (!isOurs(rec)) {
             // No armed record and no run of ours: cancelled elsewhere.
-            if (!s.armed) setTracking("none");
-            else interrupted.current = s.busy.map((b) => b.name);
-            return;
+            if (!s.armed) {
+              setTracking("none");
+              return;
+            }
+            // Still waiting for idle — keep polling (below) so the pill
+            // follows the agents and the launch is picked up when it fires.
+            interrupted.current = s.busy.map((b) => b.name);
+          } else {
+            setTracking("running");
+            setView("updating");
           }
-          setTracking("running");
-          setView("updating");
         }
         if (isOurs(rec)) handleRecord(rec, s.current);
       } catch (err) {
