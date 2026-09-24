@@ -430,13 +430,6 @@ export function resolveSpawnProvider(
 }
 
 /**
- * Thread-resume pre-flight decision (Codex; ADR-100 "Option B"). False only when
- * the provider positively reports nothing was saved for the thread — then the
- * runtime starts a fresh thread instead of a doomed resume. Fail-OPEN: a
- * provider without the hook, or a probe that throws, means "resume as before"
- * (the retain-on-crash net is the backstop). Pure + exported for tests.
- */
-/**
  * The last few non-empty lines a process printed before it exited, ANSI
  * stripped and length-capped — for the "died immediately" log, so it names
  * the process's own reason (e.g. CC's "Session ID … is already in use")
@@ -462,6 +455,13 @@ export function exitOutputTail(
   return tail.length > maxChars ? `…${tail.slice(-maxChars)}` : tail;
 }
 
+/**
+ * Thread-resume pre-flight decision (Codex; ADR-100 "Option B"). False only when
+ * the provider positively reports nothing was saved for the thread — then the
+ * runtime starts a fresh thread instead of a doomed resume. Fail-OPEN: a
+ * provider without the hook, or a probe that throws, means "resume as before"
+ * (the retain-on-crash net is the backstop). Pure + exported for tests.
+ */
 export function threadIsResumable(
   provider: Pick<AgentProvider, "hasResumableThread" | "displayName">,
   resolved: ResolvedSpawnOptions,
