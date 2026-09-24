@@ -1,5 +1,6 @@
 import type { AgentTreeNode } from "@autonomos/core";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { orgTreePoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { focusTerminal } from "../hooks/useTerminal";
@@ -179,61 +180,69 @@ function OrgCard({
     "--org-glow": attention ? tokens.attentionGlow : tokens.activeGlow,
   } as React.CSSProperties;
 
+  // Windows/Linux fire a native `contextmenu` on the Menu key's keyup even
+  // after keydown preventDefault — without this guard it would re-open the
+  // menu we just opened at the card, jumping it to the browser's coordinates.
+  const keyboardOpenAt = useRef(0);
   const openMenuAtCard = (el: HTMLElement) => {
+    keyboardOpenAt.current = Date.now();
     const r = el.getBoundingClientRect();
     onMenu(menuTarget(node, managerName, info), r.left + 16, r.bottom - 8);
   };
 
-  return (
-    // biome-ignore lint/a11y/useSemanticElements: a <button> can't contain the nested Resume <button>
-    <div
-      role="button"
-      tabIndex={0}
-      data-org-card={node.id}
-      data-org-status={exited ? "exited" : status}
-      aria-label={`${node.name}, ${label}${exited ? "" : ". Open terminal"}. Shift+F10 for actions.`}
-      title={node.template ? `${node.name} · ${node.template}` : node.name}
-      className={`org-card absolute flex flex-col justify-between rounded-[9px] px-2.5 py-2 select-none outline-none focus-visible:ring-2${
-        working ? " org-card-working" : ""
-      }${attention ? " org-card-attention" : ""}`}
-      style={{
-        ...cardVars,
-        left: x,
-        top: y,
-        width: CARD_W,
-        height: CARD_H,
-        cursor: exited ? "default" : "pointer",
-        background: exited ? tokens.ghostCard : tokens.card,
-        border: `1px ${exited ? "dashed" : "solid"} ${
-          attention
-            ? tokens.status.needsInput
-            : status === "error"
-              ? tokens.status.error
-              : tokens.cardBorder
-        }`,
-        boxShadow:
-          exited || working || attention ? undefined : tokens.cardShadow,
-        color: tokens.fg,
-      }}
-      onClick={() => {
-        if (!exited) onOpen(node);
-      }}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if ((e.key === "Enter" || e.key === " ") && !exited) {
-          e.preventDefault();
-          onOpen(node);
-        } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
-          e.preventDefault();
-          openMenuAtCard(e.currentTarget);
-        }
-      }}
-      onContextMenu={(e) => {
+  // Props both card variants share. Handlers ride the spread so the two
+  // branches below can carry STATIC roles (biome checks roles statically).
+  const shared = {
+    tabIndex: 0,
+    "data-org-card": node.id,
+    "data-org-status": exited ? "exited" : status,
+    "aria-label": `${node.name}, ${label}${unread > 0 ? `, ${unread} unread` : ""}${
+      exited ? "" : ". Open terminal"
+    }. Shift+F10 for actions.`,
+    title: node.template ? `${node.name} · ${node.template}` : node.name,
+    className: `org-card absolute flex flex-col justify-between rounded-[9px] px-2.5 py-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      working ? "org-card-working" : ""
+    }${attention ? " org-card-attention" : ""}`,
+    style: {
+      ...cardVars,
+      left: x,
+      top: y,
+      width: CARD_W,
+      height: CARD_H,
+      cursor: exited ? "default" : "pointer",
+      // Only drawn under :focus-visible (the outline-2 utility); themed so
+      // the focus mark reads as the app's, not the browser default blue.
+      outlineColor: tokens.status.active,
+      background: exited ? tokens.ghostCard : tokens.card,
+      border: `1px ${exited ? "dashed" : "solid"} ${
+        attention
+          ? tokens.status.needsInput
+          : status === "error"
+            ? tokens.status.error
+            : tokens.cardBorder
+      }`,
+      boxShadow: exited || working || attention ? undefined : tokens.cardShadow,
+      color: tokens.fg,
+    },
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
+      // Enter/Space on a running card are the native <button> click — handling
+      // them here too would open the agent twice.
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
-        onMenu(menuTarget(node, managerName, info), e.clientX, e.clientY);
-      }}
-    >
-      <div className="flex min-w-0 items-center gap-2">
+        openMenuAtCard(e.currentTarget);
+      }
+    },
+    onContextMenu: (e: React.MouseEvent<HTMLElement>) => {
+      e.preventDefault();
+      if (Date.now() - keyboardOpenAt.current < 500) return;
+      onMenu(menuTarget(node, managerName, info), e.clientX, e.clientY);
+    },
+  };
+
+  const content = (
+    <>
+      <span className="flex min-w-0 items-center gap-2">
         <span className="flex-none" style={{ opacity: exited ? 0.6 : 1 }}>
           {agentIconStyle === "provider" ? (
             <ProviderAgentIcon
@@ -259,15 +268,15 @@ function OrgCard({
             {unread} unread
           </span>
         )}
-      </div>
-      <div className="flex min-w-0 items-center gap-1.5 text-[10.5px]">
+      </span>
+      <span className="flex min-w-0 items-center gap-1.5 text-[10.5px]">
         <span
           data-org-label
-          className={`min-w-0 flex-1 truncate${
+          className={`min-w-0 flex-1 truncate ${
             working
               ? tokens.isLight
-                ? " status-shimmer-light"
-                : " status-shimmer"
+                ? "status-shimmer-light"
+                : "status-shimmer"
               : ""
           }`}
           style={{
@@ -306,8 +315,26 @@ function OrgCard({
             {formatAge(lastActive)}
           </span>
         )}
-      </div>
-    </div>
+      </span>
+    </>
+  );
+
+  // A running card IS a <button> (it has no nested controls). An exited ghost
+  // does nothing on click, so it's a native group — <fieldset> — whose Resume
+  // button stays reachable to assistive tech (a button would hide it).
+  return exited ? (
+    <fieldset {...shared} className={`${shared.className} m-0 min-w-0`}>
+      {content}
+    </fieldset>
+  ) : (
+    <button
+      type="button"
+      {...shared}
+      className={`${shared.className} text-left`}
+      onClick={() => onOpen(node)}
+    >
+      {content}
+    </button>
   );
 }
 
@@ -361,7 +388,10 @@ function OrgCanvas({
       <div
         data-org-stage
         className="relative"
-        style={{ width: layout.width, height: layout.height }}
+        // Centered while it fits; auto margins collapse to 0 once the stage
+        // is wider than the pane, so an overflowing fleet still scrolls from
+        // its left edge.
+        style={{ width: layout.width, height: layout.height, margin: "0 auto" }}
       >
         <svg
           aria-hidden="true"
@@ -380,6 +410,7 @@ function OrgCanvas({
                 data-org-edge={`${from}>${to}`}
                 d={elbowPath(a, b)}
                 fill="none"
+                className="org-edge"
                 stroke={tokens.edge}
                 strokeWidth={1.6}
                 strokeLinecap="round"
@@ -635,18 +666,23 @@ export function HierarchyPanel() {
         />
       )}
       {body}
-      {/* Mounted at the panel root — outside any future pan/zoom transform —
-          because the menu is position:fixed (a transformed ancestor would
-          re-anchor it). Mounted only while open: push-on-open, pop-on-close. */}
-      {menu && (
-        <AgentContextMenu
-          target={menu.target}
-          x={menu.x}
-          y={menu.y}
-          page={page}
-          onClose={closeMenu}
-        />
-      )}
+      {/* Portaled to <body>: the menu is position:fixed at viewport coords,
+          but dockview wraps every pane in `.dv-render-overlay`, whose
+          transform + `contain: layout paint` make the PANE the containing
+          block — rendered in place, the menu lands offset by the sidebar width
+          and header height. Mounted only while open: push-on-open, pop-on-close
+          on the escape stack. */}
+      {menu &&
+        createPortal(
+          <AgentContextMenu
+            target={menu.target}
+            x={menu.x}
+            y={menu.y}
+            page={page}
+            onClose={closeMenu}
+          />,
+          document.body,
+        )}
     </div>
   );
 }

@@ -294,13 +294,18 @@ describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
     expect(markNotificationsRead).toHaveBeenCalledWith("A");
   });
 
-  it("Enter opens too; an exited card's click does nothing", async () => {
+  it("a running card is a native button; an exited card's click does nothing", async () => {
     tree([node("Lead", "exited", [node("Kid", "running")])]);
     const switchPane = vi.fn();
     useStore.setState({ sessions: [session("Kid")], switchPane });
     render(<HierarchyPanel />);
     await screen.findByText("Kid");
+    // A running card is a native <button>: Enter/Space ARE its click (no
+    // extra key handler, which would double-open).
+    expect(card("Kid")?.tagName).toBe("BUTTON");
     fireEvent.keyDown(card("Kid") as HTMLElement, { key: "Enter" });
+    expect(switchPane).not.toHaveBeenCalled();
+    fireEvent.click(card("Kid") as HTMLElement);
     expect(switchPane).toHaveBeenCalledTimes(1);
     fireEvent.click(card("Lead") as HTMLElement);
     expect(switchPane).toHaveBeenCalledTimes(1);
@@ -320,6 +325,10 @@ describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
       clientY: 50,
     });
     const items = await screen.findAllByRole("menuitem");
+    // Portaled OUT of the panel: inside a dockview pane, `.dv-render-overlay`
+    // (transform + contain) re-anchors position:fixed to the pane.
+    const panel = document.querySelector("[data-org-chart]");
+    expect(panel?.contains(items[0])).toBe(false);
     const labels = items.map((i) => i.textContent ?? "");
     for (const want of ["Open", "Rename…", "Restart", "Kill", "Delete…"]) {
       expect(labels.some((l) => l.includes(want))).toBe(true);
@@ -338,6 +347,56 @@ describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
     const items = await screen.findAllByRole("menuitem");
     expect(items.some((i) => i.textContent?.includes("Resume"))).toBe(true);
     expect(items.some((i) => i.textContent?.includes("Kill"))).toBe(false);
+  });
+});
+
+describe("keyboard + assistive tech", () => {
+  it("focus shows as an OUTLINE (box-shadow belongs to the status animations)", async () => {
+    tree([node("A", "running")]);
+    render(<HierarchyPanel />);
+    await screen.findByText("A");
+    const cls = card("A")?.className ?? "";
+    expect(cls).toContain("focus-visible:outline-2");
+    expect(cls).not.toContain("ring-");
+    expect(cls).not.toContain("outline-none");
+    // Themed focus color (the app's slate, not the browser's default blue).
+    expect(card("A")?.style.outlineColor).toBe(
+      hexToRgb(STATUS_COLORS_DARK.active),
+    );
+  });
+
+  it("a ghost is a labelled group so its Resume button stays reachable; running cards are buttons with unread in the label", async () => {
+    tree([node("Ghost", "exited", [node("Live", "running")])]);
+    useStore.setState({
+      sessions: [session("Live")],
+      notificationCounts: { Live: 2 },
+    });
+    render(<HierarchyPanel />);
+    await screen.findByText("Live");
+    expect(card("Ghost")?.tagName).toBe("FIELDSET"); // native group
+    expect(
+      screen.getByRole("group", { name: /Ghost, Exited/ }),
+    ).toContainElement(screen.getByRole("button", { name: "Resume" }));
+    expect(card("Live")?.tagName).toBe("BUTTON");
+    expect(card("Live")?.getAttribute("aria-label")).toContain("2 unread");
+  });
+
+  it("the Menu key's trailing native contextmenu doesn't move the menu it just opened", async () => {
+    tree([node("A", "running")]);
+    useStore.setState({ sessions: [session("A")] });
+    render(<HierarchyPanel />);
+    await screen.findByText("A");
+    const el = card("A") as HTMLElement;
+    fireEvent.keyDown(el, { key: "F10", shiftKey: true });
+    const menu = () =>
+      (screen
+        .getAllByRole("menuitem")[0]
+        .closest("[style*='position: fixed']") ??
+        screen.getAllByRole("menuitem")[0].parentElement) as HTMLElement;
+    const before = menu().getAttribute("style");
+    // What Windows/Linux Chrome sends on the Menu key's keyup.
+    fireEvent.contextMenu(el, { clientX: 400, clientY: 300 });
+    expect(menu().getAttribute("style")).toBe(before);
   });
 });
 

@@ -302,3 +302,13 @@ aside.overflow-y-auto::-webkit-scrollbar {
     transition: none;
   }
 }
+/* Connectors glide WITH their cards (CSS `d` transition; browsers that can't
+   animate `d` just snap, which is the old behavior). */
+.org-edge {
+  transition: d 0.35s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-edge {
+    transition: none;
+  }
+}
