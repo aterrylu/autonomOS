@@ -239,6 +239,59 @@ describe("message flow on the chart", () => {
     expect(bubble("Worker")).toHaveTextContent("Schedule nightly");
   });
 
+  it("hovering a bubble for a FOLDED recipient reads the recipient's own log", async () => {
+    await mount("quiet");
+    fireEvent.click(
+      document.querySelector('[data-org-collapse="Helper"]') as HTMLElement,
+    );
+    const m = routed("Other", "Deep", "short preview");
+    messagesBody = {
+      sent: 0,
+      received: 1,
+      peers: [],
+      recent: [
+        {
+          ...m,
+          text: "the whole message, longer than the preview",
+          toName: "Deep",
+        },
+      ],
+    };
+    send(m);
+    fireEvent.mouseEnter(bubble("Helper") as HTMLElement);
+    await waitFor(() =>
+      expect(bubble("Helper")).toHaveTextContent(
+        "the whole message, longer than the preview",
+      ),
+    );
+    expect(
+      messageFetches.some((u) => u.includes("/api/agents/Deep/messages")),
+    ).toBe(true);
+    expect(
+      messageFetches.some((u) => u.includes("/api/agents/Helper/messages")),
+    ).toBe(false);
+  });
+
+  it("a newer message while hovered never shows the OLD full text under the new sender", async () => {
+    await mount("quiet");
+    const first = routed("Worker", "Lead", "first preview");
+    messagesBody = {
+      sent: 0,
+      received: 1,
+      peers: [],
+      recent: [{ ...first, text: "FIRST FULL TEXT" }],
+    };
+    send(first);
+    fireEvent.mouseEnter(bubble("Lead") as HTMLElement);
+    await waitFor(() =>
+      expect(bubble("Lead")).toHaveTextContent("FIRST FULL TEXT"),
+    );
+    send(routed("Helper", "Lead", "second preview"));
+    expect(bubble("Lead")).toHaveTextContent("Helper");
+    expect(bubble("Lead")).toHaveTextContent("second preview");
+    expect(bubble("Lead")).not.toHaveTextContent("FIRST FULL TEXT");
+  });
+
   it("clicking a bubble selects the recipient (its inspector opens)", async () => {
     await mount("quiet");
     send(routed("Worker", "Lead", "hi"));

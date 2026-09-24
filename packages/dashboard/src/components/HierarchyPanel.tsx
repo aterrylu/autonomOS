@@ -715,12 +715,14 @@ function useAgentMessages(agentId: string): AgentMessageStats | null {
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let latest = 0; // only the newest request may commit (no out-of-order)
     const ac = new AbortController();
     const load = () => {
+      const mine = ++latest;
       agentsApi
         .messages(agentId, { signal: ac.signal, limit: 5 })
         .then((s) => {
-          if (alive) setStats(s);
+          if (alive && mine === latest) setStats(s);
         })
         .catch(() => {
           // Keep what we had; the section is informational.

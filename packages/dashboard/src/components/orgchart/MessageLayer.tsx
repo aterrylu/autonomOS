@@ -44,6 +44,9 @@ interface Packet {
 interface Bubble {
   anchor: string;
   lastId: string;
+  /** The newest message's real recipient — may differ from `anchor` when the
+   *  recipient is folded away; its log is where the full text lives. */
+  lastTo: string;
   fromName: string;
   fromProvider?: string;
   preview: string;
@@ -179,9 +182,14 @@ export function MessageLayer({
   packetsRef.current = packets;
   const [bubbles, setBubbles] = useState<Map<string, Bubble>>(new Map());
   const [warm, setWarm] = useState<Map<string, number>>(new Map());
-  const [open, setOpen] = useState<{ anchor: string; text: string } | null>(
-    null,
-  );
+  // Keyed by message id: if a newer message replaces the bubble's line while
+  // it's hovered, the old full text must not render under the new header.
+  const [open, setOpen] = useState<{
+    anchor: string;
+    id: string;
+    text: string;
+  } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const seq = useRef(0);
   const keyRef = useRef(0);
   const inFlight = useRef(0);
@@ -221,6 +229,7 @@ export function MessageLayer({
               next.delete(anchor);
               return next;
             });
+            if (hovering.current === anchor) hovering.current = null;
           }, 500),
         );
       }, ms),
@@ -231,7 +240,8 @@ export function MessageLayer({
     (msg: RoutedMessage, anchor: string, order: number) => {
       const { reduced: rm, mode: m, providerOf: prov } = live.current;
       if (m === "animated" && !rm) {
-        const card = document.querySelector<HTMLElement>(
+        // Scoped to THIS chart's stage (there may be more than one pane).
+        const card = svgRef.current?.parentElement?.querySelector<HTMLElement>(
           `[data-org-card="${CSS.escape(anchor)}"]`,
         );
         if (card) {
@@ -258,6 +268,7 @@ export function MessageLayer({
                 fading: false,
                 seq: order,
                 lastId: msg.id,
+                lastTo: msg.to,
                 fromName: msg.fromName,
                 fromProvider: msg.from ? prov(msg.from) : undefined,
                 preview: msg.preview,
@@ -358,12 +369,18 @@ export function MessageLayer({
   const showFull = async (b: Bubble) => {
     hovering.current = b.anchor;
     clearTimeout(fadeTimers.current.get(b.anchor));
-    setOpen({ anchor: b.anchor, text: b.preview });
+    setOpen({ anchor: b.anchor, id: b.lastId, text: b.preview });
     try {
-      const stats = await agentsApi.messages(b.anchor, { limit: 20 });
+      const stats = await agentsApi.messages(b.lastTo, { limit: 20 });
       const m = stats.recent.find((x) => x.id === b.lastId);
       if (m && hovering.current === b.anchor)
-        setOpen({ anchor: b.anchor, text: m.text });
+        // Only fills in the message it was fetched for; if the line changed
+        // meanwhile, the id check at render time hides it.
+        setOpen((o) =>
+          o && o.anchor === b.anchor && o.id === b.lastId
+            ? { ...o, text: m.text }
+            : o,
+        );
     } catch {
       // Keep the preview; the full text is a nicety.
     }
@@ -377,6 +394,7 @@ export function MessageLayer({
   return (
     <>
       <svg
+        ref={svgRef}
         aria-hidden="true"
         data-org-message-layer
         className="pointer-events-none absolute inset-0 overflow-visible"
@@ -408,7 +426,7 @@ export function MessageLayer({
         const at = layout.pos.get(b.anchor);
         if (!at) return null;
         const below = at.y < 72;
-        const expanded = open?.anchor === b.anchor;
+        const expanded = open?.anchor === b.anchor && open.id === b.lastId;
         return (
           <button
             key={b.anchor}

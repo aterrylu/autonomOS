@@ -37,14 +37,26 @@ const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 // Other C0 controls except tab/newline (normalized to spaces below).
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
-/** Strip terminal escapes and markdown syntax, collapse whitespace. */
+/**
+ * Input budget for sanitizing. The output is capped at FULL_MAX anyway, and
+ * this runs synchronously on the server's event loop for every accepted
+ * message — so a huge blob (a log dump, malformed markdown, or a hostile
+ * payload) must never reach the regexes whole. Generous enough that markup
+ * stripping can't eat into the 400 visible characters.
+ */
+export const SANITIZE_INPUT_MAX = FULL_MAX * 10;
+
+/** Strip terminal escapes and markdown syntax, collapse whitespace. Every
+ *  pattern is linear (bounded quantifiers; nothing spans newlines). */
 export function plainText(raw: string): string {
   return raw
+    .slice(0, SANITIZE_INPUT_MAX)
+    .replace(/[\uD800-\uDBFF]$/, "") // don't leave a split surrogate pair
     .replace(ANSI, "")
     .replace(CONTROL, "")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // [label](url) → label
-    .replace(/^#{1,6}\s+/gm, "") // headings
-    .replace(/^\s*>\s?/gm, "") // blockquotes
+    .replace(/!?\[([^\]\n]{0,200})\]\([^)\s]{0,500}\)/g, "$1") // [label](url) → label
+    .replace(/^#{1,6}[ \t]+/gm, "") // headings
+    .replace(/^[ \t]*>[ \t]?/gm, "") // blockquotes
     .replace(/(\*\*|__|~~|`{1,3})/g, "") // emphasis/code markers
     .replace(/(^|\s)[*_](\S)/g, "$1$2") // leading single * / _
     .replace(/(\S)[*_](?=\s|$)/g, "$1") // trailing single * / _
@@ -114,13 +126,14 @@ export function recordAcceptedMessage(input: {
 }): void {
   try {
     const ts = input.now ?? Date.now();
+    const plain = plainText(input.content); // once — both caps derive from it
     const m: LoggedMessage = {
       id: randomUUID(),
       from: input.from,
       fromName: input.fromName,
       to: input.to,
       toName: input.toName,
-      text: fullOf(input.content),
+      text: cap(plain, FULL_MAX),
       ts,
     };
     push(input.to, m);
@@ -138,7 +151,7 @@ export function recordAcceptedMessage(input: {
       fromName: input.fromName,
       to: input.to,
       toName: input.toName,
-      preview: previewOf(input.content),
+      preview: cap(plain, PREVIEW_MAX),
       ts,
     });
   } catch (err) {
@@ -160,7 +173,7 @@ export function getAgentMessageStats(
     peers: [...(peers.get(agentId)?.values() ?? [])]
       .map((p) => ({ ...p }))
       .sort((a, b) => b.sent + b.received - (a.sent + a.received)),
-    recent: ring.slice(-Math.max(0, limit)).reverse(),
+    recent: limit > 0 ? ring.slice(-limit).reverse() : [],
   };
 }
 

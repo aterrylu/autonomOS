@@ -75,6 +75,32 @@ describe("messageLog — sanitizing what the dashboard may show", () => {
     assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(emoji));
   });
 
+  it("stays FAST on hostile or huge input (runs on the event loop)", () => {
+    // Measured before the fix: 100k-char inputs like these took 4–15s each.
+    const n = 100_000;
+    for (const input of [
+      "[a](".repeat(n),
+      " \n".repeat(n),
+      "\n".repeat(n),
+      "[".repeat(n),
+      "> ".repeat(n),
+      "x".repeat(n * 10),
+    ]) {
+      const t0 = performance.now();
+      previewOf(input);
+      const ms = performance.now() - t0;
+      assert.ok(
+        ms < 250,
+        `took ${ms.toFixed(0)}ms on ${JSON.stringify(input.slice(0, 8))}…`,
+      );
+    }
+  });
+
+  it("truncating the input never leaves half a surrogate pair", () => {
+    const text = plainText(`${"a".repeat(3999)}😀tail`);
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text));
+  });
+
   it("a markup-looking message is plain text, not HTML (rendering stays textContent)", () => {
     // The server doesn't escape; the dashboard renders with textContent. This
     // pins that nothing here tries to "interpret" markup either.
@@ -154,6 +180,7 @@ describe("messageLog — recording an accepted message", () => {
     assert.equal(b.recent[0].ts, RING_SIZE + 4); // newest first
     assert.ok(b.recent.every((m) => Array.from(m.text).length <= FULL_MAX));
     assert.equal(getAgentMessageStats("b", 3).recent.length, 3);
+    assert.equal(getAgentMessageStats("b", 0).recent.length, 0);
   });
 
   it("a schedule sender records as from=null with its name, and counts only on the recipient", () => {
