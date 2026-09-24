@@ -327,6 +327,38 @@ describe("rich inspector — review fixes", () => {
     expect(right).toBeCloseTo(100, 0);
   });
 
+  it("a crash from before this server started isn't shown as a contradictory bare 0", async () => {
+    stub([
+      {
+        ...node("A"),
+        status: "exited",
+        children: [node("K")],
+      } as AgentTreeNode,
+    ]);
+    byAgent.A = analytics({ crashes: 0, restarts: 0, lastExitCode: null });
+    useStore.setState({
+      theme: "void",
+      sessions: [session("K")],
+      exitedSessions: [
+        {
+          ...(session("A") as object),
+          status: "exited",
+          exitReason: "crashed",
+        } as never,
+      ],
+      agentStatuses: { K: { status: "idle" } as never },
+      notificationCounts: {},
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("A")).toBeTruthy());
+    await openInspector("A");
+    const st = section("status") as HTMLElement;
+    expect(st).toHaveTextContent("Exitcrashed");
+    expect(st).toHaveTextContent(
+      "Crashes0 since the server started (the exit below was before)",
+    );
+  });
+
   it("an exited agent is never 'waiting now'", async () => {
     // An exited lead with a live report stays drawn (as a ghost).
     stub([

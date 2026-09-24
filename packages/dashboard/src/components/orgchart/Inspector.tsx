@@ -480,7 +480,12 @@ export function OrgInspector({
       "Crashes",
       a.crashes > 0 && a.lastExitCode !== null
         ? `${a.crashes} · last exit code ${a.lastExitCode}`
-        : a.crashes,
+        : // The record says it crashed, but the counts only cover this
+          // server's run: a bare 0 beside "Exit: crashed" reads as a
+          // contradiction, so say where the crash went.
+          a.crashes === 0 && exited && s?.exitReason === "crashed"
+          ? "0 since the server started (the exit below was before)"
+          : a.crashes,
     ]);
   }
   if (exited && exitReason) statusRows.push(["Exit", exitReason]);
