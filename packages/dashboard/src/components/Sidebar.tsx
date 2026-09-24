@@ -188,6 +188,21 @@ function useOrgChartData(refreshKey: number) {
   return { chart, status };
 }
 
+/**
+ * The branch shown on an agent row's bottom line. Prefers the server-derived
+ * branch (read from .git for EVERY provider, and current) over Claude Code's
+ * JSONL value (CC-only, and whatever the session last recorded) — before this,
+ * Codex/Gemini rows showed the folder with no branch at all. "HEAD" (detached)
+ * and "" (patched to "no branch") render nothing.
+ */
+export function rowBranch(
+  live: string | undefined,
+  fromClaudeJsonl: string | undefined,
+): string | undefined {
+  const b = live || fromClaudeJsonl;
+  return b && b !== "HEAD" ? b : undefined;
+}
+
 /** Enriched project data for one session, keyed by CC providerSessionId. */
 type SessionMeta = {
   summary?: string;
@@ -1466,9 +1481,8 @@ function SessionRow({
               to the far corner. min-w-0 keeps long branch names truncatable. */}
           <span className="min-w-0 truncate">
             {meta?.projectName ?? s.workingDirectory.split("/").pop()}
-            {meta?.gitBranch &&
-              meta.gitBranch !== "HEAD" &&
-              ` · ${meta.gitBranch}`}
+            {rowBranch(s.gitBranch, meta?.gitBranch) &&
+              ` · ${rowBranch(s.gitBranch, meta?.gitBranch)}`}
           </span>
           {/* shrink-0 with NO width cap — the preset name always renders in
               full (Terry's spec); the repo text and status label are the

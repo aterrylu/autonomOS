@@ -586,6 +586,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const { initGateway } = await import("./gateway/index.js");
     initGateway().catch((err) => console.error("[gateway] init failed:", err));
 
+    // Keep every agent row's "project · branch" current for all providers
+    // (branch read from .git, not Claude Code's JSONL).
+    const { startGitBranchRefresher } = await import(
+      "./agents/gitBranchRefresher.js"
+    );
+    startGitBranchRefresher();
+
     // Background update-availability check (ADR-077 §6): first run minutes
     // after boot, then ~daily; unref'd timer, settings-gated, never touches
     // a request path. The dashboard badge reads its cache off
