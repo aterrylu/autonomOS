@@ -102,16 +102,32 @@ function Envelope({
     const len = path.getTotalLength?.() ?? 0;
     const t0 = performance.now();
     let raf = 0;
+    let landed = false;
+    const finish = () => {
+      if (landed) return;
+      landed = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(backstop);
+      onLand(packet);
+    };
     const step = (now: number) => {
       const k = Math.min(1, (now - t0) / TRAVEL_MS);
       const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
       const at = path.getPointAtLength?.((packet.reverse ? 1 - e : e) * len);
       if (at) g.setAttribute("transform", `translate(${at.x},${at.y})`);
       if (k < 1) raf = requestAnimationFrame(step);
-      else onLand(packet);
+      else finish();
     };
     raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    // Browsers pause requestAnimationFrame in background tabs. Without this
+    // backstop an envelope sent while you're away would hang mid-edge — never
+    // landing, and holding an in-flight slot. Measured live: that's exactly
+    // what happened in an occluded tab. A timer always lands it.
+    const backstop = setTimeout(finish, TRAVEL_MS + 400);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(backstop);
+    };
   }, [packet.key]);
   const c = tokens.status.active;
   return (
@@ -275,6 +291,8 @@ export function MessageLayer({
       if (
         m !== "animated" ||
         rm ||
+        // Nobody's watching: don't animate into a hidden tab.
+        document.visibilityState === "hidden" ||
         inFlight.current >= MAX_IN_FLIGHT ||
         !a ||
         !b ||

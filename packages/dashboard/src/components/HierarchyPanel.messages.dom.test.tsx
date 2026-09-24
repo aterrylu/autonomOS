@@ -171,6 +171,34 @@ describe("message flow on the chart", () => {
     expect(bubble("Other")).toHaveTextContent("d");
   });
 
+  it("an envelope ALWAYS lands even if animation frames stop (background tab)", async () => {
+    // Browsers pause rAF in hidden/occluded tabs; measured live, envelopes then
+    // hung mid-edge forever. Freeze rAF entirely and require a landing anyway.
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    await mount("animated");
+    send(routed("Worker", "Lead", "while you were away"));
+    expect(document.querySelector("[data-org-envelope]")).not.toBeNull();
+    await waitFor(
+      () => expect(bubble("Lead")).toHaveTextContent("while you were away"),
+      {
+        timeout: 3000,
+      },
+    );
+    expect(document.querySelector("[data-org-envelope]")).toBeNull();
+  });
+
+  it("a hidden tab doesn't animate at all: messages land directly", async () => {
+    await mount("animated");
+    const vis = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    send(routed("Worker", "Lead", "quietly"));
+    expect(document.querySelector("[data-org-envelope]")).toBeNull();
+    expect(bubble("Lead")).toHaveTextContent("quietly");
+    vis.mockRestore();
+  });
+
   it("Off shows nothing; Quiet shows bubbles with no envelope", async () => {
     await mount("off");
     send(routed("Worker", "Lead", "hidden"));
