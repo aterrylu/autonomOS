@@ -148,7 +148,8 @@ describe("messageLog — recording an accepted message", () => {
         now: i,
       });
     }
-    const b = getAgentMessageStats("b", 50);
+    // Ask for MORE than the ring holds: an unbounded ring would return them.
+    const b = getAgentMessageStats("b", RING_SIZE + 5);
     assert.equal(b.recent.length, RING_SIZE);
     assert.equal(b.recent[0].ts, RING_SIZE + 4); // newest first
     assert.ok(b.recent.every((m) => Array.from(m.text).length <= FULL_MAX));

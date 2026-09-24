@@ -55,10 +55,8 @@ export interface AgentMessageStats {
 }
 
 // ANSI CSI/OSC sequences (colors, cursor moves, hyperlinks).
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ESC is the point
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 // Other C0 controls except tab/newline (normalized to spaces below).
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping controls is the point
 const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
 /** Strip terminal escapes and markdown syntax, collapse whitespace. */
