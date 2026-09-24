@@ -952,31 +952,6 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
     expect(screen.getByTestId("update-start")).not.toBeDisabled();
   });
 
-  it("under launchd the warning says the work SURVIVES, detached (measured: own process group)", async () => {
-    useStore.setState({ sessions: [session("a", "api-refactor")] });
-    installServer({
-      "GET /api/system/upgrade": () =>
-        json({
-          ...IDLE_UPGRADE,
-          backgroundFate: "orphaned",
-          background: [
-            {
-              id: "a",
-              name: "api-refactor",
-              processes: [{ pid: 42, command: "npm run dev" }],
-            },
-          ],
-        }),
-    });
-    await openToCheck();
-    const warn = await screen.findByTestId("update-background-warning");
-    expect(warn.textContent).toContain(
-      "1 background process will keep running without its agent: npm run dev",
-    );
-    expect(warn.textContent).toContain("stop it yourself");
-    expect(warn.textContent).not.toContain("will be stopped");
-  });
-
   it("an agent whose first task hasn't started reads 'Starting' and counts as mid-task", async () => {
     useStore.setState({
       sessions: [session("a", "new-worker")],

@@ -607,7 +607,7 @@ function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
   }, [sessions, statuses, upgrade]);
 }
 
-function AgentList({ rows, fate }: { rows: AgentRow[]; fate: BackgroundFate }) {
+function AgentList({ rows }: { rows: AgentRow[] }) {
   const page = usePage();
   const light = isLightBg(page.bg);
   return (
@@ -654,7 +654,7 @@ function AgentList({ rows, fate }: { rows: AgentRow[]; fate: BackgroundFate }) {
                   style={{ color: AMBER }}
                   data-testid="update-agent-background"
                 >
-                  {backgroundLine(r.background, fate)}
+                  {backgroundLine(r.background)}
                 </span>
               )}
             </span>
@@ -736,35 +736,17 @@ function Radio({
   );
 }
 
-type BackgroundFate = "stopped" | "orphaned" | null | undefined;
-
-/** "1 background process will be stopped: npm run dev" (systemd: the whole
- *  cgroup goes) or "…will keep running without its agent: …" (launchd:
- *  Claude Code runs each command in its own process group, which survives
- *  the restart — measured). */
-function backgroundLine(
-  procs: { command: string }[],
-  fate: BackgroundFate,
-): string {
+/** "1 background process will be stopped: npm run dev". */
+function backgroundLine(procs: { command: string }[]): string {
   const n = procs.length;
-  const what =
-    fate === "orphaned"
-      ? "will keep running without its agent"
-      : "will be stopped";
-  return `${n} background process${n === 1 ? "" : "es"} ${what}: ${procs
+  return `${n} background process${n === 1 ? "" : "es"} will be stopped: ${procs
     .map((p) => p.command)
     .join(" · ")}`;
 }
 
 /** Warn-only: agents that read idle but left work running in a background
  *  shell, which the restart stops. Never blocks the update. */
-function BackgroundWarning({
-  rows,
-  fate,
-}: {
-  rows: AgentRow[];
-  fate: BackgroundFate;
-}) {
+function BackgroundWarning({ rows }: { rows: AgentRow[] }) {
   const withBg = rows.filter((r) => r.background && r.background.length > 0);
   if (withBg.length === 0) return null;
   return (
@@ -778,13 +760,12 @@ function BackgroundWarning({
           <span className="font-semibold" style={{ color: AMBER }}>
             {r.name}:
           </span>{" "}
-          {backgroundLine(r.background ?? [], fate)}.
+          {backgroundLine(r.background ?? [])}.
         </div>
       ))}
       <div>
-        {fate === "orphaned"
-          ? "The restart doesn't stop it, but its agent loses track of it — stop it yourself afterwards if you don't need it."
-          : "The update stops it and nothing brings it back — start it again afterwards if you still need it."}
+        The update stops it and nothing brings it back — start it again
+        afterwards if you still need it.
       </div>
     </div>
   );
@@ -902,7 +883,7 @@ function CheckScreen({ info, flow }: { info: VersionInfo; flow: UpdateFlow }) {
               together
             </dd>
           </dl>
-          <BackgroundWarning rows={rows} fate={upgrade.backgroundFate} />
+          <BackgroundWarning rows={rows} />
           {actionError && <ErrorLine>{actionError}</ErrorLine>}
         </div>
         <Footer>
@@ -932,7 +913,7 @@ function CheckScreen({ info, flow }: { info: VersionInfo; flow: UpdateFlow }) {
         className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3"
         data-testid="update-check-busy"
       >
-        <AgentList rows={rows} fate={upgrade.backgroundFate} />
+        <AgentList rows={rows} />
         <div
           className="flex flex-col gap-2"
           role="radiogroup"

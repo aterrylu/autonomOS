@@ -92,15 +92,6 @@ systemRouter.get("/releases", (c) => {
 // A run is "in flight" while its record is non-terminal and fresh. The
 // staleness bound keeps a job that died without a final write (machine
 // lost power mid-update) from wedging the button forever.
-function backgroundFate(): "stopped" | "orphaned" | null {
-  const kind = ownSupervisor().kind;
-  return kind === "systemd"
-    ? "stopped"
-    : kind === "launchd"
-      ? "orphaned"
-      : null;
-}
-
 function upgradeInFlight(): boolean {
   // The lock covers a shell `autonomos upgrade`/`rollback` too (no status
   // file), and tells a killed job's orphaned record from a live one.
@@ -116,15 +107,12 @@ systemRouter.get("/upgrade", (c) => {
     armed: getArmedUpgrade(),
     idleWindowMs: IDLE_WINDOW_MS,
     busy: listBusyAgents(),
+    // Warn-only. "Will be stopped" is measured on BOTH supervisors: the
+    // restart SIGTERMs the daemon, whose shutdown handler stops each agent,
+    // and Claude Code tears down its own tracked background shells (own
+    // process group and all) — forge/systemd and the dev Mac with a real
+    // agent. A `nohup`/detached process (ppid 1) isn't counted: it escapes.
     background: listBackgroundWork(),
-    // What the restart does to that background work — measured, per
-    // supervisor: systemd kills the service's whole cgroup (a background
-    // command's own process group included: verified on forge); launchd
-    // kills only the job's process group, and Claude Code runs each Bash
-    // command in its OWN group — a child there survives the restart,
-    // reparented to init (verified with a throwaway launchd job). So on
-    // macOS it keeps running with no agent attached.
-    backgroundFate: backgroundFate(),
     // Judged here, on the clock that wrote the record — a browser whose clock
     // is minutes off would otherwise declare a live job dead (or a dead one
     // live).
