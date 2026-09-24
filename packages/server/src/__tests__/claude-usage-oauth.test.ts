@@ -454,6 +454,16 @@ describe("oauthUsage — getLastCredentialFailure (why there is no token)", () =
     });
   });
 
+  it("invalidating the memo forgets the last failure too", async () => {
+    __setKeychainExecForTests(async () => {
+      throw Object.assign(new Error("x"), { code: 44, stderr: "" });
+    });
+    await getOAuthToken();
+    assert.notEqual(getLastCredentialFailure(), null);
+    invalidateOAuthTokenMemo();
+    assert.equal(getLastCredentialFailure(), null);
+  });
+
   it("clears the failure after a successful read", async () => {
     __setKeychainExecForTests(async () => {
       throw Object.assign(new Error("x"), { code: 36, stderr: "denied" });

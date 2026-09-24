@@ -552,9 +552,11 @@ async function readOAuthTokenMemoized(): Promise<OAuthToken | null> {
 }
 
 /** Drop the memoized token so the next read goes back to the keychain/file —
- * after an explicit settings change / cache invalidation. */
+ * after an explicit settings change / cache invalidation. Also forgets the
+ * last failure: it described the read being discarded. */
 export function invalidateOAuthTokenMemo(): void {
   tokenMemo = null;
+  lastCredentialFailure = null;
   tokenRead = null;
   tokenMemoGeneration += 1;
 }
