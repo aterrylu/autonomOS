@@ -108,6 +108,16 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.doesNotMatch(r.stderr, /waiting/, "no contention → no waiting notice");
   });
 
+  it("an unusable lock file never blocks the push: it runs unlocked, with a warning", async () => {
+    const r = await runGate(
+      join(dir, "no-such-dir", "x.lock"),
+      "echo gate-ran; exit 4",
+    ).done;
+    assert.equal(r.code, 4, "the gate's own exit code, not the lock tool's");
+    assert.equal(r.stdout.trim(), "gate-ran");
+    assert.match(r.stderr, /cannot use the lock file .*running WITHOUT/);
+  });
+
   it("concurrent gates QUEUE: the second runs only after the first releases", async () => {
     const lock = join(dir, "b.lock");
     const release = join(dir, "b.release");

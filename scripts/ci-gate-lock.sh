@@ -49,10 +49,20 @@ holder() {
   [ -n "$pids" ] && ps -o pid=,command= -p "$pids" 2>/dev/null | head -3
 }
 
-# Probe only decides whether to announce the wait. If the lock is taken
-# between the probe and the real acquire, we just wait without the message.
+# The probe runs `true` under the REAL tool, so it reports exactly what the
+# gate's own acquire will see: 0 = free, BUSY = held by another gate, anything
+# else = the lock file itself can't be opened or created (another user's file
+# under Linux fs.protected_regular, an unwritable /tmp in a sandbox). The tool
+# would then exit WITHOUT running the gate and fail the push unexplained, so
+# we run unlocked instead. If the lock is taken between the probe and the real
+# acquire, we just wait without the message.
 probe
-if [ "$?" -eq "$BUSY" ]; then
+prc=$?
+if [ "$prc" -ne 0 ] && [ "$prc" -ne "$BUSY" ]; then
+  echo "[ci-gate] cannot use the lock file $LOCK (exit $prc); running WITHOUT the machine-wide lock" >&2
+  exec "$@"
+fi
+if [ "$prc" -eq "$BUSY" ]; then
   echo "[ci-gate] waiting for another CI gate on this machine (up to ${TIMEOUT}s)…" >&2
   h=$(holder)
   [ -n "$h" ] && echo "[ci-gate] held by: $h" >&2
