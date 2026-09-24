@@ -403,6 +403,12 @@ export function normalizeClaudeUsage(d: RateLimitData): NormalizedUsage {
     [d.sevenDay, "7d"],
     [d.sevenDaySonnet, "Sonnet 7d"],
     [d.sevenDayOpus, "Opus 7d"],
+    // Named windows from `limits[]` (model-scoped weeklies, unknown kinds) cap
+    // too — their label is the one the panel shows.
+    ...(d.extraWindows ?? []).map((w): [RateLimitWindow | null, string] => [
+      w,
+      w.label,
+    ]),
   ];
   const windows = entries
     .filter((e): e is [RateLimitWindow, string] => e[0] != null)

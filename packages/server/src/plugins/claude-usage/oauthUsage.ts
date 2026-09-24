@@ -26,8 +26,13 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { AuthHints, PlanHints } from "./credentialDiagnosis.js";
 import { createEdgeLogger } from "./edgeLog.js";
-import type { ExtraUsage, RateLimitWindow } from "./scanner.js";
+import type {
+  ExtraUsage,
+  NamedRateWindow,
+  RateLimitWindow,
+} from "./scanner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -399,6 +404,23 @@ export interface OAuthUsageRaw {
     used_credits?: number;
     utilization?: number | null;
   } | null;
+  /** Newer fields, read only to DIAGNOSE a response with no rolling windows
+   *  (spend-billed accounts) — not mapped to numbers. */
+  spend?: { enabled?: boolean; limit?: unknown } | null;
+  /** Newer list-shaped windows. For some accounts (a Team plan was the report)
+   *  the flat fields above are null while this holds the real windows. */
+  limits?: RawLimitEntry[] | null;
+}
+
+/** One `limits[]` entry. All optional — decoded defensively. */
+export interface RawLimitEntry {
+  kind?: string | null;
+  group?: string | null;
+  percent?: number | string | null;
+  resets_at?: string | null;
+  scope?: {
+    model?: { id?: string | null; display_name?: string | null } | null;
+  } | null;
 }
 
 /** Mapped usage windows — the subset of RateLimitData the OAuth path produces. */
@@ -407,24 +429,179 @@ export interface MappedUsage {
   sevenDay: RateLimitWindow | null;
   sevenDaySonnet: RateLimitWindow | null;
   sevenDayOpus: RateLimitWindow | null;
+  extraWindows: NamedRateWindow[];
   extraUsage: ExtraUsage | null;
 }
 
 function parseWindow(
   raw: RawWindow | null | undefined,
 ): RateLimitWindow | null {
-  if (!raw || raw.utilization == null) return null;
-  return { utilization: raw.utilization, resetsAt: raw.resets_at ?? "" };
+  if (!raw || typeof raw !== "object") return null;
+  // Same number rule as limits[]: a non-numeric utilization is no window (it
+  // would otherwise render "NaN%" and suppress the no-windows diagnosis).
+  const utilization = limitPercent(raw.utilization);
+  if (utilization === null) return null;
+  return {
+    utilization,
+    resetsAt: typeof raw.resets_at === "string" ? raw.resets_at : "",
+  };
 }
 
-/** Pure mapper: OAuth usage JSON → RateLimitData windows. Exported for tests. */
+const warnedLimits = new Set<string>();
+function warnLimitsOnce(message: string): void {
+  if (warnedLimits.has(message)) return;
+  warnedLimits.add(message);
+  console.warn(message);
+}
+
+/** Finite number from a number or numeric string, else null. */
+function limitPercent(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function trimmedString(raw: unknown): string | undefined {
+  return typeof raw === "string" ? raw.trim() || undefined : undefined;
+}
+
+function limitSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** "weekly_opus_extended" → "Weekly Opus Extended". */
+function prettifyKind(kind: string): string {
+  return kind
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Span suffix for an extra window's label, from its `group`. */
+function groupSpan(group: string | undefined): string {
+  if (group === "session") return "5h";
+  if (group === "weekly") return "7d";
+  return "";
+}
+
+/** A scope that names no single model ("All models") is the overall weekly. */
+function isAllModels(name: string | undefined): boolean {
+  return !name || /^all(\s+models)?$/i.test(name);
+}
+
+/** Which fixed slot a `limits[]` entry fills, or null for an extra window. */
+type Slot = "fiveHour" | "sevenDay" | "sevenDaySonnet" | "sevenDayOpus";
+function slotFor(kind: string, modelName: string | undefined): Slot | null {
+  if (kind === "session") return "fiveHour";
+  if (kind === "weekly_all") return "sevenDay";
+  if (kind === "weekly_scoped") {
+    if (isAllModels(modelName)) return "sevenDay";
+    if (/\bsonnet\b/i.test(modelName ?? "")) return "sevenDaySonnet";
+    if (/\bopus\b/i.test(modelName ?? "")) return "sevenDayOpus";
+  }
+  return null;
+}
+
+/**
+ * Pure mapper: OAuth usage JSON → RateLimitData windows. Exported for tests.
+ *
+ * Two sources, merged per slot. The FLAT fields (`five_hour`, `seven_day`,
+ * `seven_day_sonnet`, `seven_day_opus`) win when present — they are what every
+ * account rendered before, so an account that has them is unchanged. The
+ * `limits[]` list fills any slot the flat fields left null (the reported Team
+ * account got null flat fields and real windows in `limits[]`), and every
+ * entry that fits NO slot — a model-scoped weekly like "Fable", or a kind we
+ * don't know yet — becomes a named extra window instead of being dropped.
+ */
 export function mapOAuthUsage(raw: OAuthUsageRaw): MappedUsage {
   const extra = raw.extra_usage ?? null;
-  return {
+  const slots: Record<Slot, RateLimitWindow | null> = {
     fiveHour: parseWindow(raw.five_hour),
     sevenDay: parseWindow(raw.seven_day),
     sevenDaySonnet: parseWindow(raw.seven_day_sonnet),
     sevenDayOpus: parseWindow(raw.seven_day_opus),
+  };
+  const extraWindows: NamedRateWindow[] = [];
+  const seen = new Set<string>();
+  // Slots a limits[] entry (not a flat field) filled — a SECOND entry for the
+  // same slot is a different window (e.g. "Sonnet 4" and "Sonnet 4.5"), so it
+  // is kept as a named window instead of being dropped.
+  const filledFromLimits = new Set<Slot>();
+  const skippedKinds: string[] = [];
+  // Exact kinds (session / weekly_all) claim their slots before any scoped
+  // entry can, so an unscoped "weekly_scoped" never takes the overall weekly
+  // slot from the real weekly_all just by coming first in the array.
+  const entries = Array.isArray(raw.limits) ? raw.limits : [];
+  const exact = (e: unknown) =>
+    !!e &&
+    typeof e === "object" &&
+    ["session", "weekly_all"].includes(
+      trimmedString((e as RawLimitEntry).kind) ?? "",
+    );
+  for (const entry of [
+    ...entries.filter(exact),
+    ...entries.filter((e) => !exact(e)),
+  ]) {
+    if (!entry || typeof entry !== "object") {
+      skippedKinds.push("(not an object)");
+      continue;
+    }
+    const utilization = limitPercent(entry.percent);
+    if (utilization === null) {
+      skippedKinds.push(trimmedString(entry.kind) ?? "(no kind)");
+      continue;
+    }
+    const window: RateLimitWindow = {
+      utilization,
+      resetsAt: trimmedString(entry.resets_at) ?? "",
+    };
+    const group = trimmedString(entry.group);
+    const kind = trimmedString(entry.kind) ?? group ?? "limit";
+    const modelName =
+      trimmedString(entry.scope?.model?.display_name) ??
+      trimmedString(entry.scope?.model?.id);
+    const slot = slotFor(kind, modelName);
+    if (slot && !slots[slot]) {
+      slots[slot] = window;
+      filledFromLimits.add(slot);
+      continue;
+    }
+    // Filled by the flat field → the same window reported twice; skip it.
+    if (slot && !filledFromLimits.has(slot)) continue;
+    // Otherwise (no slot, or a second limits[] entry for a filled slot):
+    // keep it as a named window.
+    const span = groupSpan(group);
+    const base =
+      kind === "weekly_scoped" && modelName ? modelName : prettifyKind(kind);
+    const label = span ? `${base} ${span}` : base;
+    const spanField = span === "5h" || span === "7d" ? span : undefined;
+    const baseId = `claude-${limitSlug(kind)}${modelName ? `-${limitSlug(modelName)}` : ""}`;
+    let id = baseId;
+    for (let n = 2; seen.has(id); n++) id = `${baseId}-${n}`;
+    seen.add(id);
+    extraWindows.push({
+      ...window,
+      id,
+      label,
+      ...(spanField ? { span: spanField } : {}),
+    });
+  }
+  if (skippedKinds.length > 0) {
+    // Lossy per entry by design, but never silent: once per distinct set.
+    warnLimitsOnce(
+      `[claude-usage] limits[]: skipped ${skippedKinds.length} unreadable entr${skippedKinds.length === 1 ? "y" : "ies"} (kinds: ${skippedKinds.join(", ")})`,
+    );
+  }
+  return {
+    ...slots,
+    extraWindows,
     extraUsage: extra?.is_enabled
       ? {
           isEnabled: true,
@@ -442,14 +619,23 @@ export function mapOAuthUsage(raw: OAuthUsageRaw): MappedUsage {
  *   - `stale`        — the token expired before we even called (we don't refresh).
  *   - `unauthorized` — endpoint returned 401 (token rejected).
  *   - `rate_limited` — endpoint returned 429 (back off; the token is fine).
- *   - `unavailable`  — no token, or a network / parse / non-2xx failure.
+ *   - `unavailable`  — no token, or a network / parse / non-2xx failure. `cause`
+ *     and `httpStatus` say which, so the dashboard can name it (a 403 or a
+ *     proxy's HTML page is not "Anthropic is down").
  */
 export type OAuthUsageResult =
   | { status: "ok"; data: OAuthUsageRaw }
   | { status: "stale" }
   | { status: "unauthorized" }
   | { status: "rate_limited" }
-  | { status: "unavailable" };
+  | {
+      status: "unavailable";
+      cause?: "network" | "http" | "parse";
+      httpStatus?: number;
+    };
+
+/** A 2xx whose body wasn't JSON — told apart from a transport failure. */
+class UsageBodyParseError extends Error {}
 
 const oauthFetchLog = createEdgeLogger("[claude-usage] OAuth usage fetch");
 
@@ -482,8 +668,24 @@ export async function fetchOAuthUsage(
       });
       if (res.status === 401) return { status: "unauthorized" };
       if (res.status === 429) return { status: "rate_limited" };
-      if (!res.ok) return { status: "unavailable" };
-      const data = (await res.json()) as OAuthUsageRaw;
+      if (!res.ok)
+        return { status: "unavailable", cause: "http", httpStatus: res.status };
+      let data: OAuthUsageRaw;
+      try {
+        data = (await res.json()) as OAuthUsageRaw;
+      } catch (err) {
+        throw new UsageBodyParseError(
+          `usage response was not JSON: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      // Valid JSON but not an object (null / array / primitive) is not usage
+      // data either — without this, mapOAuthUsage(null) throws out of the
+      // poller and the route answers a bare 500 with no reason.
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        throw new UsageBodyParseError(
+          `usage response was ${data === null ? "null" : Array.isArray(data) ? "an array" : typeof data}, not an object`,
+        );
+      }
       return { status: "ok", data };
     })();
     oauthFetchLog.success();
@@ -492,7 +694,10 @@ export async function fetchOAuthUsage(
     // Network / parse failure — the message never contains the token.
     // Edge-triggered: one line on the first failure, one on recovery.
     oauthFetchLog.failure(err);
-    return { status: "unavailable" };
+    return {
+      status: "unavailable",
+      cause: err instanceof UsageBodyParseError ? "parse" : "network",
+    };
   }
 }
 
@@ -626,4 +831,102 @@ export function getOAuthUsage(token?: OAuthToken): Promise<OAuthUsageResult> {
     ? () => token
     : (tokenReaderOverride ?? readOAuthToken);
   return fetchOAuthUsage(fetcherOverride ?? defaultFetcher, readToken);
+}
+
+// ── Diagnosis inputs (read-only, no credential stores) ───────────────────
+
+/** Env var NAMES that route Claude Code away from a claude.ai login. */
+const BEDROCK_FLAG = "CLAUDE_CODE_USE_BEDROCK";
+const VERTEX_FLAG = "CLAUDE_CODE_USE_VERTEX";
+
+function truthyFlag(value: unknown): boolean {
+  if (typeof value !== "string") return value === true || value === 1;
+  return /^(1|true|yes|on)$/i.test(value.trim());
+}
+
+/**
+ * Facts the N/A diagnosis needs, read from Claude Code's CONFIG files — never
+ * from a credential store, and never returning a value that identifies the
+ * user or their organization: plan LABELS (organizationType / billingType /
+ * seatTier), whether an oauthAccount / primaryApiKey exists, and which auth
+ * env flags are set (names only, from Claude Code's settings.json `env` block
+ * and this server's own environment). Best-effort: unreadable files count as
+ * "not present".
+ */
+export function readClaudeConfigHints(): {
+  auth: AuthHints;
+  plan: Omit<PlanHints, "subscriptionType">;
+} {
+  const cfg = process.env.CLAUDE_CONFIG_DIR?.trim();
+  const home = homedir();
+  const credentials = join(claudeConfigDir(), ".credentials.json");
+  const auth: AuthHints = {
+    hasOAuthAccount: false,
+    apiKeyConfigured: false,
+    cloudProvider: null,
+    configDirOverride: Boolean(cfg),
+    configReadable: true,
+    credentialsPath: credentials.startsWith(`${home}/`)
+      ? `~${credentials.slice(home.length)}`
+      : credentials,
+  };
+  const plan: Omit<PlanHints, "subscriptionType"> = {};
+
+  const candidates: string[] = [];
+  if (cfg) candidates.push(join(cfg, ".claude.json"));
+  candidates.push(join(homedir(), ".claude.json"));
+  for (const path of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as {
+        oauthAccount?: {
+          organizationType?: unknown;
+          billingType?: unknown;
+          seatTier?: unknown;
+        } | null;
+        primaryApiKey?: unknown;
+      };
+      const account = parsed?.oauthAccount;
+      if (account && typeof account === "object") {
+        auth.hasOAuthAccount = true;
+        if (typeof account.organizationType === "string")
+          plan.organizationType = account.organizationType;
+        if (typeof account.billingType === "string")
+          plan.billingType = account.billingType;
+        if (typeof account.seatTier === "string")
+          plan.seatTier = account.seatTier;
+      }
+      if (typeof parsed?.primaryApiKey === "string" && parsed.primaryApiKey)
+        auth.apiKeyConfigured = true;
+      break; // first readable config wins, as in readAccountIdentity
+    } catch (err) {
+      // Absent → try the next candidate. PRESENT but unreadable/corrupt →
+      // remember it, so "no oauthAccount" isn't read as "API-key login".
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT")
+        auth.configReadable = false;
+    }
+  }
+
+  // Claude Code's settings.json `env` block — flag NAMES only. This server's
+  // OWN env is deliberately not consulted: a launchd service or a spawned
+  // tool may carry ANTHROPIC_API_KEY / CLAUDE_CODE_USE_* that the user's own
+  // `claude` never sees, which would mislabel an OAuth user.
+  let settingsEnv: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(claudeConfigDir(), "settings.json"), "utf-8"),
+    ) as { env?: Record<string, unknown> };
+    if (parsed?.env && typeof parsed.env === "object") settingsEnv = parsed.env;
+  } catch {
+    /* no settings.json — fine */
+  }
+  const flag = (name: string) => truthyFlag(settingsEnv[name]);
+  if (flag(BEDROCK_FLAG)) auth.cloudProvider = "bedrock";
+  else if (flag(VERTEX_FLAG)) auth.cloudProvider = "vertex";
+  if (
+    typeof settingsEnv.ANTHROPIC_API_KEY === "string" &&
+    settingsEnv.ANTHROPIC_API_KEY
+  )
+    auth.apiKeyConfigured = true;
+
+  return { auth, plan };
 }

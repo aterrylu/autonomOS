@@ -18,8 +18,18 @@ import { createHash } from "node:crypto";
 import { Impit } from "impit";
 import { getSettings, isAutoDetectAccountEnabled } from "../../settings.js";
 import { createSingleFlight } from "../singleFlight.js";
+import {
+  diagnoseAutoDetectOff,
+  diagnoseFetchFailure,
+  diagnoseFromError,
+  diagnoseMissingLogin,
+  diagnoseNoWindows,
+  type UsageDiagnosis,
+  withAlsoFailed,
+} from "./credentialDiagnosis.js";
 import { createEdgeLogger } from "./edgeLog.js";
 import {
+  getLastCredentialFailure,
   getOAuthToken,
   getOAuthUsage,
   invalidateOAuthTokenMemo,
@@ -28,11 +38,24 @@ import {
   type OAuthToken,
   type OAuthUsageRaw,
   readAccountIdentity,
+  readClaudeConfigHints,
 } from "./oauthUsage.js";
 
 export interface RateLimitWindow {
   utilization: number;
   resetsAt: string;
+}
+
+/** A usage window beyond the four fixed slots — a model-scoped weekly the
+ *  response names ("Fable 7d"), or a limit kind we don't know yet. Never
+ *  dropped: shown in the panel and counted by the usage queue. */
+export interface NamedRateWindow extends RateLimitWindow {
+  /** Stable id (`claude-<kind>[-<model slug>]`). */
+  id: string;
+  /** Display label, same wording in the panel and the queue ("Fable 7d"). */
+  label: string;
+  /** Window length when the response's `group` names one. */
+  span?: "5h" | "7d";
 }
 
 export interface ExtraUsage {
@@ -69,6 +92,9 @@ export interface RateLimitData {
   sevenDay: RateLimitWindow | null;
   sevenDaySonnet: RateLimitWindow | null;
   sevenDayOpus: RateLimitWindow | null;
+  /** Windows from the response's `limits[]` that fit none of the slots above.
+   *  Optional: snapshots cached or simulated before this field existed. */
+  extraWindows?: NamedRateWindow[];
   extraUsage: ExtraUsage | null;
   account: AccountInfo;
   fetchedAt: string;
@@ -81,6 +107,11 @@ export interface RateLimitData {
   credentialSource?: CredentialSource;
   /** True when no usage credential is available anywhere */
   needsSetup?: boolean;
+  /** WHY there are no numbers (or why they're stale): a stable code, a
+   *  one-line summary, and a hint. Set on every non-happy answer, including a
+   *  successful call that carried no rolling windows (the bare "n/a" case).
+   *  See credentialDiagnosis.ts. */
+  diagnosis?: UsageDiagnosis;
 }
 
 const USAGE_URL = "https://claude.ai/api/organizations";
@@ -450,7 +481,85 @@ export async function getRateLimits(
   // {@link usageOverride}). This is what makes the usage-queue feature
   // demoable without burning a real limit.
   if (usageOverride) return usageOverride;
+  return finalizeAnswer(await resolveRateLimits(fetcher));
+}
 
+/** Last diagnosis code written to the log — each CHANGE of cause logs once
+ *  (warn to the rotating log), recovery logs once; steady state logs nothing. */
+let lastLoggedDiagnosis: string | null = null;
+
+/** Test hook: forget the last logged cause. */
+export function __resetDiagnosisLogForTests(): void {
+  lastLoggedDiagnosis = null;
+}
+
+function hasWindows(data: RateLimitData): boolean {
+  return Boolean(
+    data.fiveHour ||
+      data.sevenDay ||
+      data.sevenDaySonnet ||
+      data.sevenDayOpus ||
+      (data.extraWindows && data.extraWindows.length > 0),
+  );
+}
+
+/**
+ * Single exit for every answer: a successful call with no rolling windows and
+ * no error is the literal "n/a" case — give it a reason if the path that built
+ * it didn't (the manual-key path has no plan hints). Then log the cause once.
+ */
+function finalizeAnswer(data: RateLimitData): RateLimitData {
+  let answer = data;
+  // INVARIANT: an answer without numbers, or with an error, carries a reason.
+  // Paths that build their own diagnosis keep it; the rest (the manual-key
+  // cookie path) get one derived from their already-specific error text.
+  if (!answer.diagnosis) {
+    if (answer.error) {
+      answer = {
+        ...answer,
+        diagnosis: diagnoseFromError({
+          error: answer.error,
+          errorKind: answer.errorKind,
+        }),
+      };
+    } else if (!answer.needsSetup && !hasWindows(answer)) {
+      answer = {
+        ...answer,
+        diagnosis: diagnoseNoWindows({
+          plan: {},
+          spend: {},
+          viaSessionKey: answer.credentialSource !== "oauth",
+        }),
+      };
+    }
+  }
+  // Log once per CHANGE of cause (code + summary, so a 404 → 502 shift is
+  // announced), and "available again" only when real numbers are back with
+  // no error — never on a hop from one failure to another.
+  const key = answer.diagnosis
+    ? `${answer.diagnosis.code}|${answer.diagnosis.summary}`
+    : null;
+  const healthy = hasWindows(answer) && !answer.error;
+  if (key !== lastLoggedDiagnosis) {
+    if (answer.diagnosis) {
+      const state = hasWindows(answer) ? "usage stale" : "usage unavailable";
+      console.warn(
+        `[claude-usage] ${state} (${answer.diagnosis.code}): ${answer.diagnosis.summary} Hint: ${answer.diagnosis.hint}`,
+      );
+      lastLoggedDiagnosis = key;
+    } else if (healthy && lastLoggedDiagnosis) {
+      console.log(
+        `[claude-usage] usage available again (was ${lastLoggedDiagnosis.split("|")[0]})`,
+      );
+      lastLoggedDiagnosis = null;
+    }
+  }
+  return answer;
+}
+
+async function resolveRateLimits(
+  fetcher: UsageFetcher,
+): Promise<RateLimitData> {
   const resolved = resolveSessionKey();
 
   // The auto-detect toggle SELECTS the credential source — it is not just a
@@ -462,6 +571,9 @@ export async function getRateLimits(
   // when switching Claude accounts. Pasting a key now turns auto-detect OFF
   // client-side, so each action states its intent.)
   let fallbackNote: { error: string; errorKind: ErrorKind } | undefined;
+  /** The broken login's own reason, kept when the saved key takes over so
+   *  neither cause is hidden (the key's error still leads if it failed too). */
+  let loginDiagnosis: UsageDiagnosis | undefined;
   if (isAutoDetectAccountEnabled(getSettings())) {
     const oauth = await computeOAuthRateLimits();
     // needsSetup cannot distinguish "no Claude Code login" from "couldn't READ
@@ -524,6 +636,7 @@ export async function getRateLimits(
             : "Claude Code login was rejected — showing usage from your saved session key.",
         errorKind: oauth.errorKind,
       };
+      loginDiagnosis = oauth.diagnosis;
     }
   } else if (!resolved) {
     return {
@@ -531,6 +644,7 @@ export async function getRateLimits(
         "Auto-detect is off and no session key is saved. Turn auto-detect on, or paste a claude.ai session key.",
       ),
       needsSetup: true,
+      diagnosis: diagnoseAutoDetectOff(),
     };
   }
 
@@ -539,10 +653,25 @@ export async function getRateLimits(
   // overwrite it with the fallback note.
   const data = await computeRateLimits(`sessionKey=${resolved.key}`, fetcher);
   lastServedSource = "manual";
-  const answer: RateLimitData =
+  let answer: RateLimitData =
     fallbackNote && !data.error
-      ? { ...data, credentialSource: resolved.source, ...fallbackNote }
+      ? {
+          ...data,
+          credentialSource: resolved.source,
+          ...fallbackNote,
+          diagnosis: loginDiagnosis,
+        }
       : { ...data, credentialSource: resolved.source };
+  if (data.error && loginDiagnosis) {
+    // Both failed: lead with the key's reason, name the login's too.
+    answer = {
+      ...answer,
+      diagnosis: withAlsoFailed(
+        diagnoseFromError({ error: data.error, errorKind: data.errorKind }),
+        loginDiagnosis,
+      ),
+    };
+  }
   lastAnswer = answer;
   return answer;
 }
@@ -569,11 +698,20 @@ function cachedFor(fp: string): RateLimitData | null {
 async function computeOAuthRateLimits(): Promise<RateLimitData> {
   const token = await getOAuthToken();
   if (!token) {
-    return {
-      ...errorResult(
-        "No Claude Code login found. Log in with `claude` (or paste a session key) to track usage.",
+    const diagnosis = diagnoseMissingLogin({
+      platform: process.platform,
+      // The reader records WHY the last read found nothing (security exit
+      // code / timeout, file errno / parse failure) — the difference between
+      // "never logged in" and "keychain locked".
+      failures: [getLastCredentialFailure()].filter(
+        (f): f is NonNullable<typeof f> => f !== null,
       ),
+      auth: readClaudeConfigHints().auth,
+    });
+    return {
+      ...errorResult(diagnosis.summary),
       needsSetup: true,
+      diagnosis,
     };
   }
 
@@ -606,6 +744,7 @@ async function fetchOAuthRateLimits(
         "stale_token",
       ),
       credentialSource: "oauth",
+      diagnosis: diagnoseFetchFailure(result),
     };
   }
   if (result.status === "unauthorized") {
@@ -618,6 +757,7 @@ async function fetchOAuthRateLimits(
         "unauthorized",
       ),
       credentialSource: "oauth",
+      diagnosis: diagnoseFetchFailure(result),
     };
   }
   if (result.status === "rate_limited") {
@@ -625,8 +765,12 @@ async function fetchOAuthRateLimits(
     // re-hitting it every poll worsens the limit. Cache the rate-limited state
     // for CACHE_TTL_429 so subsequent reads short-circuit. Serve last-good for
     // this token if we have it; otherwise cache the error result itself.
+    const diagnosis = diagnoseFetchFailure(result);
     if (lastGood && lastGood.fp === fp) {
-      const stale = staleServed(lastGood.data, "rate_limited");
+      const stale = {
+        ...staleServed(lastGood.data, "rate_limited"),
+        diagnosis,
+      };
       cached = { data: stale, expiresAt: now + CACHE_TTL_429, fp };
       return stale;
     }
@@ -636,6 +780,7 @@ async function fetchOAuthRateLimits(
         "rate_limited",
       ),
       credentialSource: "oauth",
+      diagnosis,
     };
     cached = { data: errored, expiresAt: now + CACHE_TTL_429, fp };
     return errored;
@@ -643,17 +788,27 @@ async function fetchOAuthRateLimits(
   if (result.status === "unavailable") {
     // Serve last-good for the SAME token if we have it, so a transient blip
     // doesn't blank the panel; otherwise report the transient failure.
+    // The cause decides the words: a network drop or a 5xx is a transient
+    // outage ("your login is fine" is true), but a 403 or a proxy's HTML page
+    // is not — say what actually happened instead of promising it'll clear.
+    const diagnosis = diagnoseFetchFailure(result);
     if (lastGood && lastGood.fp === fp) {
-      const stale = staleServed(lastGood.data, "unavailable");
+      const stale = {
+        ...staleServed(lastGood.data, "unavailable", diagnosis),
+        diagnosis,
+      };
       cached = { data: stale, expiresAt: now + CACHE_TTL, fp };
       return stale;
     }
     return {
       ...errorResult(
-        "Anthropic's usage API is temporarily unavailable. Your login is fine — retry in a moment.",
+        diagnosis.transient
+          ? "Anthropic's usage API is temporarily unavailable. Your login is fine — retry in a moment."
+          : diagnosis.summary,
         "unavailable",
       ),
       credentialSource: "oauth",
+      diagnosis,
     };
   }
 
@@ -669,6 +824,26 @@ async function fetchOAuthRateLimits(
     fetchedAt: new Date().toISOString(),
     credentialSource: "oauth",
   };
+  // The literal "n/a" case: the call worked but carried no rolling window
+  // (neither the flat fields nor `limits[]`). Say why, with the plan label and
+  // spend signals the response itself has.
+  if (!hasWindows(data)) {
+    const raw = result.data;
+    data.diagnosis = diagnoseNoWindows({
+      plan: {
+        ...readClaudeConfigHints().plan,
+        subscriptionType: token.subscriptionType,
+      },
+      spend: {
+        spendEnabled: raw.spend?.enabled === true,
+        hasSpendLimit:
+          (raw.spend?.limit !== null && raw.spend?.limit !== undefined) ||
+          (raw.extra_usage?.is_enabled === true &&
+            typeof raw.extra_usage.monthly_limit === "number"),
+        hasLimitsArray: Array.isArray(raw.limits) && raw.limits.length > 0,
+      },
+    });
+  }
 
   lastGood = { data, fp };
   cached = { data, expiresAt: now + CACHE_TTL, fp };
@@ -790,13 +965,20 @@ async function fetchCookieRateLimits(
 function staleServed(
   data: RateLimitData,
   kind: "rate_limited" | "unavailable",
+  diagnosis?: UsageDiagnosis,
 ): RateLimitData {
+  // "Unreachable" is only true for a transient cause; a 403 or a proxy's page
+  // is named as what it is, so the marker and the log say the same thing.
+  const unavailableText =
+    diagnosis && !diagnosis.transient
+      ? `${diagnosis.summary} Showing the last successful reading.`
+      : "The usage API is unreachable — showing the last successful reading.";
   return {
     ...data,
     error:
       kind === "rate_limited"
         ? "Usage requests are being rate-limited — showing the last successful reading."
-        : "The usage API is unreachable — showing the last successful reading.",
+        : unavailableText,
     errorKind: kind,
   };
 }
