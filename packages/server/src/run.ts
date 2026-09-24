@@ -26,6 +26,7 @@ import { migrateIfNeeded } from "./agents/migrate.js";
 import {
   resumeActiveAgents,
   shutdownAllAttachments,
+  snapshotResumableAgents,
 } from "./agents/runtime.js";
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
@@ -582,6 +583,17 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     //      the window is closed — the loop cannot run a handler between them.
     sweepAgentTokenFiles();
 
+    // Snapshot the agents to resume HERE, synchronously, for the same reason
+    // the token sweep sits here: POST /api/agents is live from the bind, and
+    // every `await` below yields to it. A spawn that lands in that window is a
+    // fresh LIVE agent of this boot, not a record from before the restart — a
+    // sweep that re-listed the store after the awaits picked it up, failed to
+    // "resume" it (already attached), and marked it crashed with its token
+    // revoked (the agent-spawn-prompt CI flake; #382's new import widened the
+    // window). Taking the list before the first await closes it for good, no
+    // matter what gets awaited below later.
+    const toResume = snapshotResumableAgents();
+
     // Initialize gateway (platform adapters, routing table).
     const { initGateway } = await import("./gateway/index.js");
     initGateway().catch((err) => console.error("[gateway] init failed:", err));
@@ -625,7 +637,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // Now async (provider sidecar daemons start before each PTY). Start
     // the scheduler AFTER agents are up so agent:<name> targets resolve —
     // chain it off the resume promise rather than racing it.
-    void resumeActiveAgents()
+    void resumeActiveAgents(toResume)
       .catch((err) =>
         console.error("[startup] resumeActiveAgents failed:", err),
       )
