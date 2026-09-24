@@ -507,6 +507,28 @@ describe("keyboard + assistive tech", () => {
 });
 
 describe("F9 — recency parity with the sidebar", () => {
+  it("a stale IDLE label fades like the sidebar's (#383); a stale waiting one never does", async () => {
+    const twoDays = Date.now() - 2 * 86_400_000;
+    tree([node("Sleepy", "running"), node("Stuck", "running")]);
+    useStore.setState({
+      sessions: [
+        session("Sleepy", { lastActivityAt: twoDays }),
+        session("Stuck", { lastActivityAt: twoDays }),
+      ],
+      agentStatuses: {
+        Sleepy: { status: "idle" } as never,
+        Stuck: { status: "needs_input" } as never,
+      },
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Stuck")).not.toBeNull());
+    const label = (id: string) =>
+      card(id)?.querySelector("[data-org-label]") as HTMLElement;
+    expect(label("Sleepy").textContent).toBe("Idle");
+    expect(Number(label("Sleepy").style.opacity)).toBeLessThan(1);
+    expect(label("Stuck").style.opacity).toBe("1");
+  });
+
   it("shows the same compact age the sidebar would", async () => {
     tree([node("Old", "running")]);
     useStore.setState({

@@ -11,7 +11,11 @@ import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
 import { pruneExited } from "./orgchart/pruneExited";
 import { type OrgChartTokens, orgChartTokens } from "./orgchart/theme";
-import { formatAge, recencyTimestampStyle } from "./recency";
+import {
+  formatAge,
+  recencyLabelOpacity,
+  recencyTimestampStyle,
+} from "./recency";
 import { statusLabelStyle } from "./statusLabelStyle";
 import {
   type AgentStatus,
@@ -320,6 +324,11 @@ function OrgCard({
           style={{
             color: labelStyle.color,
             fontWeight: attention ? 600 : undefined,
+            // #383's rule, shared with the sidebar: only an at-rest (idle)
+            // label fades with age; attention and work never recede.
+            opacity: exited
+              ? undefined
+              : recencyLabelOpacity(status, lastActive, Date.now(), page.bg),
           }}
         >
           {label}
