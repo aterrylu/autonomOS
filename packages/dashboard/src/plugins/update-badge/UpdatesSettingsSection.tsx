@@ -3,9 +3,10 @@
  * toggle (owned by the settings panel, passed in so its behavior is
  * unchanged), and the kept state snapshots.
  *
- * Restore is offered ONLY on the snapshot whose fromVersion is the server's
- * `rollback.version` — the one that pairs with the previous code actually
- * kept on disk. Older snapshots are listed for reference / manual recovery
+ * Restore is offered ONLY on the server's `rollback.snapshotId` — the newest
+ * snapshot taken FROM the previous version actually kept on disk, which is
+ * exactly what a Restore puts back (there can be several from that version,
+ * e.g. after a Restore saved the live state). Older snapshots are listed for reference / manual recovery
  * from a terminal: restoring them without their code would run old code on
  * newer records, or new code on old ones.
  */
@@ -57,7 +58,7 @@ export function UpdatesSettingsSection({
 
   const label = { color: page.statusFg };
   const snapshots = data?.snapshots ?? [];
-  const pairing = data?.rollback?.version ?? null;
+  const pairing = data?.rollback?.snapshotId ?? null;
   // "updated <date>": the snapshot taken on the way INTO this version.
   const updatedAt = snapshots.find((s) => s.toVersion === version)?.createdAt;
   const updatedDate = updatedAt ? formatReleaseDate(updatedAt) : null;
@@ -103,7 +104,7 @@ export function UpdatesSettingsSection({
           style={{ border: `1px solid ${page.border}` }}
         >
           {snapshots.map((s, i) => {
-            const restorable = s.fromVersion === pairing;
+            const restorable = s.id === pairing;
             return (
               <li
                 key={s.id}

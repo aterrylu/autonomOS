@@ -33,9 +33,11 @@ beforeEach(() => {
     snapshots: [
       snap("s3", "0.7.0", "0.7.1", "2026-09-24T07:12:00Z"),
       snap("s2", "0.6.1", "0.7.0", "2026-08-26T05:13:00Z"),
+      snap("s2old", "0.6.1", "0.7.0", "2026-08-25T09:00:00Z"),
       snap("s1", "0.6.0", "0.6.1", "2026-08-25T08:15:00Z"),
     ],
-    // The previous code kept on disk is 0.6.1 — so only s2 pairs with it.
+    // The previous code kept on disk is 0.6.1 and a Restore puts back the
+    // NEWEST snapshot from it — s2, not the older s2old from the same version.
     rollback: { version: "0.6.1", snapshotId: "s2" },
   };
   vi.stubGlobal(
@@ -88,12 +90,18 @@ describe("UpdatesSettingsSection", () => {
     const rows = screen.getAllByTestId("settings-snapshot");
     expect(
       rows.map((r) => r.textContent?.match(/Saved on v[\d.]+/)?.[0]),
-    ).toEqual(["Saved on v0.7.0", "Saved on v0.6.1", "Saved on v0.6.0"]);
+    ).toEqual([
+      "Saved on v0.7.0",
+      "Saved on v0.6.1",
+      "Saved on v0.6.1",
+      "Saved on v0.6.0",
+    ]);
     // What each snapshot preceded — the label says which state it holds.
     expect(rows[0].textContent).toContain("Saved on v0.7.0 · before v0.7.1");
     expect(rows.map((r) => r.getAttribute("data-restorable"))).toEqual([
       "false",
       "true",
+      "false",
       "false",
     ]);
     expect(screen.getAllByTestId("settings-restore")).toHaveLength(1);
@@ -108,7 +116,7 @@ describe("UpdatesSettingsSection", () => {
   it("offers no Restore at all when nothing can be restored", async () => {
     snapshots = { ...(snapshots as object), rollback: null };
     await renderSection();
-    expect(screen.getAllByTestId("settings-snapshot")).toHaveLength(3);
+    expect(screen.getAllByTestId("settings-snapshot")).toHaveLength(4);
     expect(screen.queryByTestId("settings-restore")).toBeNull();
   });
 });
