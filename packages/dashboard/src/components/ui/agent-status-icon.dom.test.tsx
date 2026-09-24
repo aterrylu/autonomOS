@@ -17,7 +17,7 @@ import {
  */
 describe("agentStatusLabel", () => {
   it("maps each status to its human label", () => {
-    expect(agentStatusLabel("ready")).toBe("Ready");
+    expect(agentStatusLabel("ready")).toBe("Idle");
     expect(agentStatusLabel("working")).toBe("Working");
     expect(agentStatusLabel("idle")).toBe("Idle");
     expect(agentStatusLabel("needs_input")).toBe("Needs input");

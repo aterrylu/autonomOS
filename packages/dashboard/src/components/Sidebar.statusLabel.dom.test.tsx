@@ -9,7 +9,8 @@ import { Sidebar } from "./Sidebar";
  * Status-label styling wired into a real SessionRow: active-work labels get the
  * `.status-shimmer` class; other statuses get a static muted-accent inline color;
  * and the treatment coexists with the shipped recency fade (which fades the
- * TIMESTAMP, not the label). The pure mapping is covered in statusLabelStyle.test.ts.
+ * TIMESTAMP, plus the passive Idle label since ADR-101 — never these attention
+ * labels; see Sidebar.idleLabel.dom.test.tsx). The pure mapping is covered in statusLabelStyle.test.ts.
  */
 
 const NOW = Date.now();
