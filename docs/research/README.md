@@ -10,6 +10,9 @@ Each subfolder is a project. Drop findings, notes, architecture breakdowns, and 
 - **[openclaw/](openclaw/)** — Our current agent runtime. Understand internals to build on top of it.
 - **[dimensionalOS/](dimensionalOS/)** — Robot nav-stack + agent platform. Inspiration for the robot path. Also has OpenClaw integration.
 
+### Evaluations
+- **[agent-memory/](agent-memory/)** — Should autonomOS add an agent memory system? Landscape + hands-on spikes + phased recommendation (2026-09).
+
 ### Competition / Reference
 - **[mission-control/](mission-control/)** — builderz-lab/mission-control. Similar concept — study their approach.
 
