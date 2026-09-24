@@ -1,9 +1,10 @@
-import type { AgentTreeNode } from "@autonomos/core";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { type AgentTreeNode, PERMISSION_MODE_INFO } from "@autonomos/core";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { orgTreePoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { focusTerminal } from "../hooks/useTerminal";
+import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
@@ -112,10 +113,23 @@ interface CardProps {
   unread: number;
   tokens: OrgChartTokens;
   page: PageTheme;
+  /** Selection role: the selected card, a card on its manager chain / in its
+   *  team, a card outside it (dimmed), or no selection at all. */
+  selection: "self" | "chain" | "dim" | null;
   onOpen: (node: AgentTreeNode) => void;
+  onSelect: (id: string | null) => void;
+  onNavigate: (id: string, dir: NavDir) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
   onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
 }
+
+type NavDir = "up" | "down" | "left" | "right";
+const NAV_KEYS: Record<string, NavDir> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+};
 
 function menuTarget(
   node: AgentTreeNode,
@@ -153,7 +167,10 @@ function OrgCard({
   unread,
   tokens,
   page,
+  selection,
   onOpen,
+  onSelect,
+  onNavigate,
   onResume,
   onMenu,
 }: CardProps) {
@@ -196,9 +213,9 @@ function OrgCard({
     tabIndex: 0,
     "data-org-card": node.id,
     "data-org-status": exited ? "exited" : status,
-    "aria-label": `${node.name}, ${label}${unread > 0 ? `, ${unread} unread` : ""}${
-      exited ? "" : ". Open terminal"
-    }. Shift+F10 for actions.`,
+    "aria-label": `${node.name}, ${label}${unread > 0 ? `, ${unread} unread` : ""}. ${
+      exited ? "" : "Enter opens the terminal; "
+    }arrows move; Shift+F10 for actions.`,
     title: node.template ? `${node.name} · ${node.template}` : node.name,
     className: `org-card absolute flex flex-col justify-between rounded-[9px] px-2.5 py-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 ${
       working ? "org-card-working" : ""
@@ -209,10 +226,14 @@ function OrgCard({
       top: y,
       width: CARD_W,
       height: CARD_H,
-      cursor: exited ? "default" : "pointer",
-      // Only drawn under :focus-visible (the outline-2 utility); themed so
-      // the focus mark reads as the app's, not the browser default blue.
+      cursor: "pointer",
+      // The focus outline (focus-visible:outline-2) and the SELECTED outline
+      // share the theme's slate, so selection reads as the app's own mark.
       outlineColor: tokens.status.active,
+      ...(selection === "self"
+        ? { outline: `2px solid ${tokens.status.active}`, outlineOffset: 3 }
+        : {}),
+      opacity: selection === "dim" ? 0.45 : undefined,
       background: exited ? tokens.ghostCard : tokens.card,
       border: `1px ${exited ? "dashed" : "solid"} ${
         attention
@@ -224,11 +245,28 @@ function OrgCard({
       boxShadow: exited || working || attention ? undefined : tokens.cardShadow,
       color: tokens.fg,
     },
+    // Click SELECTS (Terry's pick: the chart stays put). Opening the terminal
+    // is always explicit: double-click, Enter, or the inspector's button.
+    onClick: () => onSelect(node.id),
+    onDoubleClick: () => {
+      if (!exited) onOpen(node);
+    },
     onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
-      // Enter/Space on a running card are the native <button> click — handling
-      // them here too would open the agent twice.
       if (e.target !== e.currentTarget) return;
-      if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+      const dir = NAV_KEYS[e.key];
+      if (dir) {
+        e.preventDefault();
+        onNavigate(node.id, dir);
+      } else if (e.key === "Enter") {
+        // preventDefault stops the native <button> click (which would select).
+        e.preventDefault();
+        if (exited) onSelect(node.id);
+        else onOpen(node);
+      } else if (e.key === " " && exited) {
+        // Space is the native click on a running <button>; a fieldset has none.
+        e.preventDefault();
+        onSelect(node.id);
+      } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
         e.preventDefault();
         openMenuAtCard(e.currentTarget);
       }
@@ -320,18 +358,22 @@ function OrgCard({
   );
 
   // A running card IS a <button> (it has no nested controls). An exited ghost
-  // does nothing on click, so it's a native group — <fieldset> — whose Resume
-  // button stays reachable to assistive tech (a button would hide it).
+  // is a native group — <fieldset> — so its nested Resume button stays
+  // reachable to assistive tech (a button would hide it).
   return exited ? (
-    <fieldset {...shared} className={`${shared.className} m-0 min-w-0`}>
+    <fieldset
+      {...shared}
+      aria-current={selection === "self" ? "true" : undefined}
+      className={`${shared.className} m-0 min-w-0`}
+    >
       {content}
     </fieldset>
   ) : (
     <button
       type="button"
       {...shared}
+      aria-pressed={selection === "self"}
       className={`${shared.className} text-left`}
-      onClick={() => onOpen(node)}
     >
       {content}
     </button>
@@ -343,16 +385,37 @@ function OrgCard({
 interface Flat {
   node: AgentTreeNode;
   managerName?: string;
+  managerId?: string;
 }
 
 function flatten(roots: AgentTreeNode[]): Flat[] {
   const out: Flat[] = [];
-  const walk = (n: AgentTreeNode, managerName?: string) => {
-    out.push({ node: n, managerName });
-    for (const c of n.children) walk(c, n.name);
+  const walk = (n: AgentTreeNode, manager?: AgentTreeNode) => {
+    out.push({ node: n, managerName: manager?.name, managerId: manager?.id });
+    for (const c of n.children) walk(c, n);
   };
   for (const r of roots) walk(r);
   return out;
+}
+
+/** The selected agent plus its manager chain and its whole team. */
+function selectionChain(flat: Flat[], selectedId: string): Set<string> {
+  const byId = new Map(flat.map((f) => [f.node.id, f]));
+  const chain = new Set<string>([selectedId]);
+  let up = byId.get(selectedId)?.managerId;
+  while (up) {
+    chain.add(up);
+    up = byId.get(up)?.managerId;
+  }
+  const down = (n: AgentTreeNode) => {
+    for (const c of n.children) {
+      chain.add(c.id);
+      down(c);
+    }
+  };
+  const self = byId.get(selectedId)?.node;
+  if (self) down(self);
+  return chain;
 }
 
 function OrgCanvas({
@@ -360,6 +423,8 @@ function OrgCanvas({
   tokens,
   page,
   statusMap,
+  selectedId,
+  onSelect,
   onOpen,
   onResume,
   onMenu,
@@ -368,6 +433,8 @@ function OrgCanvas({
   tokens: OrgChartTokens;
   page: PageTheme;
   statusMap: Record<string, AgentInfo>;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
   onOpen: (node: AgentTreeNode) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
   onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
@@ -382,9 +449,61 @@ function OrgCanvas({
       ),
     [flat],
   );
+  const chain = useMemo(
+    () => (selectedId ? selectionChain(flat, selectedId) : null),
+    [flat, selectedId],
+  );
+
+  // Arrow keys walk the chart: ↑ manager, ↓ first report, ←/→ the neighbor on
+  // the same row. Focus follows the selection so the keys keep working.
+  const navigate = useCallback(
+    (id: string, dir: NavDir) => {
+      const me = flat.find((f) => f.node.id === id);
+      const at = layout.pos.get(id);
+      if (!me || !at) return;
+      let to: string | undefined;
+      if (dir === "up") to = me.managerId;
+      else if (dir === "down") to = me.node.children[0]?.id;
+      else {
+        const row = flat
+          .map((f) => ({ id: f.node.id, p: layout.pos.get(f.node.id) }))
+          .filter((r) => r.p && r.p.y === at.y)
+          .sort((a, b) => (a.p?.x ?? 0) - (b.p?.x ?? 0));
+        const i = row.findIndex((r) => r.id === id);
+        to = row[i + (dir === "left" ? -1 : 1)]?.id;
+      }
+      if (!to) return;
+      onSelect(to);
+      requestAnimationFrame(() =>
+        document
+          .querySelector<HTMLElement>(`[data-org-card="${CSS.escape(to)}"]`)
+          ?.focus(),
+      );
+    },
+    [flat, layout, onSelect],
+  );
+
+  // Clicking empty canvas clears the selection (a pointer nicety — the
+  // keyboard path is Esc via the escape stack). Native listener: the viewport
+  // is a plain scroll container, not an interactive element.
+  const viewportRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest("[data-org-card], button")) onSelect(null);
+    };
+    el.addEventListener("click", onClick);
+    return () => el.removeEventListener("click", onClick);
+  }, [onSelect]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto" data-org-viewport>
+    <div
+      ref={viewportRef}
+      className="min-h-0 flex-1 overflow-auto"
+      data-org-viewport
+    >
       <div
         data-org-stage
         className="relative"
@@ -404,6 +523,7 @@ function OrgCanvas({
             const b = layout.pos.get(to);
             if (!a || !b) return null;
             const dashed = exitedIds.has(from) || exitedIds.has(to);
+            const lit = chain?.has(from) && chain.has(to);
             return (
               <path
                 key={`${from}>${to}`}
@@ -411,8 +531,9 @@ function OrgCanvas({
                 d={elbowPath(a, b)}
                 fill="none"
                 className="org-edge"
-                stroke={tokens.edge}
-                strokeWidth={1.6}
+                stroke={lit ? tokens.status.active : tokens.edge}
+                strokeWidth={lit ? 2 : 1.6}
+                opacity={chain && !lit ? 0.45 : undefined}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeDasharray={dashed ? "4 4" : undefined}
@@ -448,7 +569,18 @@ function OrgCanvas({
               }
               tokens={tokens}
               page={page}
+              selection={
+                !chain
+                  ? null
+                  : node.id === selectedId
+                    ? "self"
+                    : chain.has(node.id)
+                      ? "chain"
+                      : "dim"
+              }
               onOpen={onOpen}
+              onSelect={onSelect}
+              onNavigate={navigate}
               onResume={onResume}
               onMenu={onMenu}
             />
@@ -456,6 +588,265 @@ function OrgCanvas({
         })}
       </div>
     </div>
+  );
+}
+
+// ── Inspector: the selected agent, docked beside the chart ───────
+
+const PROVIDER_NAMES: Record<string, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  "gemini-cli": "Gemini CLI",
+};
+
+function OrgInspector({
+  node,
+  managerId,
+  managerName,
+  info,
+  unread,
+  tokens,
+  page,
+  statusMap,
+  onSelect,
+  onOpen,
+  onResume,
+  onRestart,
+  onMenu,
+}: {
+  node: AgentTreeNode;
+  managerId?: string;
+  managerName?: string;
+  info?: AgentInfo;
+  unread: number;
+  tokens: OrgChartTokens;
+  page: PageTheme;
+  statusMap: Record<string, AgentInfo>;
+  onSelect: (id: string | null) => void;
+  onOpen: (node: AgentTreeNode) => void;
+  onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
+  onRestart: (id: string) => void;
+  onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
+}) {
+  const exited = node.status !== "running";
+  const status = nodeStatus(node, info);
+  const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
+  const labelStyle = statusLabelStyle(status, tokens.isLight);
+  const s = info?.session;
+  const lastActive =
+    s?.lastActivityAt ??
+    (exited ? s?.exitedAt : undefined) ??
+    s?.createdAt ??
+    0;
+  const mode = node.permissionMode ?? s?.permissionMode;
+  const cwd = s?.workingDirectory;
+  const exitReason = s?.exitReason?.replace("_", " ");
+
+  const rows: Array<[string, React.ReactNode]> = [
+    [
+      "Last active",
+      <span
+        key="la"
+        style={recencyTimestampStyle(
+          lastActive,
+          Date.now(),
+          page.statusFg,
+          page.fg,
+          page.bg,
+        )}
+      >
+        {formatAge(lastActive)}
+      </span>,
+    ],
+  ];
+  if (unread > 0)
+    rows.push([
+      "Unread",
+      <span key="u" style={{ color: tokens.unread }}>
+        {unread}
+      </span>,
+    ]);
+  if (s?.createdAt) rows.push(["Created", `${formatAge(s.createdAt)} ago`]);
+  if (exited && exitReason) rows.push(["Exit", exitReason]);
+  rows.push([
+    "Runtime",
+    PROVIDER_NAMES[node.provider ?? ""] ?? node.provider ?? "Unknown",
+  ]);
+  if (mode)
+    rows.push(["Permissions", PERMISSION_MODE_INFO[mode]?.label ?? mode]);
+  if (s?.envPreset) rows.push(["Model preset", s.envPreset]);
+  // The tree node and the session record carry the same fields; prefer the
+  // tree's, fall back to the record's (either can arrive first).
+  const template = node.template ?? s?.template;
+  if (template) rows.push(["Template", template]);
+  if (node.project) rows.push(["Project", node.project]);
+  if (cwd)
+    rows.push([
+      "Directory",
+      <span key="cwd" title={cwd} className="block truncate">
+        {cwd.split("/").filter(Boolean).pop() ?? cwd}
+      </span>,
+    ]);
+
+  const chipBtn =
+    "inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full px-2 py-px text-[11px] focus-visible:outline-2";
+
+  return (
+    <aside
+      data-org-inspector={node.id}
+      aria-label={`${node.name} details`}
+      className="flex w-[280px] flex-none flex-col gap-3 overflow-y-auto px-4 py-3 text-[12px]"
+      style={{ borderLeft: `1px solid ${tokens.cardBorder}`, color: tokens.fg }}
+    >
+      <div className="flex items-center gap-2">
+        <ProviderAgentIcon provider={node.provider} status={status} size={18} />
+        <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold">
+          {node.name}
+        </h3>
+        <button
+          type="button"
+          aria-label="Close details"
+          className="cursor-pointer rounded px-1.5 text-[14px] leading-none focus-visible:outline-2"
+          style={{ color: tokens.muted, outlineColor: tokens.status.active }}
+          onClick={() => onSelect(null)}
+        >
+          ×
+        </button>
+      </div>
+      <div
+        data-org-inspector-status
+        className={`text-[12.5px] ${
+          !exited && labelStyle.shimmer
+            ? tokens.isLight
+              ? "status-shimmer-light"
+              : "status-shimmer"
+            : ""
+        }`}
+        style={{
+          color: labelStyle.color,
+          fontWeight: status === "needs_input" ? 600 : undefined,
+        }}
+      >
+        {label}
+      </div>
+
+      <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+        {rows.map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt style={{ color: tokens.muted }}>{k}</dt>
+            <dd className="m-0 min-w-0">{v}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <section className="flex flex-col gap-1.5">
+        <h4
+          className="m-0 text-[10.5px] font-semibold uppercase tracking-[0.07em]"
+          style={{ color: tokens.muted }}
+        >
+          Team
+        </h4>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span style={{ color: tokens.muted }}>Manager</span>
+          {managerId ? (
+            <button
+              type="button"
+              className={chipBtn}
+              style={{
+                border: `1px solid ${tokens.cardBorder}`,
+                outlineColor: tokens.status.active,
+              }}
+              onClick={() => onSelect(managerId)}
+            >
+              {managerName}
+            </button>
+          ) : (
+            <span>None</span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span style={{ color: tokens.muted }}>
+            Reports{node.children.length ? ` (${node.children.length})` : ""}
+          </span>
+          {node.children.length === 0 && <span>None</span>}
+          {node.children.map((c) => {
+            const cs = nodeStatus(c, statusMap[c.claudeSessionId]);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                className={chipBtn}
+                style={{
+                  border: `1px solid ${tokens.cardBorder}`,
+                  outlineColor: tokens.status.active,
+                }}
+                onClick={() => onSelect(c.id)}
+              >
+                <span
+                  aria-hidden="true"
+                  className="inline-block size-1.5 rounded-full"
+                  style={{
+                    background:
+                      c.status !== "running"
+                        ? tokens.status.neutral
+                        : statusLabelStyle(cs, tokens.isLight).color,
+                  }}
+                />
+                <span className="truncate">{c.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
+        {exited ? (
+          <button
+            type="button"
+            data-org-action="resume"
+            className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
+            style={{ color: page.bg, background: tokens.status.ready }}
+            onClick={() => onResume(node, info)}
+          >
+            Resume
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              data-org-action="open"
+              className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
+              style={{ color: page.bg, background: tokens.status.active }}
+              onClick={() => onOpen(node)}
+            >
+              Open terminal
+            </button>
+            <button
+              type="button"
+              data-org-action="restart"
+              className="cursor-pointer rounded px-3 py-1 text-[12px]"
+              style={{ border: `1px solid ${tokens.cardBorder}` }}
+              onClick={() => onRestart(node.id)}
+            >
+              Restart
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          data-org-action="more"
+          aria-label={`More actions for ${node.name}`}
+          className="cursor-pointer rounded px-2.5 py-1 text-[12px]"
+          style={{ border: `1px solid ${tokens.cardBorder}` }}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            onMenu(menuTarget(node, managerName, info), r.left, r.bottom + 4);
+          }}
+        >
+          ⋯
+        </button>
+      </div>
+    </aside>
   );
 }
 
@@ -541,7 +932,10 @@ export function HierarchyPanel() {
   const markNotificationsRead = useStore((s) => s.markNotificationsRead);
   const notificationCounts = useStore((s) => s.notificationCounts);
   const resumeSession = useStore((s) => s.resumeSession);
+  const restartSession = useStore((s) => s.restartSession);
   const [showAllExited, setShowAllExited] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const select = useCallback((id: string | null) => setSelectedId(id), []);
   const [menu, setMenu] = useState<{
     target: AgentMenuTarget;
     x: number;
@@ -552,6 +946,22 @@ export function HierarchyPanel() {
     () => pruneExited(chart, showAllExited),
     [chart, showAllExited],
   );
+
+  const flatRoots = useMemo(() => flatten(roots), [roots]);
+  const selected = selectedId
+    ? flatRoots.find((f) => f.node.id === selectedId)
+    : undefined;
+  // A selection whose agent left the drawn tree (deleted, or hidden by the
+  // exited toggle) clears itself.
+  useEffect(() => {
+    if (selectedId && !selected) setSelectedId(null);
+  }, [selectedId, selected]);
+  // Esc clears the selection through the ADR-065 escape stack (never a
+  // document keydown listener — those are dead under terminal focus).
+  useEffect(() => {
+    if (!selectedId) return;
+    return pushEscapeCloser(() => setSelectedId(null));
+  }, [selectedId]);
 
   const waiting = useMemo(
     () =>
@@ -639,6 +1049,8 @@ export function HierarchyPanel() {
     body = (
       <OrgCanvas
         roots={roots}
+        selectedId={selectedId}
+        onSelect={select}
         tokens={tokens}
         page={page}
         statusMap={statusMap}
@@ -665,7 +1077,33 @@ export function HierarchyPanel() {
           tokens={tokens}
         />
       )}
-      {body}
+      <div className="flex min-h-0 flex-1">
+        {body}
+        {selected && !loading && !error && (
+          <OrgInspector
+            node={selected.node}
+            managerId={selected.managerId}
+            managerName={selected.managerName}
+            info={statusMap[selected.node.claudeSessionId]}
+            unread={
+              selected.node.status === "running"
+                ? (notificationCounts[
+                    statusMap[selected.node.claudeSessionId]?.session.id ??
+                      selected.node.id
+                  ] ?? 0)
+                : 0
+            }
+            tokens={tokens}
+            page={page}
+            statusMap={statusMap}
+            onSelect={select}
+            onOpen={openAgent}
+            onResume={resumeAgent}
+            onRestart={(id) => void restartSession(id)}
+            onMenu={openMenu}
+          />
+        )}
+      </div>
       {/* Portaled to <body>: the menu is position:fixed at viewport coords,
           but dockview wraps every pane in `.dv-render-overlay`, whose
           transform + `contain: layout paint` make the PANE the containing

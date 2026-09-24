@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
 import type { AgentTreeNode } from "@autonomos/core";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
+import { closeTopEscape, hasEscapeCloser } from "../shortcuts/escapeStack";
 import { useStore } from "../store";
 import { HierarchyPanel } from "./HierarchyPanel";
 import { CARD_H, PAD, V_GAP } from "./orgchart/layout";
@@ -275,8 +282,8 @@ describe("F2 — Daylight draws from tokens", () => {
   });
 });
 
-describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
-  it("click opens the agent's pane and clears its unread count", async () => {
+describe("F4 + F5 — click SELECTS (Terry's pick), explicit open, right-click menu", () => {
+  it("click selects without leaving the chart; double-click opens and clears unread", async () => {
     tree([node("A", "running")]);
     const switchPane = vi.fn();
     const markNotificationsRead = vi.fn(() => Promise.resolve());
@@ -290,25 +297,31 @@ describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
     await screen.findByText("A");
     expect(screen.getByText("3 unread")).toBeInTheDocument(); // F9 parity
     fireEvent.click(card("A") as HTMLElement);
+    expect(switchPane).not.toHaveBeenCalled();
+    expect(card("A")?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector('[data-org-inspector="A"]')).not.toBeNull();
+    fireEvent.doubleClick(card("A") as HTMLElement);
     expect(switchPane).toHaveBeenCalledWith({ type: "session", id: "A" });
     expect(markNotificationsRead).toHaveBeenCalledWith("A");
   });
 
-  it("a running card is a native button; an exited card's click does nothing", async () => {
+  it("Enter opens a running card; an exited ghost selects (it has no terminal)", async () => {
     tree([node("Lead", "exited", [node("Kid", "running")])]);
     const switchPane = vi.fn();
     useStore.setState({ sessions: [session("Kid")], switchPane });
     render(<HierarchyPanel />);
     await screen.findByText("Kid");
-    // A running card is a native <button>: Enter/Space ARE its click (no
-    // extra key handler, which would double-open).
     expect(card("Kid")?.tagName).toBe("BUTTON");
     fireEvent.keyDown(card("Kid") as HTMLElement, { key: "Enter" });
-    expect(switchPane).not.toHaveBeenCalled();
-    fireEvent.click(card("Kid") as HTMLElement);
     expect(switchPane).toHaveBeenCalledTimes(1);
     fireEvent.click(card("Lead") as HTMLElement);
+    fireEvent.doubleClick(card("Lead") as HTMLElement);
     expect(switchPane).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector(
+        '[data-org-inspector="Lead"] [data-org-action="resume"]',
+      ),
+    ).not.toBeNull();
   });
 
   it("right-click opens the shared agent menu for that agent; no trash overlay exists", async () => {
@@ -347,6 +360,99 @@ describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
     const items = await screen.findAllByRole("menuitem");
     expect(items.some((i) => i.textContent?.includes("Resume"))).toBe(true);
     expect(items.some((i) => i.textContent?.includes("Kill"))).toBe(false);
+  });
+});
+
+describe("selection + inspector", () => {
+  const fleet = () => {
+    tree([
+      node("Mgr", "running", [node("R1", "running"), node("R2", "running")]),
+      node("Other", "running", [node("O1", "running")]),
+    ]);
+    useStore.setState({
+      sessions: ["Mgr", "R1", "R2", "Other", "O1"].map((id) =>
+        session(
+          id,
+          id === "R1" ? { template: "worker", envPreset: "kimi" } : {},
+        ),
+      ),
+      agentStatuses: { R1: { status: "needs_input" } as never },
+    });
+  };
+  const inspector = () =>
+    document.querySelector("[data-org-inspector]") as HTMLElement | null;
+
+  it("selecting lights the chain and dims everyone else", async () => {
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("R1") as HTMLElement);
+    expect(card("R1")?.style.outline).toContain("solid");
+    expect(card("Mgr")?.style.opacity).toBe(""); // manager chain: lit
+    expect(card("Other")?.style.opacity).toBe("0.45"); // outside: dimmed
+    expect(card("R2")?.style.opacity).toBe("0.45"); // a sibling isn't chain
+  });
+
+  it("the inspector shows status, config and team, and its chips move the selection", async () => {
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("R1") as HTMLElement);
+    const insp = inspector() as HTMLElement;
+    expect(insp.dataset.orgInspector).toBe("R1");
+    expect(insp).toHaveTextContent("Needs input");
+    expect(insp).toHaveTextContent("Claude Code");
+    expect(insp).toHaveTextContent("kimi");
+    expect(insp).toHaveTextContent("worker");
+    fireEvent.click(screen.getByRole("button", { name: "Mgr" }));
+    expect(inspector()?.dataset.orgInspector).toBe("Mgr");
+    fireEvent.click(screen.getByRole("button", { name: "R2" }));
+    expect(inspector()?.dataset.orgInspector).toBe("R2");
+  });
+
+  it("Open terminal in the inspector opens; × and Esc (escape stack) close it", async () => {
+    fleet();
+    const switchPane = vi.fn();
+    useStore.setState({ switchPane });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("R2") as HTMLElement);
+    fireEvent.click(
+      document.querySelector('[data-org-action="open"]') as HTMLElement,
+    );
+    expect(switchPane).toHaveBeenCalledWith({ type: "session", id: "R2" });
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
+    expect(inspector()).toBeNull();
+
+    fireEvent.click(card("R2") as HTMLElement);
+    expect(hasEscapeCloser()).toBe(true);
+    act(() => closeTopEscape());
+    expect(inspector()).toBeNull();
+    expect(hasEscapeCloser()).toBe(false);
+  });
+
+  it("clicking empty canvas clears the selection", async () => {
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("R1") as HTMLElement);
+    fireEvent.click(document.querySelector("[data-org-stage]") as HTMLElement);
+    expect(inspector()).toBeNull();
+  });
+
+  it("arrow keys walk the chart: ↑ manager, ↓ first report, → sibling", async () => {
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("Mgr") as HTMLElement);
+    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowDown" });
+    expect(inspector()?.dataset.orgInspector).toBe("R1");
+    fireEvent.keyDown(card("R1") as HTMLElement, { key: "ArrowRight" });
+    expect(inspector()?.dataset.orgInspector).toBe("R2");
+    fireEvent.keyDown(card("R2") as HTMLElement, { key: "ArrowUp" });
+    expect(inspector()?.dataset.orgInspector).toBe("Mgr");
+    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowRight" });
+    expect(inspector()?.dataset.orgInspector).toBe("Other");
   });
 });
 
