@@ -607,6 +607,56 @@ describe("PR 2 — team rollups + collapse", () => {
     expect(card("Deep")).not.toBeNull();
   });
 
+  it("a lead with every bucket shows at most 3 chips (priority order) + a +N chip", async () => {
+    tree([
+      node("Big", "running", [
+        node("n1", "running"),
+        node("e1", "running"),
+        node("w1", "running"),
+        node("i1", "running"),
+        node("x1", "exited", [node("keep", "running")]),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["Big", "n1", "e1", "w1", "i1", "keep"].map((id) =>
+        session(id),
+      ),
+      agentStatuses: {
+        n1: { status: "needs_input" } as never,
+        e1: { status: "error" } as never,
+        w1: { status: "working" } as never,
+        i1: { status: "idle" } as never,
+        keep: { status: "idle" } as never,
+      },
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("keep")).not.toBeNull());
+    const r = document.querySelector('[data-org-rollup="Big"]') as HTMLElement;
+    const chips = [...r.querySelectorAll("span")].map((c) => c.textContent);
+    // Exactly three status chips, then the "+N" overflow chip — never five.
+    expect(chips).toEqual(["1 needs you", "1 error", "1 working", "+2"]);
+    const more = r.querySelector("[data-org-rollup-more]") as HTMLElement;
+    expect(more.textContent).toBe("+2");
+    expect(more.title).toBe("2 idle · 1 exited");
+  });
+
+  it("folding the team of a SELECTED agent keeps its lead lit, not dimmed (nox, #391)", async () => {
+    fleet();
+    statuses();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
+    fireEvent.click(card("Deep") as HTMLElement);
+    fireEvent.click(toggle("Sub") as HTMLElement);
+    expect(card("Deep")).toBeNull();
+    // Sub (the folded lead) and Lead are Deep's chain: lit. Busy is not: dim.
+    expect(card("Sub")?.style.opacity).toBe("");
+    expect(card("Lead")?.style.opacity).toBe("");
+    expect(card("Busy")?.style.opacity).not.toBe("");
+    expect(
+      document.querySelector('[data-org-inspector="Deep"]'),
+    ).not.toBeNull();
+  });
+
   it("remembers folded teams across mounts (per browser)", async () => {
     fleet();
     statuses();

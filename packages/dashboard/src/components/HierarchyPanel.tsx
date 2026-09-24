@@ -445,6 +445,7 @@ function OrgCanvas({
   page,
   statusMap,
   selectedId,
+  selectionChainIds,
   onSelect,
   onOpen,
   onResume,
@@ -460,6 +461,8 @@ function OrgCanvas({
   page: PageTheme;
   statusMap: Record<string, AgentInfo>;
   selectedId: string | null;
+  /** Selected agent + manager chain + team, from the unfolded tree. */
+  selectionChainIds: Set<string> | null;
   onSelect: (id: string | null) => void;
   onOpen: (node: AgentTreeNode) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
@@ -481,10 +484,9 @@ function OrgCanvas({
       ),
     [flat],
   );
-  const chain = useMemo(
-    () => (selectedId ? selectionChain(flat, selectedId) : null),
-    [flat, selectedId],
-  );
+  // The chain comes from the panel, computed on the UNFOLDED tree: a selected
+  // agent folded away still lights its (drawn) lead instead of dimming all.
+  const chain = selectionChainIds;
 
   // Arrow keys walk the chart: ↑ manager, ↓ first report, ←/→ the neighbor on
   // the same row. Focus follows the selection so the keys keep working.
@@ -984,14 +986,24 @@ function TeamControls({
       color: tokens.muted,
     });
 
+  // At most three chips, by priority (needs-you, error, working first): five
+  // would run under the neighbor lead's chips (cards sit CARD_W + H_GAP apart)
+  // and could hide ITS amber. The rest fold into a "+N" chip with a tooltip.
+  const shown = chips.slice(0, 3);
+  const rest = chips.slice(3);
   return (
     <>
       <div
         data-org-rollup={node.id}
         className="org-card pointer-events-none absolute flex gap-1 whitespace-nowrap text-[10px] tabular-nums"
-        style={{ left: x + 2, top: y - 19 }}
+        style={{
+          left: x + 2,
+          top: y - 19,
+          maxWidth: CARD_W,
+          overflow: "hidden",
+        }}
       >
-        {chips.map((c) => (
+        {shown.map((c) => (
           <span
             key={c.key}
             className="rounded-full px-1.5 leading-4"
@@ -1006,6 +1018,20 @@ function TeamControls({
             {c.text}
           </span>
         ))}
+        {rest.length > 0 && (
+          <span
+            data-org-rollup-more
+            title={rest.map((c) => c.text).join(" · ")}
+            className="rounded-full px-1.5 leading-4"
+            style={{
+              color: tokens.muted,
+              background: tokens.bg,
+              border: `1px solid ${tokens.cardBorder}`,
+            }}
+          >
+            +{rest.length}
+          </span>
+        )}
       </div>
       <button
         type="button"
@@ -1197,6 +1223,10 @@ export function HierarchyPanel() {
   );
 
   const flatRoots = useMemo(() => flatten(roots), [roots]);
+  const selectionChainIds = useMemo(
+    () => (selectedId ? selectionChain(flatRoots, selectedId) : null),
+    [flatRoots, selectedId],
+  );
   const selected = selectedId
     ? flatRoots.find((f) => f.node.id === selectedId)
     : undefined;
@@ -1322,6 +1352,7 @@ export function HierarchyPanel() {
         collapsed={collapsed}
         onToggleCollapse={toggleCollapsed}
         selectedId={selectedId}
+        selectionChainIds={selectionChainIds}
         onSelect={select}
         tokens={tokens}
         page={page}
