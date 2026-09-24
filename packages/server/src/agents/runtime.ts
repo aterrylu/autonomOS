@@ -47,6 +47,7 @@ import {
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import { observeExitCode } from "./analytics.js";
 import {
   cancelAllChannelServerChecks,
   cancelChannelServerCheck,
@@ -1565,6 +1566,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
+    observeExitCode(persisted.id, exitCode);
 
     // The visible TUI (this PTY) and its sidecar daemon are SEPARATE processes —
     // the daemon does not die when the PTY does. Dispose it here unconditionally

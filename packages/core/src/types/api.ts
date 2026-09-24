@@ -206,3 +206,27 @@ export interface AgentMessageStats {
   /** Newest first. */
   recent: LoggedMessage[];
 }
+
+// ── Agent analytics (GET /api/agents/:id/analytics) ───────────────
+
+/** Counted per agent since `since` (the server start) — in memory, never
+ *  estimated. `support` says which fields this agent's runtime can report;
+ *  anything unsupported must render as "n/a", not as a zero. */
+export interface AgentAnalytics {
+  since: number;
+  startedAt: number | null;
+  status: { current: string; since: number } | null;
+  turns: number;
+  waits: { count: number; totalMs: number; waitingSince: number | null };
+  tools: Array<{ name: string; count: number }>;
+  toolCalls: number;
+  failedTools: number;
+  lastTool: { name: string; at: number } | null;
+  restarts: number;
+  crashes: number;
+  lastExitCode: number | null;
+  /** Contiguous status segments over the last 24h, oldest first. */
+  activity: Array<{ from: number; to: number; status: string }>;
+  branch: string | null;
+  support: { tools: boolean; needsInput: boolean; failedTools: boolean };
+}
