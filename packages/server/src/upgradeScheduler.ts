@@ -14,7 +14,6 @@
 // their back after a crash).
 
 import { renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { AgentActivityStatus } from "@autonomos/core";
 import { isPromptPending } from "./agents/promptDelivery.js";
 import { getAgentProcessRoots } from "./agents/runtime.js";
@@ -24,7 +23,6 @@ import {
   findBackgroundProcs,
   listProcesses,
 } from "./backgroundProcs.js";
-import { getConfigDir } from "./configDir.js";
 import { getAgentState } from "./routes/hooks.js";
 import { type LaunchResult, launchUpgradeJob } from "./upgradeJob.js";
 import {
