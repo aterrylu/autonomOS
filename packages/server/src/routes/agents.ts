@@ -15,7 +15,7 @@ import {
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
-import { withPendingHandoffCount } from "../agents/handoffEnrich.js";
+import { enrichAgent } from "../agents/enrich.js";
 import {
   isAgentLive,
   killAttachment,
@@ -212,7 +212,7 @@ agentsRouter.onError((err, c) => {
 // ── Read ───────────────────────────────────────────────────────────
 
 agentsRouter.get("/", (c) => {
-  return c.json(listAgents().map(withPendingHandoffCount));
+  return c.json(listAgents().map(enrichAgent));
 });
 
 // Tree-shape variant for clients that can't build the tree themselves
@@ -241,7 +241,7 @@ agentsRouter.get("/:id", (c) => {
   if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
   // Enrich with the pending hand-off count too, so a single-agent fetch agrees
   // with the list endpoint (same corrupt-file-safe helper).
-  return c.json(withPendingHandoffCount(agent));
+  return c.json(enrichAgent(agent));
 });
 
 // ── Create ─────────────────────────────────────────────────────────
