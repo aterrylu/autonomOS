@@ -60,6 +60,7 @@ import {
   supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
+import { terminatePty } from "./ptyTerminate.js";
 import {
   awaitSidecarExits,
   pickFreePort,
@@ -199,6 +200,8 @@ let shuttingDown = false;
  *  spawn racing that window would start a daemon the process then exits
  *  under — the orphan the wait exists to prevent. */
 let serverStopping = false;
+/** A restart-all is between its kill pass and its last respawn. */
+let restartInFlight = false;
 
 function serverStoppingError(): SpawnError {
   return new SpawnError(
@@ -521,7 +524,8 @@ export class SpawnError extends Error {
     | "NOTHING_TO_RESUME"
     | "INVALID_WORKING_DIRECTORY"
     | "PROVIDER_MISMATCH"
-    | "SERVER_STOPPING";
+    | "SERVER_STOPPING"
+    | "RESTART_IN_PROGRESS";
   readonly status: 400 | 409 | 422 | 503;
   constructor(
     code: SpawnError["code"],
@@ -1358,11 +1362,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // neither is orphaned, then surface the race rather than crashing on a
     // non-null assertion.
     void sidecar?.dispose();
-    try {
-      pty.kill();
-    } catch {
-      // best-effort — the PTY may already be dead
-    }
+    void terminatePty(pty);
     throw new Error(
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
@@ -1722,11 +1722,7 @@ export function killAttachment(
 ): boolean {
   const managed = live.get(agentId);
   if (!managed) return false;
-  try {
-    managed.pty.kill();
-  } catch (err) {
-    console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
-  }
+  void terminatePty(managed.pty);
   // Sidecar daemon is a separate process — kill it alongside the PTY.
   void managed.sidecar?.dispose();
   disposeCodexControl(agentId);
@@ -1753,11 +1749,7 @@ export function deleteAgent(agentId: UUID): boolean {
   const wasLive = live.has(agentId);
   if (wasLive) {
     const managed = live.get(agentId)!;
-    try {
-      managed.pty.kill();
-    } catch (err) {
-      console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
-    }
+    void terminatePty(managed.pty);
     void managed.sidecar?.dispose();
     live.delete(agentId);
   }
@@ -1793,11 +1785,7 @@ export function shutdownAllAttachments(): void {
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [agentId, managed] of live) {
-    try {
-      managed.pty.kill();
-    } catch {
-      // best-effort during shutdown
-    }
+    void terminatePty(managed.pty);
     // Dispose the Codex control client HERE, on the shutdown PATH, rather than
     // leaving it to process exit. Its queue may hold inbound that the sender was
     // told would be retried automatically (ADR-064) — a promise this shutdown is
@@ -1828,12 +1816,6 @@ export function shutdownAllAttachments(): void {
     }
   }
   live.clear();
-}
-
-/** Reset shuttingDown — used after restartAllAttachments to permit normal
- *  exit-marking to resume. */
-function resetShuttingDown(): void {
-  shuttingDown = false;
 }
 
 /** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
@@ -1998,28 +1980,43 @@ export async function restartAllAttachments(): Promise<{
   // local catch, so it reaches agentsRouter.onError as a 503 + Retry-After.
   assertControlPlaneReady();
   if (serverStopping) throw serverStoppingError();
+  // A second restart-all while one is waiting on the first's exits would see
+  // an empty `live` and "restart" nothing — or, once the first respawns, kill
+  // what it just started. Refuse it.
+  if (restartInFlight) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      "A restart of all agents is already in progress.",
+    );
+  }
+  restartInFlight = true;
+  try {
+    return await restartAll();
+  } finally {
+    restartInFlight = false;
+  }
+}
 
+async function restartAll(): Promise<{
+  idMap: Record<UUID, UUID>;
+  failures: Array<{ id: UUID; name: string; error: string }>;
+}> {
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
   const failures: Array<{ id: UUID; name: string; error: string }> = [];
   const daemonExits: Promise<void>[] = [];
+  const ptyExits: Promise<void>[] = [];
 
-  // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
-  shuttingDown = true;
+  // No global `shuttingDown` here: live.clear() below runs synchronously,
+  // before any killed PTY's (async) onExit can fire, so every one of them
+  // takes the stale-attachment early return and none is marked exited. The
+  // global flag protected nothing of ours and hid unrelated agents' deaths
+  // during the wait (they stayed "running").
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
-  for (const [id, managed] of live) {
-    try {
-      managed.pty.kill();
-    } catch (err) {
-      // pty.kill is rare-throw on macOS but reachable on Windows / when the
-      // process is already exiting. Log so operators see the cause; we still
-      // proceed because live.clear() below makes the dead reference unreachable.
-      console.error(
-        `[runtime] restart-all: pty.kill threw for agent ${id}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+  for (const [, managed] of live) {
+    ptyExits.push(terminatePty(managed.pty));
     // Dispose the sidecar daemon too — it won't die with the PTY.
     if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
   }
@@ -2028,7 +2025,19 @@ export async function restartAllAttachments(): Promise<{
   // daemon that was mid-turn can never still be appending to the thread its
   // replacement is resuming — two daemons on one thread. ~0.3s measured;
   // bounded by the SIGKILL backstop.
-  if (!(await awaitSidecarExits(daemonExits))) {
+  const [daemonsGone, ptysGone] = await Promise.all([
+    awaitSidecarExits(daemonExits),
+    // The old CLI must be gone before its replacement resumes the same
+    // session (a Claude Code --resume of a JSONL the old process still
+    // writes). Same bound as the daemons.
+    awaitSidecarExits(ptyExits),
+  ]);
+  if (!ptysGone) {
+    console.warn(
+      "[runtime] restart-all: an agent process had not exited after SIGKILL — respawning anyway",
+    );
+  }
+  if (!daemonsGone) {
     console.warn(
       `[runtime] restart-all: sidecar daemon(s) still alive after SIGKILL (pid ${runningSidecarPids().join(", ")}) — respawning anyway`,
     );
@@ -2037,7 +2046,6 @@ export async function restartAllAttachments(): Promise<{
   // "running" so it resumes on next boot; respawning now would fail each one
   // and mark it crashed.
   if (serverStopping) return { idMap: {}, failures };
-  resetShuttingDown();
 
   // Respawn each (id stays the same since we resume by agent id).
   const idMap: Record<UUID, UUID> = {};
@@ -2061,7 +2069,7 @@ export async function restartAllAttachments(): Promise<{
         `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
         msg,
       );
-      // The PTYs were killed under shuttingDown, so onExit did NOT mark this
+      // The old PTY's onExit took the stale-attachment return, so it did NOT mark this
       // agent exited — and the respawn just failed. Without this, the record
       // stays status:"running" with no live PTY (a zombie that tries to resume
       // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents

@@ -23,12 +23,13 @@ import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { sweepAgentTokenFiles } from "./agentCredentials.js";
 import { migrateIfNeeded } from "./agents/migrate.js";
+import { awaitPtyExits } from "./agents/ptyTerminate.js";
 import {
   resumeActiveAgents,
   shutdownAllAttachments,
   snapshotResumableAgents,
 } from "./agents/runtime.js";
-import { stopAllSidecars } from "./agents/sidecar.js";
+import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -770,7 +771,19 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   const shutdown = createShutdownHandler({
     stopWork: stopScheduler,
     teardownAgents: shutdownAllAttachments,
-    awaitDaemons: () => stopAllSidecars(),
+    // Agent processes and their sidecar daemons, in parallel, same bound.
+    awaitDaemons: async () => {
+      const [daemons, ptys] = await Promise.all([
+        stopAllSidecars(),
+        awaitPtyExits(SIDECAR_EXIT_CAP_MS),
+      ]);
+      if (ptys > 0) {
+        console.warn(
+          `[shutdown] ${ptys} agent process(es) still alive after SIGKILL — they may outlive the server`,
+        );
+      }
+      return daemons;
+    },
     exitProcess,
   });
   process.on("SIGINT", shutdown);

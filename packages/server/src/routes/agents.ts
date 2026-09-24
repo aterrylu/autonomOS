@@ -184,6 +184,15 @@ agentsRouter.onError((err, c) => {
       { "Retry-After": "1" },
     );
   }
+  // A typed spawn/restart refusal thrown by a route without a local catch
+  // (restart-all: SERVER_STOPPING 503, RESTART_IN_PROGRESS 409). Without this
+  // branch its declared status fell through to the generic 500 below.
+  if (err instanceof SpawnError) {
+    return c.json(
+      { error: err.message, code: err.code, retryable: err.status === 503 },
+      err.status,
+    );
+  }
   if (err instanceof CachePoisonedError) {
     console.error(`[agents] CACHE_POISONED on ${c.req.method} ${c.req.path}`);
     return c.json(

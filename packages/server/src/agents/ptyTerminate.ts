@@ -34,14 +34,50 @@ export interface TerminatePtyOptions {
   signal?: SignalFn;
 }
 
+type TerminablePty = Pick<IPty, "pid" | "onExit" | "kill">;
+
+/** One escalation per PTY: a kill followed by shutdown reuses the first. */
+const inFlight = new WeakMap<TerminablePty, Promise<void>>();
+/** Every PTY between terminatePty() and its exit — what shutdown waits on. */
+const exiting = new Set<Promise<void>>();
+
 /**
  * Begin terminating `pty`'s process group. Resolves when the PTY has exited.
- * Idempotency is the caller's job (one call per PTY) — a second call would
- * start a second, redundant escalation.
+ * Idempotent per PTY. Never throws.
  */
 export function terminatePty(
-  pty: Pick<IPty, "pid" | "onExit">,
+  pty: TerminablePty,
   opts: TerminatePtyOptions = {},
+): Promise<void> {
+  const existing = inFlight.get(pty);
+  if (existing) return existing;
+  const done = escalate(pty, opts);
+  inFlight.set(pty, done);
+  exiting.add(done);
+  void done.then(() => exiting.delete(done));
+  return done;
+}
+
+/**
+ * Wait (bounded) for every PTY being terminated to exit. Resolves with how
+ * many had not exited at the cap.
+ */
+export async function awaitPtyExits(capMs: number): Promise<number> {
+  if (exiting.size > 0) {
+    await new Promise<void>((resolve) => {
+      const cap = setTimeout(resolve, capMs);
+      void Promise.all([...exiting]).then(() => {
+        clearTimeout(cap);
+        resolve();
+      });
+    });
+  }
+  return exiting.size;
+}
+
+function escalate(
+  pty: TerminablePty,
+  opts: TerminatePtyOptions,
 ): Promise<void> {
   const {
     termAfterMs = PTY_TERM_AFTER_MS,
@@ -51,6 +87,11 @@ export function terminatePty(
   const timers: NodeJS.Timeout[] = [];
 
   const send = (sig: NodeJS.Signals): void => {
+    // Windows has no process groups; node-pty's own kill is all there is.
+    if (process.platform === "win32") {
+      if (sig === "SIGHUP") pty.kill();
+      return;
+    }
     try {
       signal(-pty.pid, sig);
     } catch (err) {

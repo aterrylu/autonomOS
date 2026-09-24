@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, describe, it } from "node:test";
 import { type IPty, spawn } from "node-pty";
 import {
+  awaitPtyExits,
   PTY_KILL_AFTER_MS,
   PTY_TERM_AFTER_MS,
   terminatePty,
@@ -145,5 +146,26 @@ describe("terminatePty", { timeout: 10_000 }, () => {
       },
     });
     assert.deepEqual(targets, [-pty.pid, pty.pid]);
+  });
+  it("is idempotent per PTY — a second call adds no escalation", async () => {
+    const pty = await start(STUBS.polite);
+    const sent: NodeJS.Signals[] = [];
+    const signal = (pid: number, sig: NodeJS.Signals) => {
+      sent.push(sig);
+      process.kill(pid, sig);
+    };
+    const first = terminatePty(pty, { signal });
+    assert.equal(terminatePty(pty, { signal }), first);
+    await first;
+    assert.deepEqual(sent, ["SIGHUP"]);
+  });
+
+  it("awaitPtyExits waits for every PTY being terminated, bounded", async () => {
+    const stubborn = await start(STUBS.stubborn);
+    void terminatePty(stubborn);
+    // Below the SIGKILL stage: still alive at the cap.
+    assert.equal(await awaitPtyExits(100), 1);
+    // Past it: gone.
+    assert.equal(await awaitPtyExits(PTY_KILL_AFTER_MS + 1_000), 0);
   });
 });

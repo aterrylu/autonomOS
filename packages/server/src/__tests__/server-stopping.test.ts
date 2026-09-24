@@ -38,6 +38,7 @@ const { runningSidecarPids, stopAllSidecars } = await import(
   "../agents/sidecar.js"
 );
 const { _setProviderForTesting } = await import("../providers/index.js");
+const { agentsRouter } = await import("../routes/agents.js");
 const { codexProvider } = await import("../providers/codex.js");
 const { buildAgent, insertAgent, getAgent, _resetCacheForTesting } =
   await import("../agents/store.js");
@@ -121,5 +122,12 @@ describe("server stopping", () => {
     );
     await resumeActiveAgents();
     assert.equal(getAgent(id)?.status, "running");
+  });
+  it("restart-all over HTTP answers a typed 503, not a generic 500", async () => {
+    const res = await agentsRouter.request("/restart-all", { method: "POST" });
+    assert.equal(res.status, 503);
+    const body = (await res.json()) as { code?: string; retryable?: boolean };
+    assert.equal(body.code, "SERVER_STOPPING");
+    assert.equal(body.retryable, true);
   });
 });
