@@ -24,4 +24,6 @@ pre-push:
     ci-gate:
       # Exactly what CI runs: biome over packages/ (no --write) then the full
       # check (tsc build + test suite). If this passes, the PR's `check` job will.
-      run: bunx biome check packages/ && make check
+      # Wrapped in a machine-wide lock so concurrent agents' gates queue instead
+      # of saturating the box (see scripts/ci-gate-lock.sh).
+      run: scripts/ci-gate-lock.sh bash -c 'bunx biome check packages/ && make check'
