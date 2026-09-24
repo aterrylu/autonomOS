@@ -104,6 +104,81 @@ function findRolloutPath(threadId: string): string | null {
   return bestPath;
 }
 
+/**
+ * Resume pre-flight probe: did codex SAVE this thread? Codex writes the rollout
+ * lazily on a thread's first turn, so a never-prompted agent's thread has none
+ * and `codex resume <id>` fails with "No saved session found".
+ *
+ * THREE-STATE on purpose, unlike the best-effort readers above: returns
+ * "found" / "absent", and THROWS when it can't tell (the sessions tree exists
+ * but a directory can't be listed, or the home can't be resolved). The caller
+ * fails OPEN on a throw (resumes as before) — a false "absent" would start a
+ * fresh thread and sever a real conversation, which is the harm ADR-100 exists
+ * to prevent. Only a cleanly-listed tree with no match is "absent".
+ *
+ * `env` is the AGENT's effective env (a preset or customEnvVar may set its own
+ * CODEX_HOME), not the server's.
+ */
+export function probeThreadRollout(
+  threadId: string,
+  env: NodeJS.ProcessEnv,
+): { state: "found" | "absent"; sessionsDir: string; path?: string } {
+  const sessionsDir = join(codexHome(env), "sessions"); // throws → caller fails open
+  let path: string | undefined;
+  const walk = (dir: string, depth: number, isRoot: boolean): void => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      // No sessions dir at all = codex never saved ANY thread here → absent.
+      if (isRoot && (err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err; // unreadable → can't tell → caller resumes (fail open)
+    }
+    for (const e of entries) {
+      if (path) return;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (depth < 3) walk(full, depth + 1, false);
+      } else if (e.name.endsWith(".jsonl") && e.name.includes(threadId)) {
+        path = full;
+      }
+    }
+  };
+  walk(sessionsDir, 0, true);
+  return path
+    ? { state: "found", sessionsDir, path }
+    : { state: "absent", sessionsDir };
+}
+
+/**
+ * The approval policy a saved thread ACTUALLY runs: the `approval_policy` of the
+ * last `turn_context` in its rollout (a resumed thread keeps its creation-time
+ * policy — ADR-104). Null when unreadable/absent. Never throws.
+ */
+export function readThreadApprovalPolicy(rolloutPath: string): string | null {
+  const tail = readTail(rolloutPath);
+  if (!tail) return null;
+  const lines = tail.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line || !line.includes("turn_context")) continue;
+    try {
+      const o = JSON.parse(line) as {
+        type?: string;
+        payload?: { approval_policy?: unknown };
+      };
+      if (
+        o.type === "turn_context" &&
+        typeof o.payload?.approval_policy === "string"
+      )
+        return o.payload.approval_policy;
+    } catch {
+      /* partial line — keep scanning */
+    }
+  }
+  return null;
+}
+
 /** Read the last `TAIL_BYTES` of a file as UTF-8, or null on any error. The
  *  leading (possibly mid-line) fragment is fine — the line scan tolerates it. */
 function readTail(path: string): string | null {
