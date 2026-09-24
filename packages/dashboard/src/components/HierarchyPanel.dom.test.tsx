@@ -13,7 +13,11 @@ import { closeTopEscape, hasEscapeCloser } from "../shortcuts/escapeStack";
 import { useStore } from "../store";
 import { HierarchyPanel } from "./HierarchyPanel";
 import { CARD_H, PAD, V_GAP } from "./orgchart/layout";
-import { STATUS_COLORS_DARK, STATUS_COLORS_LIGHT } from "./statusLabelStyle";
+import {
+  STATUS_COLORS_DARK,
+  STATUS_COLORS_LIGHT,
+  UNREAD_COLOR_LIGHT,
+} from "./statusLabelStyle";
 
 /**
  * HierarchyPanel — the org chart. It reads the exited-inclusive tree
@@ -279,6 +283,29 @@ describe("F2 — Daylight draws from tokens", () => {
     expect(screen.getByText("Needs input").className).not.toContain(
       "status-shimmer",
     );
+  });
+});
+
+describe('Daylight contrast (Terry: "the words look so faint")', () => {
+  it("uses the darker unread red and lighter-handed muting on light themes", async () => {
+    tree([
+      node("Lead", "exited", [node("Kid", "running")]),
+      node("X", "running"),
+    ]);
+    useStore.setState({
+      theme: "daylight",
+      sessions: [session("Kid"), session("X")],
+      notificationCounts: { Kid: 2 },
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Kid")).not.toBeNull());
+    expect(screen.getByText("2 unread").style.color).toBe(
+      hexToRgb(UNREAD_COLOR_LIGHT),
+    );
+    const ghostName = card("Lead")?.querySelector(".truncate") as HTMLElement;
+    expect(Number(ghostName.style.opacity)).toBeGreaterThan(0.6);
+    fireEvent.click(card("Kid") as HTMLElement);
+    expect(Number(card("X")?.style.opacity)).toBeGreaterThan(0.45);
   });
 });
 

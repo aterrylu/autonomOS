@@ -3,7 +3,7 @@ import { isLightBg } from "../recency";
 import {
   STATUS_COLORS_DARK,
   STATUS_COLORS_LIGHT,
-  UNREAD_COLOR,
+  unreadColor,
 } from "../statusLabelStyle";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
@@ -30,8 +30,13 @@ export interface OrgChartTokens {
   ghostCard: string;
   edge: string;
   chip: string;
-  /** Unread-count red — the sidebar's literal, shared so the two can't drift. */
+  /** Unread-count red — shared with the sidebar, darkened on light themes. */
   unread: string;
+  /** Opacity for muted text (a ghost's name/icon) and for cards dimmed by a
+   *  selection. Lighter-handed on light themes, where opacity fades toward
+   *  white and contrast collapses much faster than it does toward black. */
+  ghostTextOpacity: number;
+  dimOpacity: number;
   status: typeof STATUS_COLORS_DARK | typeof STATUS_COLORS_LIGHT;
   /** Soft ring/glow colors for the working + needs-input card animations. */
   activeRing: string;
@@ -56,7 +61,9 @@ export function orgChartTokens(page: PageTheme): OrgChartTokens {
     ghostCard: isLight ? "rgba(0,0,0,0.015)" : "rgba(255,255,255,0.012)",
     edge: isLight ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.2)",
     chip: isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.05)",
-    unread: UNREAD_COLOR,
+    unread: unreadColor(isLight),
+    ghostTextOpacity: isLight ? 0.78 : 0.6,
+    dimOpacity: isLight ? 0.55 : 0.45,
     status,
     // 8-digit hex alpha on the palette colors: ~35% ring, ~28% glow.
     activeRing: `${status.active}59`,

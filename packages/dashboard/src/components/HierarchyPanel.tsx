@@ -237,7 +237,7 @@ function OrgCard({
       ...(selection === "self"
         ? { outline: `2px solid ${tokens.status.active}`, outlineOffset: 3 }
         : {}),
-      opacity: selection === "dim" ? 0.45 : undefined,
+      opacity: selection === "dim" ? tokens.dimOpacity : undefined,
       background: exited ? tokens.ghostCard : tokens.card,
       border: `1px ${exited ? "dashed" : "solid"} ${
         attention
@@ -285,7 +285,10 @@ function OrgCard({
   const content = (
     <>
       <span className="flex min-w-0 items-center gap-2">
-        <span className="flex-none" style={{ opacity: exited ? 0.6 : 1 }}>
+        <span
+          className="flex-none"
+          style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
+        >
           {agentIconStyle === "provider" ? (
             <ProviderAgentIcon
               provider={node.provider}
@@ -298,7 +301,7 @@ function OrgCard({
         </span>
         <span
           className="min-w-0 flex-1 truncate text-[12.5px] font-semibold tracking-tight"
-          style={{ opacity: exited ? 0.6 : 1 }}
+          style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
         >
           {node.name}
         </span>
@@ -542,7 +545,7 @@ function OrgCanvas({
                 className="org-edge"
                 stroke={lit ? tokens.status.active : tokens.edge}
                 strokeWidth={lit ? 2 : 1.6}
-                opacity={chain && !lit ? 0.45 : undefined}
+                opacity={chain && !lit ? tokens.dimOpacity : undefined}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeDasharray={dashed ? "4 4" : undefined}
