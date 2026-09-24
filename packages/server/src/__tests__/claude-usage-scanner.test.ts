@@ -34,7 +34,7 @@ const {
   __setOAuthTokenReaderForTests,
   __setOAuthFetcherForTests,
   __setKeychainExecForTests,
-  __setTokenMemoTtlForTests,
+  __setMemoClockForTests,
 } = await import("../plugins/claude-usage/oauthUsage.js");
 type UsageFetcher = Parameters<typeof getRateLimits>[0];
 
@@ -1044,7 +1044,7 @@ describe("claude-usage scanner — memoized token read (real reader, fake keycha
   afterEach(() => {
     invalidateCache();
     __setKeychainExecForTests(null);
-    __setTokenMemoTtlForTests(null);
+    __setMemoClockForTests(null);
     __setOAuthFetcherForTests(null);
     if (savedUser === undefined) delete process.env.USER;
     else process.env.USER = savedUser;
@@ -1052,7 +1052,10 @@ describe("claude-usage scanner — memoized token read (real reader, fake keycha
   });
 
   it("a cached usage answer costs no keychain read; a 401 re-reads within the miss TTL", async () => {
-    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 40 });
+    // Virtual memo time: a loaded box must not age the rejected token past
+    // its 10s miss TTL between the two polls below.
+    let now = Date.now();
+    __setMemoClockForTests(() => now);
     let spawns = 0;
     let current = "tok-old";
     __setKeychainExecForTests(async () => {
@@ -1089,7 +1092,7 @@ describe("claude-usage scanner — memoized token read (real reader, fake keycha
     assert.equal((await getRateLimits()).errorKind, "unauthorized");
     assert.equal(spawns, 1);
     // …but it is re-read once the miss TTL elapses, picking up the rotation.
-    await new Promise((r) => setTimeout(r, 50));
+    now += 10_000;
     const second = await getRateLimits();
     assert.equal(second.error, undefined);
     assert.equal(second.fiveHour?.utilization, 5);

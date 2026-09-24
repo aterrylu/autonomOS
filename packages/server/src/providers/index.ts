@@ -26,6 +26,19 @@ export function getProvider(name: string): AgentProvider {
   return provider;
 }
 
+/** Test hook: swap a provider (null restores the real one). Lets a test drive a
+ *  real spawnAgent reattach against a fake runtime. */
+const realProviders = new Map(providers);
+export function _setProviderForTesting(
+  name: string,
+  provider: AgentProvider | null,
+): void {
+  const real = realProviders.get(name);
+  if (provider) providers.set(name, provider);
+  else if (real) providers.set(name, real);
+  else providers.delete(name);
+}
+
 /** Get all registered providers (for the /api/providers endpoint). */
 export function getAllProviders(): AgentProvider[] {
   return Array.from(providers.values());

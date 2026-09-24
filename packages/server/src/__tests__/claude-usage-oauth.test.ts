@@ -19,6 +19,7 @@ const {
   getLastCredentialFailure,
   invalidateOAuthTokenMemo,
   __setKeychainExecForTests,
+  __setMemoClockForTests,
   __setTokenMemoTtlForTests,
 } = await import("../plugins/claude-usage/oauthUsage.js");
 
@@ -220,8 +221,14 @@ describe("oauthUsage — fetchOAuthUsage (fetcher + token seams)", () => {
 describe("oauthUsage — getOAuthToken memo (one keychain read per TTL)", () => {
   let savedUser: string | undefined;
   let spawns = 0;
+  /** Virtual time for the memo: TTL boundaries are crossed by advancing this,
+   * never by sleeping, so a loaded box can't age an entry between two calls. */
+  let now = 0;
+  const advance = (ms: number) => {
+    now += ms;
+  };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const blob = (accessToken: string, expiresAt = Date.now() + 3_600_000) =>
+  const blob = (accessToken: string, expiresAt = now + 3_600_000) =>
     JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } });
   /** A fake `security` that answers with `next()` after a short async delay —
    * async like the real execFile, so concurrent callers genuinely overlap. */
@@ -237,10 +244,13 @@ describe("oauthUsage — getOAuthToken memo (one keychain read per TTL)", () => 
     savedUser = process.env.USER;
     process.env.USER = "memo-test-user";
     spawns = 0;
+    now = Date.now();
+    __setMemoClockForTests(() => now);
   });
   afterEach(() => {
     __setKeychainExecForTests(null);
     __setTokenMemoTtlForTests(null);
+    __setMemoClockForTests(null);
     if (savedUser === undefined) delete process.env.USER;
     else process.env.USER = savedUser;
     rmSync(TEST_DIR, { recursive: true, force: true });
@@ -256,35 +266,40 @@ describe("oauthUsage — getOAuthToken memo (one keychain read per TTL)", () => 
     assert.equal(spawns, 1);
   });
 
-  it("re-reads once the hit TTL has elapsed", async () => {
-    __setTokenMemoTtlForTests({ hitMs: 20, missMs: 20 });
+  it("re-reads once the hit TTL (60s) has elapsed — not a moment before", async () => {
     let n = 0;
     fakeKeychain(() => blob(`tok-${++n}`));
     assert.equal((await getOAuthToken())?.accessToken, "tok-1");
+    advance(59_999);
     assert.equal((await getOAuthToken())?.accessToken, "tok-1");
-    await sleep(30);
+    advance(1);
     assert.equal((await getOAuthToken())?.accessToken, "tok-2");
     assert.equal(spawns, 2);
   });
 
   it("re-reads an EXPIRED token on the miss TTL — not the hit TTL, and not every poll", async () => {
-    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 60 });
     let n = 0;
     fakeKeychain(() =>
-      ++n === 1 ? blob("old", Date.now() + 10) : blob("rotated"),
+      ++n === 1 ? blob("old", now + 5_000) : blob("rotated"),
     );
     assert.equal((await getOAuthToken())?.accessToken, "old");
-    await sleep(20); // expired, but read <60ms ago: no re-spawn per poll
+    advance(6_000); // expired, but read 6s ago (< 10s miss TTL): no re-spawn per poll
     await getOAuthToken();
     await getOAuthToken();
     assert.equal(spawns, 1);
-    await sleep(60); // miss TTL elapsed → re-read picks up the rotation
+    advance(4_000); // 10s since the read → re-read picks up the rotation
     assert.equal((await getOAuthToken())?.accessToken, "rotated");
     assert.equal(spawns, 2);
   });
 
   it("a hung `security` read settles at the deadline and does not wedge later reads", async () => {
-    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 10, deadlineMs: 30 });
+    // The deadline stays a REAL timer (30ms): the hung exec never settles, so
+    // the deadline wins however loaded the box is. Only the memo is virtual.
+    __setTokenMemoTtlForTests({
+      hitMs: 60_000,
+      missMs: 10_000,
+      deadlineMs: 30,
+    });
     let n = 0;
     __setKeychainExecForTests(() => {
       spawns += 1;
@@ -295,20 +310,20 @@ describe("oauthUsage — getOAuthToken memo (one keychain read per TTL)", () => 
     assert.equal(await getOAuthToken(), null);
     const f = getLastCredentialFailure();
     assert.ok(f?.source === "keychain" && f.timedOut);
-    await sleep(15);
+    advance(10_000);
     assert.equal((await getOAuthToken())?.accessToken, "after-hang");
   });
 
-  it("memoizes a miss only for the shorter miss TTL", async () => {
-    __setTokenMemoTtlForTests({ hitMs: 60_000, missMs: 20 });
+  it("memoizes a miss only for the shorter miss TTL (10s)", async () => {
     __setKeychainExecForTests(async () => {
       spawns += 1;
       throw Object.assign(new Error("not found"), { code: 44, stderr: "" });
     });
     assert.equal(await getOAuthToken(), null);
+    advance(9_999);
     assert.equal(await getOAuthToken(), null);
     assert.equal(spawns, 1);
-    await sleep(30);
+    advance(1);
     await getOAuthToken();
     assert.equal(spawns, 2);
   });
