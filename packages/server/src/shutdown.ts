@@ -1,60 +1,71 @@
 /**
  * The server's SIGINT/SIGTERM handler, factored out of `runServer` so its
- * ordering is testable without booting a server.
- *
- * The ordering is the point: tear down the agents, WAIT (bounded) for their
- * sidecar daemons to exit, and only then exit. Exiting in the same tick as the
- * teardown orphaned any Codex daemon that was mid-turn: it did not exit on the
- * SIGTERM, but ran the agent's turn — model calls, tool calls, file writes —
- * to completion with no server above it (measured on codex 0.154, every run).
- * Kept alive until the daemon is gone, the server sees it exit in ~0.2s; the
- * SIGKILL backstop covers one that hangs. See awaitSidecarExits.
+ * ordering is testable: tear down agents, wait (bounded) for their sidecar
+ * daemons to exit, then exit. See stopAllSidecars for why the wait matters.
  */
-
-import { awaitSidecarExits } from "./agents/sidecar.js";
 
 export interface ShutdownSteps {
   /** Stop timers that could start new work (the scheduler). */
   stopWork(): void;
-  /** Tear down every agent; returns one exit promise per sidecar daemon. */
-  teardownAgents(): Promise<void>[];
+  /** Tear down every agent (synchronous; daemons are signalled, not awaited). */
+  teardownAgents(): void;
+  /** Wait (bounded) for every sidecar daemon to exit; resolves with the pids
+   *  still alive at the bound. */
+  awaitDaemons(): Promise<number[]>;
   /** Release the pid file + control socket and exit. Called exactly once. */
   exitProcess(): void;
-  /** Override the wait cap (tests). Default: SIGKILL escalation + margin. */
-  capMs?: number;
+  /**
+   * A repeat signal inside this window is the SAME request delivered twice,
+   * not an impatient user: Ctrl+C signals the whole foreground process group,
+   * so a runner wrapping the server (tsx, bun, make) can forward a copy on top
+   * of the one the server already got. Only a repeat after it means "now".
+   */
+  repeatGraceMs?: number;
 }
 
 export function createShutdownHandler(steps: ShutdownSteps): () => void {
-  let stopping = false;
+  const repeatGraceMs = steps.repeatGraceMs ?? 1_000;
+  let startedAt: number | undefined;
   let exited = false;
   const exitOnce = (): void => {
     if (exited) return;
     exited = true;
     steps.exitProcess();
   };
+  const attempt = (label: string, step: () => void): void => {
+    try {
+      step();
+    } catch (err) {
+      console.error(`[shutdown] ${label} threw:`, err);
+    }
+  };
   return () => {
-    // A second signal while we wait on the daemons means "now".
-    if (stopping) {
+    if (startedAt !== undefined) {
+      if (Date.now() - startedAt < repeatGraceMs) return;
       console.warn(
         "Second shutdown signal — exiting without waiting for agent daemons.",
       );
       exitOnce();
       return;
     }
-    stopping = true;
+    startedAt = Date.now();
     console.log(
       "Shutting down — killing PTYs (agents will resume on next start)...",
     );
-    steps.stopWork();
-    void awaitSidecarExits(steps.teardownAgents(), steps.capMs).then(
-      (allExited) => {
-        if (!allExited) {
+    // A throw in either step must not strand the process: log it and still
+    // wait for whatever daemons were signalled, then exit.
+    attempt("stopping work", steps.stopWork);
+    attempt("agent teardown", steps.teardownAgents);
+    steps
+      .awaitDaemons()
+      .then((survivors) => {
+        if (survivors.length > 0) {
           console.warn(
-            "[shutdown] an agent daemon had not exited after SIGKILL — it may outlive the server",
+            `[shutdown] agent daemon(s) still alive after SIGKILL (pid ${survivors.join(", ")}) — they may outlive the server`,
           );
         }
-        exitOnce();
-      },
-    );
+      })
+      .catch((err) => console.error("[shutdown] daemon wait threw:", err))
+      .finally(exitOnce);
   };
 }

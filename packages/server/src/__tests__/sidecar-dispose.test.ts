@@ -1,10 +1,8 @@
 /**
- * Sidecar daemon disposal — dispose() resolves on EXIT, and a shutting-down
- * server waits (bounded) for it.
- *
- * Server shutdown awaits these promises (see shutdown.ts): exiting in the
- * same tick as the SIGTERM orphaned a mid-turn Codex daemon, which then ran
- * the agent's turn to completion with no server above it.
+ * Sidecar daemon disposal: dispose() resolves on EXIT, and stopAllSidecars()
+ * — what server shutdown waits on — reaps every daemon that exists, including
+ * one started after its first sweep. Regression for the orphaned mid-turn
+ * daemon — see stopAllSidecars.
  *
  * The stub daemons here are real child processes: one ignores SIGTERM (a hung
  * daemon — the SIGKILL backstop's case), one honors it (the normal case).
@@ -15,8 +13,10 @@ import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import {
   awaitSidecarExits,
+  runningSidecarPids,
   SIDECAR_KILL_AFTER_MS,
   startSidecarDaemon,
+  stopAllSidecars,
 } from "../agents/sidecar.js";
 
 const READY = "listening on ws://stub";
@@ -30,6 +30,15 @@ function startStub(body: string) {
     readyNeedle: READY,
   });
 }
+
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 describe("Sidecar.dispose()", () => {
   it("resolves only once a SIGTERM-ignoring daemon is SIGKILLed", async () => {
@@ -52,11 +61,52 @@ describe("Sidecar.dispose()", () => {
     assert.ok(Date.now() - t0 < SIDECAR_KILL_AFTER_MS);
   });
 
-  it("is idempotent — a second call and a call after exit both resolve", async () => {
-    const sc = await startStub(IGNORES_SIGTERM);
-    await Promise.all([sc.dispose(), sc.dispose()]);
-    assert.equal(sc.proc.signalCode, "SIGKILL");
-    await sc.dispose();
+  it("is idempotent — repeat calls return the first call's promise", async () => {
+    const sc = await startStub(HONORS_SIGTERM);
+    const first = sc.dispose();
+    assert.equal(sc.dispose(), first);
+    await first;
+    assert.equal(sc.dispose(), first);
+  });
+
+  it("a daemon that fails to spawn never enters the registry", async () => {
+    await assert.rejects(
+      startSidecarDaemon("/nonexistent/daemon", [], "ws://stub", {
+        cwd: tmpdir(),
+        env: {},
+        readyNeedle: READY,
+      }),
+    );
+    assert.deepEqual(runningSidecarPids(), []);
+  });
+});
+
+describe("stopAllSidecars()", () => {
+  it("reaps every running daemon, hung ones included", async () => {
+    const a = await startStub(HONORS_SIGTERM);
+    const b = await startStub(IGNORES_SIGTERM);
+    assert.equal(runningSidecarPids().length, 2);
+
+    assert.deepEqual(await stopAllSidecars(), []);
+    assert.equal(isAlive(a.proc.pid as number), false);
+    assert.equal(isAlive(b.proc.pid as number), false);
+  });
+
+  it("re-sweeps: a daemon started during the wait is reaped too", async () => {
+    const hung = await startStub(IGNORES_SIGTERM);
+    const stopping = stopAllSidecars();
+    const late = await startStub(HONORS_SIGTERM);
+
+    assert.deepEqual(await stopping, []);
+    assert.equal(isAlive(hung.proc.pid as number), false);
+    assert.equal(isAlive(late.proc.pid as number), false);
+  });
+
+  it("returns the pids still alive at the cap", async () => {
+    const hung = await startStub(IGNORES_SIGTERM);
+    // Cap below the SIGKILL escalation: the daemon is still alive at the cap.
+    assert.deepEqual(await stopAllSidecars(100), [hung.proc.pid]);
+    await hung.dispose();
   });
 });
 

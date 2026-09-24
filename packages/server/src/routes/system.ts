@@ -138,14 +138,18 @@ systemRouter.post("/upgrade", async (c) => {
     // started FOREGROUND (no service installed) stays down after this exit —
     // the server cannot see its own supervisor from in here, so say so in
     // the response instead of promising a restart.
+    // Exit THROUGH the shutdown handler (SIGTERM to ourselves), never a bare
+    // process.exit: the handler waits for agents' sidecar daemons, and a bare
+    // exit orphans a Codex daemon that is mid-turn to keep running its turn
+    // with no server above it.
     setTimeout(() => {
       console.log("[upgrade] Restarting to apply new bundle...");
-      process.exit(0);
+      process.kill(process.pid, "SIGTERM");
     }, 500);
     return c.json({
       ...result,
       note:
-        "Daemon exits in ~500ms. A supervised install (launchd/systemd) " +
+        "Daemon exits within a few seconds. A supervised install (launchd/systemd) " +
         "restarts automatically; a foreground daemon must be started again " +
         "with `autonomos start`.",
     });

@@ -63,6 +63,7 @@ import {
 import {
   awaitSidecarExits,
   pickFreePort,
+  runningSidecarPids,
   type Sidecar,
   startSidecarDaemon,
 } from "./sidecar.js";
@@ -192,6 +193,20 @@ export function getAgentSidecarEndpoint(agentId: UUID): string | undefined {
 
 const live = new Map<UUID, ManagedAttachment>();
 let shuttingDown = false;
+/** Set once the SERVER begins shutting down, and never cleared (unlike
+ *  `shuttingDown`, which restart-all resets). While it's set nothing may start
+ *  an agent: the shutdown waits (bounded) for sidecar daemons to exit, and a
+ *  spawn racing that window would start a daemon the process then exits
+ *  under — the orphan the wait exists to prevent. */
+let serverStopping = false;
+
+function serverStoppingError(): SpawnError {
+  return new SpawnError(
+    "SERVER_STOPPING",
+    503,
+    "The server is shutting down — try again once it is back.",
+  );
+}
 
 export function getAttachment(agentId: UUID): ManagedAttachment | undefined {
   return live.get(agentId);
@@ -479,8 +494,9 @@ export class SpawnError extends Error {
     | "NOT_ADOPTABLE"
     | "NOTHING_TO_RESUME"
     | "INVALID_WORKING_DIRECTORY"
-    | "PROVIDER_MISMATCH";
-  readonly status: 400 | 409 | 422;
+    | "PROVIDER_MISMATCH"
+    | "SERVER_STOPPING";
+  readonly status: 400 | 409 | 422 | 503;
   constructor(
     code: SpawnError["code"],
     status: SpawnError["status"],
@@ -616,6 +632,7 @@ export interface SpawnResult {
  *     the forked agent's providerSessionId then --fork-session's
  */
 export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
+  if (serverStopping) throw serverStoppingError();
   if (
     params.forkFromAgentId &&
     (params.resumeAgentId || params.resumeSessionId)
@@ -1190,6 +1207,15 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
   }
 
+  // Shutdown began during one of the awaits above. Nothing below awaits until
+  // the attachment is registered, so this is the last point where the spawn can
+  // stop cleanly: a daemon it started is already in the sidecar registry, and
+  // the shutdown's sweep reaps it.
+  if (serverStopping) {
+    void sidecar?.dispose();
+    throw serverStoppingError();
+  }
+
   let args: string[];
   try {
     args = provider.buildArgs(resolved);
@@ -1719,14 +1745,12 @@ export function deleteAgent(agentId: UUID): boolean {
  * Kill all PTY processes without marking the Agent records exited.
  * Used during server shutdown so agents auto-resume on next boot.
  *
- * The teardown itself is synchronous; it returns one promise per sidecar daemon,
- * each settling once that daemon has actually exited. The caller must await
- * them (bounded, via awaitSidecarExits) before process.exit — a Codex daemon mid-turn does not
- * exit on SIGTERM, and only a live event loop lets its SIGKILL escalation fire.
+ * Disposes each agent's sidecar daemon but does not wait for it: the caller
+ * must await stopAllSidecars() before exiting the process.
  */
-export function shutdownAllAttachments(): Promise<void>[] {
+export function shutdownAllAttachments(): void {
+  serverStopping = true;
   shuttingDown = true;
-  const daemonExits: Promise<void>[] = [];
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [agentId, managed] of live) {
@@ -1752,7 +1776,7 @@ export function shutdownAllAttachments(): Promise<void>[] {
     // own registry, not in `live`.)
     try {
       disposeCodexControl(agentId);
-      if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
+      void managed.sidecar?.dispose();
     } catch (err) {
       // A throw here would skip every REMAINING agent's teardown and — since
       // the signal handler that calls this has no catch — removePidFile,
@@ -1765,7 +1789,6 @@ export function shutdownAllAttachments(): Promise<void>[] {
     }
   }
   live.clear();
-  return daemonExits;
 }
 
 /** Reset shuttingDown — used after restartAllAttachments to permit normal
@@ -1877,6 +1900,7 @@ export async function resumeActiveAgents(
       confirmResumeSurvived(a);
       resumed++;
     } catch (err) {
+      if (serverStopping) break;
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
       console.error(`  ✗ Failed to resume ${a.name}: ${message}${stack}`);
@@ -1932,6 +1956,7 @@ export async function restartAllAttachments(): Promise<{
   // Throwing here is clean: nothing has been destroyed, and the route has no
   // local catch, so it reaches agentsRouter.onError as a 503 + Retry-After.
   assertControlPlaneReady();
+  if (serverStopping) throw serverStoppingError();
 
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
@@ -1964,9 +1989,13 @@ export async function restartAllAttachments(): Promise<{
   // bounded by the SIGKILL backstop.
   if (!(await awaitSidecarExits(daemonExits))) {
     console.warn(
-      "[runtime] restart-all: a sidecar daemon had not exited after SIGKILL — respawning anyway",
+      `[runtime] restart-all: sidecar daemon(s) still alive after SIGKILL (pid ${runningSidecarPids().join(", ")}) — respawning anyway`,
     );
   }
+  // The server began shutting down during the wait. Leave every record
+  // "running" so it resumes on next boot; respawning now would fail each one
+  // and mark it crashed.
+  if (serverStopping) return { idMap: {}, failures };
   resetShuttingDown();
 
   // Respawn each (id stays the same since we resume by agent id).
