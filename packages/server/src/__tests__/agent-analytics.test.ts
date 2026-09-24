@@ -9,6 +9,7 @@ import {
   _resetAnalyticsForTesting,
   forgetAgentAnalytics,
   getAgentAnalytics,
+  observeStart,
   observeStatus,
   observeTool,
   supportFor,
@@ -216,15 +217,39 @@ describe("agent analytics — wired into the real taps", () => {
     assert.equal(r.status?.current, "idle");
   });
 
-  it("markRunning counts starts (restarts = starts − 1); markExited counts only crashes", async () => {
+  it("starts are counted by the spawn, NOT markRunning (a fresh spawn never calls it; the crash net uses it for identity only)", async () => {
     markRunning(ID as never, {});
+    markRunning(ID as never, { providerSessionId: "x" });
+    assert.equal((await getAgentAnalytics(ID, {})).restarts, 0);
+    observeStart(ID); // fresh spawn
+    observeStart(ID); // one restart
+    assert.equal((await getAgentAnalytics(ID, {})).restarts, 1);
+  });
+
+  it("markExited counts only crashes, and CLOSES the state: no open wait, strip capped, no phantom turn on resume", async () => {
+    setAgentStatus(ID, "working");
+    setAgentStatus(ID, "needs_input");
     markExited(ID as never, "user_killed");
+    // Read a minute on: the open wait would have grown, and the strip's final
+    // segment has width (same-ms transitions are zero-length and dropped).
+    let r = await getAgentAnalytics(ID, {}, Date.now() + 60_000);
+    assert.equal(r.crashes, 0);
+    assert.equal(r.status?.current, "stopped");
+    assert.equal(
+      r.waits.waitingSince,
+      null,
+      "a killed agent is not 'waiting now'",
+    );
+    assert.ok(r.waits.totalMs < 1000, "the wait stopped growing at the kill");
+    assert.equal(r.activity.at(-1)?.status, "stopped");
+    // Resume: the fresh daemon/CC reports idle/ready — not a finished turn.
     markRunning(ID as never, {});
+    setAgentStatus(ID, "idle");
+    r = await getAgentAnalytics(ID, {});
+    assert.equal(r.turns, 0);
+    setAgentStatus(ID, "working");
     markExited(ID as never, "crashed");
-    markRunning(ID as never, {});
-    const r = await getAgentAnalytics(ID, {});
-    assert.equal(r.restarts, 2);
-    assert.equal(r.crashes, 1);
+    assert.equal((await getAgentAnalytics(ID, {})).crashes, 1);
   });
 
   it("reads the git branch of the agent's directory (and null outside a repo)", async () => {

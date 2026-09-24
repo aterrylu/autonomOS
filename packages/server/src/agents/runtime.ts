@@ -47,7 +47,7 @@ import {
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
-import { observeExitCode } from "./analytics.js";
+import { observeExitCode, observeStart } from "./analytics.js";
 import {
   cancelAllChannelServerChecks,
   cancelChannelServerCheck,
@@ -1407,6 +1407,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
   }
+  // Counted HERE — where a PTY actually started, fresh or reattached — not in
+  // markRunning, which a fresh spawn never calls and the crash net also uses
+  // for an identity-only reset.
+  observeStart(persisted.id);
 
   // The spawn succeeded and the record is written — now the queued notices are
   // true statements about what happened.
@@ -1566,7 +1570,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   pty.onExit(({ exitCode, signal }) => {
     const lifetime = Date.now() - spawnedAt;
-    observeExitCode(persisted.id, exitCode);
 
     // The visible TUI (this PTY) and its sidecar daemon are SEPARATE processes —
     // the daemon does not die when the PTY does. Dispose it here unconditionally
@@ -1592,6 +1595,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     if (live.get(persisted.id)?.pty !== pty) {
       return;
     }
+    // After the stale guard: an old PTY exiting late must not overwrite the
+    // current process's exit code.
+    observeExitCode(persisted.id, exitCode);
 
     cancelPromptTracking(persisted.id);
     cancelChannelServerCheck(persisted.id);

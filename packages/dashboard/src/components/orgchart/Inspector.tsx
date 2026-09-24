@@ -206,8 +206,15 @@ function useAgentAnalytics(
       latest.current += 1; // orphan any in-flight request
     };
   }, [load]);
+  // A status change refetches (debounced). Skipped on mount — the effect above
+  // already fetched — so opening the inspector costs one request, not two.
+  const mounted = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: statusKey is the trigger
   useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
     const t = setTimeout(load, 600);
     return () => clearTimeout(t);
   }, [statusKey]);
@@ -323,26 +330,33 @@ function ActivityStrip({
       <div
         data-org-activity
         role="img"
-        aria-label={`Activity over the last 24 hours: ${a.activity.length} status changes`}
+        aria-label={`Activity, ${caption.toLowerCase()}: ${a.activity.length} status changes`}
         className="relative h-3.5 overflow-hidden rounded-sm"
         style={{
           border: `1px solid ${tokens.cardBorder}`,
           background: tokens.chip,
         }}
       >
-        {a.activity.map((seg) => (
-          <span
-            key={`${seg.from}-${seg.status}`}
-            data-org-segment={seg.status}
-            className="absolute top-0 bottom-0"
-            title={`${seg.status} · ${formatDuration(seg.to - seg.from)}`}
-            style={{
-              left: `${((Math.max(seg.from, start) - start) / span) * 100}%`,
-              width: `${(Math.max(0, seg.to - Math.max(seg.from, start)) / span) * 100}%`,
-              background: segmentColor(seg.status, tokens),
-            }}
-          />
-        ))}
+        {a.activity.map((seg, i) => {
+          // The last state is still going: draw it to the CLIENT's clock, not
+          // the server's at fetch time, or the right edge shows an empty band
+          // (read as an unrecorded gap) until the next refetch.
+          const to =
+            i === a.activity.length - 1 ? Math.max(seg.to, now) : seg.to;
+          return (
+            <span
+              key={`${seg.from}-${seg.status}`}
+              data-org-segment={seg.status}
+              className="absolute top-0 bottom-0"
+              title={`${seg.status} · ${formatDuration(to - seg.from)}`}
+              style={{
+                left: `${((Math.max(seg.from, start) - start) / span) * 100}%`,
+                width: `${(Math.max(0, to - Math.max(seg.from, start)) / span) * 100}%`,
+                background: segmentColor(seg.status, tokens),
+              }}
+            />
+          );
+        })}
       </div>
       <span
         data-org-activity-caption
@@ -450,7 +464,7 @@ export function OrgInspector({
       a.support.needsInput ? (
         <span key="w">
           {a.waits.count}× · {formatDuration(a.waits.totalMs)}
-          {a.waits.waitingSince !== null && (
+          {a.waits.waitingSince !== null && !exited && (
             <span style={{ color: tokens.status.needsInput }}>
               {" "}
               · waiting now

@@ -245,6 +245,115 @@ describe("rich inspector — analytics", () => {
   });
 });
 
+describe("rich inspector — review fixes", () => {
+  it("opening the inspector fetches ONCE (not immediately + again at 600ms)", async () => {
+    stub([node("A")]);
+    useStore.setState({
+      theme: "void",
+      sessions: [session("A")],
+      exitedSessions: [],
+      agentStatuses: { A: { status: "idle" } as never },
+      notificationCounts: {},
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("A")).toBeTruthy());
+    await openInspector("A");
+    await new Promise((r) => setTimeout(r, 800));
+    expect(analyticsFetches).toEqual(["A"]);
+  });
+
+  it("switching agents fast never shows the previous agent's analytics (same status key)", async () => {
+    stub([node("A"), node("B")]);
+    byAgent.A = analytics({ turns: 111 });
+    byAgent.B = analytics({ turns: 222 });
+    useStore.setState({
+      theme: "void",
+      sessions: [session("A"), session("B")],
+      exitedSessions: [],
+      agentStatuses: {
+        A: { status: "idle" } as never,
+        B: { status: "idle" } as never,
+      },
+      notificationCounts: {},
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("B")).toBeTruthy());
+    await openInspector("A");
+    // A status change arms A's debounced refetch…
+    useStore.setState({
+      agentStatuses: {
+        A: { status: "working" } as never,
+        B: { status: "working" } as never,
+      },
+    });
+    // Let that render commit (so A's timer is armed with A's loader)…
+    await new Promise((r) => setTimeout(r, 50));
+    // …then B is selected before it fires.
+    fireEvent.click(card("B"));
+    await waitFor(() =>
+      expect(section("activity")).toHaveTextContent("Turns222"),
+    );
+    await new Promise((r) => setTimeout(r, 900));
+    expect(section("activity")).toHaveTextContent("Turns222");
+  });
+
+  it("the strip's last segment reaches the client's now — no empty band at the right edge", async () => {
+    stub([node("A")]);
+    // Fetched 5 minutes ago: the server's "to" lags the client clock.
+    byAgent.A = analytics({
+      activity: [
+        { from: NOW - 20 * MIN, to: NOW - 10 * MIN, status: "working" },
+        { from: NOW - 10 * MIN, to: NOW - 5 * MIN, status: "idle" },
+      ],
+    });
+    useStore.setState({
+      theme: "void",
+      sessions: [session("A")],
+      exitedSessions: [],
+      agentStatuses: { A: { status: "idle" } as never },
+      notificationCounts: {},
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("A")).toBeTruthy());
+    await openInspector("A");
+    const segs = [
+      ...(section("activity") as HTMLElement).querySelectorAll(
+        "[data-org-segment]",
+      ),
+    ] as HTMLElement[];
+    const last = segs.at(-1) as HTMLElement;
+    const right =
+      Number.parseFloat(last.style.left) + Number.parseFloat(last.style.width);
+    expect(right).toBeCloseTo(100, 0);
+  });
+
+  it("an exited agent is never 'waiting now'", async () => {
+    // An exited lead with a live report stays drawn (as a ghost).
+    stub([
+      {
+        ...node("A"),
+        status: "exited",
+        children: [node("K")],
+      } as AgentTreeNode,
+    ]);
+    useStore.setState({
+      theme: "void",
+      sessions: [session("K")],
+      exitedSessions: [
+        { ...(session("A") as object), status: "exited" } as never,
+      ],
+      agentStatuses: { K: { status: "idle" } as never },
+      notificationCounts: {},
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("A")).toBeTruthy());
+    await openInspector("A");
+    const st = section("status") as HTMLElement;
+    expect(st).toHaveTextContent("3× · 11m");
+    expect(st).not.toHaveTextContent("waiting now");
+  });
+});
+
 describe("formatDuration", () => {
   it("reads like a person would say it", () => {
     expect(formatDuration(45_000)).toBe("45s");

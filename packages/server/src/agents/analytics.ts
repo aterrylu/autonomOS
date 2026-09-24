@@ -129,8 +129,17 @@ export function observeTool(
 export function observeStart(id: string): void {
   get(id).starts += 1;
 }
-export function observeExitReason(id: string, reason: string): void {
+/** An exit closes the agent's state: a kill or crash sends no SessionEnd, so
+ *  without this an open wait would keep growing ("waiting now" on a dead
+ *  agent), the strip would keep painting "working", and a resume's first
+ *  ready/idle would count as a phantom turn. */
+export function observeExit(
+  id: string,
+  reason: string,
+  now = Date.now(),
+): void {
   if (reason === "crashed") get(id).crashes += 1;
+  observeStatus(id, "stopped", now);
 }
 export function observeExitCode(id: string, code: number | null): void {
   get(id).lastExitCode = code;

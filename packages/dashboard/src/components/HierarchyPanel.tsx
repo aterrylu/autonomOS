@@ -1202,6 +1202,9 @@ export function HierarchyPanel() {
         {body}
         {selected && !loading && !error && (
           <OrgInspector
+            // Keyed: switching agents must not carry over the previous one's
+            // pending refetch timer (it would commit A's analytics under B).
+            key={selected.node.id}
             node={selected.node}
             managerId={selected.managerId}
             managerName={selected.managerName}
