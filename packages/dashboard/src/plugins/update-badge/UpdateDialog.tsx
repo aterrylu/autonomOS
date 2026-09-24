@@ -764,7 +764,8 @@ function BackgroundWarning({ rows }: { rows: AgentRow[] }) {
         </div>
       ))}
       <div>
-        The update restarts it — start it again after if you still need it.
+        The update stops it and nothing brings it back — start it again
+        afterwards if you still need it.
       </div>
     </div>
   );
