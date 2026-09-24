@@ -40,7 +40,7 @@ import {
   digitForRow,
   flattenHierarchyRows,
 } from "./sidebarRowOrder";
-import { statusLabelStyle, UNREAD_COLOR } from "./statusLabelStyle";
+import { statusLabelStyle, unreadColor } from "./statusLabelStyle";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -1496,7 +1496,7 @@ function SessionRow({
             style={{ color: page.statusFg }}
           >
             {notifCount > 0 && (
-              <span style={{ color: UNREAD_COLOR }}>
+              <span style={{ color: unreadColor(isLightTheme) }}>
                 {notifCount} unread ·{" "}
               </span>
             )}
