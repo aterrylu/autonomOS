@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
+import { diagnosisLabel, diagnosisTitle } from "./diagnosis";
 import { type SaveValidateResult, saveAndValidate } from "./saveAndValidate";
 import {
   type ErrorKind,
   isCredentialError,
   type RateLimitData,
   type RateLimitWindow,
+  type UsageDiagnosis,
 } from "./types";
 import { UsagePanel } from "./UsagePanel";
 import { useClickOutside } from "./useClickOutside";
@@ -66,6 +68,53 @@ function WindowLabel({
   );
 }
 
+/** "What to check" line under a panel's headline — the diagnosis hint. */
+function DiagnosisHint({ diagnosis }: { diagnosis?: UsageDiagnosis }) {
+  const theme = useStore((s) => s.theme);
+  const page = THEMES[theme].page;
+  if (!diagnosis) return null;
+  return (
+    <div
+      className="mb-3 text-[11px]"
+      style={{ color: page.statusFg }}
+      data-testid="usage-diagnosis-hint"
+    >
+      {diagnosis.hint}
+    </div>
+  );
+}
+
+/** Panel for a successful call that carried no window we could read (the
+ *  former bare "n/a"): says why, what to check, and offers a retry. */
+function DiagnosisPanel({
+  diagnosis,
+  onClose,
+  onRetry,
+}: {
+  diagnosis: UsageDiagnosis;
+  onClose: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <FloatingPanel onClose={onClose}>
+      <div className="font-medium text-sm mb-2">No usage to show</div>
+      <div className="mb-2">{diagnosis.summary}</div>
+      <DiagnosisHint diagnosis={diagnosis} />
+      <button
+        type="button"
+        onClick={() => {
+          onRetry();
+          onClose();
+        }}
+        className="w-full rounded px-3 py-1.5 text-xs font-medium cursor-pointer"
+        style={{ background: "#16825d", color: "#fff" }}
+      >
+        Check again
+      </button>
+    </FloatingPanel>
+  );
+}
+
 function FloatingPanel({
   onClose,
   children,
@@ -113,9 +162,12 @@ function setupButtonLabel(phase: SetupPhase): string {
 function SetupPanel({
   onClose,
   onSaved,
+  diagnosis,
 }: {
   onClose: () => void;
   onSaved: () => void;
+  /** Why auto-detect found no usable login, shown above the key input. */
+  diagnosis?: UsageDiagnosis;
 }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
@@ -169,6 +221,24 @@ function SetupPanel({
   return (
     <FloatingPanel onClose={onClose}>
       <div className="font-medium text-sm mb-2">Claude Usage Setup</div>
+      {diagnosis && (
+        <>
+          <div
+            className="rounded px-2 py-1.5 mb-2"
+            style={{ background: "#e6b45015", color: "#e6b450" }}
+            data-testid="usage-diagnosis-summary"
+          >
+            {diagnosis.summary}
+          </div>
+          <DiagnosisHint diagnosis={diagnosis} />
+          {(diagnosis.code === "api_key_auth" ||
+            diagnosis.code === "cloud_provider_auth") && (
+            <div className="mb-3 text-[11px]" style={{ color: page.statusFg }}>
+              If you also have a claude.ai plan, paste its session key below.
+            </div>
+          )}
+        </>
+      )}
       <ol
         className="list-decimal list-inside space-y-1.5 mb-3"
         style={{ color: page.statusFg }}
@@ -269,12 +339,14 @@ function SetupPanel({
 function ErrorPanel({
   error,
   errorKind,
+  diagnosis,
   onClose,
   onReconfigure,
   onRetry,
 }: {
   error: string;
   errorKind?: ErrorKind;
+  diagnosis?: UsageDiagnosis;
   onClose: () => void;
   onReconfigure: () => void;
   onRetry: () => void;
@@ -285,11 +357,19 @@ function ErrorPanel({
   // transient failures (rate limit, outage) we offer a retry instead of
   // pushing the user into a reconfigure loop that cannot help.
   const credential = isCredentialError(errorKind);
+  // "Temporarily" and "not your key" are only TRUE for transient causes. A 403
+  // or a proxy's page may well be about this account, so with a diagnosis
+  // that isn't transient, drop both promises and let the hint speak.
+  const transient = !diagnosis || diagnosis.transient === true;
 
   return (
     <FloatingPanel onClose={onClose}>
       <div className="font-medium text-sm mb-2">
-        {credential ? "Session key problem" : "Usage temporarily unavailable"}
+        {credential
+          ? "Session key problem"
+          : transient
+            ? "Usage temporarily unavailable"
+            : "Usage unavailable"}
       </div>
       <div
         className="rounded px-2 py-1.5 mb-3"
@@ -297,6 +377,7 @@ function ErrorPanel({
       >
         {error}
       </div>
+      <DiagnosisHint diagnosis={diagnosis} />
       {credential ? (
         <button
           type="button"
@@ -308,9 +389,12 @@ function ErrorPanel({
         </button>
       ) : (
         <>
-          <div className="mb-3 text-[11px]" style={{ color: page.statusFg }}>
-            This isn't a problem with your session key — no need to reconfigure.
-          </div>
+          {transient && (
+            <div className="mb-3 text-[11px]" style={{ color: page.statusFg }}>
+              This isn't a problem with your session key — no need to
+              reconfigure.
+            </div>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -360,19 +444,31 @@ export function UsageStatusBarItem() {
           className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
           style={{ color: "#e6b450" }}
           onClick={() => setPanel(panel === "none" ? "setup" : "none")}
-          title="Click to set up Claude usage tracking"
+          title={diagnosisTitle(
+            data.diagnosis,
+            "Click to set up Claude usage tracking",
+          )}
         >
-          <Codicon name="claude" size={14} /> setup needed
+          <Codicon name="claude" size={14} />{" "}
+          {diagnosisLabel(data.diagnosis?.code, "setup needed")}
         </button>
         {panel === "setup" && (
-          <SetupPanel onClose={() => setPanel("none")} onSaved={refetch} />
+          <SetupPanel
+            onClose={() => setPanel("none")}
+            onSaved={refetch}
+            diagnosis={data.diagnosis}
+          />
         )}
       </div>
     );
   }
 
   const hasData =
-    data.fiveHour || data.sevenDay || data.sevenDaySonnet || data.sevenDayOpus;
+    data.fiveHour ||
+    data.sevenDay ||
+    data.sevenDaySonnet ||
+    data.sevenDayOpus ||
+    (data.extraWindows?.length ?? 0) > 0;
 
   if (data.error && !hasData) {
     // A bad credential is the user's to fix (red, "err"); a transient outage
@@ -387,14 +483,16 @@ export function UsageStatusBarItem() {
           className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
           style={{ color: credential ? "#ea6c73" : "#e6b450" }}
           onClick={() => setPanel(panel === "none" ? "error" : "none")}
-          title={data.error}
+          title={diagnosisTitle(data.diagnosis, data.error)}
         >
-          <Codicon name="claude" size={14} /> {credential ? "err" : "delayed"}
+          <Codicon name="claude" size={14} />{" "}
+          {diagnosisLabel(data.diagnosis?.code, credential ? "err" : "delayed")}
         </button>
         {panel === "error" && (
           <ErrorPanel
             error={data.error}
             errorKind={data.errorKind}
+            diagnosis={data.diagnosis}
             onClose={() => setPanel("none")}
             onReconfigure={() => setPanel("setup")}
             onRetry={refetch}
@@ -408,14 +506,31 @@ export function UsageStatusBarItem() {
   }
 
   if (!hasData) {
+    // A successful call with no readable window. Used to be a bare, silent
+    // "n/a"; now it names the reason and opens a panel with what to check.
+    const diagnosis = data.diagnosis;
     return (
-      <span
-        className="inline-flex items-center gap-1"
-        style={{ color: page.statusFg }}
-        title="No rate limit data available"
-      >
-        <Codicon name="claude" size={14} /> n/a
-      </span>
+      <div className="relative">
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
+          style={{ color: page.statusFg }}
+          onClick={() =>
+            diagnosis && setPanel(panel === "none" ? "error" : "none")
+          }
+          title={diagnosisTitle(diagnosis, "No rate limit data available")}
+        >
+          <Codicon name="claude" size={14} />{" "}
+          {diagnosisLabel(diagnosis?.code, "n/a")}
+        </button>
+        {panel === "error" && diagnosis && (
+          <DiagnosisPanel
+            diagnosis={diagnosis}
+            onClose={() => setPanel("none")}
+            onRetry={refetch}
+          />
+        )}
+      </div>
     );
   }
 
@@ -431,6 +546,7 @@ export function UsageStatusBarItem() {
   const topModel = [
     { window: data.sevenDaySonnet, label: "Sonnet 7d" },
     { window: data.sevenDayOpus, label: "Opus 7d" },
+    ...(data.extraWindows ?? []).map((w) => ({ window: w, label: w.label })),
   ]
     .flatMap(({ window, label }) => (window ? [{ window, label }] : []))
     .sort((a, b) => b.window.utilization - a.window.utilization)[0];
@@ -466,7 +582,7 @@ export function UsageStatusBarItem() {
         )}
         {staleMsg && (
           <span
-            title={staleMsg}
+            title={error ? staleMsg : diagnosisTitle(data.diagnosis, staleMsg)}
             style={{
               // Red for credential failures (the fallback note lands here:
               // numbers from the saved key + a broken login); amber for
