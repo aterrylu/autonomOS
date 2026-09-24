@@ -69,6 +69,10 @@ import {
   startSidecarDaemon,
 } from "./sidecar.js";
 import {
+  createStartupNoticeScanner,
+  STARTUP_NOTICE_WINDOW_MS,
+} from "./startupNotices.js";
+import {
   buildAgent,
   deleteAgentRaw,
   getAgent,
@@ -1321,6 +1325,32 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // are never tracked (promptless spawns) or not yet tracked — though the
   // latter can't happen: trackPromptDelivery below runs in this same
   // synchronous block, before any watcher timer can fire.
+  // Startup screens the provider wants surfaced (e.g. Gemini's folder-trust
+  // dialog) — independent of the Auto-Trust setting, because a dialog shows
+  // up exactly when it's off. Observability only; nothing is typed.
+  if (provider.startupNotices?.length) {
+    const agentName = resolved.name ?? resolved.sessionId.slice(0, 8);
+    const feed = createStartupNoticeScanner(provider.startupNotices, (msg) => {
+      // Same staleness guard as the watcher below.
+      if (live.get(resolved.sessionId)?.pty !== pty) return;
+      console.warn(`[runtime] ${agentName}: ${msg}`);
+      pushSystemNotification(resolved.sessionId, `${agentName}: ${msg}`);
+    });
+    const subs: Array<{ dispose(): void }> = [];
+    const stop = (): void => {
+      clearTimeout(timer);
+      for (const sub of subs.splice(0)) sub.dispose();
+    };
+    const timer = setTimeout(stop, STARTUP_NOTICE_WINDOW_MS);
+    timer.unref();
+    subs.push(
+      pty.onData((chunk) => {
+        if (feed(chunk)) stop();
+      }),
+      pty.onExit(stop),
+    );
+  }
+
   const startupWatcherAttached =
     getSettings().autoTrust !== false && provider.attachStartupWatcher != null;
   if (startupWatcherAttached) {

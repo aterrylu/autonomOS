@@ -21,6 +21,7 @@ import {
 import { getConfigDir } from "../configDir.js";
 import { getControlSocketPath } from "../internalSocket.js";
 import { getAuthToken, getServerPort } from "../serverState.js";
+import { getSettings } from "../settings.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -116,6 +117,15 @@ export const geminiCliProvider: AgentProvider = {
     agentNaming: false,
   },
 
+  startupNotices: [
+    {
+      // Gemini 0.46's trust dialog heading, verbatim from a real render.
+      needle: "Do you trust the files in this folder?",
+      message:
+        'Gemini is asking whether to trust this folder. Until you answer in its terminal it runs as Ask, whatever permission mode you picked, and choosing "Don\'t trust" keeps it there. Turn on Auto-Trust in Settings to skip this.',
+    },
+  ],
+
   resolveBinary(): string {
     return resolveBinaryFromCandidates(
       "gemini",
@@ -130,6 +140,20 @@ export const geminiCliProvider: AgentProvider = {
     // Permission mode → --approval-mode (always set; "default" is Gemini's
     // own default, so this is behavior-preserving for supervised spawns).
     args.push("--approval-mode", geminiApprovalMode(options.permissionMode));
+
+    // Folder trust. In a folder Gemini doesn't trust, it shows a "Do you trust
+    // the files in this folder?" dialog and — until trusted — overrides ANY
+    // --approval-mode to "default" (measured on 0.46 in a fresh HOME: yolo
+    // ran as default; "Don't trust" keeps it there for good). --skip-trust
+    // trusts the workspace for THIS session only: no dialog, the requested
+    // mode applies (measured: yolo / auto_edit / default all honored), and
+    // ~/.gemini/trustedFolders.json is not written. Gated on the same
+    // Auto-Trust setting as Claude Code's pre-trust (#374); with it off, the
+    // user answers Gemini's own dialog — and startupNotices says why the agent
+    // is waiting. Trusting also lets Gemini load the folder's own .gemini
+    // config (MCP servers, hooks, commands), the same class of trust as
+    // Claude Code's.
+    if (getSettings().autoTrust !== false) args.push("--skip-trust");
 
     // Filter MCP servers to only autonomOS (if injected)
     if (options.injectChannelServer) {
