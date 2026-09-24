@@ -90,6 +90,22 @@ describe("agent analytics — counted from status transitions", () => {
   });
 });
 
+describe("agent analytics — strip merging", () => {
+  beforeEach(() => _resetAnalyticsForTesting());
+  it("a zero-length blip doesn't leave two adjacent same-status segments", async () => {
+    observeStatus("a", "tool_running", T0);
+    observeStatus("a", "working", T0 + MIN); // zero-length: next change is instant
+    observeStatus("a", "tool_running", T0 + MIN);
+    observeStatus("a", "idle", T0 + 3 * MIN);
+    const r = await getAgentAnalytics("a", {}, T0 + 4 * MIN);
+    assert.deepEqual(
+      r.activity.map((s) => s.status),
+      ["tool_running", "idle"],
+    );
+    assert.equal(r.activity[0].to, T0 + 3 * MIN);
+  });
+});
+
 describe("agent analytics — tools", () => {
   beforeEach(() => _resetAnalyticsForTesting());
 

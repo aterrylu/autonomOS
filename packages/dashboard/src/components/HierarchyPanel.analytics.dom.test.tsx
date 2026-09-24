@@ -152,6 +152,12 @@ describe("rich inspector — analytics", () => {
         (s) => (s as HTMLElement).dataset.orgSegment,
       ),
     ).toEqual(["working", "idle", "needs_input"]);
+    // The strip spans from the first change (50m ago), not a hairline in 24h.
+    expect(act.querySelector("[data-org-activity-caption]")).toHaveTextContent(
+      /^Since .+ \(50m\)$/,
+    );
+    const firstSeg = act.querySelector("[data-org-segment]") as HTMLElement;
+    expect(Number.parseFloat(firstSeg.style.width)).toBeGreaterThan(50);
     expect(act).toHaveTextContent("Turns7");
     expect(act).toHaveTextContent("Tool calls17");
     expect(act).toHaveTextContent("Failed tools2");

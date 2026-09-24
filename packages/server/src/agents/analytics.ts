@@ -197,8 +197,13 @@ export async function getAgentAnalytics(
   for (let i = 0; i < t.length; i++) {
     const from = Math.max(t[i].at, cutoff);
     const to = i + 1 < t.length ? t[i + 1].at : now;
-    if (to > cutoff && to > from)
-      activity.push({ from, to, status: t[i].status });
+    if (!(to > cutoff && to > from)) continue;
+    // A zero-length blip between two same-status runs (e.g. working for 0ms
+    // between two tool calls) is dropped above; merge what it leaves behind so
+    // the strip never shows two adjacent segments of the same status.
+    const last = activity.at(-1);
+    if (last && last.status === t[i].status && last.to === from) last.to = to;
+    else activity.push({ from, to, status: t[i].status });
   }
   const waits = s?.waits ?? { count: 0, totalMs: 0, waitingSince: null };
   return {

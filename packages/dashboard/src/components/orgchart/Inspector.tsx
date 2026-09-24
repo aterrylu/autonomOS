@@ -153,6 +153,12 @@ function CommunicationSection({
   );
 }
 
+/** "just now" / "5m ago" — formatAge reads "now" for fresh times. */
+function agoText(ts: number): string {
+  const age = formatAge(ts);
+  return age === "now" ? "just now" : `${age} ago`;
+}
+
 /** "45s", "12m", "3h 12m", "2d 4h" — a duration, for time-in-state etc. */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—";
@@ -300,32 +306,51 @@ function ActivityStrip({
   now: number;
   tokens: OrgChartTokens;
 }) {
-  const start = now - 86_400_000;
+  // Span from the first recorded change (at most 24h back): a young agent's
+  // few minutes would otherwise be a hairline in a 24-hour-wide strip.
+  const first = a.activity[0]?.from ?? now;
+  const start = Math.max(now - 86_400_000, Math.min(first, now - 60_000));
   const span = now - start;
+  const caption =
+    now - start >= 86_400_000 - 60_000
+      ? "Last 24 hours"
+      : `Since ${new Date(start).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })} (${formatDuration(span)})`;
   return (
-    <div
-      data-org-activity
-      role="img"
-      aria-label={`Activity over the last 24 hours: ${a.activity.length} status changes`}
-      className="relative h-3.5 overflow-hidden rounded-sm"
-      style={{
-        border: `1px solid ${tokens.cardBorder}`,
-        background: tokens.chip,
-      }}
-    >
-      {a.activity.map((seg) => (
-        <span
-          key={`${seg.from}-${seg.status}`}
-          data-org-segment={seg.status}
-          className="absolute top-0 bottom-0"
-          title={`${seg.status} · ${formatDuration(seg.to - seg.from)}`}
-          style={{
-            left: `${((Math.max(seg.from, start) - start) / span) * 100}%`,
-            width: `${(Math.max(0, seg.to - Math.max(seg.from, start)) / span) * 100}%`,
-            background: segmentColor(seg.status, tokens),
-          }}
-        />
-      ))}
+    <div className="flex flex-col gap-1">
+      <div
+        data-org-activity
+        role="img"
+        aria-label={`Activity over the last 24 hours: ${a.activity.length} status changes`}
+        className="relative h-3.5 overflow-hidden rounded-sm"
+        style={{
+          border: `1px solid ${tokens.cardBorder}`,
+          background: tokens.chip,
+        }}
+      >
+        {a.activity.map((seg) => (
+          <span
+            key={`${seg.from}-${seg.status}`}
+            data-org-segment={seg.status}
+            className="absolute top-0 bottom-0"
+            title={`${seg.status} · ${formatDuration(seg.to - seg.from)}`}
+            style={{
+              left: `${((Math.max(seg.from, start) - start) / span) * 100}%`,
+              width: `${(Math.max(0, seg.to - Math.max(seg.from, start)) / span) * 100}%`,
+              background: segmentColor(seg.status, tokens),
+            }}
+          />
+        ))}
+      </div>
+      <span
+        data-org-activity-caption
+        className="text-[10.5px]"
+        style={{ color: tokens.muted }}
+      >
+        {caption}
+      </span>
     </div>
   );
 }
@@ -465,8 +490,7 @@ export function OrgInspector({
       </span>,
     ]);
   if (a?.branch) detailRows.push(["Branch", a.branch]);
-  if (s?.createdAt)
-    detailRows.push(["Created", `${formatAge(s.createdAt)} ago`]);
+  if (s?.createdAt) detailRows.push(["Created", agoText(s.createdAt)]);
   const sessionId = s?.providerSessionId;
   if (sessionId)
     detailRows.push([
@@ -583,7 +607,7 @@ export function OrgInspector({
         <Rows rows={statusRows} tokens={tokens} />
       </Section>
 
-      <Section id="activity" title="Activity · 24h" tokens={tokens}>
+      <Section id="activity" title="Activity" tokens={tokens}>
         {a ? (
           <>
             <ActivityStrip a={a} now={now} tokens={tokens} />
