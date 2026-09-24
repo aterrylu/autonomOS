@@ -1,25 +1,29 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import type { AgentTreeNode } from "@autonomos/core";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import { useStore } from "../store";
 import { HierarchyPanel } from "./HierarchyPanel";
+import { CARD_H, PAD, V_GAP } from "./orgchart/layout";
+import { STATUS_COLORS_DARK, STATUS_COLORS_LIGHT } from "./statusLabelStyle";
 
 /**
- * HierarchyPanel — the org-chart view. It fetches /api/agents/tree on mount and
- * renders one of: loading / error / empty / a tree of AgentCards. We stub the
- * fetch to drive each content state and assert the right message / cards. The
- * status overlay/activity is sourced from the Zustand store, which we seed.
+ * HierarchyPanel — the org chart. It reads the exited-inclusive tree
+ * (`/api/agents/tree?includeExited=true`) and renders loading / error / empty /
+ * a canvas of cards. Each block below pins one audit finding (F1–F9) so a
+ * regression names the problem it reintroduces.
  */
 
-/** Real `Response` objects, not `{ ok, json }` duck types: the api client reads
- *  the body via `res.text()`, so a partial stub would fail the parse rather
- *  than the assertion under test. */
+let lastTreeUrl = "";
+
+/** Real `Response` objects: the api client reads the body via `res.text()`. */
 function stubTreeFetch(impl: () => Promise<unknown>) {
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
       if (typeof url === "string" && url.includes("/api/agents/tree")) {
+        lastTreeUrl = url;
         return impl();
       }
       return Promise.resolve(new Response("{}", { status: 200 }));
@@ -27,12 +31,54 @@ function stubTreeFetch(impl: () => Promise<unknown>) {
   );
 }
 
+function tree(nodes: unknown[]) {
+  stubTreeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify(nodes), { status: 200 })),
+  );
+}
+
+function node(
+  id: string,
+  status: "running" | "exited",
+  children: AgentTreeNode[] = [],
+  extra: Partial<AgentTreeNode> = {},
+): AgentTreeNode {
+  return {
+    id,
+    claudeSessionId: id,
+    name: id,
+    status,
+    provider: "claude-code",
+    children,
+    ...extra,
+  } as AgentTreeNode;
+}
+
+function session(id: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    claudeSessionId: id,
+    name: id,
+    status: "running",
+    workingDirectory: `/work/${id}`,
+    createdAt: Date.now() - 5 * 60_000,
+    updatedAt: Date.now(),
+    provider: "claude-code",
+    ...extra,
+  } as never;
+}
+
+const card = (id: string) =>
+  document.querySelector(`[data-org-card="${id}"]`) as HTMLElement | null;
+
 beforeEach(() => {
-  // Quiet store baseline — no live/exited sessions, no statuses.
+  lastTreeUrl = "";
   useStore.setState({
+    theme: "void",
     sessions: [],
     exitedSessions: [],
     agentStatuses: {},
+    notificationCounts: {},
   });
 });
 
@@ -40,9 +86,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("HierarchyPanel", () => {
+describe("HierarchyPanel — content states", () => {
   it("shows the empty-state guidance when no agents are running", async () => {
-    stubTreeFetch(() => Promise.resolve(new Response("[]", { status: 200 })));
+    tree([]);
     render(<HierarchyPanel />);
     expect(await screen.findByText(/no agents running/i)).toBeInTheDocument();
     expect(
@@ -67,41 +113,253 @@ describe("HierarchyPanel", () => {
     expect(await screen.findByText(/cannot reach server/i)).toBeInTheDocument();
   });
 
-  it("renders an agent card with name, template and status for a returned tree", async () => {
-    stubTreeFetch(() =>
-      Promise.resolve(
-        new Response(
-          JSON.stringify([
-            {
-              claudeSessionId: "sess-1",
-              name: "Dispatcher",
-              template: "dispatcher",
-              status: "running",
-              children: [],
-            },
-          ]),
-          { status: 200 },
-        ),
-      ),
-    );
-
-    // Seed the activity status looked up by claudeSessionId.
+  it("renders a card with name and live status; the template rides the tooltip", async () => {
+    tree([node("Dispatcher", "running", [], { template: "dispatcher" })]);
     useStore.setState({
-      sessions: [
-        {
-          id: "store-1",
-          claudeSessionId: "sess-1",
-          name: "Dispatcher",
-          status: "running",
-        } as never,
-      ],
-      agentStatuses: { "store-1": { status: "working" } },
+      sessions: [session("Dispatcher")],
+      agentStatuses: { Dispatcher: { status: "working" } as never },
     });
-
     render(<HierarchyPanel />);
     expect(await screen.findByText("Dispatcher")).toBeInTheDocument();
-    expect(screen.getByText("dispatcher")).toBeInTheDocument(); // template pill
-    // "working" → label "Working"
     expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(card("Dispatcher")?.title).toBe("Dispatcher · dispatcher");
   });
 });
+
+describe("F3 + F6 — an exited manager keeps its team and can be resumed", () => {
+  it("asks for the exited-inclusive tree", async () => {
+    tree([node("A", "running")]);
+    render(<HierarchyPanel />);
+    await screen.findByText("A");
+    expect(lastTreeUrl).toContain("includeExited=true");
+  });
+
+  it("draws the exited lead as a ghost with its running report still under it", async () => {
+    tree([
+      node("Dispatcher", "running", [
+        node("BackendLead", "exited", [node("APIWorker", "running")]),
+      ]),
+    ]);
+    const resumeSession = vi.fn(() => Promise.resolve());
+    useStore.setState({
+      sessions: [session("Dispatcher"), session("APIWorker")],
+      exitedSessions: [session("BackendLead", { status: "exited" })],
+      resumeSession: resumeSession as never,
+    });
+    render(<HierarchyPanel />);
+    await screen.findByText("APIWorker");
+
+    const lead = card("BackendLead");
+    const worker = card("APIWorker");
+    expect(lead?.dataset.orgStatus).toBe("exited");
+    expect(lead?.style.borderStyle || lead?.style.border).toContain("dashed");
+    // The report sits one level BELOW the ghost, not promoted to the top row.
+    expect(Number.parseFloat(worker?.style.top ?? "0")).toBe(
+      PAD + 2 * (CARD_H + V_GAP),
+    );
+    expect(
+      document.querySelector('[data-org-edge="BackendLead>APIWorker"]'),
+    ).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(resumeSession).toHaveBeenCalledWith(
+      "BackendLead",
+      "/work/BackendLead",
+      "BackendLead",
+      { isAutonomosAgent: true },
+    );
+  });
+
+  it("hides exited agents that hold no live team behind a 'Show N exited' toggle", async () => {
+    tree([
+      node("Lead", "running", [node("Gone", "exited")]),
+      node("OldSolo", "exited"),
+    ]);
+    render(<HierarchyPanel />);
+    await screen.findByText("Lead");
+    expect(card("Gone")).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Show 2 exited" });
+    fireEvent.click(toggle);
+    expect(card("Gone")).not.toBeNull();
+    expect(card("OldSolo")).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Hide exited" }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("F7 — teams side by side, solo agents on a shelf", () => {
+  it("puts two team leads on the same row and a solo agent on the Unassigned shelf", async () => {
+    tree([
+      node("TeamA", "running", [node("a1", "running")]),
+      node("TeamB", "running", [node("b1", "running")]),
+      node("Solo", "running"),
+    ]);
+    render(<HierarchyPanel />);
+    await screen.findByText("Solo");
+    expect(card("TeamA")?.style.top).toBe(card("TeamB")?.style.top);
+    expect(card("TeamA")?.style.left).not.toBe(card("TeamB")?.style.left);
+    expect(screen.getByText("Unassigned · 1")).toBeInTheDocument();
+    expect(Number.parseFloat(card("Solo")?.style.top ?? "0")).toBeGreaterThan(
+      Number.parseFloat(card("a1")?.style.top ?? "0"),
+    );
+  });
+});
+
+describe("F1 + F8 — status colors are the sidebar's", () => {
+  it("a needs-input card uses the sidebar's amber, pulses, and is listed in 'needs you'", async () => {
+    tree([node("Waiting", "running"), node("Idle", "running")]);
+    useStore.setState({
+      sessions: [session("Waiting"), session("Idle")],
+      agentStatuses: {
+        Waiting: { status: "needs_input", currentTool: "Bash" } as never,
+        Idle: { status: "idle" } as never,
+      },
+    });
+    render(<HierarchyPanel />);
+    // The name shows twice (card + "needs you" pill) — wait on the card.
+    await waitFor(() => expect(card("Waiting")).not.toBeNull());
+
+    const w = card("Waiting");
+    expect(w?.dataset.orgStatus).toBe("needs_input");
+    expect(w?.className).toContain("org-card-attention");
+    expect(w?.style.border).toContain(hexToRgb(STATUS_COLORS_DARK.needsInput));
+    expect(card("Idle")?.className).not.toContain("org-card-attention");
+    expect(card("Idle")?.style.border).not.toContain(
+      hexToRgb(STATUS_COLORS_DARK.needsInput),
+    );
+
+    expect(screen.getByText("1 needs you")).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-org-waiting="Waiting"]'),
+    ).toHaveTextContent("WaitingBash");
+  });
+
+  it("a working card breathes and its label uses the sidebar's shimmer class", async () => {
+    tree([node("Busy", "running")]);
+    useStore.setState({
+      sessions: [session("Busy")],
+      agentStatuses: {
+        Busy: { status: "tool_running", currentTool: "Bash" } as never,
+      },
+    });
+    render(<HierarchyPanel />);
+    await screen.findByText("Running Bash");
+    expect(card("Busy")?.className).toContain("org-card-working");
+    expect(screen.getByText("Running Bash").className).toContain(
+      "status-shimmer",
+    );
+  });
+});
+
+describe("F2 — Daylight draws from tokens", () => {
+  it("light cards, dark connectors, light-palette amber; none of the old hardcoded dark", async () => {
+    tree([node("Lead", "running", [node("Rep", "running")])]);
+    useStore.setState({
+      theme: "daylight",
+      sessions: [session("Lead"), session("Rep")],
+      agentStatuses: { Rep: { status: "needs_input" } as never },
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Rep")).not.toBeNull());
+    expect(card("Lead")?.style.background).toBe("rgb(255, 255, 255)");
+    expect(card("Rep")?.style.border).toContain(
+      hexToRgb(STATUS_COLORS_LIGHT.needsInput),
+    );
+    const edge = document.querySelector('[data-org-edge="Lead>Rep"]');
+    expect(edge?.getAttribute("stroke")).toBe("rgba(0,0,0,0.2)");
+    expect(document.body.innerHTML).not.toContain("28, 36, 51");
+    expect(screen.getByText("Needs input").className).not.toContain(
+      "status-shimmer",
+    );
+  });
+});
+
+describe("F4 + F5 — click opens, right-click gives the agent menu", () => {
+  it("click opens the agent's pane and clears its unread count", async () => {
+    tree([node("A", "running")]);
+    const switchPane = vi.fn();
+    const markNotificationsRead = vi.fn(() => Promise.resolve());
+    useStore.setState({
+      sessions: [session("A")],
+      notificationCounts: { A: 3 },
+      switchPane,
+      markNotificationsRead: markNotificationsRead as never,
+    });
+    render(<HierarchyPanel />);
+    await screen.findByText("A");
+    expect(screen.getByText("3 unread")).toBeInTheDocument(); // F9 parity
+    fireEvent.click(card("A") as HTMLElement);
+    expect(switchPane).toHaveBeenCalledWith({ type: "session", id: "A" });
+    expect(markNotificationsRead).toHaveBeenCalledWith("A");
+  });
+
+  it("Enter opens too; an exited card's click does nothing", async () => {
+    tree([node("Lead", "exited", [node("Kid", "running")])]);
+    const switchPane = vi.fn();
+    useStore.setState({ sessions: [session("Kid")], switchPane });
+    render(<HierarchyPanel />);
+    await screen.findByText("Kid");
+    fireEvent.keyDown(card("Kid") as HTMLElement, { key: "Enter" });
+    expect(switchPane).toHaveBeenCalledTimes(1);
+    fireEvent.click(card("Lead") as HTMLElement);
+    expect(switchPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("right-click opens the shared agent menu for that agent; no trash overlay exists", async () => {
+    tree([node("Mgr", "running", [node("Rep", "running")])]);
+    useStore.setState({ sessions: [session("Mgr"), session("Rep")] });
+    render(<HierarchyPanel />);
+    await screen.findByText("Rep");
+    expect(
+      document.querySelector('[title="Kill and remove agent"]'),
+    ).toBeNull();
+
+    fireEvent.contextMenu(card("Rep") as HTMLElement, {
+      clientX: 40,
+      clientY: 50,
+    });
+    const items = await screen.findAllByRole("menuitem");
+    const labels = items.map((i) => i.textContent ?? "");
+    for (const want of ["Open", "Rename…", "Restart", "Kill", "Delete…"]) {
+      expect(labels.some((l) => l.includes(want))).toBe(true);
+    }
+  });
+
+  it("an exited card's menu offers Resume", async () => {
+    tree([node("Ghost", "exited", [node("Live", "running")])]);
+    useStore.setState({
+      sessions: [session("Live")],
+      exitedSessions: [session("Ghost", { status: "exited" })],
+    });
+    render(<HierarchyPanel />);
+    await screen.findByText("Live");
+    fireEvent.contextMenu(card("Ghost") as HTMLElement);
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.some((i) => i.textContent?.includes("Resume"))).toBe(true);
+    expect(items.some((i) => i.textContent?.includes("Kill"))).toBe(false);
+  });
+});
+
+describe("F9 — recency parity with the sidebar", () => {
+  it("shows the same compact age the sidebar would", async () => {
+    tree([node("Old", "running")]);
+    useStore.setState({
+      sessions: [
+        session("Old", { lastActivityAt: Date.now() - 3 * 3_600_000 }),
+      ],
+    });
+    render(<HierarchyPanel />);
+    await screen.findByText("Old");
+    await waitFor(() => expect(card("Old")).toHaveTextContent("3h"));
+  });
+});
+
+/** jsdom normalizes `#rrggbb` inside `border` to `rgb(r, g, b)`. */
+function hexToRgb(hex: string): string {
+  const v = hex.replace("#", "");
+  const r = Number.parseInt(v.slice(0, 2), 16);
+  const g = Number.parseInt(v.slice(2, 4), 16);
+  const b = Number.parseInt(v.slice(4, 6), 16);
+  return `rgb(${r}, ${g}, ${b})`;
+}

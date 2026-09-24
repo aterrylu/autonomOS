@@ -19,7 +19,7 @@ import {
   buildAgentTreeNodes,
 } from "@autonomos/core";
 import { agentsSocket } from "./api/agentsSocket";
-import { agentsPoll, statusPoll, treePoll } from "./api/polls";
+import { agentsPoll, orgTreePoll, statusPoll, treePoll } from "./api/polls";
 import { applyAgentsSnapshot, applyStatusSnapshot } from "./store";
 
 let stopBridge: (() => void) | null = null;
@@ -43,6 +43,7 @@ export function startPushBridge(): () => void {
     live = next;
     agentsPoll.setSuspended(next);
     treePoll.setSuspended(next);
+    orgTreePoll.setSuspended(next);
     statusPoll.setSuspended(next);
     if (!next) lastAgents = null;
   };
@@ -60,6 +61,9 @@ export function startPushBridge(): () => void {
       applyAgentsSnapshot(agents);
       agentsPoll.inject(agents);
       treePoll.inject(buildAgentTreeNodes(agents));
+      // Same derive the server runs for `?includeExited=true` — the org chart's
+      // exited-inclusive view, parity by construction like the plain tree.
+      orgTreePoll.inject(buildAgentTreeNodes(agents, { includeExited: true }));
     }
 
     const map: AgentStatusMap = {};

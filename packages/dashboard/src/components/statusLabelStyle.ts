@@ -45,6 +45,10 @@ export const STATUS_COLORS_LIGHT = {
   neutral: "#6b7178", // darker gray (~4.5:1)
 } as const;
 
+/** The unread-count color ("2 unread") — one value for every surface that
+ *  shows an agent's unread count (sidebar row, org-chart card). */
+export const UNREAD_COLOR = "#ea6c73";
+
 export interface StatusLabelStyle {
   /** The label text color. For a shimmer label this is the base/fallback color;
    *  the animated gradient is applied via the shimmer CSS class instead. */

@@ -1,12 +1,16 @@
 import type { AgentTreeNode } from "@autonomos/core";
-import { useMemo, useState } from "react";
-import { Tree, TreeNode } from "react-organizational-chart";
-import { useShallow } from "zustand/react/shallow";
-import { treePoll } from "../api/polls";
+import { useCallback, useMemo, useState } from "react";
+import { orgTreePoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
+import { focusTerminal } from "../hooks/useTerminal";
 import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
-import { Codicon } from "./Codicon";
+import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
+import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
+import { pruneExited } from "./orgchart/pruneExited";
+import { type OrgChartTokens, orgChartTokens } from "./orgchart/theme";
+import { formatAge, recencyTimestampStyle } from "./recency";
+import { statusLabelStyle } from "./statusLabelStyle";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -15,39 +19,29 @@ import {
 import { ProviderAgentIcon } from "./ui/provider-icon";
 
 /**
- * Org chart tree panel — top-down hierarchy visualization.
+ * Org chart — the manager/report hierarchy as a canvas of agent cards.
  *
- * Uses react-organizational-chart for layout + CSS connectors.
- * Cards show agent name, template, and live status.
+ * Built from four small layers so each concern is testable on its own:
+ *  - data: `orgTreePoll` (the tree WITH exited agents, push-fed like the rest)
+ *  - pruneExited: which exited agents to draw (ghosts that hold a live team)
+ *  - layoutOrg: tidy-tree geometry (teams side by side, solo agents on a shelf)
+ *  - orgChartTokens: every color, from the theme + the sidebar status palette
+ *
+ * Interaction mirrors the sidebar row: click opens the agent's terminal,
+ * right-click opens the SAME AgentContextMenu (ADR-093).
  */
-
-// ── Types ────────────────────────────────────────────────────────
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
-/** A node of `GET /api/agents/tree`. The shape is declared once in
- *  @autonomos/core (ADR-078) — this alias keeps the local name the card and
- *  tree components read. */
-export type OrgNode = AgentTreeNode;
-
-const WORKING_STATUSES: ReadonlySet<AgentStatus> = new Set([
-  "working",
-  "tool_running",
-  "orchestrating",
-]);
-
-// ── Data fetching ────────────────────────────────────────────────
+// ── Data ─────────────────────────────────────────────────────────
 
 /**
- * Read the shared 5s org-chart poll (this panel used to run its own identical
- * timer next to the Sidebar's — see `treePoll`).
- *
- * The three error strings are unchanged, just re-derived from the typed
- * `ApiError`: status 0 means the request never reached the server, anything
- * else is the server answering with a failure.
+ * Read the org chart's tree (exited agents included). The three error strings
+ * are derived from the typed `ApiError`: status 0 means the request never
+ * reached the server, anything else is the server answering with a failure.
  */
 export function useOrgChart() {
-  const { data, error } = usePoll(treePoll);
+  const { data, error } = usePoll(orgTreePoll);
 
   const chart = Array.isArray(data) ? data : [];
   const loading = data === null && error === null;
@@ -62,14 +56,16 @@ export function useOrgChart() {
   return { chart, loading, error: message };
 }
 
-// ── Status resolver ──────────────────────────────────────────────
+interface AgentInfo {
+  session: SessionInfo;
+  agentStatus: AgentStatus;
+  currentTool?: string;
+}
 
 /**
- * Build a lookup map of session activity status (working, needs_input, etc.)
- * keyed by `claudeSessionId`. Using the session ID — not the name — avoids
- * the collision class that Bug 2 fixed on the server: two sessions with the
- * same name would otherwise overwrite each other here, and AgentCard could
- * pick up the wrong `currentTool`/activity state.
+ * Live activity per agent, keyed by `claudeSessionId` (the tree's key — equal to
+ * the agent id). Keying by id, not name, keeps two same-named agents from
+ * trading status.
  */
 export function useAgentStatusById() {
   const sessions = useStore((s) => s.sessions);
@@ -77,10 +73,7 @@ export function useAgentStatusById() {
   const agentStatuses = useStore((s) => s.agentStatuses);
 
   return useMemo(() => {
-    const map: Record<
-      string,
-      { session: SessionInfo; agentStatus: AgentStatus; currentTool?: string }
-    > = {};
+    const map: Record<string, AgentInfo> = {};
     const put = (
       session: SessionInfo,
       agentStatus: AgentStatus,
@@ -89,9 +82,7 @@ export function useAgentStatusById() {
       if (!session.claudeSessionId) return;
       map[session.claudeSessionId] = { session, agentStatus, currentTool };
     };
-    for (const session of exitedSessions) {
-      put(session, "stopped");
-    }
+    for (const session of exitedSessions) put(session, "stopped");
     for (const session of sessions) {
       const statusInfo = agentStatuses[session.id];
       const agentStatus: AgentStatus =
@@ -103,349 +94,406 @@ export function useAgentStatusById() {
   }, [sessions, exitedSessions, agentStatuses]);
 }
 
-// ── Accent line gradient helper ──────────────────────────────────
-
-function accentGradient(isWorking: boolean, isRunning: boolean): string {
-  if (isWorking) return "linear-gradient(90deg, #3b82f6, #9333ea)";
-  if (isRunning) return "linear-gradient(90deg, #22c55e, #10b981)";
-  return "rgba(255,255,255,0.06)";
+/** Resolve the displayed status for a tree node. */
+function nodeStatus(node: AgentTreeNode, info?: AgentInfo): AgentStatus {
+  if (node.status !== "running") return "stopped";
+  return info?.agentStatus ?? "unknown";
 }
 
-// ── Agent Card ───────────────────────────────────────────────────
+// ── Card ─────────────────────────────────────────────────────────
 
-interface OrgNodeProps {
-  node: OrgNode;
+interface CardProps {
+  node: AgentTreeNode;
+  x: number;
+  y: number;
+  managerName?: string;
+  info?: AgentInfo;
+  unread: number;
+  tokens: OrgChartTokens;
   page: PageTheme;
-  statusMap: ReturnType<typeof useAgentStatusById>;
+  onOpen: (node: AgentTreeNode) => void;
+  onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
+  onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
 }
 
-function AgentCard({ node, page, statusMap }: OrgNodeProps) {
-  // Source of truth for running/exited comes from the node itself
-  // (keyed by claudeSessionId — no collision on duplicate names).
-  const isRunning = node.status === "running";
-  // Activity state (working, needs_input, etc.) looked up by session ID —
-  // same-key-same-meaning invariant, no collision hazard.
-  const info = statusMap[node.claudeSessionId];
-  const agentStatus: AgentStatus = isRunning
-    ? (info?.agentStatus ?? "unknown")
-    : "stopped";
-  const isWorking = WORKING_STATUSES.has(agentStatus);
-  const agentIconStyle = useStore((s) => s.agentIconStyle);
-  const {
-    killSession,
-    removeSession,
-    resumeSession,
-    sessions,
-    exitedSessions,
-  } = useStore(
-    useShallow((s) => ({
-      killSession: s.killSession,
-      removeSession: s.removeSession,
-      resumeSession: s.resumeSession,
-      sessions: s.sessions,
-      exitedSessions: s.exitedSessions,
-    })),
-  );
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [isRemoving, setIsRemoving] = useState(false);
-  const [isResuming, setIsResuming] = useState(false);
-
-  // Look up the session (live or exited) by claudeSessionId — unique even
-  // across name collisions. The store id is what DELETE /api/agents/:id
-  // expects, so we need the SessionInfo, not just the claudeSessionId.
-  const targetSession = useMemo(() => {
-    const id = node.claudeSessionId;
-    return (
-      sessions.find((s) => s.claudeSessionId === id) ??
-      exitedSessions.find((s) => s.claudeSessionId === id) ??
-      null
-    );
-  }, [sessions, exitedSessions, node.claudeSessionId]);
-
-  const handleRemove = async () => {
-    if (!targetSession || isRemoving) return;
-    setIsRemoving(true);
-    try {
-      if (isRunning) {
-        await killSession(targetSession.id);
+function menuTarget(
+  node: AgentTreeNode,
+  managerName: string | undefined,
+  info: AgentInfo | undefined,
+): AgentMenuTarget {
+  const workingDirectory = info?.session.workingDirectory;
+  return node.status === "running"
+    ? {
+        id: node.id,
+        name: node.name,
+        status: "running",
+        manager: managerName,
+        workingDirectory,
       }
-      await removeSession(targetSession.id);
-      setConfirmRemove(false);
-    } catch {
-      // Keep confirm dialog open so user sees it didn't work
-    } finally {
-      setIsRemoving(false);
-    }
-  };
-
-  const handleResume = async () => {
-    if (isResuming || isRunning) return;
-    setIsResuming(true);
-    try {
-      // The resume endpoint uses claudeSessionId as :id and restores full
-      // config (template, manager, cwd, etc.) from persisted state — so the
-      // `cwd` and `name` args passed here are unused for the isAutonomosAgent
-      // branch. `resumeSession` throws on failure (and records the reason in the
-      // store `status`), so the catch below is the one that resets `isResuming`.
-      await resumeSession(node.claudeSessionId, "", node.name, {
+    : {
+        id: node.id,
+        name: node.name,
+        status: "exited",
+        manager: managerName,
+        // An autonomOS agent resumes by its record id (the resume route
+        // restores template, manager and cwd from the record).
+        resumeKey: node.id,
+        workingDirectory,
         isAutonomosAgent: true,
-      });
-    } catch {
-      // Defensive — store currently doesn't throw for the autonomOS path
-    } finally {
-      setIsResuming(false);
-    }
+      };
+}
+
+function OrgCard({
+  node,
+  x,
+  y,
+  managerName,
+  info,
+  unread,
+  tokens,
+  page,
+  onOpen,
+  onResume,
+  onMenu,
+}: CardProps) {
+  const agentIconStyle = useStore((s) => s.agentIconStyle);
+  const exited = node.status !== "running";
+  const status = nodeStatus(node, info);
+  const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
+  const labelStyle = statusLabelStyle(status, tokens.isLight);
+  // "Working" is exactly the sidebar's shimmer set — one definition (ADR-090).
+  const working = !exited && labelStyle.shimmer;
+  const attention = !exited && status === "needs_input";
+  const s = info?.session;
+  const lastActive =
+    s?.lastActivityAt ??
+    (exited ? s?.exitedAt : undefined) ??
+    s?.createdAt ??
+    0;
+
+  // The ring/glow colors ride CSS variables so index.css's keyframes stay
+  // palette-free and follow the theme.
+  const cardVars = {
+    "--org-shadow": tokens.cardShadow,
+    "--org-ring": attention ? tokens.attentionRing : tokens.activeRing,
+    "--org-glow": attention ? tokens.attentionGlow : tokens.activeGlow,
+  } as React.CSSProperties;
+
+  const openMenuAtCard = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    onMenu(menuTarget(node, managerName, info), r.left + 16, r.bottom - 8);
   };
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: a <button> can't contain the nested Resume <button>
     <div
-      className="inline-block text-left transition-all duration-300 relative group"
-      style={{ minWidth: 180, maxWidth: 250 }}
+      role="button"
+      tabIndex={0}
+      data-org-card={node.id}
+      data-org-status={exited ? "exited" : status}
+      aria-label={`${node.name}, ${label}${exited ? "" : ". Open terminal"}. Shift+F10 for actions.`}
+      title={node.template ? `${node.name} · ${node.template}` : node.name}
+      className={`org-card absolute flex flex-col justify-between rounded-[9px] px-2.5 py-2 select-none outline-none focus-visible:ring-2${
+        working ? " org-card-working" : ""
+      }${attention ? " org-card-attention" : ""}`}
+      style={{
+        ...cardVars,
+        left: x,
+        top: y,
+        width: CARD_W,
+        height: CARD_H,
+        cursor: exited ? "default" : "pointer",
+        background: exited ? tokens.ghostCard : tokens.card,
+        border: `1px ${exited ? "dashed" : "solid"} ${
+          attention
+            ? tokens.status.needsInput
+            : status === "error"
+              ? tokens.status.error
+              : tokens.cardBorder
+        }`,
+        boxShadow:
+          exited || working || attention ? undefined : tokens.cardShadow,
+        color: tokens.fg,
+      }}
+      onClick={() => {
+        if (!exited) onOpen(node);
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if ((e.key === "Enter" || e.key === " ") && !exited) {
+          e.preventDefault();
+          onOpen(node);
+        } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          e.preventDefault();
+          openMenuAtCard(e.currentTarget);
+        }
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(menuTarget(node, managerName, info), e.clientX, e.clientY);
+      }}
     >
-      {/* Glow effect for active agents */}
-      {isRunning && (
-        <div
-          className="absolute -inset-[1px] rounded-xl opacity-60 blur-sm transition-opacity duration-500"
-          style={{
-            background: isWorking
-              ? "linear-gradient(135deg, rgba(59,130,246,0.3), rgba(147,51,234,0.2))"
-              : "linear-gradient(135deg, rgba(34,197,94,0.2), rgba(16,185,129,0.15))",
-          }}
-        />
-      )}
-
-      {/* Card */}
-      <div
-        className="relative rounded-xl px-4 py-3 backdrop-blur-sm"
-        style={{
-          background: isRunning
-            ? "rgba(28, 36, 51, 0.9)"
-            : "rgba(28, 36, 51, 0.6)",
-          border: `1px solid ${isRunning ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.04)"}`,
-          boxShadow: isRunning
-            ? "0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03)"
-            : "0 2px 8px rgba(0,0,0,0.2)",
-        }}
-      >
-        {/* Top accent line */}
-        <div
-          className="absolute top-0 left-3 right-3 h-[2px] rounded-full"
-          style={{ background: accentGradient(isWorking, isRunning) }}
-        />
-
-        {/* Overlay — action buttons on hover, confirm on click */}
-        {targetSession && (
-          <div
-            className={`absolute inset-0 rounded-xl flex flex-col items-center justify-center gap-2 transition-opacity z-10 ${confirmRemove ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-            style={{ background: "rgba(0,0,0,0.7)" }}
-          >
-            {confirmRemove ? (
-              <>
-                <span
-                  className="text-[11px] font-medium"
-                  style={{ color: "#ea6c73" }}
-                >
-                  {isRunning
-                    ? "Kill & remove permanently?"
-                    : "Remove permanently?"}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleRemove}
-                    disabled={isRemoving}
-                    className="text-[11px] px-2.5 py-1 rounded cursor-pointer font-medium disabled:opacity-50"
-                    style={{ color: "#fff", background: "#ea6c73" }}
-                  >
-                    Remove
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmRemove(false)}
-                    className="text-[11px] px-2.5 py-1 rounded cursor-pointer"
-                    style={{
-                      color: page.statusFg,
-                      background: "rgba(255,255,255,0.1)",
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="flex items-center gap-3">
-                {!isRunning && (
-                  <button
-                    type="button"
-                    onClick={handleResume}
-                    disabled={isResuming}
-                    className="cursor-pointer disabled:opacity-50"
-                    title="Resume agent"
-                    style={{ color: "#22c55e" }}
-                  >
-                    <Codicon name="debug-start" size={18} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setConfirmRemove(true)}
-                  className="cursor-pointer"
-                  title={isRunning ? "Kill and remove agent" : "Remove agent"}
-                >
-                  <Codicon name="trash" size={18} />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Name row */}
-        <div className="flex items-center gap-2.5 mt-1 mb-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="flex-none" style={{ opacity: exited ? 0.6 : 1 }}>
           {agentIconStyle === "provider" ? (
             <ProviderAgentIcon
               provider={node.provider}
-              status={agentStatus}
-              size={18}
+              status={status}
+              size={16}
             />
           ) : (
-            <AgentStatusIcon status={agentStatus} size={14} />
+            <AgentStatusIcon status={status} size={14} />
           )}
+        </span>
+        <span
+          className="min-w-0 flex-1 truncate text-[12.5px] font-semibold tracking-tight"
+          style={{ opacity: exited ? 0.6 : 1 }}
+        >
+          {node.name}
+        </span>
+        {unread > 0 && (
           <span
-            className="text-[13px] font-semibold tracking-tight truncate"
-            style={{ color: isRunning ? "#e6e1cf" : page.statusFg }}
+            className="flex-none text-[10px] font-semibold tabular-nums"
+            style={{ color: tokens.unread }}
           >
-            {node.name}
+            {unread} unread
           </span>
-        </div>
-
-        {/* Meta row */}
-        <div className="flex items-center gap-2">
-          {node.template && (
-            <span
-              className="text-[10px] px-2 py-0.5 rounded-full truncate font-medium"
-              style={{
-                background: "rgba(255,255,255,0.06)",
-                color: page.statusFg,
-                letterSpacing: "0.02em",
-              }}
-            >
-              {node.template}
-            </span>
-          )}
-          <span
-            className="text-[10px] truncate ml-auto"
+        )}
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5 text-[10.5px]">
+        <span
+          data-org-label
+          className={`min-w-0 flex-1 truncate${
+            working
+              ? tokens.isLight
+                ? " status-shimmer-light"
+                : " status-shimmer"
+              : ""
+          }`}
+          style={{
+            color: labelStyle.color,
+            fontWeight: attention ? 600 : undefined,
+          }}
+        >
+          {label}
+        </span>
+        {exited ? (
+          <button
+            type="button"
+            className="flex-none cursor-pointer rounded px-1.5 text-[10px] leading-4"
             style={{
-              color: isWorking ? "#93c5fd" : page.statusFg,
-              fontStyle: isWorking ? "italic" : "normal",
+              color: tokens.status.ready,
+              border: `1px solid ${tokens.status.ready}`,
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onResume(node, info);
             }}
           >
-            {agentStatusLabel(agentStatus, info?.currentTool)}
+            Resume
+          </button>
+        ) : (
+          <span
+            className="flex-none tabular-nums"
+            style={recencyTimestampStyle(
+              lastActive,
+              Date.now(),
+              page.statusFg,
+              page.fg,
+              page.bg,
+            )}
+          >
+            {formatAge(lastActive)}
           </span>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ── Recursive tree rendering ─────────────────────────────────────
+// ── Canvas ───────────────────────────────────────────────────────
 
-function OrgTreeNode({ node, page, statusMap }: OrgNodeProps) {
+interface Flat {
+  node: AgentTreeNode;
+  managerName?: string;
+}
+
+function flatten(roots: AgentTreeNode[]): Flat[] {
+  const out: Flat[] = [];
+  const walk = (n: AgentTreeNode, managerName?: string) => {
+    out.push({ node: n, managerName });
+    for (const c of n.children) walk(c, n.name);
+  };
+  for (const r of roots) walk(r);
+  return out;
+}
+
+function OrgCanvas({
+  roots,
+  tokens,
+  page,
+  statusMap,
+  onOpen,
+  onResume,
+  onMenu,
+}: {
+  roots: AgentTreeNode[];
+  tokens: OrgChartTokens;
+  page: PageTheme;
+  statusMap: Record<string, AgentInfo>;
+  onOpen: (node: AgentTreeNode) => void;
+  onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
+  onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
+}) {
+  const notificationCounts = useStore((s) => s.notificationCounts);
+  const layout = useMemo(() => layoutOrg(roots), [roots]);
+  const flat = useMemo(() => flatten(roots), [roots]);
+  const exitedIds = useMemo(
+    () =>
+      new Set(
+        flat.filter((f) => f.node.status !== "running").map((f) => f.node.id),
+      ),
+    [flat],
+  );
+
   return (
-    <TreeNode
-      label={<AgentCard node={node} page={page} statusMap={statusMap} />}
-    >
-      {node.children.map((child) => (
-        <OrgTreeNode
-          key={child.claudeSessionId}
-          node={child}
-          page={page}
-          statusMap={statusMap}
-        />
-      ))}
-    </TreeNode>
+    <div className="min-h-0 flex-1 overflow-auto" data-org-viewport>
+      <div
+        data-org-stage
+        className="relative"
+        style={{ width: layout.width, height: layout.height }}
+      >
+        <svg
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 overflow-visible"
+          width={layout.width}
+          height={layout.height}
+        >
+          {layout.edges.map(({ from, to }) => {
+            const a = layout.pos.get(from);
+            const b = layout.pos.get(to);
+            if (!a || !b) return null;
+            const dashed = exitedIds.has(from) || exitedIds.has(to);
+            return (
+              <path
+                key={`${from}>${to}`}
+                data-org-edge={`${from}>${to}`}
+                d={elbowPath(a, b)}
+                fill="none"
+                stroke={tokens.edge}
+                strokeWidth={1.6}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={dashed ? "4 4" : undefined}
+              />
+            );
+          })}
+        </svg>
+        {layout.shelf && (
+          <div
+            data-org-shelf
+            className="absolute text-[10.5px] font-semibold uppercase tracking-[0.07em]"
+            style={{ left: PAD, top: layout.shelf.y, color: tokens.muted }}
+          >
+            Unassigned · {layout.shelf.count}
+          </div>
+        )}
+        {flat.map(({ node, managerName }) => {
+          const p = layout.pos.get(node.id);
+          if (!p) return null;
+          const info = statusMap[node.claudeSessionId];
+          return (
+            <OrgCard
+              key={node.id}
+              node={node}
+              x={p.x}
+              y={p.y}
+              managerName={managerName}
+              info={info}
+              unread={
+                node.status === "running"
+                  ? (notificationCounts[info?.session.id ?? node.id] ?? 0)
+                  : 0
+              }
+              tokens={tokens}
+              page={page}
+              onOpen={onOpen}
+              onResume={onResume}
+              onMenu={onMenu}
+            />
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
-// ── Content states ──────────────────────────────────────────────
+// ── Toolbar: who needs you + exited toggle ───────────────────────
 
-function HierarchyContent({
-  chart,
-  loading,
-  error,
-  page,
-  statusMap,
+function Toolbar({
+  waiting,
+  hiddenExited,
+  showAllExited,
+  onToggleExited,
+  onOpen,
+  tokens,
 }: {
-  chart: OrgNode[];
-  loading: boolean;
-  error: string | null;
-  page: PageTheme;
-  statusMap: ReturnType<typeof useAgentStatusById>;
+  waiting: Array<{ node: AgentTreeNode; tool?: string }>;
+  hiddenExited: number;
+  showAllExited: boolean;
+  onToggleExited: () => void;
+  onOpen: (node: AgentTreeNode) => void;
+  tokens: OrgChartTokens;
 }) {
-  if (loading) {
-    return (
-      <div
-        className="flex items-center justify-center flex-1 text-sm"
-        style={{ color: page.statusFg }}
-      >
-        Loading...
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div
-        className="flex flex-col items-center justify-center flex-1 gap-2 text-sm"
-        style={{ color: "#ea6c73" }}
-      >
-        <span>{error}</span>
-        <span className="text-xs opacity-60" style={{ color: page.statusFg }}>
-          Retrying automatically...
-        </span>
-      </div>
-    );
-  }
-
-  if (chart.length === 0) {
-    return (
-      <div
-        className="flex flex-col items-center justify-center flex-1 gap-2 text-sm"
-        style={{ color: page.statusFg }}
-      >
-        <span>No agents running</span>
-        <span className="text-xs opacity-60">
-          Create an agent, then ask it to spawn helpers — managers and their
-          reports appear here
-        </span>
-      </div>
-    );
-  }
-
+  const showToggle = hiddenExited > 0 || showAllExited;
+  if (waiting.length === 0 && !showToggle) return null;
+  const amber = tokens.status.needsInput;
   return (
-    <div className="flex-1 overflow-auto p-8">
-      <div className="flex flex-col gap-12 items-center">
-        {chart.map((root) => (
-          <Tree
-            key={root.claudeSessionId}
-            label={<AgentCard node={root} page={page} statusMap={statusMap} />}
-            lineWidth="2px"
-            lineColor="rgba(255,255,255,0.15)"
-            lineBorderRadius="12px"
-            lineHeight="28px"
-            lineStyle="solid"
-            nodePadding="12px"
-          >
-            {root.children.map((child) => (
-              <OrgTreeNode
-                key={child.claudeSessionId}
-                node={child}
-                page={page}
-                statusMap={statusMap}
-              />
-            ))}
-          </Tree>
-        ))}
-      </div>
+    <div
+      data-org-toolbar
+      className="flex min-h-10 flex-wrap items-center gap-2 px-3 py-2 text-[11.5px]"
+      style={{ borderBottom: `1px solid ${tokens.cardBorder}` }}
+    >
+      {waiting.length > 0 && (
+        <>
+          <span className="font-semibold" style={{ color: amber }}>
+            {waiting.length} need{waiting.length === 1 ? "s" : ""} you
+          </span>
+          {waiting.map(({ node, tool }) => (
+            <button
+              key={node.id}
+              type="button"
+              data-org-waiting={node.id}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-0.5"
+              style={{
+                color: amber,
+                border: `1px solid ${amber}`,
+                background: `${amber}17`,
+              }}
+              onClick={() => onOpen(node)}
+            >
+              <b>{node.name}</b>
+              {tool && <span style={{ opacity: 0.85 }}>{tool}</span>}
+            </button>
+          ))}
+        </>
+      )}
+      <span className="flex-1" />
+      {showToggle && (
+        <button
+          type="button"
+          data-org-exited-toggle
+          aria-pressed={showAllExited}
+          className="cursor-pointer rounded px-2 py-0.5"
+          style={{
+            color: tokens.muted,
+            border: `1px solid ${tokens.cardBorder}`,
+          }}
+          onClick={onToggleExited}
+        >
+          {showAllExited ? "Hide exited" : `Show ${hiddenExited} exited`}
+        </button>
+      )}
     </div>
   );
 }
@@ -455,21 +503,150 @@ function HierarchyContent({
 export function HierarchyPanel() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const tokens = useMemo(() => orgChartTokens(page), [page]);
   const statusMap = useAgentStatusById();
   const { chart, loading, error } = useOrgChart();
+  const switchPane = useStore((s) => s.switchPane);
+  const markNotificationsRead = useStore((s) => s.markNotificationsRead);
+  const notificationCounts = useStore((s) => s.notificationCounts);
+  const resumeSession = useStore((s) => s.resumeSession);
+  const [showAllExited, setShowAllExited] = useState(false);
+  const [menu, setMenu] = useState<{
+    target: AgentMenuTarget;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const { roots, hiddenExited } = useMemo(
+    () => pruneExited(chart, showAllExited),
+    [chart, showAllExited],
+  );
+
+  const waiting = useMemo(
+    () =>
+      flatten(roots)
+        .filter(
+          ({ node }) =>
+            node.status === "running" &&
+            statusMap[node.claudeSessionId]?.agentStatus === "needs_input",
+        )
+        .map(({ node }) => ({
+          node,
+          tool: statusMap[node.claudeSessionId]?.currentTool,
+        })),
+    [roots, statusMap],
+  );
+
+  // Same path as a sidebar row click: switch to the pane, focus its terminal,
+  // clear its unread count.
+  const openAgent = useCallback(
+    (node: AgentTreeNode) => {
+      const id = statusMap[node.claudeSessionId]?.session.id ?? node.id;
+      switchPane({ type: "session", id });
+      focusTerminal(id);
+      if (notificationCounts[id]) void markNotificationsRead(id);
+    },
+    [statusMap, switchPane, notificationCounts, markNotificationsRead],
+  );
+
+  const resumeAgent = useCallback(
+    (node: AgentTreeNode, info?: AgentInfo) => {
+      resumeSession(node.id, info?.session.workingDirectory ?? "", node.name, {
+        isAutonomosAgent: true,
+      }).catch(() => {
+        // resumeSession records the failure in the store's status line.
+      });
+    },
+    [resumeSession],
+  );
+
+  const openMenu = useCallback(
+    (target: AgentMenuTarget, x: number, y: number) =>
+      setMenu({ target, x, y }),
+    [],
+  );
+  // Stable identity: the menu registers onClose on the ADR-065 escape stack
+  // keyed by it — a fresh function per render would churn that registration.
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  let body: React.ReactNode;
+  if (loading) {
+    body = (
+      <div
+        className="flex flex-1 items-center justify-center text-sm"
+        style={{ color: tokens.muted }}
+      >
+        Loading...
+      </div>
+    );
+  } else if (error) {
+    body = (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-2 text-sm"
+        style={{ color: tokens.status.error }}
+      >
+        <span>{error}</span>
+        <span className="text-xs opacity-60" style={{ color: tokens.muted }}>
+          Retrying automatically...
+        </span>
+      </div>
+    );
+  } else if (roots.length === 0) {
+    body = (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-2 text-sm"
+        style={{ color: tokens.muted }}
+      >
+        <span>No agents running</span>
+        <span className="text-xs opacity-60">
+          Create an agent, then ask it to spawn helpers — managers and their
+          reports appear here
+        </span>
+      </div>
+    );
+  } else {
+    body = (
+      <OrgCanvas
+        roots={roots}
+        tokens={tokens}
+        page={page}
+        statusMap={statusMap}
+        onOpen={openAgent}
+        onResume={resumeAgent}
+        onMenu={openMenu}
+      />
+    );
+  }
 
   return (
     <div
-      className="flex flex-col h-full w-full"
-      style={{ background: page.bg }}
+      data-org-chart
+      className="flex h-full w-full flex-col"
+      style={{ background: page.bg, color: tokens.fg }}
     >
-      <HierarchyContent
-        chart={chart}
-        loading={loading}
-        error={error}
-        page={page}
-        statusMap={statusMap}
-      />
+      {!loading && !error && (
+        <Toolbar
+          waiting={waiting}
+          hiddenExited={hiddenExited}
+          showAllExited={showAllExited}
+          onToggleExited={() => setShowAllExited((v) => !v)}
+          onOpen={openAgent}
+          tokens={tokens}
+        />
+      )}
+      {body}
+      {/* Mounted at the panel root — outside any future pan/zoom transform —
+          because the menu is position:fixed (a transformed ancestor would
+          re-anchor it). Mounted only while open: push-on-open, pop-on-close. */}
+      {menu && (
+        <AgentContextMenu
+          target={menu.target}
+          x={menu.x}
+          y={menu.y}
+          page={page}
+          onClose={closeMenu}
+        />
+      )}
     </div>
   );
 }
