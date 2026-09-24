@@ -3,6 +3,44 @@ export interface RateLimitWindow {
   resetsAt: string;
 }
 
+/** A window beyond the four fixed slots (model-scoped weekly, unknown kind). */
+export interface NamedRateWindow extends RateLimitWindow {
+  id: string;
+  label: string;
+  span?: "5h" | "7d";
+}
+
+/** Why usage is missing or stale — mirrored from the server's
+ *  credentialDiagnosis.ts. `code` may be one this build doesn't know. */
+export type UsageDiagnosisCode =
+  | "no_login"
+  | "login_unreadable"
+  | "auto_detect_off"
+  | "session_key_rejected"
+  | "no_subscription_org"
+  | "keychain_denied"
+  | "keychain_timeout"
+  | "credentials_unreadable"
+  | "credentials_malformed"
+  | "api_key_auth"
+  | "cloud_provider_auth"
+  | "token_expired"
+  | "token_rejected"
+  | "usage_forbidden"
+  | "rate_limited"
+  | "network_unreachable"
+  | "http_error"
+  | "unexpected_response"
+  | "no_rolling_limits";
+
+export interface UsageDiagnosis {
+  code: UsageDiagnosisCode;
+  summary: string;
+  hint: string;
+  /** Server-decided: the cause clears on its own. */
+  transient?: boolean;
+}
+
 export interface ExtraUsage {
   isEnabled: boolean;
   monthlyLimit: number;
@@ -51,6 +89,8 @@ export interface RateLimitData {
   sevenDay: RateLimitWindow | null;
   sevenDaySonnet: RateLimitWindow | null;
   sevenDayOpus: RateLimitWindow | null;
+  /** Named windows from the response's `limits[]` beyond the fixed slots. */
+  extraWindows?: NamedRateWindow[];
   extraUsage: ExtraUsage | null;
   account: AccountInfo;
   fetchedAt: string;
@@ -61,6 +101,8 @@ export interface RateLimitData {
   credentialSource?: CredentialSource;
   /** True when no session key is configured anywhere */
   needsSetup?: boolean;
+  /** Why there are no numbers (or why they're stale). */
+  diagnosis?: UsageDiagnosis;
 }
 
 export type DisplayMode = "text" | "bar";

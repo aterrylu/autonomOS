@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import { THEMES, useStore } from "../store";
-import { Sidebar } from "./Sidebar";
+import { rowBranch, Sidebar } from "./Sidebar";
 
 /**
  * Sidebar render behavior for the default-view + exited-removal changes.
@@ -159,5 +159,54 @@ describe("Sidebar — env preset pill", () => {
     for (const theme of Object.values(THEMES)) {
       expect(theme.terminal.yellow).toMatch(/^#[0-9a-f]{6}$/i);
     }
+  });
+});
+
+describe("Sidebar — project · branch for every provider", () => {
+  const codex = {
+    id: "c-1",
+    name: "codex-worker-a",
+    status: "running" as const,
+    workingDirectory: "/tmp/proj",
+    provider: "codex" as const,
+    claudeSessionId: "c-1",
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const show = (session: typeof codex & { gitBranch?: string }) => {
+    useStore.setState({
+      sessions: [session],
+      sidebarViewMode: "flat",
+      sidebarViewModeExplicit: true,
+    });
+    renderSidebar();
+  };
+
+  it("a Codex agent in a git repo shows project · branch (server-derived, no CC JSONL)", () => {
+    show({ ...codex, gitBranch: "terry/feature-x" });
+    expect(screen.getByText("proj · terry/feature-x")).toBeInTheDocument();
+  });
+
+  it("a non-git Codex agent shows just the folder — no dangling separator", () => {
+    show(codex);
+    expect(screen.getByText("proj")).toBeInTheDocument();
+    expect(screen.queryByText(/proj ·/)).toBeNull();
+  });
+});
+
+describe("rowBranch", () => {
+  it("prefers the live server-derived branch over Claude Code's JSONL value", () => {
+    expect(rowBranch("now", "then")).toBe("now");
+  });
+  it("falls back to the JSONL value when no live branch", () => {
+    expect(rowBranch(undefined, "then")).toBe("then");
+  });
+  it('honors the server "" (no branch now) instead of falling back to stale JSONL', () => {
+    expect(rowBranch("", "then")).toBeUndefined();
+  });
+  it("hides a detached HEAD and absence", () => {
+    expect(rowBranch("HEAD", undefined)).toBeUndefined();
+    expect(rowBranch(undefined, "HEAD")).toBeUndefined();
+    expect(rowBranch(undefined, undefined)).toBeUndefined();
   });
 });

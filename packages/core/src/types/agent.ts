@@ -92,6 +92,14 @@ export interface Agent {
    *  Absent/0 means an empty queue. See handoffQueue.ts. */
   pendingHandoffCount?: number;
 
+  /** The git branch this agent's `workingDirectory` is on — DERIVED from the
+   *  filesystem at serialization (not persisted), so every provider has it, not
+   *  just Claude Code (whose JSONL `gitBranch` was the old, CC-only source).
+   *  Absent for a non-git directory or a detached HEAD. Live changes arrive as a
+   *  version-preserving `agent.updated` patch; `""` there means "no branch now".
+   *  See server agents/gitBranch.ts. */
+  gitBranch?: string;
+
   /** Provider that backs this agent's PTY. */
   provider: Provider;
 

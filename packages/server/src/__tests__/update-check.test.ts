@@ -124,6 +124,8 @@ describe("isUpdateCheckEnabled", () => {
   });
 });
 
+const FIXTURE_RESPONSE_DELAY_MS = 100;
+
 describe("startUpdateCheck gate", () => {
   // The privacy claim is that updateCheck:false means NO network call — not
   // merely that the predicate returns false. The counting fixture is wired
@@ -138,8 +140,14 @@ describe("startUpdateCheck gate", () => {
     let count = 0;
     server = createServer((_req, res) => {
       count += 1;
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ tag_name: "v9.9.9" }));
+      // Hold the response so the gap between "the fixture saw the request"
+      // and "the client committed the result" is always open, not only under
+      // load. A test that waits on the hit count and then asserts state fails
+      // here every run instead of flaking in a busy full-suite run.
+      setTimeout(() => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ tag_name: "v9.9.9" }));
+      }, FIXTURE_RESPONSE_DELAY_MS);
     });
     await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
     const addr = server?.address();
@@ -152,8 +160,12 @@ describe("startUpdateCheck gate", () => {
     process.env.AUTONOMOS_RELEASE_API_URL = fixture.base;
     try {
       startUpdateCheck(5); // first tick ~5ms out
+      // Wait for the COMMITTED result, not the fixture hit: the hit is counted
+      // on receipt, before the client has parsed the response. Stopping on the
+      // hit asserted too early AND left the fetch in flight, so its late write
+      // leaked "9.9.9" into the next test.
       const deadline = Date.now() + 3_000;
-      while (fixture.hits() === 0 && Date.now() < deadline) {
+      while (getUpdateCheckState().latest === null && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 20));
       }
       stopUpdateCheck();

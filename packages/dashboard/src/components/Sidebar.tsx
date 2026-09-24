@@ -28,7 +28,11 @@ import {
   mergeOrgWithSessions,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
-import { isLightBg, recencyTimestampStyle } from "./recency";
+import {
+  isLightBg,
+  recencyLabelOpacity,
+  recencyTimestampStyle,
+} from "./recency";
 import { dropEdgeAt, flatDropIndex, insertionBoundary } from "./sidebarReorder";
 import {
   arrowForRow,
@@ -186,6 +190,23 @@ function useOrgChartData(refreshKey: number) {
         : "error";
 
   return { chart, status };
+}
+
+/**
+ * The branch shown on an agent row's bottom line. Prefers the server-derived
+ * branch (read from .git for EVERY provider, and current) over Claude Code's
+ * JSONL value (CC-only, and whatever the session last recorded) — before this,
+ * Codex/Gemini rows showed the folder with no branch at all. "HEAD" (detached)
+ * and "" (server: "no branch now") render nothing — "" does NOT fall back.
+ */
+export function rowBranch(
+  live: string | undefined,
+  fromClaudeJsonl: string | undefined,
+): string | undefined {
+  // `""` is the server saying "no branch now" — honor it; only a truly absent
+  // value (server hasn't said) falls back to the stale CC JSONL branch.
+  const b = live !== undefined ? live : fromClaudeJsonl;
+  return b && b !== "HEAD" ? b : undefined;
 }
 
 /** Enriched project data for one session, keyed by CC providerSessionId. */
@@ -1431,7 +1452,8 @@ function SessionRow({
               ✉ {s.pendingHandoffCount}
             </span>
           )}
-          {/* Recency treatment (B2 — timestamp-only fade): the AGE TEXT fades
+          {/* Recency treatment (B2): the AGE TEXT fades (and, per ADR-101, a
+              passive Idle label below rides the same ramp)
               with age so wildly-stale sessions recede. The unread prefix stays
               full-strength (an attention signal, like the status dot/label) —
               only the formatAge() text is wrapped in the faded span. Computed
@@ -1466,9 +1488,8 @@ function SessionRow({
               to the far corner. min-w-0 keeps long branch names truncatable. */}
           <span className="min-w-0 truncate">
             {meta?.projectName ?? s.workingDirectory.split("/").pop()}
-            {meta?.gitBranch &&
-              meta.gitBranch !== "HEAD" &&
-              ` · ${meta.gitBranch}`}
+            {rowBranch(s.gitBranch, meta?.gitBranch) &&
+              ` · ${rowBranch(s.gitBranch, meta?.gitBranch)}`}
           </span>
           {/* shrink-0 with NO width cap — the preset name always renders in
               full (Terry's spec); the repo text and status label are the
@@ -1504,7 +1525,21 @@ function SessionRow({
                   : ""
               }`}
               style={
-                labelStyle.shimmer ? undefined : { color: labelStyle.color }
+                labelStyle.shimmer
+                  ? undefined
+                  : {
+                      color: labelStyle.color,
+                      // T1 (Terry's pick): a passive Idle label fades on the
+                      // SAME ramp as the timestamp beside it; attention
+                      // statuses return 1. Same lastActive + render cadence as
+                      // the timestamp, so the two can never disagree.
+                      opacity: recencyLabelOpacity(
+                        agentState.status,
+                        lastActive,
+                        Date.now(),
+                        page.bg,
+                      ),
+                    }
               }
             >
               {agentStatusLabel(

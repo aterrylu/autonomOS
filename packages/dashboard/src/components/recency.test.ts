@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isLightBg, recencyBucket, recencyTimestampStyle } from "./recency";
+import {
+  isLightBg,
+  recencyBucket,
+  recencyLabelOpacity,
+  recencyTimestampStyle,
+} from "./recency";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -191,5 +196,52 @@ describe("recencyTimestampStyle — degenerate timestamps stay legible (never fa
         DARK_BG,
       ).opacity,
     ).toBe(1);
+  });
+});
+
+describe("recencyLabelOpacity — passive labels ride the timestamp ramp (T1)", () => {
+  const NOW_ = 1_800_000_000_000;
+  const DAY_ = 86_400_000;
+  const DARK = "#000000";
+  const LIGHT = "#fafaf8";
+  const ages = [10 * 60_000, 5 * 3_600_000, 3 * DAY_, 30 * DAY_];
+
+  it("ready and idle match the timestamp's opacity at every bucket, both themes", () => {
+    for (const bg of [DARK, LIGHT]) {
+      for (const age of ages) {
+        const ts = recencyTimestampStyle(NOW_ - age, NOW_, "#888", "#fff", bg);
+        for (const s of ["ready", "idle"]) {
+          expect(recencyLabelOpacity(s, NOW_ - age, NOW_, bg)).toBe(ts.opacity);
+        }
+      }
+    }
+    // and the ramp genuinely bites (not a vacuous 1 === 1)
+    expect(recencyLabelOpacity("idle", NOW_ - 30 * DAY_, NOW_, DARK)).toBe(
+      0.52,
+    );
+    expect(recencyLabelOpacity("ready", NOW_ - 3 * DAY_, NOW_, LIGHT)).toBe(
+      0.86,
+    );
+  });
+
+  it("attention and activity statuses NEVER fade, however stale", () => {
+    for (const s of [
+      "needs_input",
+      "error",
+      "working",
+      "tool_running",
+      "compacting",
+      "orchestrating",
+      "stopped",
+      "unknown",
+    ]) {
+      expect(recencyLabelOpacity(s, NOW_ - 90 * DAY_, NOW_, DARK)).toBe(1);
+      expect(recencyLabelOpacity(s, NOW_ - 90 * DAY_, NOW_, LIGHT)).toBe(1);
+    }
+  });
+
+  it("an unknown timestamp never fades a passive label", () => {
+    expect(recencyLabelOpacity("idle", 0, NOW_, DARK)).toBe(1);
+    expect(recencyLabelOpacity("idle", Number.NaN, NOW_, DARK)).toBe(1);
   });
 });
