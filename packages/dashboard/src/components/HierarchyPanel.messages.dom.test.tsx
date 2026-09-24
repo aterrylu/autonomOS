@@ -188,6 +188,25 @@ describe("message flow on the chart", () => {
     expect(document.querySelector("[data-org-envelope]")).toBeNull();
   });
 
+  it("a warmed edge glows, then its path is REMOVED once the glow has faded (nox, #399)", async () => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    await mount("animated");
+    vi.useFakeTimers();
+    const warm = () => document.querySelectorAll(".org-edge-warm").length;
+    send(routed("Worker", "Lead", "hi"));
+    await act(async () => vi.advanceTimersByTime(3000)); // envelope lands
+    expect(bubble("Lead")).not.toBeNull();
+    expect(warm()).toBe(1);
+    // A re-warm restarts the clock: the first timer must not cut it short.
+    send(routed("Worker", "Lead", "again"));
+    await act(async () => vi.advanceTimersByTime(3000));
+    await act(async () => vi.advanceTimersByTime(3500));
+    expect(warm()).toBe(1);
+    await act(async () => vi.advanceTimersByTime(3000));
+    expect(warm()).toBe(0);
+  });
+
   it("a hidden tab doesn't animate at all: messages land directly", async () => {
     await mount("animated");
     const vis = vi

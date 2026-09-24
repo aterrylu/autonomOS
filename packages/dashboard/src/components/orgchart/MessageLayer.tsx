@@ -29,6 +29,8 @@ export type MessageMode = "animated" | "quiet" | "off";
 const MAX_IN_FLIGHT = 3;
 const TRAVEL_MS = 1100;
 const BUBBLE_MS = 4200;
+/** Matches the `org-edge-warm` CSS animation; the path is dropped after it. */
+const WARM_MS = 6000;
 const BUMP_MS = 380;
 
 interface Packet {
@@ -194,6 +196,7 @@ export function MessageLayer({
   const keyRef = useRef(0);
   const inFlight = useRef(0);
   const fadeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const warmTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const hovering = useRef<string | null>(null);
 
   // Latest render inputs, read from socket callbacks without re-subscribing.
@@ -341,7 +344,26 @@ export function MessageLayer({
       const edge = p.reverse
         ? `${p.anchor}>${live.current.anchorOf(p.msg.from ?? "")}`
         : `${live.current.anchorOf(p.msg.from ?? "")}>${p.anchor}`;
-      if (!p.arc) setWarm((w) => new Map(w).set(edge, Date.now()));
+      if (!p.arc) {
+        setWarm((w) => new Map(w).set(edge, Date.now()));
+        // Drop the path once its glow has faded, so a long-lived chart doesn't
+        // carry dead paths (or ones for edges a re-layout removed). A re-warm
+        // restarts the clock.
+        const timers = warmTimers.current;
+        clearTimeout(timers.get(edge));
+        timers.set(
+          edge,
+          setTimeout(() => {
+            timers.delete(edge);
+            setWarm((w) => {
+              if (!w.has(edge)) return w;
+              const next = new Map(w);
+              next.delete(edge);
+              return next;
+            });
+          }, WARM_MS),
+        );
+      }
       land(p.msg, p.anchor, p.seq);
     },
     [land],
@@ -362,6 +384,7 @@ export function MessageLayer({
   useEffect(
     () => () => {
       for (const t of fadeTimers.current.values()) clearTimeout(t);
+      for (const t of warmTimers.current.values()) clearTimeout(t);
     },
     [],
   );
