@@ -1111,7 +1111,9 @@ function UpdatingScreen({
           );
         })}
       </ol>
-      {rec?.message && (
+      {/* While waiting for idle, the "Wait for idle" step already carries
+          the job's word — don't say it twice. */}
+      {rec?.message && rec.phase !== "waiting_idle" && (
         <div className="px-5 pb-3 text-xs" style={{ color: page.statusFg }}>
           {rec.message}
         </div>
