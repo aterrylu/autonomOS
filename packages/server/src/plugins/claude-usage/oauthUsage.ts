@@ -32,6 +32,7 @@ import type {
   ExtraUsage,
   NamedRateWindow,
   RateLimitWindow,
+  SpendLimit,
 } from "./scanner.js";
 
 const execFileAsync = promisify(execFile);
@@ -403,13 +404,27 @@ export interface OAuthUsageRaw {
     monthly_limit?: number;
     used_credits?: number;
     utilization?: number | null;
+    currency?: string | null;
   } | null;
   /** Newer fields, read only to DIAGNOSE a response with no rolling windows
    *  (spend-billed accounts) — not mapped to numbers. */
-  spend?: { enabled?: boolean; limit?: unknown } | null;
+  spend?: {
+    enabled?: boolean;
+    used?: RawMoney | null;
+    limit?: RawMoney | number | null;
+    percent?: number | null;
+    resets_at?: string | null;
+  } | null;
   /** Newer list-shaped windows. For some accounts (a Team plan was the report)
    *  the flat fields above are null while this holds the real windows. */
   limits?: RawLimitEntry[] | null;
+}
+
+/** A money amount as the `spend` block spells it (minor units + exponent). */
+export interface RawMoney {
+  amount_minor?: number | null;
+  currency?: string | null;
+  exponent?: number | null;
 }
 
 /** One `limits[]` entry. All optional — decoded defensively. */
@@ -938,4 +953,159 @@ export function readClaudeConfigHints(): {
     auth.apiKeyConfigured = true;
 
   return { auth, plan };
+}
+
+// ── Spend (spend-metered accounts) ─────────────────────────────────────────
+
+const warnedSpend = new Set<string>();
+function warnSpendOnce(message: string): void {
+  if (warnedSpend.has(message)) return;
+  warnedSpend.add(message);
+  console.warn(`[claude-usage] ${message}`);
+}
+
+/** Major units from a `spend`-style money object; null when unusable. The
+ *  exponent must be an ISO-4217-style minor-unit count (integer 0–4) — a wild
+ *  one would turn $5 into $50,000 or Infinity. */
+function moneyMajor(
+  raw: unknown,
+): { amount: number; currency?: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const m = raw as RawMoney;
+  const minor = limitPercent(m.amount_minor);
+  if (minor === null || minor < 0) return null;
+  const exp = m.exponent == null ? 2 : limitPercent(m.exponent);
+  if (exp === null || !Number.isInteger(exp) || exp < 0 || exp > 4) {
+    warnSpendOnce(
+      `spend money object has an unusable exponent: ${JSON.stringify(m.exponent)}`,
+    );
+    return null;
+  }
+  return { amount: minor / 10 ** exp, currency: trimmedString(m.currency) };
+}
+
+/** One source's reading, before choosing between sources. */
+interface SpendCandidate {
+  used: number;
+  currency?: string;
+  /** set = a readable positive limit; none = the field is absent/null;
+   *  unreadable = present but not usable (0, negative, unknown shape,
+   *  other currency). Only "none" may be shown as "no limit set". */
+  limitStatus: SpendLimit["limitStatus"];
+  limit: number | null;
+  resetsAt: string | null;
+  source: SpendLimit["source"];
+}
+
+function finish(c: SpendCandidate): SpendLimit {
+  const limit = c.limitStatus === "set" ? c.limit : null;
+  return {
+    used: c.used,
+    limit,
+    // Multiply first: (used / limit) * 100 turns 1120/1000 into 112.00000000000001.
+    percent: limit === null ? null : (c.used * 100) / limit,
+    currency: c.currency ?? "USD",
+    resetsAt: c.resetsAt,
+    source: c.source,
+    limitStatus: c.limitStatus,
+  };
+}
+
+function fromExtraUsage(
+  extra: OAuthUsageRaw["extra_usage"],
+  lenientEnabledFlag: boolean,
+): SpendCandidate | null {
+  if (!extra || typeof extra !== "object") return null;
+  // The OAuth response always carries is_enabled (codexbar's OAuth fixtures,
+  // Terry's Max payload); only the claude.ai web body omits it.
+  const enabled = lenientEnabledFlag
+    ? extra.is_enabled !== false
+    : extra.is_enabled === true;
+  if (!enabled) return null;
+  const usedCents = limitPercent(extra.used_credits);
+  if (usedCents === null || usedCents < 0) return null;
+  let limitStatus: SpendLimit["limitStatus"] = "none";
+  let limit: number | null = null;
+  if (extra.monthly_limit != null) {
+    const cents = limitPercent(extra.monthly_limit);
+    if (cents !== null && cents > 0) {
+      limitStatus = "set";
+      limit = cents / 100;
+    } else {
+      limitStatus = "unreadable";
+      warnSpendOnce(
+        `extra_usage.monthly_limit is not a usable limit: ${JSON.stringify(extra.monthly_limit)}`,
+      );
+    }
+  }
+  return {
+    used: usedCents / 100,
+    currency: trimmedString(extra.currency),
+    limitStatus,
+    limit,
+    resetsAt: null,
+    source: "extra_usage",
+  };
+}
+
+function fromSpendBlock(spend: OAuthUsageRaw["spend"]): SpendCandidate | null {
+  if (!spend || typeof spend !== "object" || spend.enabled !== true)
+    return null;
+  const used = moneyMajor(spend.used);
+  if (!used) return null;
+  let limitStatus: SpendLimit["limitStatus"] = "none";
+  let limit: number | null = null;
+  if (spend.limit != null) {
+    const l = moneyMajor(spend.limit);
+    if (!l || l.amount <= 0) {
+      limitStatus = "unreadable";
+      warnSpendOnce(
+        `spend.limit is not a readable money amount: ${JSON.stringify(spend.limit)}`,
+      );
+    } else if (used.currency && l.currency && used.currency !== l.currency) {
+      limitStatus = "unreadable";
+      warnSpendOnce(
+        `spend.used (${used.currency}) and spend.limit (${l.currency}) are in different currencies`,
+      );
+    } else {
+      limitStatus = "set";
+      limit = l.amount;
+    }
+  }
+  return {
+    used: used.amount,
+    currency: used.currency,
+    limitStatus,
+    limit,
+    resetsAt: trimmedString(spend.resets_at) ?? null,
+    source: "spend",
+  };
+}
+
+/**
+ * Spend against a spend limit, for an account with NO rolling window. Pure;
+ * exported for tests. Two sources:
+ *
+ *  1. `extra_usage` — `used_credits` / `monthly_limit` in CENTS (codexbar's
+ *     Enterprise fixtures and its #1114 minor-units fix).
+ *  2. `spend` — `used` / `limit` as money objects, seen on Terry's Max payload
+ *     with `enabled: false` and `limit: null`; the shape of a SET limit is
+ *     inferred, so only a money object is accepted.
+ *
+ * The source with a readable limit wins; otherwise the first that shows spend.
+ * Never invents a limit, and never reports an unreadable one as absent.
+ * `web: true` is the claude.ai session-key body, which omits `is_enabled`.
+ */
+export function mapSpendLimit(
+  raw: OAuthUsageRaw,
+  opts: { web?: boolean } = {},
+): SpendLimit | null {
+  const candidates = [
+    fromExtraUsage(raw.extra_usage, opts.web === true),
+    fromSpendBlock(raw.spend),
+  ].filter((c): c is SpendCandidate => c !== null);
+  if (candidates.length === 0) return null;
+  return finish(
+    candidates.find((c) => c.limitStatus === "set") ?? candidates[0],
+  );
 }
