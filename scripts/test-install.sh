@@ -473,6 +473,11 @@ grep -q '"mode": "bundle"' "$TEST_PREFIX/share/autonomos/install.json" || {
 }
 echo "==> ✓ install.json marker present"
 
+# ADR-101: state snapshot before every upgrade + code+state rollback pair.
+# A sentinel in settings.json is snapshotted by the upgrade; we then change it
+# (standing in for a newer version rewriting state) and expect rollback to put
+# the pre-upgrade value back alongside the old code.
+echo '{"ciSentinel":"before-upgrade"}' > "$TEST_CFG/settings.json"
 echo "==> Running 'autonomos upgrade' against the fixture release"
 assert_only_test_label "autonomos upgrade"
 AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
@@ -591,9 +596,19 @@ rm -f "$UNIT_FILE"
 echo "==> ✓ Unit healed to current template, --port preserved, staged unit removed"
 assert_real_daemon_untouched "unit-sync drift heal"
 
+echo "==> Snapshot taken by the upgrade is listed"
+SNAPS=$("$WRAPPER" snapshots list)
+echo "$SNAPS" | grep -q "before update from v$INSTALLED_VERSION" || {
+  echo "✗ No pre-upgrade snapshot listed:"; echo "$SNAPS"; exit 1;
+}
+echo '{"ciSentinel":"after-upgrade"}' > "$TEST_CFG/settings.json"
 echo "==> Running 'autonomos rollback'"
 assert_only_test_label "autonomos rollback"
 "$WRAPPER" rollback
+grep -q '"before-upgrade"' "$TEST_CFG/settings.json" || {
+  echo "✗ Rollback restored code but not state (settings.json: $(cat "$TEST_CFG/settings.json"))"; exit 1;
+}
+echo "==> ✓ Rollback restored code AND the pre-upgrade state snapshot"
 ROLLED_BACK_VERSION=$("$WRAPPER" --version)
 [[ "$ROLLED_BACK_VERSION" == "$INSTALLED_VERSION" ]] || {
   echo "✗ Expected $INSTALLED_VERSION after rollback, got: $ROLLED_BACK_VERSION"; exit 1;

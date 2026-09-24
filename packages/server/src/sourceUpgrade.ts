@@ -37,6 +37,8 @@ export type SourceUpgradeOptions = {
    * for tests — a real checkout rebuild takes minutes.
    */
   buildCommand?: readonly string[];
+  /** Progress callback (ADR-101) — cosmetic; a throw never fails the upgrade. */
+  onPhase?: (phase: "building") => void;
 };
 
 export type SourceUpgradeResult =
@@ -287,6 +289,11 @@ export async function performSourceUpgrade(
     };
   }
 
+  try {
+    opts.onPhase?.("building");
+  } catch {
+    // progress is cosmetic
+  }
   const build = runBuild(repoRoot, opts.buildCommand);
   if (!build.ok) {
     // A failed build must not leave the clone on a tag it can't serve — go

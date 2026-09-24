@@ -600,6 +600,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const { startUpdateCheck } = await import("./updateCheck.js");
     startUpdateCheck();
 
+    // After an in-app/CLI update: compare agents against the pre-update
+    // snapshot and record the verdict for the success banner (ADR-101).
+    // No-op on an ordinary boot.
+    const { startPostUpgradeVerification } = await import("./upgradeVerify.js");
+    startPostUpgradeVerification();
+
     // Write the shared Gemini settings file HERE, not at top-of-boot: its MCP
     // config bakes in the control-socket path AND the public REST base, so it
     // can only be correct once both are published (setServerPort in the listen

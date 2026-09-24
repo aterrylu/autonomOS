@@ -13,6 +13,7 @@ import { AgentStatusIcon } from "../../components/ui/agent-status-icon";
 import { ProviderAgentIcon } from "../../components/ui/provider-icon";
 import { type AgentIconStyle, THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
+import { UpdatesSettingsSection } from "../update-badge/UpdatesSettingsSection";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
@@ -659,26 +660,36 @@ export function SettingsPanel({
             start.
           </div>
 
-          <div className="flex items-center justify-between mt-3">
-            <div
-              className="text-[10px] font-medium uppercase tracking-wide"
-              style={labelStyle}
-            >
-              Update Check
-            </div>
-            <ToggleSwitch
-              // Default-on: only off when explicitly set to false.
-              enabled={settings?.updateCheck !== false}
-              inactiveBackground={page.border}
-              onClick={() =>
-                toggleSetting("updateCheck", settings?.updateCheck === false)
+          <div className="mt-3">
+            {/* Settings → Updates (ADR-101): version, the daily-check toggle
+                (unchanged behavior, rendered inside the section) and the
+                kept snapshots with the in-app Restore. */}
+            <UpdatesSettingsSection
+              onRestore={onClose}
+              updateCheckToggle={
+                <>
+                  <div className="flex items-center justify-between">
+                    <span style={labelStyle}>Check for updates daily</span>
+                    <ToggleSwitch
+                      // Default-on: only off when explicitly set to false.
+                      enabled={settings?.updateCheck !== false}
+                      inactiveBackground={page.border}
+                      onClick={() =>
+                        toggleSetting(
+                          "updateCheck",
+                          settings?.updateCheck === false,
+                        )
+                      }
+                      testId="update-check-toggle"
+                    />
+                  </div>
+                  <div className="text-[10px]" style={labelStyle}>
+                    The server checks GitHub daily and shows new releases in the
+                    status bar. The dashboard itself never contacts GitHub.
+                  </div>
+                </>
               }
-              testId="update-check-toggle"
             />
-          </div>
-          <div className="text-[10px]" style={labelStyle}>
-            Check GitHub daily for a newer release and show a passive badge in
-            the status bar. The dashboard itself never contacts GitHub.
           </div>
 
           <div className="flex items-center justify-between mt-3">

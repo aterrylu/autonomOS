@@ -31,6 +31,11 @@ import {
   resolveInstall,
 } from "@autonomos/server/installInfo.js";
 import {
+  createSnapshot,
+  deleteSnapshot,
+  type SnapshotManifest,
+} from "@autonomos/server/snapshots.js";
+import {
   getVersionAt,
   performSourceRollback,
   performSourceUpgrade,
@@ -41,19 +46,86 @@ import {
   performUpgrade,
   resolveReleaseOverrides,
 } from "@autonomos/server/upgrade.js";
+import {
+  advanceUpgradeStatus,
+  type UpgradePhase,
+} from "@autonomos/server/upgradeStatus.js";
 import { getServerVersion } from "@autonomos/server/version.js";
 import {
   expectedVersionAfterSwap,
   restartDaemonAfterSwap,
   syncSupervisorUnit,
 } from "../lib/apply-bundle.js";
+import { restoreStateFor } from "../lib/state-pair.js";
 
-type UpgradeFlags = { targetVersion: string | undefined };
+/**
+ * Snapshot agent state BEFORE anything changes (ADR-101). Fail-safe: no
+ * snapshot, no update — the safety net is not optional. Returns null after
+ * reporting the failure.
+ */
+function takeSnapshot(
+  from: string,
+  to: string | undefined,
+  report: Reporter,
+): SnapshotManifest | null {
+  report("snapshotting", { from });
+  try {
+    const snap = createSnapshot(from, to ?? null);
+    report("snapshotting", { snapshotId: snap.id });
+    console.log(
+      `✓ Saved a snapshot of agent state (${Math.round(snap.bytes / 1024)} KB): snapshots/${snap.id}`,
+    );
+    return snap;
+  } catch (err) {
+    const message = `Couldn't save a snapshot of your agents' state, so nothing was changed: ${err instanceof Error ? err.message : err}`;
+    report("failed", { message });
+    console.error(`✗ ${message}`);
+    return null;
+  }
+}
+
+type UpgradeFlags = {
+  targetVersion: string | undefined;
+  /**
+   * In-app update (ADR-101): the out-of-band job passes this so the
+   * dashboard can follow progress across the restart. Absent for a shell
+   * run — then every report below is a no-op.
+   */
+  statusFile: string | undefined;
+};
+
+type Reporter = (
+  phase: UpgradePhase,
+  extra?: {
+    to?: string | null;
+    message?: string;
+    from?: string;
+    snapshotId?: string;
+  },
+) => void;
+
+function makeReporter(statusFile: string | undefined): Reporter {
+  return (phase, extra = {}) => {
+    if (!statusFile) return;
+    try {
+      advanceUpgradeStatus(statusFile, { phase, ...extra });
+    } catch (err) {
+      // Progress is cosmetic: a status-file write failure must never change
+      // the upgrade's outcome. Say so in the job log, keep going.
+      console.warn(
+        `[upgrade] could not write status file: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  };
+}
 
 function parseFlags(argv: readonly string[]): UpgradeFlags {
   let targetVersion: string | undefined;
+  let statusFile: string | undefined;
   for (const a of argv) {
-    if (a.startsWith("--version=")) {
+    if (a.startsWith("--status-file=")) {
+      statusFile = a.slice("--status-file=".length);
+    } else if (a.startsWith("--version=")) {
       targetVersion = a.slice("--version=".length);
     } else if (/^v?\d+\.\d+\.\d+/.test(a)) {
       targetVersion = a;
@@ -65,7 +137,7 @@ function parseFlags(argv: readonly string[]): UpgradeFlags {
   }
   // Accept both "0.4.0" and "v0.4.0" — the release tag adds the v itself.
   if (targetVersion?.startsWith("v")) targetVersion = targetVersion.slice(1);
-  return { targetVersion };
+  return { targetVersion, statusFile };
 }
 
 /**
@@ -78,6 +150,7 @@ function parseFlags(argv: readonly string[]): UpgradeFlags {
 async function runSourceUpgradeFlow(
   install: ResolvedInstall,
   flags: UpgradeFlags,
+  report: Reporter,
 ): Promise<number> {
   // bundleDir is where resolveInstall PHYSICALLY found the marker — ground
   // truth. info.prefix is what the installer wrote at install time and goes
@@ -93,14 +166,20 @@ async function runSourceUpgradeFlow(
       : "Fetching release tags...",
   );
 
+  const snapshot = takeSnapshot(currentVersion, flags.targetVersion, report);
+  if (!snapshot) return 1;
+  report("fetching", { from: currentVersion });
   const result = await performSourceUpgrade({
     repoRoot,
     installInfo: install.info,
     currentVersion,
     targetVersion: flags.targetVersion,
+    onPhase: (p) => report(p),
   });
 
   if (result.status === "up-to-date") {
+    deleteSnapshot(snapshot.id); // nothing changed — don't churn retention
+    report("up_to_date");
     console.log(`✓ Already on the latest version (${result.version}).`);
     // Still self-heal unit-template drift — an install can be current on
     // code but running under an install-day unit. No restart follows here.
@@ -108,6 +187,7 @@ async function runSourceUpgradeFlow(
     return 0;
   }
   if (result.status === "error") {
+    report("failed", { message: result.message });
     console.error(`✗ Upgrade failed: ${result.message}`);
     return 1;
   }
@@ -118,6 +198,7 @@ async function runSourceUpgradeFlow(
     console.log(`✓ Upgraded ${result.from} → ${result.to}.`);
   }
   console.log("  Roll back anytime with: autonomos rollback");
+  report("restarting", { to: result.to });
 
   // Unit sync happens between swap and restart so the single existing
   // restart applies any drift heal — zero extra restarts either way. Sync
@@ -129,6 +210,10 @@ async function runSourceUpgradeFlow(
     reloadUnit,
   });
   if (outcome.kind === "restart-failed") {
+    report("failed", {
+      message:
+        "The update installed but the service restart could not be issued — run `autonomos restart` (or undo with `autonomos rollback`).",
+    });
     // Same verdict semantics as the bundle flow below: a failed supervisor
     // COMMAND says nothing about the just-built checkout — don't undo it.
     console.error(
@@ -138,7 +223,15 @@ async function runSourceUpgradeFlow(
     );
     return 1;
   }
-  if (outcome.kind !== "not-verified") return 0;
+  if (outcome.kind !== "not-verified") {
+    report("done", {
+      message:
+        outcome.kind === "verified"
+          ? undefined
+          : "Installed; no supervised daemon was restarted — start it with `autonomos start`.",
+    });
+    return 0;
+  }
 
   console.error(
     `✗ Version ${result.to} did not become healthy. Rolling back to ${result.from}...`,
@@ -151,6 +244,10 @@ async function runSourceUpgradeFlow(
   // generations back (or falsely claim no rollback state exists).
   const freshMarker = readInstallJson(repoRoot);
   if (!freshMarker) {
+    report("failed", {
+      message:
+        "The new version didn't come up and install.json could not be re-read, so no automatic rollback ran — run `autonomos rollback` on the host.",
+    });
     console.error(
       `✗ Cannot auto-rollback: install.json could not be re-read after the ` +
         `upgrade. Roll back manually once the marker is repaired:\n` +
@@ -161,10 +258,26 @@ async function runSourceUpgradeFlow(
   }
   const rollback = performSourceRollback(repoRoot, freshMarker);
   if (rollback.status === "error") {
+    report("failed", {
+      message: `The new version didn't come up AND the automatic rollback failed: ${rollback.message}. Run \`autonomos rollback\` on the host.`,
+    });
     console.error(`✗ Automatic rollback also failed: ${rollback.message}`);
     return 1;
   }
+  // Code is back; now the STATE that pairs with it (daemon stopped first).
+  const state = await restoreStateFor(rollback.to, snapshot.id);
+  console.error(
+    state.restored
+      ? `✓ Restored agent state from snapshots/${state.snapshot.id}.`
+      : `⚠️  Agent state not restored: ${state.reason}.`,
+  );
   const recovery = await restartDaemonAfterSwap(rollback.to);
+  report("rolled_back", {
+    message:
+      recovery.kind === "verified"
+        ? `v${result.to} didn't become healthy within the health check, so v${rollback.to}${state.restored ? " and your agents' pre-update state were" : " was"} restored and it is serving again.${state.restored ? "" : ` (Agent state not restored: ${state.reason}.)`}`
+        : `v${result.to} didn't become healthy; v${rollback.to} was restored but could not be verified serving — check \`autonomos status\`.`,
+  });
   if (recovery.kind === "verified") {
     console.error(
       `✓ Rolled back to ${rollback.to} and it is serving again. ` +
@@ -189,27 +302,34 @@ export async function runUpgradeCommand(
     console.error(err instanceof Error ? err.message : err);
     return 64;
   }
+  const report = makeReporter(flags.statusFile);
 
   let install: ResolvedInstall;
   try {
     install = resolveInstall();
   } catch (err) {
+    report("failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
     console.error(err instanceof Error ? err.message : err);
     return 2;
   }
 
   if (install.info.mode === "source") {
-    return await runSourceUpgradeFlow(install, flags);
+    return await runSourceUpgradeFlow(install, flags, report);
   }
 
   const overrides = resolveReleaseOverrides();
   if ("error" in overrides) {
+    report("failed", { message: overrides.error });
     console.error(`✗ ${overrides.error}`);
     return 1;
   }
 
   const platform = detectPlatform();
   const currentVersion = getServerVersion();
+  const snapshot = takeSnapshot(currentVersion, flags.targetVersion, report);
+  if (!snapshot) return 1;
   console.log(`Current version: ${currentVersion}`);
   console.log(
     flags.targetVersion
@@ -225,15 +345,19 @@ export async function runUpgradeCommand(
     targetVersion: flags.targetVersion,
     releaseApiBase: overrides.releaseApiBase,
     releaseRepo: overrides.releaseRepo,
+    onPhase: (p) => report(p),
   });
 
   if (result.status === "up-to-date") {
+    deleteSnapshot(snapshot.id); // nothing changed — don't churn retention
+    report("up_to_date");
     console.log(`✓ Already on the latest version (${result.version}).`);
     // Same self-heal as the source flow: current code, install-day unit.
     syncSupervisorUnit({ restartFollows: false });
     return 0;
   }
   if (result.status === "error") {
+    report("failed", { message: result.message });
     console.error(`✗ Upgrade failed: ${result.message}`);
     return 1;
   }
@@ -243,6 +367,7 @@ export async function runUpgradeCommand(
   } else {
     console.log(`✓ Upgraded ${result.from} → ${result.to}.`);
   }
+  report("restarting", { to: result.to });
   console.log(`  Previous version kept at: ${install.bundleDir}.previous`);
   console.log("  Roll back anytime with: autonomos rollback");
 
@@ -257,6 +382,10 @@ export async function runUpgradeCommand(
     { reloadUnit },
   );
   if (outcome.kind === "restart-failed") {
+    report("failed", {
+      message:
+        "The update installed but the service restart could not be issued — run `autonomos restart` (or undo with `autonomos rollback`).",
+    });
     // The supervisor COMMAND failed — the bundle was never judged, and the
     // daemon is likely still serving the old version. Rolling back here
     // would act on evidence about the supervisor, not the bundle.
@@ -267,7 +396,15 @@ export async function runUpgradeCommand(
     );
     return 1;
   }
-  if (outcome.kind !== "not-verified") return 0;
+  if (outcome.kind !== "not-verified") {
+    report("done", {
+      message:
+        outcome.kind === "verified"
+          ? undefined
+          : "Installed; no supervised daemon was restarted — start it with `autonomos start`.",
+    });
+    return 0;
+  }
 
   // Supervised restart didn't produce a healthy daemon on the new version.
   // Leaving the box down on a bad release is the one unacceptable outcome —
@@ -277,13 +414,29 @@ export async function runUpgradeCommand(
   );
   const rollback = performRollback(install.bundleDir);
   if (rollback.status === "error") {
+    report("failed", {
+      message: `The new version didn't come up AND the automatic rollback failed: ${rollback.message}. Run \`autonomos rollback\` on the host.`,
+    });
     console.error(`✗ Automatic rollback also failed: ${rollback.message}`);
     console.error(
       `  Manual recovery: mv ${install.bundleDir}.previous ${install.bundleDir}, then autonomos restart`,
     );
     return 1;
   }
+  // Code is back; now the STATE that pairs with it (daemon stopped first).
+  const state = await restoreStateFor(rollback.to, snapshot.id);
+  console.error(
+    state.restored
+      ? `✓ Restored agent state from snapshots/${state.snapshot.id}.`
+      : `⚠️  Agent state not restored: ${state.reason}.`,
+  );
   const recovery = await restartDaemonAfterSwap(rollback.to);
+  report("rolled_back", {
+    message:
+      recovery.kind === "verified"
+        ? `v${result.to} didn't become healthy within the health check, so v${rollback.to}${state.restored ? " and your agents' pre-update state were" : " was"} restored and it is serving again.${state.restored ? "" : ` (Agent state not restored: ${state.reason}.)`}`
+        : `v${result.to} didn't become healthy; v${rollback.to} was restored but could not be verified serving — check \`autonomos status\`.`,
+  });
   if (recovery.kind === "verified") {
     console.error(
       `✓ Rolled back to ${rollback.to} and it is serving again. ` +

@@ -13,6 +13,8 @@
     "./installInfo.js": "./src/installInfo.ts",
     "./sourceUpgrade.js": "./src/sourceUpgrade.ts",
     "./upgrade.js": "./src/upgrade.ts",
+    "./upgradeStatus.js": "./src/upgradeStatus.ts",
+    "./snapshots.js": "./src/snapshots.ts",
     "./version.js": "./src/version.ts"
   },
   "scripts": {

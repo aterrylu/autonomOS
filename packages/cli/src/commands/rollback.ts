@@ -17,13 +17,37 @@ import {
 } from "@autonomos/server/installInfo.js";
 import { performSourceRollback } from "@autonomos/server/sourceUpgrade.js";
 import { performRollback } from "@autonomos/server/upgrade.js";
+import { advanceUpgradeStatus } from "@autonomos/server/upgradeStatus.js";
 import { restartDaemonAfterSwap } from "../lib/apply-bundle.js";
+import { restoreStateFor } from "../lib/state-pair.js";
 
-export async function runRollbackCommand(): Promise<number> {
+export async function runRollbackCommand(
+  argv: readonly string[] = [],
+): Promise<number> {
+  // --status-file: the in-app Restore (ADR-101) runs this same command as an
+  // out-of-band job and follows it through the status file.
+  const statusFile = argv
+    .find((a) => a.startsWith("--status-file="))
+    ?.slice("--status-file=".length);
+  const report = (
+    phase: "restarting" | "done" | "failed",
+    extra: { message?: string; from?: string; to?: string } = {},
+  ) => {
+    if (!statusFile) return;
+    try {
+      advanceUpgradeStatus(statusFile, { phase, kind: "rollback", ...extra });
+    } catch {
+      // progress is cosmetic
+    }
+  };
+
   let install: ResolvedInstall;
   try {
     install = resolveInstall();
   } catch (err) {
+    report("failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
     console.error(err instanceof Error ? err.message : err);
     return 2;
   }
@@ -33,6 +57,7 @@ export async function runRollbackCommand(): Promise<number> {
       ? performSourceRollback(install.bundleDir, install.info)
       : performRollback(install.bundleDir);
   if (result.status === "error") {
+    report("failed", { message: result.message });
     console.error(`✗ Rollback failed: ${result.message}`);
     return 1;
   }
@@ -45,16 +70,33 @@ export async function runRollbackCommand(): Promise<number> {
           "(run rollback again to swap forward).",
   );
 
+  // Code and state move together: restore the snapshot taken when this
+  // version was left (daemon stopped first), then restart onto both.
+  const state = await restoreStateFor(result.to);
+  console.log(
+    state.restored
+      ? `✓ Restored agent state from snapshots/${state.snapshot.id}.`
+      : `⚠️  Agent state not restored: ${state.reason}.`,
+  );
+  report("restarting", { from: result.from, to: result.to });
   const outcome = await restartDaemonAfterSwap(result.to);
+  const stateNote = state.restored
+    ? "Your agents' setup was restored from the snapshot taken before the update."
+    : `Agent state was not restored: ${state.reason}.`;
   if (outcome.kind === "restart-failed") {
-    console.error(
-      `✗ Rollback is on disk, but the supervisor restart could not be ` +
-        `issued — the daemon is likely still on the previous version. ` +
-        `Fix the supervisor, then run: autonomos restart`,
-    );
+    // With a state restore the daemon was STOPPED first, so a failed restart
+    // leaves it down — say that, not "still on the previous version".
+    const msg = state.restored
+      ? "Rollback and state restore are on disk, but the service could not be restarted — autonomOS is stopped. Fix the supervisor, then run: autonomos restart"
+      : "Rollback is on disk, but the supervisor restart could not be issued — the daemon is likely still on the previous version. Fix the supervisor, then run: autonomos restart";
+    report("failed", { message: msg });
+    console.error(`✗ ${msg}`);
     return 1;
   }
   if (outcome.kind === "not-verified") {
+    report("failed", {
+      message: `Restored v${result.to}, but couldn't verify it came up. ${stateNote} Check \`autonomos status\` on the host.`,
+    });
     console.error(
       `⚠️  Could not verify ${result.to} came up after the restart. ` +
         "Check: autonomos status / autonomos logs",
@@ -64,5 +106,6 @@ export async function runRollbackCommand(): Promise<number> {
     // worse than stopping with a clear message.
     return 1;
   }
+  report("done", { message: `Restored v${result.to}. ${stateNote}` });
   return 0;
 }

@@ -152,6 +152,22 @@ the mechanical (it adds prose) but not absurdly so — very roughly 1.5×–6× 
 mechanical character count. Wildly outside that range is a smell worth a look, not
 an automatic failure.
 
+### 4b. Storage-format marker (ADR-101 — required when it applies)
+
+If any changeset in this release bumps the agent-record format
+(`AGENT_SCHEMA_VERSION` in `packages/server/src/agents/store.ts`), put this
+exact line at the very top of the friendly body:
+
+```
+<!-- autonomos:storage-format-change -->
+```
+
+It is invisible on GitHub, and the in-app update reads it to warn the
+operator — before they click Update — that older versions can't read the new
+format and going back restores their pre-update snapshot. Never add it when
+the format did not change; never express it only in prose (the server does
+not parse prose). Check: `git diff v<prev>..v<version> -- packages/server/src/agents/store.ts | grep AGENT_SCHEMA_VERSION`.
+
 ### 5. The fixed footer (reproduce verbatim)
 
 Stable boilerplate every release — fully fixed, nothing in it varies per release:

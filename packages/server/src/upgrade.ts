@@ -1,9 +1,8 @@
-// Shared upgrade logic (ADR-077). Used by both:
-//   - The CLI `autonomos upgrade` command (runs out-of-process, can upgrade
-//     even when the daemon is stopped, owns the post-restart health gate)
-//   - The server POST /api/system/upgrade endpoint (runs in-process; performs
-//     the swap then stage-then-exit(0)s so the supervisor revives it — the
-//     process is never the agent of its own restart)
+// Shared upgrade logic (ADR-077). Used by the CLI `autonomos upgrade`
+// command (runs out-of-process, can upgrade even when the daemon is stopped,
+// owns the post-restart health gate) — both from a shell and as the in-app
+// update's out-of-band job (ADR-101: POST /api/system/upgrade launches that
+// command in its own supervisor scope; nothing here runs inside the daemon).
 //
 // The flow:
 //   1. Caller resolves the install via installInfo.resolveInstall() — the
@@ -126,7 +125,21 @@ export type UpgradeOptions = {
    * point at a local fixture server). Default "https://api.github.com".
    */
   releaseApiBase?: string;
+  /**
+   * Progress callback for the out-of-band in-app upgrade (ADR-101): the
+   * job reports phases to a status file the dashboard reads. Cosmetic by
+   * contract — a throwing callback must never fail the upgrade.
+   */
+  onPhase?: (phase: "downloading" | "verifying" | "installing") => void;
 };
+
+function reportPhase<P>(cb: ((p: P) => void) | undefined, phase: P): void {
+  try {
+    cb?.(phase);
+  } catch {
+    // progress is cosmetic; never let it change the upgrade's outcome
+  }
+}
 
 export type UpgradeResult =
   | { status: "up-to-date"; version: string }
@@ -235,10 +248,12 @@ export async function performUpgrade(
     const tarballPath = join(staging, tarballName);
     const sha256sumsPath = join(staging, "SHA256SUMS");
 
+    reportPhase(opts.onPhase, "downloading");
     await downloadTo(tarball.browser_download_url, tarballPath);
     await downloadTo(sha256sums.browser_download_url, sha256sumsPath);
 
     // ── verify checksum
+    reportPhase(opts.onPhase, "verifying");
     const sums = readFileSync(sha256sumsPath, "utf-8");
     const expected = sums
       .split("\n")
@@ -287,6 +302,7 @@ export async function performUpgrade(
     });
 
     // ── atomic swap (current → previous, new → current)
+    reportPhase(opts.onPhase, "installing");
     rmSync(previousDir, { recursive: true, force: true });
     const liveDisplaced = existsSync(opts.bundleDir);
     if (liveDisplaced) {

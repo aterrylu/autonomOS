@@ -33,6 +33,7 @@ completeness; the **release engineer** does everything else.
   section in its body — itemized, or explicitly empty with the reasoning —
   and anything auth-touching in that section is a hard human gate before
   merge.
+- **No irreversible migrations** (ADR-101). A release that bumps the agent-record format (`AGENT_SCHEMA_VERSION`) must keep the pre-update snapshot sufficient to go back, keep older versions refusing newer records loudly (the store's schema guard), and its GitHub release body MUST contain the marker `<!-- autonomos:storage-format-change -->` so the in-app update warns before the click. The `/release` step adds it; check the changesets for a schema bump before cutting.
 - **Never bind, tunnel, or touch `localhost:3100`** — that is the operator's
   live production server.
 - **Never run `scripts/test-install.sh` or any `autonomos` service verb

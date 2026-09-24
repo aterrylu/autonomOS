@@ -1,0 +1,275 @@
+// Launch the in-app upgrade OUT OF BAND (ADR-101).
+//
+// The daemon must never be the agent of its own restart (ADR-077 — OpenClaw's
+// prod bugs: an updater running inside the supervised process dies with it).
+// "Out of band" is not the same as "detached", and that distinction was
+// measured, not assumed:
+//
+//   - systemd (forge, measured): a setsid+nohup child of the service is
+//     KILLED by `systemctl --user restart` — our unit sets no KillMode, so the
+//     default control-group kill takes every process in the service's cgroup,
+//     detached or not. A `systemd-run --user` transient unit SURVIVED.
+//   - launchd (macOS, measured): a setsid child happened to survive
+//     `kickstart -k`, and so did a separately bootstrapped one-shot job.
+//
+// So the job always runs in its OWN supervisor scope: a transient systemd
+// user unit, or a one-shot launchd job. The daemon's role is only to validate,
+// write the initial status record, launch, and keep serving; the job runs the
+// existing `autonomos upgrade` spine (health gate + auto-rollback, ADR-077)
+// with `--status-file`, which reports progress to upgrade-status.json.
+//
+// A daemon NOT under a supervisor (foreground `autonomos start`) cannot be
+// restarted by anything after the swap, so the in-app path refuses there and
+// the dashboard tells the operator to run `autonomos upgrade` in a terminal.
+
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { getConfigDir } from "./configDir.js";
+import { upgradeStatusPath, writeUpgradeStatus } from "./upgradeStatus.js";
+import { getServerVersion } from "./version.js";
+
+export type Supervisor =
+  | { kind: "systemd" }
+  | { kind: "launchd"; label: string }
+  | { kind: "none" };
+
+/**
+ * Which supervisor owns THIS process — read from the environment the
+ * supervisor itself sets (both verified on real services): systemd exports
+ * INVOCATION_ID to service processes; launchd exports XPC_SERVICE_NAME = the
+ * job label. Cheap and side-effect free, unlike probing launchctl/systemctl.
+ */
+export function detectSupervisor(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Supervisor {
+  if (platform === "linux" && env.INVOCATION_ID) return { kind: "systemd" };
+  const xpc = env.XPC_SERVICE_NAME;
+  // Terminal-launched processes on macOS get XPC_SERVICE_NAME="0" or an
+  // application.* bundle id — only a real launchd job label counts.
+  if (
+    platform === "darwin" &&
+    xpc &&
+    xpc !== "0" &&
+    !xpc.startsWith("application.")
+  ) {
+    return { kind: "launchd", label: xpc };
+  }
+  return { kind: "none" };
+}
+
+/** Env the job needs to address the SAME install + service as this daemon. */
+const PROPAGATED_ENV = [
+  "HOME",
+  "PATH",
+  "AUTONOMOS_CONFIG_DIR",
+  "AUTONOMOS_SERVICE_LABEL",
+  "AUTONOMOS_RELEASE_API_URL",
+  "AUTONOMOS_RELEASE_REPO",
+  "XDG_RUNTIME_DIR",
+] as const;
+
+export type LaunchPlan = {
+  argv: string[];
+  env: Record<string, string>;
+};
+
+/**
+ * The job's command: re-invoke THIS process's own entry point (bundle
+ * index.js, or the source CLI under its tsx loader — execArgv carries it)
+ * with the upgrade verb. Exported for tests.
+ */
+export function buildLaunchPlan(
+  verbArgs: readonly string[],
+  statusFile: string,
+  proc: Pick<
+    NodeJS.Process,
+    "execPath" | "execArgv" | "argv" | "env"
+  > = process,
+): LaunchPlan {
+  const entry = proc.argv[1];
+  if (!entry) throw new Error("cannot determine this process's entry point");
+  const argv = [
+    proc.execPath,
+    ...proc.execArgv,
+    entry,
+    ...verbArgs,
+    `--status-file=${statusFile}`,
+  ];
+  const env: Record<string, string> = {};
+  for (const k of PROPAGATED_ENV) {
+    const v = proc.env[k];
+    if (v) env[k] = v;
+  }
+  return { argv, env };
+}
+
+// systemd expands $VAR / $$ in transient-unit command arguments (found the
+// hard way while measuring: a literal "$$" arrived as "$"). Escape every $.
+function systemdEscape(arg: string): string {
+  return arg.replace(/\$/g, "$$$$");
+}
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export type LaunchResult = { ok: true } | { ok: false; message: string };
+
+type Runner = (
+  cmd: string,
+  args: string[],
+) => { status: number | null; stderr: string };
+
+const defaultRunner: Runner = (cmd, args) => {
+  const r = spawnSync(cmd, args, { encoding: "utf-8" });
+  return { status: r.status, stderr: r.stderr ?? String(r.error ?? "") };
+};
+
+type LaunchOpts = {
+  supervisor?: Supervisor;
+  run?: Runner;
+  configDir?: string;
+  proc?: Pick<NodeJS.Process, "execPath" | "execArgv" | "argv" | "env">;
+};
+
+/** The in-app update: `autonomos upgrade --version=<target>` out of band. */
+export function launchUpgradeJob(
+  targetVersion: string,
+  opts: LaunchOpts = {},
+): LaunchResult {
+  return launchJob(
+    ["upgrade", `--version=${targetVersion}`],
+    "upgrade",
+    targetVersion,
+    opts,
+  );
+}
+
+/**
+ * The in-app Restore: `autonomos rollback` out of band — code AND the
+ * matching state snapshot, as one pair (the CLI owns the pairing).
+ */
+export function launchRollbackJob(
+  rollbackTo: string | null,
+  opts: LaunchOpts = {},
+): LaunchResult {
+  return launchJob(["rollback"], "rollback", rollbackTo, opts);
+}
+
+function launchJob(
+  verbArgs: readonly string[],
+  kind: "upgrade" | "rollback",
+  targetVersion: string | null,
+  opts: {
+    supervisor?: Supervisor;
+    run?: Runner;
+    configDir?: string;
+    proc?: Pick<NodeJS.Process, "execPath" | "execArgv" | "argv" | "env">;
+  } = {},
+): LaunchResult {
+  const supervisor = opts.supervisor ?? detectSupervisor();
+  const run = opts.run ?? defaultRunner;
+  const configDir = opts.configDir ?? getConfigDir();
+  const statusFile = upgradeStatusPath(configDir);
+  if (supervisor.kind === "none") {
+    return {
+      ok: false,
+      message:
+        "This daemon is not running under a service, so nothing could restart it after the update. Run `autonomos upgrade` in a terminal.",
+    };
+  }
+
+  const now = new Date().toISOString();
+  writeUpgradeStatus(
+    {
+      phase: "launching",
+      kind,
+      from: getServerVersion(),
+      to: targetVersion,
+      startedAt: now,
+      updatedAt: now,
+    },
+    statusFile,
+  );
+
+  const plan = buildLaunchPlan(verbArgs, statusFile, opts.proc);
+  const stamp = Date.now();
+
+  if (supervisor.kind === "systemd") {
+    const unitBase = (
+      process.env.AUTONOMOS_SERVICE_LABEL || "autonomos"
+    ).replace(/[^A-Za-z0-9_.-]/g, "-");
+    const args = [
+      "--user",
+      "--collect",
+      "--quiet",
+      `--unit=${unitBase}-upgrade-${stamp}`,
+      ...Object.entries(plan.env).map(
+        ([k, v]) => `--setenv=${k}=${systemdEscape(v)}`,
+      ),
+      ...plan.argv.map(systemdEscape),
+    ];
+    const r = run("systemd-run", args);
+    if (r.status !== 0) {
+      return fail(statusFile, `systemd-run failed: ${r.stderr.trim()}`);
+    }
+    return { ok: true };
+  }
+
+  // launchd: a one-shot job under a label derived from the daemon's own, so a
+  // test daemon (AUTONOMOS_SERVICE_LABEL=…test) launches a test-labelled job.
+  const label = `${supervisor.label}.upgrade`;
+  const logDir = join(configDir, "logs");
+  mkdirSync(logDir, { recursive: true });
+  const plistPath = join(configDir, "upgrade-job.plist");
+  const envXml = Object.entries(plan.env)
+    .map(
+      ([k, v]) => `<key>${xmlEscape(k)}</key><string>${xmlEscape(v)}</string>`,
+    )
+    .join("");
+  writeFileSync(
+    plistPath,
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${xmlEscape(label)}</string>
+<key>ProgramArguments</key><array>${plan.argv.map((a) => `<string>${xmlEscape(a)}</string>`).join("")}</array>
+<key>EnvironmentVariables</key><dict>${envXml}</dict>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>${xmlEscape(join(logDir, "upgrade-job.log"))}</string>
+<key>StandardErrorPath</key><string>${xmlEscape(join(logDir, "upgrade-job.log"))}</string>
+</dict></plist>
+`,
+  );
+  const uid = process.getuid?.() ?? 0;
+  // A previous run's job stays loaded (not running) after it exits — clear it
+  // so bootstrap doesn't refuse with "already loaded". Failure = not loaded.
+  run("launchctl", ["bootout", `gui/${uid}/${label}`]);
+  const r = run("launchctl", ["bootstrap", `gui/${uid}`, plistPath]);
+  if (r.status !== 0) {
+    return fail(statusFile, `launchctl bootstrap failed: ${r.stderr.trim()}`);
+  }
+  return { ok: true };
+}
+
+function fail(statusFile: string, message: string): LaunchResult {
+  const now = new Date().toISOString();
+  writeUpgradeStatus(
+    {
+      phase: "failed",
+      from: getServerVersion(),
+      to: null,
+      message,
+      startedAt: now,
+      updatedAt: now,
+    },
+    statusFile,
+  );
+  return { ok: false, message };
+}
