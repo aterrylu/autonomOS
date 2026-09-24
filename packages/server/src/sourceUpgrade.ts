@@ -39,6 +39,11 @@ export type SourceUpgradeOptions = {
   buildCommand?: readonly string[];
   /** Progress callback (ADR-105) — cosmetic; a throw never fails the upgrade. */
   onPhase?: (phase: "building") => void;
+  /** Last check before the working tree changes (the in-app job's idle
+   *  gate, ADR-105). `{ proceed: false }` → error, nothing changed. */
+  beforeCheckout?: () => Promise<
+    { proceed: true } | { proceed: false; message: string }
+  >;
 };
 
 export type SourceUpgradeResult =
@@ -270,6 +275,11 @@ export async function performSourceUpgrade(
   const cmp = compareSemver(opts.currentVersion, targetVersion);
   if (cmp === 0 || (cmp > 0 && !opts.targetVersion)) {
     return { status: "up-to-date", version: targetVersion };
+  }
+
+  if (opts.beforeCheckout) {
+    const go = await opts.beforeCheckout();
+    if (!go.proceed) return { status: "error", message: go.message };
   }
 
   const previousRef = git(repoRoot, ["rev-parse", "HEAD"]);

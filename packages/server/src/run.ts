@@ -605,6 +605,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // No-op on an ordinary boot.
     const { startPostUpgradeVerification } = await import("./upgradeVerify.js");
     startPostUpgradeVerification();
+    // While an update job is in flight, publish the fleet's busy state for
+    // its last-moment "wait for idle" re-check (ADR-105).
+    const { startFleetReporter } = await import("./upgradeScheduler.js");
+    startFleetReporter();
 
     // Write the shared Gemini settings file HERE, not at top-of-boot: its MCP
     // config bakes in the control-socket path AND the public REST base, so it
@@ -635,7 +639,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       .catch((err) =>
         console.error("[startup] resumeActiveAgents failed:", err),
       )
-      .finally(() => initScheduler());
+      .finally(async () => {
+        initScheduler();
+        // The post-update check judges agents only once they've been
+        // resumed, not on a fixed timer (ADR-105).
+        const { noteAgentsResumed } = await import("./upgradeVerify.js");
+        noteAgentsResumed();
+      });
   }
 
   // Port precedence: --port CLI flag > PORT env > 3000 default.

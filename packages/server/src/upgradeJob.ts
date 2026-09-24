@@ -174,10 +174,18 @@ type LaunchOpts = {
 /** The in-app update: `autonomos upgrade --version=<target>` out of band. */
 export function launchUpgradeJob(
   targetVersion: string,
-  opts: LaunchOpts = {},
+  opts: LaunchOpts & {
+    /** "Wait for idle": the job re-checks the fleet right before the
+     *  irreversible step (idle at launch isn't idle minutes later). */
+    waitIdle?: boolean;
+  } = {},
 ): LaunchResult {
   return launchJob(
-    ["upgrade", `--version=${targetVersion}`],
+    [
+      "upgrade",
+      `--version=${targetVersion}`,
+      ...(opts.waitIdle ? ["--wait-idle"] : []),
+    ],
     "upgrade",
     targetVersion,
     opts,
@@ -228,6 +236,7 @@ function launchJob(
         to: targetVersion,
         startedAt: now,
         updatedAt: now,
+        ...(verbArgs.includes("--wait-idle") && { waitIdle: true }),
       },
       statusFile,
     );

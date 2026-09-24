@@ -26,6 +26,7 @@ import {
   type UpgradeState,
   type UpgradeStatusRecord,
 } from "../../api/system";
+import { useUpdateBus } from "./updateBus";
 import { isLiveRun, writeUpdatedFlag } from "./updateFlow";
 
 /** Mutable so tests can shrink the waits; production never touches it. */
@@ -106,7 +107,7 @@ export function useUpdateFlow(enabled: boolean) {
 
   /** React to our run's record. `servingVersion` is who answered. */
   const handleRecord = useCallback(
-    (rec: UpgradeStatusRecord, servingVersion: string) => {
+    (rec: UpgradeStatusRecord, servingVersion: string, inFlight?: boolean) => {
       setRecord(rec);
       switch (rec.phase) {
         case "restarting":
@@ -153,7 +154,9 @@ export function useUpdateFlow(enabled: boolean) {
         default:
           // Non-terminal but no longer live: the job died without a final
           // write (or never started). Say so instead of following it forever.
-          if (!isLiveRun(rec)) {
+          // Liveness is the server's call when it made one — a browser clock
+          // minutes off would otherwise misjudge it either way.
+          if (!(inFlight ?? isLiveRun(rec))) {
             setRecord({
               ...rec,
               phase: "failed",
@@ -162,7 +165,13 @@ export function useUpdateFlow(enabled: boolean) {
             setTracking("none");
             setReconnectStart(null);
             setView("failed");
+            return;
           }
+          // A live pre-restart phase answered: we're connected. A blip that
+          // put us in "reconnecting" must not keep its give-up clock running
+          // through a minutes-long build.
+          setReconnectStart(null);
+          setTracking("running");
           return;
       }
     },
@@ -181,7 +190,7 @@ export function useUpdateFlow(enabled: boolean) {
           baseline.current = s.status?.startedAt ?? null;
           interrupted.current = [];
           setTracking("armed");
-        } else if (isLiveRun(s.status)) {
+        } else if (s.inFlight ?? isLiveRun(s.status)) {
           baseline.current = null;
           setRecord(s.status);
           setTracking("running");
@@ -222,7 +231,7 @@ export function useUpdateFlow(enabled: boolean) {
             setView("updating");
           }
         }
-        if (isOurs(rec)) handleRecord(rec, s.current);
+        if (isOurs(rec)) handleRecord(rec, s.current, s.inFlight);
       } catch (err) {
         if (!alive) return;
         // Signed out (token rotated) while armed or running: stop polling a
@@ -264,7 +273,7 @@ export function useUpdateFlow(enabled: boolean) {
         });
         if (!alive) return;
         setUpgrade(s);
-        if (isOurs(s.status)) handleRecord(s.status, v.version);
+        if (isOurs(s.status)) handleRecord(s.status, v.version, s.inFlight);
       } catch (err) {
         if (!alive) return;
         if (is401(err)) {
@@ -320,14 +329,14 @@ export function useUpdateFlow(enabled: boolean) {
   }, [loadCheck]);
 
   const start = useCallback(
-    async (when: "idle" | "now") => {
+    async (when: "idle" | "now", expectedVersion?: string) => {
       setPending(true);
       setActionError(null);
       baseline.current = upgrade?.status?.startedAt ?? null;
       interrupted.current =
         when === "now" ? (upgrade?.busy ?? []).map((b) => b.name) : [];
       try {
-        const r = await systemApi.startUpgrade(when);
+        const r = await systemApi.startUpgrade(when, expectedVersion);
         if ("armed" in r) {
           setUpgrade((u) => (u ? { ...u, armed: r.armed } : u));
           setTracking("armed");
@@ -350,6 +359,12 @@ export function useUpdateFlow(enabled: boolean) {
         } else if (code === "NO_UPDATE") {
           setActionError("autonomOS is already up to date.");
           setView((v) => (v === "closed" ? "check" : v));
+        } else if (code === "VERSION_CHANGED") {
+          // A newer release appeared since the notes were shown: show ITS
+          // notes (the notes screen refetches on mount) before any install.
+          setActionError(errText(err));
+          useUpdateBus.getState().refreshVersion();
+          setView("notes");
         } else {
           setActionError(errText(err));
           setView((v) => (v === "closed" ? "check" : v));
@@ -368,6 +383,15 @@ export function useUpdateFlow(enabled: boolean) {
       setUpgrade((u) => (u ? { ...u, armed: null } : u));
       setTracking("none");
     } catch (err) {
+      if (err instanceof ApiError && err.code === "LAUNCHED") {
+        // The idle window closed first: the update is already running —
+        // follow it rather than pretend it was cancelled.
+        baseline.current = null;
+        setUpgrade((u) => (u ? { ...u, armed: null } : u));
+        setTracking("running");
+        setView("updating");
+        return;
+      }
       setActionError(`Couldn't cancel: ${errText(err)}`);
     }
   }, []);

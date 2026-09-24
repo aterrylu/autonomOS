@@ -57,22 +57,24 @@ describe("updateFlow helpers", () => {
   });
 
   it("picks the step list by install mode and maps phases onto it", () => {
+    // The snapshot comes right before the change — after download/verify (and
+    // the idle re-check), so it holds the state actually left.
     const bundle = stepsFor("bundle", "0.7.0", { snapshotId: "0.6.1-x" });
     expect(bundle.map((s) => s.id)).toEqual([
-      "snapshot",
       "download",
       "verify",
+      "snapshot",
       "install",
       "restart",
       "health",
       "reopen",
       "verify-agents",
     ]);
-    expect(bundle[0].detail).toContain("snapshots/0.6.1-x");
+    expect(bundle[2].detail).toContain("snapshots/0.6.1-x");
     const source = stepsFor("source", "0.7.0");
     expect(source.map((s) => s.id)).toEqual([
-      "snapshot",
       "fetch",
+      "snapshot",
       "build",
       "restart",
       "health",
@@ -85,9 +87,9 @@ describe("updateFlow helpers", () => {
       "reopen",
     ]);
     expect(activeStepIndex(bundle, "launching")).toBe(0);
-    expect(activeStepIndex(bundle, "snapshotting")).toBe(0);
-    expect(activeStepIndex(bundle, "downloading")).toBe(1);
-    expect(activeStepIndex(bundle, "verifying")).toBe(2);
+    expect(activeStepIndex(bundle, "downloading")).toBe(0);
+    expect(activeStepIndex(bundle, "verifying")).toBe(1);
+    expect(activeStepIndex(bundle, "snapshotting")).toBe(2);
     expect(activeStepIndex(source, "building")).toBe(2);
     expect(activeStepIndex(source, "health_check")).toBe(4);
     // done: agent check still pending until verification lands.
@@ -96,5 +98,21 @@ describe("updateFlow helpers", () => {
     // A list with no agent-check step (rollback) completes on done.
     const rb = stepsFor("rollback", "0.6.1");
     expect(activeStepIndex(rb, "done")).toBe(rb.length);
+  });
+
+  it("a wait-for-idle run shows the re-check as its own step, with the job's word", () => {
+    const steps = stepsFor("bundle", "0.7.0", {
+      waitIdle: true,
+      waitingMessage: "Waiting for api to finish",
+    });
+    expect(steps.map((s) => s.id).slice(0, 4)).toEqual([
+      "download",
+      "verify",
+      "wait",
+      "snapshot",
+    ]);
+    expect(steps[2].detail).toBe("Waiting for api to finish");
+    expect(activeStepIndex(steps, "waiting_idle")).toBe(2);
+    expect(stepsFor("source", "0.7.0", { waitIdle: true })[1].id).toBe("wait");
   });
 });

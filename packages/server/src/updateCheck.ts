@@ -302,3 +302,10 @@ export function _resetUpdateCheckForTesting(): void {
   stopUpdateCheck();
   state = { ...EMPTY_STATE };
 }
+
+/** Test hook — pin the cached check result. */
+export function _setUpdateCheckStateForTesting(
+  patch: Partial<UpdateCheckState>,
+): void {
+  state = { ...state, ...patch };
+}

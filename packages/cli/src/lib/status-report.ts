@@ -12,6 +12,7 @@
 // record (withTerminalStatus), or the dashboard would follow it forever.
 
 import {
+  acquireUpgradeLock,
   advanceUpgradeStatus,
   readUpgradeStatus,
   TERMINAL_PHASES,
@@ -55,6 +56,31 @@ export function makeReporter(
       }
     }
   };
+}
+
+/**
+ * Hold the cross-process upgrade lock for the whole run — a shell
+ * `autonomos upgrade` next to the in-app job (or two of either) would extract
+ * into the same `.new` dir or check out the same clone. Refuses, with the
+ * holder named, when another live run holds it.
+ */
+export async function withUpgradeLock(
+  verb: "upgrade" | "rollback",
+  report: Reporter,
+  run: () => Promise<number>,
+): Promise<number> {
+  const lock = acquireUpgradeLock(verb);
+  if (!lock.ok) {
+    const message = `Another ${lock.holder.verb === "rollback" ? "restore" : "update"} is already running (pid ${lock.holder.pid}, started ${lock.holder.startedAt || "earlier"}). Wait for it to finish.`;
+    report("failed", { message });
+    console.error(`✗ ${message}`);
+    return 1;
+  }
+  try {
+    return await run();
+  } finally {
+    lock.release();
+  }
 }
 
 /** Run a job body; if it throws before recording an outcome, record one. */

@@ -353,17 +353,22 @@ type NotesState =
 
 function NotesScreen({
   info,
+  notice,
   onLater,
   onContinue,
 }: {
   info: VersionInfo;
+  /** Why we're back here (e.g. a newer release appeared mid-flow). */
+  notice?: string | null;
   onLater: () => void;
   onContinue: () => void;
 }) {
   const page = usePage();
   const [notes, setNotes] = useState<NotesState>({ kind: "loading" });
 
+  // Refetch when the target moves (VERSION_CHANGED → new `latest`).
   useEffect(() => {
+    void info.latest;
     const ctrl = new AbortController();
     systemApi
       .releases({ signal: ctrl.signal })
@@ -382,7 +387,7 @@ function NotesScreen({
         if (!ctrl.signal.aborted) setNotes({ kind: "unavailable" });
       });
     return () => ctrl.abort();
-  }, []);
+  }, [info.latest]);
 
   const releases = notes.kind === "ok" ? notes.releases : [];
   const breaking = breakingReleases(releases);
@@ -416,6 +421,7 @@ function NotesScreen({
             <Spinner size={12} /> Loading release notes…
           </div>
         )}
+        {notice && <ErrorLine>{notice}</ErrorLine>}
         {notes.kind === "unavailable" && (
           <div
             className="text-xs"
@@ -557,6 +563,10 @@ interface AgentRow {
   status: string;
   provider?: string;
   busy: boolean;
+  /** Just spawned; its first task hasn't started yet. */
+  reason?: "first_task";
+  /** Background shell work a restart would stop (warn-only). */
+  background?: { pid: number; command: string }[];
 }
 
 function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
@@ -564,6 +574,9 @@ function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
   const statuses = useStore((s) => s.agentStatuses);
   return useMemo(() => {
     const busy = new Map((upgrade?.busy ?? []).map((b) => [b.id, b]));
+    const bg = new Map(
+      (upgrade?.background ?? []).map((b) => [b.id, b.processes]),
+    );
     const rows: AgentRow[] = sessions.map((s) => {
       const server = busy.get(s.id);
       const status = statuses[s.id]?.status ?? server?.status ?? "unknown";
@@ -573,12 +586,21 @@ function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
         status,
         provider: s.provider,
         busy: busy.has(s.id),
+        reason: server?.reason,
+        background: bg.get(s.id),
       };
     });
     // A busy agent the store doesn't know yet still has to be shown.
     for (const b of busy.values()) {
       if (!rows.some((r) => r.id === b.id)) {
-        rows.push({ id: b.id, name: b.name, status: b.status, busy: true });
+        rows.push({
+          id: b.id,
+          name: b.name,
+          status: b.status,
+          busy: true,
+          reason: b.reason,
+          background: bg.get(b.id),
+        });
       }
     }
     return [...rows.filter((r) => r.busy), ...rows.filter((r) => !r.busy)];
@@ -614,10 +636,27 @@ function AgentList({ rows }: { rows: AgentRow[] }) {
             />
             <span className="w-32 shrink-0 truncate font-medium">{r.name}</span>
             <span className="w-24 shrink-0" style={{ color }}>
-              {agentStatusLabel(r.status as AgentStatus) || "Unknown"}
+              {r.reason === "first_task"
+                ? "Starting"
+                : agentStatusLabel(r.status as AgentStatus) || "Unknown"}
             </span>
-            <span className="min-w-0" style={{ color: page.statusFg }}>
-              {consequenceFor(r.status, r.provider)}
+            <span
+              className="min-w-0 flex flex-col"
+              style={{ color: page.statusFg }}
+            >
+              <span>
+                {r.reason === "first_task"
+                  ? "Its first task hasn't started yet — it would be lost"
+                  : consequenceFor(r.status, r.provider)}
+              </span>
+              {r.background && r.background.length > 0 && (
+                <span
+                  style={{ color: AMBER }}
+                  data-testid="update-agent-background"
+                >
+                  {backgroundLine(r.background)}
+                </span>
+              )}
             </span>
           </li>
         );
@@ -697,14 +736,51 @@ function Radio({
   );
 }
 
+/** "1 background process will be stopped: npm run dev". */
+function backgroundLine(procs: { command: string }[]): string {
+  const n = procs.length;
+  return `${n} background process${n === 1 ? "" : "es"} will be stopped: ${procs
+    .map((p) => p.command)
+    .join(" · ")}`;
+}
+
+/** Warn-only: agents that read idle but left work running in a background
+ *  shell, which the restart stops. Never blocks the update. */
+function BackgroundWarning({ rows }: { rows: AgentRow[] }) {
+  const withBg = rows.filter((r) => r.background && r.background.length > 0);
+  if (withBg.length === 0) return null;
+  return (
+    <div
+      className="flex flex-col gap-1 rounded-md px-3 py-2 text-xs"
+      style={{ border: `1px solid ${AMBER}55`, background: `${AMBER}12` }}
+      data-testid="update-background-warning"
+    >
+      {withBg.map((r) => (
+        <div key={r.id}>
+          <span className="font-semibold" style={{ color: AMBER }}>
+            {r.name}:
+          </span>{" "}
+          {backgroundLine(r.background ?? [])}.
+        </div>
+      ))}
+      <div>
+        The update restarts it — start it again after if you still need it.
+      </div>
+    </div>
+  );
+}
+
 /** "Interrupts a and b mid-task and dismisses c's question." */
 function interruptSummary(rows: AgentRow[]): string {
   const busy = rows.filter((r) => r.busy);
   const asking = busy
     .filter((r) => r.status === "needs_input")
     .map((r) => r.name);
+  const starting = busy
+    .filter((r) => r.reason === "first_task")
+    .map((r) => r.name);
   const working = busy
-    .filter((r) => r.status !== "needs_input")
+    .filter((r) => r.status !== "needs_input" && r.reason !== "first_task")
     .map((r) => r.name);
   const parts: string[] = [];
   if (working.length) parts.push(`Interrupts ${joinNames(working)} mid-task`);
@@ -714,6 +790,13 @@ function interruptSummary(rows: AgentRow[]): string {
         ? `${asking[0]}'s question`
         : `the questions from ${joinNames(asking)}`;
     parts.push(`${working.length ? "dismisses" : "Dismisses"} ${who}`);
+  }
+  if (starting.length) {
+    const whose =
+      starting.length === 1
+        ? `${starting[0]}'s first task`
+        : `the first tasks of ${joinNames(starting)}`;
+    parts.push(`${parts.length ? "loses" : "Loses"} ${whose}`);
   }
   return `${parts.join(" and ")}. Files they already wrote stay on disk.`;
 }
@@ -799,6 +882,7 @@ function CheckScreen({ info, flow }: { info: VersionInfo; flow: UpdateFlow }) {
               together
             </dd>
           </dl>
+          <BackgroundWarning rows={rows} />
           {actionError && <ErrorLine>{actionError}</ErrorLine>}
         </div>
         <Footer>
@@ -806,7 +890,7 @@ function CheckScreen({ info, flow }: { info: VersionInfo; flow: UpdateFlow }) {
           <Button
             kind="primary"
             disabled={pending}
-            onClick={() => void flow.start("now")}
+            onClick={() => void flow.start("now", info.latest)}
             data-testid="update-start"
           >
             Update to v{info.latest}
@@ -860,7 +944,7 @@ function CheckScreen({ info, flow }: { info: VersionInfo; flow: UpdateFlow }) {
         <Button
           kind={when === "now" ? "danger" : "primary"}
           disabled={pending}
-          onClick={() => void flow.start(when)}
+          onClick={() => void flow.start(when, info.latest)}
           data-testid="update-start"
         >
           {when === "idle" ? "Wait, then update" : "Update now"}
@@ -952,8 +1036,22 @@ function UpdatingScreen({
   const steps = stepsFor(rollback ? "rollback" : mode, to, {
     asset,
     snapshotId: rec?.snapshotId,
+    waitIdle: rec?.waitIdle,
+    waitingMessage: rec?.phase === "waiting_idle" ? rec.message : undefined,
   });
-  const active = activeStepIndex(steps, rec?.phase, !!rec?.verification);
+  // Monotonic within a run: a source job re-checks idle and refreshes its
+  // snapshot AFTER the build — that must not walk the list backwards.
+  const furthest = useRef<{ run: string | undefined; i: number }>({
+    run: undefined,
+    i: 0,
+  });
+  const computed = activeStepIndex(steps, rec?.phase, !!rec?.verification);
+  if (furthest.current.run !== rec?.startedAt) {
+    furthest.current = { run: rec?.startedAt, i: computed };
+  } else if (computed > furthest.current.i) {
+    furthest.current.i = computed;
+  }
+  const active = furthest.current.i;
   return (
     <>
       <Header
@@ -1305,6 +1403,7 @@ export function UpdateDialog({
       {flow.view === "notes" && (
         <NotesScreen
           info={info}
+          notice={flow.actionError}
           onLater={flow.close}
           onContinue={flow.goCheck}
         />

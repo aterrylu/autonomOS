@@ -13,7 +13,10 @@
 // which is the safe direction (the operator re-arms; nothing updates behind
 // their back after a crash).
 
+import { renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentActivityStatus } from "@autonomos/core";
+import { isPromptPending } from "./agents/promptDelivery.js";
 import { getAgentProcessRoots } from "./agents/runtime.js";
 import { listAgents } from "./agents/store.js";
 import {
@@ -21,8 +24,14 @@ import {
   findBackgroundProcs,
   listProcesses,
 } from "./backgroundProcs.js";
+import { getConfigDir } from "./configDir.js";
 import { getAgentState } from "./routes/hooks.js";
 import { type LaunchResult, launchUpgradeJob } from "./upgradeJob.js";
+import {
+  type FleetReport,
+  upgradeFleetPath,
+  upgradeJobRunning,
+} from "./upgradeStatus.js";
 
 export const IDLE_WINDOW_MS = 30_000;
 const TICK_MS = 2_000;
@@ -40,14 +49,47 @@ export type BusyAgent = {
   id: string;
   name: string;
   status: AgentActivityStatus;
+  /** "first_task": just spawned with a prompt that hasn't started yet. Its
+   *  status still reads unknown/ready, but a restart now would lose the task
+   *  (the argv prompt isn't re-sent on resume). */
+  reason?: "first_task";
 };
 
-export function listBusyAgents(): BusyAgent[] {
+/** A just-started agent whose status is still unknown is treated as busy for
+ *  this long — the fallback for providers with no prompt-delivery receipt
+ *  (Codex): ADR-074 measured argv prompts taking >40s to submit under load. */
+export const FIRST_TASK_GRACE_MS = 90_000;
+
+/** Why an agent would be interrupted by a restart now; null = it wouldn't.
+ *  Pure — the inputs are read by listBusyAgents. */
+export function busyReason(
+  status: AgentActivityStatus,
+  promptPending: boolean,
+  startedAt: number | undefined,
+  nowWall: number,
+): "status" | "first_task" | null {
+  if (BUSY_STATUSES.has(status)) return "status";
+  if (promptPending) return "first_task";
+  if (
+    status === "unknown" &&
+    typeof startedAt === "number" &&
+    nowWall - startedAt < FIRST_TASK_GRACE_MS
+  ) {
+    return "first_task";
+  }
+  return null;
+}
+
+export function listBusyAgents(nowWall = Date.now()): BusyAgent[] {
   const out: BusyAgent[] = [];
   for (const a of listAgents()) {
     if (a.status !== "running") continue;
     const s = getAgentState(a.id).status;
-    if (BUSY_STATUSES.has(s)) out.push({ id: a.id, name: a.name, status: s });
+    const why = busyReason(s, isPromptPending(a.id), a.startedAt, nowWall);
+    if (why === "status") out.push({ id: a.id, name: a.name, status: s });
+    else if (why === "first_task") {
+      out.push({ id: a.id, name: a.name, status: s, reason: "first_task" });
+    }
   }
   return out;
 }
@@ -101,14 +143,22 @@ export function getArmedUpgrade(): ArmedState | null {
 type Deps = {
   busy?: () => BusyAgent[];
   launch?: (target: string) => LaunchResult;
+  /** Monotonic ms — the idle window must not jump with the wall clock (NTP
+   *  steps, suspend/resume). */
   now?: () => number;
+  /** A job already running (in-app or `autonomos upgrade` from a shell). */
+  inFlight?: () => boolean;
 };
 const DEFAULT_DEPS: Required<Deps> = {
-  busy: listBusyAgents,
-  launch: (t) => launchUpgradeJob(t),
-  now: () => Date.now(),
+  busy: () => listBusyAgents(),
+  launch: (t) => launchUpgradeJob(t, { waitIdle: true }),
+  now: () => performance.now(),
+  inFlight: () => upgradeJobRunning(),
 };
 let deps: Required<Deps> = { ...DEFAULT_DEPS };
+/** Monotonic start of the current idle stretch (armed.idleSince is its
+ *  wall-clock rendering, for display only). */
+let idleSinceMono: number | null = null;
 
 /** One scheduler step. Exported for tests (drive time explicitly). */
 export function tickArmedUpgrade(): LaunchResult | null {
@@ -116,13 +166,18 @@ export function tickArmedUpgrade(): LaunchResult | null {
   const now = deps.now();
   if (deps.busy().length > 0) {
     armed.idleSince = null;
+    idleSinceMono = null;
     return null;
   }
-  if (armed.idleSince === null) {
-    armed.idleSince = new Date(now).toISOString();
+  if (idleSinceMono === null) {
+    idleSinceMono = now;
+    armed.idleSince = new Date().toISOString();
     return null;
   }
-  if (now - Date.parse(armed.idleSince) < IDLE_WINDOW_MS) return null;
+  if (now - idleSinceMono < IDLE_WINDOW_MS) return null;
+  // Never a second job next to a running one (a shell `autonomos upgrade`,
+  // a Restore): wait it out; the run that follows sees whether it's needed.
+  if (deps.inFlight()) return null;
   const target = armed.target;
   disarmUpgrade();
   return deps.launch(target);
@@ -131,9 +186,10 @@ export function tickArmedUpgrade(): LaunchResult | null {
 export function armUpgrade(target: string): ArmedState {
   armed = {
     target,
-    armedAt: new Date(deps.now()).toISOString(),
+    armedAt: new Date().toISOString(),
     idleSince: null,
   };
+  idleSinceMono = null;
   if (!timer) {
     timer = setInterval(() => {
       try {
@@ -154,6 +210,7 @@ export function armUpgrade(target: string): ArmedState {
 
 export function disarmUpgrade(): void {
   armed = null;
+  idleSinceMono = null;
   if (timer) {
     clearInterval(timer);
     timer = undefined;
@@ -165,5 +222,55 @@ export function _setSchedulerDepsForTesting(d: Deps): void {
 }
 export function _resetSchedulerForTesting(): void {
   disarmUpgrade();
+  fleetIdleSinceMono = null;
   deps = { ...DEFAULT_DEPS };
+}
+
+// ── fleet report for the running job ────────────────────────────────────────
+//
+// "Wait for idle" is judged at launch, but a bundle download takes seconds
+// and a source build minutes — and the old daemon keeps taking turns until
+// the restart. So while a job is in flight the daemon publishes the fleet's
+// state to a file the job re-checks right before its irreversible step
+// (cli lib/restart-gate.ts). Only the daemon knows agent status; the job
+// deliberately holds no token to ask it over HTTP.
+
+let fleetIdleSinceMono: number | null = null;
+let fleetTimer: NodeJS.Timeout | undefined;
+
+/** One report step. Exported for tests. */
+export function writeFleetReport(
+  path = upgradeFleetPath(),
+  now = deps.now(),
+): FleetReport | null {
+  if (!deps.inFlight()) {
+    fleetIdleSinceMono = null;
+    return null;
+  }
+  const busy = deps.busy();
+  if (busy.length > 0) fleetIdleSinceMono = null;
+  else if (fleetIdleSinceMono === null) fleetIdleSinceMono = now;
+  const report: FleetReport = {
+    at: new Date().toISOString(),
+    idleForMs: fleetIdleSinceMono === null ? null : now - fleetIdleSinceMono,
+    busy,
+  };
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(report));
+  renameSync(tmp, path);
+  return report;
+}
+
+export function startFleetReporter(): void {
+  if (fleetTimer) return;
+  fleetTimer = setInterval(() => {
+    try {
+      writeFleetReport();
+    } catch (err) {
+      console.warn(
+        `[upgrade] fleet report failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }, TICK_MS);
+  fleetTimer.unref();
 }

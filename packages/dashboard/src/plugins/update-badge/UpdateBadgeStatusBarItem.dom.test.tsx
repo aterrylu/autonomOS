@@ -363,7 +363,8 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
 
     fireEvent.click(screen.getByTestId("update-start"));
     const armed = await screen.findByTestId("update-badge-armed");
-    expect(posted).toEqual({ when: "idle" });
+    // The version whose notes were shown rides along (R11).
+    expect(posted).toEqual({ when: "idle", expectedVersion: "0.7.0" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(armed.textContent).toContain("Update to v0.7.0 waiting on 3 agents");
   });
@@ -504,7 +505,9 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
       });
     };
     await launch();
-    await waitFor(() => expect(posted).toEqual({ when: "now" }));
+    await waitFor(() =>
+      expect(posted).toEqual({ when: "now", expectedVersion: "0.7.0" }),
+    );
     expect(await screen.findByText("Updating to v0.7.0")).toBeInTheDocument();
     await waitFor(() =>
       expect(
@@ -709,7 +712,7 @@ describe("UpdateBadgeStatusBarItem — snapshots (ADR-105 amendment)", () => {
     ).toBeInTheDocument();
   });
 
-  it("starts the step list with Save snapshot (showing its id) and ends with Verify agents", async () => {
+  it("shows Save snapshot (with its id) right before Install, and ends with Verify agents", async () => {
     installServer();
     let posted = false;
     routes["POST /api/system/upgrade"] = () => {
@@ -745,7 +748,7 @@ describe("UpdateBadgeStatusBarItem — snapshots (ADR-105 amendment)", () => {
     const ids = [...steps.querySelectorAll("[data-step]")].map((li) =>
       li.getAttribute("data-step"),
     );
-    expect(ids[0]).toBe("snapshot");
+    expect(ids.indexOf("snapshot")).toBe(ids.indexOf("install") - 1);
     expect(ids[ids.length - 1]).toBe("verify-agents");
   });
 
@@ -921,5 +924,168 @@ describe("UpdateBadgeStatusBarItem — Restore", () => {
     expect((await screen.findByTestId("update-command")).textContent).toBe(
       "autonomos rollback",
     );
+  });
+});
+
+describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () => {
+  it("warns about background work an idle-looking agent would lose (never blocks)", async () => {
+    useStore.setState({ sessions: [session("a", "api-refactor")] });
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          background: [
+            {
+              id: "a",
+              name: "api-refactor",
+              processes: [{ pid: 42, command: "npm run dev" }],
+            },
+          ],
+        }),
+    });
+    await openToCheck();
+    const warn = await screen.findByTestId("update-background-warning");
+    expect(warn.textContent).toContain(
+      "api-refactor: 1 background process will be stopped: npm run dev",
+    );
+    // Warn-only: the update stays one click away.
+    expect(screen.getByTestId("update-start")).not.toBeDisabled();
+  });
+
+  it("an agent whose first task hasn't started reads 'Starting' and counts as mid-task", async () => {
+    useStore.setState({
+      sessions: [session("a", "new-worker")],
+      agentStatuses: { a: { status: "ready" } },
+    });
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          busy: [
+            {
+              id: "a",
+              name: "new-worker",
+              status: "ready",
+              reason: "first_task",
+            },
+          ],
+        }),
+    });
+    await openToCheck();
+    expect(await screen.findByText("1 agent is mid-task")).toBeInTheDocument();
+    const row = screen.getAllByTestId("update-agent-row")[0];
+    expect(row.textContent).toContain("Starting");
+    expect(row.textContent).toContain("first task hasn't started");
+  });
+
+  it("R4: a cancel that lost the race to the launch follows the running update", async () => {
+    useStore.setState({ sessions: [session("a", "api-refactor")] });
+    let armedPosted = false;
+    let launched = false;
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          // The poll never reveals the launch (it lags the DELETE): only the
+          // 409 LAUNCHED answer itself can move the tab to the progress view.
+          busy: [{ id: "a", name: "api-refactor", status: "working" }],
+          armed: !armedPosted
+            ? null
+            : {
+                target: "0.7.0",
+                armedAt: "2026-09-23T10:00:00Z",
+                idleSince: null,
+              },
+          status: null,
+        }),
+      "POST /api/system/upgrade": () => {
+        armedPosted = true;
+        return json({
+          ok: true,
+          armed: {
+            target: "0.7.0",
+            armedAt: "2026-09-23T10:00:00Z",
+            idleSince: null,
+          },
+        });
+      },
+      "DELETE /api/system/upgrade": () => {
+        launched = true; // the idle tick won the race
+        return json(
+          {
+            error: "The update already started and can't be cancelled.",
+            code: "LAUNCHED",
+          },
+          409,
+        );
+      },
+    });
+    await openToCheck();
+    fireEvent.click(await screen.findByTestId("update-start"));
+    fireEvent.click(await screen.findByTestId("update-armed-cancel"));
+    expect(await screen.findByTestId("update-steps")).toBeInTheDocument();
+    expect(launched).toBe(true);
+    expect(screen.queryByText(/Couldn't cancel/)).toBeNull();
+  });
+
+  it("R11: a newer release mid-flow goes back to What's new, says why, and asks for the NEW version", async () => {
+    const bodies: unknown[] = [];
+    let latest = "0.7.0";
+    installServer({
+      "GET /api/system/version": () => json({ ...VERSION, latest }),
+      "POST /api/system/upgrade": (init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        latest = "0.7.1";
+        return json(
+          {
+            error:
+              "A newer release (v0.7.1) appeared since you opened this. Review its notes first.",
+            code: "VERSION_CHANGED",
+            latest: "0.7.1",
+          },
+          409,
+        );
+      },
+    });
+    await openToCheck();
+    fireEvent.click(await screen.findByTestId("update-start"));
+    expect(
+      await screen.findByText(/A newer release \(v0\.7\.1\) appeared/),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("What's new in v0.7.1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(await screen.findByTestId("update-start"));
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toMatchObject({ expectedVersion: "0.7.1" });
+  });
+
+  it("R9: the server's inFlight wins over a browser clock that thinks the run is stale", async () => {
+    let posted = false;
+    installServer({
+      "POST /api/system/upgrade": () => {
+        posted = true;
+        return json({ ok: true, launched: true });
+      },
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          status: posted
+            ? {
+                phase: "building",
+                from: "0.6.1",
+                to: "0.7.0",
+                startedAt: "2026-09-23T10:00:00.000Z",
+                // 20 minutes old by the browser's (skewed) clock…
+                updatedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+              }
+            : null,
+          inFlight: posted, // …but the server, which wrote it, says live.
+        }),
+    });
+    await openToCheck();
+    fireEvent.click(await screen.findByTestId("update-start"));
+    expect(await screen.findByTestId("update-steps")).toBeInTheDocument();
+    await act(() => new Promise((r) => setTimeout(r, 80)));
+    expect(screen.queryByText(/stopped reporting/)).toBeNull();
   });
 });

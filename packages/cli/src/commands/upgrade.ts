@@ -48,18 +48,21 @@ import {
   performUpgrade,
   resolveReleaseOverrides,
 } from "@autonomos/server/upgrade.js";
+import { upgradeFleetPath } from "@autonomos/server/upgradeStatus.js";
 import { getServerVersion } from "@autonomos/server/version.js";
 import {
   expectedVersionAfterSwap,
   restartDaemonAfterSwap,
   syncSupervisorUnit,
 } from "../lib/apply-bundle.js";
+import { readFleetReport, waitForIdleFleet } from "../lib/restart-gate.js";
 import { restoreStateFor } from "../lib/state-pair.js";
 import {
   makeReporter,
   type Reporter,
   statusFileArg,
   withTerminalStatus,
+  withUpgradeLock,
 } from "../lib/status-report.js";
 
 /**
@@ -88,6 +91,40 @@ function takeSnapshot(
   }
 }
 
+const IDLE_WINDOW_MS = 30_000;
+/** Before the swap/checkout nothing has changed yet, so giving up is clean. */
+const GATE_CAP_BEFORE_CHANGE_MS = 15 * 60_000;
+/** After a source build the code on disk already moved; wait less, then go. */
+const GATE_CAP_AFTER_BUILD_MS = 5 * 60_000;
+
+async function idleGate(
+  flags: UpgradeFlags,
+  report: Reporter,
+  capMs: number,
+): Promise<{ ok: true } | { ok: false; names: string; minutes: number }> {
+  if (!flags.waitIdle) return { ok: true };
+  const r = await waitForIdleFleet({
+    readFleet: () => readFleetReport(upgradeFleetPath()),
+    windowMs: IDLE_WINDOW_MS,
+    capMs,
+    onWaiting: (busy) => {
+      const names = busy.map((b) => b.name).join(", ");
+      report("waiting_idle", {
+        message: names
+          ? `Waiting for ${names} to finish`
+          : "Waiting for every agent to be idle for 30 seconds",
+      });
+      console.log(`… waiting for idle${names ? ` (${names})` : ""}`);
+    },
+  });
+  if (r.ok) return { ok: true };
+  return {
+    ok: false,
+    names: r.busy.map((b) => b.name).join(", ") || "agents",
+    minutes: Math.round(capMs / 60_000),
+  };
+}
+
 type UpgradeFlags = {
   targetVersion: string | undefined;
   /**
@@ -96,13 +133,19 @@ type UpgradeFlags = {
    * run — then every report below is a no-op.
    */
   statusFile: string | undefined;
+  /** "Wait for idle" (ADR-105): re-check the fleet right before the
+   *  irreversible step. Passed by the idle scheduler's launch. */
+  waitIdle: boolean;
 };
 
 function parseFlags(argv: readonly string[]): UpgradeFlags {
   let targetVersion: string | undefined;
   let statusFile: string | undefined;
+  let waitIdle = false;
   for (const a of argv) {
-    if (a.startsWith("--status-file=")) {
+    if (a === "--wait-idle") {
+      waitIdle = true;
+    } else if (a.startsWith("--status-file=")) {
       statusFile = a.slice("--status-file=".length);
     } else if (a.startsWith("--version=")) {
       targetVersion = a.slice("--version=".length);
@@ -116,7 +159,7 @@ function parseFlags(argv: readonly string[]): UpgradeFlags {
   }
   // Accept both "0.4.0" and "v0.4.0" — the release tag adds the v itself.
   if (targetVersion?.startsWith("v")) targetVersion = targetVersion.slice(1);
-  return { targetVersion, statusFile };
+  return { targetVersion, statusFile, waitIdle };
 }
 
 /**
@@ -145,8 +188,9 @@ async function runSourceUpgradeFlow(
       : "Fetching release tags...",
   );
 
-  const snapshot = takeSnapshot(currentVersion, flags.targetVersion, report);
-  if (!snapshot) return 1;
+  // Taken at the last moment before anything changes (beforeCheckout), and
+  // refreshed after the build — the daemon keeps writing records meanwhile.
+  const snap: { current: SnapshotManifest | null } = { current: null };
   let touched = false;
   report("fetching", { from: currentVersion });
   const result = await performSourceUpgrade({
@@ -158,10 +202,26 @@ async function runSourceUpgradeFlow(
       touched = true; // "building" follows the checkout
       report(p);
     },
+    beforeCheckout: async () => {
+      const gate = await idleGate(flags, report, GATE_CAP_BEFORE_CHANGE_MS);
+      if (!gate.ok) {
+        return {
+          proceed: false,
+          message: `${gate.names} stayed busy for ${gate.minutes} minutes, so nothing was changed. Try again when they're idle, or choose Update now.`,
+        };
+      }
+      snap.current = takeSnapshot(currentVersion, flags.targetVersion, report);
+      return snap.current
+        ? { proceed: true }
+        : {
+            proceed: false,
+            message:
+              "Couldn't save a snapshot of your agents' state, so nothing was changed.",
+          };
+    },
   });
 
   if (result.status === "up-to-date") {
-    deleteSnapshot(snapshot.id); // nothing changed — don't churn retention
     report("up_to_date");
     console.log(`✓ Already on the latest version (${result.version}).`);
     // Still self-heal unit-template drift — an install can be current on
@@ -170,17 +230,41 @@ async function runSourceUpgradeFlow(
     return 0;
   }
   if (result.status === "error") {
-    // Failed before the install step (release missing, download or checksum
-    // failed): nothing on disk changed, so the snapshot would only be a
-    // duplicate Restore row. Past that step, keep it — the swap may have run.
-    if (!touched) deleteSnapshot(snapshot.id);
+    // Failed before the checkout: nothing on disk changed, so a snapshot
+    // would only be a duplicate Restore row. Past it, keep it.
+    const dropped = !touched && snap.current !== null;
+    if (dropped && snap.current) deleteSnapshot(snap.current.id);
     report("failed", {
       message: result.message,
-      ...(!touched && { snapshotId: undefined }),
+      ...((dropped || !snap.current) && { snapshotId: undefined }),
     });
     console.error(`✗ Upgrade failed: ${result.message}`);
     return 1;
   }
+  if (!snap.current) {
+    // Unreachable: the checkout only happens after beforeCheckout took it.
+    throw new Error("updated without a state snapshot");
+  }
+
+  // The build took minutes and the old daemon kept taking turns: re-check
+  // idle, then refresh the snapshot so it holds the state actually left.
+  const gate2 = await idleGate(flags, report, GATE_CAP_AFTER_BUILD_MS);
+  if (!gate2.ok) {
+    console.warn(
+      `⚠️  ${gate2.names} still busy after ${gate2.minutes} more minutes; restarting anyway (the new code is already built).`,
+    );
+  }
+  try {
+    const fresh = createSnapshot(currentVersion, result.to);
+    deleteSnapshot(snap.current.id);
+    snap.current = fresh;
+    report("snapshotting", { snapshotId: fresh.id });
+  } catch (err) {
+    console.warn(
+      `⚠️  Couldn't refresh the state snapshot (${err instanceof Error ? err.message : err}); keeping the one taken before the build.`,
+    );
+  }
+  const snapshot = snap.current;
 
   // Something changed on disk: only now is this snapshot worth a retention
   // slot (pruning at creation evicted a real one per no-op or failed try).
@@ -290,8 +374,11 @@ async function runSourceUpgradeFlow(
 export async function runUpgradeCommand(
   argv: readonly string[] = [],
 ): Promise<number> {
-  return withTerminalStatus(statusFileArg(argv), { kind: "upgrade" }, () =>
-    upgradeCommand(argv),
+  const statusFile = statusFileArg(argv);
+  return withTerminalStatus(statusFile, { kind: "upgrade" }, () =>
+    withUpgradeLock("upgrade", makeReporter(statusFile), () =>
+      upgradeCommand(argv),
+    ),
   );
 }
 
@@ -329,8 +416,9 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
 
   const platform = detectPlatform();
   const currentVersion = getServerVersion();
-  const snapshot = takeSnapshot(currentVersion, flags.targetVersion, report);
-  if (!snapshot) return 1;
+  // Taken at the last moment before the swap (beforeSwap), after the idle
+  // re-check — it must hold the state actually being left.
+  const snap: { current: SnapshotManifest | null } = { current: null };
   let touched = false;
   console.log(`Current version: ${currentVersion}`);
   console.log(
@@ -351,10 +439,26 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       if (p === "installing") touched = true;
       report(p);
     },
+    beforeSwap: async () => {
+      const gate = await idleGate(flags, report, GATE_CAP_BEFORE_CHANGE_MS);
+      if (!gate.ok) {
+        return {
+          proceed: false,
+          message: `${gate.names} stayed busy for ${gate.minutes} minutes, so nothing was changed. Try again when they're idle, or choose Update now.`,
+        };
+      }
+      snap.current = takeSnapshot(currentVersion, flags.targetVersion, report);
+      return snap.current
+        ? { proceed: true }
+        : {
+            proceed: false,
+            message:
+              "Couldn't save a snapshot of your agents' state, so nothing was changed.",
+          };
+    },
   });
 
   if (result.status === "up-to-date") {
-    deleteSnapshot(snapshot.id); // nothing changed — don't churn retention
     report("up_to_date");
     console.log(`✓ Already on the latest version (${result.version}).`);
     // Same self-heal as the source flow: current code, install-day unit.
@@ -362,16 +466,21 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
     return 0;
   }
   if (result.status === "error") {
-    // Failed before the install step (release missing, download or checksum
-    // failed): nothing on disk changed, so the snapshot would only be a
-    // duplicate Restore row. Past that step, keep it — the swap may have run.
-    if (!touched) deleteSnapshot(snapshot.id);
+    // Failed before the swap: nothing on disk changed, so a snapshot would
+    // only be a duplicate Restore row. Past it, keep it.
+    const dropped = !touched && snap.current !== null;
+    if (dropped && snap.current) deleteSnapshot(snap.current.id);
     report("failed", {
       message: result.message,
-      ...(!touched && { snapshotId: undefined }),
+      ...((dropped || !snap.current) && { snapshotId: undefined }),
     });
     console.error(`✗ Upgrade failed: ${result.message}`);
     return 1;
+  }
+  const snapshot = snap.current;
+  if (!snapshot) {
+    // Unreachable: the swap only happens after beforeSwap took it.
+    throw new Error("updated without a state snapshot");
   }
 
   // Something changed on disk: only now is this snapshot worth a retention

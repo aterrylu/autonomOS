@@ -26,6 +26,7 @@ import { listSnapshots, type SnapshotAgent } from "./snapshots.js";
 import {
   advanceUpgradeStatus,
   readUpgradeStatus,
+  type UpgradeStatusRecord,
   type UpgradeVerification,
   upgradeStatusPath,
 } from "./upgradeStatus.js";
@@ -80,9 +81,34 @@ export function verifyAgainstBaseline(
 
 const POLL_MS = 3_000;
 const WAIT_FOR_DONE_MS = 3 * 60_000;
-// Agents resume at boot; a failed resume exits within seconds. Give that
-// time to surface before judging "running again".
-const SETTLE_MS = 20_000;
+/** Mutable so tests can shrink the waits. */
+export const verifyTiming = {
+  /** Resume is sequential per agent (sidecars first); bounded so a hung
+   *  resume still gets a verdict. */
+  resumeWaitMs: 3 * 60_000,
+  /** After resume returns, a failed resume still needs a moment to exit and
+   *  be marked (Codex "died immediately" lands within ~1s; give it room). */
+  settleMs: 10_000,
+};
+
+let markResumed: () => void = () => {};
+let resumed: Promise<void> = new Promise((r) => {
+  markResumed = r;
+});
+/** Called once boot's resumeActiveAgents() has settled (run.ts). */
+export function noteAgentsResumed(): void {
+  markResumed();
+}
+/** Test seam: a fresh, unresolved resume signal. */
+export function _resetResumeSignalForTesting(): void {
+  resumed = new Promise((r) => {
+    markResumed = r;
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms).unref());
+}
 
 export function startPostUpgradeVerification(): void {
   const path = upgradeStatusPath();
@@ -109,39 +135,66 @@ export function startPostUpgradeVerification(): void {
       return;
     }
     clearInterval(poll);
-    const t = setTimeout(() => {
-      try {
-        const snap = listSnapshots().find((s) => s.id === rec.snapshotId);
-        const baseline = snap?.agents ?? [];
-        const problems = snap
-          ? verifyAgainstBaseline(baseline, listAgents())
-          : [
-              {
-                id: "-",
-                name: "snapshot",
-                issue: "The pre-update snapshot could not be read",
-              },
-            ];
-        advanceUpgradeStatus(path, {
-          phase: "done",
-          verification: {
-            checkedAt: new Date().toISOString(),
-            checked: baseline.length,
-            problems,
-          },
-        });
-        if (problems.length) {
-          console.warn(
-            `[upgrade] post-update verification: ${problems.length} agent(s) need attention — ${problems.map((p) => `${p.name}: ${p.issue}`).join("; ")}`,
-          );
-        }
-      } catch (err) {
-        console.warn(
-          `[upgrade] post-update verification failed to run: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    }, SETTLE_MS);
-    t.unref();
+    void verifyRun(path, rec);
   }, POLL_MS);
   poll.unref();
+}
+
+/** Judge one finished run once its agents have actually been resumed. */
+export async function verifyRun(
+  path: string,
+  rec: UpgradeStatusRecord,
+): Promise<void> {
+  const timedOut = await Promise.race([
+    resumed.then(() => false),
+    sleep(verifyTiming.resumeWaitMs).then(() => true),
+  ]);
+  if (timedOut) {
+    console.warn(
+      "[upgrade] agents were still resuming after 3 minutes; verifying anyway",
+    );
+  }
+  await sleep(verifyTiming.settleMs);
+  try {
+    // Only annotate THE SAME finished run: in the meantime the operator may
+    // have started a Restore, whose fresh record must not be merged into
+    // (or marked "done" by) this verdict.
+    const current = readUpgradeStatus(path);
+    if (
+      !current ||
+      current.startedAt !== rec.startedAt ||
+      current.phase !== "done" ||
+      current.verification
+    ) {
+      return;
+    }
+    const snap = listSnapshots().find((s) => s.id === rec.snapshotId);
+    const baseline = snap?.agents ?? [];
+    const problems = snap
+      ? verifyAgainstBaseline(baseline, listAgents())
+      : [
+          {
+            id: "-",
+            name: "snapshot",
+            issue: "The pre-update snapshot could not be read",
+          },
+        ];
+    advanceUpgradeStatus(path, {
+      phase: "done",
+      verification: {
+        checkedAt: new Date().toISOString(),
+        checked: baseline.length,
+        problems,
+      },
+    });
+    if (problems.length) {
+      console.warn(
+        `[upgrade] post-update verification: ${problems.length} agent(s) need attention — ${problems.map((p) => `${p.name}: ${p.issue}`).join("; ")}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[upgrade] post-update verification failed to run: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }

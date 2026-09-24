@@ -131,6 +131,16 @@ export type UpgradeOptions = {
    * contract — a throwing callback must never fail the upgrade.
    */
   onPhase?: (phase: "downloading" | "verifying" | "installing") => void;
+  /**
+   * Last check before the irreversible swap — the new bundle is downloaded,
+   * verified and extracted, the live one untouched. The in-app job waits for
+   * idle and takes its state snapshot here (ADR-105). Returning
+   * `{ proceed: false }` removes the extracted bundle and reports an error;
+   * nothing on disk has changed.
+   */
+  beforeSwap?: () => Promise<
+    { proceed: true } | { proceed: false; message: string }
+  >;
 };
 
 function reportPhase<P>(cb: ((p: P) => void) | undefined, phase: P): void {
@@ -300,6 +310,14 @@ export async function performUpgrade(
       installedBy: "upgrade",
       installedAt: new Date().toISOString(),
     });
+
+    if (opts.beforeSwap) {
+      const go = await opts.beforeSwap();
+      if (!go.proceed) {
+        rmSync(newDir, { recursive: true, force: true });
+        return { status: "error", message: go.message };
+      }
+    }
 
     // ── atomic swap (current → previous, new → current)
     reportPhase(opts.onPhase, "installing");

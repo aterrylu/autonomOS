@@ -44,8 +44,10 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 function useUpdateAvailable(): Known | null {
   const [info, setInfo] = useState<Known | null>(null);
+  const versionNonce = useUpdateBus((s) => s.versionNonce);
 
   useEffect(() => {
+    void versionNonce; // re-poll now when the flow learns `latest` moved
     let mounted = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -89,7 +91,7 @@ function useUpdateAvailable(): Known | null {
       mounted = false;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [versionNonce]);
 
   return info;
 }
@@ -181,7 +183,7 @@ export function UpdateBadgeStatusBarItem() {
           className="cursor-pointer rounded-full px-1.5 font-semibold hover:brightness-125"
           style={{ color: page.fg, borderLeft: `1px solid ${AMBER}55` }}
           disabled={flow.pending}
-          onClick={() => void flow.start("now")}
+          onClick={() => void flow.start("now", target)}
           data-testid="update-armed-now"
         >
           Update now

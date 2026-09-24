@@ -50,6 +50,7 @@ export type UpgradePhase =
   | "fetching"
   | "downloading"
   | "verifying"
+  | "waiting_idle"
   | "installing"
   | "building"
   | "restarting"
@@ -78,14 +79,25 @@ export interface UpgradeStatusRecord {
   kind?: "upgrade" | "rollback";
   /** The pre-upgrade state snapshot this run took. */
   snapshotId?: string;
-  /** Written by the NEW daemon ~20s after "done". */
+  /** Written by the NEW daemon once its agents have resumed after "done". */
   verification?: UpgradeVerification;
+  /** Launched by "wait for idle": re-checks the fleet before the swap. */
+  waitIdle?: boolean;
 }
 
 export interface BusyAgent {
   id: string;
   name: string;
   status: string;
+  /** "first_task": just spawned; its first task hasn't started yet. */
+  reason?: "first_task";
+}
+
+/** An agent's background shell work an update restart would stop. */
+export interface BackgroundWork {
+  id: string;
+  name: string;
+  processes: { pid: number; command: string }[];
 }
 
 export interface UpgradeState {
@@ -96,6 +108,10 @@ export interface UpgradeState {
   armed: { target: string; armedAt: string; idleSince: string | null } | null;
   idleWindowMs: number;
   busy: BusyAgent[];
+  /** Warn-only: never part of "busy". Absent from older servers. */
+  background?: BackgroundWork[];
+  /** Judged on the server's clock (a skewed browser clock can't). */
+  inFlight?: boolean;
 }
 
 export type StartUpgradeResult =
@@ -130,10 +146,12 @@ export const systemApi = {
     request<SystemReleases>("/api/system/releases", opts),
   upgradeState: (opts: Opts = {}) =>
     request<UpgradeState>("/api/system/upgrade", { ...opts, fresh: true }),
-  startUpgrade: (when: "idle" | "now") =>
+  /** `expectedVersion`: the version whose notes the dialog showed — the
+   *  server refuses (VERSION_CHANGED) if `latest` moved since. */
+  startUpgrade: (when: "idle" | "now", expectedVersion?: string) =>
     request<StartUpgradeResult>("/api/system/upgrade", {
       method: "POST",
-      body: { when },
+      body: { when, ...(expectedVersion && { expectedVersion }) },
     }),
   snapshots: (opts: Opts = {}) =>
     request<SystemSnapshots>("/api/system/snapshots", { ...opts, fresh: true }),

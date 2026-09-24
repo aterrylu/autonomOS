@@ -108,7 +108,14 @@ export interface UpdateStep {
 export function stepsFor(
   mode: InstallMode | "rollback",
   to: string,
-  opts: { asset?: string; snapshotId?: string } = {},
+  opts: {
+    asset?: string;
+    snapshotId?: string;
+    /** "Wait for idle" run: the job re-checks the fleet before the swap. */
+    waitIdle?: boolean;
+    /** The job's latest word while waiting ("Waiting for api to finish"). */
+    waitingMessage?: string;
+  } = {},
 ): UpdateStep[] {
   const restart: UpdateStep = {
     id: "restart",
@@ -148,22 +155,37 @@ export function stepsFor(
       detail: "Every agent that was resumable still is",
     },
   ];
+  // The job re-checks idle and THEN snapshots, right before the change: the
+  // snapshot must hold the state actually left, not the state at launch.
+  const wait: UpdateStep[] = opts.waitIdle
+    ? [
+        {
+          id: "wait",
+          label: "Wait for idle",
+          detail:
+            opts.waitingMessage ??
+            "Every agent idle for 30 seconds — a new turn pushes it back",
+        },
+      ]
+    : [];
   if (mode === "source") {
     return [
-      snapshot,
       { id: "fetch", label: `Fetch v${to}` },
+      ...wait,
+      snapshot,
       { id: "build", label: "Build", detail: "Rebuilds from source (1–3 min)" },
       ...tail,
     ];
   }
   return [
-    snapshot,
     { id: "download", label: `Download v${to}`, detail: opts.asset },
     {
       id: "verify",
       label: "Verify checksum",
       detail: "SHA256 checked against the release",
     },
+    ...wait,
+    snapshot,
     {
       id: "install",
       label: "Install",
@@ -179,6 +201,7 @@ const PHASE_STEP: Record<UpgradePhase, string | null> = {
   fetching: "fetch",
   downloading: "download",
   verifying: "verify",
+  waiting_idle: "wait",
   installing: "install",
   building: "build",
   restarting: "restart",

@@ -12,7 +12,15 @@
 // half-way through a phase change, least of all the one written seconds
 // before a SIGKILL-adjacent restart.
 
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./configDir.js";
 
@@ -22,6 +30,7 @@ export type UpgradePhase =
   | "fetching" // source: git fetch tags
   | "downloading" // bundle: tarball + SHA256SUMS
   | "verifying" // bundle: checksum
+  | "waiting_idle" // "wait for idle": re-checking the fleet before the irreversible step
   | "installing" // bundle: atomic swap
   | "building" // source: checkout + make build (minutes)
   | "restarting" // supervisor restart issued — the daemon is down now
@@ -45,6 +54,9 @@ export type UpgradeStatusRecord = {
   snapshotId?: string;
   /** Written by the NEW daemon after "done" (upgradeVerify.ts). */
   verification?: UpgradeVerification;
+  /** Launched by "wait for idle": the job re-checks the fleet before its
+   *  irreversible step (shows as its own step in the dashboard). */
+  waitIdle?: boolean;
 };
 
 export type UpgradeVerification = {
@@ -102,7 +114,10 @@ export function writeUpgradeStatus(
   record: UpgradeStatusRecord,
   path = upgradeStatusPath(),
 ): void {
-  const tmp = `${path}.tmp`;
+  // Unique per writer: the job and the daemon (verification) both write this
+  // file, and a shared temp name lets one rename the other's half-written
+  // temp into place — a torn record reads as "no upgrade", i.e. not in flight.
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(tmp, path);
 }
@@ -124,5 +139,134 @@ export function advanceUpgradeStatus(
       updatedAt: now,
     },
     path,
+  );
+}
+
+// ── one job at a time, across processes ─────────────────────────────────────
+//
+// The status file says what the IN-APP job is doing, but a shell
+// `autonomos upgrade` or `rollback` writes no status file — and two jobs
+// extracting into the same `.new` dir, or checking out the same clone, corrupt
+// each other. Every upgrade/rollback run (in-app job or shell) holds this
+// O_EXCL lock; the routes and the idle tick honor it. A lock whose pid is dead
+// is stale and taken over.
+
+export type UpgradeLock = { pid: number; verb: string; startedAt: string };
+
+export function upgradeLockPath(configDir = getConfigDir()): string {
+  return join(configDir, "upgrade.lock");
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function readLock(path: string): UpgradeLock | null {
+  try {
+    const v = JSON.parse(readFileSync(path, "utf-8"));
+    return typeof v?.pid === "number" ? (v as UpgradeLock) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function upgradeLockHeld(
+  path = upgradeLockPath(),
+  isAlive: (pid: number) => boolean = pidAlive,
+): boolean {
+  const holder = readLock(path);
+  return holder !== null && isAlive(holder.pid);
+}
+
+export function acquireUpgradeLock(
+  verb: string,
+  path = upgradeLockPath(),
+  isAlive: (pid: number) => boolean = pidAlive,
+): { ok: true; release: () => void } | { ok: false; holder: UpgradeLock } {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, "wx", 0o600);
+      const lock: UpgradeLock = {
+        pid: process.pid,
+        verb,
+        startedAt: new Date().toISOString(),
+      };
+      writeSync(fd, JSON.stringify(lock));
+      closeSync(fd);
+      return {
+        ok: true,
+        release: () => {
+          if (readLock(path)?.pid === process.pid) {
+            try {
+              unlinkSync(path);
+            } catch {
+              // already gone
+            }
+          }
+        },
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      const holder = readLock(path);
+      if (holder && isAlive(holder.pid)) return { ok: false, holder };
+      // Stale (holder died) or unreadable (died mid-write): take it over.
+      try {
+        unlinkSync(path);
+      } catch {
+        // raced with another taker — the retry decides
+      }
+    }
+  }
+  const holder = readLock(path);
+  return {
+    ok: false,
+    holder: holder ?? { pid: -1, verb: "unknown", startedAt: "" },
+  };
+}
+
+// ── fleet report (daemon → job) ─────────────────────────────────────────────
+// Written by the daemon while a job is in flight (upgradeScheduler), read by
+// the job's last-moment idle gate (cli lib/restart-gate.ts). Lives here so the
+// CLI can import the contract without pulling in the agent runtime.
+
+export type FleetBusyAgent = {
+  id: string;
+  name: string;
+  status: string;
+  reason?: "first_task";
+};
+
+export type FleetReport = {
+  at: string;
+  /** Continuous idle so far, ms (monotonic); null = something is busy now. */
+  idleForMs: number | null;
+  busy: FleetBusyAgent[];
+};
+
+export function upgradeFleetPath(configDir = getConfigDir()): string {
+  return join(configDir, "upgrade-fleet.json");
+}
+
+/**
+ * Is an update/restore job actually running? The lock is the authority: every
+ * job holds it from its first step to its last write, so a record past
+ * "launching" with no live lock holder is an orphan (the job was killed) —
+ * say so NOW instead of after the 15-minute staleness bound. Only the short
+ * gap between the daemon writing "launching" and the job taking the lock
+ * still leans on the time bound.
+ */
+export function upgradeJobRunning(
+  rec: UpgradeStatusRecord | null = readUpgradeStatus(),
+  lockHeld: boolean = upgradeLockHeld(),
+  now = Date.now(),
+): boolean {
+  if (lockHeld) return true;
+  return (
+    rec !== null && rec.phase === "launching" && isUpgradeInFlight(rec, now)
   );
 }

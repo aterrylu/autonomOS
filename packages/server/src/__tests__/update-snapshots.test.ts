@@ -92,7 +92,9 @@ describe("createSnapshot", () => {
       statSync(join(dir, "env-presets", "kimi.json")).mode & 0o777,
       0o600,
     );
-    assert.equal(statSync(join(dir, "token")).mode & 0o777, 0o600);
+    // The operator token is never snapshotted: a Restore must not revive a
+    // rotated (possibly leaked) credential.
+    assert.ok(!existsSync(join(dir, "token")), "no operator token");
     assert.equal(statSync(snapshotsDir(cfg)).mode & 0o777, 0o700);
     assert.deepEqual(
       m.agents.map((a) => [a.id, a.providerThreadId]),
@@ -160,7 +162,6 @@ describe("restoreSnapshot", () => {
       existsSync(join(cfg, "new-feature-dir")),
       "unrelated entries untouched",
     );
-    assert.equal(statSync(join(cfg, "token")).mode & 0o777, 0o600);
     assert.ok(
       !readdirSync(cfg).some((d) => d.startsWith(".restore-")),
       "no debris",
@@ -194,7 +195,10 @@ describe("restoreSnapshot", () => {
     );
     // Damage the snapshot: an entry the manifest lists (after "agents" in
     // entry order, so agents was already staged when this fails) is missing.
-    rmSync(join(snapshotsDir(cfg), m.id, "token"), { force: true });
+    rmSync(join(snapshotsDir(cfg), m.id, "env-presets"), {
+      recursive: true,
+      force: true,
+    });
     assert.throws(
       () => restoreSnapshot(m.id, "0.7.0", cfg),
       /live state was left as it was/,
@@ -210,7 +214,7 @@ describe("restoreSnapshot", () => {
       2,
       "the already-staged agents entry was NOT swapped in",
     );
-    assert.equal(readFileSync(join(cfg, "token"), "utf-8"), "tok");
+    assert.ok(existsSync(join(cfg, "env-presets", "kimi.json")));
     assert.ok(
       !readdirSync(cfg).some((d) => d.startsWith(".restore-")),
       "no debris",
@@ -230,6 +234,46 @@ describe("restoreSnapshot", () => {
     assert.equal(snapshotForVersion("0.6.1", cfg)?.id, newer.id);
     deleteSnapshot(newer.id, cfg);
     assert.notEqual(snapshotForVersion("0.6.1", cfg)?.id, newer.id);
+  });
+});
+
+describe("snapshot hardening", () => {
+  it("a Restore leaves a rotated operator token alone", () => {
+    seedState();
+    const m = createSnapshot("0.6.1", "0.7.0", cfg);
+    writeFileSync(join(cfg, "token"), "rotated", { mode: 0o600 });
+    restoreSnapshot(m.id, "0.7.0", cfg);
+    assert.equal(readFileSync(join(cfg, "token"), "utf-8"), "rotated");
+  });
+
+  it("ids come from directory names, never from a manifest's own id", () => {
+    seedState();
+    const m = createSnapshot("0.6.1", "0.7.0", cfg);
+    const mf = join(snapshotsDir(cfg), m.id, "manifest.json");
+    const tampered = { ...JSON.parse(readFileSync(mf, "utf-8")), id: "../.." };
+    writeFileSync(mf, JSON.stringify(tampered));
+    assert.deepEqual(
+      listSnapshots(cfg).map((s) => s.id),
+      [m.id],
+    );
+    pruneSnapshots(cfg, 0);
+    assert.ok(existsSync(cfg), "pruning never escapes snapshots/");
+  });
+
+  it("restore only ever touches the known entries", () => {
+    seedState();
+    const m = createSnapshot("0.6.1", "0.7.0", cfg);
+    const mf = join(snapshotsDir(cfg), m.id, "manifest.json");
+    const tampered = JSON.parse(readFileSync(mf, "utf-8"));
+    tampered.entries = [...tampered.entries, "../outside", "logs"];
+    writeFileSync(mf, JSON.stringify(tampered));
+    mkdirSync(join(cfg, "logs"), { recursive: true });
+    writeFileSync(join(cfg, "logs", "keep.log"), "x");
+    const { restored } = restoreSnapshot(m.id, "0.7.0", cfg);
+    assert.ok(!restored.entries.includes("../outside"));
+    assert.ok(!restored.entries.includes("logs"));
+    assert.equal(readFileSync(join(cfg, "logs", "keep.log"), "utf-8"), "x");
+    assert.throws(() => restoreSnapshot("../x", "0.7.0", cfg), /invalid/);
   });
 });
 

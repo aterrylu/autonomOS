@@ -37,7 +37,7 @@ import {
   listBackgroundWork,
   listBusyAgents,
 } from "../upgradeScheduler.js";
-import { isUpgradeInFlight, readUpgradeStatus } from "../upgradeStatus.js";
+import { readUpgradeStatus, upgradeJobRunning } from "../upgradeStatus.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();
@@ -93,7 +93,9 @@ systemRouter.get("/releases", (c) => {
 // staleness bound keeps a job that died without a final write (machine
 // lost power mid-update) from wedging the button forever.
 function upgradeInFlight(): boolean {
-  return isUpgradeInFlight(readUpgradeStatus());
+  // The lock covers a shell `autonomos upgrade`/`rollback` too (no status
+  // file), and tells a killed job's orphaned record from a live one.
+  return upgradeJobRunning();
 }
 
 systemRouter.get("/upgrade", (c) => {
@@ -106,6 +108,10 @@ systemRouter.get("/upgrade", (c) => {
     idleWindowMs: IDLE_WINDOW_MS,
     busy: listBusyAgents(),
     background: listBackgroundWork(),
+    // Judged here, on the clock that wrote the record — a browser whose clock
+    // is minutes off would otherwise declare a live job dead (or a dead one
+    // live).
+    inFlight: upgradeInFlight(),
   });
 });
 
@@ -180,6 +186,22 @@ systemRouter.post("/upgrade", async (c) => {
   const u = getUpdateCheckState();
   if (!u.updateAvailable || !u.latest) {
     return c.json({ error: "No update available.", code: "NO_UPDATE" }, 409);
+  }
+  // The dialog showed notes (and any storage-format callout) for one
+  // version; if the daily check moved `latest` since, don't install a
+  // different one behind that screen.
+  if (
+    typeof body?.expectedVersion === "string" &&
+    body.expectedVersion !== u.latest
+  ) {
+    return c.json(
+      {
+        error: `A newer release (v${u.latest}) appeared since you opened this. Review its notes first.`,
+        code: "VERSION_CHANGED",
+        latest: u.latest,
+      },
+      409,
+    );
   }
   if (detectSupervisor().kind === "none") {
     return c.json(
@@ -289,6 +311,17 @@ systemRouter.post("/rollback", (c) => {
 systemRouter.delete("/upgrade", (c) => {
   const denied = operatorOnly(c);
   if (denied) return denied;
+  // Lost the race with the idle tick: the job already launched. Saying
+  // "cancelled" here would let the operator walk away from a restart.
+  if (!getArmedUpgrade() && upgradeInFlight()) {
+    return c.json(
+      {
+        error: "The update already started and can't be cancelled.",
+        code: "LAUNCHED",
+      },
+      409,
+    );
+  }
   disarmUpgrade();
   return c.json({ ok: true });
 });

@@ -11,7 +11,7 @@
 //   IN:  agents/ (the agent → provider session/thread MAPPING — what the Codex
 //        incident lost), agent-tokens/, schedules/, templates/, env-presets/
 //        (secrets — modes preserved, 0600 stays 0600), handoff-queues/,
-//        settings.json, token, pinned-sessions.json, gemini-settings.json,
+//        settings.json, pinned-sessions.json, gemini-settings.json,
 //        sessions.json (pre-migration legacy).
 //   OUT: logs/, schedule-runs/ (append-only history), control.sock, pid files,
 //        upgrade-status.json, snapshots/ itself. Conversations are never
@@ -42,7 +42,9 @@ export const SNAPSHOT_ENTRIES = [
   "env-presets",
   "handoff-queues",
   "settings.json",
-  "token",
+  // NOT "token": the operator credential. A Restore must never bring back a
+  // token rotated since (it would re-validate a leaked one and log out the
+  // browser holding the new one) — and the code+state pair never needs it.
   "pinned-sessions.json",
   "gemini-settings.json",
   "sessions.json",
@@ -173,9 +175,12 @@ export function listSnapshots(configDir = getConfigDir()): SnapshotManifest[] {
   for (const d of readdirSync(root)) {
     if (d.startsWith(".")) continue;
     try {
-      out.push(
-        JSON.parse(readFileSync(join(root, d, "manifest.json"), "utf-8")),
-      );
+      const m = JSON.parse(
+        readFileSync(join(root, d, "manifest.json"), "utf-8"),
+      ) as SnapshotManifest;
+      // The directory name IS the id: a manifest's own `id` is data, and
+      // prune/restore turn ids into paths.
+      out.push({ ...m, id: d });
     } catch {
       // not a complete snapshot — never offered for restore
     }
@@ -233,10 +238,20 @@ export function restoreSnapshot(
   liveVersion: string,
   configDir = getConfigDir(),
 ): { restored: SnapshotManifest; saved: SnapshotManifest } {
+  if (!id || id.includes("/") || id.includes("\\") || id.startsWith(".")) {
+    throw new Error(`invalid snapshot id: ${id}`);
+  }
   const src = join(snapshotsDir(configDir), id);
-  const manifest = JSON.parse(
+  const raw = JSON.parse(
     readFileSync(join(src, "manifest.json"), "utf-8"),
   ) as SnapshotManifest;
+  // Entries become paths under the live config dir: only ever the known set.
+  const allowed = new Set<string>(SNAPSHOT_ENTRIES);
+  const manifest: SnapshotManifest = {
+    ...raw,
+    id,
+    entries: (raw.entries ?? []).filter((e) => allowed.has(e)),
+  };
 
   const saved = createSnapshot(liveVersion, manifest.fromVersion, configDir);
 

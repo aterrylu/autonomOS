@@ -24,6 +24,7 @@ import {
   type Reporter,
   statusFileArg,
   withTerminalStatus,
+  withUpgradeLock,
 } from "../lib/status-report.js";
 
 export async function runRollbackCommand(
@@ -32,8 +33,9 @@ export async function runRollbackCommand(
   // --status-file: the in-app Restore (ADR-105) runs this same command as an
   // out-of-band job and follows it through the status file.
   const statusFile = statusFileArg(argv);
+  const report = makeReporter(statusFile, { kind: "rollback" });
   return withTerminalStatus(statusFile, { kind: "rollback" }, () =>
-    rollbackCommand(makeReporter(statusFile, { kind: "rollback" })),
+    withUpgradeLock("rollback", report, () => rollbackCommand(report)),
   );
 }
 
@@ -49,6 +51,9 @@ async function rollbackCommand(report: Reporter): Promise<number> {
     return 2;
   }
 
+  // Report before the long step: a source Restore checks out and REBUILDS
+  // (minutes); left at "launching" it would read as a job that never started.
+  report(install.info.mode === "source" ? "building" : "installing");
   const result =
     install.info.mode === "source"
       ? performSourceRollback(install.bundleDir, install.info)
