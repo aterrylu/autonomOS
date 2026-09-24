@@ -12,6 +12,7 @@
 // half-way through a phase change, least of all the one written seconds
 // before a SIGKILL-adjacent restart.
 
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   openSync,
@@ -151,7 +152,39 @@ export function advanceUpgradeStatus(
 // O_EXCL lock; the routes and the idle tick honor it. A lock whose pid is dead
 // is stale and taken over.
 
-export type UpgradeLock = { pid: number; verb: string; startedAt: string };
+export type UpgradeLock = {
+  pid: number;
+  verb: string;
+  startedAt: string;
+  /** The holder's process start identity: with pid reuse (after a reboot,
+   *  or just time), a live pid alone says nothing about WHICH process. */
+  pidStart?: string;
+};
+
+/** Backstop for a lock whose holder identity can't be checked: no update or
+ *  restore job lives anywhere near this long. */
+export const LOCK_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+/** A process's start identity, or null when it can't be read. */
+export function processStartId(pid: number): string | null {
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+      // Fields after the ")" of comm (which may itself contain spaces);
+      // starttime is field 22 overall = index 19 after the ")".
+      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      return rest[19] ?? null;
+    }
+    const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf-8",
+      timeout: 2_000,
+    });
+    const out = r.stdout?.trim();
+    return r.status === 0 && out ? out : null;
+  } catch {
+    return null;
+  }
+}
 
 export function upgradeLockPath(configDir = getConfigDir()): string {
   return join(configDir, "upgrade.lock");
@@ -175,26 +208,48 @@ function readLock(path: string): UpgradeLock | null {
   }
 }
 
+/** Is the lock's holder the SAME process that took it, still alive? */
+function holderLive(
+  holder: UpgradeLock,
+  isAlive: (pid: number) => boolean,
+  startId: (pid: number) => string | null,
+  now: number,
+): boolean {
+  if (!isAlive(holder.pid)) return false;
+  if (holder.pidStart) {
+    const current = startId(holder.pid);
+    // Unreadable now → fall through to the age bound, never wedge.
+    if (current !== null) return current === holder.pidStart;
+  }
+  const age = now - Date.parse(holder.startedAt);
+  return Number.isFinite(age) && age < LOCK_MAX_AGE_MS;
+}
+
 export function upgradeLockHeld(
   path = upgradeLockPath(),
   isAlive: (pid: number) => boolean = pidAlive,
+  startId: (pid: number) => string | null = processStartId,
+  now = Date.now(),
 ): boolean {
   const holder = readLock(path);
-  return holder !== null && isAlive(holder.pid);
+  return holder !== null && holderLive(holder, isAlive, startId, now);
 }
 
 export function acquireUpgradeLock(
   verb: string,
   path = upgradeLockPath(),
   isAlive: (pid: number) => boolean = pidAlive,
+  startId: (pid: number) => string | null = processStartId,
 ): { ok: true; release: () => void } | { ok: false; holder: UpgradeLock } {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = openSync(path, "wx", 0o600);
+      const pidStart = startId(process.pid);
       const lock: UpgradeLock = {
         pid: process.pid,
         verb,
         startedAt: new Date().toISOString(),
+        ...(pidStart && { pidStart }),
       };
       writeSync(fd, JSON.stringify(lock));
       closeSync(fd);
@@ -213,8 +268,11 @@ export function acquireUpgradeLock(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       const holder = readLock(path);
-      if (holder && isAlive(holder.pid)) return { ok: false, holder };
-      // Stale (holder died) or unreadable (died mid-write): take it over.
+      if (holder && holderLive(holder, isAlive, startId, Date.now())) {
+        return { ok: false, holder };
+      }
+      // Stale (holder died, or its pid now belongs to another process) or
+      // unreadable (died mid-write): take it over.
       try {
         unlinkSync(path);
       } catch {

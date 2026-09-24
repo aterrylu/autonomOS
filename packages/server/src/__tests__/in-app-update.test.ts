@@ -377,6 +377,21 @@ describe("POST /api/system/upgrade is operator-only", () => {
       });
     }
 
+    it("allows the dashboard behind a Host-rewriting reverse proxy", async () => {
+      // nginx `proxy_pass http://127.0.0.1:3100` sends Host: 127.0.0.1:3100
+      // while the page's Origin is the public name.
+      const res = await app.request("/api/system/upgrade", {
+        method: "POST",
+        headers: {
+          ...DASHBOARD,
+          Origin: "https://box.example",
+          Host: "127.0.0.1:3100",
+        },
+        body: JSON.stringify({ when: "now" }),
+      });
+      assert.notEqual((await res.json()).code, "CROSS_ORIGIN");
+    });
+
     it("refuses a cross-site cancel (DELETE)", async () => {
       const res = await app.request("/api/system/upgrade", {
         method: "DELETE",

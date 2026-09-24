@@ -199,6 +199,85 @@ describe("R8: one job at a time across processes", () => {
     assert.ok(!upgradeLockHeld(path, () => true));
   });
 
+  it("a reused pid is not the holder: an old lock can't wedge updates (nox review)", () => {
+    const path = upgradeLockPath(cfg);
+    const a = acquireUpgradeLock(
+      "upgrade",
+      path,
+      () => true,
+      () => "start-A",
+    );
+    assert.ok(a.ok);
+    // Same pid, alive, but a DIFFERENT process now (reboot / pid reuse):
+    assert.equal(
+      upgradeLockHeld(
+        path,
+        () => true,
+        () => "start-B",
+      ),
+      false,
+    );
+    const b = acquireUpgradeLock(
+      "rollback",
+      path,
+      () => true,
+      () => "start-B",
+    );
+    assert.ok(b.ok, "taken over");
+    if (b.ok) b.release();
+  });
+
+  it("the same live process still holds it", () => {
+    const path = upgradeLockPath(cfg);
+    const a = acquireUpgradeLock(
+      "upgrade",
+      path,
+      () => true,
+      () => "start-A",
+    );
+    assert.ok(
+      upgradeLockHeld(
+        path,
+        () => true,
+        () => "start-A",
+      ),
+    );
+    if (a.ok) a.release();
+  });
+
+  it("without a readable identity, the age bound decides (never wedged forever)", () => {
+    const path = upgradeLockPath(cfg);
+    const old = new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString();
+    writeFileSync(
+      path,
+      JSON.stringify({ pid: process.pid, verb: "upgrade", startedAt: old }),
+    );
+    assert.equal(
+      upgradeLockHeld(
+        path,
+        () => true,
+        () => null,
+      ),
+      false,
+    );
+    writeFileSync(
+      path,
+      JSON.stringify({
+        pid: process.pid,
+        verb: "upgrade",
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    assert.equal(
+      upgradeLockHeld(
+        path,
+        () => true,
+        () => null,
+      ),
+      true,
+    );
+  });
+
   it("the routes refuse while a shell run holds the lock (no status file)", async () => {
     _setUpdateCheckStateForTesting({ updateAvailable: true, latest: "0.8.0" });
     const lock = acquireUpgradeLock("upgrade", upgradeLockPath(cfg));

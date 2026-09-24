@@ -65,3 +65,29 @@ describe("renderSystemdUserUnit", () => {
     assert.match(unit, /^ExecStart=.*start --port=3100$/m);
   });
 });
+
+describe("the service label reaches the daemon's env (non-default only)", () => {
+  it("default-label units render unchanged (no drift for existing installs)", () => {
+    delete process.env.AUTONOMOS_SERVICE_LABEL;
+    assert.ok(!renderSystemdUserUnit(opts).includes("AUTONOMOS_SERVICE_LABEL"));
+    assert.ok(
+      !renderLaunchAgentPlist(opts).includes("AUTONOMOS_SERVICE_LABEL"),
+    );
+  });
+
+  it("a test-labelled unit tells its daemon the label (so it recognizes its own service)", () => {
+    process.env.AUTONOMOS_SERVICE_LABEL = "com.autonomos.daemon.test";
+    try {
+      assert.match(
+        renderSystemdUserUnit(opts),
+        /^Environment=AUTONOMOS_SERVICE_LABEL=com\.autonomos\.daemon\.test$/m,
+      );
+      assert.match(
+        renderLaunchAgentPlist(opts),
+        /<key>AUTONOMOS_SERVICE_LABEL<\/key>\s*<string>com\.autonomos\.daemon\.test<\/string>/,
+      );
+    } finally {
+      delete process.env.AUTONOMOS_SERVICE_LABEL;
+    }
+  });
+});

@@ -152,7 +152,11 @@ function operatorOnly(c: Context): Response | null {
   const fetchSite = c.req.header("Sec-Fetch-Site");
   const origin = c.req.header("Origin");
   let crossOrigin = fetchSite !== undefined && fetchSite !== "same-origin";
-  if (!crossOrigin && origin) {
+  // Origin vs Host only when the browser sent no Sec-Fetch-Site (older
+  // browsers). When it did, it already vouched for same-origin — and a
+  // reverse proxy that rewrites Host (stock nginx proxy_pass) would make
+  // the comparison 403 every legitimate click.
+  if (fetchSite === undefined && origin) {
     try {
       crossOrigin = new URL(origin).host !== c.req.header("Host");
     } catch {
