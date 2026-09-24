@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import type { ProjectInfo } from "../store";
@@ -173,5 +173,16 @@ describe("ProjectItem — redesigned rows", () => {
       "/repo/autonomOS",
       { provider: PROJECT.sessions[0].provider },
     );
+  });
+
+  it("disclosure uses the ORIGINAL ▶/▼ glyph, not a rotating chevron (Terry's live-gate revert)", () => {
+    renderItem();
+    const header = screen.getByRole("button", { expanded: true });
+    // Seeded expanded → ▼, and no SVG chevron anywhere in the toggle.
+    expect(header.textContent?.startsWith("▼")).toBe(true);
+    expect(header.querySelector("svg")).toBeNull();
+    act(() => useStore.setState({ expandedProjects: {} }));
+    const collapsed = screen.getByRole("button", { expanded: false });
+    expect(collapsed.textContent?.startsWith("▶")).toBe(true);
   });
 });
