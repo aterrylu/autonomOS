@@ -572,7 +572,11 @@ describe("PR 2 — team rollups + collapse", () => {
     statuses();
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("Deep")).not.toBeNull());
-    const chip = screen.getAllByText("1 needs you")[0] as HTMLElement;
+    // Scope to the rollup: the toolbar strip ALSO reads "1 needs you".
+    const chip = document.querySelector(
+      '[data-org-rollup="Lead"] span',
+    ) as HTMLElement;
+    expect(chip.textContent).toBe("1 needs you");
     expect(chip.style.color).toBe(hexToRgb(STATUS_COLORS_DARK.needsInput));
   });
 

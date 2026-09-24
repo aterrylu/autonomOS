@@ -587,7 +587,7 @@ function OrgCanvas({
           const p = layout.pos.get(node.id);
           if (!p || !collapsed.has(node.id) || !rollups.has(node.id))
             return null;
-          return [6, 3].map((d) => (
+          return [10, 5].map((d) => (
             <div
               key={`${node.id}-stack-${d}`}
               data-org-stack={node.id}
@@ -600,7 +600,7 @@ function OrgCanvas({
                 height: CARD_H,
                 background: tokens.card,
                 border: `1px solid ${tokens.cardBorder}`,
-                opacity: d === 6 ? 0.45 : 0.75,
+                opacity: d === 10 ? 0.45 : 0.75,
               }}
             />
           ));
