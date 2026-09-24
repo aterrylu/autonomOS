@@ -206,6 +206,46 @@ export function isAgentLive(agentId: UUID): boolean {
 }
 
 /**
+ * Mark an agent crashed after a failed RESPAWN — unless it is live.
+ *
+ * The respawn paths (boot resume sweep, the crash-net fresh respawn,
+ * restart-all) all catch a spawn failure and mark the record crashed so it
+ * doesn't zombie as `status: "running"` with no PTY. But one of their failure
+ * modes is `spawnAgent` refusing because the agent is ALREADY live (the
+ * "already attached" / live-namesake guards) — something else attached it in
+ * the meantime. Marking THAT crashed is not a cleanup, it's a kill without the
+ * kill: `markExited` revokes the per-agent token (ADR-055), so the still-running
+ * process has every hook rejected and its status freezes, while the dashboard
+ * reports it crashed. That was the agent-spawn-prompt CI flake (a spawn landing
+ * inside the boot window before the resume sweep). The rule: a catch never
+ * exits a live agent. Returns the updated record, or undefined when skipped
+ * (or when the record is gone).
+ */
+export function markCrashedUnlessLive(
+  agentId: UUID,
+  context: string,
+): Agent | undefined {
+  if (live.has(agentId)) {
+    console.warn(
+      `[runtime] ${context}: ${agentId.slice(0, 8)} is live (attached elsewhere) — leaving it running, not marking it crashed`,
+    );
+    return undefined;
+  }
+  return markExited(agentId, "crashed");
+}
+
+/**
+ * The agents the boot sweep should resume: every record persisted as running.
+ * Boot MUST take this snapshot synchronously right after the control socket
+ * binds (see run.ts armRuntimeInits) — from the bind on, POST /api/agents can
+ * create fresh live agents, and a sweep that lists the store later would pick
+ * those up as "records from before the restart".
+ */
+export function snapshotResumableAgents(): Agent[] {
+  return listAgents().filter((a) => a.status === "running");
+}
+
+/**
  * PERF/TEST ONLY — register a synthetic attachment backed by a caller-supplied
  * PTY (typically a FakePty from `perf/fake-pty.ts`) so the real terminal WS
  * transport can be benchmarked without spawning `claude`. Mirrors the
@@ -1509,7 +1549,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       const record = getAgent(persisted.id);
       if (record) {
         void respawnAgent(record).catch((err) => {
-          const updated = markExited(persisted.id, "crashed");
+          const updated = markCrashedUnlessLive(
+            persisted.id,
+            "fresh respawn after failed resume",
+          );
           if (updated)
             emitAgentDelta({
               type: "agent.exited",
@@ -1767,13 +1810,34 @@ function confirmResumeSurvived(a: Agent): void {
  * Failures are caught per-agent and the failing agent is marked exited+crashed
  * so a zombie record (status=running with no live PTY) doesn't sit forever.
  */
-export async function resumeActiveAgents(): Promise<void> {
-  const agents = listAgents().filter((a) => a.status === "running");
-  if (agents.length === 0) return;
+export async function resumeActiveAgents(
+  snapshot: readonly Agent[] = snapshotResumableAgents(),
+): Promise<void> {
+  if (snapshot.length === 0) return;
 
-  console.log(`Resuming ${agents.length} agent(s)...`);
+  console.log(`Resuming ${snapshot.length} agent(s)...`);
   let resumed = 0;
-  for (const a of agents) {
+  let skipped = 0;
+  for (const snap of snapshot) {
+    // Re-read: the snapshot is from the moment the control socket bound, and
+    // earlier iterations awaited — the user may have killed, deleted, or
+    // re-attached this agent since.
+    const a = getAgent(snap.id);
+    if (!a || a.status !== "running") {
+      skipped++;
+      continue;
+    }
+    if (live.has(a.id)) {
+      // Already attached by this boot (a spawn or /attach that raced the
+      // sweep). It keeps its PTY, token and status; respawning would only
+      // throw "already attached" and, before this guard, the catch below
+      // marked the LIVE agent crashed and revoked its token.
+      console.log(
+        `  ↷ ${a.name} (${a.id.slice(0, 8)}...) already live — not resuming`,
+      );
+      skipped++;
+      continue;
+    }
     try {
       // Inside the try, deliberately. getTemplate() throws on anything that
       // isn't ENOENT — that is its contract — so one corrupt or truncated
@@ -1802,8 +1866,11 @@ export async function resumeActiveAgents(): Promise<void> {
       // Surface the reason in the dashboard, not just server logs — otherwise a
       // Codex agent whose sidecar daemon won't come up shows only as "crashed"
       // every boot with no actionable hint (mirrors the prompt-delivery path).
-      pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
-      const updated = markExited(a.id, "crashed");
+      const updated = markCrashedUnlessLive(a.id, "boot resume");
+      // Only notify about a failure that actually left the agent down.
+      if (updated) {
+        pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
+      }
       if (updated) {
         emitAgentDelta({
           type: "agent.exited",
@@ -1814,8 +1881,8 @@ export async function resumeActiveAgents(): Promise<void> {
       }
     }
   }
-  if (resumed < agents.length) {
-    console.warn(`Resumed ${resumed} of ${agents.length} agents`);
+  if (resumed + skipped < snapshot.length) {
+    console.warn(`Resumed ${resumed} of ${snapshot.length} agents`);
   }
 }
 
@@ -1900,8 +1967,10 @@ export async function restartAllAttachments(): Promise<{
       // The PTYs were killed under shuttingDown, so onExit did NOT mark this
       // agent exited — and the respawn just failed. Without this, the record
       // stays status:"running" with no live PTY (a zombie that tries to resume
-      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents.
-      const updated = markExited(a.id, "crashed");
+      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents
+      // — unless a concurrent attach made it live, which the respawn's
+      // "already attached" throw lands here as.
+      const updated = markCrashedUnlessLive(a.id, "restart-all");
       if (updated) {
         emitAgentDelta({
           type: "agent.exited",
