@@ -110,6 +110,9 @@ export interface UpgradeState {
   busy: BusyAgent[];
   /** Warn-only: never part of "busy". Absent from older servers. */
   background?: BackgroundWork[];
+  /** What the restart does to it: systemd stops it (whole cgroup); launchd
+   *  leaves it running with no agent (own process group). */
+  backgroundFate?: "stopped" | "orphaned" | null;
   /** Judged on the server's clock (a skewed browser clock can't). */
   inFlight?: boolean;
 }
