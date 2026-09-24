@@ -30,6 +30,10 @@ import {
   type SidecarSpec,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
+import {
+  probeThreadRollout,
+  readThreadApprovalPolicy,
+} from "../gateway/codexRollout.js";
 import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
@@ -74,7 +78,7 @@ const SUPPRESS_UPDATE_PROMPT_ARGS = ["-c", "check_for_update_on_startup=false"];
  *
  * Codex's two-axis model (approval + sandbox) is effectively one axis here:
  * the sandbox is always `danger-full-access` (autonomOS is the trust boundary).
- * Codex has no plan mode — `plan` is clamped to the default policy. The clamp
+ * Codex has no plan mode and no auto tier — both clamp to on-request (Ask). The clamp
  * warning lives in daemonConfigArgs (called once per spawn) so it doesn't
  * double-log across the daemon + TUI layers.
  */
@@ -84,10 +88,11 @@ function codexApprovalPolicy(
   switch (mode) {
     case "bypass":
       return "never";
-    case "auto":
-      return "on-failure";
     default:
-      // "ask" and the clamped "plan" both prompt before acting.
+      // "ask" plus the clamped "plan" AND "auto": codex 0.15x has only
+      // on-request | never. `auto` used to map to "on-failure", which codex
+      // removed and silently coerced to on-request — so auto already behaved
+      // exactly like ask; this states it instead of relying on the coercion.
       return "on-request";
   }
 }
@@ -104,8 +109,8 @@ function codexApprovalPolicy(
  *
  * The mapping is deliberately mode-aware, mirroring the trust the permission mode
  * already grants for shell:
- *   - bypass / auto → "approve": never prompt (the agent is already autonomous).
- *   - ask / plan    → "writes": prompt only for MUTATING tools; a tool that
+ *   - bypass        → "approve": never prompt (the agent is already autonomous).
+ *   - ask / plan / auto → "writes": prompt only for MUTATING tools; a tool that
  *     declares `readOnlyHint: true` (see the annotated read-only tools in
  *     mcp/tools.ts) is auto-approved even under `writes`. So a supervised agent
  *     still gets asked before kill_agent / delete_* but not before list_agents.
@@ -117,11 +122,11 @@ function codexMcpApprovalMode(
 ): string {
   switch (mode) {
     case "bypass":
-    case "auto":
       return "approve";
     default:
-      // "ask" and the clamped "plan": prompt for mutations, auto-approve
-      // read-only (readOnlyHint) tools.
+      // "ask" plus the clamped "plan" AND "auto" (Codex has no auto tier — ADR-104:
+      // auto is clamped to Ask on BOTH axes, so "behaves like Ask" is true for
+      // MCP tools too): prompt for mutations, auto-approve read-only tools.
       return "writes";
   }
 }
@@ -151,16 +156,16 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
   args.push("-c", `sandbox_mode="danger-full-access"`);
 
   // Approval gating is separate from sandboxing: the permission mode maps to a
-  // Codex approval_policy (bypass→never, auto→on-failure, ask/plan→
+  // Codex approval_policy (bypass→never, ask/plan/auto→
   // on-request). The TUI flag in buildArgs is the primary control; this
   // daemon-side policy backs it for gateway-injected turns that share the
   // same thread. Codex has no plan mode — warn once here when we clamp it.
-  if (options.permissionMode === "plan") {
+  if (options.permissionMode === "plan" || options.permissionMode === "auto") {
     console.warn(
-      "[codex] permission mode 'plan' has no Codex equivalent — clamping to " +
+      `[codex] permission mode '${options.permissionMode}' has no Codex equivalent — clamping to ` +
         "'ask' (approval_policy=on-request). Sandbox stays " +
         "danger-full-access (autonomOS is the trust boundary). NOTE: the " +
-        "agent's record still says 'plan' — it reflects what was requested, " +
+        `agent's record still says '${options.permissionMode}' — it reflects what was requested, ` +
         "not this clamp.",
     );
   }
@@ -252,6 +257,61 @@ export const codexProvider: AgentProvider = {
     };
   },
 
+  // Codex has no plan mode and no auto tier: both behave like Ask (on-request).
+  // Surfaced to the user at spawn so the clamp is never silent.
+  clampedModeNotice(mode: PermissionMode): string | undefined {
+    if (mode === "auto")
+      return "Codex has no auto tier — this agent behaves like Ask. Pick Bypass for no approvals.";
+    if (mode === "plan")
+      return "Codex has no plan mode — this agent behaves like Ask.";
+    return undefined;
+  },
+
+  // Thread-resume pre-flight: resume only if codex actually SAVED this thread.
+  // A never-prompted agent's thread has no rollout (written lazily on the first
+  // turn) → start fresh instead of a doomed "No saved session found" resume.
+  // Throws when it can't tell (unreadable sessions tree) → the runtime resumes.
+  hasResumableThread(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+  ): boolean {
+    if (!options.providerThreadId) return false;
+    return probeThreadRollout(options.providerThreadId, env).state === "found";
+  },
+
+  // The mode a resumed thread ACTUALLY runs (from its last turn_context), when
+  // the record disagrees — e.g. a pre-ADR-104 mode-change resume wrote the new
+  // mode to the record and then crashed on the override, so the thread still
+  // runs the old policy. Undefined when consistent or unreadable.
+  resumedThreadMode(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+    recordMode: PermissionMode,
+  ): PermissionMode | undefined {
+    if (!options.providerThreadId) return undefined;
+    let path: string | undefined;
+    try {
+      path = probeThreadRollout(options.providerThreadId, env).path;
+    } catch {
+      return undefined;
+    }
+    const actual = path ? readThreadApprovalPolicy(path) : null;
+    if (!actual || actual === codexApprovalPolicy(recordMode)) return undefined;
+    if (actual === "never") return "bypass";
+    if (actual === "on-request") return "ask";
+    return undefined; // a policy we don't map — don't guess
+  },
+
+  // A resumed thread keeps the policy it was created with (codex rejects
+  // overrides on a remote resume), so a mode change whose Codex policy differs
+  // cannot take effect on resume.
+  resumeCannotApplyModeChange(
+    from: PermissionMode,
+    to: PermissionMode,
+  ): boolean {
+    return codexApprovalPolicy(from) !== codexApprovalPolicy(to);
+  },
+
   buildArgs(options: ResolvedSpawnOptions): string[] {
     // Daemon model: the visible TUI is a thin client of the sidecar daemon.
     if (options.sidecarEndpoint) {
@@ -270,6 +330,17 @@ export const codexProvider: AgentProvider = {
           ]
         : ["--remote", options.sidecarEndpoint];
       args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
+      // RESUME: pass NO permission overrides. Codex rejects them on a remote
+      // resume ("Permission overrides are not supported when resuming a remote
+      // task", exit 1) — every Codex agent died on every restart. It isn't needed
+      // either: a resumed thread keeps the approval/sandbox policy it was created
+      // with (verified per mode via the recorded turn_context, and it ignores the
+      // daemon's -c on resume). A mode CHANGE on resume therefore can't apply —
+      // see resumeCannotApplyModeChange below and the runtime's handling.
+      if (options.providerThreadId) {
+        if (options.prompt) args.push(options.prompt);
+        return args;
+      }
       // The TUI creates/owns the thread, so ITS sandbox/approval flags govern the
       // thread (the daemon-side -c is necessary but not sufficient — both layers
       // must say danger-full-access or Codex falls back to workspace-write and

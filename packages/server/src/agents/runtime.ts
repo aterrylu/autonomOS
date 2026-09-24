@@ -18,6 +18,7 @@ import {
   type ExitReason,
   type PermissionMode,
   type Provider,
+  type ResolvedSpawnOptions,
   type SpawnOptions,
   type UUID,
 } from "@autonomos/core";
@@ -340,6 +341,76 @@ export function retainedThreadCrashNotice(opts: {
 }
 
 /**
+ * The provider a spawn runs. A reattach runs the RECORD's provider: an omitted
+ * `provider` means "the one it already is", and one that contradicts the record
+ * is refused (a Codex thread can't be resumed by Claude Code — silently
+ * switching orphans the conversation). A new spawn uses the request, else the
+ * default. Pure + exported for tests.
+ */
+export function resolveSpawnProvider(
+  requested: Provider | undefined,
+  reattachRecord: Pick<Agent, "provider" | "name"> | undefined,
+): Provider {
+  if (reattachRecord) {
+    if (requested && requested !== reattachRecord.provider) {
+      throw new SpawnError(
+        "PROVIDER_MISMATCH",
+        409,
+        `"${reattachRecord.name}" is a ${reattachRecord.provider} agent — it can't be resumed as ${requested}. Omit provider to resume it, or spawn a new ${requested} agent.`,
+      );
+    }
+    return reattachRecord.provider;
+  }
+  return requested ?? "claude-code";
+}
+
+/**
+ * Thread-resume pre-flight decision (Codex; ADR-100 "Option B"). False only when
+ * the provider positively reports nothing was saved for the thread — then the
+ * runtime starts a fresh thread instead of a doomed resume. Fail-OPEN: a
+ * provider without the hook, or a probe that throws, means "resume as before"
+ * (the retain-on-crash net is the backstop). Pure + exported for tests.
+ */
+export function threadIsResumable(
+  provider: Pick<AgentProvider, "hasResumableThread" | "displayName">,
+  resolved: ResolvedSpawnOptions,
+  env: Record<string, string | undefined> = {},
+): boolean {
+  if (!resolved.providerThreadId || !provider.hasResumableThread) return true;
+  try {
+    return provider.hasResumableThread(resolved, env);
+  } catch (err) {
+    console.warn(
+      `[runtime] ${provider.displayName} thread probe threw — assuming resumable:`,
+      err instanceof Error ? err.message : err,
+    );
+    return true;
+  }
+}
+
+/**
+ * Whether a requested permission-mode change must be REFUSED on this resume
+ * because the provider can't apply it to a resumed conversation (Codex keeps a
+ * thread's creation-time policy and rejects overrides on remote resume). When
+ * locked, the effective mode stays the current one — the record must never
+ * claim a mode the process isn't running. Pure + exported for tests.
+ */
+export function resumePermissionModeLock(opts: {
+  isReattach: boolean;
+  resumingThread: boolean;
+  current: PermissionMode;
+  requested: PermissionMode;
+  cannotApply?: (from: PermissionMode, to: PermissionMode) => boolean;
+}): { locked: boolean; effective: PermissionMode } {
+  const locked =
+    opts.isReattach &&
+    opts.resumingThread &&
+    opts.requested !== opts.current &&
+    !!opts.cannotApply?.(opts.current, opts.requested);
+  return { locked, effective: locked ? opts.current : opts.requested };
+}
+
+/**
  * A spawn failure that already knows its own HTTP status.
  *
  * Every throw site this PR ADDED uses this, so the route no longer has to infer
@@ -357,8 +428,9 @@ export class SpawnError extends Error {
     | "INVALID_SESSION_ID"
     | "NOT_ADOPTABLE"
     | "NOTHING_TO_RESUME"
-    | "INVALID_WORKING_DIRECTORY";
-  readonly status: 400 | 422;
+    | "INVALID_WORKING_DIRECTORY"
+    | "PROVIDER_MISMATCH";
+  readonly status: 400 | 409 | 422;
   constructor(
     code: SpawnError["code"],
     status: SpawnError["status"],
@@ -564,7 +636,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw new Error(`Invalid working directory: ${cwd}`);
   }
 
-  const providerName: Provider = (params.provider as Provider) ?? "claude-code";
+  // On a REATTACH the provider is the RECORD's — never a default. Falling back
+  // to "claude-code" here (when a caller omitted `provider`, e.g. a REST
+  // `resumeAgentId` or an agent's `create_agent(resumeSessionId)`) respawned a
+  // Codex agent as Claude Code and overwrote the record's provider, orphaning
+  // its conversation — the ADR-061 "collapse undefined too early" class again.
+  // Same two lookups as the resolution block below (which still does the
+  // not-found / already-attached validation).
+  const reattachRecord = params.resumeAgentId
+    ? getAgent(params.resumeAgentId)
+    : params.resumeSessionId
+      ? (getAgentByProviderSessionId(params.resumeSessionId) ??
+        getAgent(params.resumeSessionId as UUID))
+      : undefined;
+  const providerName = resolveSpawnProvider(
+    params.provider as Provider | undefined,
+    reattachRecord,
+  );
   const provider = getProvider(providerName);
   const binary = provider.resolveBinary();
 
@@ -769,7 +857,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // with no mode wrote the fallback over a `bypass` record, permanently, with
   // nothing logged. Callers therefore forward `undefined`; do not "tidy" that
   // back into a `??` at the call site.
-  const permissionMode = params.permissionMode ?? agent.permissionMode;
+  let permissionMode = params.permissionMode ?? agent.permissionMode;
 
   // A resume that CHANGES autonomy is worth a line in the log either way. The
   // change is legitimate (the caller asked for it), but "this agent's autonomy
@@ -914,6 +1002,99 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // half-started agent.
   if (envPreset) applyPresetToEnv(env, envPreset);
 
+  // ── Resume decisions (ADR-104) — AFTER the env is final, because a preset or
+  // customEnvVar can give this agent its own CODEX_HOME; probing the server's
+  // would mis-judge a real thread as "never saved". User notices are QUEUED and
+  // pushed only once the record is written, so a spawn that then fails never
+  // leaves behind a notice claiming something that didn't happen.
+  const pendingNotices: string[] = [];
+
+  // THREAD pre-flight (Codex; ADR-100 "Option B"): codex writes a thread's
+  // rollout lazily on its first turn, so a never-prompted agent's thread was
+  // never saved and `codex resume <id>` exits 1 ("No saved session found"). Only
+  // a POSITIVE "absent" starts fresh; can't-tell resumes (fail open). Separate
+  // from hasResumableSession so it never arms the onExit force-fresh net.
+  let startedFreshThread = false;
+  if (
+    resolved.providerThreadId &&
+    !threadIsResumable(provider, resolved, env)
+  ) {
+    const oldThread = resolved.providerThreadId;
+    console.warn(
+      `[runtime] ${agent.id.slice(0, 8)} ${provider.displayName}: no saved conversation found for thread ${oldThread} — starting a fresh thread`,
+    );
+    resolved.providerThreadId = undefined;
+    startedFreshThread = true;
+    pendingNotices.push(
+      `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
+    );
+  }
+
+  // The mode a resumed thread ACTUALLY runs. A resumed Codex thread keeps its
+  // creation-time policy, and a pre-ADR-104 mode-change resume could have left
+  // the record naming a mode the thread never ran. Make the record follow the
+  // process, and say so — a silently wider/narrower agent is worse than a crash.
+  let currentMode = agent.permissionMode;
+  if (resolution === "reattach" && resolved.providerThreadId) {
+    let actual: PermissionMode | undefined;
+    try {
+      actual = provider.resumedThreadMode?.(
+        resolved,
+        env,
+        agent.permissionMode,
+      );
+    } catch {
+      actual = undefined;
+    }
+    if (actual && actual !== agent.permissionMode) {
+      console.warn(
+        `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): record said ${agent.permissionMode} but its resumed ${provider.displayName} conversation runs ${actual} — correcting the record`,
+      );
+      pendingNotices.push(
+        `${agent.name}'s record said ${agent.permissionMode}, but its resumed ${provider.displayName} conversation actually runs as ${actual}. The record now says ${actual}; spawn a fresh agent to use ${agent.permissionMode}.`,
+      );
+      currentMode = actual;
+      if (params.permissionMode === undefined) {
+        permissionMode = actual;
+        resolved.permissionMode = actual;
+      }
+    }
+  }
+
+  // A resumed conversation that cannot take a permission-mode change (Codex:
+  // overrides are rejected on a remote resume). Never record a change that
+  // didn't apply: keep the mode the process actually runs, and say so.
+  const modeLock = resumePermissionModeLock({
+    isReattach: resolution === "reattach",
+    resumingThread: !!resolved.providerThreadId,
+    current: currentMode,
+    requested: permissionMode,
+    cannotApply: provider.resumeCannotApplyModeChange,
+  });
+  if (modeLock.locked) {
+    console.warn(
+      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): requested mode ${permissionMode} can't apply to a resumed ${provider.displayName} conversation — it keeps ${currentMode}`,
+    );
+    pendingNotices.push(
+      `${agent.name} resumed in ${currentMode}: a resumed ${provider.displayName} conversation keeps the permissions it started with, so the switch to ${permissionMode} was not applied. Spawn a fresh agent to use ${permissionMode}.`,
+    );
+    permissionMode = modeLock.effective;
+    resolved.permissionMode = modeLock.effective;
+  }
+
+  // A mode the provider can't represent is clamped (Codex: plan/auto → Ask).
+  // Say so whenever it newly takes effect: a fresh spawn, a mode change on
+  // resume, or a fresh thread started by the pre-flight.
+  const clampNotice = provider.clampedModeNotice?.(permissionMode);
+  if (
+    clampNotice &&
+    (resolution !== "reattach" ||
+      permissionMode !== agent.permissionMode ||
+      startedFreshThread)
+  ) {
+    pendingNotices.push(`${agent.name}: ${clampNotice}`);
+  }
+
   // Write the per-agent token to its 0600 file BEFORE anything that could launch
   // the channel server (the sidecar daemon below, or the PTY). The channel server
   // reads the token from this file (ADR-055 follow-up) rather than from env/argv,
@@ -1046,6 +1227,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           providerSessionId,
           startedAt: Date.now(),
           permissionMode,
+          // The thread the PTY actually runs: unchanged on a normal resume,
+          // CLEARED when the thread pre-flight found nothing saved — so the next
+          // restart doesn't retry a thread that can never resume.
+          providerThreadId: resolved.providerThreadId,
           // Written on reattach for the same reason as permissionMode: the PTY
           // was launched with the resolved preset, so the record must follow.
           // Record-driven respawns pass the record's own value → no-op.
@@ -1066,6 +1251,12 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw new Error(
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
+  }
+
+  // The spawn succeeded and the record is written — now the queued notices are
+  // true statements about what happened.
+  for (const notice of pendingNotices) {
+    pushSystemNotification(persisted.id, notice);
   }
 
   const managed: ManagedAttachment = {
@@ -1544,6 +1735,31 @@ async function respawnAgent(a: Agent): Promise<void> {
   });
 }
 
+/** How long a resumed PTY must stay alive before boot logs it as resumed. */
+const RESUME_SURVIVAL_MS = 5_000;
+
+/** Log ✓ only once the resumed agent has actually stayed up, ✗ if it died.
+ *  Unref'd so it never holds the process open. */
+function confirmResumeSurvived(a: Agent): void {
+  // Pin the PTY INSTANCE: a crash-net respawn inside the window would put a
+  // DIFFERENT live PTY under the same id, which is not "this resume survived".
+  const pty = live.get(a.id)?.pty;
+  const t = setTimeout(() => {
+    const alive =
+      pty !== undefined &&
+      live.get(a.id)?.pty === pty &&
+      getAgent(a.id)?.status === "running";
+    if (alive) {
+      console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...) resumed`);
+    } else {
+      console.warn(
+        `  ✗ ${a.name} (${a.id.slice(0, 8)}...) exited within ${RESUME_SURVIVAL_MS / 1000}s of resume — see the [runtime] line above`,
+      );
+    }
+  }, RESUME_SURVIVAL_MS);
+  t.unref?.();
+}
+
 /**
  * Resume all agents whose persisted status is "running" (typical post-startup
  * recovery path). Called once from server startup.
@@ -1573,7 +1789,11 @@ export async function resumeActiveAgents(): Promise<void> {
         );
       }
       await respawnAgent(a);
-      console.log(`  ✓ ${a.name} (${a.id.slice(0, 8)}...)`);
+      // "Spawned" is not "survived": a resume can die in ~300ms after spawn()
+      // returns (the old "✓ then exited" report). Say what's true now, then
+      // confirm survival after a short window without blocking the boot loop.
+      console.log(`  → ${a.name} (${a.id.slice(0, 8)}...) resume started`);
+      confirmResumeSurvived(a);
       resumed++;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

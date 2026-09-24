@@ -105,13 +105,71 @@ export interface AgentProvider {
    *
    * Motivating case: Claude Code writes its session JSONL lazily (on the first
    * turn, not at session creation), so an agent that hasn't conversed yet has
-   * no `--resume` target. Codex handles this internally (a missing thread id
-   * means a fresh `--remote` thread), so it does NOT implement this hook.
+   * no `--resume` target. Codex does NOT implement this hook — it resumes by
+   * THREAD, not session, and has its own pre-flight (`hasResumableThread`)
+   * which deliberately does not arm the onExit force-fresh net (ADR-100).
    *
    * Providers that omit this hook are treated as "always resumable" — the
    * runtime keeps its prior unconditional resume behavior for them.
    */
   hasResumableSession?(options: ResolvedSpawnOptions): boolean;
+
+  /**
+   * Optional: THREAD-resume pre-flight for providers that resume by
+   * `providerThreadId` (Codex). Return false when the thread has nothing saved
+   * to resume — the runtime then clears the thread and spawns a fresh one
+   * instead of a doomed resume. Codex writes its rollout lazily (first turn), so
+   * a never-prompted agent's thread id points at a session that was never saved
+   * ("No saved session found" on resume).
+   *
+   * Distinct from `hasResumableSession` ON PURPOSE: that hook also arms the
+   * onExit force-fresh safety net, which for Codex would clear a REAL
+   * conversation on any environmental resume crash (ADR-100). This one only
+   * decides fresh-vs-resume up front.
+   *
+   * `env` is the AGENT's effective env (a preset may set its own CODEX_HOME).
+   * Return false ONLY when positively sure nothing was saved; THROW when you
+   * can't tell — the runtime then resumes (fails open), because a false "not
+   * saved" would sever a real conversation.
+   */
+  hasResumableThread?(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+  ): boolean;
+
+  /**
+   * Optional: the permission mode a RESUMED thread actually runs, when it
+   * disagrees with the record (`recordMode`). A resumed Codex thread keeps its
+   * creation-time policy, and pre-ADR-104 a failed mode-change resume could
+   * leave the record naming a mode the thread never ran. Undefined = record is
+   * consistent (or can't tell). The runtime corrects the record and says so.
+   */
+  resumedThreadMode?(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+    recordMode: PermissionMode,
+  ): PermissionMode | undefined;
+
+  /**
+   * Optional: true when changing permission mode `from` → `to` CANNOT take
+   * effect on a RESUMED conversation. Codex persists a thread's approval/sandbox
+   * policy and rejects permission overrides on a remote resume, so the thread
+   * keeps the policy it started with. The runtime then keeps the record on the
+   * mode the process actually runs and tells the user, rather than recording a
+   * change that never applied.
+   */
+  resumeCannotApplyModeChange?(
+    from: PermissionMode,
+    to: PermissionMode,
+  ): boolean;
+
+  /**
+   * Optional: a user-facing notice when `mode` has no native equivalent in this
+   * provider and is clamped to something else (Codex: `plan` and `auto` both
+   * behave like Ask). The runtime surfaces it as a notification on a fresh
+   * spawn, so a clamp is never silent. Undefined = the mode is native.
+   */
+  clampedModeNotice?(mode: PermissionMode): string | undefined;
 
   /**
    * Optional: translate a native hook event into CC-shaped vocabulary so the
