@@ -11,13 +11,16 @@
  * wrapper follows. Closing the PTY master (`destroy()`) alone did not help.
  *
  * Escalation: SIGHUP to the group now, SIGTERM at `termAfterMs`, SIGKILL at
- * `killAfterMs`. The group signal also reaches anything the agent backgrounded
- * in its session (a dev server, `tail -f`) — the intent for kill / delete /
- * restart / shutdown.
+ * `killAfterMs`. The group signal reaches every process still in the agent's
+ * group (MCP servers, relaunched children). It does NOT reach work the agent
+ * put in a group of its own: measured, Claude Code's Bash tool runs each
+ * command in a separate process group, so `nohup … &` from an agent is out of
+ * reach here (and, reparented to init, of any kill) — by design of the tool.
  *
  * PID-reuse safety: nothing is signalled once the PTY's onExit has fired —
- * every pending escalation stage is cancelled on exit. After the leader is reaped its
- * pid can be reused, and a later `-pid` could name an unrelated group.
+ * every pending escalation stage is cancelled on exit. After the leader is
+ * reaped its pid can be reused, and a later `-pid` could name an unrelated
+ * group.
  */
 
 import { execFileSync } from "node:child_process";
@@ -38,19 +41,31 @@ export interface TerminatePtyOptions {
 }
 
 /**
- * How many processes are in the group right now (ps), or undefined if it
- * can't be read. Logged at kill time so the operator can see what a group
- * kill took with it beyond the agent CLI — backgrounded dev servers,
- * `tail -f`, MCP servers.
+ * pgid of every process, from one `ps`. Reused for a short window so a burst of
+ * kills (shutdown, restart-all: one per agent) costs a single `ps`, not one per
+ * agent on the event loop.
+ */
+let pgidTable: { at: number; pgids: number[] } | undefined;
+const PGID_TABLE_TTL_MS = 500;
+
+/**
+ * How many processes are in the group right now, or undefined if it can't be
+ * read. Logged at kill time so the operator can see what a group kill took
+ * with it beyond the agent CLI (MCP servers, anything left in its group).
  */
 function groupSize(pgid: number): number | undefined {
-  try {
-    return execFileSync("ps", ["-axo", "pgid="], { encoding: "utf8" })
-      .split("\n")
-      .filter((l) => Number(l.trim()) === pgid).length;
-  } catch {
-    return undefined;
+  const now = Date.now();
+  if (!pgidTable || now - pgidTable.at > PGID_TABLE_TTL_MS) {
+    try {
+      const pgids = execFileSync("ps", ["-axo", "pgid="], { encoding: "utf8" })
+        .split("\n")
+        .map((l) => Number(l.trim()));
+      pgidTable = { at: now, pgids };
+    } catch {
+      return undefined;
+    }
   }
+  return pgidTable.pgids.filter((g) => g === pgid).length;
 }
 
 type TerminablePty = Pick<IPty, "pid" | "onExit" | "kill">;
@@ -145,7 +160,7 @@ function escalate(
     const n = groupSize(pty.pid);
     if (n !== undefined && n > 1) {
       console.log(
-        `[pty] stopping ${opts.label}: its process group has ${n} processes (the agent CLI + ${n - 1} more — MCP servers, anything it backgrounded)`,
+        `[pty] stopping ${opts.label}: its process group has ${n} processes (the agent CLI + ${n - 1} more, e.g. its MCP servers)`,
       );
     }
   }
