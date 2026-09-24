@@ -23,8 +23,52 @@ export interface Sidecar {
   endpoint: string;
   /** The daemon child process. */
   proc: ChildProcess;
-  /** Kill the daemon. Idempotent. */
-  dispose(): void;
+  /**
+   * Kill the daemon: SIGTERM, then SIGKILL after {@link SIDECAR_KILL_AFTER_MS}.
+   * Idempotent. Resolves once the daemon has actually EXITED — callers that are
+   * about to lose the event loop (server shutdown) must await it, bounded, via
+   * {@link awaitSidecarExits}. Callers whose process keeps running may ignore
+   * it (`void`) — the escalation fires on its own.
+   */
+  dispose(): Promise<void>;
+}
+
+/**
+ * How long a disposed daemon gets to honor SIGTERM before SIGKILL.
+ *
+ * Codex treats SIGTERM as "drain": an idle daemon exits at once, but a daemon
+ * mid-turn keeps running the turn — model calls, tool calls, the agent's shell
+ * commands — until it completes, and only then exits. SIGKILL is what actually
+ * stops an in-flight turn (the daemon's children die with it; measured on codex
+ * 0.154). That is the resume-safe outcome: the turn is cut exactly as a crash
+ * cuts it, which ADR-104's resume path already survives.
+ */
+export const SIDECAR_KILL_AFTER_MS = 2_000;
+
+/**
+ * Wait for disposed daemons to exit, but never longer than `capMs` (default:
+ * the SIGKILL escalation plus a margin for the kill to land). Resolves `true`
+ * if every daemon exited in time.
+ *
+ * Server shutdown must go through this rather than calling `process.exit()`
+ * straight after dispose(): the SIGKILL escalation is a timer in THIS process,
+ * so exiting first pre-empts it, and a daemon that was mid-turn outlives the
+ * server — orphaned to init, still running its turn. The cap timer is ref'd so
+ * the wait holds the loop open on its own rather than relying on whatever
+ * other handles happen to be alive.
+ */
+export function awaitSidecarExits(
+  exits: Promise<void>[],
+  capMs = SIDECAR_KILL_AFTER_MS + 1_000,
+): Promise<boolean> {
+  if (exits.length === 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const cap = setTimeout(() => resolve(false), capMs);
+    void Promise.all(exits).then(() => {
+      clearTimeout(cap);
+      resolve(true);
+    });
+  });
 }
 
 /** Pick a free TCP port on loopback by binding :0 and reading the assignment. */
@@ -76,11 +120,20 @@ export function startSidecarDaemon(
       env: opts.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // Settles when the daemon is gone. A spawn failure ('error' with no pid)
+    // never ran a process, so it counts as exited; a post-readiness 'error'
+    // (e.g. a failed kill) does not.
+    const exited = new Promise<void>((resolveExit) => {
+      proc.once("exit", () => resolveExit());
+      proc.once("error", () => {
+        if (proc.pid === undefined) resolveExit();
+      });
+    });
 
-    const dispose = () => {
+    const dispose = (): Promise<void> => {
       disposing = true;
       // Already exited — nothing to do.
-      if (proc.exitCode !== null || proc.signalCode !== null) return;
+      if (proc.exitCode !== null || proc.signalCode !== null) return exited;
       try {
         proc.kill("SIGTERM");
       } catch (err) {
@@ -88,7 +141,7 @@ export function startSidecarDaemon(
         // Any other errno (e.g. EPERM) means it may still be ALIVE but we
         // couldn't signal it; fall through to the SIGKILL escalation rather
         // than silently abandoning a live daemon.
-        if ((err as NodeJS.ErrnoException).code === "ESRCH") return;
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") return exited;
         console.warn(
           `[sidecar] SIGTERM failed for daemon pid ${proc.pid} (${
             (err as Error).message
@@ -96,18 +149,20 @@ export function startSidecarDaemon(
         );
       }
       // Escalate to SIGKILL if the daemon doesn't exit promptly, so a stuck
-      // daemon never lingers and holds its port. The timer is unref'd so it
-      // never keeps the server process alive on its own, and is cleared the
-      // moment the daemon actually exits.
+      // (or mid-turn, see SIDECAR_KILL_AFTER_MS) daemon never lingers and
+      // holds its port. The timer is unref'd so it never keeps the server
+      // process alive on its own — which is why shutdown must go through
+      // awaitSidecarExits — and is cleared the moment the daemon exits.
       const kill = setTimeout(() => {
         try {
           proc.kill("SIGKILL");
         } catch {
           // already gone
         }
-      }, 2_000);
+      }, SIDECAR_KILL_AFTER_MS);
       kill.unref();
       proc.once("exit", () => clearTimeout(kill));
+      return exited;
     };
 
     const onReady = () => {
@@ -158,7 +213,7 @@ export function startSidecarDaemon(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      dispose();
+      void dispose();
       reject(err);
     };
 

@@ -70,6 +70,7 @@ import {
   setInternalSocketPath,
   setServerPort,
 } from "./serverState.js";
+import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
 import { getServerVersion } from "./version.js";
 import { agentsRouter as agentsWsRouter } from "./ws/agents.js";
@@ -750,12 +751,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // Clean up all PTY processes on shutdown. Agents stay in persistence as
   // "running" so they auto-resume on next boot.
-  const shutdown = (): void => {
-    console.log(
-      "Shutting down — killing PTYs (agents will resume on next start)...",
-    );
-    stopScheduler();
-    shutdownAllAttachments();
+  const exitProcess = (): void => {
     // Release the pid file (claimed via acquireOwnership at startup),
     // per ADR-029.
     removePidFile();
@@ -767,6 +763,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     removeControlSocket(controlSocketPath);
     process.exit(0);
   };
+  const shutdown = createShutdownHandler({
+    stopWork: stopScheduler,
+    teardownAgents: shutdownAllAttachments,
+    exitProcess,
+  });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 

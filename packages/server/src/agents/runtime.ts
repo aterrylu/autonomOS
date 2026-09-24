@@ -60,7 +60,12 @@ import {
   supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
-import { pickFreePort, type Sidecar, startSidecarDaemon } from "./sidecar.js";
+import {
+  awaitSidecarExits,
+  pickFreePort,
+  type Sidecar,
+  startSidecarDaemon,
+} from "./sidecar.js";
 import {
   buildAgent,
   deleteAgentRaw,
@@ -271,7 +276,12 @@ export function _registerSyntheticAttachment(
     outputBuffer: [],
     outputSize: 0,
     ...(opts?.sidecarEndpoint
-      ? { sidecar: { endpoint: opts.sidecarEndpoint, dispose: () => {} } }
+      ? {
+          sidecar: {
+            endpoint: opts.sidecarEndpoint,
+            dispose: () => Promise.resolve(),
+          },
+        }
       : {}),
   };
   // Mirror spawnAgent's output-buffer onData so replay works.
@@ -1185,7 +1195,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     args = provider.buildArgs(resolved);
   } catch (err) {
     // buildArgs threw after the daemon was already started — don't leak it.
-    sidecar?.dispose();
+    void sidecar?.dispose();
     throw err;
   }
 
@@ -1222,7 +1232,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     });
   } catch (err) {
     // PTY spawn failed — don't leak the sidecar daemon we just started.
-    sidecar?.dispose();
+    void sidecar?.dispose();
     throw err;
   }
 
@@ -1282,7 +1292,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // getAgent() and here — tear down the PTY and daemon we just started so
     // neither is orphaned, then surface the race rather than crashing on a
     // non-null assertion.
-    sidecar?.dispose();
+    void sidecar?.dispose();
     try {
       pty.kill();
     } catch {
@@ -1456,7 +1466,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // the daemon does not die when the PTY does. Dispose it here unconditionally
     // (idempotent): whether this is the canonical attachment or a stale handler
     // from a replaced PTY, this closure's daemon is now orphaned and must go.
-    sidecar?.dispose();
+    void sidecar?.dispose();
 
     // Guard against stale onExit handlers firing after the same agent.id has
     // been respawned. node-pty's onExit is async, so during restartAllAttachments
@@ -1653,7 +1663,7 @@ export function killAttachment(
     console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
   }
   // Sidecar daemon is a separate process — kill it alongside the PTY.
-  managed.sidecar?.dispose();
+  void managed.sidecar?.dispose();
   disposeCodexControl(agentId);
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
@@ -1683,7 +1693,7 @@ export function deleteAgent(agentId: UUID): boolean {
     } catch (err) {
       console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
     }
-    managed.sidecar?.dispose();
+    void managed.sidecar?.dispose();
     live.delete(agentId);
   }
   disposeCodexControl(agentId);
@@ -1708,9 +1718,15 @@ export function deleteAgent(agentId: UUID): boolean {
 /**
  * Kill all PTY processes without marking the Agent records exited.
  * Used during server shutdown so agents auto-resume on next boot.
+ *
+ * The teardown itself is synchronous; it returns one promise per sidecar daemon,
+ * each settling once that daemon has actually exited. The caller must await
+ * them (bounded, via awaitSidecarExits) before process.exit — a Codex daemon mid-turn does not
+ * exit on SIGTERM, and only a live event loop lets its SIGKILL escalation fire.
  */
-export function shutdownAllAttachments(): void {
+export function shutdownAllAttachments(): Promise<void>[] {
   shuttingDown = true;
+  const daemonExits: Promise<void>[] = [];
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [agentId, managed] of live) {
@@ -1736,7 +1752,7 @@ export function shutdownAllAttachments(): void {
     // own registry, not in `live`.)
     try {
       disposeCodexControl(agentId);
-      managed.sidecar?.dispose();
+      if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
     } catch (err) {
       // A throw here would skip every REMAINING agent's teardown and — since
       // the signal handler that calls this has no catch — removePidFile,
@@ -1749,6 +1765,7 @@ export function shutdownAllAttachments(): void {
     }
   }
   live.clear();
+  return daemonExits;
 }
 
 /** Reset shuttingDown — used after restartAllAttachments to permit normal
@@ -1919,6 +1936,7 @@ export async function restartAllAttachments(): Promise<{
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
   const failures: Array<{ id: UUID; name: string; error: string }> = [];
+  const daemonExits: Promise<void>[] = [];
 
   // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
   shuttingDown = true;
@@ -1937,9 +1955,18 @@ export async function restartAllAttachments(): Promise<{
       );
     }
     // Dispose the sidecar daemon too — it won't die with the PTY.
-    managed.sidecar?.dispose();
+    if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
   }
   live.clear();
+  // Let the old daemons exit before the respawns resume their threads. A
+  // daemon mid-turn drains on SIGTERM, and until its SIGKILL lands it is still
+  // appending to the very thread the new daemon is about to resume — two
+  // daemons on one thread. Bounded: the escalation guarantees an exit.
+  if (!(await awaitSidecarExits(daemonExits))) {
+    console.warn(
+      "[runtime] restart-all: a sidecar daemon had not exited after SIGKILL — respawning anyway",
+    );
+  }
   resetShuttingDown();
 
   // Respawn each (id stays the same since we resume by agent id).
