@@ -106,7 +106,11 @@ export function _resetResumeSignalForTesting(): void {
   });
 }
 
+/** unref'd: a pending verdict must never keep the daemon alive. A zero wait
+ *  resolves without a timer — an unref'd timer as the ONLY pending work
+ *  lets the event loop drain before it fires (seen in CI's test runner). */
 function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
   return new Promise((r) => setTimeout(r, ms).unref());
 }
 
