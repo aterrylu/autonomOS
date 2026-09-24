@@ -195,21 +195,68 @@ const CACHE_TTL_429 = 5 * 60_000;
 let cachedOrgId: {
   orgId: string;
   fp: string;
-  /** The chosen org's bootstrap capabilities, when bootstrap resolved it (a
-   *  pasted full cookie with lastActiveOrg carries none). */
-  caps?: string[];
+  /** The chosen org's bootstrap capabilities. "unknown" = bootstrap couldn't
+   *  tell us (failed, or didn't list the org); spend stays OFF then, and the
+   *  lookup is retried on the next poll. */
+  caps?: string[] | "unknown";
 } | null = null;
 
 /** Capabilities that mark a claude.ai WINDOW plan (Pro / Max). The same
  *  vocabulary selectUsageOrg already relies on ("claude_max"). */
 const WINDOW_PLAN_CAPS = new Set(["claude_max", "claude_pro"]);
 
-/** True when the org behind this session key is a Pro/Max window plan — the
- *  session-key twin of the OAuth path's subscriptionType guard: a windowless
- *  answer there is a #387 fault to diagnose, not a spend meter to show. */
-function isWindowPlanOrg(fp: string): boolean {
+/**
+ * May a windowless answer for this session key show a spend meter? The
+ * session-key twin of the OAuth path's subscriptionType guard: NOT for a
+ * Pro/Max org (a windowless answer there is a #387 fault to diagnose), and NOT
+ * when the org's capabilities are unknown — hiding spend is safer than showing
+ * a spend meter to a window-plan user.
+ */
+function spendAllowedForOrg(fp: string): boolean {
   const caps = cachedOrgId?.fp === fp ? cachedOrgId.caps : undefined;
-  return caps?.some((c) => WINDOW_PLAN_CAPS.has(c)) ?? false;
+  if (caps === "unknown") return false;
+  return !(caps?.some((c) => WINDOW_PLAN_CAPS.has(c)) ?? false);
+}
+
+const warnedCaps = new Set<string>();
+
+/**
+ * The capabilities of a KNOWN org id, from bootstrap — for a pasted full
+ * cookie whose lastActiveOrg already names the org, so selectUsageOrg never
+ * ran. "unknown" (with a once-per-reason log) when bootstrap can't say.
+ */
+async function fetchOrgCaps(
+  cookie: string,
+  orgId: string,
+  fetcher: UsageFetcher,
+): Promise<string[] | "unknown"> {
+  const unknown = (reason: string): "unknown" => {
+    if (!warnedCaps.has(reason)) {
+      warnedCaps.add(reason);
+      console.warn(
+        `[claude-usage] org capabilities unknown for the pasted cookie (${reason}): spend display off, the no-window diagnosis stays`,
+      );
+    }
+    return "unknown";
+  };
+  try {
+    const res = await fetcher(BOOTSTRAP_URL, {
+      headers: { Cookie: buildCookieHeader(cookie) },
+    });
+    if (!res.ok) return unknown(`bootstrap HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      account?: { memberships?: Membership[] };
+    };
+    const org = data?.account?.memberships?.find(
+      (m) => m.organization?.uuid === orgId,
+    )?.organization;
+    if (!org) return unknown("bootstrap did not list the cookie's org");
+    return org.capabilities ?? [];
+  } catch (err) {
+    return unknown(
+      `bootstrap failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+    );
+  }
 }
 
 /**
@@ -414,14 +461,25 @@ export async function fetchOrgId(
 ): Promise<OrgIdResult> {
   const fp = fingerprint(cookie);
   if (cachedOrgId && cachedOrgId.fp === fp) {
+    // Capabilities that bootstrap couldn't supply last time: try again.
+    if (cachedOrgId.caps === "unknown") {
+      cachedOrgId.caps = await fetchOrgCaps(cookie, cachedOrgId.orgId, fetcher);
+    }
     return { orgId: cachedOrgId.orgId, status: "ok" };
   }
 
-  // Honor an explicit lastActiveOrg if present (manual full-cookie paste).
+  // Honor an explicit lastActiveOrg if present (manual full-cookie paste) —
+  // and still ask bootstrap for that org's capabilities, so the Pro/Max spend
+  // guard works on this path too.
   const orgMatch = cookie.match(/lastActiveOrg=([^;]+)/);
   if (orgMatch) {
-    cachedOrgId = { orgId: orgMatch[1], fp };
-    return { orgId: orgMatch[1], status: "ok" };
+    const orgId = orgMatch[1];
+    cachedOrgId = {
+      orgId,
+      fp,
+      caps: await fetchOrgCaps(cookie, orgId, fetcher),
+    };
+    return { orgId, status: "ok" };
   }
 
   // Resolve from the bootstrap API using the session key alone. Same edge
@@ -1015,7 +1073,7 @@ async function fetchCookieRateLimits(
   // (the web body omits extra_usage.is_enabled, hence `web`) — but not a
   // Pro/Max org, whose windowless answer keeps the #387 diagnosis (the same
   // guard the OAuth path applies via subscriptionType).
-  if (!hasWindows(data) && !isWindowPlanOrg(fp)) {
+  if (!hasWindows(data) && spendAllowedForOrg(fp)) {
     const spend = mapSpendLimit(body as unknown as OAuthUsageRaw, {
       web: true,
     });

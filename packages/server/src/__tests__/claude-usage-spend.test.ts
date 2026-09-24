@@ -349,6 +349,82 @@ describe("getRateLimits — spend meter only for spend-metered accounts", () => 
     }
   });
 
+  describe("pasted FULL cookie (carries lastActiveOrg)", () => {
+    const WINDOWLESS_CREDITS = {
+      five_hour: null,
+      seven_day: null,
+      extra_usage: { monthly_limit: 5000, used_credits: 1200 },
+    };
+    const withKey = (key: string) =>
+      writeFileSync(
+        join(TEST_DIR, "settings.json"),
+        JSON.stringify({
+          autoDetectClaudeAccount: false,
+          claudeSessionKey: key,
+        }),
+      );
+    afterEach(() => rmSync(join(TEST_DIR, "settings.json"), { force: true }));
+    const bootstrap = (caps: string[]) => ({
+      account: {
+        memberships: [
+          { organization: { uuid: "org-full-0001", capabilities: caps } },
+        ],
+      },
+    });
+
+    it("a Max org still keeps the #387 diagnosis (caps fetched from bootstrap on this path too)", async () => {
+      withKey("sk-ant-sid01-full; lastActiveOrg=org-full-0001");
+      const d = await getRateLimits(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.includes("/bootstrap")
+            ? bootstrap(["chat", "claude_max"])
+            : WINDOWLESS_CREDITS,
+      }));
+      assert.equal(
+        d.spendLimit,
+        undefined,
+        "a Max org never shows a spend meter",
+      );
+      assert.equal(d.diagnosis?.code, "no_rolling_limits");
+    });
+
+    it("an Enterprise org on the same path still shows its spend", async () => {
+      withKey("sk-ant-sid01-ent; lastActiveOrg=org-full-0001");
+      const d = await getRateLimits(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.includes("/bootstrap") ? bootstrap(["chat"]) : WINDOWLESS_CREDITS,
+      }));
+      assert.equal(d.spendLimit?.used, 12);
+      assert.equal(d.spendLimit?.limit, 50);
+    });
+
+    it("bootstrap failing → caps unknown → no spend meter, diagnosis kept, reason logged once", async () => {
+      withKey("sk-ant-sid01-nobs; lastActiveOrg=org-full-0001");
+      const warned: string[] = [];
+      console.warn = (...a: unknown[]) => {
+        warned.push(a.join(" "));
+      };
+      const fetcher = async (url: string) =>
+        url.includes("/bootstrap")
+          ? { ok: false, status: 503, json: async () => ({}) }
+          : { ok: true, status: 200, json: async () => WINDOWLESS_CREDITS };
+      const d = await getRateLimits(fetcher);
+      invalidateCache();
+      await getRateLimits(fetcher);
+      assert.equal(d.spendLimit, undefined);
+      assert.equal(d.diagnosis?.code, "no_rolling_limits");
+      assert.equal(
+        warned.filter((w) => /org capabilities unknown/.test(w)).length,
+        1,
+        "the reason is logged once",
+      );
+    });
+  });
+
   it("Terry's Max payload is unchanged: windows, no spend meter", async () => {
     serve(MAX_HOME);
     const d = await getRateLimits();
