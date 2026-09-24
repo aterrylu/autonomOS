@@ -39,6 +39,9 @@ const WELCOME =
 
 class FakePty implements PtyHandle {
   written: string[] = [];
+  /** Every write() call, INCLUDING ones swallowed pre-attach — the watcher's
+   *  attempt count, observable without a clock. */
+  writeCalls = 0;
   private handlers: Array<(data: string) => void> = [];
   /** When false, writes are swallowed (stdin handler not attached yet). */
   stdinAttached = true;
@@ -47,6 +50,7 @@ class FakePty implements PtyHandle {
   throwOnWrite = false;
 
   write(data: string): void {
+    this.writeCalls += 1;
     if (this.throwOnWrite) throw new Error("EIO: pty closed");
     if (!this.stdinAttached) return; // swallowed — the race
     this.written.push(data);
@@ -402,13 +406,17 @@ describe("startup watcher — default-No trust dialog + verified dismissal", () 
     // Pre-fix ANSI_RE left "0q"/"4m" fragments from these, which then passed
     // the (old) any-byte dismissal check and settled the watcher instantly.
     pty.emit("\x1b[>0q\x1b[>4m\x1b[<u");
-    await sleep(60); // multiple check windows at FAST timing
-    assert.equal(
-      pty.watcherCount,
-      1,
-      "stripped-to-nothing chatter must not settle the watcher",
-    );
+    // Asserted on STATE, not a wall-clock window: "still engaged after
+    // sleep(60)" raced the watcher's own ~60ms attempt budget (3 × 20ms) and
+    // false-failed whenever the sleep overslept. What the chatter must not do
+    // is settle the watcher EARLY — so wait for disposal, then prove it got
+    // there by exhausting every attempt rather than by a false dismissal.
     await waitFor(() => pty.watcherCount === 0, "exhausts attempts");
+    assert.equal(
+      pty.writeCalls,
+      3,
+      "stripped-to-nothing chatter must not settle the watcher before its attempt budget",
+    );
     assert.deepEqual(
       pty.written,
       [],
