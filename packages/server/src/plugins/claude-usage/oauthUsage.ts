@@ -295,6 +295,16 @@ async function resolveToken(): Promise<TokenRead> {
     };
   }
 
+  // Test-isolation opt-out: the real-spawn integration harness sets this so a
+  // test server never reads the operator's keychain or credentials file. The
+  // keychain lookup is keyed on $USER, not HOME, so a throwaway HOME alone does
+  // not isolate it. An explicit CLAUDE_CODE_OAUTH_TOKEN (above) still applies;
+  // only the user's credential STORES are skipped, with no failure reason
+  // (nothing was attempted, so there is nothing to explain).
+  if (process.env.AUTONOMOS_DISABLE_CREDENTIAL_READS === "1") {
+    return { token: null, failure: null };
+  }
+
   const fromKeychain = await readKeychainCredentials();
   const keychainToken = fromKeychain.ok
     ? parseToken(fromKeychain.raw, "keychain")

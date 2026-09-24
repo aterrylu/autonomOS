@@ -293,6 +293,14 @@ describe("permission mode — process and record agree across a resume", {
       "the normalized legacy spelling must launch as ask (no permission flag)",
     );
   });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
+  });
 });
 
 /**
@@ -506,5 +514,13 @@ describe("restart-all preserves per-agent permission modes", {
       );
       return;
     }
+  });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
   });
 });

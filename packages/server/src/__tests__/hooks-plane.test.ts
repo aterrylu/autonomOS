@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { statSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 import {
   authedJson,
@@ -57,6 +57,9 @@ describe("/api/hooks trust boundary", {
 
   after(() => {
     server?.kill();
+    // Remove this boot's config dir (incl. its throwaway HOME) like the other
+    // real-spawn suites do; it was left behind in $TMPDIR on every run.
+    if (server) rmSync(server.configDir, { recursive: true, force: true });
   });
 
   const SESSION = "hook-plane-probe";
@@ -139,5 +142,13 @@ describe("/api/hooks trust boundary", {
     // harmless security-wise but would mean the dashboard had lost it.
     const res = await socketRequest(server, "/api/agent-status");
     assert.equal(res.status, 404);
+  });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
   });
 });

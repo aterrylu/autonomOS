@@ -3,21 +3,29 @@
  * REAL server as a child process with an isolated CONFIG_DIR, plus small
  * HTTP helpers.
  *
- * CI-ONLY GATE (load-bearing safety). These suites boot a real autonomos
- * server and spawn REAL `claude` processes under a PTY. On a developer machine
- * that is ALSO running a live autonomos deployment, that is dangerous — a
- * careless cleanup like `pkill -f claude` would kill the operator's real
- * agents (this happened once). So the suites NEVER run unless
- * AUTONOMOS_INTEGRATION=1 is set, which ONLY CI sets (see
- * .github/workflows/test.yml). If you ever run them locally, do so on a
- * machine with no live deployment, and NEVER use a broad pkill — only ever
- * kill scoped PIDs / agent ids.
+ * OPT-IN GATE. These suites boot a real autonomos server and spawn REAL
+ * `claude` processes under a PTY, so they only run with AUTONOMOS_INTEGRATION=1
+ * (CI sets it; see .github/workflows/test.yml). Running them locally next to a
+ * live deployment is safe as audited in ADR-103: every boot is isolated
+ * (own config dir, token, --port=0, control socket, throwaway HOME /
+ * CLAUDE_CONFIG_DIR / CODEX_HOME, no credential-store reads) and each suite
+ * asserts nothing landed in the operator's real ~/.claude. The one rule that
+ * still matters: NEVER clean up with a broad `pkill -f claude` — that kills the
+ * operator's real agents (this happened once). Only kill scoped PIDs.
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,10 +60,91 @@ export interface BootedServer {
   port: number;
   token: string;
   configDir: string;
+  /** Throwaway HOME the server and every agent it spawns run under. */
+  fakeHome: string;
   kill: () => void;
+  /** Throws if this run left anything in the operator's REAL Claude Code
+   *  state (a session dir under ~/.claude/projects, or a trust entry in
+   *  ~/.claude.json) for a temp-dir cwd. Call in every suite's `after`. */
+  assertNoRealHomeLeak: () => void;
   /** Full stdout+stderr captured so far — include in assertion messages so
    *  the server's prompt-delivery/auto-trust decisions are visible on failure. */
   logs: () => string;
+}
+
+// ── Real-HOME isolation ──────────────────────────────────────────────
+//
+// The suites spawn a REAL `claude`. With the operator's HOME inherited, every
+// run wrote a session dir into the real ~/.claude/projects (they surface in
+// the dashboard's Projects panel as autonomos-usageq-cwd-* / -prompt-cwd-*)
+// and the spawn-time pre-trust wrote a `projects[<tmp cwd>]` entry into the
+// real ~/.claude.json. Each boot now runs under its own throwaway HOME inside
+// its configDir (so the suites' existing rmSync(configDir) cleans it up), and
+// the leak itself is asserted rather than assumed.
+
+/** The operator's real Claude Code config dir, resolved the way CC does. */
+function realClaudeDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+}
+function realClaudeJson(): string {
+  const cfg = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return cfg ? join(cfg, ".claude.json") : join(homedir(), ".claude.json");
+}
+
+/** CC names a project dir by replacing every non-alphanumeric in the cwd with
+ *  "-". A temp-dir cwd therefore starts with the encoded tmpdir (both the
+ *  symlinked and the resolved spelling — /var vs /private/var on macOS). */
+function tmpPrefixes(): { dirs: string[]; paths: string[] } {
+  const paths = [...new Set([tmpdir(), realpathSync(tmpdir())])];
+  return { paths, dirs: paths.map((p) => p.replace(/[^a-zA-Z0-9]/g, "-")) };
+}
+
+function listRealProjectDirs(): Set<string> {
+  try {
+    return new Set(readdirSync(join(realClaudeDir(), "projects")));
+  } catch {
+    return new Set();
+  }
+}
+function listRealTrustKeys(): Set<string> {
+  try {
+    const cfg = JSON.parse(readFileSync(realClaudeJson(), "utf-8")) as {
+      projects?: Record<string, unknown>;
+    };
+    return new Set(Object.keys(cfg.projects ?? {}));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Seed a throwaway HOME the way CI seeds its runner: onboarding complete, so
+ *  the TUI boots straight to the prompt (else SessionStart never fires). The
+ *  config lives at CLAUDE_CONFIG_DIR, which we set explicitly so it wins even
+ *  when the developer exports their own. */
+function seedFakeHome(fakeHome: string): string {
+  const claudeDir = join(fakeHome, ".claude");
+  mkdirSync(claudeDir, { recursive: true });
+  // Probe under the fake HOME too: even `--version` must not start a claude
+  // against the operator's real config.
+  const v = spawnSync("claude", ["--version"], {
+    encoding: "utf-8",
+    env: { ...process.env, HOME: fakeHome, CLAUDE_CONFIG_DIR: claudeDir },
+  });
+  const version = /(\d+\.\d+\.\d+)/.exec(v.stdout ?? "")?.[1] ?? "2.1.168";
+  writeFileSync(
+    join(claudeDir, ".claude.json"),
+    `${JSON.stringify(
+      {
+        hasCompletedOnboarding: true,
+        numStartups: 5,
+        theme: "dark",
+        lastOnboardingVersion: version,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return claudeDir;
 }
 
 /**
@@ -77,6 +166,12 @@ export async function bootServer(opts?: {
   anthropicAuthToken?: string;
 }): Promise<BootedServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-integ-"));
+  const fakeHome = join(configDir, "home");
+  const fakeClaudeDir = seedFakeHome(fakeHome);
+  // Snapshot BEFORE anything spawns: only entries NEW since boot count, so the
+  // operator's live fleet writing its own sessions can't trip the assertion.
+  const realDirsBefore = listRealProjectDirs();
+  const realTrustBefore = listRealTrustKeys();
   const token = `integ-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
   if (opts?.anthropicBaseUrl) {
@@ -105,6 +200,19 @@ export async function bootServer(opts?: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: configDir,
       AUTONOMOS_TOKEN: token,
+      // Inherited by every spawned agent (providers/shared.ts buildBaseEnv).
+      HOME: fakeHome,
+      CLAUDE_CONFIG_DIR: fakeClaudeDir,
+      CODEX_HOME: join(fakeHome, ".codex"),
+      // The usage plugin's keychain read is keyed on $USER, not HOME, so the
+      // fake HOME alone does not isolate it. This makes it read no store.
+      AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
+      // No telemetry / error-report / auto-update traffic from test agents.
+      // (Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: the provider strips every
+      // CLAUDE_CODE_* var from agent envs, providers/shared.ts.)
+      DISABLE_TELEMETRY: "1",
+      DISABLE_ERROR_REPORTING: "1",
+      DISABLE_AUTOUPDATER: "1",
       ...(opts?.anthropicBaseUrl
         ? {
             ANTHROPIC_BASE_URL: opts.anthropicBaseUrl,
@@ -196,8 +304,30 @@ export async function bootServer(opts?: {
     port,
     token,
     configDir,
+    fakeHome,
     kill: (): void => {
       if (child.exitCode === null) child.kill("SIGTERM");
+    },
+    assertNoRealHomeLeak: (): void => {
+      const { dirs, paths } = tmpPrefixes();
+      const newDirs = [...listRealProjectDirs()].filter(
+        (d) => !realDirsBefore.has(d) && dirs.some((p) => d.startsWith(p)),
+      );
+      const newTrust = [...listRealTrustKeys()].filter(
+        (k) => !realTrustBefore.has(k) && paths.some((p) => k.startsWith(p)),
+      );
+      if (newDirs.length || newTrust.length) {
+        throw new Error(
+          "Integration run leaked into the operator's REAL Claude Code state " +
+            `(expected everything under ${fakeHome}):\n` +
+            newDirs
+              .map((d) => `  ${realClaudeDir()}/projects/${d}`)
+              .join("\n") +
+            (newTrust.length
+              ? `\n  ${realClaudeJson()} trust keys: ${newTrust.join(", ")}`
+              : ""),
+        );
+      }
     },
     logs: (): string =>
       `stdout:\n${stdoutChunks.join("")}\nstderr:\n${stderrChunks.join("")}`,
