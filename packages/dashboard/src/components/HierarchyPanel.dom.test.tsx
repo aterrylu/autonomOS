@@ -448,14 +448,58 @@ describe("selection + inspector", () => {
       document.querySelector('[data-org-action="open"]') as HTMLElement,
     );
     expect(switchPane).toHaveBeenCalledWith({ type: "session", id: "R2" });
+    // Opening leaves the chart, so the selection (and its inspector) drops.
+    expect(inspector()).toBeNull();
+
+    fireEvent.click(card("R2") as HTMLElement);
     fireEvent.click(screen.getByRole("button", { name: "Close details" }));
     expect(inspector()).toBeNull();
 
+    // A real click: pointer-down lands IN the chart, so Esc is ours.
+    fireEvent.pointerDown(card("R2") as HTMLElement);
     fireEvent.click(card("R2") as HTMLElement);
     expect(hasEscapeCloser()).toBe(true);
     act(() => closeTopEscape());
     expect(inspector()).toBeNull();
     expect(hasEscapeCloser()).toBe(false);
+  });
+
+  it("opening an agent from the chart drops the selection — Esc is NOT held for a hidden chart (nox, #390)", async () => {
+    // Dockview keeps this panel mounted while hidden; a lingering selection
+    // used to keep an escape closer, so the first Esc typed into the terminal
+    // you just opened only cleared the invisible selection.
+    fleet();
+    const switchPane = vi.fn();
+    useStore.setState({ switchPane });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.pointerDown(card("R2") as HTMLElement);
+    fireEvent.click(card("R2") as HTMLElement);
+    expect(hasEscapeCloser()).toBe(true);
+    fireEvent.doubleClick(card("R2") as HTMLElement);
+    expect(switchPane).toHaveBeenCalled();
+    expect(inspector()).toBeNull();
+    expect(hasEscapeCloser()).toBe(false);
+  });
+
+  it("focus or a pointer landing OUTSIDE the chart releases Escape but keeps the selection", async () => {
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.pointerDown(card("R1") as HTMLElement);
+    fireEvent.click(card("R1") as HTMLElement);
+    expect(hasEscapeCloser()).toBe(true);
+    // e.g. clicking into a terminal pane beside the chart in a split layout
+    const outside = document.createElement("textarea");
+    document.body.appendChild(outside);
+    fireEvent.pointerDown(outside);
+    fireEvent.focusIn(outside);
+    expect(hasEscapeCloser()).toBe(false);
+    expect(inspector()?.dataset.orgInspector).toBe("R1");
+    // Coming back into the chart re-arms it.
+    fireEvent.pointerDown(card("R1") as HTMLElement);
+    expect(hasEscapeCloser()).toBe(true);
+    outside.remove();
   });
 
   it("clicking empty canvas clears the selection", async () => {

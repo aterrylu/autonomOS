@@ -948,7 +948,13 @@ export function HierarchyPanel() {
   const restartSession = useStore((s) => s.restartSession);
   const [showAllExited, setShowAllExited] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const select = useCallback((id: string | null) => setSelectedId(id), []);
+  const [engaged, setEngaged] = useState(false);
+  // Every selection comes from an interaction IN the chart (a card, an arrow
+  // key, an inspector chip, a bubble), so selecting also marks it engaged.
+  const select = useCallback((id: string | null) => {
+    setSelectedId(id);
+    if (id) setEngaged(true);
+  }, []);
   const [menu, setMenu] = useState<{
     target: AgentMenuTarget;
     x: number;
@@ -969,12 +975,28 @@ export function HierarchyPanel() {
   useEffect(() => {
     if (selectedId && !selected) setSelectedId(null);
   }, [selectedId, selected]);
-  // Esc clears the selection through the ADR-065 escape stack (never a
-  // document keydown listener — those are dead under terminal focus).
+  // Esc clears the selection through the ADR-065 escape stack — but ONLY while
+  // the user is actually in the chart. Dockview keeps this panel mounted while
+  // hidden, so a selection alone must not reserve Escape: otherwise the first
+  // Esc typed into a terminal (to interrupt a turn) silently clears a chart you
+  // can't see. "Engaged" = the last focus or pointer-down landed inside the
+  // chart; the tracking listeners live only while a selection exists.
+  const chartRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!selectedId) return;
-    return pushEscapeCloser(() => setSelectedId(null));
+    const track = (e: Event) =>
+      setEngaged(!!chartRef.current?.contains(e.target as Node | null));
+    window.addEventListener("focusin", track, true);
+    window.addEventListener("pointerdown", track, true);
+    return () => {
+      window.removeEventListener("focusin", track, true);
+      window.removeEventListener("pointerdown", track, true);
+    };
   }, [selectedId]);
+  useEffect(() => {
+    if (!selectedId || !engaged) return;
+    return pushEscapeCloser(() => setSelectedId(null));
+  }, [selectedId, engaged]);
 
   const waiting = useMemo(
     () =>
@@ -996,6 +1018,10 @@ export function HierarchyPanel() {
   const openAgent = useCallback(
     (node: AgentTreeNode) => {
       const id = statusMap[node.claudeSessionId]?.session.id ?? node.id;
+      // Leaving for the terminal ends the chart interaction: drop the
+      // selection so nothing on the hidden chart competes for Escape.
+      setSelectedId(null);
+      setEngaged(false);
       switchPane({ type: "session", id });
       focusTerminal(id);
       if (notificationCounts[id]) void markNotificationsRead(id);
@@ -1076,6 +1102,7 @@ export function HierarchyPanel() {
 
   return (
     <div
+      ref={chartRef}
       data-org-chart
       className="flex h-full w-full flex-col"
       style={{ background: page.bg, color: tokens.fg }}
