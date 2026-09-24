@@ -143,6 +143,14 @@ export interface AgentProvider {
   ): boolean;
 
   /**
+   * Optional: a user-facing notice when `mode` has no native equivalent in this
+   * provider and is clamped to something else (Codex: `plan` and `auto` both
+   * behave like Ask). The runtime surfaces it as a notification on a fresh
+   * spawn, so a clamp is never silent. Undefined = the mode is native.
+   */
+  clampedModeNotice?(mode: PermissionMode): string | undefined;
+
+  /**
    * Optional: translate a native hook event into CC-shaped vocabulary so the
    * shared status derivation can consume it. Return null to drop the event
    * (e.g. streaming chunks with no lifecycle meaning). The returned object

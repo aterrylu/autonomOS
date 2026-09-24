@@ -341,6 +341,30 @@ export function retainedThreadCrashNotice(opts: {
 }
 
 /**
+ * The provider a spawn runs. A reattach runs the RECORD's provider: an omitted
+ * `provider` means "the one it already is", and one that contradicts the record
+ * is refused (a Codex thread can't be resumed by Claude Code — silently
+ * switching orphans the conversation). A new spawn uses the request, else the
+ * default. Pure + exported for tests.
+ */
+export function resolveSpawnProvider(
+  requested: Provider | undefined,
+  reattachRecord: Pick<Agent, "provider" | "name"> | undefined,
+): Provider {
+  if (reattachRecord) {
+    if (requested && requested !== reattachRecord.provider) {
+      throw new SpawnError(
+        "PROVIDER_MISMATCH",
+        409,
+        `"${reattachRecord.name}" is a ${reattachRecord.provider} agent — it can't be resumed as ${requested}. Omit provider to resume it, or spawn a new ${requested} agent.`,
+      );
+    }
+    return reattachRecord.provider;
+  }
+  return requested ?? "claude-code";
+}
+
+/**
  * Thread-resume pre-flight decision (Codex; ADR-100 "Option B"). False only when
  * the provider positively reports nothing was saved for the thread — then the
  * runtime starts a fresh thread instead of a doomed resume. Fail-OPEN: a
@@ -403,8 +427,9 @@ export class SpawnError extends Error {
     | "INVALID_SESSION_ID"
     | "NOT_ADOPTABLE"
     | "NOTHING_TO_RESUME"
-    | "INVALID_WORKING_DIRECTORY";
-  readonly status: 400 | 422;
+    | "INVALID_WORKING_DIRECTORY"
+    | "PROVIDER_MISMATCH";
+  readonly status: 400 | 409 | 422;
   constructor(
     code: SpawnError["code"],
     status: SpawnError["status"],
@@ -610,7 +635,23 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw new Error(`Invalid working directory: ${cwd}`);
   }
 
-  const providerName: Provider = (params.provider as Provider) ?? "claude-code";
+  // On a REATTACH the provider is the RECORD's — never a default. Falling back
+  // to "claude-code" here (when a caller omitted `provider`, e.g. a REST
+  // `resumeAgentId` or an agent's `create_agent(resumeSessionId)`) respawned a
+  // Codex agent as Claude Code and overwrote the record's provider, orphaning
+  // its conversation — the ADR-061 "collapse undefined too early" class again.
+  // Same two lookups as the resolution block below (which still does the
+  // not-found / already-attached validation).
+  const reattachRecord = params.resumeAgentId
+    ? getAgent(params.resumeAgentId)
+    : params.resumeSessionId
+      ? (getAgentByProviderSessionId(params.resumeSessionId) ??
+        getAgent(params.resumeSessionId as UUID))
+      : undefined;
+  const providerName = resolveSpawnProvider(
+    params.provider as Provider | undefined,
+    reattachRecord,
+  );
   const provider = getProvider(providerName);
   const binary = provider.resolveBinary();
 
@@ -1159,6 +1200,16 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw new Error(
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
+  }
+
+  // A mode the provider can't represent is clamped (Codex: plan/auto → Ask).
+  // Say so on a fresh spawn — the record keeps the requested mode, so without
+  // this the clamp would be invisible. Not on reattach: it was said at creation.
+  if (resolution !== "reattach") {
+    const clampNotice = provider.clampedModeNotice?.(permissionMode);
+    if (clampNotice) {
+      pushSystemNotification(persisted.id, `${persisted.name}: ${clampNotice}`);
+    }
   }
 
   const managed: ManagedAttachment = {

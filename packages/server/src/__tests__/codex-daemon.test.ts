@@ -170,10 +170,12 @@ describe("codex daemon topology", () => {
     });
 
     it("maps permissionMode → approval_policy on the daemon (always set)", () => {
-      // Codex has no plan mode — 'plan' clamps to ask's policy (on-request).
+      // Codex has no plan mode and no auto tier — both clamp to ask's policy
+      // (on-request). codex 0.15x accepts only on-request | never; "on-failure"
+      // was removed and silently coerced, so auto never really was on-failure.
       const cases: Record<PermissionMode, string> = {
         ask: "on-request",
-        auto: "on-failure",
+        auto: "on-request",
         plan: "on-request",
         bypass: "never",
       };
@@ -260,7 +262,7 @@ describe("codex daemon topology", () => {
       assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
-    it("auto mode keeps the sandbox off and sets approval_policy=on-failure", () => {
+    it("auto mode keeps the sandbox off and clamps to ask's on-request (Codex has no auto tier)", () => {
       const args = codexProvider.buildArgs(
         baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "auto" }),
       );
@@ -272,7 +274,7 @@ describe("codex daemon topology", () => {
         "-s",
         "danger-full-access",
         "-c",
-        'approval_policy="on-failure"',
+        'approval_policy="on-request"',
       ]);
     });
 

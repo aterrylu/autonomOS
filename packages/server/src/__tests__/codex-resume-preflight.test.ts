@@ -26,9 +26,12 @@ const { codexProvider } = await import("../providers/codex.js");
 const { _resetCodexRolloutCacheForTesting } = await import(
   "../gateway/codexRollout.js"
 );
-const { threadIsResumable, resumePermissionModeLock } = await import(
-  "../agents/runtime.js"
-);
+const {
+  threadIsResumable,
+  resumePermissionModeLock,
+  resolveSpawnProvider,
+  SpawnError,
+} = await import("../agents/runtime.js");
 
 const opts = (o: Partial<ResolvedSpawnOptions> = {}) =>
   ({ providerThreadId: undefined, ...o }) as ResolvedSpawnOptions;
@@ -183,6 +186,61 @@ describe("resumePermissionModeLock", () => {
         isReattach: false,
         requested: "bypass",
       }).locked,
+      false,
+    );
+  });
+});
+
+describe("resolveSpawnProvider — a reattach runs the RECORD's provider", () => {
+  const codexRec = { provider: "codex" as const, name: "codex-worker-a" };
+  it("an omitted provider on a Codex reattach stays Codex (was: silently became claude-code)", () => {
+    assert.equal(resolveSpawnProvider(undefined, codexRec), "codex");
+  });
+  it("the same provider repeated is fine", () => {
+    assert.equal(resolveSpawnProvider("codex", codexRec), "codex");
+  });
+  it("a CONTRADICTING provider is refused (409), never silently switched", () => {
+    assert.throws(
+      () => resolveSpawnProvider("claude-code", codexRec),
+      (e: unknown) =>
+        e instanceof SpawnError &&
+        e.code === "PROVIDER_MISMATCH" &&
+        e.status === 409,
+    );
+  });
+  it("a new spawn uses the request, else the default", () => {
+    assert.equal(resolveSpawnProvider("gemini-cli", undefined), "gemini-cli");
+    assert.equal(resolveSpawnProvider(undefined, undefined), "claude-code");
+  });
+});
+
+describe("Codex auto is HONEST (no auto tier in codex 0.15x)", () => {
+  it("auto maps to on-request like ask — never the removed on-failure, never wider", () => {
+    const args = codexProvider.buildArgs(
+      opts({
+        sidecarEndpoint: "ws://127.0.0.1:1",
+        permissionMode: "auto",
+      }) as ResolvedSpawnOptions,
+    );
+    assert.ok(args.includes('approval_policy="on-request"'));
+    assert.ok(!args.some((a) => a.includes("on-failure")));
+    assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
+  });
+  it("auto and plan get a user-facing clamp notice; native modes don't", () => {
+    assert.match(
+      codexProvider.clampedModeNotice?.("auto") ?? "",
+      /behaves like Ask.*Bypass/,
+    );
+    assert.match(
+      codexProvider.clampedModeNotice?.("plan") ?? "",
+      /behaves like Ask/,
+    );
+    assert.equal(codexProvider.clampedModeNotice?.("ask"), undefined);
+    assert.equal(codexProvider.clampedModeNotice?.("bypass"), undefined);
+  });
+  it("ask ↔ auto is not a real change on resume (same Codex policy)", () => {
+    assert.equal(
+      codexProvider.resumeCannotApplyModeChange?.("ask", "auto"),
       false,
     );
   });
