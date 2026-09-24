@@ -188,9 +188,14 @@ agentsRouter.onError((err, c) => {
   // (restart-all: SERVER_STOPPING 503, RESTART_IN_PROGRESS 409). Without this
   // branch its declared status fell through to the generic 500 below.
   if (err instanceof SpawnError) {
+    console.warn(
+      `[agents] ${err.code} on ${c.req.method} ${c.req.path}: ${err.message}`,
+    );
+    const retryable = err.status === 503;
     return c.json(
-      { error: err.message, code: err.code, retryable: err.status === 503 },
+      { error: err.message, code: err.code, retryable },
       err.status,
+      retryable ? { "Retry-After": "1" } : undefined,
     );
   }
   if (err instanceof CachePoisonedError) {

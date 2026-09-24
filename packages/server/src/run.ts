@@ -777,9 +777,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         stopAllSidecars(),
         awaitPtyExits(SIDECAR_EXIT_CAP_MS),
       ]);
-      if (ptys > 0) {
+      if (ptys.length > 0) {
         console.warn(
-          `[shutdown] ${ptys} agent process(es) still alive after SIGKILL — they may outlive the server`,
+          `[shutdown] agent process(es) still alive after SIGKILL: ${ptys.join(", ")} — they may outlive the server`,
         );
       }
       return daemons;

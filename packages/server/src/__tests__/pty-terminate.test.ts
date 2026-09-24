@@ -133,19 +133,50 @@ describe("terminatePty", { timeout: 10_000 }, () => {
     assert.deepEqual(sent, ["SIGHUP"]);
   });
 
-  it("falls back to the leader when the group signal fails with ESRCH", async () => {
+  it("a gone group (ESRCH) ends the escalation — the bare pid is NEVER signalled", async () => {
+    // node-pty reaps the leader up to ~200ms before emitting exit; in that
+    // window the group signal fails ESRCH, and a fallback to the bare pid could
+    // reach a reused one. Simulate the gone group and prove nothing follows.
     const pty = await start(STUBS.polite);
     const targets: number[] = [];
-    await terminatePty(pty, {
-      signal: (pid, sig) => {
+    const exited = terminatePty(pty, {
+      termAfterMs: 50,
+      killAfterMs: 100,
+      signal: (pid) => {
         targets.push(pid);
-        if (pid < 0) {
-          throw Object.assign(new Error("no such group"), { code: "ESRCH" });
-        }
-        process.kill(pid, sig);
+        throw Object.assign(new Error("no such group"), { code: "ESRCH" });
       },
     });
-    assert.deepEqual(targets, [-pty.pid, pty.pid]);
+    await new Promise((r) => setTimeout(r, 300)); // past both stages
+    assert.deepEqual(targets, [-pty.pid], "signalled again after ESRCH");
+    process.kill(pty.pid, "SIGKILL"); // let the PTY settle
+    await exited;
+  });
+
+  it("reports group members that outlive the leader by command name", async () => {
+    // Leader dies to SIGHUP; its child ignores SIGHUP and stays in the group.
+    const pty = await start(
+      `${CHILD(`${IGNORE(["SIGHUP"])} ${IDLE}`)} console.log("READY"); ${IDLE}`,
+    );
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => {
+      warnings.push(a.join(" "));
+    };
+    try {
+      await terminatePty(pty, { label: "demo [fake] (00000000)" });
+      const t0 = Date.now();
+      while (warnings.length === 0 && Date.now() - t0 < 2_000) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    } finally {
+      console.warn = orig;
+    }
+    const line = warnings.find((w) => w.includes("outlived it"));
+    assert.ok(line, `no straggler warning: ${warnings.join(" | ")}`);
+    assert.match(line, /demo \[fake\] \(00000000\)/);
+    assert.match(line, /1 process\(es\).*\(node\)/);
+    assert.doesNotMatch(line, /setInterval|-e/, "args leaked into the log");
   });
   it("is idempotent per PTY — a second call adds no escalation", async () => {
     const pty = await start(STUBS.polite);
@@ -164,8 +195,8 @@ describe("terminatePty", { timeout: 10_000 }, () => {
     const stubborn = await start(STUBS.stubborn);
     void terminatePty(stubborn);
     // Below the SIGKILL stage: still alive at the cap.
-    assert.equal(await awaitPtyExits(100), 1);
+    assert.deepEqual(await awaitPtyExits(100), [`pid ${stubborn.pid}`]);
     // Past it: gone.
-    assert.equal(await awaitPtyExits(PTY_KILL_AFTER_MS + 1_000), 0);
+    assert.deepEqual(await awaitPtyExits(PTY_KILL_AFTER_MS + 1_000), []);
   });
 });

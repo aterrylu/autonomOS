@@ -60,7 +60,7 @@ import {
   supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
-import { terminatePty } from "./ptyTerminate.js";
+import { awaitPtyExits, terminatePty } from "./ptyTerminate.js";
 import {
   awaitSidecarExits,
   pickFreePort,
@@ -194,22 +194,23 @@ export function getAgentSidecarEndpoint(agentId: UUID): string | undefined {
 
 const live = new Map<UUID, ManagedAttachment>();
 let shuttingDown = false;
-/** Set once the SERVER begins shutting down, and never cleared (unlike
- *  `shuttingDown`, which restart-all resets). While it's set nothing may start
- *  an agent: the shutdown waits (bounded) for sidecar daemons to exit, and a
- *  spawn racing that window would start a daemon the process then exits
- *  under — the orphan the wait exists to prevent. */
+/** Set once the SERVER begins shutting down, and never cleared. While it's
+ *  set nothing may start an agent: the shutdown waits (bounded) for sidecar
+ *  daemons to exit, and a spawn racing that window would start a daemon the
+ *  process then exits under — the orphan the wait exists to prevent. */
 let serverStopping = false;
 /** Terminate an agent's PTY process group (see ptyTerminate), labelled for the log. */
 function stopAgentPty(agentId: UUID, pty: IPty): Promise<void> {
-  const name = getAgent(agentId)?.name;
+  const agent = getAgent(agentId);
   return terminatePty(pty, {
-    label: `${name ?? "agent"} (${agentId.slice(0, 8)})`,
+    label: `${agent?.name ?? "agent"} [${agent?.provider ?? "?"}] (${agentId.slice(0, 8)})`,
   });
 }
 
 /** A restart-all is between its kill pass and its last respawn. */
 let restartInFlight = false;
+/** When the in-flight restart-all began — named in its 409. */
+let restartStartedAt: number | undefined;
 
 function serverStoppingError(): SpawnError {
   return new SpawnError(
@@ -1995,10 +1996,11 @@ export async function restartAllAttachments(): Promise<{
     throw new SpawnError(
       "RESTART_IN_PROGRESS",
       409,
-      "A restart of all agents is already in progress.",
+      `A restart of all agents is already in progress (started ${Math.round((Date.now() - (restartStartedAt ?? Date.now())) / 1000)}s ago).`,
     );
   }
   restartInFlight = true;
+  restartStartedAt = Date.now();
   try {
     return await restartAll();
   } finally {
@@ -2019,8 +2021,8 @@ async function restartAll(): Promise<{
   // No global `shuttingDown` here: live.clear() below runs synchronously,
   // before any killed PTY's (async) onExit can fire, so every one of them
   // takes the stale-attachment early return and none is marked exited. The
-  // global flag protected nothing of ours and hid unrelated agents' deaths
-  // during the wait (they stayed "running").
+  // global flag protected nothing of ours, and it hid the exit of any agent
+  // STARTED during the wait (create_agent, /attach) — it stayed "running".
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [id, managed] of live) {
@@ -2041,8 +2043,9 @@ async function restartAll(): Promise<{
     awaitSidecarExits(ptyExits),
   ]);
   if (!ptysGone) {
+    const alive = await awaitPtyExits(0);
     console.warn(
-      "[runtime] restart-all: an agent process had not exited after SIGKILL — respawning anyway",
+      `[runtime] restart-all: agent process(es) still alive after SIGKILL: ${alive.join(", ")} — respawning anyway`,
     );
   }
   if (!daemonsGone) {
@@ -2077,8 +2080,8 @@ async function restartAll(): Promise<{
         `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
         msg,
       );
-      // The old PTY's onExit took the stale-attachment return, so it did NOT mark this
-      // agent exited — and the respawn just failed. Without this, the record
+      // The old PTY's onExit took the stale-attachment return, so it did NOT
+      // mark this agent exited — and the respawn just failed. Without this, the record
       // stays status:"running" with no live PTY (a zombie that tries to resume
       // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents
       // — unless a concurrent attach made it live, which the respawn's
@@ -2147,6 +2150,7 @@ export async function resolveAgentId(
 export function _resetForTesting(): void {
   live.clear();
   shuttingDown = false;
+  restartInFlight = false;
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
 }
