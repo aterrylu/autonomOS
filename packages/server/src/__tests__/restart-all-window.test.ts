@@ -111,7 +111,13 @@ describe("restart-all's wait window", { timeout: 20_000 }, () => {
       provider: "fakeshort" as never,
       name: "other",
     });
-    await new Promise((r) => setTimeout(r, 800));
+    // Poll rather than sleep a fixed time: under load the stub's boot + 300ms
+    // can take well over a second. With the old global flag the exit is never
+    // marked, so this still fails (not just slowly) on a regression.
+    const t0 = Date.now();
+    while (getAgent(other.id)?.status !== "exited" && Date.now() - t0 < 5_000) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     assert.equal(
       getAgent(other.id)?.status,
       "exited",
