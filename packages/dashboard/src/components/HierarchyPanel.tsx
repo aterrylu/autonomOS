@@ -730,6 +730,55 @@ function OrgInspector({
         {label}
       </div>
 
+      {/* Actions sit right under the status, where the eye already is —
+          not at the bottom of a tall pane. */}
+      <div className="flex flex-wrap gap-1.5">
+        {exited ? (
+          <button
+            type="button"
+            data-org-action="resume"
+            className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
+            style={{ color: page.bg, background: tokens.status.ready }}
+            onClick={() => onResume(node, info)}
+          >
+            Resume
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              data-org-action="open"
+              className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
+              style={{ color: page.bg, background: tokens.status.active }}
+              onClick={() => onOpen(node)}
+            >
+              Open terminal
+            </button>
+            <button
+              type="button"
+              data-org-action="restart"
+              className="cursor-pointer rounded px-3 py-1 text-[12px]"
+              style={{ border: `1px solid ${tokens.cardBorder}` }}
+              onClick={() => onRestart(node.id)}
+            >
+              Restart
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          data-org-action="more"
+          aria-label={`More actions for ${node.name}`}
+          className="cursor-pointer rounded px-2.5 py-1 text-[12px]"
+          style={{ border: `1px solid ${tokens.cardBorder}` }}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            onMenu(menuTarget(node, managerName, info), r.left, r.bottom + 4);
+          }}
+        >
+          ⋯
+        </button>
+      </div>
       <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
         {rows.map(([k, v]) => (
           <div key={k} className="contents">
@@ -798,54 +847,6 @@ function OrgInspector({
           })}
         </div>
       </section>
-
-      <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
-        {exited ? (
-          <button
-            type="button"
-            data-org-action="resume"
-            className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
-            style={{ color: page.bg, background: tokens.status.ready }}
-            onClick={() => onResume(node, info)}
-          >
-            Resume
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              data-org-action="open"
-              className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
-              style={{ color: page.bg, background: tokens.status.active }}
-              onClick={() => onOpen(node)}
-            >
-              Open terminal
-            </button>
-            <button
-              type="button"
-              data-org-action="restart"
-              className="cursor-pointer rounded px-3 py-1 text-[12px]"
-              style={{ border: `1px solid ${tokens.cardBorder}` }}
-              onClick={() => onRestart(node.id)}
-            >
-              Restart
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          data-org-action="more"
-          aria-label={`More actions for ${node.name}`}
-          className="cursor-pointer rounded px-2.5 py-1 text-[12px]"
-          style={{ border: `1px solid ${tokens.cardBorder}` }}
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            onMenu(menuTarget(node, managerName, info), r.left, r.bottom + 4);
-          }}
-        >
-          ⋯
-        </button>
-      </div>
     </aside>
   );
 }
