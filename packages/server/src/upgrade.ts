@@ -474,11 +474,24 @@ export function compareSemver(a: string, b: string): -1 | 0 | 1 {
 }
 
 async function downloadTo(url: string, dest: string): Promise<void> {
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`Download failed (${resp.status}) for ${url}`);
+  const name = url.split("/").pop() ?? url;
+  let buf: Buffer;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`Download failed (${resp.status}) for ${url}`);
+    }
+    buf = Buffer.from(await resp.arrayBuffer());
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Download failed")) {
+      throw err;
+    }
+    // undici reports a cut connection as a bare "terminated" / "fetch
+    // failed" — say what actually happened. Nothing has changed yet.
+    throw new Error(
+      `the download of ${name} was interrupted (${err instanceof Error ? err.message : err}) — check the connection and try again`,
+    );
   }
-  const buf = Buffer.from(await resp.arrayBuffer());
   writeFileSync(dest, buf);
 }
 
