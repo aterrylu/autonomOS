@@ -14,7 +14,13 @@
 // their back after a crash).
 
 import type { AgentActivityStatus } from "@autonomos/core";
+import { getAgentProcessRoots } from "./agents/runtime.js";
 import { listAgents } from "./agents/store.js";
+import {
+  type BackgroundProc,
+  findBackgroundProcs,
+  listProcesses,
+} from "./backgroundProcs.js";
 import { getAgentState } from "./routes/hooks.js";
 import { type LaunchResult, launchUpgradeJob } from "./upgradeJob.js";
 
@@ -44,6 +50,38 @@ export function listBusyAgents(): BusyAgent[] {
     if (BUSY_STATUSES.has(s)) out.push({ id: a.id, name: a.name, status: s });
   }
   return out;
+}
+
+export type BackgroundWork = {
+  id: string;
+  name: string;
+  processes: BackgroundProc[];
+};
+
+const BACKGROUND_CACHE_MS = 2_000;
+let backgroundCache: { at: number; value: BackgroundWork[] } | null = null;
+
+/**
+ * Running agents with background shell work an update restart would stop —
+ * a WARNING for the pre-flight, never a gate (status stays the only "busy").
+ * One `ps` per call, cached briefly: the dialog polls every ~2s.
+ */
+export function listBackgroundWork(now = Date.now()): BackgroundWork[] {
+  if (backgroundCache && now - backgroundCache.at < BACKGROUND_CACHE_MS) {
+    return backgroundCache.value;
+  }
+  const running = listAgents().filter((a) => a.status === "running");
+  const value: BackgroundWork[] = [];
+  if (running.length > 0) {
+    const table = listProcesses();
+    for (const a of running) {
+      const processes = findBackgroundProcs(table, getAgentProcessRoots(a.id));
+      if (processes.length > 0)
+        value.push({ id: a.id, name: a.name, processes });
+    }
+  }
+  backgroundCache = { at: now, value };
+  return value;
 }
 
 export type ArmedState = {

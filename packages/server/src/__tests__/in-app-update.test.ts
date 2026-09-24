@@ -178,7 +178,11 @@ describe("launchUpgradeJob", () => {
 
   it("systemd: a transient user unit (own cgroup) with $ escaped for systemd", () => {
     const r = recorder();
-    const proc = { ...PROC, argv: ["/usr/bin/node", "/opt/$weird/index.js"] };
+    const proc = {
+      ...PROC,
+      argv: ["/usr/bin/node", "/opt/$weird/index.js"],
+      env: { ...PROC.env, HOME: "/home/$user" },
+    };
     const res = launchUpgradeJob("0.8.0", {
       supervisor: { kind: "systemd" },
       run: r.run,
@@ -195,6 +199,8 @@ describe("launchUpgradeJob", () => {
       a.includes("/opt/$$weird/index.js"),
       "systemd would expand a bare $",
     );
+    // …but --setenv values are literal (measured): never escaped.
+    assert.ok(a.includes("--setenv=HOME=/home/$user"), a.join(" "));
     assert.equal(readUpgradeStatus(upgradeStatusPath(cfg))?.phase, "launching");
   });
 
@@ -308,14 +314,77 @@ describe("POST /api/system/upgrade is operator-only", () => {
     assert.equal(res.status, 403);
   });
 
+  // What the dashboard's own fetch sends.
+  const DASHBOARD = {
+    Cookie: "autonomos_token=x",
+    "Content-Type": "application/json",
+    "Sec-Fetch-Site": "same-origin",
+    Origin: "http://localhost:3100",
+    Host: "localhost:3100",
+  };
+
   it("a dashboard (cookie) request passes the guard to the real checks", async () => {
     const res = await app.request("/api/system/upgrade", {
       method: "POST",
-      headers: { Cookie: "autonomos_token=x" },
+      headers: DASHBOARD,
       body: JSON.stringify({ when: "now" }),
     });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).code, "NO_UPDATE");
+  });
+
+  describe("CSRF: the Lax cookie also rides requests from other ports", () => {
+    const attempts: [string, Record<string, string>][] = [
+      [
+        "a cross-site fetch (Sec-Fetch-Site)",
+        {
+          ...DASHBOARD,
+          "Sec-Fetch-Site": "same-site",
+          Origin: "http://localhost:5173",
+        },
+      ],
+      [
+        "an older browser: Origin from another port of the same host",
+        (() => {
+          const { "Sec-Fetch-Site": _, ...h } = DASHBOARD;
+          return { ...h, Origin: "http://localhost:5173" };
+        })(),
+      ],
+      [
+        "a form-style POST with no JSON content type (no preflight)",
+        (() => {
+          const {
+            "Content-Type": _,
+            "Sec-Fetch-Site": __,
+            Origin: ___,
+            ...h
+          } = DASHBOARD;
+          return { ...h, "Content-Type": "text/plain" };
+        })(),
+      ],
+    ];
+    for (const [label, headers] of attempts) {
+      it(`refuses ${label}`, async () => {
+        for (const path of ["/api/system/upgrade", "/api/system/rollback"]) {
+          const res = await app.request(path, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ when: "now" }),
+          });
+          assert.equal(res.status, 403, path);
+          assert.equal((await res.json()).code, "CROSS_ORIGIN", path);
+        }
+      });
+    }
+
+    it("refuses a cross-site cancel (DELETE)", async () => {
+      const res = await app.request("/api/system/upgrade", {
+        method: "DELETE",
+        headers: { ...DASHBOARD, "Sec-Fetch-Site": "cross-site" },
+      });
+      assert.equal(res.status, 403);
+      assert.equal((await res.json()).code, "CROSS_ORIGIN");
+    });
   });
 
   it("DELETE (cancel) is guarded the same way", async () => {

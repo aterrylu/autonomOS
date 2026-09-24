@@ -177,7 +177,21 @@ export interface ManagedAttachment {
    * member the runtime DOES read, the cast would keep compiling while the fake
    * lacked it. Stating the real coupling lets the compiler enforce it instead.
    */
-  sidecar?: Pick<Sidecar, "endpoint" | "dispose">;
+  sidecar?: Pick<Sidecar, "endpoint" | "dispose"> & {
+    /** The daemon's pid — it, not the TUI, runs Codex's commands. Read only by
+     *  the update pre-flight's background-process check. */
+    pid?: number;
+  };
+}
+
+/** The processes an agent's work runs under: its CLI (the PTY child) and,
+ *  for Codex, the app-server daemon. Empty when the agent isn't live. */
+export function getAgentProcessRoots(agentId: UUID): number[] {
+  const m = live.get(agentId);
+  if (!m) return [];
+  return [m.pty.pid, m.sidecar?.pid].filter(
+    (p): p is number => typeof p === "number" && p > 0,
+  );
 }
 
 /** ws:// endpoint of an agent's provider daemon (Codex), or undefined. */
@@ -1264,7 +1278,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     pty,
     outputBuffer: [],
     outputSize: 0,
-    sidecar,
+    sidecar: sidecar && {
+      endpoint: sidecar.endpoint,
+      dispose: () => sidecar?.dispose(),
+      pid: sidecar.proc.pid,
+    },
   };
   live.set(persisted.id, managed);
 

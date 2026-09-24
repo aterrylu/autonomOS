@@ -270,7 +270,9 @@ function startJob(
       "--quiet",
       `--unit=${unitBase}-upgrade-${stamp}`,
       ...Object.entries(plan.env).map(
-        ([k, v]) => `--setenv=${k}=${systemdEscape(v)}`,
+        // Measured on forge: --setenv values are taken LITERALLY (only the
+        // command argv gets $-expanded), so escaping them would double a `$`.
+        ([k, v]) => `--setenv=${k}=${v}`,
       ),
       ...plan.argv.map(systemdEscape),
     ];

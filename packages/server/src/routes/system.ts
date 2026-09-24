@@ -34,6 +34,7 @@ import {
   disarmUpgrade,
   getArmedUpgrade,
   IDLE_WINDOW_MS,
+  listBackgroundWork,
   listBusyAgents,
 } from "../upgradeScheduler.js";
 import { isUpgradeInFlight, readUpgradeStatus } from "../upgradeStatus.js";
@@ -104,6 +105,7 @@ systemRouter.get("/upgrade", (c) => {
     armed: getArmedUpgrade(),
     idleWindowMs: IDLE_WINDOW_MS,
     busy: listBusyAgents(),
+    background: listBackgroundWork(),
   });
 });
 
@@ -133,6 +135,35 @@ function operatorOnly(c: Context): Response | null {
         error:
           "The in-app update is dashboard-only. From a shell, run `autonomos upgrade`.",
         code: "OPERATOR_ONLY",
+      },
+      403,
+    );
+  }
+  // CSRF: the cookie is SameSite=Lax, which browsers still attach to requests
+  // from OTHER PORTS of the same host (site = scheme + host, port ignored) —
+  // e.g. an agent's dev server on :5173 could POST here with the operator's
+  // cookie. The dashboard itself is always same-origin.
+  const fetchSite = c.req.header("Sec-Fetch-Site");
+  const origin = c.req.header("Origin");
+  let crossOrigin = fetchSite !== undefined && fetchSite !== "same-origin";
+  if (!crossOrigin && origin) {
+    try {
+      crossOrigin = new URL(origin).host !== c.req.header("Host");
+    } catch {
+      crossOrigin = true;
+    }
+  }
+  // A JSON content type forces a CORS preflight on any cross-origin POST,
+  // which fails (no CORS here) — the belt to the headers' braces for clients
+  // that send neither.
+  const notJson =
+    c.req.method === "POST" &&
+    !(c.req.header("Content-Type") ?? "").includes("application/json");
+  if (crossOrigin || notJson) {
+    return c.json(
+      {
+        error: "Update requests must come from the dashboard itself.",
+        code: "CROSS_ORIGIN",
       },
       403,
     );
