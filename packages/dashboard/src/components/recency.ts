@@ -1,7 +1,7 @@
-// Recency treatment for the sidebar's last-activity timestamp (recency B2 —
-// timestamp-only fade; see docs/DECISIONS.md). The ONLY thing that changes is the
-// top-right "41m"/"11d" timestamp; the row, name, status icon, and repo·branch
-// line are untouched.
+// Recency treatment for the sidebar's last-activity timestamp (recency B2; see
+// docs/DECISIONS.md) and, since ADR-101, the passive Idle status label, which
+// rides the same ramp (recencyLabelOpacity at the bottom). The row, name, status
+// icon, repo·branch text, and every attention label are untouched.
 //
 // The intent is de-emphasis, not alarm: a fresh (<1h) row's timestamp reads at
 // full text brightness (the theme's foreground), then older rows keep the neutral
@@ -109,4 +109,32 @@ export function recencyTimestampStyle(
     color: bucket === "fresh" ? freshColor : statusFg,
     opacity: ramp[bucket],
   };
+}
+
+/** At-rest statuses whose label fades with recency (Terry's T1 pick). Every
+ *  other status (needs_input, error, the active-work shimmer, stopped) stays
+ *  full strength at any age: a stale row that needs you is exactly the one you
+ *  should not skip, so attention never recedes. */
+const PASSIVE_LABEL_STATUSES = new Set(["ready", "idle"]);
+
+/**
+ * Opacity for the sidebar status LABEL. A passive (ready/idle) label follows the
+ * SAME theme-aware ramp as the timestamp, so a stale row's right edge recedes as
+ * one unit; any other status returns 1. Same `lastActive` guard as
+ * recencyTimestampStyle, so an unknown age never fades. The status dot is left
+ * untouched (it stays the at-a-glance "alive" signal).
+ */
+export function recencyLabelOpacity(
+  status: string,
+  lastActive: number,
+  now: number,
+  bg: string,
+): number {
+  if (!PASSIVE_LABEL_STATUSES.has(status)) return 1;
+  const ageMs =
+    Number.isFinite(lastActive) && lastActive > 0
+      ? now - lastActive
+      : Number.NaN;
+  const ramp = isLightBg(bg) ? RECENCY_OPACITY_LIGHT : RECENCY_OPACITY_DARK;
+  return ramp[recencyBucket(ageMs)];
 }

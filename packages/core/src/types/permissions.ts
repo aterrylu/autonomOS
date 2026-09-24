@@ -164,8 +164,13 @@ export const PERMISSION_MODE_INFO: Record<
     perProvider: {
       "claude-code": "Auto-accepts edits (acceptEdits)",
       "gemini-cli": "Auto-accepts edits (auto_edit)",
-      codex: "Runs commands, asks only on failure (on-failure)",
+      // Codex has NO auto tier: codex 0.15x accepts only on-request | never
+      // (on-failure was removed and is silently coerced to on-request). Clamped
+      // to Ask for commands, like `plan` — pick Bypass for no approvals.
+      codex:
+        "Not supported — behaves like Ask for commands (Codex has no auto tier); pick Bypass for no approvals",
     },
+    unsupportedBy: ["codex"],
   },
   plan: {
     mode: "plan",
@@ -174,7 +179,7 @@ export const PERMISSION_MODE_INFO: Record<
     perProvider: {
       "claude-code": "Read-only plan mode",
       "gemini-cli": "Read-only plan mode",
-      codex: "Not supported — falls back to Ask",
+      codex: "Not supported — behaves like Ask (Codex has no plan mode)",
     },
     unsupportedBy: ["codex"],
   },

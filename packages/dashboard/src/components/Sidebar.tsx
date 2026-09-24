@@ -28,7 +28,11 @@ import {
   mergeOrgWithSessions,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
-import { isLightBg, recencyTimestampStyle } from "./recency";
+import {
+  isLightBg,
+  recencyLabelOpacity,
+  recencyTimestampStyle,
+} from "./recency";
 import { dropEdgeAt, flatDropIndex, insertionBoundary } from "./sidebarReorder";
 import {
   arrowForRow,
@@ -1448,7 +1452,8 @@ function SessionRow({
               ✉ {s.pendingHandoffCount}
             </span>
           )}
-          {/* Recency treatment (B2 — timestamp-only fade): the AGE TEXT fades
+          {/* Recency treatment (B2): the AGE TEXT fades (and, per ADR-101, a
+              passive Idle label below rides the same ramp)
               with age so wildly-stale sessions recede. The unread prefix stays
               full-strength (an attention signal, like the status dot/label) —
               only the formatAge() text is wrapped in the faded span. Computed
@@ -1520,7 +1525,21 @@ function SessionRow({
                   : ""
               }`}
               style={
-                labelStyle.shimmer ? undefined : { color: labelStyle.color }
+                labelStyle.shimmer
+                  ? undefined
+                  : {
+                      color: labelStyle.color,
+                      // T1 (Terry's pick): a passive Idle label fades on the
+                      // SAME ramp as the timestamp beside it; attention
+                      // statuses return 1. Same lastActive + render cadence as
+                      // the timestamp, so the two can never disagree.
+                      opacity: recencyLabelOpacity(
+                        agentState.status,
+                        lastActive,
+                        Date.now(),
+                        page.bg,
+                      ),
+                    }
               }
             >
               {agentStatusLabel(
