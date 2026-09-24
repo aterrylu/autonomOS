@@ -246,8 +246,12 @@ export function agentStatusLabel(
   currentTool?: string,
 ): string {
   switch (status) {
+    // One label for both at-rest states (Terry's pick): "ready" (SessionStart —
+    // startup, resume, or /clear) and "idle" (Stop) both mean "not busy, waiting
+    // for input", and Codex never emits ready at all, so two words only confused.
+    // The server still distinguishes them (idle stickiness, restoredStatus).
     case "ready":
-      return "Ready";
+      return "Idle";
     case "working":
       return "Working";
     case "tool_running":
