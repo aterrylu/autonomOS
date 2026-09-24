@@ -114,7 +114,7 @@ describe("codex daemon topology", () => {
       assert.doesNotMatch(spec.args.join(" "), /mcp_servers/);
     });
 
-    it("pre-approves our MCP tools mode-aware on the DAEMON (approve for bypass/auto, writes for ask/plan)", () => {
+    it("pre-approves our MCP tools mode-aware on the DAEMON (approve for bypass, writes for ask/plan/auto)", () => {
       // Without this, Codex's `auto` default prompts once per session for the
       // un-annotated tool set. The mode-aware value mirrors the autonomy the
       // permission mode already grants: an autonomous agent never prompts; a
@@ -122,7 +122,9 @@ describe("codex daemon topology", () => {
       // for the readOnlyHint-annotated read-only ones (auto-approved by "writes").
       const expected: Record<PermissionMode, string> = {
         bypass: "approve",
-        auto: "approve",
+        // Codex has no auto tier: auto is clamped to Ask on BOTH axes (ADR-104),
+        // so "behaves like Ask" is true for MCP tools too — never wider.
+        auto: "writes",
         ask: "writes",
         plan: "writes",
       };

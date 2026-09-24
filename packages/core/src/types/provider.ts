@@ -125,9 +125,30 @@ export interface AgentProvider {
    * Distinct from `hasResumableSession` ON PURPOSE: that hook also arms the
    * onExit force-fresh safety net, which for Codex would clear a REAL
    * conversation on any environmental resume crash (ADR-100). This one only
-   * decides fresh-vs-resume up front. A throw is treated as "resumable".
+   * decides fresh-vs-resume up front.
+   *
+   * `env` is the AGENT's effective env (a preset may set its own CODEX_HOME).
+   * Return false ONLY when positively sure nothing was saved; THROW when you
+   * can't tell — the runtime then resumes (fails open), because a false "not
+   * saved" would sever a real conversation.
    */
-  hasResumableThread?(options: ResolvedSpawnOptions): boolean;
+  hasResumableThread?(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+  ): boolean;
+
+  /**
+   * Optional: the permission mode a RESUMED thread actually runs, when it
+   * disagrees with the record (`recordMode`). A resumed Codex thread keeps its
+   * creation-time policy, and pre-ADR-104 a failed mode-change resume could
+   * leave the record naming a mode the thread never ran. Undefined = record is
+   * consistent (or can't tell). The runtime corrects the record and says so.
+   */
+  resumedThreadMode?(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+    recordMode: PermissionMode,
+  ): PermissionMode | undefined;
 
   /**
    * Optional: true when changing permission mode `from` → `to` CANNOT take

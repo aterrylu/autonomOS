@@ -30,7 +30,10 @@ import {
   type SidecarSpec,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
-import { codexThreadHasRollout } from "../gateway/codexRollout.js";
+import {
+  probeThreadRollout,
+  readThreadApprovalPolicy,
+} from "../gateway/codexRollout.js";
 import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
@@ -106,8 +109,8 @@ function codexApprovalPolicy(
  *
  * The mapping is deliberately mode-aware, mirroring the trust the permission mode
  * already grants for shell:
- *   - bypass / auto → "approve": never prompt (the agent is already autonomous).
- *   - ask / plan    → "writes": prompt only for MUTATING tools; a tool that
+ *   - bypass        → "approve": never prompt (the agent is already autonomous).
+ *   - ask / plan / auto → "writes": prompt only for MUTATING tools; a tool that
  *     declares `readOnlyHint: true` (see the annotated read-only tools in
  *     mcp/tools.ts) is auto-approved even under `writes`. So a supervised agent
  *     still gets asked before kill_agent / delete_* but not before list_agents.
@@ -119,11 +122,11 @@ function codexMcpApprovalMode(
 ): string {
   switch (mode) {
     case "bypass":
-    case "auto":
       return "approve";
     default:
-      // "ask" and the clamped "plan": prompt for mutations, auto-approve
-      // read-only (readOnlyHint) tools.
+      // "ask" plus the clamped "plan" AND "auto" (Codex has no auto tier — ADR-104:
+      // auto is clamped to Ask on BOTH axes, so "behaves like Ask" is true for
+      // MCP tools too): prompt for mutations, auto-approve read-only tools.
       return "writes";
   }
 }
@@ -267,11 +270,36 @@ export const codexProvider: AgentProvider = {
   // Thread-resume pre-flight: resume only if codex actually SAVED this thread.
   // A never-prompted agent's thread has no rollout (written lazily on the first
   // turn) → start fresh instead of a doomed "No saved session found" resume.
-  hasResumableThread(options: ResolvedSpawnOptions): boolean {
-    return (
-      !!options.providerThreadId &&
-      codexThreadHasRollout(options.providerThreadId)
-    );
+  // Throws when it can't tell (unreadable sessions tree) → the runtime resumes.
+  hasResumableThread(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+  ): boolean {
+    if (!options.providerThreadId) return false;
+    return probeThreadRollout(options.providerThreadId, env).state === "found";
+  },
+
+  // The mode a resumed thread ACTUALLY runs (from its last turn_context), when
+  // the record disagrees — e.g. a pre-ADR-104 mode-change resume wrote the new
+  // mode to the record and then crashed on the override, so the thread still
+  // runs the old policy. Undefined when consistent or unreadable.
+  resumedThreadMode(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined>,
+    recordMode: PermissionMode,
+  ): PermissionMode | undefined {
+    if (!options.providerThreadId) return undefined;
+    let path: string | undefined;
+    try {
+      path = probeThreadRollout(options.providerThreadId, env).path;
+    } catch {
+      return undefined;
+    }
+    const actual = path ? readThreadApprovalPolicy(path) : null;
+    if (!actual || actual === codexApprovalPolicy(recordMode)) return undefined;
+    if (actual === "never") return "bypass";
+    if (actual === "on-request") return "ask";
+    return undefined; // a policy we don't map — don't guess
   },
 
   // A resumed thread keeps the policy it was created with (codex rejects

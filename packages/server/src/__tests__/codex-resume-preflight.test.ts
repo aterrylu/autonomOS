@@ -13,7 +13,13 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -62,7 +68,10 @@ describe("codexProvider.hasResumableThread (B: never-prompted thread)", () => {
     const tid = "01a0d253-434c-7091-be37-bd2e0f0227c3";
     saveRollout(tid);
     assert.equal(
-      codexProvider.hasResumableThread?.(opts({ providerThreadId: tid })),
+      codexProvider.hasResumableThread?.(
+        opts({ providerThreadId: tid }),
+        process.env,
+      ),
       true,
     );
   });
@@ -70,12 +79,16 @@ describe("codexProvider.hasResumableThread (B: never-prompted thread)", () => {
     assert.equal(
       codexProvider.hasResumableThread?.(
         opts({ providerThreadId: "01a0d241-faf8-7930-a36e-a823d15165e2" }),
+        process.env,
       ),
       false,
     );
   });
   it("false with no thread id at all", () => {
-    assert.equal(codexProvider.hasResumableThread?.(opts()), false);
+    assert.equal(
+      codexProvider.hasResumableThread?.(opts(), process.env),
+      false,
+    );
   });
   it("does NOT implement hasResumableSession — so ADR-100's force-fresh net stays disarmed", () => {
     assert.equal(codexProvider.hasResumableSession, undefined);
@@ -242,6 +255,118 @@ describe("Codex auto is HONEST (no auto tier in codex 0.15x)", () => {
     assert.equal(
       codexProvider.resumeCannotApplyModeChange?.("ask", "auto"),
       false,
+    );
+  });
+});
+
+describe("C1: the probe NEVER turns can't-tell into 'never saved'", () => {
+  it("an unreadable sessions tree THROWS (runtime then resumes) — not 'absent'", (t) => {
+    if (process.getuid?.() === 0) return t.skip("root reads anything");
+    const day = join(home, "sessions", "2026", "09", "24");
+    mkdirSync(day, { recursive: true });
+    chmodSync(join(home, "sessions", "2026"), 0o000);
+    try {
+      assert.throws(() =>
+        codexProvider.hasResumableThread?.(
+          opts({ providerThreadId: "t-x" }),
+          process.env,
+        ),
+      );
+      // …and the runtime decision therefore fails OPEN (resume):
+      assert.equal(
+        threadIsResumable(
+          codexProvider,
+          opts({ providerThreadId: "t-x" }),
+          process.env,
+        ),
+        true,
+      );
+    } finally {
+      chmodSync(join(home, "sessions", "2026"), 0o755);
+    }
+  });
+
+  it("no sessions dir at all = cleanly 'absent' (codex never saved anything here)", () => {
+    assert.equal(
+      codexProvider.hasResumableThread?.(
+        opts({ providerThreadId: "t-y" }),
+        process.env,
+      ),
+      false,
+    );
+  });
+
+  it("probes the AGENT's CODEX_HOME, not the server's", () => {
+    const tid = "01a0d253-434c-7091-be37-bd2e0f0227c3";
+    const agentHome = mkdtempSync(join(tmpdir(), "agent-codex-home-"));
+    try {
+      const dir = join(agentHome, "sessions", "2026", "09", "24");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `rollout-x-${tid}.jsonl`), "{}\n");
+      // server's CODEX_HOME (home) has nothing; the agent's does:
+      assert.equal(
+        codexProvider.hasResumableThread?.(opts({ providerThreadId: tid }), {
+          CODEX_HOME: agentHome,
+        }),
+        true,
+      );
+    } finally {
+      rmSync(agentHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("H2: the mode a resumed thread ACTUALLY runs (from its turn_context)", () => {
+  function rolloutWithPolicy(tid: string, policy: string): void {
+    const dir = join(home, "sessions", "2026", "09", "24");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `rollout-x-${tid}.jsonl`),
+      `${JSON.stringify({ type: "turn_context", payload: { approval_policy: policy, sandbox_policy: { type: "danger-full-access" } } })}\n`,
+    );
+  }
+  it("record says ask but the thread runs never → corrected to bypass (was silently WIDER)", () => {
+    rolloutWithPolicy("t-bp", "never");
+    assert.equal(
+      codexProvider.resumedThreadMode?.(
+        opts({ providerThreadId: "t-bp" }),
+        process.env,
+        "ask",
+      ),
+      "bypass",
+    );
+  });
+  it("record says bypass but the thread runs on-request → corrected to ask (was silently narrower)", () => {
+    rolloutWithPolicy("t-ask", "on-request");
+    assert.equal(
+      codexProvider.resumedThreadMode?.(
+        opts({ providerThreadId: "t-ask" }),
+        process.env,
+        "bypass",
+      ),
+      "ask",
+    );
+  });
+  it("a consistent record (incl. auto/plan ≡ on-request) is left alone", () => {
+    rolloutWithPolicy("t-ok", "on-request");
+    for (const m of ["ask", "auto", "plan"] as const)
+      assert.equal(
+        codexProvider.resumedThreadMode?.(
+          opts({ providerThreadId: "t-ok" }),
+          process.env,
+          m,
+        ),
+        undefined,
+      );
+  });
+  it("unreadable / no rollout → no correction (never guess)", () => {
+    assert.equal(
+      codexProvider.resumedThreadMode?.(
+        opts({ providerThreadId: "t-none" }),
+        process.env,
+        "ask",
+      ),
+      undefined,
     );
   });
 });
