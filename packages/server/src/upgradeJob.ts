@@ -74,22 +74,85 @@ function readOwnCgroup(): string {
  *   launchd — XPC_SERVICE_NAME equal to OUR label (a terminal gets "0" or an
  *             application.* id; another job's label is not ours either).
  */
+/** The pid launchd runs for `label` (read-only `launchctl print`), or null. */
+function launchdJobPid(label: string): number | null {
+  const uid = process.getuid?.();
+  if (uid === undefined) return null;
+  const r = spawnSync("launchctl", ["print", `gui/${uid}/${label}`], {
+    encoding: "utf-8",
+    timeout: 3_000,
+  });
+  const m = r.status === 0 ? /^\s*pid = (\d+)/m.exec(r.stdout) : null;
+  return m ? Number(m[1]) : null;
+}
+
+function parentPid(pid: number): number | null {
+  if (pid === process.pid) return process.ppid;
+  const r = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+    encoding: "utf-8",
+    timeout: 2_000,
+  });
+  const n = Number(r.stdout?.trim());
+  return r.status === 0 && Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Wrapper hops allowed between the launchd job and the daemon (a shell or
+ *  tsx launcher). Anything started FROM an agent is ≥3 away: itself → the
+ *  agent CLI → the daemon → the job (measured on the dev Mac). */
+const LAUNCHD_MAX_HOPS = 2;
+
+export type SupervisorProbe = {
+  readCgroup?: () => string;
+  launchdJobPid?: (label: string) => number | null;
+  parentPid?: (pid: number) => number | null;
+  selfPid?: number;
+};
+
+/**
+ * Whether autonomOS's OWN service owns this process — not just "some
+ * supervisor". The env markers alone are inherited by anything a unit/job
+ * starts:
+ *   systemd — INVOCATION_ID AND our unit in /proc/self/cgroup
+ *             (verified on forge: …/app.slice/autonomos.service);
+ *   launchd — XPC_SERVICE_NAME equal to OUR label AND launchd's pid for that
+ *             job is this process or a near ancestor. XPC_SERVICE_NAME
+ *             alone was a real false positive (measured): a daemon started
+ *             from an agent's terminal inherits the LIVE service's label, and
+ *             an update from it would restart the live service.
+ */
 export function detectSupervisor(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
-  readCgroup: () => string = readOwnCgroup,
+  probe: SupervisorProbe = {},
 ): Supervisor {
   const { launchdLabel, systemdUnit } = expectedServiceNames(env);
   if (platform === "linux" && env.INVOCATION_ID) {
-    const ours = readCgroup()
+    const ours = (probe.readCgroup ?? readOwnCgroup)()
       .split("\n")
       .some((line) => line.trimEnd().endsWith(`/${systemdUnit}`));
     return ours ? { kind: "systemd" } : { kind: "none" };
   }
   if (platform === "darwin" && env.XPC_SERVICE_NAME === launchdLabel) {
-    return { kind: "launchd", label: launchdLabel };
+    const jobPid = (probe.launchdJobPid ?? launchdJobPid)(launchdLabel);
+    const up = probe.parentPid ?? parentPid;
+    let pid: number | null = probe.selfPid ?? process.pid;
+    for (let hop = 0; hop <= LAUNCHD_MAX_HOPS && pid !== null; hop++) {
+      if (jobPid !== null && pid === jobPid) {
+        return { kind: "launchd", label: launchdLabel };
+      }
+      pid = up(pid);
+    }
+    return { kind: "none" };
   }
   return { kind: "none" };
+}
+
+/** The real process's supervisor, probed once — it can't change while this
+ *  process runs, and routes ask on every poll. */
+let supervisorCache: Supervisor | undefined;
+export function ownSupervisor(): Supervisor {
+  supervisorCache ??= detectSupervisor();
+  return supervisorCache;
 }
 
 /** Env the job needs to address the SAME install + service as this daemon. */
@@ -214,7 +277,7 @@ function launchJob(
     proc?: ProcLike;
   } = {},
 ): LaunchResult {
-  const supervisor = opts.supervisor ?? detectSupervisor();
+  const supervisor = opts.supervisor ?? ownSupervisor();
   const run = opts.run ?? defaultRunner;
   const configDir = opts.configDir ?? getConfigDir();
   const statusFile = upgradeStatusPath(configDir);

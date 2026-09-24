@@ -76,7 +76,9 @@ describe("detectSupervisor", () => {
 
   it("systemd only when THIS process runs in autonomOS's own unit", () => {
     assert.deepEqual(
-      detectSupervisor({ INVOCATION_ID: "x" }, "linux", ownUnit),
+      detectSupervisor({ INVOCATION_ID: "x" }, "linux", {
+        readCgroup: ownUnit,
+      }),
       {
         kind: "systemd",
       },
@@ -88,7 +90,7 @@ describe("detectSupervisor", () => {
           AUTONOMOS_SERVICE_LABEL: "com.autonomos.daemon.test",
         },
         "linux",
-        testUnit,
+        { readCgroup: testUnit },
       ),
       { kind: "systemd" },
     );
@@ -99,7 +101,9 @@ describe("detectSupervisor", () => {
     // unit's INVOCATION_ID; the update job would stop it with nothing to
     // restart it.
     assert.equal(
-      detectSupervisor({ INVOCATION_ID: "x" }, "linux", gnomeTerminal).kind,
+      detectSupervisor({ INVOCATION_ID: "x" }, "linux", {
+        readCgroup: gnomeTerminal,
+      }).kind,
       "none",
     );
     // …and a test-labelled daemon doesn't count the default unit as its own.
@@ -110,18 +114,55 @@ describe("detectSupervisor", () => {
           AUTONOMOS_SERVICE_LABEL: "com.autonomos.daemon.test",
         },
         "linux",
-        ownUnit,
+        { readCgroup: ownUnit },
       ).kind,
       "none",
     );
-    assert.equal(detectSupervisor({}, "linux", ownUnit).kind, "none");
+    assert.equal(
+      detectSupervisor({}, "linux", { readCgroup: ownUnit }).kind,
+      "none",
+    );
+  });
+
+  // Process chains measured on the dev Mac (pids kept):
+  //   live daemon    45348 → 45344 (= launchd job pid) → 1
+  //   agent-started  46844 → 45368 claude → 45348 → 45344 (job) → 1
+  const parents: Record<number, number> = {
+    45348: 45344,
+    45344: 1,
+    46844: 45368,
+    45368: 45348,
+  };
+  const macProbe = (self: number) => ({
+    selfPid: self,
+    launchdJobPid: () => 45344,
+    parentPid: (p: number) => parents[p] ?? null,
+  });
+
+  it("launchd: the live daemon (job pid is its parent) counts", () => {
+    assert.deepEqual(
+      detectSupervisor(
+        { XPC_SERVICE_NAME: "com.autonomos.daemon" },
+        "darwin",
+        macProbe(45348),
+      ),
+      { kind: "launchd", label: "com.autonomos.daemon" },
+    );
+  });
+
+  it("launchd: a daemon started from an agent's terminal inherits the LIVE label but is NOT supervised", () => {
+    // An update from it would have restarted the live service (measured).
+    assert.equal(
+      detectSupervisor(
+        { XPC_SERVICE_NAME: "com.autonomos.daemon" },
+        "darwin",
+        macProbe(46844),
+      ).kind,
+      "none",
+    );
   });
 
   it("launchd only when XPC_SERVICE_NAME is OUR label", () => {
-    assert.deepEqual(
-      detectSupervisor({ XPC_SERVICE_NAME: "com.autonomos.daemon" }, "darwin"),
-      { kind: "launchd", label: "com.autonomos.daemon" },
-    );
     for (const xpc of [
       "0",
       "application.com.apple.Terminal.1",

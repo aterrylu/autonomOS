@@ -25,9 +25,9 @@ import { listSnapshots, snapshotForVersion } from "../snapshots.js";
 import { getUpdateCheckState } from "../updateCheck.js";
 import { readBundleVersion } from "../upgrade.js";
 import {
-  detectSupervisor,
   launchRollbackJob,
   launchUpgradeJob,
+  ownSupervisor,
 } from "../upgradeJob.js";
 import {
   armUpgrade,
@@ -93,7 +93,7 @@ systemRouter.get("/releases", (c) => {
 // staleness bound keeps a job that died without a final write (machine
 // lost power mid-update) from wedging the button forever.
 function backgroundFate(): "stopped" | "orphaned" | null {
-  const kind = detectSupervisor().kind;
+  const kind = ownSupervisor().kind;
   return kind === "systemd"
     ? "stopped"
     : kind === "launchd"
@@ -110,7 +110,7 @@ function upgradeInFlight(): boolean {
 systemRouter.get("/upgrade", (c) => {
   return c.json({
     current: getServerVersion(),
-    supervised: detectSupervisor().kind !== "none",
+    supervised: ownSupervisor().kind !== "none",
     installMode: installMode(),
     status: readUpgradeStatus(),
     armed: getArmedUpgrade(),
@@ -224,7 +224,7 @@ systemRouter.post("/upgrade", async (c) => {
       409,
     );
   }
-  if (detectSupervisor().kind === "none") {
+  if (ownSupervisor().kind === "none") {
     return c.json(
       {
         error:
@@ -305,7 +305,7 @@ systemRouter.post("/rollback", (c) => {
       409,
     );
   }
-  if (detectSupervisor().kind === "none") {
+  if (ownSupervisor().kind === "none") {
     return c.json(
       {
         error:
