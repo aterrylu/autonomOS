@@ -28,9 +28,11 @@ import { cwdToDirName } from "../titleCache.js";
  *
  * These tests pin the contracts the runtime fix depends on:
  *   1. claude-code exposes `hasResumableSession` reflecting on-disk reality.
- *   2. clearing `resumeSessionId` makes buildArgs emit a FRESH same-id spawn
- *      (`--session-id <id>`) instead of `--resume <id>` — the runtime's B
- *      pre-flight fallback.
+ *   2. clearing `resumeSessionId` makes buildArgs emit a FRESH spawn
+ *      (`--session-id <providerSessionId>`) instead of `--resume <id>`. Since
+ *      ADR-111 the runtime's pre-flight fallback also REGENERATES
+ *      providerSessionId first (never reuses a possibly-known id); that is
+ *      pinned in cc-resume-regen-spawn.test.ts.
  *   3. codex has NO `hasResumableSession` hook (it self-handles via the
  *      presence/absence of a thread id) — documenting why only CC needs B.
  */

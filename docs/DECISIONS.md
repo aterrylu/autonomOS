@@ -2330,3 +2330,23 @@ baseline and removes the "TBD" ambiguity.
 - **Alternatives considered:** a percentage-first default (rejected by Terry: it reads as a refilling window); ring / battery / sparkline / pace-only / threshold-only displays (design rounds 1 and 2); a "$" item for Team with credits (rejected by Terry); reusing the window toggle's values for spend (confusing, since its "text" value means percent).
 - **Not verified:** a real usage-based Enterprise response (fixture from codexbar); the `spend` block's shape when a limit is set; whether Enterprise responses carry a reset date. Pace therefore appears only for the inferred `spend` source today.
 - **Source:** TeamLead@autonomOS relays of Terry (2026-09-24); design rounds in the metering explainer artifact; this PR.
+
+## ADR-111: Claude Code resume probes the realpath, and a "not resumable" reattach never reuses the session id (supersedes ADR-049's "fresh with the same --session-id")
+
+- **Date:** 2026-09-24 · **Decided by:** TeamLead/Terry (GO on the proposal); Claude (diagnosis + implementation)
+- **Context:** Two reports (CodexGemini: a second kill → resume of a CC agent exits 1; Onboarding: restart-all of a CC agent whose cwd is a symlink crashes in ~170ms). Diagnosis with real `claude` 2.1.281 under node-pty, in an isolated fake HOME against the mock API, and end to end on an isolated server:
+  - CC files a session JSONL under the **realpath** of its cwd. `hasResumableSession` probed the **unresolved** path, got ENOENT, and the reattach started fresh with the **same** `--session-id`. CC then exits 1: **"Error: Session ID <id> is already in use."** The runtime logged "likely a bad flag", and the ADR-049/100 onExit net could not help, because no resume was attempted.
+  - A/B on the product path: with a resolved cwd, kill → attach ×2 used `--resume` and stayed running; with a symlinked cwd it went fresh-same-id and ended up exited both times.
+  - **On macOS `/var` is a symlink**, so every `os.tmpdir()` / `$TMPDIR` cwd (every isolated test instance) was affected, as well as `/tmp` and any symlinked home or project dir.
+  - The re-entrancy hypothesis ("CC registers the id elsewhere, so a same-id fresh start isn't repeatable") was refuted: a session killed before its first turn leaves no JSONL, and a same-id fresh start then works a 2nd and 3rd time.
+  - `projectsDir()` also hardcoded `$HOME/.claude/projects`, ignoring a (preset-)relocated `CLAUDE_CONFIG_DIR`.
+  - `titleCache` had the same unresolved lookup, so titles for symlinked cwds were silently missing.
+- **Decision:**
+  1. The probe checks where the CHILD files sessions: projects root = the child's `CLAUDE_CONFIG_DIR` (relative → resolved against the child's cwd, `~` NOT expanded, matching CC's own `claude auth status` resolution) else `$HOME/.claude/projects`. It checks the realpath spelling, then the raw one. ENOENT-only = absent; any other error fails open, as before. The probe now runs after the child env is final (`hasResumableSession(options, env)`), like the Codex thread pre-flight.
+  2. A reattach the probe calls "not resumable" **regenerates `providerSessionId`** and starts fresh under the new id. The id is written back through the reattach `markRunning`, the same channel as the onExit net's regeneration, so every `providerSessionId` consumer follows it. One info log line: "no saved session for <old>; starting fresh as <new>".
+  3. `titleCache` looks up the realpath spelling first.
+  4. The fast-exit log prints the process's last output lines (e.g. CC's "already in use") instead of "likely a bad flag".
+- **Rationale:** Resolving the path fixes the root cause. Regenerating the id is defense in depth: with nothing to resume under the old id, a new id costs nothing and makes a collision impossible, including from future CC layout drift or >200-char cwds where our truncation hash may diverge from the SDK's.
+- **Alternatives considered:** Only resolve the realpath (rejected: a future layout change would re-create the same exit-1 crash). Only regenerate the id (rejected: the resolvable conversation would be silently dropped and started fresh). Expand `~` in `CLAUDE_CONFIG_DIR` (rejected: CC doesn't, so we'd probe a directory CC never writes to).
+- **Tests:** `cc-resume-realpath.test.ts` (symlink, `$TMPDIR`, raw fallback, relocated/relative/`~` config dir, titleCache, exit tail); `cc-resume-regen-spawn.test.ts` (real `spawnAgent`: new id end to end, same id when resumable, child env reaches the probe); gated L3 `cc-resume-symlink-integration.test.ts` (real `claude`: symlinked cwd, kill → attach ×2 → running, both `--resume`). All mutation-verified.
+- **Source:** TeamLead relaying CodexGemini + Onboarding reports, autonomOS agent channel, 2026-09-24.
