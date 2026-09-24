@@ -176,7 +176,7 @@ WAS_INSTALLED=0
 if [[ -d "$INSTALL_DIR" ]]; then
   WAS_INSTALLED=1
   # Re-running the installer IS an upgrade path, so it snapshots agent state
-  # first like `autonomos upgrade` does (ADR-103) — via the EXISTING install's
+  # first like `autonomos upgrade` does (ADR-105) — via the EXISTING install's
   # own CLI, which knows its config dir. A bundle from before snapshots
   # existed lacks the command: say so plainly rather than skipping silently.
   if [[ -x "$INSTALL_PREFIX/bin/autonomos" ]] && "$INSTALL_PREFIX/bin/autonomos" snapshots create >/dev/null 2>&1; then

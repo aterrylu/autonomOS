@@ -152,7 +152,7 @@ the mechanical (it adds prose) but not absurdly so — very roughly 1.5×–6× 
 mechanical character count. Wildly outside that range is a smell worth a look, not
 an automatic failure.
 
-### 4b. Storage-format marker (ADR-103 — required when it applies)
+### 4b. Storage-format marker (ADR-105 — required when it applies)
 
 If any changeset in this release bumps the agent-record format
 (`AGENT_SCHEMA_VERSION` in `packages/server/src/agents/store.ts`), put this

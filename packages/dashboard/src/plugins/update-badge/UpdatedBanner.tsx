@@ -1,5 +1,5 @@
 /**
- * The one-time post-update banner (ADR-103), shown under the header on the
+ * The one-time post-update banner (ADR-105), shown under the header on the
  * first load after an in-app update (or Restore) completed. The flow writes a
  * sessionStorage flag right before its reload; this reads AND clears it on
  * mount, so a later manual reload doesn't re-announce anything.

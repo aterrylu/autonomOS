@@ -37,7 +37,7 @@ export type SourceUpgradeOptions = {
    * for tests — a real checkout rebuild takes minutes.
    */
   buildCommand?: readonly string[];
-  /** Progress callback (ADR-103) — cosmetic; a throw never fails the upgrade. */
+  /** Progress callback (ADR-105) — cosmetic; a throw never fails the upgrade. */
   onPhase?: (phase: "building") => void;
 };
 

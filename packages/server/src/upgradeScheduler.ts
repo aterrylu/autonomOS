@@ -1,4 +1,4 @@
-// "Update when agents are idle" (ADR-103).
+// "Update when agents are idle" (ADR-105).
 //
 // An update restarts the daemon, which closes every agent's PTY; agents come
 // back via resume (ADR-049), but a turn in flight stops where it is and does

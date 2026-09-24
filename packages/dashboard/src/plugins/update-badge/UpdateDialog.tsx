@@ -1,5 +1,5 @@
 /**
- * The in-app update modal (ADR-103) — every screen of the flow except the
+ * The in-app update modal (ADR-105) — every screen of the flow except the
  * status-bar pill and the full-screen Reconnecting overlay. Presentational:
  * all state and server calls live in useUpdateFlow; the one exception is the
  * What's-new screen, which fetches the release notes it renders.

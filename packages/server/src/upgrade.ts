@@ -1,7 +1,7 @@
 // Shared upgrade logic (ADR-077). Used by the CLI `autonomos upgrade`
 // command (runs out-of-process, can upgrade even when the daemon is stopped,
 // owns the post-restart health gate) — both from a shell and as the in-app
-// update's out-of-band job (ADR-103: POST /api/system/upgrade launches that
+// update's out-of-band job (ADR-105: POST /api/system/upgrade launches that
 // command in its own supervisor scope; nothing here runs inside the daemon).
 //
 // The flow:
@@ -126,7 +126,7 @@ export type UpgradeOptions = {
    */
   releaseApiBase?: string;
   /**
-   * Progress callback for the out-of-band in-app upgrade (ADR-103): the
+   * Progress callback for the out-of-band in-app upgrade (ADR-105): the
    * job reports phases to a status file the dashboard reads. Cosmetic by
    * contract — a throwing callback must never fail the upgrade.
    */

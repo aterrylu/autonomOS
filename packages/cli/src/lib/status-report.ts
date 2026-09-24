@@ -1,4 +1,4 @@
-// Progress reporting for the out-of-band update/restore job (ADR-103).
+// Progress reporting for the out-of-band update/restore job (ADR-105).
 //
 // The in-app flow runs `autonomos upgrade|rollback --status-file=…` as a job
 // under the supervisor and follows it through that file — the daemon it would

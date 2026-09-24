@@ -87,7 +87,7 @@ build:
 	@echo "Removing any stale embedded dashboard (hosted server serves packages/dashboard/dist; _embedded_dashboard is a binary-build artifact only)..."
 	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
-	@# Build into dist.next and swap (ADR-103): on a source install the OLD
+	@# Build into dist.next and swap (ADR-105): on a source install the OLD
 	@# daemon keeps serving packages/dashboard/dist throughout `autonomos
 	@# upgrade`'s minutes-long rebuild, and vite empties its outDir first — a
 	@# browser refresh mid-build would 404 every asset. The swap window is two

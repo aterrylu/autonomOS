@@ -29,7 +29,7 @@ import {
 export async function runRollbackCommand(
   argv: readonly string[] = [],
 ): Promise<number> {
-  // --status-file: the in-app Restore (ADR-103) runs this same command as an
+  // --status-file: the in-app Restore (ADR-105) runs this same command as an
   // out-of-band job and follows it through the status file.
   const statusFile = statusFileArg(argv);
   return withTerminalStatus(statusFile, { kind: "rollback" }, () =>

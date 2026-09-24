@@ -52,7 +52,7 @@ export type UpdateCheckState = {
   releaseUrl: string | null;
   /**
    * Every published release NEWER than the running version, newest first,
-   * with its GitHub release BODY verbatim (ADR-103 — the in-app "What's new"
+   * with its GitHub release BODY verbatim (ADR-105 — the in-app "What's new"
    * renders exactly the notes /release publishes; one source, never a
    * bundled or hand-maintained copy). null = not fetched / fetch failed:
    * the dashboard then shows "notes unavailable — view on GitHub" and the
@@ -69,7 +69,7 @@ export type ReleaseNote = {
   url: string | null;
   publishedAt: string | null;
   /**
-   * The release changes the agent-record format (ADR-103 no-irreversible-
+   * The release changes the agent-record format (ADR-105 no-irreversible-
    * migrations policy). Driven by a STRUCTURED marker in the release body —
    * `<!-- autonomos:storage-format-change -->`, invisible on GitHub — never
    * by sniffing prose. The dashboard shows a pre-click callout for it.

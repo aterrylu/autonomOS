@@ -44,7 +44,7 @@ import { clearHandoffQueue } from "../handoffQueue.js";
 
 // ── Paths ──────────────────────────────────────────────────────────
 
-/** Current agent-record format. Bumping it REQUIRES the ADR-103 policy: the
+/** Current agent-record format. Bumping it REQUIRES the ADR-105 policy: the
  *  release notes carry the storage-format marker, and older versions refuse
  *  these records (the guard below) instead of misreading them. */
 export const AGENT_SCHEMA_VERSION = 1;
@@ -127,7 +127,7 @@ function loadFromDisk(): Map<UUID, Agent> {
         console.warn(`Skipping malformed agent file: ${entry}`);
         continue;
       }
-      // No-irreversible-migrations policy (ADR-103): a record written by a
+      // No-irreversible-migrations policy (ADR-105): a record written by a
       // NEWER autonomOS (higher schemaVersion) is refused LOUDLY and left
       // untouched on disk — never loaded, so never re-saved in this older
       // shape. The fix is restoring the snapshot that pairs with this

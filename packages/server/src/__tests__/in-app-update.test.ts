@@ -1,4 +1,4 @@
-// In-app update (ADR-103): out-of-band launch, idle scheduler, operator-only
+// In-app update (ADR-105): out-of-band launch, idle scheduler, operator-only
 // trigger, and the release-notes cache. The launcher's SUPERVISOR behavior
 // (systemd-run survives a service restart; a setsid child does not) was
 // measured on real supervisors before this was written — these tests pin the

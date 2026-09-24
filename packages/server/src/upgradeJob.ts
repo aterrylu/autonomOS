@@ -1,4 +1,4 @@
-// Launch the in-app upgrade OUT OF BAND (ADR-103).
+// Launch the in-app upgrade OUT OF BAND (ADR-105).
 //
 // The daemon must never be the agent of its own restart (ADR-077 — OpenClaw's
 // prod bugs: an updater running inside the supervised process dies with it).

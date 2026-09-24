@@ -1,5 +1,5 @@
 /**
- * The in-app update state machine (ADR-103), owned by the status-bar pill.
+ * The in-app update state machine (ADR-105), owned by the status-bar pill.
  *
  * Two independent axes:
  *  - `view`     — which modal screen is showing (or "closed"). Purely UI;

@@ -1,5 +1,5 @@
 /**
- * Settings → Updates (ADR-103): the running version, the daily update-check
+ * Settings → Updates (ADR-105): the running version, the daily update-check
  * toggle (owned by the settings panel, passed in so its behavior is
  * unchanged), and the kept state snapshots.
  *

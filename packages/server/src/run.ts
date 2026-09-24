@@ -601,7 +601,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     startUpdateCheck();
 
     // After an in-app/CLI update: compare agents against the pre-update
-    // snapshot and record the verdict for the success banner (ADR-103).
+    // snapshot and record the verdict for the success banner (ADR-105).
     // No-op on an ordinary boot.
     const { startPostUpgradeVerification } = await import("./upgradeVerify.js");
     startPostUpgradeVerification();

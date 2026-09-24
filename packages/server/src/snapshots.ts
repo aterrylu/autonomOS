@@ -1,4 +1,4 @@
-// Pre-upgrade state snapshots (ADR-103 amendment, Terry's picks).
+// Pre-upgrade state snapshots (ADR-105 amendment, Terry's picks).
 //
 // The health gate + auto-rollback protect the DAEMON. They do not protect
 // agent STATE: a rollback restores code, not the records a newer version may

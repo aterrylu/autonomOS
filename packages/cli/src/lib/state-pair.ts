@@ -1,4 +1,4 @@
-// Code + state move together (ADR-103 amendment).
+// Code + state move together (ADR-105 amendment).
 //
 // A rollback that restores CODE but not STATE runs old code on records a
 // newer version may have rewritten. Every path that puts an older version
