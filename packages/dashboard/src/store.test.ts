@@ -173,3 +173,20 @@ describe("pickActiveFallback", () => {
     expect(pickActiveFallback("solo", {}, {}, [])).toBeNull();
   });
 });
+
+// Terry's #369 pick B: the Projects disclosure is an ACCORDION — at most one
+// project open at a time, so its sessions don't crowd the sidebar's height.
+describe("toggleProjectExpanded — accordion", () => {
+  it("opening a project collapses any other open one; re-clicking closes it", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: partial store patch for test
+    useStore.setState({ expandedProjects: {} } as any);
+    useStore.getState().toggleProjectExpanded("/a");
+    expect(useStore.getState().expandedProjects).toEqual({ "/a": true });
+    // Opening /b closes /a (accordion — not additive).
+    useStore.getState().toggleProjectExpanded("/b");
+    expect(useStore.getState().expandedProjects).toEqual({ "/b": true });
+    // Re-clicking the open one collapses to nothing.
+    useStore.getState().toggleProjectExpanded("/b");
+    expect(useStore.getState().expandedProjects).toEqual({});
+  });
+});
