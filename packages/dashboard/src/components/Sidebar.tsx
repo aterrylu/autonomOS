@@ -193,13 +193,15 @@ function useOrgChartData(refreshKey: number) {
  * branch (read from .git for EVERY provider, and current) over Claude Code's
  * JSONL value (CC-only, and whatever the session last recorded) — before this,
  * Codex/Gemini rows showed the folder with no branch at all. "HEAD" (detached)
- * and "" (patched to "no branch") render nothing.
+ * and "" (server: "no branch now") render nothing — "" does NOT fall back.
  */
 export function rowBranch(
   live: string | undefined,
   fromClaudeJsonl: string | undefined,
 ): string | undefined {
-  const b = live || fromClaudeJsonl;
+  // `""` is the server saying "no branch now" — honor it; only a truly absent
+  // value (server hasn't said) falls back to the stale CC JSONL branch.
+  const b = live !== undefined ? live : fromClaudeJsonl;
   return b && b !== "HEAD" ? b : undefined;
 }
 

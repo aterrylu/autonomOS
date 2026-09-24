@@ -15,8 +15,11 @@ import { listAgents } from "./store.js";
 
 const REFRESH_MS = 15_000;
 
-/** Last branch the dashboard was told about, per agent. First sight only
- *  records (the snapshot/created delta already carried it via enrichAgent). */
+/** Last branch the dashboard was told about, per agent. First sight EMITS
+ *  too: the created/attached delta carried a possibly-cached (≤10s) value, and
+ *  an agent that checks out a branch right after spawn/resume would otherwise
+ *  have that change recorded as the baseline and never sent. One redundant,
+ *  version-preserving patch per agent per spawn/boot is free. */
 const lastSent = new Map<string, string>();
 
 /** One refresh pass — exported for tests. */
@@ -28,7 +31,7 @@ export function refreshGitBranches(agents: Agent[] = listAgents()): void {
     const branch = cachedGitBranch(a.workingDirectory, { fresh: true }) ?? "";
     const prev = lastSent.get(a.id);
     lastSent.set(a.id, branch);
-    if (prev === undefined || prev === branch) continue;
+    if (prev === branch) continue;
     emitAgentDelta({
       type: "agent.updated",
       id: a.id,

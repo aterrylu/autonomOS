@@ -23,6 +23,15 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
  *  checkout, finite so a pathological path can't spin. */
 const MAX_DEPTH = 40;
 
+const warned = new Set<string>();
+function warnOnce(path: string, code: string | undefined): void {
+  if (warned.has(path)) return;
+  warned.add(path);
+  console.warn(
+    `[agents] ${path} exists but is unreadable (${code ?? "unknown"}) — branch omitted for agents there`,
+  );
+}
+
 /** Locate the git dir governing `dir`: walk up to the nearest `.git`, following
  *  a worktree/submodule `gitdir:` pointer. Null when `dir` is not inside a repo. */
 function findGitDir(dir: string): string | null {
@@ -39,8 +48,16 @@ function findGitDir(dir: string): string | null {
         // A relative gitdir is relative to the directory holding the .git file.
         return isAbsolute(target) ? target : resolve(cur, target);
       }
-    } catch {
-      /* no .git here (or unreadable) — keep walking up */
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        // A .git EXISTS here but can't be read (EACCES/EPERM/EIO…). Walking on
+        // would adopt an ENCLOSING repo's branch (a nested worktree, a dotfiles
+        // home) — a wrong value, worse than none. Stop, and say so once.
+        warnOnce(dotGit, code);
+        return null;
+      }
+      /* no .git here — keep walking up */
     }
     const parent = dirname(cur);
     if (parent === cur) return null; // filesystem root
@@ -60,7 +77,11 @@ export function readGitBranch(dir: string | undefined): string | undefined {
     if (!gitDir) return undefined;
     const head = readFileSync(join(gitDir, "HEAD"), "utf-8").trim();
     const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-    return m ? m[1] : undefined; // a bare sha = detached HEAD → no branch
+    // A bare sha = detached HEAD → no branch. `.invalid` is the placeholder
+    // git writes to HEAD in a reftable-format repo (the real HEAD lives in
+    // .git/reftable/, a binary format) — never show it as a branch.
+    if (!m || m[1] === ".invalid") return undefined;
+    return m[1];
   } catch {
     return undefined;
   }

@@ -14,7 +14,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
@@ -107,6 +113,36 @@ describe("readGitBranch — real git layouts", () => {
     assert.equal(readGitBranch(d), undefined);
   });
 
+  it("a reftable-format repo never shows git's `.invalid` HEAD placeholder", (t) => {
+    const r = join(root, "reftable");
+    mkdirSync(r);
+    const env = { ...process.env };
+    delete env.GIT_DIR;
+    const init = spawnSync(
+      "git",
+      ["init", "-q", "--ref-format=reftable", "-b", "terry/real"],
+      { cwd: r, env },
+    );
+    if (init.status !== 0) return t.skip("git on this host lacks reftable");
+    assert.equal(readGitBranch(r), undefined);
+  });
+
+  it("an UNREADABLE .git does not walk up to an enclosing repo's branch", (t) => {
+    // A nested checkout (e.g. <repo>/.claude/worktrees/x) whose own .git can't
+    // be read must not inherit the OUTER repo's branch — wrong beats missing.
+    if (process.getuid?.() === 0) return t.skip("root reads anything");
+    const nested = join(repo, "nested-unreadable");
+    mkdirSync(nested);
+    const dotGit = join(nested, ".git");
+    writeFileSync(dotGit, "gitdir: /nowhere\n");
+    chmodSync(dotGit, 0o000); // exists, unreadable → EACCES
+    try {
+      assert.equal(readGitBranch(nested), undefined, "not the outer 'main'");
+    } finally {
+      chmodSync(dotGit, 0o644);
+    }
+  });
+
   it("a non-git directory has no branch (and never throws)", () => {
     const plain = join(root, "not-a-repo");
     mkdirSync(plain);
@@ -143,7 +179,7 @@ describe("refreshGitBranches — a mid-session checkout reaches the dashboard", 
   });
   afterEach(() => off());
 
-  it("first sight records only; a branch change emits ONE version-preserving patch", () => {
+  it("first sight emits (catches a checkout right after spawn); a change emits ONE version-preserving patch", () => {
     const r = join(root, "switcher");
     mkdirSync(r);
     git(r, "init", "-q", "-b", "main");
@@ -153,20 +189,20 @@ describe("refreshGitBranches — a mid-session checkout reaches the dashboard", 
     refreshGitBranches([a]);
     assert.equal(
       seen.length,
-      0,
-      "first sight: the snapshot already carried it",
+      1,
+      "first sight emits (the created delta may be stale)",
     );
 
     git(r, "checkout", "-q", "-b", "feature/next");
     refreshGitBranches([a]);
-    assert.equal(seen.length, 1);
-    const d = seen[0];
+    assert.equal(seen.length, 2);
+    const d = seen[1];
     assert.ok(d.type === "agent.updated");
     assert.deepEqual(d.patch, { gitBranch: "feature/next" });
     assert.equal(d.version, a.version, "derived value: version NOT bumped");
 
     refreshGitBranches([a]);
-    assert.equal(seen.length, 1, "no change → no delta");
+    assert.equal(seen.length, 2, "no change → no delta");
   });
 
   it('leaving git (detached) patches the branch to "" so the client can clear it', () => {

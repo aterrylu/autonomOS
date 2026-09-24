@@ -200,7 +200,9 @@ describe("rowBranch", () => {
   });
   it("falls back to the JSONL value when no live branch", () => {
     expect(rowBranch(undefined, "then")).toBe("then");
-    expect(rowBranch("", "then")).toBe("then");
+  });
+  it('honors the server "" (no branch now) instead of falling back to stale JSONL', () => {
+    expect(rowBranch("", "then")).toBeUndefined();
   });
   it("hides a detached HEAD and absence", () => {
     expect(rowBranch("HEAD", undefined)).toBeUndefined();
