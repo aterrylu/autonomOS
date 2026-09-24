@@ -24,7 +24,9 @@ export interface Sidecar {
   /** The daemon child process. */
   proc: ChildProcess;
   /**
-   * Kill the daemon: SIGTERM, then SIGKILL after {@link SIDECAR_KILL_AFTER_MS}.
+   * Kill the daemon: SIGTERM, a second SIGTERM after
+   * {@link SIDECAR_FORCE_TERM_MS}, then SIGKILL after
+   * {@link SIDECAR_KILL_AFTER_MS} (see SIDECAR_FORCE_TERM_MS for why two).
    * Idempotent (repeat calls return the first call's promise). Resolves once
    * the daemon has actually EXITED. Callers whose process keeps running may
    * ignore it (`void`) — the escalation fires on its own; server shutdown goes
@@ -34,9 +36,27 @@ export interface Sidecar {
 }
 
 /**
- * How long a disposed daemon gets to honor SIGTERM before SIGKILL: a backstop
- * for a hung daemon. A healthy codex daemon exits in ~0.2s (see
- * stopAllSidecars).
+ * When a disposed daemon that is still alive gets its SECOND SIGTERM.
+ *
+ * Codex's app-server shuts down in two stages. The first SIGTERM means
+ * "drain": an idle daemon exits at once, but one mid-turn keeps running the
+ * turn — model calls, the agent's shell commands — to completion, however long
+ * that takes. A second SIGTERM aborts: the turn is cut, codex reaps its own
+ * children, and it exits in ~0.2s. Measured on codex 0.154 with a busy agent:
+ * one SIGTERM → still running at the SIGKILL backstop, and the SIGKILL orphaned
+ * the agent's shell command; two SIGTERMs → exited in ~0.2s, nothing left.
+ * The two must be separate deliveries — a signal still pending when the same
+ * signal arrives is merged into it — hence the gap.
+ *
+ * (Every dispose used to get a second SIGTERM by accident: the PTY's onExit
+ * disposes again. That is why a per-agent kill was clean and why the server's
+ * old shutdown — which exited before onExit could fire — orphaned the daemon.)
+ */
+export const SIDECAR_FORCE_TERM_MS = 250;
+
+/**
+ * How long a disposed daemon gets before SIGKILL: a backstop for a daemon
+ * that ignores both SIGTERMs. Its children are NOT reaped by SIGKILL.
  */
 export const SIDECAR_KILL_AFTER_MS = 2_000;
 
@@ -63,14 +83,11 @@ export function runningSidecarPids(): number[] {
  * Server shutdown: dispose EVERY daemon and wait (bounded) until none is left.
  * Resolves with the pids still alive at the cap (empty = all exited).
  *
- * Why the server must wait instead of exiting straight after dispose():
- * measured on codex 0.154, when the server exited in the same tick as the
- * SIGTERM, a daemon that was mid-turn did NOT exit — it was orphaned to init
- * and ran its turn (model calls, the agent's shell commands) to completion,
- * every time. With the server alive until the daemon is gone, it exited within
- * ~0.2s. (Why codex's own shutdown stalls once its parent vanishes isn't
- * isolated.) Exiting first would also pre-empt the SIGKILL backstop, a timer in
- * this process.
+ * Why the server must wait instead of exiting straight after dispose(): the
+ * forced second SIGTERM and the SIGKILL backstop are timers in THIS process.
+ * Exiting first left a daemon that was mid-turn with only the first SIGTERM —
+ * "drain" — so it was orphaned to init and ran the agent's turn to completion
+ * with no server above it (see SIDECAR_FORCE_TERM_MS).
  *
  * Each round re-sweeps the registry, so a daemon a racing spawn started after
  * the first sweep is disposed and waited for too.
@@ -192,19 +209,24 @@ export function startSidecarDaemon(
           }) — escalating to SIGKILL`,
         );
       }
-      // Escalate to SIGKILL if the daemon doesn't exit promptly, so a stuck
-      // daemon never lingers and holds its port. The timer is unref'd so it
-      // never keeps the server alive on its own (hence stopAllSidecars at
-      // shutdown), and is cleared the moment the daemon exits.
-      const escalate = setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // already gone
-        }
-      }, SIDECAR_KILL_AFTER_MS);
-      escalate.unref();
-      proc.once("exit", () => clearTimeout(escalate));
+      // Escalate if the daemon doesn't exit: a second SIGTERM (codex's abort,
+      // see SIDECAR_FORCE_TERM_MS), then SIGKILL so a stuck daemon never
+      // lingers and holds its port. The timers are unref'd so they never keep
+      // the server alive on their own (hence stopAllSidecars at shutdown), and
+      // are cleared the moment the daemon exits.
+      const escalate = (ms: number, signal: NodeJS.Signals) => {
+        const t = setTimeout(() => {
+          try {
+            proc.kill(signal);
+          } catch {
+            // already gone
+          }
+        }, ms);
+        t.unref();
+        proc.once("exit", () => clearTimeout(t));
+      };
+      escalate(SIDECAR_FORCE_TERM_MS, "SIGTERM");
+      escalate(SIDECAR_KILL_AFTER_MS, "SIGKILL");
       return exited;
     };
     if (proc.pid !== undefined) running.set(proc, dispose);

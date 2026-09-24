@@ -14,6 +14,7 @@ import { describe, it } from "node:test";
 import {
   awaitSidecarExits,
   runningSidecarPids,
+  SIDECAR_FORCE_TERM_MS,
   SIDECAR_KILL_AFTER_MS,
   startSidecarDaemon,
   stopAllSidecars,
@@ -61,9 +62,25 @@ describe("Sidecar.dispose()", () => {
     assert.ok(Date.now() - t0 < SIDECAR_KILL_AFTER_MS);
   });
 
-  it("is idempotent — repeat calls signal the daemon once", async () => {
-    // Shutdown disposes each daemon twice (the agent teardown, then the
-    // registry sweep); each extra call must not re-signal or re-arm SIGKILL.
+  it("a daemon that drains on the first SIGTERM exits on the forced second one", async () => {
+    // Codex's two-stage shutdown: SIGTERM #1 = finish the turn, #2 = abort.
+    const sc = await startStub(
+      `let n = 0; process.on("SIGTERM", () => { if (++n === 2) process.exit(0); }); console.log(${JSON.stringify(READY)}); setInterval(() => {}, 1000);`,
+    );
+    const t0 = Date.now();
+    await sc.dispose();
+    const elapsed = Date.now() - t0;
+    assert.equal(sc.proc.exitCode, 0, "exited itself — not SIGKILLed");
+    assert.ok(
+      elapsed >= SIDECAR_FORCE_TERM_MS - 50 && elapsed < SIDECAR_KILL_AFTER_MS,
+      `exited after ${elapsed}ms`,
+    );
+  });
+
+  it("is idempotent — repeat calls add no signals", async () => {
+    // Shutdown disposes each daemon more than once (the agent teardown, the
+    // PTY's onExit, the registry sweep); only the one escalation may run:
+    // SIGTERM, the forced SIGTERM, then SIGKILL.
     const sc = await startStub(
       `process.on("SIGTERM", () => console.log("TERM")); ${IGNORES_SIGTERM}`,
     );
@@ -75,7 +92,8 @@ describe("Sidecar.dispose()", () => {
     sc.dispose();
     sc.dispose();
     await first;
-    assert.equal(out.split("TERM").length - 1, 1);
+    assert.equal(sc.proc.signalCode, "SIGKILL");
+    assert.equal(out.split("TERM").length - 1, 2);
   });
 
   it("a daemon that fails to spawn never enters the registry", async () => {
