@@ -2,14 +2,12 @@
  * Sidecar daemon disposal — dispose() resolves on EXIT, and a shutting-down
  * server waits (bounded) for it.
  *
- * The bug this pins: a Codex app-server daemon mid-turn treats SIGTERM as
- * "drain" and keeps running the turn. dispose()'s SIGKILL escalation is an
- * unref'd timer, and the server's shutdown called process.exit() in the same
- * tick — so the escalation never fired and the daemon was orphaned to init,
- * still executing the agent's turn with no server above it.
+ * Server shutdown awaits these promises (see shutdown.ts): exiting in the
+ * same tick as the SIGTERM orphaned a mid-turn Codex daemon, which then ran
+ * the agent's turn to completion with no server above it.
  *
- * The stub daemons here are real child processes: one ignores SIGTERM (the
- * mid-turn Codex shape), one honors it (the idle shape).
+ * The stub daemons here are real child processes: one ignores SIGTERM (a hung
+ * daemon — the SIGKILL backstop's case), one honors it (the normal case).
  */
 
 import assert from "node:assert/strict";

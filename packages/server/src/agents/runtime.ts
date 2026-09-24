@@ -1958,10 +1958,10 @@ export async function restartAllAttachments(): Promise<{
     if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
   }
   live.clear();
-  // Let the old daemons exit before the respawns resume their threads. A
-  // daemon mid-turn drains on SIGTERM, and until its SIGKILL lands it is still
-  // appending to the very thread the new daemon is about to resume — two
-  // daemons on one thread. Bounded: the escalation guarantees an exit.
+  // Let the old daemons exit before the respawns resume their threads, so a
+  // daemon that was mid-turn can never still be appending to the thread its
+  // replacement is resuming — two daemons on one thread. Usually ~0.2s;
+  // bounded by the SIGKILL backstop.
   if (!(await awaitSidecarExits(daemonExits))) {
     console.warn(
       "[runtime] restart-all: a sidecar daemon had not exited after SIGKILL — respawning anyway",

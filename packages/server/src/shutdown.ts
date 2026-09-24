@@ -3,12 +3,12 @@
  * ordering is testable without booting a server.
  *
  * The ordering is the point: tear down the agents, WAIT (bounded) for their
- * sidecar daemons to exit, and only then exit. A Codex app-server daemon
- * mid-turn treats SIGTERM as "drain" and keeps running the turn; its SIGKILL
- * escalation is a timer in this process. Exiting in the same tick as the
- * teardown pre-empted that timer, orphaning the daemon to init where it kept
- * executing the agent's turn — model calls, tool calls, file writes — with no
- * server above it.
+ * sidecar daemons to exit, and only then exit. Exiting in the same tick as the
+ * teardown orphaned any Codex daemon that was mid-turn: it did not exit on the
+ * SIGTERM, but ran the agent's turn — model calls, tool calls, file writes —
+ * to completion with no server above it (measured on codex 0.154, every run).
+ * Kept alive until the daemon is gone, the server sees it exit in ~0.2s; the
+ * SIGKILL backstop covers one that hangs. See awaitSidecarExits.
  */
 
 import { awaitSidecarExits } from "./agents/sidecar.js";
