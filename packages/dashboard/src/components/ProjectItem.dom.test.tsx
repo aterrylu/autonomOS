@@ -148,4 +148,30 @@ describe("ProjectItem — redesigned rows", () => {
       "/repo/autonomOS",
     );
   });
+
+  it("right edge (V1): count and quick-spawn '+' share one flush-right slot; '+' is inert until hover", () => {
+    renderItem();
+    const plus = screen.getByLabelText("New session in autonomOS");
+    const header = screen.getByRole("button", { expanded: true });
+    // The "+" is NOT nested in the disclosure toggle (a click on it must not
+    // collapse the project) and sits in the SAME slot as the count.
+    expect(header.contains(plus)).toBe(false);
+    const slot = plus.parentElement;
+    expect(slot?.textContent).toBe(`${PROJECT.sessions.length}+`);
+    // At rest the "+" is invisible AND pointer-inert, so a click on the count
+    // can't silently spawn; hover/keyboard focus bring it in.
+    expect(plus.className).toMatch(/\bopacity-0\b/);
+    expect(plus.className).toMatch(/\bpointer-events-none\b/);
+    expect(plus.className).toMatch(/group-hover:pointer-events-auto/);
+    expect(plus.className).toMatch(/focus-visible:opacity-100/);
+    // The count yields its slot on hover.
+    const count = slot?.querySelector("span");
+    expect(count?.className).toMatch(/group-hover:opacity-0/);
+    // Still spawns in the project's own provider (bug #2).
+    fireEvent.click(plus);
+    expect(useStore.getState().createSession).toHaveBeenCalledWith(
+      "/repo/autonomOS",
+      { provider: PROJECT.sessions[0].provider },
+    );
+  });
 });

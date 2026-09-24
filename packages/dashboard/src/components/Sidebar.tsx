@@ -2315,30 +2315,38 @@ export const ProjectItem = React.memo(function ProjectItem({
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}
           </span>
+        </button>
+        {/* Right edge (V1): the count and the quick-spawn "+" share ONE slot
+            flush-right. At rest the count shows; on row hover (or keyboard
+            focus on the "+") the count fades out and the "+" fades into its
+            place — no dead gap to the right of the count. The "+" is
+            pointer-inert while invisible so a click on the count can't spawn. */}
+        <div className="group/slot relative mr-3 flex h-5 w-5 shrink-0 items-center justify-end">
           <span
-            className="shrink-0 text-[10px] tabular-nums"
+            className="text-[10px] tabular-nums transition-opacity duration-150 group-hover:opacity-0 group-focus-within/slot:opacity-0"
             style={{ color: page.statusFg }}
           >
             {project.sessions.length}
           </span>
-        </button>
-        <button
-          type="button"
-          disabled={isBusy || !projectProvider}
-          className="shrink-0 rounded px-1.5 mr-2 text-sm leading-none opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer disabled:opacity-50"
-          style={{ color: page.statusFg }}
-          title={`New session in ${project.name}`}
-          // Fire-and-forget: spawnSession throws on failure and records it in
-          // `status`; this button has no inline error surface, so swallow the
-          // rejection only to keep it from becoming unhandled.
-          onClick={() => {
-            createSession(project.path, {
-              provider: projectProvider,
-            }).catch(() => {});
-          }}
-        >
-          +
-        </button>
+          <button
+            type="button"
+            disabled={isBusy || !projectProvider}
+            className="absolute inset-0 flex items-center justify-end rounded text-sm leading-none opacity-0 pointer-events-none transition-opacity duration-150 cursor-pointer group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:cursor-default group-hover:disabled:opacity-50"
+            style={{ color: page.statusFg }}
+            title={`New session in ${project.name}`}
+            aria-label={`New session in ${project.name}`}
+            // Fire-and-forget: spawnSession throws on failure and records it in
+            // `status`; this button has no inline error surface, so swallow the
+            // rejection only to keep it from becoming unhandled.
+            onClick={() => {
+              createSession(project.path, {
+                provider: projectProvider,
+              }).catch(() => {});
+            }}
+          >
+            +
+          </button>
+        </div>
       </div>
 
       {expanded && (
