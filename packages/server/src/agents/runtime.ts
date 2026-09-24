@@ -1987,7 +1987,7 @@ export async function restartAllAttachments(): Promise<{
   live.clear();
   // Let the old daemons exit before the respawns resume their threads, so a
   // daemon that was mid-turn can never still be appending to the thread its
-  // replacement is resuming — two daemons on one thread. Usually ~0.2s;
+  // replacement is resuming — two daemons on one thread. ~0.3s measured;
   // bounded by the SIGKILL backstop.
   if (!(await awaitSidecarExits(daemonExits))) {
     console.warn(
