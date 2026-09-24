@@ -151,11 +151,21 @@ fmt:
 	npx biome check --write --unsafe packages/
 
 # ── check: lint + typecheck + test ───────────────
+# Local runs cap test fan-out at half the cores. Uncapped, one run forks about
+# one process per core, and a few agents' gates at once saturated the box (load
+# avg 24-35), slowing the live server and causing timing-only flakes. CI sets
+# CI=true, so its command line is unchanged.
+ifndef CI
+LOCAL_TEST_CAP := $(shell node -e "process.stdout.write(String(Math.max(1, Math.floor(require('os').availableParallelism() / 2))))" 2>/dev/null)
+NODE_TEST_CONCURRENCY := $(if $(LOCAL_TEST_CAP),--test-concurrency=$(LOCAL_TEST_CAP))
+VITEST_MAX_WORKERS := $(if $(LOCAL_TEST_CAP),--maxWorkers=$(LOCAL_TEST_CAP))
+endif
+
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	$(TSX) --test packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
-	cd packages/dashboard && node_modules/.bin/vitest run
+	$(TSX) --test $(NODE_TEST_CONCURRENCY) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	cd packages/dashboard && node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # ── hero: regenerate the README hero screenshot (docs/assets/hero.png) ───────────────
 # Boots an isolated demo instance (own config dir + fake HOME + ephemeral port,

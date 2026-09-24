@@ -142,16 +142,24 @@ export interface UsageQueueSnapshot {
 
 export interface ProjectSession {
   sessionId: string;
+  /** Which agent backend owns the session — drives the provider icon on the
+   *  row. Set by the discovery layer: "claude-code" for ~/.claude sessions,
+   *  "codex" for ~/.codex rollouts, "gemini-cli" for Gemini. */
+  provider: string;
+  /** Display title: the resolved title (SDK customTitle → JSONL title cache →
+   *  first prompt) with the raw SDK summary as the final fallback. */
   summary: string;
   lastModified: number;
   gitBranch?: string;
   firstPrompt?: string;
-  /** User-set title via /rename — SDK bug: currently returns undefined. */
-  customTitle?: string;
   /** True if this session is managed by autonomOS (has an agent record). */
   isAutonomosAgent?: boolean;
   /** Lifecycle status for autonomOS agents. */
   autonomosStatus?: "running" | "exited";
+  /** How the session originated — set by the Codex discovery layer to classify
+   *  autonomOS-spawned ("autonomos") vs external terminal ("external") vs
+   *  headless ("headless"). Optional; the CC listing omits it. */
+  originator?: string;
   /** Template used to spawn this agent. */
   template?: string;
   /** Manager display name in the org chart (resolved from managerId). */

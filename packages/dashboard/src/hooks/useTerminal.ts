@@ -3,6 +3,8 @@ import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
 import {
   acquireTerminal,
+  disposeTerminal,
+  focusTerminal,
   getLiveTerminal,
   type LiveTerminal,
 } from "../terminal/liveTerminals";
@@ -91,6 +93,17 @@ export function useTerminal(
   const isActive =
     activePane?.type === "session" && activePane.id === sessionId;
 
+  // Bumped when this session's PTY is replaced under a stable id (restart /
+  // rename-restart). It's in the attach effect's deps so the pane re-acquires a
+  // fresh terminal even when the pane was already focused (switchPane(sameId) is
+  // a no-op, so nothing else would remount it). See store.reloadTerminal.
+  const reloadNonce = useStore((s) => s.terminalReloadNonce[sessionId] ?? 0);
+  // Tracks the nonce this mount last acted on. Initialized to the current value,
+  // so it differs ONLY when the nonce is bumped WHILE mounted (restart-while-
+  // focused) — never on a fresh mount / switch-back, which must reuse the cached
+  // terminal (ADR-072 keep-alive), not dispose it.
+  const prevNonceRef = useRef(reloadNonce);
+
   // Auto-clear unread notifications whenever this session is active and has unreads
   const markRead = useStore((s) => s.markNotificationsRead);
   const unreadCount = useStore((s) => s.notificationCounts[sessionId] ?? 0);
@@ -104,6 +117,17 @@ export function useTerminal(
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    // Race-proof reload: on a nonce bump the PTY under this id was replaced, so
+    // force-drop any lingering cached terminal before acquiring — closing the
+    // window where the kill's 4010 hasn't uncached the old one yet (it would
+    // otherwise be a cache HIT and re-attach the dead terminal). Guarded to fire
+    // ONLY on a bump-while-mounted; a fresh mount / switch-back keeps the cache
+    // hit so keep-alive still re-streams nothing (ADR-072).
+    if (prevNonceRef.current !== reloadNonce) {
+      prevNonceRef.current = reloadNonce;
+      disposeTerminal(sessionId);
+    }
 
     const entry = acquireTerminal(sessionId);
     if (!entry) {
@@ -133,14 +157,24 @@ export function useTerminal(
       // mount's pill.
       entry.detach(container);
     };
-  }, [sessionId, setStatus, containerRef, handleClipboardCopy]);
+  }, [sessionId, setStatus, containerRef, handleClipboardCopy, reloadNonce]);
 
-  // Focus terminal when it becomes the active session
+  // Focus the terminal when it becomes the active session — AND after a reload
+  // (restart) of the already-active pane. Two things were wrong the first time:
+  // (a) `isActive` alone can't detect a restart-while-focused (activePane never
+  // changes), so `reloadNonce` is a dep; (b) the raw `terminal.focus()` fired
+  // the instant the fresh terminal was acquired, before its xterm textarea was
+  // attached + visible, so the focus silently landed on <body> (the #353 lesson:
+  // can't focus what isn't focusable yet — this was the real hole Terry hit).
+  // `focusTerminal` is the fix for (b): it POLLS via rAF until the textarea is
+  // actually visible (`offsetParent !== null`), then focuses. reloadNonce is an
+  // intentional re-run TRIGGER, not a value read in the body.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadNonce is an intentional re-run trigger, not read in the body.
   useEffect(() => {
     if (isActive) {
-      getLiveTerminal(sessionId)?.terminal.focus();
+      focusTerminal(sessionId);
     }
-  }, [isActive, sessionId]);
+  }, [isActive, sessionId, reloadNonce]);
 
   // Update theme on the live terminal
   useEffect(() => {

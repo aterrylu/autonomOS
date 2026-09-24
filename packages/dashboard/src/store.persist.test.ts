@@ -143,4 +143,26 @@ describe("permission mode rehydration", () => {
     await useStore.persist.rehydrate();
     expect(useStore.getState().permissionMode).toBe("ask");
   });
+
+  it("restores the open Projects group across a reload (#369 bug #8), clamped to one", async () => {
+    // partialize writes expandedProjects; merge must read it back or every
+    // reload collapses the group (nox). A legacy multi-open map clamps to the
+    // accordion's at-most-one invariant.
+    seed({
+      expandedProjects: { "/repo/a": true, "/repo/b": true, "/repo/c": false },
+    });
+    await useStore.persist.rehydrate();
+    const open = Object.entries(useStore.getState().expandedProjects).filter(
+      ([, v]) => v,
+    );
+    expect(open).toHaveLength(1);
+    expect(open[0][0]).toBe("/repo/a");
+  });
+
+  it("ignores a corrupted expandedProjects value", async () => {
+    useStore.setState({ expandedProjects: {} });
+    seed({ expandedProjects: "nope" });
+    await useStore.persist.rehydrate();
+    expect(useStore.getState().expandedProjects).toEqual({});
+  });
 });

@@ -730,6 +730,9 @@ const TOKEN_MEMO_TTL_MS = 60_000;
  * missing-login debounce could confirm it. */
 const TOKEN_MISS_MEMO_TTL_MS = 10_000;
 let tokenMemoTtlMs = TOKEN_MEMO_TTL_MS;
+/** The memo's clock. Injectable so tests move time explicitly instead of
+ * sleeping past real TTLs, which flaked under a loaded box. */
+let memoClock: () => number = Date.now;
 let tokenMissMemoTtlMs = TOKEN_MISS_MEMO_TTL_MS;
 
 let tokenMemo: {
@@ -753,13 +756,13 @@ function memoFresh(now: number): boolean {
 }
 
 async function readOAuthTokenMemoized(): Promise<OAuthToken | null> {
-  if (memoFresh(Date.now())) return tokenMemo?.token ?? null;
+  if (memoFresh(memoClock())) return tokenMemo?.token ?? null;
   if (tokenRead) return tokenRead;
   const generation = tokenMemoGeneration;
   const read = resolveToken()
     .then(({ token, failure }) => {
       if (generation === tokenMemoGeneration) {
-        tokenMemo = { token, readAt: Date.now(), rejected: false };
+        tokenMemo = { token, readAt: memoClock(), rejected: false };
         lastCredentialFailure = failure;
       }
       return token;
@@ -786,7 +789,7 @@ export function invalidateOAuthTokenMemo(): void {
  * TTL — and without re-reading on every poll while it stays rejected. */
 export function markOAuthTokenRejected(): void {
   if (tokenMemo)
-    tokenMemo = { ...tokenMemo, rejected: true, readAt: Date.now() };
+    tokenMemo = { ...tokenMemo, rejected: true, readAt: memoClock() };
 }
 
 // ── Test seams ────────────────────────────────────────────────
@@ -825,6 +828,12 @@ export function __setTokenMemoTtlForTests(
   tokenMemoTtlMs = ttl?.hitMs ?? TOKEN_MEMO_TTL_MS;
   tokenMissMemoTtlMs = ttl?.missMs ?? TOKEN_MISS_MEMO_TTL_MS;
   keychainDeadlineMs = ttl?.deadlineMs ?? KEYCHAIN_DEADLINE_MS;
+  invalidateOAuthTokenMemo();
+}
+
+/** Drive the memo from a fake clock (tests); null restores `Date.now`. */
+export function __setMemoClockForTests(clock: (() => number) | null): void {
+  memoClock = clock ?? Date.now;
   invalidateOAuthTokenMemo();
 }
 

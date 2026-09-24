@@ -114,7 +114,7 @@ describe("codex daemon topology", () => {
       assert.doesNotMatch(spec.args.join(" "), /mcp_servers/);
     });
 
-    it("pre-approves our MCP tools mode-aware on the DAEMON (approve for bypass/auto, writes for ask/plan)", () => {
+    it("pre-approves our MCP tools mode-aware on the DAEMON (approve for bypass, writes for ask/plan/auto)", () => {
       // Without this, Codex's `auto` default prompts once per session for the
       // un-annotated tool set. The mode-aware value mirrors the autonomy the
       // permission mode already grants: an autonomous agent never prompts; a
@@ -122,7 +122,9 @@ describe("codex daemon topology", () => {
       // for the readOnlyHint-annotated read-only ones (auto-approved by "writes").
       const expected: Record<PermissionMode, string> = {
         bypass: "approve",
-        auto: "approve",
+        // Codex has no auto tier: auto is clamped to Ask on BOTH axes (ADR-104),
+        // so "behaves like Ask" is true for MCP tools too — never wider.
+        auto: "writes",
         ask: "writes",
         plan: "writes",
       };
@@ -170,10 +172,12 @@ describe("codex daemon topology", () => {
     });
 
     it("maps permissionMode → approval_policy on the daemon (always set)", () => {
-      // Codex has no plan mode — 'plan' clamps to ask's policy (on-request).
+      // Codex has no plan mode and no auto tier — both clamp to ask's policy
+      // (on-request). codex 0.15x accepts only on-request | never; "on-failure"
+      // was removed and silently coerced, so auto never really was on-failure.
       const cases: Record<PermissionMode, string> = {
         ask: "on-request",
-        auto: "on-failure",
+        auto: "on-request",
         plan: "on-request",
         bypass: "never",
       };
@@ -260,7 +264,7 @@ describe("codex daemon topology", () => {
       assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
-    it("auto mode keeps the sandbox off and sets approval_policy=on-failure", () => {
+    it("auto mode keeps the sandbox off and clamps to ask's on-request (Codex has no auto tier)", () => {
       const args = codexProvider.buildArgs(
         baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "auto" }),
       );
@@ -272,11 +276,11 @@ describe("codex daemon topology", () => {
         "-s",
         "danger-full-access",
         "-c",
-        'approval_policy="on-failure"',
+        'approval_policy="on-request"',
       ]);
     });
 
-    it("RESUMES the prior conversation when a threadId was captured", () => {
+    it("RESUMES the prior conversation when a threadId was captured — with NO permission overrides", () => {
       const args = codexProvider.buildArgs(
         baseOptions({
           sidecarEndpoint: ENDPOINT,
@@ -284,8 +288,12 @@ describe("codex daemon topology", () => {
           providerThreadId: "thread-abc-123",
         }),
       );
-      // `codex resume <id> --remote <ep>` reattaches the persisted conversation
-      // instead of `--remote` alone (which forks a fresh empty thread).
+      // `codex resume <id> --remote <ep>` reattaches the persisted conversation.
+      // NO -s / approval_policy / bypass flag: codex 0.154 rejects any
+      // permission override on a remote resume ("Permission overrides are not
+      // supported when resuming a remote task", exit 1 — every Codex agent died
+      // on every restart). This test used to pin the bypass flag here, i.e. it
+      // pinned the bug. A resumed thread keeps its creation-time policy.
       assert.deepEqual(args, [
         "resume",
         "thread-abc-123",
@@ -293,8 +301,40 @@ describe("codex daemon topology", () => {
         ENDPOINT,
         "-c",
         "check_for_update_on_startup=false",
-        "--dangerously-bypass-approvals-and-sandbox",
       ]);
+    });
+
+    for (const mode of ["ask", "auto", "plan", "bypass"] as const) {
+      it(`resume carries no permission override in ${mode} mode`, () => {
+        const args = codexProvider.buildArgs(
+          baseOptions({
+            sidecarEndpoint: ENDPOINT,
+            permissionMode: mode,
+            providerThreadId: "thread-xyz",
+          }),
+        );
+        assert.ok(!args.includes("-s"), "no sandbox override");
+        assert.ok(
+          !args.some((a) => a.startsWith("approval_policy=")),
+          "no approval override",
+        );
+        assert.ok(
+          !args.includes("--dangerously-bypass-approvals-and-sandbox"),
+          "no bypass override",
+        );
+      });
+    }
+
+    it("a FRESH spawn still sets the thread's permissions (overrides stay on create)", () => {
+      const ask = codexProvider.buildArgs(
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "ask" }),
+      );
+      assert.ok(ask.includes("-s") && ask.includes("danger-full-access"));
+      assert.ok(ask.includes('approval_policy="on-request"'));
+      const bypass = codexProvider.buildArgs(
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "bypass" }),
+      );
+      assert.ok(bypass.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
     it("does NOT use the resume form on a first spawn (no threadId yet)", () => {

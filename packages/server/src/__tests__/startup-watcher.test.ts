@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import type { PtyHandle, ResolvedSpawnOptions } from "@autonomos/core";
 import {
   attachStartupWatcherCore,
@@ -12,14 +12,15 @@ import {
  * TUI rendering the trust dialog before its stdin handler is attached, so
  * early Enters are silently dropped.
  *
- * Timing discipline (why this file was deflaked): the watcher's Enters and its
- * disposal land from *timer* callbacks (retry loop, scripted dialog dismissal).
- * Asserting after a fixed `await sleep(N)` raced those callbacks under
- * full-suite load, so we POLL for the terminal effect ({@link waitFor}) —
- * usually `watcherCount === 0` (disposal is monotonic and always eventually
- * reached: dismissal, give-up, timeout, or dead-pty) — then assert on the
- * writes. Waits that assert an effect must NOT happen still sleep a bounded
- * window; those can't false-fail from load.
+ * Timing discipline: the watcher's Enters and its disposal land from *timer*
+ * callbacks (retry loop, confirmation window), and the scripted terminal
+ * answers on timers too. On REAL timers those races were not load-proof, even
+ * with polling: a timer's start time is libuv's cached loop time, so after a
+ * slow iteration a 20ms check could fire before a 5ms reply and a test counted
+ * an extra Enter. So every test runs on VIRTUAL time (`mock.timers`, see
+ * {@link sleep}). Timer order is then exact, and a bounded "must NOT happen"
+ * window can't false-fail from load. We still wait for the terminal effect
+ * ({@link waitFor}), usually `watcherCount === 0`, then assert on the writes.
  */
 
 const TRUST_DIALOG =
@@ -89,30 +90,74 @@ const FAST: Omit<StartupWatcherConfig, "expectChannels"> = {
   timeoutMs: 500,
 };
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((r) => setTimeout(r, ms));
+/**
+ * VIRTUAL TIME. Every test runs on `mock.timers` (setTimeout, setInterval,
+ * setImmediate, Date), and `sleep`/`waitFor` advance that clock 1ms at a time.
+ * Real timers could not make these tests load-proof: a timer's start time is
+ * libuv's CACHED loop time, so after a slow loop iteration (first-test JIT, a
+ * loaded box) a just-created 20ms check can already be overdue and fire before
+ * a scripted 5ms reply, or even before a setImmediate one, and a test then
+ * counts an extra Enter. With a virtual clock, "reply at +5 before check at
+ * +20" is exact, whatever the load.
+ */
+const realSetImmediate = setImmediate; // captured BEFORE mocking: flushes real I/O + microtasks
+const flush = (): Promise<void> =>
+  new Promise((r) => realSetImmediate(() => r()));
+
+beforeEach(() => {
+  mock.timers.enable({
+    apis: ["setTimeout", "setInterval", "setImmediate", "Date"],
+    now: 0,
+  });
+});
+afterEach(() => {
+  mock.timers.reset();
+});
+
+/** Advance virtual time by `ms`, letting every callback due along the way run. */
+async function sleep(ms: number): Promise<void> {
+  for (let t = 0; t < ms; t++) {
+    mock.timers.tick(1);
+    await flush();
+  }
+}
 
 /**
- * Poll `predicate` until true, or throw after `timeoutMs`. Replaces
- * `sleep(guess)` for any assertion that an effect HAS happened: returns the
- * instant it's observed (fast + load-independent) instead of betting on a fixed
- * delay. 1s cap is far above any real callback latency.
+ * Advance virtual time until `predicate` holds, or throw after `timeoutMs` of
+ * VIRTUAL time. Use it for any assertion that an effect HAS happened: it
+ * returns at the first virtual millisecond the effect is observable.
  */
 async function waitFor(
   predicate: () => boolean,
   what: string,
   timeoutMs = 1000,
 ): Promise<void> {
-  const start = Date.now();
-  while (!predicate()) {
-    if (Date.now() - start > timeoutMs) {
+  for (let t = 0; !predicate(); t++) {
+    if (t > timeoutMs) {
       throw new Error(
-        `waitFor timed out after ${timeoutMs}ms waiting for: ${what}`,
+        `waitFor timed out after ${timeoutMs}ms (virtual) waiting for: ${what}`,
       );
     }
-    await sleep(2);
+    await sleep(1);
   }
 }
+
+describe("startup watcher — test harness", () => {
+  it("every test runs on VIRTUAL time (the precondition the whole file relies on)", async () => {
+    assert.equal(Date.now(), 0, "Date is mocked and starts at 0");
+    let fired = false;
+    setTimeout(() => {
+      fired = true;
+    }, 10_000);
+    const wall = performance.now();
+    await sleep(10_000);
+    assert.ok(fired, "a 10s timer fired by advancing the virtual clock");
+    assert.ok(
+      performance.now() - wall < 5_000,
+      "…without waiting 10s of wall-clock time",
+    );
+  });
+});
 
 describe("startup watcher — needle-driven retry", () => {
   it("happy path: Enter lands, dialog clears → exactly one Enter, watcher disposes", async () => {
