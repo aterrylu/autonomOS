@@ -2367,17 +2367,20 @@ export const ProjectItem = React.memo(function ProjectItem({
               : "unknown";
 
             const onOpen = () => {
-              // No-op while a spawn/resume is already in flight — SessionRow has
-              // no disabled state (agent-row parity), so the row stays visually
-              // live and just guards here instead of dimming via `disabled`
-              // (nox: a kept `disabled` with no dim reads as a dead click).
-              if (isBusy) return;
               // A live row IS our running agent — jump straight to its pane
-              // (subordinate chip, decision C). Otherwise resume/adopt it.
+              // (subordinate chip, decision C). A pure switchPane, so it is NOT
+              // gated on isBusy: jumping to a running agent must work even while
+              // an unrelated spawn is in flight (nox).
               if (isLive && rec) {
                 switchPane({ type: "session", id: rec.id });
                 return;
               }
+              // Resume/adopt: no-op while a spawn/resume is already in flight.
+              // The external path is also gated inside spawnSession, but the
+              // Stopped path (isAutonomosAgent → agentsApi.attach) is not.
+              // SessionRow has no disabled state (agent-row parity), so the row
+              // stays visually live and guards here instead of dimming.
+              if (isBusy) return;
               resumeSession(s.sessionId, project.path, s.summary, {
                 isAutonomosAgent: s.isAutonomosAgent,
               }).catch(() => {});
@@ -2452,7 +2455,7 @@ export const ProjectItem = React.memo(function ProjectItem({
                     )}
                     {state === "live" ? (
                       // Row-click jumps to the live agent; a subtle trailing ↗
-                      // marks it as a link rather than a resume. No status dot.
+                      // marks it as a link rather than a resume.
                       <span
                         className="ml-auto shrink-0 pl-1.5"
                         role="img"

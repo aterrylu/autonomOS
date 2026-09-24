@@ -107,6 +107,32 @@ describe("ProjectItem — redesigned rows", () => {
     expect(useStore.getState().resumeSession).not.toHaveBeenCalled();
   });
 
+  it("a LIVE row shows its REAL status dot from the live feed (#369 refinement)", () => {
+    renderItem();
+    const live = screen.getByText("live session").closest("button");
+    if (!live) throw new Error("no row");
+    // Seeded agentStatuses["live-1"] = "working" → the syncing corner badge,
+    // aria-labelled "Working" (not the blank circle the coarse record gave).
+    expect(within(live).getByLabelText("Working")).toBeTruthy();
+  });
+
+  it("a LIVE row still jumps while an unrelated spawn is in flight (isBusy gates resume only)", () => {
+    useStore.setState({ status: "spawning..." });
+    renderItem();
+    const live = screen.getByText("live session").closest("button");
+    if (!live) throw new Error("no row");
+    fireEvent.click(live);
+    expect(useStore.getState().switchPane).toHaveBeenCalledWith({
+      type: "session",
+      id: "live-1",
+    });
+    // …but the resume path IS still guarded while busy.
+    const ext = screen.getByText("external session").closest("button");
+    if (!ext) throw new Error("no row");
+    fireEvent.click(ext);
+    expect(useStore.getState().resumeSession).not.toHaveBeenCalled();
+  });
+
   it("an EXTERNAL row resumes/adopts by its session id on click", () => {
     renderItem();
     const row = screen.getByText("external session").closest("button");

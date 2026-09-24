@@ -1496,6 +1496,19 @@ export const useStore = create<AppState>()(
           }
           merged.dvPaneWorkspace = clean;
         }
+        // Projects expand state (#369 bug #8): partialize writes it, so merge
+        // must read it back or every reload collapses the open project. Keep
+        // only string→true entries and clamp to the accordion invariant (at
+        // most one open) so a hand-edited or legacy multi-open map can't break it.
+        if (
+          saved?.expandedProjects &&
+          typeof saved.expandedProjects === "object"
+        ) {
+          const open = Object.entries(
+            saved.expandedProjects as Record<string, unknown>,
+          ).find(([k, v]) => typeof k === "string" && k && v === true);
+          merged.expandedProjects = open ? { [open[0]]: true } : {};
+        }
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
         if (
