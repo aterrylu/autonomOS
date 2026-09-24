@@ -66,27 +66,73 @@ const PROC = {
 };
 
 describe("detectSupervisor", () => {
-  it("systemd via INVOCATION_ID, launchd via a real job label, else none", () => {
-    assert.deepEqual(detectSupervisor({ INVOCATION_ID: "x" }, "linux"), {
-      kind: "systemd",
-    });
+  // Real cgroup lines, captured on forge.
+  const ownUnit = () =>
+    "0::/user.slice/user-1000.slice/user@1000.service/app.slice/autonomos.service\n";
+  const testUnit = () =>
+    "0::/user.slice/user-1000.slice/user@1000.service/app.slice/com.autonomos.daemon.test.service\n";
+  const gnomeTerminal = () =>
+    "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-terminal.slice/gnome-terminal-server.service\n";
+
+  it("systemd only when THIS process runs in autonomOS's own unit", () => {
+    assert.deepEqual(
+      detectSupervisor({ INVOCATION_ID: "x" }, "linux", ownUnit),
+      {
+        kind: "systemd",
+      },
+    );
+    assert.deepEqual(
+      detectSupervisor(
+        {
+          INVOCATION_ID: "x",
+          AUTONOMOS_SERVICE_LABEL: "com.autonomos.daemon.test",
+        },
+        "linux",
+        testUnit,
+      ),
+      { kind: "systemd" },
+    );
+  });
+
+  it("an inherited INVOCATION_ID from another unit (a terminal) is NOT supervision", () => {
+    // A foreground `autonomos start` in GNOME Terminal inherits the terminal
+    // unit's INVOCATION_ID; the update job would stop it with nothing to
+    // restart it.
+    assert.equal(
+      detectSupervisor({ INVOCATION_ID: "x" }, "linux", gnomeTerminal).kind,
+      "none",
+    );
+    // …and a test-labelled daemon doesn't count the default unit as its own.
+    assert.equal(
+      detectSupervisor(
+        {
+          INVOCATION_ID: "x",
+          AUTONOMOS_SERVICE_LABEL: "com.autonomos.daemon.test",
+        },
+        "linux",
+        ownUnit,
+      ).kind,
+      "none",
+    );
+    assert.equal(detectSupervisor({}, "linux", ownUnit).kind, "none");
+  });
+
+  it("launchd only when XPC_SERVICE_NAME is OUR label", () => {
     assert.deepEqual(
       detectSupervisor({ XPC_SERVICE_NAME: "com.autonomos.daemon" }, "darwin"),
       { kind: "launchd", label: "com.autonomos.daemon" },
     );
-    // Terminal-launched processes on macOS carry "0" or an application.* id.
-    assert.equal(
-      detectSupervisor({ XPC_SERVICE_NAME: "0" }, "darwin").kind,
-      "none",
-    );
-    assert.equal(
-      detectSupervisor(
-        { XPC_SERVICE_NAME: "application.com.apple.Terminal.1" },
-        "darwin",
-      ).kind,
-      "none",
-    );
-    assert.equal(detectSupervisor({}, "linux").kind, "none");
+    for (const xpc of [
+      "0",
+      "application.com.apple.Terminal.1",
+      "com.example.some-other-job",
+    ]) {
+      assert.equal(
+        detectSupervisor({ XPC_SERVICE_NAME: xpc }, "darwin").kind,
+        "none",
+        xpc,
+      );
+    }
   });
 });
 

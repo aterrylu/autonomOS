@@ -23,7 +23,7 @@
 // the dashboard tells the operator to run `autonomos upgrade` in a terminal.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./configDir.js";
 import { upgradeStatusPath, writeUpgradeStatus } from "./upgradeStatus.js";
@@ -36,27 +36,58 @@ export type Supervisor =
   | { kind: "launchd"; label: string }
   | { kind: "none" };
 
+// Mirrors packages/cli/src/lib/service-templates.ts (the server can't import
+// the CLI): the label install-service writes, and its systemd unit name.
+const DEFAULT_SERVICE_LABEL = "com.autonomos.daemon";
+const DEFAULT_SYSTEMD_UNIT = "autonomos.service";
+
+export function expectedServiceNames(env: NodeJS.ProcessEnv = process.env): {
+  launchdLabel: string;
+  systemdUnit: string;
+} {
+  const label = env.AUTONOMOS_SERVICE_LABEL || DEFAULT_SERVICE_LABEL;
+  return {
+    launchdLabel: label,
+    systemdUnit:
+      label === DEFAULT_SERVICE_LABEL
+        ? DEFAULT_SYSTEMD_UNIT
+        : `${label}.service`,
+  };
+}
+
+function readOwnCgroup(): string {
+  try {
+    return readFileSync("/proc/self/cgroup", "utf-8");
+  } catch {
+    return "";
+  }
+}
+
 /**
- * Which supervisor owns THIS process — read from the environment the
- * supervisor itself sets (both verified on real services): systemd exports
- * INVOCATION_ID to service processes; launchd exports XPC_SERVICE_NAME = the
- * job label. Cheap and side-effect free, unlike probing launchctl/systemctl.
+ * Whether autonomOS's OWN service owns this process — not just "some
+ * supervisor". The env markers alone are inherited by anything a unit/job
+ * starts: a terminal that itself runs as a systemd user unit (GNOME Terminal,
+ * a tmux service) hands INVOCATION_ID to a foreground `autonomos start`, and
+ * the update job would then stop that daemon with nothing to restart it. So:
+ *   systemd — INVOCATION_ID AND our unit in /proc/self/cgroup
+ *             (verified on forge: …/app.slice/autonomos.service);
+ *   launchd — XPC_SERVICE_NAME equal to OUR label (a terminal gets "0" or an
+ *             application.* id; another job's label is not ours either).
  */
 export function detectSupervisor(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  readCgroup: () => string = readOwnCgroup,
 ): Supervisor {
-  if (platform === "linux" && env.INVOCATION_ID) return { kind: "systemd" };
-  const xpc = env.XPC_SERVICE_NAME;
-  // Terminal-launched processes on macOS get XPC_SERVICE_NAME="0" or an
-  // application.* bundle id — only a real launchd job label counts.
-  if (
-    platform === "darwin" &&
-    xpc &&
-    xpc !== "0" &&
-    !xpc.startsWith("application.")
-  ) {
-    return { kind: "launchd", label: xpc };
+  const { launchdLabel, systemdUnit } = expectedServiceNames(env);
+  if (platform === "linux" && env.INVOCATION_ID) {
+    const ours = readCgroup()
+      .split("\n")
+      .some((line) => line.trimEnd().endsWith(`/${systemdUnit}`));
+    return ours ? { kind: "systemd" } : { kind: "none" };
+  }
+  if (platform === "darwin" && env.XPC_SERVICE_NAME === launchdLabel) {
+    return { kind: "launchd", label: launchdLabel };
   }
   return { kind: "none" };
 }
