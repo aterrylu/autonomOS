@@ -70,6 +70,14 @@ describe("status-report", () => {
     assert.equal(read().phase, "done");
   });
 
+  it("a phase's message doesn't leak into the next phase", () => {
+    const report = makeReporter(file);
+    report("waiting_idle", { message: "Waiting for api to finish" });
+    assert.equal(read().message, "Waiting for api to finish");
+    report("restarting");
+    assert.equal(read().message, undefined);
+  });
+
   it("a rollback job's records carry kind: rollback", () => {
     makeReporter(file, { kind: "rollback" })("restarting");
     assert.equal(read().kind, "rollback");

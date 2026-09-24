@@ -37,7 +37,10 @@ export function makeReporter(
 ): Reporter {
   return (phase, extra = {}) => {
     if (!statusFile) return;
-    const patch = { ...base, phase, ...extra };
+    // `message` belongs to the phase that set it: a report without one
+    // clears it, or "Waiting for api to finish" would ride along into
+    // "restarting" and "done" (seen live).
+    const patch = { ...base, message: undefined, phase, ...extra };
     const attempts = TERMINAL_PHASES.has(phase) ? 2 : 1;
     for (let i = 1; i <= attempts; i++) {
       try {
