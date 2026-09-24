@@ -66,11 +66,16 @@ describe("Gemini trust dialog notice (real render)", () => {
   });
 
   it("fires even when the needle itself is split across chunks", () => {
-    const at = REAL_DIALOG.indexOf("trust the files");
-    assert.ok(at > 0, "precondition: the fixture holds the dialog");
-    for (let cut = at - 5; cut < at + 20; cut++) {
+    // Gemini repaints the dialog (three copies in this render), so a split of
+    // the whole stream would still leave an intact later copy — vacuous. Use
+    // only the output up to the SECOND copy: exactly one needle, then split it.
+    const needle = "Do you trust the files in this folder?";
+    const first = REAL_DIALOG.indexOf(needle);
+    const once = REAL_DIALOG.slice(0, REAL_DIALOG.indexOf(needle, first + 1));
+    assert.equal(once.split(needle).length - 1, 1, "precondition: one copy");
+    for (let cut = first + 1; cut < first + needle.length; cut++) {
       assert.equal(
-        scan([REAL_DIALOG.slice(0, cut), REAL_DIALOG.slice(cut)]).length,
+        scan([once.slice(0, cut), once.slice(cut)]).length,
         1,
         `cut at ${cut}`,
       );
