@@ -473,7 +473,7 @@ grep -q '"mode": "bundle"' "$TEST_PREFIX/share/autonomos/install.json" || {
 }
 echo "==> ✓ install.json marker present"
 
-# ADR-101: state snapshot before every upgrade + code+state rollback pair.
+# ADR-103: state snapshot before every upgrade + code+state rollback pair.
 # A sentinel in settings.json is snapshotted by the upgrade; we then change it
 # (standing in for a newer version rewriting state) and expect rollback to put
 # the pre-upgrade value back alongside the old code.

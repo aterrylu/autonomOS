@@ -16,7 +16,7 @@ import { updateTiming } from "./useUpdateFlow";
 
 /**
  * UpdateBadgeStatusBarItem — the update pill + the in-app update flow
- * (ADR-101). The pill reads the server's cached update-check answer off
+ * (ADR-103). The pill reads the server's cached update-check answer off
  * /api/system/version and renders only when an update is known; clicking it
  * walks What's new → Check agents → Update, then follows the server-side job
  * through the restart gap.
@@ -622,7 +622,7 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
   });
 });
 
-describe("UpdateBadgeStatusBarItem — snapshots (ADR-101 amendment)", () => {
+describe("UpdateBadgeStatusBarItem — snapshots (ADR-103 amendment)", () => {
   const releasesWith = (
     releases: Array<{
       version: string;

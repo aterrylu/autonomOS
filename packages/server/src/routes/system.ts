@@ -1,4 +1,4 @@
-// /api/system/* — version, release notes, and the in-app update (ADR-101).
+// /api/system/* — version, release notes, and the in-app update (ADR-103).
 //
 // GET    /api/system/version   → { version, platform, arch, …update fields }
 //        Contract (API-conventions pass): path + {version, platform, arch}
@@ -114,7 +114,7 @@ systemRouter.get("/upgrade", (c) => {
  * the per-agent X-Agent-Token header, or bearer-token API calls. The trigger
  * therefore requires the dashboard's login COOKIE and refuses both.
  *
- * Honest boundary (ADR-101): an agent's MCP config carries the operator
+ * Honest boundary (ADR-103): an agent's MCP config carries the operator
  * token, so an agent that deliberately forges a browser request with it
  * could pass this check. That is the same trusted-fleet boundary every
  * operator route already has (ADR-067's caveat); this guard closes every

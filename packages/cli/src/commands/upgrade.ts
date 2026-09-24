@@ -63,7 +63,7 @@ import {
 } from "../lib/status-report.js";
 
 /**
- * Snapshot agent state BEFORE anything changes (ADR-101). Fail-safe: no
+ * Snapshot agent state BEFORE anything changes (ADR-103). Fail-safe: no
  * snapshot, no update — the safety net is not optional. Returns null after
  * reporting the failure.
  */
@@ -91,7 +91,7 @@ function takeSnapshot(
 type UpgradeFlags = {
   targetVersion: string | undefined;
   /**
-   * In-app update (ADR-101): the out-of-band job passes this so the
+   * In-app update (ADR-103): the out-of-band job passes this so the
    * dashboard can follow progress across the restart. Absent for a shell
    * run — then every report below is a no-op.
    */

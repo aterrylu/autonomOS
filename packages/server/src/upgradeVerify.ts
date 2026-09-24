@@ -1,4 +1,4 @@
-// Post-upgrade agent verification (ADR-101 amendment).
+// Post-upgrade agent verification (ADR-103 amendment).
 //
 // The health gate proves the DAEMON came up; it says nothing about agents.
 // After an update the new daemon compares the live agents against the

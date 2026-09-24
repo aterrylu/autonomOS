@@ -1,5 +1,5 @@
 // Pre-update state snapshots, code+state pairing inputs, post-update
-// verification, and the no-irreversible-migrations guard (ADR-101 amendment).
+// verification, and the no-irreversible-migrations guard (ADR-103 amendment).
 
 import assert from "node:assert/strict";
 import {

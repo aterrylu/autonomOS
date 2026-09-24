@@ -2293,6 +2293,10 @@ baseline and removes the "TBD" ambiguity.
 
 ## ADR-101: In-app update — release notes from GitHub, agent-aware pre-flight, out-of-band upgrader
 
+## ADR-103: In-app update — release notes from GitHub, agent-aware pre-flight, out-of-band upgrader
+
+*Numbering: drafted as ADR-101; renumbered to the next free number at merge — #383 holds 101 and #387 took 102.*
+
 - **Date:** 2026-09-24 — **Decided by:** Terry (asks + picks: busy default = wait for idle, idle window 30s, no skip-this-version, all releases since the user's version stacked newest-first; notes must be the GitHub release notes, one source); mechanics by the release engineer. Provisional number — renumber to next-free at merge.
 - **Context.** The update badge (#323) only linked to GitHub; updating meant a shell. The old `POST /api/system/upgrade` swapped the bundle *inside the daemon* and exited — the in-band pattern ADR-077 warned about (the process cannot be the agent of its own restart, and it runs no health gate), bundle-only, and never wired to a button.
 - **Decision.**

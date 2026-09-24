@@ -1,4 +1,4 @@
-// `autonomos snapshots list` — the pre-update state snapshots (ADR-101).
+// `autonomos snapshots list` — the pre-update state snapshots (ADR-103).
 //
 // Findable later, not just in the moment: every `autonomos upgrade` saves a
 // snapshot of agent state first; `autonomos rollback` restores the one that
@@ -20,7 +20,7 @@ export async function runSnapshotsCommand(
 ): Promise<number> {
   const sub = argv[0] ?? "list";
   if (sub === "create") {
-    // Used by install.sh before it swaps a new bundle in (ADR-101): the
+    // Used by install.sh before it swaps a new bundle in (ADR-103): the
     // running version's state, taken by the running version's own code.
     try {
       const m = createSnapshot(getServerVersion(), null);

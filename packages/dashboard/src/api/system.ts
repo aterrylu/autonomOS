@@ -1,5 +1,5 @@
 /**
- * /api/system/* — version, release notes, and the in-app update (ADR-101).
+ * /api/system/* — version, release notes, and the in-app update (ADR-103).
  *
  * Types are declared here rather than in @autonomos/core: they are the
  * server route's wire contract (routes/system.ts), consumed only by the
@@ -74,7 +74,7 @@ export interface UpgradeStatusRecord {
   message?: string;
   startedAt: string;
   updatedAt: string;
-  /** Absent on records written before ADR-101's amendment = "upgrade". */
+  /** Absent on records written before ADR-103's amendment = "upgrade". */
   kind?: "upgrade" | "rollback";
   /** The pre-upgrade state snapshot this run took. */
   snapshotId?: string;

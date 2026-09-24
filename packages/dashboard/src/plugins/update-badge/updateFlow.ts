@@ -1,5 +1,5 @@
 /**
- * Pure helpers for the in-app update flow (ADR-101): release ordering,
+ * Pure helpers for the in-app update flow (ADR-103): release ordering,
  * breaking-change detection, per-status consequence copy, the phase → step
  * mapping, and the post-reload "Updated" flag. No React, no fetching — the
  * status-bar item owns the state machine; this file owns the rules.

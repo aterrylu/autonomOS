@@ -661,7 +661,7 @@ export function SettingsPanel({
           </div>
 
           <div className="mt-3">
-            {/* Settings → Updates (ADR-101): version, the daily-check toggle
+            {/* Settings → Updates (ADR-103): version, the daily-check toggle
                 (unchanged behavior, rendered inside the section) and the
                 kept snapshots with the in-app Restore. */}
             <UpdatesSettingsSection

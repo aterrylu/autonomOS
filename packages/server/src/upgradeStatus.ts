@@ -1,4 +1,4 @@
-// Out-of-band upgrade progress record (ADR-101).
+// Out-of-band upgrade progress record (ADR-103).
 //
 // The in-app update is executed by a SEPARATE supervisor job (upgradeJob.ts),
 // because the daemon cannot be the agent of its own restart (ADR-077). That

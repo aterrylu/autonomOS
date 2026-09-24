@@ -1,4 +1,4 @@
-// Update-available pill + the in-app update flow (ADR-101; supersedes the
+// Update-available pill + the in-app update flow (ADR-103; supersedes the
 // passive-only badge of ADR-077 §6).
 //
 // The pill reads the SERVER's cached update-check answer off
