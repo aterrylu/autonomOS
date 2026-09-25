@@ -48,7 +48,14 @@ beforeEach(() => {
           JSON.stringify(
             url === "/api/system/snapshots"
               ? snapshots
-              : { version: "0.7.1", platform: "darwin", arch: "arm64" },
+              : url === "/api/system/check-updates"
+                ? {
+                    current: "0.7.1",
+                    latest: "0.7.2",
+                    updateAvailable: true,
+                    checkedAt: "2026-09-25T08:00:00Z",
+                  }
+                : { version: "0.7.1", platform: "darwin", arch: "arm64" },
           ),
         ),
       ),
@@ -118,5 +125,16 @@ describe("UpdatesSettingsSection", () => {
     await renderSection();
     expect(screen.getAllByTestId("settings-snapshot")).toHaveLength(4);
     expect(screen.queryByTestId("settings-restore")).toBeNull();
+  });
+  it("Check now runs the check, says what it found, and nudges the status-bar pill", async () => {
+    await renderSection();
+    const before = useUpdateBus.getState().versionNonce;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("settings-check-now"));
+    });
+    expect(screen.getByTestId("settings-check-result").textContent).toBe(
+      "v0.7.2 is available — Update is in the status bar",
+    );
+    expect(useUpdateBus.getState().versionNonce).toBe(before + 1);
   });
 });

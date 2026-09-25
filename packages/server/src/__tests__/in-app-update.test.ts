@@ -466,6 +466,49 @@ describe("release notes cache (one source: GitHub release bodies)", () => {
     return `http://127.0.0.1:${a.port}`;
   }
 
+  it("Check now: runs the real check on demand (operator-only)", async () => {
+    const base = await serve({
+      "/repos/o/r/releases/latest": { tag_name: "v9.9.9" },
+      "/repos/o/r/releases?": [{ tag_name: "v9.9.9", body: "## New" }],
+    });
+    const saved = {
+      url: process.env.AUTONOMOS_RELEASE_API_URL,
+      repo: process.env.AUTONOMOS_RELEASE_REPO,
+    };
+    process.env.AUTONOMOS_RELEASE_API_URL = base;
+    process.env.AUTONOMOS_RELEASE_REPO = "o/r";
+    try {
+      const app = new Hono();
+      app.route("/api/system", systemRouter);
+      const agent = await app.request("/api/system/check-updates", {
+        method: "POST",
+        headers: { "X-Agent-Token": "t", "Content-Type": "application/json" },
+      });
+      assert.equal(agent.status, 403);
+      const res = await app.request("/api/system/check-updates", {
+        method: "POST",
+        headers: {
+          Cookie: "autonomos_token=x",
+          "Content-Type": "application/json",
+          "Sec-Fetch-Site": "same-origin",
+        },
+        body: "{}",
+      });
+      const body = await res.json();
+      assert.equal(body.updateAvailable, true);
+      assert.equal(body.latest, "9.9.9");
+      assert.ok(body.checkedAt, "the check actually ran");
+    } finally {
+      for (const [k, v] of [
+        ["AUTONOMOS_RELEASE_API_URL", saved.url],
+        ["AUTONOMOS_RELEASE_REPO", saved.repo],
+      ] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it("keeps every published release in (current, latest], newest first, bodies verbatim", async () => {
     const base = await serve({
       "/repos/o/r/releases/latest": { tag_name: "v9.9.9" },

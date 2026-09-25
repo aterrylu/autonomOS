@@ -22,7 +22,7 @@ import { getCookie } from "hono/cookie";
 import type { InstallMode } from "../installInfo.js";
 import { resolveInstall } from "../installInfo.js";
 import { listSnapshots, snapshotForVersion } from "../snapshots.js";
-import { getUpdateCheckState } from "../updateCheck.js";
+import { getUpdateCheckState, runUpdateCheck } from "../updateCheck.js";
 import { readBundleVersion } from "../upgrade.js";
 import {
   launchRollbackJob,
@@ -73,6 +73,30 @@ systemRouter.get("/version", (c) => {
     checkedAt: update.checkedAt,
     releaseUrl: update.releaseUrl,
     installMode: installMode(),
+  });
+});
+
+/**
+ * "Check for updates" — run the release check NOW instead of waiting for the
+ * boot delay (5 min) or the daily cadence. Operator-only like every trigger
+ * (it contacts GitHub and replaces the cached state). An explicit click runs
+ * even with the daily check switched off: the operator asked. Concurrent
+ * clicks share the one in-flight check.
+ */
+let manualCheck: Promise<unknown> | null = null;
+systemRouter.post("/check-updates", async (c) => {
+  const denied = operatorOnly(c);
+  if (denied) return denied;
+  manualCheck ??= runUpdateCheck().finally(() => {
+    manualCheck = null;
+  });
+  await manualCheck;
+  const u = getUpdateCheckState();
+  return c.json({
+    current: getServerVersion(),
+    latest: u.latest,
+    updateAvailable: u.updateAvailable,
+    checkedAt: u.checkedAt,
   });
 });
 

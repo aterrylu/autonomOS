@@ -146,6 +146,14 @@ export const systemApi = {
     request<SystemReleases>("/api/system/releases", opts),
   upgradeState: (opts: Opts = {}) =>
     request<UpgradeState>("/api/system/upgrade", { ...opts, fresh: true }),
+  /** Run the release check now (Settings → Updates → Check now). */
+  checkUpdates: () =>
+    request<{
+      current: string;
+      latest: string | null;
+      updateAvailable: boolean;
+      checkedAt: string | null;
+    }>("/api/system/check-updates", { method: "POST", body: {} }),
   /** `expectedVersion`: the version whose notes the dialog showed — the
    *  server refuses (VERSION_CHANGED) if `latest` moved since. */
   startUpgrade: (when: "idle" | "now", expectedVersion?: string) =>

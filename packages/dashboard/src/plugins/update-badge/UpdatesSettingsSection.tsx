@@ -37,6 +37,32 @@ export function UpdatesSettingsSection({
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const requestRestore = useUpdateBus((s) => s.requestRestore);
+  const refreshVersion = useUpdateBus((s) => s.refreshVersion);
+  type Check =
+    | { kind: "idle" }
+    | { kind: "checking" }
+    | { kind: "done"; latest: string | null; available: boolean }
+    | { kind: "error"; message: string };
+  const [check, setCheck] = useState<Check>({ kind: "idle" });
+  const checkNow = async () => {
+    setCheck({ kind: "checking" });
+    try {
+      const r = await systemApi.checkUpdates();
+      setCheck({
+        kind: "done",
+        latest: r.latest,
+        available: r.updateAvailable,
+      });
+      // The status-bar pill reads /api/system/version on its own cadence —
+      // nudge it so a found update shows up right away.
+      refreshVersion();
+    } catch (err) {
+      setCheck({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Check failed",
+      });
+    }
+  };
   const [version, setVersion] = useState<string | null>(null);
   const [data, setData] = useState<SystemSnapshots | null>(null);
   const [error, setError] = useState(false);
@@ -77,6 +103,30 @@ export function UpdatesSettingsSection({
           {version ? `v${version}` : "…"}
           {updatedDate && <span style={label}> · updated {updatedDate}</span>}
         </span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span
+          className="text-[10px] min-w-0"
+          style={label}
+          data-testid="settings-check-result"
+        >
+          {check.kind === "checking" && "Checking GitHub…"}
+          {check.kind === "done" &&
+            (check.available && check.latest
+              ? `v${check.latest} is available — Update is in the status bar`
+              : "You're on the latest version")}
+          {check.kind === "error" && `Couldn't check: ${check.message}`}
+        </span>
+        <button
+          type="button"
+          className="shrink-0 cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium hover:brightness-110 disabled:opacity-60"
+          style={{ border: `1px solid ${page.border}`, color: page.fg }}
+          onClick={() => void checkNow()}
+          disabled={check.kind === "checking"}
+          data-testid="settings-check-now"
+        >
+          Check now
+        </button>
       </div>
       {updateCheckToggle}
 
