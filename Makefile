@@ -151,6 +151,15 @@ fmt:
 	npx biome check --write --unsafe packages/
 
 # ── check: lint + typecheck + test ───────────────
+# Per-test backstop (OUTSIDE `ifndef CI` on purpose — it must apply in CI,
+# which sets CI=true): a test stuck on an await fails at 5 min, NAMED, instead
+# of silently holding the run until the CI job timeout. 5 min sits above every
+# real-agent suite's own diagnostic budget (agent-spawn-prompt waits 180s in a
+# 200s describe), so it never pre-empts their better failure messages. It can
+# NOT catch a synchronous block (the event loop is frozen); the CI job's
+# timeout-minutes is the backstop for that.
+NODE_TEST_TIMEOUT := --test-timeout=300000
+
 # Local runs cap test fan-out at half the cores. Uncapped, one run forks about
 # one process per core, and a few agents' gates at once saturated the box (load
 # avg 24-35), slowing the live server and causing timing-only flakes. CI sets
@@ -164,7 +173,7 @@ endif
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	$(TSX) --test $(NODE_TEST_CONCURRENCY) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # ── hero: regenerate the README hero screenshot (docs/assets/hero.png) ───────────────

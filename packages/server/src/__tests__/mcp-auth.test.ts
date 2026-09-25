@@ -60,6 +60,8 @@ const INITIALIZE_BODY = JSON.stringify({
 
 describe("/mcp is socket-only and authenticated", {
   skip: !RUN_INTEGRATION,
+  // ~1.3s in CI; 60s is generous yet fails fast and NAMES the suite.
+  timeout: 60_000,
 }, () => {
   let server: BootedServer;
 

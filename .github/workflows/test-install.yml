@@ -11,6 +11,8 @@ jobs:
   test:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
+    # p95 50s (darwin) / 42s (linux) over the last 30 runs.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

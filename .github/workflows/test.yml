@@ -7,6 +7,8 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # p95 128s over the last 30 runs. Without a bound a hang burns GitHub's 6h default (it did: #388).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
