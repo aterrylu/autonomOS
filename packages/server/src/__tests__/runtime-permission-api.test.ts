@@ -295,6 +295,11 @@ describe("load-time migration of legacy agent records (keeps exact behavior)", (
     const a = load(id);
     assert.ok(a, "the record must load");
     assert.equal(a.permissionMode, "bypass", "never relabeled");
+    assert.deepEqual(
+      a.permission,
+      { runtime: "some-removed-cli", values: { x: "y" } },
+      "the stored permission is kept, not rebuilt",
+    );
   });
 
   it("a well-formed stored permission is kept as-is (legacy mode re-derived from it)", () => {
