@@ -26,6 +26,9 @@ export interface AgentsSnapshot {
 }
 
 type Listener = () => void;
+/** A message the gateway accepted (transient; nothing stores it). */
+export type RoutedMessage = Extract<AgentDelta, { type: "message.routed" }>;
+type MessageListener = (m: RoutedMessage) => void;
 
 const BASE_RETRY_MS = 1000;
 const MAX_RETRY_MS = 15_000;
@@ -36,6 +39,9 @@ let snapshot: AgentsSnapshot = {
   statuses: new Map(),
 };
 const listeners = new Set<Listener>();
+// Transient events ride their own channel: they aren't state, so they don't
+// belong in the snapshot (and must not trigger snapshot re-renders).
+const messageListeners = new Set<MessageListener>();
 let ws: WebSocket | null = null;
 let retryMs = BASE_RETRY_MS;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,6 +128,16 @@ function applyDelta(delta: AgentDelta): void {
       const statuses = new Map(snapshot.statuses);
       statuses.set(delta.id, { state: delta.state, unread: delta.unread });
       commit({ statuses });
+      break;
+    }
+    case "message.routed": {
+      for (const l of messageListeners) {
+        try {
+          l(delta);
+        } catch (err) {
+          console.warn("[agentsSocket] message listener failed:", err);
+        }
+      }
       break;
     }
     default:
@@ -248,6 +264,15 @@ export const agentsSocket = {
         // connection's reconcile lands.
         commit({ connected: false, agents: null, statuses: new Map() });
       }
+    };
+  },
+  /** Accepted agent-to-agent messages as they happen (the Org Chart's
+   *  message flow). Only delivered while something also `subscribe`s — the
+   *  push bridge keeps the socket open for the whole dashboard session. */
+  onMessageRouted(listener: MessageListener): () => void {
+    messageListeners.add(listener);
+    return () => {
+      messageListeners.delete(listener);
     };
   },
   getSnapshot(): AgentsSnapshot {

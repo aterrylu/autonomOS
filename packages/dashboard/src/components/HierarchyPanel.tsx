@@ -1,4 +1,4 @@
-import { type AgentTreeNode, PERMISSION_MODE_INFO } from "@autonomos/core";
+import type { AgentTreeNode } from "@autonomos/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { orgTreePoll } from "../api/polls";
@@ -8,8 +8,16 @@ import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
+import { OrgInspector } from "./orgchart/Inspector";
 import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
+import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
 import { pruneExited } from "./orgchart/pruneExited";
+import {
+  type AgentInfo,
+  menuTarget,
+  nodeStatus,
+  type PageTheme,
+} from "./orgchart/shared";
 import {
   applyCollapse,
   computeRollups,
@@ -43,8 +51,6 @@ import { ProviderAgentIcon } from "./ui/provider-icon";
  * right-click opens the SAME AgentContextMenu (ADR-093).
  */
 
-type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
-
 // ── Data ─────────────────────────────────────────────────────────
 
 /**
@@ -66,12 +72,6 @@ export function useOrgChart() {
       : null;
 
   return { chart, loading, error: message };
-}
-
-interface AgentInfo {
-  session: SessionInfo;
-  agentStatus: AgentStatus;
-  currentTool?: string;
 }
 
 /**
@@ -106,12 +106,6 @@ export function useAgentStatusById() {
   }, [sessions, exitedSessions, agentStatuses]);
 }
 
-/** Resolve the displayed status for a tree node. */
-function nodeStatus(node: AgentTreeNode, info?: AgentInfo): AgentStatus {
-  if (node.status !== "running") return "stopped";
-  return info?.agentStatus ?? "unknown";
-}
-
 // ── Card ─────────────────────────────────────────────────────────
 
 interface CardProps {
@@ -140,33 +134,6 @@ const NAV_KEYS: Record<string, NavDir> = {
   ArrowLeft: "left",
   ArrowRight: "right",
 };
-
-function menuTarget(
-  node: AgentTreeNode,
-  managerName: string | undefined,
-  info: AgentInfo | undefined,
-): AgentMenuTarget {
-  const workingDirectory = info?.session.workingDirectory;
-  return node.status === "running"
-    ? {
-        id: node.id,
-        name: node.name,
-        status: "running",
-        manager: managerName,
-        workingDirectory,
-      }
-    : {
-        id: node.id,
-        name: node.name,
-        status: "exited",
-        manager: managerName,
-        // An autonomOS agent resumes by its record id (the resume route
-        // restores template, manager and cwd from the record).
-        resumeKey: node.id,
-        workingDirectory,
-        isAutonomosAgent: true,
-      };
-}
 
 function OrgCard({
   node,
@@ -447,6 +414,8 @@ function OrgCanvas({
   selectedId,
   selectionChainIds,
   onSelect,
+  messageMode,
+  anchorOf,
   onOpen,
   onResume,
   onMenu,
@@ -464,6 +433,10 @@ function OrgCanvas({
   /** Selected agent + manager chain + team, from the unfolded tree. */
   selectionChainIds: Set<string> | null;
   onSelect: (id: string | null) => void;
+  messageMode: MessageMode;
+  /** The drawn card that stands for an agent (itself, or its nearest visible
+   *  ancestor when its team is folded). */
+  anchorOf: (id: string) => string | undefined;
   onOpen: (node: AgentTreeNode) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
   onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
@@ -487,6 +460,14 @@ function OrgCanvas({
   // The chain comes from the panel, computed on the UNFOLDED tree: a selected
   // agent folded away still lights its (drawn) lead instead of dimming all.
   const chain = selectionChainIds;
+  const managerById = useMemo(
+    () => new Map(flat.map((f) => [f.node.id, f.managerId])),
+    [flat],
+  );
+  const nodeById = useMemo(
+    () => new Map(flat.map((f) => [f.node.id, f.node])),
+    [flat],
+  );
 
   // Arrow keys walk the chart: ↑ manager, ↓ first report, ←/→ the neighbor on
   // the same row. Focus follows the selection so the keys keep working.
@@ -661,268 +642,18 @@ function OrgCanvas({
             />
           );
         })}
+        <MessageLayer
+          layout={layout}
+          managerOf={(id) => managerById.get(id)}
+          anchorOf={anchorOf}
+          providerOf={(id) => nodeById.get(id)?.provider}
+          nameOf={(id) => nodeById.get(id)?.name}
+          mode={messageMode}
+          tokens={tokens}
+          onSelect={onSelect}
+        />
       </div>
     </div>
-  );
-}
-
-// ── Inspector: the selected agent, docked beside the chart ───────
-
-const PROVIDER_NAMES: Record<string, string> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-  "gemini-cli": "Gemini CLI",
-};
-
-function OrgInspector({
-  node,
-  managerId,
-  managerName,
-  info,
-  unread,
-  tokens,
-  page,
-  statusMap,
-  onSelect,
-  onOpen,
-  onResume,
-  onRestart,
-  onMenu,
-}: {
-  node: AgentTreeNode;
-  managerId?: string;
-  managerName?: string;
-  info?: AgentInfo;
-  unread: number;
-  tokens: OrgChartTokens;
-  page: PageTheme;
-  statusMap: Record<string, AgentInfo>;
-  onSelect: (id: string | null) => void;
-  onOpen: (node: AgentTreeNode) => void;
-  onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
-  onRestart: (id: string) => void;
-  onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
-}) {
-  const exited = node.status !== "running";
-  const status = nodeStatus(node, info);
-  const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
-  const labelStyle = statusLabelStyle(status, tokens.isLight);
-  const s = info?.session;
-  const lastActive =
-    s?.lastActivityAt ??
-    (exited ? s?.exitedAt : undefined) ??
-    s?.createdAt ??
-    0;
-  const mode = node.permissionMode ?? s?.permissionMode;
-  const cwd = s?.workingDirectory;
-  const exitReason = s?.exitReason?.replace("_", " ");
-
-  const rows: Array<[string, React.ReactNode]> = [
-    [
-      "Last active",
-      <span
-        key="la"
-        style={recencyTimestampStyle(
-          lastActive,
-          Date.now(),
-          page.statusFg,
-          page.fg,
-          page.bg,
-        )}
-      >
-        {formatAge(lastActive)}
-      </span>,
-    ],
-  ];
-  if (unread > 0)
-    rows.push([
-      "Unread",
-      <span key="u" style={{ color: tokens.unread }}>
-        {unread}
-      </span>,
-    ]);
-  if (s?.createdAt) rows.push(["Created", `${formatAge(s.createdAt)} ago`]);
-  if (exited && exitReason) rows.push(["Exit", exitReason]);
-  rows.push([
-    "Runtime",
-    PROVIDER_NAMES[node.provider ?? ""] ?? node.provider ?? "Unknown",
-  ]);
-  if (mode)
-    rows.push(["Permissions", PERMISSION_MODE_INFO[mode]?.label ?? mode]);
-  if (s?.envPreset) rows.push(["Model preset", s.envPreset]);
-  // The tree node and the session record carry the same fields; prefer the
-  // tree's, fall back to the record's (either can arrive first).
-  const template = node.template ?? s?.template;
-  if (template) rows.push(["Template", template]);
-  if (node.project) rows.push(["Project", node.project]);
-  if (cwd)
-    rows.push([
-      "Directory",
-      <span key="cwd" title={cwd} className="block truncate">
-        {cwd.split("/").filter(Boolean).pop() ?? cwd}
-      </span>,
-    ]);
-
-  const chipBtn =
-    "inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full px-2 py-px text-[11px] focus-visible:outline-2";
-
-  return (
-    <aside
-      data-org-inspector={node.id}
-      aria-label={`${node.name} details`}
-      className="flex w-[280px] flex-none flex-col gap-3 overflow-y-auto px-4 py-3 text-[12px]"
-      style={{ borderLeft: `1px solid ${tokens.cardBorder}`, color: tokens.fg }}
-    >
-      <div className="flex items-center gap-2">
-        <ProviderAgentIcon provider={node.provider} status={status} size={18} />
-        <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold">
-          {node.name}
-        </h3>
-        <button
-          type="button"
-          aria-label="Close details"
-          className="cursor-pointer rounded px-1.5 text-[14px] leading-none focus-visible:outline-2"
-          style={{ color: tokens.muted, outlineColor: tokens.status.active }}
-          onClick={() => onSelect(null)}
-        >
-          ×
-        </button>
-      </div>
-      <div
-        data-org-inspector-status
-        className={`text-[12.5px] ${
-          !exited && labelStyle.shimmer
-            ? tokens.isLight
-              ? "status-shimmer-light"
-              : "status-shimmer"
-            : ""
-        }`}
-        style={{
-          color: labelStyle.color,
-          fontWeight: status === "needs_input" ? 600 : undefined,
-        }}
-      >
-        {label}
-      </div>
-
-      {/* Actions sit right under the status, where the eye already is —
-          not at the bottom of a tall pane. */}
-      <div className="flex flex-wrap gap-1.5">
-        {exited ? (
-          <button
-            type="button"
-            data-org-action="resume"
-            className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
-            style={{ color: page.bg, background: tokens.status.ready }}
-            onClick={() => onResume(node, info)}
-          >
-            Resume
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              data-org-action="open"
-              className="cursor-pointer rounded px-3 py-1 text-[12px] font-medium"
-              style={{ color: page.bg, background: tokens.status.active }}
-              onClick={() => onOpen(node)}
-            >
-              Open terminal
-            </button>
-            <button
-              type="button"
-              data-org-action="restart"
-              className="cursor-pointer rounded px-3 py-1 text-[12px]"
-              style={{ border: `1px solid ${tokens.cardBorder}` }}
-              onClick={() => onRestart(node.id)}
-            >
-              Restart
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          data-org-action="more"
-          aria-label={`More actions for ${node.name}`}
-          className="cursor-pointer rounded px-2.5 py-1 text-[12px]"
-          style={{ border: `1px solid ${tokens.cardBorder}` }}
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            onMenu(menuTarget(node, managerName, info), r.left, r.bottom + 4);
-          }}
-        >
-          ⋯
-        </button>
-      </div>
-      <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
-        {rows.map(([k, v]) => (
-          <div key={k} className="contents">
-            <dt style={{ color: tokens.muted }}>{k}</dt>
-            <dd className="m-0 min-w-0">{v}</dd>
-          </div>
-        ))}
-      </dl>
-
-      <section className="flex flex-col gap-1.5">
-        <h4
-          className="m-0 text-[10.5px] font-semibold uppercase tracking-[0.07em]"
-          style={{ color: tokens.muted }}
-        >
-          Team
-        </h4>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span style={{ color: tokens.muted }}>Manager</span>
-          {managerId ? (
-            <button
-              type="button"
-              className={chipBtn}
-              style={{
-                border: `1px solid ${tokens.cardBorder}`,
-                outlineColor: tokens.status.active,
-              }}
-              onClick={() => onSelect(managerId)}
-            >
-              {managerName}
-            </button>
-          ) : (
-            <span>None</span>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span style={{ color: tokens.muted }}>
-            Reports{node.children.length ? ` (${node.children.length})` : ""}
-          </span>
-          {node.children.length === 0 && <span>None</span>}
-          {node.children.map((c) => {
-            const cs = nodeStatus(c, statusMap[c.claudeSessionId]);
-            return (
-              <button
-                key={c.id}
-                type="button"
-                className={chipBtn}
-                style={{
-                  border: `1px solid ${tokens.cardBorder}`,
-                  outlineColor: tokens.status.active,
-                }}
-                onClick={() => onSelect(c.id)}
-              >
-                <span
-                  aria-hidden="true"
-                  className="inline-block size-1.5 rounded-full"
-                  style={{
-                    background:
-                      c.status !== "running"
-                        ? tokens.status.neutral
-                        : statusLabelStyle(cs, tokens.isLight).color,
-                  }}
-                />
-                <span className="truncate">{c.name}</span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-    </aside>
   );
 }
 
@@ -1060,12 +791,20 @@ function TeamControls({
 
 // ── Toolbar: who needs you + exited toggle ───────────────────────
 
+const MESSAGE_MODES: Array<{ mode: MessageMode; label: string }> = [
+  { mode: "animated", label: "Animated" },
+  { mode: "quiet", label: "Quiet" },
+  { mode: "off", label: "Off" },
+];
+
 function Toolbar({
   waiting,
   hiddenExited,
   showAllExited,
   onToggleExited,
   onOpen,
+  messageMode,
+  onMessageMode,
   tokens,
 }: {
   waiting: Array<{ node: AgentTreeNode; tool?: string }>;
@@ -1073,10 +812,11 @@ function Toolbar({
   showAllExited: boolean;
   onToggleExited: () => void;
   onOpen: (node: AgentTreeNode) => void;
+  messageMode: MessageMode;
+  onMessageMode: (m: MessageMode) => void;
   tokens: OrgChartTokens;
 }) {
   const showToggle = hiddenExited > 0 || showAllExited;
-  if (waiting.length === 0 && !showToggle) return null;
   const amber = tokens.status.needsInput;
   return (
     <div
@@ -1109,6 +849,34 @@ function Toolbar({
         </>
       )}
       <span className="flex-1" />
+      <fieldset
+        data-org-message-mode
+        className="m-0 flex items-center gap-1.5 border-0 p-0"
+      >
+        <legend className="float-left mr-1" style={{ color: tokens.muted }}>
+          Messages
+        </legend>
+        <span
+          className="inline-flex overflow-hidden rounded"
+          style={{ border: `1px solid ${tokens.cardBorder}` }}
+        >
+          {MESSAGE_MODES.map(({ mode, label }) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={messageMode === mode}
+              className="cursor-pointer px-2 py-0.5"
+              style={{
+                color: messageMode === mode ? tokens.fg : tokens.muted,
+                background: messageMode === mode ? tokens.chip : "transparent",
+              }}
+              onClick={() => onMessageMode(mode)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+      </fieldset>
       {showToggle && (
         <button
           type="button"
@@ -1138,6 +906,29 @@ function rollupBucket(node: AgentTreeNode, info?: AgentInfo): RollupBucket {
   // "Working" is the sidebar's shimmer set — one definition (ADR-090).
   if (statusLabelStyle(status, false).shimmer) return "working";
   return "idle";
+}
+
+const MESSAGES_KEY = "autonomos.orgchart.messages";
+
+/** Messages mode (Animated / Quiet / Off), remembered per browser. */
+function useMessageMode(): [MessageMode, (m: MessageMode) => void] {
+  const [mode, setMode] = useState<MessageMode>(() => {
+    try {
+      const v = localStorage.getItem(MESSAGES_KEY);
+      return v === "quiet" || v === "off" ? v : "animated";
+    } catch {
+      return "animated";
+    }
+  });
+  const set = useCallback((m: MessageMode) => {
+    setMode(m);
+    try {
+      localStorage.setItem(MESSAGES_KEY, m);
+    } catch {
+      // Not persisted; the choice still applies this session.
+    }
+  }, []);
+  return [mode, set];
 }
 
 const COLLAPSED_KEY = "autonomos.orgchart.collapsed";
@@ -1208,6 +999,7 @@ export function HierarchyPanel() {
     [chart, showAllExited],
   );
   const [collapsed, toggleCollapsed] = useCollapsedTeams();
+  const [messageMode, setMessageMode] = useMessageMode();
   // Rollups count the tree as DRAWN (after pruning) but BEFORE folding, so a
   // collapsed lead still says who in its team needs you.
   const rollups = useMemo(
@@ -1221,6 +1013,27 @@ export function HierarchyPanel() {
     () => applyCollapse(roots, collapsed),
     [roots, collapsed],
   );
+  // A message to an agent folded away (or otherwise not drawn) lands on its
+  // nearest DRAWN ancestor — the card that stands for it right now.
+  const anchorOf = useMemo(() => {
+    const parent = new Map<string, string | undefined>();
+    const walk = (n: AgentTreeNode, up?: string) => {
+      parent.set(n.id, up);
+      for (const c of n.children) walk(c, n.id);
+    };
+    for (const r of roots) walk(r);
+    const drawnIds = new Set<string>();
+    const mark = (n: AgentTreeNode) => {
+      drawnIds.add(n.id);
+      for (const c of n.children) mark(c);
+    };
+    for (const r of drawn) mark(r);
+    return (id: string) => {
+      let cur: string | undefined = id;
+      while (cur && !drawnIds.has(cur)) cur = parent.get(cur);
+      return cur;
+    };
+  }, [roots, drawn]);
 
   const flatRoots = useMemo(() => flatten(roots), [roots]);
   const selectionChainIds = useMemo(
@@ -1354,6 +1167,8 @@ export function HierarchyPanel() {
         selectedId={selectedId}
         selectionChainIds={selectionChainIds}
         onSelect={select}
+        messageMode={messageMode}
+        anchorOf={anchorOf}
         tokens={tokens}
         page={page}
         statusMap={statusMap}
@@ -1378,6 +1193,8 @@ export function HierarchyPanel() {
           showAllExited={showAllExited}
           onToggleExited={() => setShowAllExited((v) => !v)}
           onOpen={openAgent}
+          messageMode={messageMode}
+          onMessageMode={setMessageMode}
           tokens={tokens}
         />
       )}
@@ -1385,6 +1202,9 @@ export function HierarchyPanel() {
         {body}
         {selected && !loading && !error && (
           <OrgInspector
+            // Keyed: switching agents must not carry over the previous one's
+            // pending refetch timer (it would commit A's analytics under B).
+            key={selected.node.id}
             node={selected.node}
             managerId={selected.managerId}
             managerName={selected.managerName}

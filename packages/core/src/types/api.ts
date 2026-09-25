@@ -174,3 +174,59 @@ export interface ProjectInfo {
   sessions: ProjectSession[];
   lastActive: number;
 }
+
+// ── Agent message log (GET /api/agents/:id/messages) ──────────────
+
+/** One agent-to-agent message the gateway accepted, as the Org Chart
+ *  inspector reads it. `text` is sanitized (ANSI + markdown stripped) and
+ *  capped server-side; render it as text, never HTML. */
+export interface LoggedMessage {
+  id: string;
+  from: string | null;
+  fromName: string;
+  to: string;
+  toName: string;
+  /** Sanitized, capped at FULL_MAX. */
+  text: string;
+  ts: number;
+}
+
+export interface PeerCount {
+  id: string | null;
+  name: string;
+  sent: number;
+  received: number;
+}
+
+export interface AgentMessageStats {
+  sent: number;
+  received: number;
+  /** Busiest first. */
+  peers: PeerCount[];
+  /** Newest first. */
+  recent: LoggedMessage[];
+}
+
+// ── Agent analytics (GET /api/agents/:id/analytics) ───────────────
+
+/** Counted per agent since `since` (the server start) — in memory, never
+ *  estimated. `support` says which fields this agent's runtime can report;
+ *  anything unsupported must render as "n/a", not as a zero. */
+export interface AgentAnalytics {
+  since: number;
+  startedAt: number | null;
+  status: { current: string; since: number } | null;
+  turns: number;
+  waits: { count: number; totalMs: number; waitingSince: number | null };
+  tools: Array<{ name: string; count: number }>;
+  toolCalls: number;
+  failedTools: number;
+  lastTool: { name: string; at: number } | null;
+  restarts: number;
+  crashes: number;
+  lastExitCode: number | null;
+  /** Contiguous status segments over the last 24h, oldest first. */
+  activity: Array<{ from: number; to: number; status: string }>;
+  branch: string | null;
+  support: { tools: boolean; needsInput: boolean; failedTools: boolean };
+}
