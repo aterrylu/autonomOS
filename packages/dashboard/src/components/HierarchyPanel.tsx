@@ -1,6 +1,12 @@
-import { type AgentTreeNode, PERMISSION_MODE_INFO } from "@autonomos/core";
+import {
+  type AgentMessageStats,
+  type AgentTreeNode,
+  PERMISSION_MODE_INFO,
+} from "@autonomos/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { agentsApi } from "../api/agents";
+import { agentsSocket } from "../api/agentsSocket";
 import { orgTreePoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { focusTerminal } from "../hooks/useTerminal";
@@ -9,6 +15,7 @@ import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
+import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
 import { pruneExited } from "./orgchart/pruneExited";
 import {
   applyCollapse,
@@ -447,6 +454,8 @@ function OrgCanvas({
   selectedId,
   selectionChainIds,
   onSelect,
+  messageMode,
+  anchorOf,
   onOpen,
   onResume,
   onMenu,
@@ -464,6 +473,10 @@ function OrgCanvas({
   /** Selected agent + manager chain + team, from the unfolded tree. */
   selectionChainIds: Set<string> | null;
   onSelect: (id: string | null) => void;
+  messageMode: MessageMode;
+  /** The drawn card that stands for an agent (itself, or its nearest visible
+   *  ancestor when its team is folded). */
+  anchorOf: (id: string) => string | undefined;
   onOpen: (node: AgentTreeNode) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
   onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
@@ -487,6 +500,14 @@ function OrgCanvas({
   // The chain comes from the panel, computed on the UNFOLDED tree: a selected
   // agent folded away still lights its (drawn) lead instead of dimming all.
   const chain = selectionChainIds;
+  const managerById = useMemo(
+    () => new Map(flat.map((f) => [f.node.id, f.managerId])),
+    [flat],
+  );
+  const nodeById = useMemo(
+    () => new Map(flat.map((f) => [f.node.id, f.node])),
+    [flat],
+  );
 
   // Arrow keys walk the chart: ↑ manager, ↓ first report, ←/→ the neighbor on
   // the same row. Focus follows the selection so the keys keep working.
@@ -661,6 +682,16 @@ function OrgCanvas({
             />
           );
         })}
+        <MessageLayer
+          layout={layout}
+          managerOf={(id) => managerById.get(id)}
+          anchorOf={anchorOf}
+          providerOf={(id) => nodeById.get(id)?.provider}
+          nameOf={(id) => nodeById.get(id)?.name}
+          mode={messageMode}
+          tokens={tokens}
+          onSelect={onSelect}
+        />
       </div>
     </div>
   );
@@ -673,6 +704,137 @@ const PROVIDER_NAMES: Record<string, string> = {
   codex: "Codex",
   "gemini-cli": "Gemini CLI",
 };
+
+/**
+ * One agent's message stats for its inspector: fetched on demand (full text
+ * lives only in the server's per-agent log, never in a broadcast), refreshed
+ * — debounced — whenever a message to or from this agent is routed.
+ */
+function useAgentMessages(agentId: string): AgentMessageStats | null {
+  const [stats, setStats] = useState<AgentMessageStats | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let latest = 0; // only the newest request may commit (no out-of-order)
+    const ac = new AbortController();
+    const load = () => {
+      const mine = ++latest;
+      agentsApi
+        .messages(agentId, { signal: ac.signal, limit: 5 })
+        .then((s) => {
+          if (alive && mine === latest) setStats(s);
+        })
+        .catch(() => {
+          // Keep what we had; the section is informational.
+        });
+    };
+    setStats(null);
+    load();
+    const off = agentsSocket.onMessageRouted((m) => {
+      if (m.to !== agentId && m.from !== agentId) return;
+      clearTimeout(timer);
+      timer = setTimeout(load, 300);
+    });
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      ac.abort();
+      off();
+    };
+  }, [agentId]);
+  return stats;
+}
+
+function CommunicationSection({
+  agentId,
+  tokens,
+  onSelect,
+}: {
+  agentId: string;
+  tokens: OrgChartTokens;
+  onSelect: (id: string | null) => void;
+}) {
+  const stats = useAgentMessages(agentId);
+  const heading = (
+    <h4
+      className="m-0 text-[10.5px] font-semibold uppercase tracking-[0.07em]"
+      style={{ color: tokens.muted }}
+    >
+      Communication
+    </h4>
+  );
+  if (!stats)
+    return <section className="flex flex-col gap-1.5">{heading}</section>;
+  const none = stats.sent === 0 && stats.received === 0;
+  return (
+    <section data-org-communication className="flex flex-col gap-1.5">
+      {heading}
+      {none ? (
+        <span style={{ color: tokens.muted }}>
+          No messages since the server started.
+        </span>
+      ) : (
+        <>
+          <span className="tabular-nums">
+            Sent {stats.sent} · Received {stats.received}
+          </span>
+          {stats.peers.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span style={{ color: tokens.muted }}>Top peers</span>
+              {stats.peers.slice(0, 3).map((p) =>
+                p.id ? (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="cursor-pointer rounded-full px-2 py-px text-[11px] tabular-nums focus-visible:outline-2"
+                    style={{
+                      border: `1px solid ${tokens.cardBorder}`,
+                      outlineColor: tokens.status.active,
+                    }}
+                    onClick={() => onSelect(p.id)}
+                  >
+                    {p.name} {p.sent}↔{p.received}
+                  </button>
+                ) : (
+                  <span key={p.name} className="text-[11px] tabular-nums">
+                    {p.name} {p.received}
+                  </span>
+                ),
+              )}
+            </div>
+          )}
+          <ul className="m-0 flex list-none flex-col gap-1 p-0">
+            {stats.recent.map((m) => {
+              const outgoing = m.from === agentId;
+              return (
+                <li
+                  key={m.id}
+                  data-org-message={m.id}
+                  className="rounded px-2 py-1 text-[11.5px]"
+                  style={{ background: tokens.chip }}
+                >
+                  <span
+                    className="flex gap-1.5 text-[10.5px]"
+                    style={{ color: tokens.muted }}
+                  >
+                    <span>
+                      {outgoing ? `→ ${m.toName}` : `← ${m.fromName}`}
+                    </span>
+                    <span className="ml-auto tabular-nums">
+                      {formatAge(m.ts)}
+                    </span>
+                  </span>
+                  {/* Sanitized, capped server-side; rendered as text. */}
+                  <span className="line-clamp-3 break-words">{m.text}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
 
 function OrgInspector({
   node,
@@ -862,6 +1024,12 @@ function OrgInspector({
           </div>
         ))}
       </dl>
+
+      <CommunicationSection
+        agentId={node.id}
+        tokens={tokens}
+        onSelect={onSelect}
+      />
 
       <section className="flex flex-col gap-1.5">
         <h4
@@ -1060,12 +1228,20 @@ function TeamControls({
 
 // ── Toolbar: who needs you + exited toggle ───────────────────────
 
+const MESSAGE_MODES: Array<{ mode: MessageMode; label: string }> = [
+  { mode: "animated", label: "Animated" },
+  { mode: "quiet", label: "Quiet" },
+  { mode: "off", label: "Off" },
+];
+
 function Toolbar({
   waiting,
   hiddenExited,
   showAllExited,
   onToggleExited,
   onOpen,
+  messageMode,
+  onMessageMode,
   tokens,
 }: {
   waiting: Array<{ node: AgentTreeNode; tool?: string }>;
@@ -1073,10 +1249,11 @@ function Toolbar({
   showAllExited: boolean;
   onToggleExited: () => void;
   onOpen: (node: AgentTreeNode) => void;
+  messageMode: MessageMode;
+  onMessageMode: (m: MessageMode) => void;
   tokens: OrgChartTokens;
 }) {
   const showToggle = hiddenExited > 0 || showAllExited;
-  if (waiting.length === 0 && !showToggle) return null;
   const amber = tokens.status.needsInput;
   return (
     <div
@@ -1109,6 +1286,34 @@ function Toolbar({
         </>
       )}
       <span className="flex-1" />
+      <fieldset
+        data-org-message-mode
+        className="m-0 flex items-center gap-1.5 border-0 p-0"
+      >
+        <legend className="float-left mr-1" style={{ color: tokens.muted }}>
+          Messages
+        </legend>
+        <span
+          className="inline-flex overflow-hidden rounded"
+          style={{ border: `1px solid ${tokens.cardBorder}` }}
+        >
+          {MESSAGE_MODES.map(({ mode, label }) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={messageMode === mode}
+              className="cursor-pointer px-2 py-0.5"
+              style={{
+                color: messageMode === mode ? tokens.fg : tokens.muted,
+                background: messageMode === mode ? tokens.chip : "transparent",
+              }}
+              onClick={() => onMessageMode(mode)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+      </fieldset>
       {showToggle && (
         <button
           type="button"
@@ -1138,6 +1343,29 @@ function rollupBucket(node: AgentTreeNode, info?: AgentInfo): RollupBucket {
   // "Working" is the sidebar's shimmer set — one definition (ADR-090).
   if (statusLabelStyle(status, false).shimmer) return "working";
   return "idle";
+}
+
+const MESSAGES_KEY = "autonomos.orgchart.messages";
+
+/** Messages mode (Animated / Quiet / Off), remembered per browser. */
+function useMessageMode(): [MessageMode, (m: MessageMode) => void] {
+  const [mode, setMode] = useState<MessageMode>(() => {
+    try {
+      const v = localStorage.getItem(MESSAGES_KEY);
+      return v === "quiet" || v === "off" ? v : "animated";
+    } catch {
+      return "animated";
+    }
+  });
+  const set = useCallback((m: MessageMode) => {
+    setMode(m);
+    try {
+      localStorage.setItem(MESSAGES_KEY, m);
+    } catch {
+      // Not persisted; the choice still applies this session.
+    }
+  }, []);
+  return [mode, set];
 }
 
 const COLLAPSED_KEY = "autonomos.orgchart.collapsed";
@@ -1208,6 +1436,7 @@ export function HierarchyPanel() {
     [chart, showAllExited],
   );
   const [collapsed, toggleCollapsed] = useCollapsedTeams();
+  const [messageMode, setMessageMode] = useMessageMode();
   // Rollups count the tree as DRAWN (after pruning) but BEFORE folding, so a
   // collapsed lead still says who in its team needs you.
   const rollups = useMemo(
@@ -1221,6 +1450,27 @@ export function HierarchyPanel() {
     () => applyCollapse(roots, collapsed),
     [roots, collapsed],
   );
+  // A message to an agent folded away (or otherwise not drawn) lands on its
+  // nearest DRAWN ancestor — the card that stands for it right now.
+  const anchorOf = useMemo(() => {
+    const parent = new Map<string, string | undefined>();
+    const walk = (n: AgentTreeNode, up?: string) => {
+      parent.set(n.id, up);
+      for (const c of n.children) walk(c, n.id);
+    };
+    for (const r of roots) walk(r);
+    const drawnIds = new Set<string>();
+    const mark = (n: AgentTreeNode) => {
+      drawnIds.add(n.id);
+      for (const c of n.children) mark(c);
+    };
+    for (const r of drawn) mark(r);
+    return (id: string) => {
+      let cur: string | undefined = id;
+      while (cur && !drawnIds.has(cur)) cur = parent.get(cur);
+      return cur;
+    };
+  }, [roots, drawn]);
 
   const flatRoots = useMemo(() => flatten(roots), [roots]);
   const selectionChainIds = useMemo(
@@ -1354,6 +1604,8 @@ export function HierarchyPanel() {
         selectedId={selectedId}
         selectionChainIds={selectionChainIds}
         onSelect={select}
+        messageMode={messageMode}
+        anchorOf={anchorOf}
         tokens={tokens}
         page={page}
         statusMap={statusMap}
@@ -1378,6 +1630,8 @@ export function HierarchyPanel() {
           showAllExited={showAllExited}
           onToggleExited={() => setShowAllExited((v) => !v)}
           onOpen={openAgent}
+          messageMode={messageMode}
+          onMessageMode={setMessageMode}
           tokens={tokens}
         />
       )}

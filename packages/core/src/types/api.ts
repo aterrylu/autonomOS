@@ -174,3 +174,35 @@ export interface ProjectInfo {
   sessions: ProjectSession[];
   lastActive: number;
 }
+
+// ── Agent message log (GET /api/agents/:id/messages) ──────────────
+
+/** One agent-to-agent message the gateway accepted, as the Org Chart
+ *  inspector reads it. `text` is sanitized (ANSI + markdown stripped) and
+ *  capped server-side; render it as text, never HTML. */
+export interface LoggedMessage {
+  id: string;
+  from: string | null;
+  fromName: string;
+  to: string;
+  toName: string;
+  /** Sanitized, capped at FULL_MAX. */
+  text: string;
+  ts: number;
+}
+
+export interface PeerCount {
+  id: string | null;
+  name: string;
+  sent: number;
+  received: number;
+}
+
+export interface AgentMessageStats {
+  sent: number;
+  received: number;
+  /** Busiest first. */
+  peers: PeerCount[];
+  /** Newest first. */
+  recent: LoggedMessage[];
+}

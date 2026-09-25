@@ -8,14 +8,13 @@
 // stop/status/upgrade commands to consume.
 
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import type { HostInfo } from "@autonomos/core";
 import { createAdaptorServer, serve } from "@hono/node-server";
-import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
@@ -33,6 +32,7 @@ import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
+import { mountDashboard } from "./dashboardStatic.js";
 import { installErrorHandling } from "./httpError.js";
 import {
   assertUsableSocketPath,
@@ -277,6 +277,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   const dashboardBuild = dashboardDist
     ? readDashboardBuild(dashboardDist)
     : null;
+  // /api/host reports the build a reload would get NOW. mountDashboard (below)
+  // swaps in its live getter: it re-reads index.html when it changes, so a
+  // boot-time value would make the tab's staleness check warn about a rebuild
+  // it has already loaded.
+  let currentDashboardBuild = () => dashboardBuild;
 
   const corsOrigin =
     process.env.CORS_ORIGIN ||
@@ -397,7 +402,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.get("/api/host", (c) =>
     c.json({
       hostname: hostname(),
-      dashboard: dashboardBuild,
+      dashboard: currentDashboardBuild(),
     } satisfies HostInfo),
   );
 
@@ -492,13 +497,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // anyone scanning. 404 is the honest answer.
     app.all("/mcp", apiNotFound);
 
-    app.use("/*", serveStatic({ root: dashboardDist }));
-
-    const indexHtml = readFileSync(
-      resolve(dashboardDist, "index.html"),
-      "utf-8",
-    );
-    app.get("*", (c) => c.html(indexHtml));
+    // Static assets + SPA fallback, with explicit caching and precompressed
+    // variants (see dashboardStatic.ts).
+    currentDashboardBuild = mountDashboard(app, dashboardDist).currentBuild;
   }
 
   // The internal listener. `serve()` is port-only, so we build the adaptor
