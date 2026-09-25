@@ -997,7 +997,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // Build provider args + env
   const { channels } = getSettings();
 
-  const resolved = {
+  const resolved: ResolvedSpawnOptions = {
     ...params,
     // Must come AFTER the spread: params.permissionMode may be undefined, and
     // the provider argv has to reflect the same resolved mode the record holds.
@@ -1292,7 +1292,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // halves of the auto-trust feature (prevent the dialog; else dismiss it).
   if (getSettings().autoTrust !== false && provider.prepareSpawn) {
     try {
-      provider.prepareSpawn(resolved, env);
+      const prep = provider.prepareSpawn(resolved, env);
+      if (prep.workdirTrust) resolved.workdirTrust = prep.workdirTrust;
     } catch (err) {
       // Best-effort by contract; the watcher is the fallback path.
       console.warn(

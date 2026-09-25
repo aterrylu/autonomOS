@@ -98,11 +98,14 @@ export interface AgentProvider {
    * customEnvVars + per-agent preset), not the server's process.env — the
    * layers can legally relocate provider config (e.g. CLAUDE_CONFIG_DIR),
    * and setup must act on what the child will actually read.
+   *
+   * The result reports what setup established (see {@link WorkdirTrust});
+   * the runtime copies it onto the options before the startup watcher attaches.
    */
   prepareSpawn?(
     options: ResolvedSpawnOptions,
     env: Record<string, string>,
-  ): void;
+  ): PrepareSpawnResult;
 
   /**
    * Optional: does a RESUMABLE session actually exist on disk for these options?
@@ -311,6 +314,21 @@ export interface SpawnOptions {
 }
 
 /**
+ * What pre-spawn setup established about the working directory's trust, so the
+ * startup watcher knows whether the provider's trust dialog can still render.
+ *   - "trusted": the provider's config now marks this folder trusted (already
+ *     did, or prepareSpawn just wrote it) — the dialog should not appear.
+ *   - "declined": the config holds an explicit "no" for this folder, kept as
+ *     is — the dialog WILL render.
+ *   - "unknown": no config yet, unreadable, or the write failed.
+ */
+export type WorkdirTrust = "trusted" | "declined" | "unknown";
+
+export interface PrepareSpawnResult {
+  workdirTrust?: WorkdirTrust;
+}
+
+/**
  * ResolvedSpawnOptions — SpawnOptions after the orchestrator has resolved
  * defaults, generated IDs, and computed derived values. Passed to buildArgs().
  */
@@ -354,4 +372,11 @@ export interface ResolvedSpawnOptions extends SpawnOptions {
    * `--remote` (which would fork a new, empty thread). Undefined on first spawn.
    */
   providerThreadId?: string;
+
+  /**
+   * Set by the runtime from prepareSpawn's result, before the startup watcher
+   * attaches. Undefined when prepareSpawn didn't run (auto-trust off) or the
+   * provider has none.
+   */
+  workdirTrust?: WorkdirTrust;
 }

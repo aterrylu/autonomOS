@@ -650,3 +650,172 @@ describe("startup watcher — onSettled contract", () => {
     await waitFor(() => pty.watcherCount === 0, "disposed despite the throw");
   });
 });
+
+/**
+ * Pre-trusted workdir (#374 wrote or found `hasTrustDialogAccepted: true`):
+ * the trust dialog should not render, so settle must not wait for it and its
+ * absence must not be reported. It is still ANSWERED if it renders anyway.
+ * `trustOptional` is false for "declined"/"unknown", which keep the exact
+ * pre-change behavior (pinned by the last test here).
+ */
+describe("startup watcher — optional trust (pre-trusted workdir)", () => {
+  let warnings: string[];
+  beforeEach(() => {
+    warnings = [];
+    mock.method(console, "warn", (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+  });
+  afterEach(() => {
+    mock.restoreAll();
+  });
+  const neverDismissed = () =>
+    warnings.filter((w) => w.includes("never dismissed"));
+
+  it("no channels, no dialog: settles on the next tick (not synchronously, not at timeout) and never warns", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      trustOptional: true,
+      ...FAST,
+      timeoutMs: 60,
+      onSettled: () => settled++,
+    });
+    // Deferred: the runtime marks the agent live a few sync lines after
+    // attaching, and ignores a settle that arrives before that.
+    assert.equal(settled, 0, "never fires synchronously inside attach");
+    await sleep(1);
+    assert.equal(settled, 1, "fires on the next tick");
+    await waitFor(() => pty.watcherCount === 0, "disposed at hard timeout");
+    assert.equal(settled, 1, "the terminal path does not re-fire it");
+    assert.deepEqual(
+      neverDismissed(),
+      [],
+      "an optional dialog is never reported",
+    );
+    assert.deepEqual(pty.written, []);
+  });
+
+  it("no channels, dialog renders anyway: still answered, settle stays exactly once", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    pty.onWrite = () => setTimeout(() => pty.emit(WELCOME), 5);
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      trustOptional: true,
+      ...FAST,
+      onSettled: () => settled++,
+    });
+    await sleep(1);
+    assert.equal(settled, 1);
+    pty.emit(TRUST_DIALOG);
+    await waitFor(() => pty.watcherCount === 0, "answered and disposed");
+    assert.deepEqual(pty.written, ["\r"], "the optional dialog was answered");
+    assert.equal(settled, 1);
+    assert.deepEqual(neverDismissed(), []);
+  });
+
+  it("channels on: settle waits for the channels dialog, then fires once", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    pty.onWrite = () => setTimeout(() => pty.emit(WELCOME), 5);
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: true,
+      trustOptional: true,
+      ...FAST,
+      onSettled: () => settled++,
+    });
+    await sleep(50);
+    assert.equal(settled, 0, "channels is still required");
+    pty.emit(CHANNELS_DIALOG);
+    await waitFor(() => pty.watcherCount === 0, "channels answered, disposed");
+    assert.equal(settled, 1);
+    assert.deepEqual(neverDismissed(), []);
+  });
+
+  it("channels on but never shown: the timeout names channels only, not trust", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: true,
+      trustOptional: true,
+      ...FAST,
+      timeoutMs: 60,
+      onSettled: () => settled++,
+    });
+    await waitFor(() => pty.watcherCount === 0, "timed out");
+    assert.equal(settled, 1);
+    const w = neverDismissed();
+    assert.equal(w.length, 1);
+    assert.match(w[0], /never dismissed: channels$/);
+  });
+
+  it("optional trust that DID render and is stuck at timeout is still reported", async () => {
+    const pty = new FakePty();
+    pty.stdinAttached = false; // every Enter swallowed → trust stays mid-retry
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      trustOptional: true,
+      ...FAST,
+      timeoutMs: 60, // < retry budget (5 × 20ms), so it times out mid-retry
+      onSettled: () => settled++,
+    });
+    pty.emit(TRUST_DIALOG);
+    await waitFor(() => pty.watcherCount === 0, "timed out mid-retry");
+    assert.equal(settled, 1);
+    const w = neverDismissed();
+    assert.equal(w.length, 1, "a visible, unanswered dialog is not silent");
+    assert.match(w[0], /never dismissed: trust \(mid-retry: trust\)$/);
+  });
+
+  it("dead PTY after an early settle: onSettled is still exactly once", async () => {
+    const pty = new FakePty();
+    pty.throwOnWrite = true;
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      trustOptional: true,
+      ...FAST,
+      onSettled: () => settled++,
+    });
+    await sleep(1);
+    assert.equal(settled, 1);
+    pty.emit(TRUST_DIALOG); // engage → write throws → cleanup
+    await waitFor(() => pty.watcherCount === 0, "disposed via dead PTY");
+    assert.equal(settled, 1);
+  });
+
+  it("a throwing onSettled on the early path is contained", async () => {
+    const pty = new FakePty();
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      trustOptional: true,
+      ...FAST,
+      timeoutMs: 40,
+      onSettled: () => {
+        throw new Error("listener bug");
+      },
+    });
+    await waitFor(() => pty.watcherCount === 0, "disposed despite the throw");
+  });
+
+  it("trust REQUIRED (declined/unknown): unchanged — settle only at timeout, and it warns", async () => {
+    const pty = new FakePty();
+    let settled = 0;
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      ...FAST,
+      timeoutMs: 60,
+      onSettled: () => settled++,
+    });
+    await sleep(30);
+    assert.equal(settled, 0, "does not settle before the dialog or timeout");
+    await waitFor(() => pty.watcherCount === 0, "timed out");
+    assert.equal(settled, 1);
+    const w = neverDismissed();
+    assert.equal(w.length, 1);
+    assert.match(w[0], /never dismissed: trust$/);
+  });
+});
