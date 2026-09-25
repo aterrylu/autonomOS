@@ -53,6 +53,15 @@ describe("layoutOrg", () => {
     expect(s1?.x).toBe(PAD);
   });
 
+  it("a collapsed lead (no drawn children) stays in the team row via isTeam", () => {
+    const L = layoutOrg([n("Folded"), n("T", n("t1")), n("Solo")], {
+      isTeam: (x) => x.id === "Folded",
+    });
+    expect(L.pos.get("Folded")?.y).toBe(PAD);
+    expect(L.pos.get("T")?.y).toBe(PAD);
+    expect(L.shelf?.count).toBe(1);
+  });
+
   it("with only solo agents, the shelf starts at the top", () => {
     const L = layoutOrg([n("a"), n("b")]);
     expect(L.shelf?.y).toBe(PAD);
