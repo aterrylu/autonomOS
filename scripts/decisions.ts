@@ -13,7 +13,8 @@
 //   renumber <file>           move a colliding ADR to the next free number (make adr-renumber FILE=…)
 //   import [<ref>]            move ADRs a branch appended to the old docs/DECISIONS.md into
 //                             their own files (make adr-import REF=…)
-//   migrate                   one-shot split of docs/DECISIONS.md (already run; kept for audit)
+//   migrate [<ref>] --force   split <ref>:docs/DECISIONS.md (already run; re-run on the latest
+//                             main before the split merges, so late appends migrate as legacy)
 //
 // Legacy entries (everything migrated from docs/DECISIONS.md) are listed in
 // docs/decisions/legacy-manifest.json with a sha256 each. They are frozen
@@ -33,10 +34,12 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -44,6 +47,29 @@ export const DECISIONS_DIR = "docs/decisions";
 export const LEGACY_LOG = "docs/DECISIONS.md";
 export const MANIFEST_FILE = "legacy-manifest.json";
 export const INDEX_FILE = "README.md";
+
+/**
+ * docs/DECISIONS.md after the split: a pointer, pinned byte for byte by `check`, so no
+ * decision can be recorded there (in any header spelling) and the pointer can't vanish.
+ */
+export const LEGACY_STUB = `# Architectural Decision Records → [\`docs/decisions/\`](decisions/)
+
+This log moved: **every decision is now its own file** in
+[\`docs/decisions/\`](decisions/), named \`ADR-NNN-<slug>.md\`, with a generated index in
+[\`docs/decisions/README.md\`](decisions/README.md). ADR numbers did not change, so
+existing "ADR-NNN" references (code comments, PRs, notes) still point at the same
+decision: open \`docs/decisions/ADR-NNN-*.md\`.
+
+- **Add a decision:** \`make adr NEW="Short title"\`. Do not append here; CI rejects
+  any change to this file.
+- **Have an open PR that appended an entry here?** Run \`make adr-import REF=HEAD\`
+  while merging main, then keep main's version of this file. See the steps in
+  [\`docs/decisions/README.md\`](decisions/README.md).
+
+The migrated entries are byte-for-byte what this file held (verified by
+\`scripts/decisions.test.ts\` against the SHA-256 in
+[\`legacy-manifest.json\`](decisions/legacy-manifest.json)).
+`;
 
 /** Fields every NEW entry must carry (CLAUDE.md → "Decision Records"). */
 export const REQUIRED_FIELDS = [
@@ -66,9 +92,22 @@ const NEW_HEADER_RE = /^## ADR-(\d{3,}): (\S.*)$/;
 const NEW_FILE_RE = /^ADR-(\d{3,})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const ANY_ADR_FILE_RE = /^adr/i;
 
-export const sha256 = (s: string) =>
-  createHash("sha256").update(s).digest("hex");
-const pad = (n: number) => String(n).padStart(3, "0");
+export function sha256(s: string): string {
+  return createHash("sha256").update(s).digest("hex");
+}
+
+function pad(n: number): string {
+  return String(n).padStart(3, "0");
+}
+
+/** Repo-relative path of a file in the decisions directory. */
+function relPath(file: string): string {
+  return `${DECISIONS_DIR}/${file}`;
+}
+
+function firstLine(text: string): string {
+  return text.split("\n", 1)[0] ?? "";
+}
 
 // ── shared parsing ──────────────────────────────────────────────────────────
 
@@ -123,7 +162,9 @@ export function slugify(title: string, max = 60): string {
   return slug.slice(0, max) || "untitled";
 }
 
-export const numberOf = (id: string) => Number.parseInt(id, 10);
+export function numberOf(id: string): number {
+  return Number.parseInt(id, 10);
+}
 
 // ── migrate ─────────────────────────────────────────────────────────────────
 
@@ -211,9 +252,8 @@ export function loadEntries(dir: string, manifest: Manifest): Entry[] {
   const out: Entry[] = [];
   for (const file of adrFiles(dir)) {
     const text = readFileSync(join(dir, file), "utf8");
-    const first = text.split("\n", 1)[0] ?? "";
     const known = legacy.get(file);
-    const m = (known ? LEGACY_HEADER_RE : NEW_HEADER_RE).exec(first);
+    const m = (known ? LEGACY_HEADER_RE : NEW_HEADER_RE).exec(firstLine(text));
     if (!m) continue;
     out.push({
       file,
@@ -229,126 +269,205 @@ export function loadEntries(dir: string, manifest: Manifest): Entry[] {
 
 // ── check ───────────────────────────────────────────────────────────────────
 
-/** Value of a `**Label:**` field (bullet or plain line, or inline after `·`), up to the end of its line. */
-export function fieldValue(text: string, label: string): string | undefined {
+// A line that starts a field: `**Label:**` or `- **Label:**`. Also where a block value ends.
+const FIELD_LINE_RE = /^[ \t]*(?:[-*][ \t]+)?\*\*[^*\n]+:\*\*/;
+const HEADING_RE = /^#{1,6}\s/;
+
+/** Blank out fenced code blocks, so a field shown inside ``` doesn't count as one. */
+function withoutCodeFences(text: string): string {
+  return text.replace(/^(```|~~~)[\s\S]*?^\1[^\n]*$/gm, "");
+}
+
+export interface Field {
+  /** The rest of the label's line, cut at an inline next field (`… · **Next:**`). */
+  inline: string;
+  /** `inline` plus any continuation lines up to the next field line or heading. */
+  body: string;
+}
+
+/**
+ * A `**Label:**` field: at the start of a line (plain or bullet), or inline after ` · ` / ` — `
+ * on a field line (`- **Date:** … · **Decided by:** …`). A mention in prose, or inside a
+ * fenced code block, is not a field.
+ */
+export function field(text: string, label: string): Field | undefined {
   const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = new RegExp(`\\*\\*${esc}:\\*\\*([^\\n]*)`).exec(text);
-  if (!m) return undefined;
-  return m[1]!
-    .split(/\s·\s\*\*/)[0]!
-    .replace(/\s—\s\*\*.*$/, "")
-    .trim();
+  const atStart = new RegExp(`^[ \\t]*(?:[-*][ \\t]+)?\\*\\*${esc}:\\*\\*`);
+  const inline = new RegExp(`\\s[·—]\\s\\*\\*${esc}:\\*\\*`);
+  const lines = withoutCodeFences(text).split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const m =
+      atStart.exec(line) ??
+      (FIELD_LINE_RE.test(line) ? inline.exec(line) : null);
+    if (!m) continue;
+    const value = line
+      .slice(m.index + m[0].length)
+      .replace(/\s[·—]\s\*\*.*$/, "")
+      .trim();
+    const rest: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (FIELD_LINE_RE.test(lines[j]!) || HEADING_RE.test(lines[j]!)) break;
+      rest.push(lines[j]!);
+    }
+    return { inline: value, body: [value, ...rest].join("\n").trim() };
+  }
+  return undefined;
+}
+
+export function fieldValue(text: string, label: string): string | undefined {
+  return field(text, label)?.inline;
+}
+
+/** YYYY-MM-DD at the start of `s`, and a real calendar date. */
+function isIsoDate(s: string): boolean {
+  const d = /^(\d{4}-\d{2}-\d{2})\b/.exec(s)?.[1];
+  if (!d) return false;
+  const t = new Date(`${d}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === d;
 }
 
 export function checkDecisions(root: string): string[] {
   const dir = join(root, DECISIONS_DIR);
-  const errors: string[] = [];
-  const rel = (f: string) => `${DECISIONS_DIR}/${f}`;
   const manifest = loadManifest(dir);
+  return [
+    ...checkLegacyFrozen(dir, manifest),
+    ...checkLegacyLogIsStub(root),
+    ...checkDirectoryContents(dir),
+    ...checkNewEntries(dir, manifest),
+    ...checkNumbersUnique(dir, manifest),
+  ];
+}
 
-  // 1. Legacy entries are frozen.
+/** Legacy entries are frozen. */
+function checkLegacyFrozen(dir: string, manifest: Manifest): string[] {
+  const errors: string[] = [];
   for (const e of manifest.entries) {
     const path = join(dir, e.file);
     if (!existsSync(path)) {
       errors.push(
-        `${rel(e.file)} is missing. Migrated ADRs are permanent history; restore it.`,
+        `${relPath(e.file)} is missing. Migrated ADRs are permanent history; restore it.`,
       );
-      continue;
-    }
-    if (sha256(readFileSync(path, "utf8")) !== e.sha256) {
+    } else if (sha256(readFileSync(path, "utf8")) !== e.sha256) {
       errors.push(
-        `${rel(e.file)} was modified. Past ADRs are append-only history: never edit one. ` +
+        `${relPath(e.file)} was modified. Past ADRs are append-only history: never edit one. ` +
           'To reverse or amend it, write a NEW ADR (make adr NEW="…") that references it.',
       );
     }
   }
+  return errors;
+}
 
-  // 2. The old single-file log stays a stub.
+/** The old single-file log stays the pinned stub: nothing appended, nothing removed. */
+function checkLegacyLogIsStub(root: string): string[] {
   const logPath = join(root, LEGACY_LOG);
-  if (existsSync(logPath)) {
-    const appended = readFileSync(logPath, "utf8")
-      .split("\n")
-      .filter((l) => LEGACY_HEADER_RE.test(l));
-    if (appended.length > 0) {
-      errors.push(
-        `${LEGACY_LOG} gained ADR entries (${appended.map((l) => l.slice(3, 11)).join(", ")}). ` +
-          `Decisions now live one per file in ${DECISIONS_DIR}/. Move them with: make adr-import REF=HEAD, ` +
-          `then restore the stub: git checkout origin/main -- ${LEGACY_LOG}`,
-      );
-    }
+  if (!existsSync(logPath)) {
+    return [
+      `${LEGACY_LOG} is missing. Keep the pointer stub (external links and notes use it): git checkout origin/main -- ${LEGACY_LOG}`,
+    ];
   }
+  const text = readFileSync(logPath, "utf8");
+  if (text === LEGACY_STUB) return [];
+  const headers = text.split("\n").filter((l) => /^#{1,6}\s*ADR\b/i.test(l));
+  return [
+    `${LEGACY_LOG} changed. It is a frozen pointer; decisions live one per file in ${DECISIONS_DIR}/.` +
+      (headers.length
+        ? ` It gained ADR entries (${headers.map((l) => JSON.stringify(l.slice(0, 40))).join(", ")}): move them with make adr-import REF=HEAD, then`
+        : " To undo it,") +
+      ` restore the stub: git checkout origin/main -- ${LEGACY_LOG}`,
+  ];
+}
 
-  // 3. New entries: filename ↔ header, required fields.
+/** Only ADR files, the index and the manifest live in docs/decisions/ (so nothing escapes check). */
+function checkDirectoryContents(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter(
+      (d) =>
+        !d.isFile() ||
+        !(
+          d.name === INDEX_FILE ||
+          d.name === MANIFEST_FILE ||
+          ANY_ADR_FILE_RE.test(d.name)
+        ),
+    )
+    .map(
+      (d) =>
+        `${relPath(d.name)}: unexpected ${d.isFile() ? "file" : "entry"}. ${DECISIONS_DIR}/ holds only ADR-NNN-slug.md files, ${INDEX_FILE} and ${MANIFEST_FILE}.`,
+    );
+}
+
+/** New entries: filename ↔ header, required fields. */
+function checkNewEntries(dir: string, manifest: Manifest): string[] {
   const legacyFiles = new Set(manifest.entries.map((e) => e.file));
-  for (const file of adrFiles(dir)) {
-    if (legacyFiles.has(file)) continue;
-    const fm = NEW_FILE_RE.exec(file);
-    if (!fm) {
+  return adrFiles(dir)
+    .filter((file) => !legacyFiles.has(file))
+    .flatMap((file) => checkNewEntry(dir, file));
+}
+
+function checkNewEntry(dir: string, file: string): string[] {
+  const fm = NEW_FILE_RE.exec(file);
+  if (!fm) {
+    return [
+      `${relPath(file)}: bad filename. New ADRs are named ADR-NNN-kebab-slug.md (letter suffixes like 029b are reserved for migrated history).`,
+    ];
+  }
+  const text = readFileSync(join(dir, file), "utf8");
+  const first = firstLine(text);
+  const hm = NEW_HEADER_RE.exec(first);
+  if (!hm) {
+    return [
+      `${relPath(file)}: the first line must be the header "## ADR-${fm[1]}: <Title>" (found: ${JSON.stringify(first)}).`,
+    ];
+  }
+  const errors: string[] = [];
+  if (hm[1] !== fm[1]) {
+    errors.push(
+      `${relPath(file)}: header says ADR-${hm[1]} but the filename says ADR-${fm[1]}. Make them agree.`,
+    );
+  }
+  for (const label of REQUIRED_FIELDS) {
+    const f = field(text, label);
+    if (f === undefined) {
+      errors.push(`${relPath(file)}: missing required field **${label}:**`);
+    } else if (f.body === "") {
+      errors.push(`${relPath(file)}: **${label}:** is empty`);
+    } else if (/\bTODO\b/.test(f.body)) {
       errors.push(
-        `${rel(file)}: bad filename. New ADRs are named ADR-NNN-kebab-slug.md (letter suffixes like 029b are reserved for migrated history).`,
-      );
-      continue;
-    }
-    const text = readFileSync(join(dir, file), "utf8");
-    const first = text.split("\n", 1)[0] ?? "";
-    const hm = NEW_HEADER_RE.exec(first);
-    if (!hm) {
-      errors.push(
-        `${rel(file)}: the first line must be the header "## ADR-${fm[1]}: <Title>" (found: ${JSON.stringify(first)}).`,
-      );
-      continue;
-    }
-    if (hm[1] !== fm[1]) {
-      errors.push(
-        `${rel(file)}: header says ADR-${hm[1]} but the filename says ADR-${fm[1]}. Make them agree.`,
-      );
-    }
-    for (const label of REQUIRED_FIELDS) {
-      const v = fieldValue(text, label);
-      if (v === undefined)
-        errors.push(`${rel(file)}: missing required field **${label}:**`);
-      else if (v === "" && !hasBlockValue(text, label))
-        errors.push(`${rel(file)}: **${label}:** is empty`);
-      else if (/\bTODO\b/.test(v))
-        errors.push(
-          `${rel(file)}: **${label}:** still holds the template's TODO`,
-        );
-    }
-    const date = fieldValue(text, "Date");
-    if (date !== undefined && !/^\d{4}-\d{2}-\d{2}\b/.test(date)) {
-      errors.push(
-        `${rel(file)}: **Date:** must start with YYYY-MM-DD (found: ${JSON.stringify(date)}).`,
+        `${relPath(file)}: **${label}:** still holds the template's TODO`,
       );
     }
   }
-
-  // 4. No number is used twice, except the grandfathered legacy repeats.
-  const entries = loadEntries(dir, manifest);
-  const byNum = new Map<number, Entry[]>();
-  for (const e of entries) byNum.set(e.num, [...(byNum.get(e.num) ?? []), e]);
-  for (const [num, group] of byNum) {
-    if (group.length < 2 || group.every((e) => e.legacy)) continue;
-    const next = pad(Math.max(...entries.map((e) => e.num)) + 1);
-    const newcomers = group.filter((e) => !e.legacy);
+  const date = fieldValue(text, "Date");
+  if (date && !isIsoDate(date)) {
     errors.push(
-      `ADR-${pad(num)} is used by ${group.length} files: ${group.map((e) => rel(e.file)).join(", ")}.\n` +
-        "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
-        `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${rel(e.file)}`).join("  or  ")}` +
-        `  (next free on this branch: ADR-${next}; the script also checks open PRs).`,
+      `${relPath(file)}: **Date:** must start with a real YYYY-MM-DD date (found: ${JSON.stringify(date)}).`,
     );
   }
   return errors;
 }
 
-/** A field whose value starts on the next lines (e.g. `**Rationale:**` then a bullet list). */
-function hasBlockValue(text: string, label: string): boolean {
-  const i = text.indexOf(`**${label}:**`);
-  const after = text
-    .slice(i + label.length + 6)
-    .split("\n")
-    .slice(1, 4)
-    .join("\n");
-  return after.trim() !== "" && !after.trimStart().startsWith("**");
+/** No number is used twice, except the grandfathered legacy repeats. */
+function checkNumbersUnique(dir: string, manifest: Manifest): string[] {
+  const entries = loadEntries(dir, manifest);
+  const next = pad(Math.max(...entries.map((e) => e.num)) + 1);
+  const byNum = new Map<number, Entry[]>();
+  for (const e of entries) {
+    const group = byNum.get(e.num);
+    if (group) group.push(e);
+    else byNum.set(e.num, [e]);
+  }
+  const errors: string[] = [];
+  for (const [num, group] of byNum) {
+    if (group.length < 2 || group.every((e) => e.legacy)) continue;
+    const newcomers = group.filter((e) => !e.legacy);
+    errors.push(
+      `ADR-${pad(num)} is used by ${group.length} files: ${group.map((e) => relPath(e.file)).join(", ")}.\n` +
+        "  Parallel PRs picked the same number; whoever merges LATER renumbers (one file, nothing else changes).\n" +
+        `  Fix: ${newcomers.map((e) => `make adr-renumber FILE=${relPath(e.file)}`).join("  or  ")}` +
+        `  (next free on this branch: ADR-${next}; the script also checks open PRs).`,
+    );
+  }
+  return errors;
 }
 
 // ── index ───────────────────────────────────────────────────────────────────
@@ -386,44 +505,60 @@ export function supersessions(
   return [...found.values()];
 }
 
-const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
-const label = (id: string) => `ADR-${id}`;
+/** Ids of the entries that supersede one ADR, fully or in part. */
+interface Inbound {
+  full: string[];
+  part: string[];
+}
+
+function cell(s: string): string {
+  return s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+}
+
+function adrLabel(id: string): string {
+  return `ADR-${id}`;
+}
+
+/** An explicit (non-legacy) `**Status:**` wins; otherwise derive it from inbound supersession. */
+function statusOf(e: Entry, inbound: Inbound): string {
+  const explicit = e.legacy ? undefined : fieldValue(e.text, "Status");
+  if (explicit) return explicit;
+  if (inbound.full.length) {
+    return `Superseded by ${inbound.full.map(adrLabel).join(", ")}`;
+  }
+  if (inbound.part.length) {
+    return `Amended by ${inbound.part.map(adrLabel).join(", ")}`;
+  }
+  return "Accepted";
+}
 
 export function renderIndex(entries: Entry[]): string {
   const sorted = [...entries].sort(
     (a, b) => a.num - b.num || a.file.localeCompare(b.file),
   );
-  const by = new Map<string, { full: string[]; part: string[] }>();
-  const sup = new Map<string, Supersession[]>();
+  const inboundById = new Map<string, Inbound>();
+  const outboundByFile = new Map<string, Supersession[]>();
   for (const e of sorted) {
     const list = supersessions(e);
-    sup.set(e.file, list);
+    outboundByFile.set(e.file, list);
     for (const s of list) {
-      const slot = by.get(s.target) ?? { full: [], part: [] };
+      const slot = inboundById.get(s.target) ?? { full: [], part: [] };
       (s.partial ? slot.part : slot.full).push(e.id);
-      by.set(s.target, slot);
+      inboundById.set(s.target, slot);
     }
   }
   const rows = sorted.map((e) => {
     const date =
       /\*\*Date:\*\*[^0-9\n]*(\d{4}-\d{2}-\d{2})/.exec(e.text)?.[1] ?? "";
-    const inbound = by.get(e.id) ?? { full: [], part: [] };
-    const explicit = e.legacy ? undefined : fieldValue(e.text, "Status");
-    const status =
-      explicit ||
-      (inbound.full.length
-        ? `Superseded by ${inbound.full.map(label).join(", ")}`
-        : inbound.part.length
-          ? `Amended by ${inbound.part.map(label).join(", ")}`
-          : "Accepted");
-    const supersedes = (sup.get(e.file) ?? [])
-      .map((s) => `${label(s.target)}${s.partial ? " (in part)" : ""}`)
+    const inbound = inboundById.get(e.id) ?? { full: [], part: [] };
+    const supersedes = (outboundByFile.get(e.file) ?? [])
+      .map((s) => `${adrLabel(s.target)}${s.partial ? " (in part)" : ""}`)
       .join(", ");
     const supersededBy = [
-      ...inbound.full.map(label),
-      ...inbound.part.map((id) => `${label(id)} (in part)`),
+      ...inbound.full.map(adrLabel),
+      ...inbound.part.map((id) => `${adrLabel(id)} (in part)`),
     ].join(", ");
-    return `| [${label(e.id)}](${e.file}) | ${cell(e.title)} | ${date} | ${cell(status)} | ${supersedes} | ${supersededBy} |`;
+    return `| [${adrLabel(e.id)}](${e.file}) | ${cell(e.title)} | ${date} | ${cell(statusOf(e, inbound))} | ${supersedes} | ${supersededBy} |`;
   });
   return `${INDEX_PREAMBLE}| ADR | Title | Date | Status | Supersedes | Superseded by |
 |---|---|---|---|---|---|
@@ -491,11 +626,40 @@ says so; update any references to the old number in your PR).
 
 // ── numbering ───────────────────────────────────────────────────────────────
 
-const git = (root: string, args: string[]) =>
-  execFileSync("git", ["-C", root, ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+/** Run a command and return its stdout; on failure the error carries the command's stderr. */
+function run(
+  cmd: string,
+  args: string[],
+  options: { cwd?: string; timeout?: number; maxBuffer?: number } = {},
+): string {
+  try {
+    return execFileSync(cmd, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      ...options,
+    });
+  } catch (err) {
+    const e = err as { stderr?: string; message: string };
+    throw new Error(
+      `${cmd} ${args.join(" ")}: ${(e.stderr || e.message).trim().split("\n")[0]}`,
+    );
+  }
+}
+
+const why = (err: unknown) =>
+  err instanceof Error ? err.message : String(err);
+
+function git(root: string, args: string[]): string {
+  return run("git", ["-C", root, ...args]);
+}
+
+function gh(
+  root: string,
+  args: string[],
+  options: { maxBuffer?: number } = {},
+): string {
+  return run("gh", args, { cwd: root, timeout: 30_000, ...options });
+}
 
 /** ADR numbers in a list of paths (docs/decisions/ADR-NNN-*.md) and in `+## ADR-NNN` diff lines. */
 export function numbersIn(text: string): number[] {
@@ -507,25 +671,35 @@ export function numbersIn(text: string): number[] {
   return out;
 }
 
+const PR_LIST_LIMIT = 200;
+/** `gh pr list --json files` returns at most this many files per PR. */
+const GH_FILES_CAP = 100;
+
 /**
  * Every number already claimed: this checkout, origin/main, and open PRs (new files, plus
- * legacy `+## ADR-NNN` appends to docs/DECISIONS.md during the transition). Sources that
- * are unavailable (offline, no gh) are skipped with a warning, never fatal.
+ * legacy `+## ADR-NNN` appends to docs/DECISIONS.md during the transition). A source that is
+ * unavailable (offline, no gh) is skipped with a warning saying why, never fatal: CI's
+ * duplicate check is the backstop. ADR_OFFLINE=1 skips the network sources (tests).
  */
 export function claimedNumbers(
   root: string,
   opts: { excludeFile?: string } = {},
 ): { nums: number[]; warnings: string[] } {
   const warnings: string[] = [];
-  const dir = join(root, DECISIONS_DIR);
-  const nums = adrFiles(dir)
+  const nums = adrFiles(join(root, DECISIONS_DIR))
     .filter((f) => f !== opts.excludeFile)
     .flatMap((f) => numbersIn(f));
+  if (process.env.ADR_OFFLINE === "1") {
+    return {
+      nums,
+      warnings: ["ADR_OFFLINE=1: origin/main and open PRs not checked"],
+    };
+  }
   try {
     git(root, ["fetch", "--quiet", "origin", "main"]);
-  } catch {
+  } catch (err) {
     warnings.push(
-      "could not fetch origin/main; using the local origin/main ref",
+      `could not fetch origin/main (${why(err)}); using the local origin/main ref`,
     );
   }
   try {
@@ -540,71 +714,94 @@ export function claimedNumbers(
         ]),
       ),
     );
-    nums.push(
-      ...numbersIn(
-        git(root, ["show", `origin/main:${LEGACY_LOG}`]).replace(
-          /^## /gm,
-          "+## ",
-        ),
-      ),
-    );
-  } catch {
-    warnings.push("origin/main unavailable; skipped it");
+  } catch (err) {
+    warnings.push(`origin/main's ${DECISIONS_DIR}/ not read (${why(err)})`);
   }
   try {
-    const prs = JSON.parse(
-      execFileSync(
-        "gh",
-        [
+    // Count main's legacy-log headers as if they were `+## ADR-NNN` diff lines.
+    const mainLog = git(root, ["show", `origin/main:${LEGACY_LOG}`]);
+    nums.push(...numbersIn(mainLog.replace(/^## /gm, "+## ")));
+  } catch (err) {
+    warnings.push(`origin/main's ${LEGACY_LOG} not read (${why(err)})`);
+  }
+  let prs: {
+    number: number;
+    changedFiles: number;
+    files: { path: string }[];
+  }[];
+  try {
+    prs = JSON.parse(
+      gh(root, [
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        String(PR_LIST_LIMIT),
+        "--json",
+        "number,changedFiles,files",
+      ]),
+    );
+  } catch (err) {
+    warnings.push(
+      `open PRs NOT checked (${why(err)}); CI still catches a collision`,
+    );
+    return { nums, warnings };
+  }
+  if (prs.length >= PR_LIST_LIMIT) {
+    warnings.push(
+      `${prs.length} open PRs: only the newest ${PR_LIST_LIMIT} were checked`,
+    );
+  }
+  for (const pr of prs) {
+    let paths = pr.files.map((f) => f.path);
+    if (pr.changedFiles > GH_FILES_CAP) {
+      try {
+        paths = gh(root, [
           "pr",
-          "list",
-          "--state",
-          "open",
-          "--limit",
-          "100",
-          "--json",
-          "number,files",
-        ],
-        {
-          cwd: root,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          timeout: 30_000,
-        },
-      ),
-    ) as { number: number; files: { path: string }[] }[];
-    for (const pr of prs) {
-      const paths = pr.files.map((f) => f.path);
-      nums.push(
-        ...numbersIn(
-          paths.filter((p) => p.startsWith(`${DECISIONS_DIR}/`)).join("\n"),
-        ),
-      );
-      if (paths.includes(LEGACY_LOG)) {
-        try {
-          const diff = execFileSync("gh", ["pr", "diff", String(pr.number)], {
-            cwd: root,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-            timeout: 30_000,
-            maxBuffer: 64 * 1024 * 1024,
-          });
-          nums.push(...numbersIn(diff));
-        } catch {
-          warnings.push(`could not read the diff of PR #${pr.number}`);
-        }
+          "diff",
+          String(pr.number),
+          "--name-only",
+        ]).split("\n");
+      } catch (err) {
+        warnings.push(
+          `PR #${pr.number} has ${pr.changedFiles} files; only ${GH_FILES_CAP} checked (${why(err)})`,
+        );
       }
     }
-  } catch {
-    warnings.push(
-      "gh unavailable or unauthenticated; open PRs NOT checked (CI still catches a collision)",
+    nums.push(
+      ...numbersIn(
+        paths.filter((p) => p.startsWith(`${DECISIONS_DIR}/`)).join("\n"),
+      ),
     );
+    if (!paths.includes(LEGACY_LOG)) continue;
+    try {
+      const diff = gh(root, ["pr", "diff", String(pr.number)], {
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      nums.push(...numbersIn(diff));
+    } catch (err) {
+      warnings.push(
+        `could not read the diff of PR #${pr.number} (${why(err)})`,
+      );
+    }
   }
   return { nums, warnings };
 }
 
-export const nextNumber = (nums: number[]) =>
-  (nums.length ? Math.max(...nums) : 0) + 1;
+/** claimedNumbers, printing each warning to stderr. */
+function claimedNumbersLogged(
+  root: string,
+  opts: { excludeFile?: string } = {},
+): number[] {
+  const { nums, warnings } = claimedNumbers(root, opts);
+  for (const w of warnings) console.warn(`warning: ${w}`);
+  return nums;
+}
+
+export function nextNumber(nums: number[]): number {
+  return (nums.length ? Math.max(...nums) : 0) + 1;
+}
 
 export function template(num: number, title: string, today: string): string {
   return `## ADR-${pad(num)}: ${title}
@@ -631,71 +828,119 @@ function writeIndex(root: string, checkOnly: boolean): boolean {
   return true;
 }
 
-function renumber(root: string, fileArg: string): string {
+export function renumber(root: string, fileArg: string): string {
   const dir = join(root, DECISIONS_DIR);
   const file = fileArg.split("/").pop()!;
   const m = NEW_FILE_RE.exec(file);
   if (!m)
     throw new Error(`${fileArg}: not a new-style ADR file (ADR-NNN-slug.md)`);
-  const { nums, warnings } = claimedNumbers(root, { excludeFile: file });
-  for (const w of warnings) console.warn(`warning: ${w}`);
-  const n = pad(nextNumber(nums));
+  const n = pad(nextNumber(claimedNumbersLogged(root, { excludeFile: file })));
   const target = `ADR-${n}-${m[2]}.md`;
-  const text = readFileSync(join(dir, file), "utf8").replace(
-    new RegExp(`^## ADR-${m[1]}: `),
-    `## ADR-${n}: `,
-  );
-  writeFileSync(join(dir, file), text);
-  try {
-    git(root, ["mv", join(DECISIONS_DIR, file), join(DECISIONS_DIR, target)]);
-  } catch {
-    renameSync(join(dir, file), join(dir, target));
+  const before = readFileSync(join(dir, file), "utf8");
+  const header = new RegExp(`^## ADR-${m[1]}: `);
+  if (!header.test(before)) {
+    throw new Error(
+      `${fileArg}: its first line isn't "## ADR-${m[1]}: …", so the header can't be renumbered. Fix the header first.`,
+    );
   }
-  return `${DECISIONS_DIR}/${target}`;
+  writeFileSync(join(dir, file), before.replace(header, `## ADR-${n}: `));
+  const from = join(DECISIONS_DIR, file);
+  let tracked = true;
+  try {
+    git(root, ["ls-files", "--error-unmatch", from]);
+  } catch {
+    tracked = false;
+  }
+  // A tracked file must move in the index too, or the commit would lose it; surface git's error.
+  if (tracked) git(root, ["mv", from, join(DECISIONS_DIR, target)]);
+  else renameSync(join(dir, file), join(dir, target));
+  return relPath(target);
+}
+
+export interface Appended {
+  id: string;
+  title: string;
+  content: string;
 }
 
 /**
- * Entries in an old-style log that aren't recorded yet: what a branch appended. An entry is
- * already recorded if its bytes match a migrated one, or its title matches any ADR file.
- * Matching on title covers a branch forked before a past entry was amended (an older copy),
- * and a stacked branch whose base PR already imported the entry under a new number. A reused
- * number under a different title is a new entry.
+ * What a branch appended to an old-style log. An entry is already recorded if its bytes match a
+ * migrated one, or its title matches an ADR file with the same body (a stacked branch whose base
+ * PR already imported it under a new number). A title match with a DIFFERENT body is reported in
+ * `differs`, never dropped silently: it's an in-place edit of a past entry (not carried over;
+ * write a new ADR) or a stale copy of one amended since. Headers that look like an ADR but don't
+ * parse are reported in `malformed`, since their text would be glued onto the previous entry.
  */
 export function appendedEntries(
   log: string,
   manifest: Manifest,
-  knownTitles: Set<string>,
-): { id: string; title: string; content: string }[] {
+  known: Map<string, { file: string; text: string }>,
+): { entries: Appended[]; differs: string[]; malformed: string[] } {
   const hashes = new Set(manifest.entries.map((e) => e.sha256));
-  return splitLog(log)
-    .chunks.map((c) => ({
-      id: c.id,
-      title: c.title,
-      content: trimSeparator(c.text).content,
-    }))
-    .filter((c) => !hashes.has(sha256(c.content)) && !knownTitles.has(c.title));
+  const bodyOf = (text: string) => text.slice(firstLine(text).length);
+  const entries: Appended[] = [];
+  const differs: string[] = [];
+  for (const c of splitLog(log).chunks) {
+    const content = trimSeparator(c.text).content;
+    if (hashes.has(sha256(content))) continue;
+    const same = known.get(c.title);
+    if (!same) {
+      entries.push({ id: c.id, title: c.title, content });
+    } else if (bodyOf(same.text) !== bodyOf(content)) {
+      differs.push(
+        `ADR-${c.id} "${c.title}" differs from ${relPath(same.file)}`,
+      );
+    }
+  }
+  const malformed = log
+    .split("\n")
+    .filter((l) => /^#{1,6}\s*ADR\b/i.test(l) && !LEGACY_HEADER_RE.test(l));
+  return { entries, differs, malformed };
 }
 
 /**
  * Move the ADRs a branch appended to the old docs/DECISIONS.md into their own files.
  * Keeps each entry's number unless it's taken here, else takes the next free one.
+ * Throws (writing nothing) on anything it can't carry over faithfully.
  */
-function importFrom(root: string, ref: string): string[] {
+export function importFrom(
+  root: string,
+  ref: string,
+): { written: string[]; notes: string[] } {
   const dir = join(root, DECISIONS_DIR);
   const log = git(root, ["show", `${ref}:${LEGACY_LOG}`]);
+  if (splitLog(log).chunks.length === 0) {
+    throw new Error(
+      `${ref}:${LEGACY_LOG} holds no ADR entries (it is already the stub). Pass the commit from before you merged main, e.g. REF=HEAD^1 once the merge is committed.`,
+    );
+  }
   const manifest = loadManifest(dir);
-  const titles = new Set(loadEntries(dir, manifest).map((e) => e.title));
+  const known = new Map(
+    loadEntries(dir, manifest).map((e) => [
+      e.title,
+      { file: e.file, text: e.text },
+    ]),
+  );
+  const { entries, differs, malformed } = appendedEntries(log, manifest, known);
+  if (malformed.length) {
+    throw new Error(
+      `ADR-like headers in ${ref}:${LEGACY_LOG} that don't parse (use "## ADR-NNN: Title"): ${malformed.map((l) => JSON.stringify(l)).join(", ")}. Fix them on your branch and re-run.`,
+    );
+  }
+  const notes = differs.map(
+    (d) =>
+      `NOT imported: ${d}. If your branch edited a past ADR in place, that edit is not carried over (past ADRs are append-only; write a new ADR). If it's an older copy of an entry amended on main since, nothing is lost.`,
+  );
   const written: string[] = [];
-  for (const entry of appendedEntries(log, manifest, titles)) {
+  const titles = new Set<string>();
+  for (const entry of entries) {
     if (titles.has(entry.title)) continue; // the same entry twice in one log
     titles.add(entry.title);
     const taken = adrFiles(dir).flatMap((f) => numbersIn(f));
     let num = numberOf(entry.id);
     if (taken.includes(num) || !/^\d+$/.test(entry.id)) {
-      const { nums, warnings } = claimedNumbers(root);
-      for (const w of warnings) console.warn(`warning: ${w}`);
-      num = nextNumber([...nums, ...taken]);
-      console.warn(
+      num = nextNumber([...claimedNumbersLogged(root), ...taken]);
+      notes.push(
         `ADR-${entry.id} is taken; imported as ADR-${pad(num)}. Update references to ADR-${entry.id} in your PR.`,
       );
     }
@@ -706,9 +951,9 @@ function importFrom(root: string, ref: string): string[] {
     );
     const file = `ADR-${pad(num)}-${slugify(entry.title)}.md`;
     writeFileSync(join(dir, file), content);
-    written.push(`${DECISIONS_DIR}/${file}`);
+    written.push(relPath(file));
   }
-  return written;
+  return { written, notes };
 }
 
 function main(argv: string[]): number {
@@ -745,9 +990,7 @@ function main(argv: string[]): number {
         console.error('usage: make adr NEW="Short decision title"');
         return 2;
       }
-      const { nums, warnings } = claimedNumbers(root);
-      for (const w of warnings) console.warn(`warning: ${w}`);
-      const num = nextNumber(nums);
+      const num = nextNumber(claimedNumbersLogged(root));
       const file = join(DECISIONS_DIR, `ADR-${pad(num)}-${slugify(title)}.md`);
       writeFileSync(
         join(root, file),
@@ -763,47 +1006,88 @@ function main(argv: string[]): number {
         );
         return 2;
       }
-      const to = renumber(root, args[0]);
+      let to: string;
+      try {
+        to = renumber(root, args[0]);
+      } catch (err) {
+        console.error(`✗ ${why(err)}`);
+        return 1;
+      }
       console.log(
         `→ ${to}\nUpdate any references to the old number in your PR (code comments, PR body).`,
       );
       return 0;
     }
     case "import": {
-      const written = importFrom(root, args[0] || "HEAD");
-      if (written.length === 0)
-        console.log(`no new ADRs in ${args[0] || "HEAD"}:${LEGACY_LOG}`);
-      for (const f of written) console.log(`wrote ${f}`);
+      const ref = args[0] || "HEAD";
+      let result: { written: string[]; notes: string[] };
+      try {
+        result = importFrom(root, ref);
+      } catch (err) {
+        console.error(`✗ ${why(err)}`);
+        return 1;
+      }
+      for (const n of result.notes) console.warn(`warning: ${n}`);
+      if (result.written.length === 0)
+        console.log(`no new ADRs in ${ref}:${LEGACY_LOG}`);
+      for (const f of result.written) console.log(`wrote ${f}`);
       return 0;
     }
     case "migrate": {
+      // Re-run on the latest main before merging the split, so entries appended meanwhile
+      // are migrated as legacy too: migrate origin/main --force
+      const ref = args.find((a) => !a.startsWith("--")) ?? "HEAD";
       const dir = join(root, DECISIONS_DIR);
+      const manifestPath = join(dir, MANIFEST_FILE);
+      if (existsSync(manifestPath) && !args.includes("--force")) {
+        console.error(
+          `✗ ${relPath(MANIFEST_FILE)} exists; the migration already ran. Re-run on purpose with --force.`,
+        );
+        return 1;
+      }
+      const commit = git(root, ["rev-parse", ref]).trim();
+      const log = git(root, ["show", `${commit}:${LEGACY_LOG}`]);
+      const { files, manifest } = migrate(log, commit);
+      if (files.size === 0) {
+        console.error(
+          `✗ ${ref}:${LEGACY_LOG} has no ADR entries (already the stub?); nothing migrated`,
+        );
+        return 1;
+      }
       mkdirSync(dir, { recursive: true });
-      const commit = git(root, ["rev-parse", "HEAD"]).trim();
-      const { files, manifest } = migrate(
-        readFileSync(join(root, LEGACY_LOG), "utf8"),
-        commit,
-      );
+      if (existsSync(manifestPath)) {
+        for (const e of loadManifest(dir).entries)
+          rmSync(join(dir, e.file), { force: true });
+      }
       for (const [file, content] of files)
         writeFileSync(join(dir, file), content);
-      writeFileSync(
-        join(dir, MANIFEST_FILE),
-        `${JSON.stringify(manifest, null, 2)}\n`,
-      );
+      writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      writeFileSync(join(root, LEGACY_LOG), LEGACY_STUB);
       console.log(
-        `migrated ${files.size} ADRs into ${relative(root, dir)}/ (source ${commit.slice(0, 7)})`,
+        `migrated ${files.size} ADRs into ${DECISIONS_DIR}/ (source ${commit.slice(0, 7)}); run make adr-index`,
       );
       return 0;
     }
     default:
       console.error(
-        "usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | migrate",
+        "usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | migrate [<ref>] [--force]",
       );
       return 2;
   }
 }
 
 // Portable main-guard (see sync-changelog.ts): true as an entrypoint, false on import.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+// realpath both sides: invoked via a symlinked path (macOS /tmp → /private/tmp) the URLs differ.
+const realHref = (p: string) => {
+  try {
+    return pathToFileURL(realpathSync(p)).href;
+  } catch {
+    return pathToFileURL(p).href;
+  }
+};
+if (
+  process.argv[1] &&
+  realHref(fileURLToPath(import.meta.url)) === realHref(process.argv[1])
+) {
   process.exit(main(process.argv.slice(2)));
 }

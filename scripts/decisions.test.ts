@@ -47,6 +47,19 @@ const realDir = join(REPO_ROOT, DECISIONS_DIR);
 const manifest = loadManifest(realDir);
 const readReal = (f: string) => readFileSync(join(realDir, f), "utf8");
 
+/** The old single-file log at the migration's source commit. Throws in a shallow clone. */
+function originalLog(): string {
+  return execFileSync(
+    "git",
+    ["-C", REPO_ROOT, "show", `${manifest.source.commit}:${LEGACY_LOG}`],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+}
+
 describe("migration from docs/DECISIONS.md is lossless", () => {
   it("reassembles to the recorded sha256 of the original log", () => {
     const rebuilt = reassemble(manifest, readReal);
@@ -56,15 +69,7 @@ describe("migration from docs/DECISIONS.md is lossless", () => {
   it("matches the original log byte for byte when git has the source commit", (t) => {
     let original: string;
     try {
-      original = execFileSync(
-        "git",
-        ["-C", REPO_ROOT, "show", `${manifest.source.commit}:${LEGACY_LOG}`],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          maxBuffer: 64 * 1024 * 1024,
-        },
-      );
+      original = originalLog();
     } catch {
       t.skip(
         "source commit not in this (shallow) clone; the sha256 test above still covers it",
@@ -271,21 +276,10 @@ describe("check", () => {
 });
 
 describe("import from a branch that appended to the old log", () => {
-  const original = () =>
-    execFileSync(
-      "git",
-      ["-C", REPO_ROOT, "show", `${manifest.source.commit}:${LEGACY_LOG}`],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        maxBuffer: 64 * 1024 * 1024,
-      },
-    );
-
   it("extracts only the appended entries, including one that reuses a taken number", (t) => {
     let log: string;
     try {
-      log = original();
+      log = originalLog();
     } catch {
       t.skip("source commit not in this (shallow) clone");
       return;
