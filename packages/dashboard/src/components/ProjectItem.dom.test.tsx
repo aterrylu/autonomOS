@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import type { ProjectInfo } from "../store";
@@ -210,5 +211,69 @@ describe("ProjectItem — redesigned rows", () => {
     act(() => useStore.setState({ expandedProjects: {} }));
     const collapsed = screen.getByRole("button", { expanded: false });
     expect(collapsed.textContent?.startsWith("▶")).toBe(true);
+  });
+});
+
+describe("ProjectItem — status frames (render fan-out)", () => {
+  /** Render inside a Profiler and return a live commit counter. */
+  function renderCounted() {
+    let commits = 0;
+    render(
+      <Profiler
+        id="project-item"
+        onRender={() => {
+          commits += 1;
+        }}
+      >
+        <ProjectItem
+          project={PROJECT}
+          page={page}
+          liveSessionIds={new Set(["cc-live"])}
+          onAgentContextMenu={vi.fn()}
+        />
+      </Profiler>,
+    );
+    return () => commits;
+  }
+
+  it("a COLLAPSED project does not re-render when an agent's status changes", () => {
+    useStore.setState({ expandedProjects: {} });
+    const commits = renderCounted();
+    const before = commits();
+    act(() => {
+      useStore.setState({ agentStatuses: { "live-1": { status: "idle" } } });
+    });
+    expect(commits()).toBe(before);
+  });
+
+  it("an EXPANDED project re-renders and shows the new status", () => {
+    const commits = renderCounted();
+    const live = screen.getByText("live session").closest("button");
+    if (!live) throw new Error("no row");
+    // Seeded "working" → the aria-labelled Working badge.
+    expect(within(live).queryByLabelText("Working")).toBeTruthy();
+    const before = commits();
+    act(() => {
+      useStore.setState({ agentStatuses: { "live-1": { status: "idle" } } });
+    });
+    expect(commits()).toBeGreaterThan(before);
+    // The rendered dot follows the new status (the badge is gone).
+    expect(within(live).queryByLabelText("Working")).toBeNull();
+  });
+
+  it("a status change while COLLAPSED shows up as soon as the project is expanded", () => {
+    useStore.setState({ expandedProjects: {} });
+    renderCounted();
+    act(() => {
+      useStore.setState({ agentStatuses: { "live-1": { status: "idle" } } });
+      useStore.setState({ agentStatuses: { "live-1": { status: "working" } } });
+    });
+    act(() => {
+      useStore.setState({ expandedProjects: { "/repo/autonomOS": true } });
+    });
+    const live = screen.getByText("live session").closest("button");
+    if (!live) throw new Error("no row");
+    // The CURRENT status (working → the Working badge), not a stale one.
+    expect(within(live).getByLabelText("Working")).toBeTruthy();
   });
 });
