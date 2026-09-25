@@ -15,6 +15,10 @@ import {
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
+import {
+  forgetAgentAnalytics,
+  getAgentAnalytics,
+} from "../agents/analytics.js";
 import { enrichAgent } from "../agents/enrich.js";
 import {
   isAgentLive,
@@ -272,6 +276,22 @@ agentsRouter.get("/:id/messages", (c) => {
   const raw = Number.parseInt(c.req.query("limit") ?? "", 10);
   const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 50) : 20;
   return c.json(getAgentMessageStats(agent.id, limit));
+});
+
+// One agent's analytics for the Org Chart inspector: counters since the
+// server started (status time, turns, waits, tools, restarts/crashes, a 24h
+// activity strip) plus its git branch. Never estimated — see agents/analytics.
+agentsRouter.get("/:id/analytics", async (c) => {
+  const id = c.req.param("id");
+  const agent = resolveAgent(id);
+  if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
+  return c.json(
+    await getAgentAnalytics(agent.id, {
+      provider: agent.provider,
+      workingDirectory: agent.workingDirectory,
+      startedAt: agent.status === "running" ? agent.startedAt : undefined,
+    }),
+  );
 });
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -1047,6 +1067,7 @@ agentsRouter.delete("/:id", (c) => {
   clearAgentState(id);
   clearNotifications(id);
   forgetAgentMessages(id);
+  forgetAgentAnalytics(id);
   // Disarm any queued auto-Enter: an armed pane for a DELETED agent would
   // otherwise fire hours later against a gone PTY and push a notification
   // under an id nothing can resolve (same invariant as the clears). Lives in
