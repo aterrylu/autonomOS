@@ -38,10 +38,48 @@ import {
 const STATUSLINE_REFRESH_SECONDS = 5;
 
 // ── Hook relay ─────────────────────────────────────────────────
-const HOOK_ENTRY = {
-  matcher: "",
-  hooks: [{ type: "command", command: HOOK_CMD, timeout: 3, async: true }],
-} as const;
+/**
+ * The three events the status machine derives a turn's state from. They run
+ * SYNCHRONOUSLY; everything else stays async.
+ *
+ * Every hook is its own `curl`, and async hooks are fired and forgotten, so
+ * their arrival order at the server is not guaranteed: measured, an async
+ * SessionStart/UserPromptSubmit/Stop trio all start within ~190ms, and a
+ * UserPromptSubmit can land AFTER its turn's Stop. `deriveStatus` is
+ * last-writer-wins by arrival, so that left an idle agent showing "working"
+ * forever (the agent-spawn-prompt flake under concurrent boots). A sync hook
+ * blocks Claude Code until its curl returns, so these three can't overtake
+ * each other (verified on CC 2.1.282: strictly serialized).
+ *
+ * Cost (the hook's own curl, measured against the control socket): healthy
+ * p50 11ms / p99 ~100ms at turn start and end; server down fails as fast;
+ * server frozen ~2.2s per hook, bounded by curl --max-time 2, and CC also cuts
+ * a hook at its 3s `timeout` and carries on (verified), so a turn can never
+ * hang on it. Tool events stay async: they fire per tool call, and their order
+ * relative to each other doesn't decide status the same way.
+ *
+ * Gemini needs no counterpart: gemini-cli awaits its SessionStart/BeforeAgent/
+ * AfterAgent hooks (it reads their output), so they are already ordered.
+ */
+const ORDERED_HOOK_EVENTS: ReadonlySet<string> = new Set([
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+]);
+
+function hookEntry(event: string) {
+  return {
+    matcher: "",
+    hooks: [
+      {
+        type: "command",
+        command: HOOK_CMD,
+        timeout: 3,
+        async: !ORDERED_HOOK_EVENTS.has(event),
+      },
+    ],
+  };
+}
 
 const HOOK_EVENTS = [
   "SessionStart",
@@ -271,7 +309,7 @@ export const claudeCodeProvider: AgentProvider = {
     //     of the CC terminal. Replaces the user's personal statusLine for
     //     spawned sessions only. CC merges these as parallel keys at the root.
     const settingsPayload: Record<string, unknown> = {
-      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
+      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [hookEntry(e)]])),
     };
     if (settings.statusLine?.enabled !== false) {
       // JSON.stringify produces a properly-escaped, double-quoted path —
