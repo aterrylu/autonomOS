@@ -2372,6 +2372,8 @@ baseline and removes the "TBD" ambiguity.
 
 ## ADR-104: Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu
 
+## ADR-112: Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu
+
 - **Date:** 2026-09-24 · **Decided by:** Terry (approved proposal v2: "fold the audit findings into the features"), designed + built by OrgChart@autonomOS, relayed via TeamLead. Context-menu reuse and drag conventions checked with Shortcuts@autonomOS.
 - **Context:** A live audit of the Org Chart tab (isolated instance, 10 real Claude Code / Codex / Gemini agents) found nine problems, F1–F9: a needs-input card looked like an idle one; Daylight rendered dark tiles with invisible connectors (hardcoded `rgba(28,36,51)` cards, white 15% lines); a crashed manager scattered its team to the top level; clicking a card did nothing and hovering offered only a destructive trash overlay; Resume could never render; every root stacked in one tall column; status colors differed from the sidebar's (ADR-090); cards showed less than a sidebar row (no unread count, no recency).
 - **Decision:**
