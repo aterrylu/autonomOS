@@ -1,0 +1,10 @@
+## ADR-038: Remove Anthropic API endpoint override; test harness uses env inheritance
+- **Date:** 2026-06-13 — **Decided by:** Human (Terry), implemented by Cleanup@autonomOS
+- **Context:** A per-session settings field (`anthropicBaseUrl` + `anthropicAuthToken` + `anthropicOverrideEnabled`) let users override the default Anthropic API endpoint with a custom URL paired with an auth token. The override was injected into spawned-session env via `buildBaseEnv`. The only real consumer was the real-claude integration test harness, which uses the override mechanism to redirect `claude` at a mock `/v1/messages` SSE backend (see test-redesign work).
+- **Decision:** Remove the user-visible feature (PR #214). The test harness migrates to plain process-environment inheritance: `bootEmbedded` sets `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` on the embedded server's process env, `buildBaseEnv` already spreads `{...process.env}` into spawned sessions, and `claude` reads the env vars natively. Zero production code retained to serve the test framework. `anthropicBaseUrl` / `anthropicAuthToken` / `anthropicOverrideEnabled` settings keys are *actively scrubbed* on read (the auth token is a credential and must not linger on disk after the feature is gone). `customEnvVars` remains as the documented escape hatch for users with proxy needs.
+- **Rationale:** (1) Cleaner architecture — zero production code retained for testing beats an env-var-only feature flag. (2) Credential hygiene — an auth token in `settings.json` after the feature is gone is mild leak surface; active scrubbing closes it.
+- **Alternatives considered:**
+  - Keep an env-var-only settings path (read but no UI) — rejected; still surface area carrying the same code paths internally.
+  - MITM proxy or iptables-based redirect for the test mock — rejected; significant complexity to replace something that comes for free with process-env inheritance.
+  - Accept test breakage and disable the integration suite — rejected; the harness is load-bearing for desktop-app correctness.
+- **Source:** CC session, Cleanup@autonomOS worker. Shipped in PR #214 stacked on PR #213.

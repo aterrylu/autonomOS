@@ -23,7 +23,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { ResolvedSpawnOptions } from "@autonomos/core";
+import {
+  PERMISSION_MODE_INFO,
+  type ResolvedSpawnOptions,
+} from "@autonomos/core";
 
 // UNCONDITIONAL: workers inherit AUTONOMOS_CONFIG_DIR=<real dir> (#350).
 process.env.AUTONOMOS_CONFIG_DIR = `/tmp/aos-codex-preflight-${randomUUID()}`;
@@ -227,7 +230,7 @@ describe("resolveSpawnProvider — a reattach runs the RECORD's provider", () =>
   });
 });
 
-describe("Codex auto is HONEST (no auto tier in codex 0.15x)", () => {
+describe("Codex auto/plan are HONEST (clamped, and the copy never claims Codex lacks them)", () => {
   it("auto maps to on-request like ask — never the removed on-failure, never wider", () => {
     const args = codexProvider.buildArgs(
       opts({
@@ -250,6 +253,28 @@ describe("Codex auto is HONEST (no auto tier in codex 0.15x)", () => {
     );
     assert.equal(codexProvider.clampedModeNotice?.("ask"), undefined);
     assert.equal(codexProvider.clampedModeNotice?.("bypass"), undefined);
+  });
+  it("pins the exact notices — they say 'not wired up', never 'Codex has no …'", () => {
+    // Codex 0.154 HAS both: a Plan collaboration mode and automatic approval
+    // review (approvals_reviewer=auto_review). autonomOS just doesn't wire them
+    // up. A notice claiming otherwise shipped once (#398) — pin the truth.
+    assert.equal(
+      codexProvider.clampedModeNotice?.("auto"),
+      "Codex's auto review isn't wired up in autonomOS yet, so this agent behaves like Ask. Pick Bypass for no approvals.",
+    );
+    assert.equal(
+      codexProvider.clampedModeNotice?.("plan"),
+      "Codex's plan mode isn't wired up in autonomOS yet, so this agent behaves like Ask.",
+    );
+    const userFacing = [
+      codexProvider.clampedModeNotice?.("auto"),
+      codexProvider.clampedModeNotice?.("plan"),
+      PERMISSION_MODE_INFO.auto.perProvider.codex,
+      PERMISSION_MODE_INFO.plan.perProvider.codex,
+    ];
+    for (const text of userFacing) {
+      assert.doesNotMatch(text ?? "", /has no|no auto tier|no plan mode/i);
+    }
   });
   it("ask ↔ auto is not a real change on resume (same Codex policy)", () => {
     assert.equal(

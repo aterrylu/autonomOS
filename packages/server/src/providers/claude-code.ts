@@ -24,6 +24,7 @@ import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { candidateProjectCwds, cwdToDirName } from "../titleCache.js";
+import { ANSI_RE, despace } from "./ptyText.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -59,13 +60,7 @@ const HOOK_EVENTS = [
 ] as const;
 
 // ── Auto-trust: ANSI stripping + prompt needles ───────────────
-// The CSI prefix class includes the private-parameter markers <=>? — without
-// them, sequences like `\x1b[>0q` (DECRQM/mode chatter CC emits around
-// dialogs) strip only partially and leak fragments ("0q", "4m") into the
-// needle buffer. Those fragments once counted as "fresh output" and
-// false-settled a dialog that was still on screen.
-const ANSI_RE =
-  /\x1b[[\]()#;?<=>]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
+// ANSI_RE / despace live in ptyText.ts (shared with the startup notices).
 
 const TRUST_NEEDLES = [
   "Yes,Itrustthisfolder",
@@ -87,11 +82,6 @@ const TRUST_NEEDLES = [
 // were green while CI's real dialog exited every agent.
 const TRUST_NO_SELECTED_NORM = "❯No,exit";
 const TRUST_YES_SELECTED_NORM = "❯Yes,Itrustthisfolder";
-
-/** All whitespace removed — the normal form highlight needles match on. */
-function despace(s: string): string {
-  return s.replace(/\s+/g, "");
-}
 
 const DOWN_ARROW = "\x1b[B";
 

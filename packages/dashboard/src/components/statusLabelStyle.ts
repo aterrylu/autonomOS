@@ -2,7 +2,7 @@ import type { AgentStatus } from "./ui/agent-status-icon";
 
 // Muted-accent coloring for the sidebar's bottom-line status LABEL (the
 // agentStatusLabel text). Labels only — the status DOTS keep their existing
-// bright colors. See docs/DECISIONS.md.
+// bright colors. See docs/decisions/.
 //
 // Active-work statuses (working / tool_running / compacting / orchestrating)
 // render with an animated slate-blue shimmer so an actively-working agent reads
