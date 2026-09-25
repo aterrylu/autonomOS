@@ -2368,10 +2368,6 @@ baseline and removes the "TBD" ambiguity.
 - **Not in scope:** deleting the already-leaked real `~/.claude/projects` entries (Terry's data, handled separately); the quarantined `usage-queue-sim-integration` (skip: true) inherits the isolation when it is un-quarantined.
 - **Source:** TeamLead relaying Terry over the autonomOS agent channel, 2026-09-24.
 
-## ADR-103: Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu
-
-## ADR-104: Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu
-
 ## ADR-112: Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu
 
 - **Date:** 2026-09-24 · **Decided by:** Terry (approved proposal v2: "fold the audit findings into the features"), designed + built by OrgChart@autonomOS, relayed via TeamLead. Context-menu reuse and drag conventions checked with Shortcuts@autonomOS.
