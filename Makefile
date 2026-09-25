@@ -179,6 +179,7 @@ check:
 	$(TSX) scripts/decisions.ts check
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
+	$(TSX) scripts/check-dashboard-dist.ts
 	$(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 

@@ -11,6 +11,7 @@
 import { cpSync, existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { distProblem } from "../../../scripts/check-dashboard-dist.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dashboardDist = resolve(here, "../../dashboard/dist");
@@ -22,6 +23,17 @@ if (!existsSync(indexHtml)) {
     `[embed-dashboard] Dashboard not built — missing ${indexHtml}.\n` +
       `Run "bun --filter @autonomos/dashboard build" first.`,
   );
+  process.exit(1);
+}
+
+// dist/ is copied verbatim into the binary: refuse anything that isn't the
+// Vite build (e.g. stale tsc output — ~300 compiled src files + .d.ts).
+const problem = distProblem(
+  dashboardDist,
+  resolve(here, "../../dashboard/public"),
+);
+if (problem) {
+  console.error(`[embed-dashboard] ${problem}`);
   process.exit(1);
 }
 
