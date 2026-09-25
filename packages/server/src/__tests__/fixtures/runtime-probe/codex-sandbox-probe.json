@@ -1,0 +1,11 @@
+{
+ "argv": [
+  "codex",
+  "features",
+  "list",
+  "-c",
+  "sandbox_mode=__probe__"
+ ],
+ "exit": 1,
+ "output": "Error: failed to load bootstrap configuration\n\nCaused by:\n    unknown variant `__probe__`, expected one of `read-only`, `workspace-write`, `danger-full-access`\n    in `sandbox_mode`\n    \n"
+}

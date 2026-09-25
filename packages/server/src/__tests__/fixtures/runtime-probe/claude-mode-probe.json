@@ -1,0 +1,10 @@
+{
+ "argv": [
+  "claude",
+  "--permission-mode",
+  "__probe__",
+  "--version"
+ ],
+ "exit": 1,
+ "output": "error: option '--permission-mode <mode>' argument '__probe__' is invalid. Allowed choices are acceptEdits, auto, bypassPermissions, manual, dontAsk, plan.\n"
+}
