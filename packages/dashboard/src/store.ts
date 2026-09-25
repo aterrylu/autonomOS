@@ -168,7 +168,12 @@ export const THEMES: Record<ThemeName, AppTheme> = {
       bg: "#fafaf8",
       fg: "#2e3440",
       border: "#e1e4e8",
-      statusFg: "#959da5",
+      // Muted text (row repo·branch line, timestamps, nav, section labels).
+      // Was #959da5 = 2.63:1 on #fafaf8, below WCAG AA even before any recency
+      // fade, which read as "words look so faint" on white (Terry). #626b74 is
+      // the same hue/saturation, darkened: 5.19:1 unfaded, and every faded
+      // recency bucket stays >= 3:1 on the light ramp (themeContrast.test.ts).
+      statusFg: "#626b74",
     },
   },
   void: {
