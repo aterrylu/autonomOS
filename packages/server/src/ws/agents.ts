@@ -19,14 +19,14 @@ import { getAgentStatusSnapshot } from "../routes/hooks.js";
 
 const clients = new Set<WSContext>();
 
-/** Heartbeat cadence. The dashboard treats ~2 missed beats (12s of silence)
- *  as stale: it shows "Reconnecting…", abandons the socket and reconnects.
- *  That is what turns a HALF-OPEN socket (VPN drop, Wi-Fi→cellular,
- *  sleep/wake) or a stalled server into a visible state within seconds —
- *  TCP itself can take minutes to notice. Was 30s (75s to detect); the
- *  status-bar indicator now reads this heartbeat, so it sets the indicator's
- *  accuracy. One tiny frame per dashboard tab per 5s. */
-export const HEARTBEAT_INTERVAL_MS = 5_000;
+/** Heartbeat cadence. The dashboard treats 5s of silence (2 missed beats +
+ *  slack) as stale: it shows "Reconnecting…", abandons the socket and
+ *  reconnects. That is what turns a HALF-OPEN socket (VPN drop, Wi-Fi→
+ *  cellular, sleep/wake) or a stalled server into a visible state within
+ *  seconds — TCP itself can take minutes to notice. It covers the time you
+ *  are NOT typing; while you type, per-keystroke acks (routes/terminal.ts)
+ *  answer within a second. One tiny frame per dashboard tab every 2s. */
+export const HEARTBEAT_INTERVAL_MS = 2_000;
 const heartbeats = new Map<WSContext, ReturnType<typeof setInterval>>();
 
 function dropClient(ws: WSContext): void {

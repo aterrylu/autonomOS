@@ -2,6 +2,7 @@
 // Must come first: stubs canvas + localStorage before xterm/store imports.
 import "../test/setup-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agentsSocket } from "../api/agentsSocket";
 import { restartingIds, useStore } from "../store";
 import type { PaneConnection } from "./connectionWatch";
 import {
@@ -787,7 +788,7 @@ describe("pane connection watch", () => {
     backend.type("\x1b[I"); // a focus report is not the user's keystroke
     expect(ws().sent).toEqual([]); // nothing queued for later
     ws().onopen?.();
-    expect(last()).toEqual({ kind: "ok", droppedKeys: 3 });
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 3, exact: true });
   });
 
   it("an unanswered Esc arms the socket-dead check (but can never blame a silent agent)", async () => {
@@ -798,7 +799,7 @@ describe("pane connection watch", () => {
     vi.setSystemTime(t0 + 5_500);
     _watchdogTickForTesting(t0 + 5_500);
     await flush();
-    expect(last()).toEqual({ kind: "lost", droppedKeys: 1 });
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 1, exact: false });
   });
 
   it("an Esc the server DID receive, with no output, disarms quietly (no 'not responding' for a non-printing key)", async () => {
@@ -822,14 +823,14 @@ describe("pane connection watch", () => {
     expect(first.closed).toBe(true);
     expect(FakeWebSocket.instances).toHaveLength(2);
     // x, y were sent but never answered — they may be stranded.
-    expect(last()).toEqual({ kind: "lost", droppedKeys: 2 });
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 2, exact: false });
 
     // The replacement hangs during the outage; recovery reconnects NOW.
     ws().readyState = FakeWebSocket.CONNECTING;
     _setTransportHealthForTesting("connected");
     expect(FakeWebSocket.instances).toHaveLength(3);
     ws().onopen?.();
-    expect(last()).toEqual({ kind: "ok", droppedKeys: 2 });
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 2, exact: false });
     vi.advanceTimersByTime(8_000);
     expect(last()).toEqual({ kind: "ok", droppedKeys: 0 });
   });
@@ -842,7 +843,7 @@ describe("pane connection watch", () => {
     backend.type("r");
     ws().readyState = FakeWebSocket.CLOSED;
     ws().onclose?.({ code: 1006 }); // …then dies
-    expect(last()).toEqual({ kind: "lost", droppedKeys: 2 });
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 2, exact: false });
   });
 
   it("replies provoked by the scrollback REPLAY are dropped until the server's end-of-replay marker is PARSED; live replies after it go through", () => {
@@ -917,7 +918,7 @@ describe("pane connection watch", () => {
       await flush();
     }
     expect(fetchCalls).toHaveLength(3);
-    expect(last()).toEqual({ kind: "lost", droppedKeys: 1 });
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 1, exact: false });
     expect(FakeWebSocket.instances).toHaveLength(2); // reconnected
   });
 
@@ -934,7 +935,7 @@ describe("pane connection watch", () => {
       null,
     );
     entry.bindConnectionIndicator((c) => seen.push(c));
-    expect(seen.at(-1)).toEqual({ kind: "ok", droppedKeys: 1 }); // still there
+    expect(seen.at(-1)).toEqual({ kind: "ok", droppedKeys: 1, exact: true }); // still there
     vi.advanceTimersByTime(8_100);
     expect(seen.at(-1)).toEqual({ kind: "ok", droppedKeys: 0 });
   });
@@ -946,7 +947,7 @@ describe("pane connection watch", () => {
     // The private input path every sender now shares.
     (entry as unknown as { sendInput(d: string): void }).sendInput("\x15");
     ws().onopen?.();
-    expect(last()).toEqual({ kind: "ok", droppedKeys: 1 });
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 1, exact: true });
   });
 
   it("a byte back within 5s answers the keystroke — no probe at all", async () => {
@@ -984,7 +985,7 @@ describe("pane connection watch", () => {
     _watchdogTickForTesting(t0 + 5_500);
     await flush();
     expect(FakeWebSocket.instances).toHaveLength(2);
-    expect(last()).toEqual({ kind: "lost", droppedKeys: 1 });
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 1, exact: false });
   });
 
   it("an UNMEASURED provider never gets the agent-not-responding chip", async () => {
@@ -1030,5 +1031,253 @@ describe("pane connection watch", () => {
     _watchdogTickForTesting(Date.now() + 10_000);
     await flush();
     expect(fetchCalls).toEqual([]);
+  });
+});
+
+/**
+ * Acked input (revision 2 — Terry: "the gate should be when I type but the
+ * server isn't receiving it"). Drives a real LiveTerminal through the
+ * capability negotiation, server acks, agent echo, and every threshold on the
+ * fake clock. Thresholds are 15–30× the worst healthy latency measured under
+ * load (see connectionWatch.ts).
+ */
+describe("acked input — per-keystroke detection", () => {
+  let backends: ReturnType<typeof makeFakeBackend>[];
+  let states: PaneConnection[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    backends = [];
+    states = [];
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("acked mode must not probe /io"))),
+    );
+    _setBackendFactoryForTesting(() => {
+      const b = makeFakeBackend();
+      backends.push(b);
+      return b;
+    });
+    useStore.setState({
+      fetchSessions: vi.fn() as never,
+      sessions: [{ id: "a1", provider: "claude-code" }] as never,
+    });
+    agentsSocket._applyForTests({
+      type: "reconcile",
+      agents: [],
+      statuses: {},
+    });
+    _setTransportHealthForTesting("connected");
+  });
+
+  afterEach(() => {
+    _disposeAllTerminals();
+    _setBackendFactoryForTesting(null);
+    _setTransportHealthForTesting("connected");
+    agentsSocket._applyForTests({
+      type: "reconcile",
+      agents: [],
+      statuses: {},
+    });
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const ACK_MARK = "autonomos-replay-end;input-ack=1";
+  function mount(opts: { negotiate?: boolean } = {}) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const entry = acquireTerminal("a1");
+    if (!entry) throw new Error("acquire returned null");
+    entry.attach(container, null);
+    entry.bindConnectionIndicator((c) => states.push(c));
+    const ws = () => FakeWebSocket.instances.at(-1)!;
+    ws().onopen?.();
+    const backend = backends.at(-1)!;
+    if (opts.negotiate !== false) backend.parseOsc(7777, ACK_MARK);
+    return { entry, ws, backend };
+  }
+  const last = () => states.at(-1)!;
+  const tick = (ms: number) => {
+    vi.advanceTimersByTime(ms);
+    _watchdogTickForTesting(Date.now());
+  };
+  const frames = (ws: FakeWebSocket) =>
+    (ws.sent as unknown[]).filter(
+      (d) => d instanceof Uint8Array,
+    ) as Uint8Array[];
+  const seqOf = (f: Uint8Array) => new DataView(f.buffer).getUint32(1);
+  const ack = (ws: FakeWebSocket, seq: number) => {
+    const b = new ArrayBuffer(5);
+    const v = new DataView(b);
+    v.setUint8(0, 0x02);
+    v.setUint32(1, seq);
+    (ws.onmessage as unknown as (e: { data: ArrayBuffer }) => void)?.({
+      data: b,
+    });
+  };
+
+  it("NEGOTIATED: plain text until the server advertises input-ack; binary acked frames after", () => {
+    const { ws, backend } = mount({ negotiate: false });
+    backend.type("a");
+    expect(ws().sent).toEqual(["a"]); // an older server: the old way
+    backend.parseOsc(7777, ACK_MARK);
+    backend.type("b");
+    const f = frames(ws());
+    expect(f).toHaveLength(1);
+    expect(f[0][0]).toBe(0x01);
+    expect(new TextDecoder().decode(f[0].subarray(9))).toBe("b");
+    // The URL asked for it; the marker is what switched it on.
+    expect(new URL(ws().url).searchParams.get("inputAck")).toBe("1");
+  });
+
+  it("a replay marker WITHOUT the ack token keeps plain text (old server)", () => {
+    const { ws, backend } = mount({ negotiate: false });
+    backend.parseOsc(7777, "autonomos-replay-end");
+    backend.type("x");
+    expect(ws().sent).toEqual(["x"]);
+  });
+
+  it("every new socket re-negotiates (no carrying ack mode across a reconnect)", () => {
+    const { entry, ws, backend } = mount();
+    entry.forceReconnect();
+    ws().onopen?.();
+    backend.type("z");
+    expect(ws().sent).toEqual(["z"]); // marker not seen yet on THIS socket
+  });
+
+  it("1s without an ack → 'Not reaching server…' with the exact key count; the ack clears it", () => {
+    const { ws, backend } = mount();
+    backend.type("h");
+    backend.type("i");
+    tick(900);
+    expect(last().kind).toBe("ok");
+    tick(200);
+    expect(last()).toEqual({ kind: "unacked", keys: 2 });
+    for (const f of frames(ws())) ack(ws(), seqOf(f));
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 0 });
+  });
+
+  it("3s without an ack → give up: reconnect, and the notice says the keys WEREN'T sent (exact)", () => {
+    const { ws, backend } = mount();
+    backend.type("h");
+    backend.type("i");
+    tick(3_100);
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 2, exact: true });
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    ws().onopen?.();
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 2, exact: true });
+  });
+
+  it("binary control frames are NEVER written into the terminal", () => {
+    const { ws, backend } = mount();
+    const writes: unknown[] = [];
+    const orig = backend.terminal.write.bind(backend.terminal);
+    (backend.terminal as { write: unknown }).write = (
+      d: unknown,
+      cb?: () => void,
+    ) => {
+      writes.push(d);
+      orig(d as string, cb);
+    };
+    backend.type("h");
+    ack(ws(), seqOf(frames(ws())[0]));
+    expect(writes).toEqual([]);
+  });
+
+  it("acked key, no echo: subtle 'Waiting for agent…' at 2s, explicit 'Agent not responding' at 5s, echo clears", () => {
+    const { ws, backend } = mount();
+    backend.type("h");
+    const t0 = Date.now();
+    ack(ws(), seqOf(frames(ws())[0]));
+    tick(1_900);
+    expect(last().kind).toBe("ok");
+    tick(200);
+    expect(last()).toEqual({ kind: "waiting", since: t0 });
+    tick(3_000);
+    expect(last()).toEqual({ kind: "silent", since: t0 });
+    ws().onmessage?.({ data: "h" });
+    expect(last()).toEqual({ kind: "ok", droppedKeys: 0 });
+  });
+
+  it("an echo within the window means no chip at all (the healthy case: ≤67ms measured)", () => {
+    const { ws, backend } = mount();
+    backend.type("h");
+    ack(ws(), seqOf(frames(ws())[0]));
+    ws().onmessage?.({ data: "h" });
+    tick(10_000);
+    expect(states.every((c) => c.kind === "ok")).toBe(true);
+  });
+
+  it("no 'waiting'/'not responding' while the agent is at a permission or choice dialog (needs_input)", () => {
+    agentsSocket._applyForTests({
+      type: "reconcile",
+      agents: [],
+      statuses: {
+        a1: {
+          state: {
+            status: "needs_input",
+            lastEvent: "PermissionRequest",
+            updatedAt: 1,
+          },
+          unread: 0,
+        },
+      },
+    } as never);
+    const { ws, backend } = mount();
+    backend.type("y");
+    ack(ws(), seqOf(frames(ws())[0]));
+    tick(8_000);
+    expect(states.every((c) => c.kind === "ok")).toBe(true);
+  });
+
+  it("an unmeasured provider never gets the agent chips (the unacked chip still applies — it's transport)", () => {
+    useStore.setState({
+      sessions: [{ id: "a1", provider: "future-tui" }] as never,
+    });
+    const { ws, backend } = mount();
+    backend.type("h");
+    ack(ws(), seqOf(frames(ws())[0]));
+    tick(8_000);
+    expect(
+      states.some((c) => c.kind === "waiting" || c.kind === "silent"),
+    ).toBe(false);
+    backend.type("j");
+    tick(1_100);
+    expect(last()).toEqual({ kind: "unacked", keys: 1 });
+  });
+
+  it("mouse/focus reports and terminal replies are framed but not tracked (no false 'not reaching')", () => {
+    const { backend } = mount();
+    backend.type("\x1b[<0;10;5M");
+    backend.type("\x1b[I");
+    tick(3_500);
+    expect(states.every((c) => c.kind === "ok")).toBe(true);
+  });
+
+  it("a transport loss with YOUNG unacked keys can't claim they weren't sent (exact: false)", () => {
+    const { backend } = mount();
+    backend.type("h");
+    vi.advanceTimersByTime(300); // well before the 3s give-up
+    _setTransportHealthForTesting("reconnecting");
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 1, exact: false });
+  });
+
+  it("acked mode never probes /io (the ack IS the receipt)", () => {
+    const { ws, backend } = mount();
+    backend.type("h");
+    ack(ws(), seqOf(frames(ws())[0]));
+    tick(9_000);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });

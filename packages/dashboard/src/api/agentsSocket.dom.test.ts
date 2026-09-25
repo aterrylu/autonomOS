@@ -131,7 +131,7 @@ describe("agentsSocket reconnect baseline", () => {
     expect(agentsSocket.getSnapshot().agents?.has("a1")).toBe(false);
   });
 
-  it("watchdog abandons a half-open socket within the 12s stale window and reconnects WITHOUT waiting for onclose", () => {
+  it("watchdog abandons a half-open socket within the 5s stale window and reconnects WITHOUT waiting for onclose", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws1 = FakeWebSocket.instances[0];
     ws1.halfOpen = true; // close() will never complete
@@ -139,12 +139,12 @@ describe("agentsSocket reconnect baseline", () => {
     ws1.frame({ type: "reconcile", agents: [agent("a1")], statuses: {} });
     expect(agentsSocket.getSnapshot().health).toBe("connected");
 
-    // 11s of silence: still inside the window (2 missed 5s beats + slack).
-    vi.advanceTimersByTime(11_000);
+    // 4.5s of silence: still inside the window (2 missed 2s beats + slack).
+    vi.advanceTimersByTime(4_500);
     expect(ws1.closed).toBe(false);
     expect(agentsSocket.getSnapshot().health).toBe("connected");
 
-    vi.advanceTimersByTime(2_000);
+    vi.advanceTimersByTime(1_000);
     expect(ws1.closed).toBe(true);
     const snap = agentsSocket.getSnapshot();
     expect(snap.health).toBe("reconnecting");
@@ -156,14 +156,14 @@ describe("agentsSocket reconnect baseline", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
-  it("heartbeat frames at the 5s cadence keep a healthy socket alive", () => {
+  it("heartbeat frames at the 2s cadence keep a healthy socket alive", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws1 = FakeWebSocket.instances[0];
     ws1.open();
     ws1.frame({ type: "reconcile", agents: [agent("a1")], statuses: {} });
 
-    for (let i = 0; i < 36; i++) {
-      vi.advanceTimersByTime(5_000);
+    for (let i = 0; i < 90; i++) {
+      vi.advanceTimersByTime(2_000);
       ws1.frame({ type: "ping", ts: i });
     }
     expect(ws1.closed).toBe(false);
@@ -171,7 +171,7 @@ describe("agentsSocket reconnect baseline", () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
-  it("health: connecting → connected → reconnecting → disconnected (30s silent) → connected", () => {
+  it("health: connecting → connected → reconnecting → disconnected (20s silent) → connected", () => {
     const seen: string[] = [];
     const off = agentsSocket.onHealthChange((h) => seen.push(h));
     try {
@@ -181,8 +181,8 @@ describe("agentsSocket reconnect baseline", () => {
       ws1.open();
       ws1.drop(); // a real close
       expect(agentsSocket.getSnapshot().health).toBe("reconnecting");
-      // Every retry fails to open; 30s after the last frame → disconnected.
-      vi.advanceTimersByTime(31_000);
+      // Every retry fails to open; 20s after the last frame → disconnected.
+      vi.advanceTimersByTime(21_000);
       expect(agentsSocket.getSnapshot().health).toBe("disconnected");
       // The CURRENT attempt — earlier retries may already have been
       // abandoned by the handshake timeout (their onopen is superseded).
@@ -211,9 +211,9 @@ describe("agentsSocket reconnect baseline", () => {
     const ws1 = FakeWebSocket.instances[0];
     ws1.halfOpen = true;
     // Never opens, never errors: the upgrade hung on a half-open path.
-    vi.advanceTimersByTime(7_000);
+    vi.advanceTimersByTime(4_000);
     expect(ws1.closed).toBe(false);
-    vi.advanceTimersByTime(2_000);
+    vi.advanceTimersByTime(1_500);
     expect(ws1.closed).toBe(true);
     vi.advanceTimersByTime(2_000); // backoff (1s ±30%)
     expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
@@ -223,8 +223,8 @@ describe("agentsSocket reconnect baseline", () => {
     unsubscribe = agentsSocket.subscribe(() => {});
     const ws1 = FakeWebSocket.instances[0];
     ws1.open();
-    for (let i = 0; i < 4; i++) {
-      vi.advanceTimersByTime(5_000);
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(2_000);
       ws1.frame({ type: "ping", ts: i });
     }
     expect(ws1.closed).toBe(false);

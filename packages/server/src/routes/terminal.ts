@@ -12,6 +12,10 @@ interface PtyBinding {
   pty: IPty;
   /** Protocol-level liveness pinger (see startLivenessPing). */
   stopPing?: () => void;
+  /** This socket negotiated binary acked input frames. */
+  ack?: boolean;
+  /** performance.now() at onOpen — the zero of a frame's `sentAtMs`. */
+  openedAt: number;
   /** Present when the client identified itself (see {@link parseFence}). */
   fence?: { key: string; gen: number; dropped: number };
 }
@@ -58,11 +62,11 @@ function parseFence(
 // WebSocket ping/pong control frames, not a message: browsers answer them
 // automatically (on the network thread — throttled background tabs still
 // pong) and they are invisible to the page, so an older dashboard is
-// unaffected. The deadline (7s, checked every 2s → dead at 7–9s) sits below
-// the dashboard's 12s stale window, so by the time the dashboard gives up on
-// a socket the server has already killed it.
-export const TERMINAL_PING_MS = 2_000;
-export const TERMINAL_DEAD_AFTER_MS = 7_000;
+// unaffected. The deadline (4s, checked every 1s → dead at 4–5s) sits at or
+// below the dashboard's 5s stale window, so by the time the dashboard gives up
+// on a socket the server has already killed it.
+export const TERMINAL_PING_MS = 1_000;
+export const TERMINAL_DEAD_AFTER_MS = 4_000;
 
 interface RawWs {
   ping(): void;
@@ -126,6 +130,63 @@ export function _startLivenessPingForTesting(
 /** OSC 7777 — private use; the dashboard registers a handler for it. Keep in
  *  sync with REPLAY_END_OSC in dashboard/src/terminal/connectionWatch.ts. */
 export const REPLAY_END_MARK = "\x1b]7777;autonomos-replay-end\x07";
+/** The same marker, also advertising input acknowledgement to a client that
+ *  asked for it (?inputAck=1). Only after seeing THIS does the client switch
+ *  its keystrokes to binary acked frames — an older server never sends it, so
+ *  it never receives a frame it would mistake for typed text. */
+export const REPLAY_END_MARK_ACK =
+  "\x1b]7777;autonomos-replay-end;input-ack=1\x07";
+
+// ── Input acknowledgement (binary control plane) ───────────────────────
+// Text frames carry terminal bytes, both ways, as they always have. BINARY
+// frames are the control plane, used only on a socket that negotiated it:
+//   client → server  [0x01][u32 seq][u32 sentAtMs][utf-8 keystrokes]
+//   server → client  [0x02][u32 seq]                          "written"
+// The ack is sent after pty.write() succeeded, so it proves the keystroke
+// reached the agent's PTY — the dashboard's "is my typing arriving?" signal,
+// in about a round trip (measured p99 ≤ 31ms at load avg 47) instead of a
+// heartbeat's stale window. A fenced or expired frame is never acked: it did
+// not reach the agent, and the dashboard counts it as not sent.
+//
+// `sentAtMs` is the client's clock RELATIVE TO ITS OWN onopen, and the server
+// compares it with ms since ITS onOpen — both measured from the same event, so
+// no clock sync is needed (the estimate errs late by ~half a round trip).
+// A frame older than INPUT_MAX_AGE_MS is dropped unwritten: the dashboard gives
+// up on an unacked key at 3s and reports it lost, so writing it later (after a
+// server stall, a slow link) would be exactly the late burst we promise never
+// to deliver. The margin to 3s absorbs the ack's trip back.
+export const INPUT_FRAME = 0x01;
+export const ACK_FRAME = 0x02;
+export const INPUT_MAX_AGE_MS = 2_500;
+
+function asBytes(data: unknown): Uint8Array | null {
+  if (data instanceof Uint8Array) return data; // Buffer included
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (Array.isArray(data) && data.every((d) => d instanceof Uint8Array)) {
+    return Buffer.concat(data as Uint8Array[]); // ws fragmented message
+  }
+  return null;
+}
+
+/** Decode an acked input frame; null when it isn't one. */
+export function decodeInputFrame(
+  bytes: Uint8Array,
+): { seq: number; sentAtMs: number; text: string } | null {
+  if (bytes.length < 9 || bytes[0] !== INPUT_FRAME) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, 9);
+  return {
+    seq: view.getUint32(1),
+    sentAtMs: view.getUint32(5),
+    text: new TextDecoder().decode(bytes.subarray(9)),
+  };
+}
+
+export function encodeAckFrame(seq: number): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(5));
+  out[0] = ACK_FRAME;
+  new DataView(out.buffer).setUint32(1, seq);
+  return out;
+}
 
 /** Test hook — the fence map is module state. */
 export function _resetTerminalFenceForTesting(): void {
@@ -360,6 +421,7 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
     const sessionId = c.req.param("sessionId")!;
     const wantsReplayMark = c.req.query("replayMark") === "1";
+    const wantsAck = c.req.query("inputAck") === "1";
     const fence = parseFence(
       sessionId,
       c.req.query("client"),
@@ -393,9 +455,9 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         // still get through. An OSC with an unregistered number: any terminal
         // that doesn't handle it ignores it silently. Opt-in so an older
         // dashboard never receives it.
-        if (wantsReplayMark) {
+        if (wantsReplayMark || wantsAck) {
           try {
-            ws.send(REPLAY_END_MARK);
+            ws.send(wantsAck ? REPLAY_END_MARK_ACK : REPLAY_END_MARK);
           } catch {
             return;
           }
@@ -429,6 +491,8 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           disposable,
           closeStream: forwarder.close,
           stopPing: startLivenessPing(ws.raw, sessionId),
+          ack: wantsAck,
+          openedAt: performance.now(),
           ...(fence ? { fence: { ...fence, dropped: 0 } } : {}),
         });
 
@@ -468,10 +532,29 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         const managed = getSession(binding.sessionId);
         if (!managed) return;
 
-        const msg =
-          typeof event.data === "string"
-            ? event.data
-            : new TextDecoder().decode(event.data as ArrayBuffer);
+        let msg: string;
+        let ackSeq: number | undefined;
+        if (typeof event.data === "string") {
+          msg = event.data;
+        } else {
+          const bytes = asBytes(event.data);
+          const frame = binding.ack && bytes ? decodeInputFrame(bytes) : null;
+          if (frame) {
+            const age = performance.now() - binding.openedAt - frame.sentAtMs;
+            if (age > INPUT_MAX_AGE_MS) {
+              // The dashboard has already given up on this key (or will
+              // before an ack could reach it) — never write it late.
+              console.warn(
+                `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped expired input (${Math.round(age)}ms old, seq ${frame.seq})`,
+              );
+              return;
+            }
+            msg = frame.text;
+            ackSeq = frame.seq;
+          } else {
+            msg = bytes ? new TextDecoder().decode(bytes) : "";
+          }
+        }
 
         // Fenced: a newer socket from the same client has taken over, so this
         // is input the client already abandoned. Drop it (never a late
@@ -530,6 +613,13 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           // After the write: a throw (PTY fd just died) must not make /io
           // report "the agent received your key".
           managed.lastInputAt = Date.now();
+          if (ackSeq !== undefined) {
+            try {
+              ws.send(encodeAckFrame(ackSeq));
+            } catch {
+              // socket closing — the client will see the close
+            }
+          }
         } catch (err) {
           console.error(
             `PTY write failed for session ${binding.sessionId}:`,

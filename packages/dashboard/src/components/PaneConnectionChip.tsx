@@ -5,6 +5,7 @@ import type { PaneConnection } from "../terminal/connectionWatch";
 // amber = degraded/unconfirmed, red = connection lost.
 const AMBER = "#d29922";
 const RED = "#ea6c73";
+const GRAY = "#8b949e";
 
 function keys(n: number): string {
   return `${n} keystroke${n === 1 ? "" : "s"}`;
@@ -17,8 +18,17 @@ function keys(n: number): string {
 export function describePaneConnection(
   c: PaneConnection,
   now: number,
-): { text: string; color: string } | null {
+): { text: string; color: string; subtle?: boolean } | null {
   switch (c.kind) {
+    case "unacked":
+      return {
+        color: AMBER,
+        text: `Not reaching server… · ${keys(c.keys)} waiting`,
+      };
+    case "waiting":
+      // Deliberately quiet: it appears ~2s into any slow first echo and
+      // usually resolves on its own — a hint, not an alarm.
+      return { color: GRAY, text: "Waiting for agent…", subtle: true };
     case "lost":
       return {
         color: RED,
@@ -32,12 +42,13 @@ export function describePaneConnection(
       return { color: AMBER, text: `Agent not responding · ${s}s` };
     }
     default:
-      return c.droppedKeys > 0
-        ? {
-            color: AMBER,
-            text: `Reconnected · ${keys(c.droppedKeys)} typed while disconnected may not have been sent`,
-          }
-        : null;
+      if (c.droppedKeys <= 0) return null;
+      return {
+        color: AMBER,
+        text: c.exact
+          ? `Reconnected · ${keys(c.droppedKeys)} typed while disconnected ${c.droppedKeys === 1 ? "wasn't" : "weren't"} sent`
+          : `Reconnected · ${keys(c.droppedKeys)} typed while disconnected may not have been sent`,
+      };
   }
 }
 
@@ -52,7 +63,8 @@ export function PaneConnectionChip({
   connection: PaneConnection;
 }) {
   const [now, setNow] = useState(() => Date.now());
-  const counting = connection.kind === "silent";
+  const counting =
+    connection.kind === "silent" || connection.kind === "waiting";
   useEffect(() => {
     if (!counting) return;
     setNow(Date.now());
@@ -72,7 +84,13 @@ export function PaneConnectionChip({
     <output
       aria-live="polite"
       data-testid="pane-connection-chip"
-      className="pointer-events-none absolute top-2 right-3 z-10 flex max-w-[80%] items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-foreground shadow-lg"
+      className={
+        d.subtle
+          ? // Same box and position as the loud chips (no layout shift) —
+            // just muted: no border accent, no shadow, dimmed text.
+            "pointer-events-none absolute top-2 right-3 z-10 flex max-w-[80%] items-center gap-1.5 rounded-full border border-transparent bg-card/70 px-2.5 py-0.5 text-xs text-muted-foreground"
+          : "pointer-events-none absolute top-2 right-3 z-10 flex max-w-[80%] items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-foreground shadow-lg"
+      }
     >
       <span
         aria-hidden="true"

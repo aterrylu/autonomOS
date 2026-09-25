@@ -146,20 +146,22 @@ function applyDelta(delta: AgentDelta): void {
   }
 }
 
-// Half-open detection: the server heartbeats every 5s, so a healthy socket
+// Half-open detection: the server heartbeats every 2s, so a healthy socket
 // is never frameless for long. An OPEN socket silent past ~2 beats (VPN drop,
 // Wi-Fi switch, sleep/wake, a stalled server — TCP can take minutes to
 // notice) is ABANDONED: we stop listening to it and open a fresh one at once.
 // Not "close and wait for onclose" — measured on a half-open link, close()
 // leaves the socket in CLOSING indefinitely and onclose never fires, so a
 // reconnect gated on it never happens.
-export const STALE_AFTER_MS = 12_000;
+// Terry: 12s "is a little bit too long". This covers IDLE time only — while
+// typing, per-keystroke acks answer within ~1s (liveTerminals.ts).
+export const STALE_AFTER_MS = 5_000;
 /** Reconnecting this long (since the last frame) escalates to disconnected. */
-export const DISCONNECTED_AFTER_MS = 30_000;
+export const DISCONNECTED_AFTER_MS = 20_000;
 /** A handshake that hasn't opened by then is abandoned and retried — on a
  *  half-open path the upgrade can hang with no error. */
-const CONNECT_TIMEOUT_MS = 8_000;
-const WATCHDOG_CHECK_MS = 1_000;
+const CONNECT_TIMEOUT_MS = 5_000;
+const WATCHDOG_CHECK_MS = 500;
 let lastFrameAt = 0;
 let connectStartedAt = 0;
 let everOpened = false;

@@ -213,7 +213,7 @@ describe("ConnectionStatusBarItem driven by the /ws/agents heartbeat", () => {
     unsubscribe = null;
   });
 
-  it("a stalled server reads 'Reconnecting… last heard Ns ago' at ~12s and escalates at 30s — even while the HTTP poll would still say Connected", async () => {
+  it("a stalled server reads 'Reconnecting… last heard Ns ago' at ~5s and escalates at 20s — even while the HTTP poll would still say Connected", async () => {
     FakeWS.all = [];
     vi.stubGlobal("WebSocket", FakeWS);
     vi.spyOn(Math, "random").mockReturnValue(0.5);
@@ -227,18 +227,18 @@ describe("ConnectionStatusBarItem driven by the /ws/agents heartbeat", () => {
     expect(label()).toBe("Connected");
 
     // Heartbeats flowing: stays Connected.
-    await advance(5_000);
+    await advance(2_000);
     ws.onmessage?.({ data: JSON.stringify({ type: "ping", ts: 1 }) });
     // That was the LAST frame. The server now stops answering (SIGSTOP /
     // half-open) while the /api/host poll still succeeds — the old indicator
     // would have said Connected for up to ~30s.
-    await advance(11_000);
-    expect(label()).toBe("Connected"); // 11s silent: inside the window
-    await advance(2_000);
-    expect(label()).toBe("Reconnecting… last heard 13s ago");
+    await advance(4_500);
+    expect(label()).toBe("Connected"); // 4.5s silent: inside the window
+    await advance(1_000);
+    expect(label()).toBe("Reconnecting… last heard 6s ago");
     await advance(3_000);
-    expect(label()).toBe("Reconnecting… last heard 16s ago"); // counts up
-    await advance(15_000);
+    expect(label()).toBe("Reconnecting… last heard 9s ago"); // counts up
+    await advance(12_000);
     expect(label()).toBe("Disconnected · retrying");
     vi.restoreAllMocks();
   });

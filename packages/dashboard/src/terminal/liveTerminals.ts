@@ -6,8 +6,13 @@ import { restartingIds, THEMES, useStore } from "../store";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
 import {
+  ACK_GIVE_UP_MS,
+  ACK_LATE_MS,
   classifyIoProbe,
   DROPPED_NOTICE_MS,
+  decodeAckFrame,
+  encodeInputFrame,
+  INPUT_ACK_TOKEN,
   type IoProbe,
   isCountableInput,
   isTerminalReply,
@@ -19,6 +24,7 @@ import {
   REPLAY_REPLY_CAP_UNCONFIRMED_MS,
   SILENT_CHIP_PROVIDERS,
   TERMINAL_CLIENT_ID,
+  WAITING_MS,
   WATCHDOG_MS,
 } from "./connectionWatch";
 import { isDegenerate, isPlausibleFit } from "./resize";
@@ -183,7 +189,9 @@ export function _disposeAllTerminals(): void {
 // 2. A 1s tick running each attached pane's input watchdog.
 let watchInstalled = false;
 let transportHealth: TransportHealth = "connecting";
-const WATCH_TICK_MS = 1_000;
+/** Fast enough that "Not reaching server…" lands at ~1s, not ~2s; the loop
+ *  is a few field reads over ≤8 cached panes. */
+const WATCH_TICK_MS = 250;
 /** Socket generations are PAGE-wide, never per instance: the server fences
  *  by session + page client id, so a re-created pane (LRU eviction, a session
  *  restarted) starting over at 1 would sit BELOW a stale binding from before
@@ -304,6 +312,19 @@ export class LiveTerminal {
   private noticePending = false;
   /** Terminal replies dropped during the current replay (debug breadcrumb). */
   private droppedReplies = 0;
+  /** This socket's server advertised acked input (OSC 7777 …input-ack=1). */
+  private ackMode = false;
+  private ackSeq = 0;
+  /** performance.now() at this socket's onopen — the zero of sentAtMs. */
+  private openedAt = 0;
+  /** Acked frames in flight: seq → when sent, and what kind of key. */
+  private readonly pending = new Map<
+    number,
+    { t: number; user: boolean; countable: boolean }
+  >();
+  /** Every counted drop is KNOWN unsent (so the notice can say "weren't"
+   *  instead of "may not have been"). */
+  private droppedExact = true;
   /** Countable keystrokes sent since the last byte back — they may be
    *  stranded if this socket is abandoned. */
   private unconfirmedKeys = 0;
@@ -428,8 +449,12 @@ export class LiveTerminal {
     // End of the replay: the server's OSC 7777 marker was just PARSED — every
     // replayed query has been answered (and dropped) by now, so live replies
     // from here on are real.
-    this.terminal.parser.registerOscHandler(REPLAY_END_OSC, () => {
+    this.terminal.parser.registerOscHandler(REPLAY_END_OSC, (data) => {
       serverSendsReplayMark = true;
+      // Capability negotiation rides on the same marker: only a server that
+      // SAYS it understands binary acked frames ever gets one. Everything
+      // typed before this point went as plain text, the old way.
+      if (data.includes(INPUT_ACK_TOKEN)) this.ackMode = true;
       this.endReplayWindow();
       return true; // consumed; nothing to render
     });
@@ -596,6 +621,22 @@ export class LiveTerminal {
    *  mod-key bindings), so no input path can bypass the accounting. */
   private sendInput(data: string): void {
     const user = isUserInput(data);
+    if (this.wsRef.current?.readyState === WebSocket.OPEN && this.ackMode) {
+      // Acked path: the server writes it and says so; silence is measured
+      // per keystroke by the tick (see ackTick).
+      const seq = ++this.ackSeq;
+      this.wsRef.current.send(
+        encodeInputFrame(seq, performance.now() - this.openedAt, data),
+      );
+      if (user) {
+        this.pending.set(seq, {
+          t: Date.now(),
+          user: true,
+          countable: isCountableInput(data),
+        });
+      }
+      return;
+    }
     if (this.wsRef.current?.readyState === WebSocket.OPEN) {
       this.wsRef.current.send(data);
       if (user) {
@@ -614,7 +655,7 @@ export class LiveTerminal {
       // is the one the user most needs to know about.
       this.droppedKeys++;
       if (this.connection.kind === "lost") {
-        this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
+        this.setConnection(this.lostState());
       }
     }
   }
@@ -647,6 +688,47 @@ export class LiveTerminal {
     }, DROPPED_NOTICE_MS);
   }
 
+  private lostState(): PaneConnection {
+    return {
+      kind: "lost",
+      droppedKeys: this.droppedKeys,
+      exact: this.droppedExact,
+    };
+  }
+
+  /** Move every in-flight keystroke into the dropped count. Acked frames the
+   *  pane gave up on (≥ ACK_GIVE_UP_MS) are KNOWN unwritten — the server
+   *  refuses frames that old; anything younger, or sent the old unacked
+   *  way, only MAY be. */
+  private strandInFlight(now = Date.now()): void {
+    let n = this.unconfirmedKeys;
+    if (this.unconfirmedKeys > 0) this.droppedExact = false;
+    for (const p of this.pending.values()) {
+      if (!p.user) continue;
+      n++;
+      if (now - p.t < ACK_GIVE_UP_MS) this.droppedExact = false;
+    }
+    this.droppedKeys += n;
+    this.unconfirmedKeys = 0;
+    this.pending.clear();
+  }
+
+  private agentNeedsInput(): boolean {
+    // A permission / choice dialog is on screen: a letter may legitimately
+    // print nothing, and the dialog already says the agent is waiting on you.
+    return (
+      agentsSocket.getSnapshot().statuses.get(this.sessionId)?.state.status ===
+      "needs_input"
+    );
+  }
+
+  private providerMeasured(): boolean {
+    const provider = useStore
+      .getState()
+      .sessions.find((x) => x.id === this.sessionId)?.provider;
+    return !!provider && SILENT_CHIP_PROVIDERS.has(provider);
+  }
+
   private setConnection(c: PaneConnection): void {
     this.connection = c;
     this.onConnectionChange?.(c);
@@ -657,10 +739,9 @@ export class LiveTerminal {
    *  arrive late), so they're counted with the refused ones. */
   forceReconnect(): void {
     if (this.disposed || this.ended) return;
-    this.droppedKeys += this.unconfirmedKeys;
-    this.unconfirmedKeys = 0;
+    this.strandInFlight();
     this.disarm();
-    this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
+    this.setConnection(this.lostState());
     this.retryDelay = 1000;
     this.connect();
   }
@@ -686,6 +767,10 @@ export class LiveTerminal {
    *  down: the status bar already says so, and a per-pane chip on top would
    *  just repeat it once per pane. */
   watchdogTick(now: number): void {
+    if (this.ackMode) {
+      this.ackTick(now);
+      return;
+    }
     if (
       this.armedAt === null ||
       this.probing ||
@@ -700,6 +785,86 @@ export class LiveTerminal {
       return;
     }
     void this.probeIo(this.armedAt);
+  }
+
+  /** The acked-input watchdog. Every threshold is 15–30× the worst healthy
+   *  answer measured under load (see connectionWatch.ts). */
+  private ackTick(now: number): void {
+    if (
+      this.disposed ||
+      this.ended ||
+      !this.isAttached() ||
+      transportHealth !== "connected" ||
+      this.connection.kind === "lost"
+    ) {
+      return;
+    }
+    // 1. Is my typing reaching the server?
+    let oldest = Number.POSITIVE_INFINITY;
+    let userKeys = 0;
+    for (const p of this.pending.values()) {
+      if (!p.user) continue;
+      userKeys++;
+      if (p.t < oldest) oldest = p.t;
+    }
+    if (userKeys > 0) {
+      const age = now - oldest;
+      if (age >= ACK_GIVE_UP_MS) {
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: ${userKeys} keystroke(s) unacknowledged for ${age}ms — reconnecting the pane`,
+        );
+        this.forceReconnect();
+        return;
+      }
+      if (age >= ACK_LATE_MS) {
+        if (
+          this.connection.kind !== "unacked" ||
+          this.connection.keys !== userKeys
+        ) {
+          this.setConnection({ kind: "unacked", keys: userKeys });
+        }
+        return;
+      }
+    }
+    if (this.connection.kind === "unacked") this.setConnection(PANE_OK);
+    // 2. The server has it — is the agent answering?
+    if (this.armedAt === null || !this.armedCountable) return;
+    if (this.agentNeedsInput() || !this.providerMeasured()) {
+      if (
+        this.connection.kind === "waiting" ||
+        this.connection.kind === "silent"
+      )
+        this.setConnection(PANE_OK);
+      return;
+    }
+    const age = now - this.armedAt;
+    if (age >= WATCHDOG_MS) {
+      if (this.connection.kind !== "silent") {
+        this.setConnection({ kind: "silent", since: this.armedAt });
+      }
+    } else if (age >= WAITING_MS && this.connection.kind === "ok") {
+      this.setConnection({ kind: "waiting", since: this.armedAt });
+    }
+  }
+
+  /** A server ack: the keystroke is in the agent's PTY. A printing key now
+   *  waits for the agent's echo (the "waiting / not responding" clock). */
+  private onAck(seq: number): void {
+    const p = this.pending.get(seq);
+    if (!p) return;
+    this.pending.delete(seq);
+    if (p.user && p.countable && this.armedAt === null) {
+      this.armedAt = Date.now();
+      this.armedCountable = true;
+    }
+    if (this.connection.kind === "unacked") {
+      let overdue = false;
+      const now = Date.now();
+      for (const q of this.pending.values()) {
+        if (q.user && now - q.t >= ACK_LATE_MS) overdue = true;
+      }
+      if (!overdue) this.setConnection(PANE_OK);
+    }
   }
 
   private disarm(): void {
@@ -766,7 +931,8 @@ export class LiveTerminal {
     if (
       this.armedCountable &&
       provider &&
-      SILENT_CHIP_PROVIDERS.has(provider)
+      SILENT_CHIP_PROVIDERS.has(provider) &&
+      !this.agentNeedsInput()
     ) {
       this.setConnection({ kind: "silent", since: armedAt });
     } else {
@@ -835,9 +1001,15 @@ export class LiveTerminal {
     // a socket message: an unknown message would be typed into the agent by
     // an older server.
     this.gen = ++nextGen;
+    // Anything still in flight belonged to the socket being replaced.
+    this.strandInFlight();
+    this.ackMode = false; // re-negotiated per socket, via the replay marker
+    this.ackSeq = 0;
     const ws = new WebSocket(
-      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1`,
+      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1`,
     );
+    // Acks arrive as binary frames; ArrayBuffer keeps decoding synchronous.
+    ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
       // Superseded-socket guard: connect() may replace this socket before its
@@ -852,6 +1024,7 @@ export class LiveTerminal {
       // duplication would be permanent and cumulative.
       if (this.everConnected) this.terminal.reset();
       this.everConnected = true;
+      this.openedAt = performance.now();
       // The full-scrollback replay starts now (first connect too — a page
       // reload replays exactly the same way).
       this.droppedReplies = 0;
@@ -877,8 +1050,10 @@ export class LiveTerminal {
       this.disarm();
       this.unconfirmedKeys = 0;
       const dropped = this.droppedKeys;
+      const exact = this.droppedExact;
       this.droppedKeys = 0;
-      this.setConnection({ kind: "ok", droppedKeys: dropped });
+      this.droppedExact = true;
+      this.setConnection({ kind: "ok", droppedKeys: dropped, exact });
       if (this.noticeTimer) {
         clearTimeout(this.noticeTimer);
         this.noticeTimer = null;
@@ -903,12 +1078,23 @@ export class LiveTerminal {
 
     ws.onmessage = (event) => {
       if (this.wsRef.current !== ws || this.disposed) return;
+      // Binary = the control plane (acks). NEVER written to the terminal.
+      if (typeof event.data !== "string") {
+        const seq =
+          event.data instanceof ArrayBuffer ? decodeAckFrame(event.data) : null;
+        if (seq !== null) this.onAck(seq);
+        return;
+      }
       // Any byte back answers every keystroke so far — including a busy
       // agent's spinner repaint, which is why a long tool run never trips
       // the watchdog.
       this.disarm();
       this.unconfirmedKeys = 0;
-      if (this.connection.kind === "silent") this.setConnection(PANE_OK);
+      if (
+        this.connection.kind === "silent" ||
+        this.connection.kind === "waiting"
+      )
+        this.setConnection(PANE_OK);
       try {
         this.terminal.write(event.data, () => {
           // Same superseded-socket rule as every WS handler: a callback
@@ -994,10 +1180,9 @@ export class LiveTerminal {
       this.setStatusIfActive("reconnecting...");
       // Unconditional, even if already "lost": a replacement socket that
       // carried keys and then closed still stranded them.
-      this.droppedKeys += this.unconfirmedKeys;
-      this.unconfirmedKeys = 0;
+      this.strandInFlight();
       this.disarm();
-      this.setConnection({ kind: "lost", droppedKeys: this.droppedKeys });
+      this.setConnection(this.lostState());
       this.reconnectTimer = setTimeout(() => {
         this.retryDelay = Math.min(this.retryDelay * 2, MAX_RETRY_DELAY);
         this.connect();

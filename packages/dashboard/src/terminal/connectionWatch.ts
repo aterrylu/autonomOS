@@ -15,8 +15,48 @@
  * run never trips it.
  */
 
-/** Silence after an unanswered keystroke before the pane asks the server. */
+/** Silence after an unanswered keystroke before the pane asks the server
+ *  (servers without input acks), and — with acks — how long an acked key may
+ *  go unechoed before the explicit "Agent not responding" chip. */
 export const WATCHDOG_MS = 5_000;
+
+// ── Acked-input thresholds (servers that advertise input-ack) ───────────
+// Measured on a real rig at load avg 23–47 (idle + mid-turn Claude Code,
+// Gemini): ack p99 ≤ 31ms, first-echo p99 ≤ 67ms. Every threshold below is
+// 15–30× the worst healthy answer, so a slow-but-working box can't trip them.
+/** An unacked keystroke this old → "Not reaching server…". */
+export const ACK_LATE_MS = 1_000;
+/** …this old → give up: count it not sent, reconnect the pane. The server
+ *  refuses frames older than 2.5s (INPUT_MAX_AGE_MS), so a key given up on
+ *  here can never be written later. */
+export const ACK_GIVE_UP_MS = 3_000;
+/** An ACKED printing key with no echo this long → subtle "Waiting for agent…". */
+export const WAITING_MS = 2_000;
+/** The OSC 7777 payload a server adds when it supports acked input. */
+export const INPUT_ACK_TOKEN = "input-ack=1";
+
+/** Binary acked-input frame: [0x01][u32 seq][u32 sentAtMs][utf-8 bytes]. */
+export function encodeInputFrame(
+  seq: number,
+  sentAtMs: number,
+  text: string,
+): Uint8Array {
+  const body = new TextEncoder().encode(text);
+  const out = new Uint8Array(9 + body.length);
+  out[0] = 0x01;
+  const view = new DataView(out.buffer);
+  view.setUint32(1, seq);
+  view.setUint32(5, Math.max(0, Math.min(0xffffffff, Math.round(sentAtMs))));
+  out.set(body, 9);
+  return out;
+}
+
+/** The seq of a server ack frame ([0x02][u32 seq]); null for anything else. */
+export function decodeAckFrame(data: ArrayBuffer): number | null {
+  if (data.byteLength !== 5) return null;
+  const view = new DataView(data);
+  return view.getUint8(0) === 0x02 ? view.getUint32(1) : null;
+}
 
 /** How long the "N keystrokes may not have been sent" notice stays after a
  *  pane reconnects. */
@@ -46,10 +86,15 @@ export const SILENT_CHIP_PROVIDERS: ReadonlySet<string> = new Set([
 ]);
 
 export type PaneConnection =
-  /** Nothing to report. `droppedKeys` > 0 = show the post-reconnect notice. */
-  | { kind: "ok"; droppedKeys: number }
+  /** Nothing to report. `droppedKeys` > 0 = show the post-reconnect notice;
+   *  `exact` = every one is KNOWN unsent (acked input) rather than "may". */
+  | { kind: "ok"; droppedKeys: number; exact?: boolean }
   /** The pane's socket is gone or being replaced. */
-  | { kind: "lost"; droppedKeys: number }
+  | { kind: "lost"; droppedKeys: number; exact?: boolean }
+  /** Keystrokes sent but not yet acknowledged by the server for >1s. */
+  | { kind: "unacked"; keys: number }
+  /** Server has our key; no echo for >2s yet (subtle, often resolves). */
+  | { kind: "waiting"; since: number }
   /** Server got our input; the agent has printed nothing since `since`. */
   | { kind: "silent"; since: number };
 

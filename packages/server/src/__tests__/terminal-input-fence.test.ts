@@ -26,6 +26,8 @@ const {
   _resetTerminalFenceForTesting,
   _startLivenessPingForTesting,
   REPLAY_END_MARK,
+  REPLAY_END_MARK_ACK,
+  INPUT_MAX_AGE_MS,
 } = await import("../routes/terminal.js");
 const { _registerSyntheticAttachment } = await import("../agents/runtime.js");
 const { agentsRouter } = await import("../routes/agents.js");
@@ -355,5 +357,95 @@ describe("server-side liveness ping", () => {
       _startLivenessPingForTesting(undefined, { pingMs: 20, deadAfterMs: 70 }),
       undefined,
     );
+  });
+});
+
+describe("acked input (binary control plane)", () => {
+  function inputFrame(seq: number, sentAtMs: number, text: string) {
+    const body = new TextEncoder().encode(text);
+    const out = new Uint8Array(9 + body.length);
+    out[0] = 0x01;
+    const v = new DataView(out.buffer);
+    v.setUint32(1, seq);
+    v.setUint32(5, sentAtMs);
+    out.set(body, 9);
+    return out;
+  }
+  async function openAck(id: string, q = "") {
+    const acks: number[] = [];
+    const texts: string[] = [];
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/ws/terminal/${id}?client=${CLIENT}&gen=1&replayMark=1&inputAck=1${q}`,
+    );
+    ws.binaryType = "arraybuffer";
+    opened.push(ws);
+    ws.addEventListener("message", (ev) => {
+      if (typeof ev.data === "string") texts.push(ev.data);
+      else acks.push(new DataView(ev.data as ArrayBuffer).getUint32(1));
+    });
+    await new Promise<void>((r) =>
+      ws.addEventListener("open", () => r(), { once: true }),
+    );
+    return { ws, acks, texts };
+  }
+
+  it("advertises input-ack in the replay marker only to a client that asked", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe030";
+    session(id);
+    const { texts } = await openAck(id);
+    await settle();
+    assert.ok(texts.join("").includes(REPLAY_END_MARK_ACK));
+    const plain: string[] = [];
+    await open(id, `?client=other-tab-3333&gen=1&replayMark=1`, (d) =>
+      plain.push(d),
+    );
+    await settle();
+    assert.ok(plain.join("").includes(REPLAY_END_MARK));
+    assert.ok(!plain.join("").includes("input-ack"));
+  });
+
+  it("writes an acked frame's keystrokes and acks its seq AFTER the write", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe031";
+    const { writes } = session(id);
+    const { ws, acks } = await openAck(id);
+    await settle();
+    ws.send(inputFrame(7, 50, "hi"));
+    await settle();
+    assert.deepEqual(writes, ["hi"]);
+    assert.deepEqual(acks, [7]);
+  });
+
+  it("never writes (or acks) a frame older than the client's give-up — no late keys after a stall", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe032";
+    const { writes } = session(id);
+    const { ws, acks } = await openAck(id);
+    await sleep(INPUT_MAX_AGE_MS + 200);
+    // sentAtMs = 0 → the key was typed right at open, now > 2.5s ago.
+    ws.send(inputFrame(1, 0, "STALE"));
+    await settle();
+    assert.deepEqual(writes, []);
+    assert.deepEqual(acks, []);
+  });
+
+  it("does not ack a write that failed", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe033";
+    const { pty } = session(id);
+    pty.write = () => {
+      throw new Error("EIO: pty closed");
+    };
+    const { ws, acks } = await openAck(id);
+    await settle();
+    ws.send(inputFrame(3, 10, "k"));
+    await settle();
+    assert.deepEqual(acks, []);
+  });
+
+  it("a socket that did NOT negotiate treats binary as text (the old behavior)", async () => {
+    const id = "00000000-0000-4000-8000-0000000fe034";
+    const { writes } = session(id);
+    const ws = await open(id, `?client=${CLIENT}&gen=1`);
+    ws.send(new TextEncoder().encode("raw"));
+    await settle();
+    assert.deepEqual(writes, ["raw"]);
   });
 });

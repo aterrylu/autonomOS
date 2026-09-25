@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { describePaneConnection } from "../components/PaneConnectionChip";
 import {
   classifyIoProbe,
+  decodeAckFrame,
+  encodeInputFrame,
   isCountableInput,
   isMouseReport,
   isTerminalReply,
@@ -147,5 +149,45 @@ describe("isUserInput — what counts as a keystroke the user needs to hear abou
     }
     expect(isMouseReport("\x1b[<0;50;20M")).toBe(true);
     expect(isMouseReport("\x1b[A")).toBe(false);
+  });
+});
+
+describe("revision 2 wording + frame codec", () => {
+  it("unacked names the problem and the count; waiting is subtle; exact drops say weren't", () => {
+    expect(describePaneConnection({ kind: "unacked", keys: 2 }, 0)?.text).toBe(
+      "Not reaching server… · 2 keystrokes waiting",
+    );
+    const w = describePaneConnection({ kind: "waiting", since: 0 }, 2_500);
+    expect(w?.text).toBe("Waiting for agent…");
+    expect(w?.subtle).toBe(true);
+    expect(
+      describePaneConnection({ kind: "ok", droppedKeys: 2, exact: true }, 0)
+        ?.text,
+    ).toBe("Reconnected · 2 keystrokes typed while disconnected weren't sent");
+    expect(
+      describePaneConnection({ kind: "ok", droppedKeys: 1, exact: true }, 0)
+        ?.text,
+    ).toBe("Reconnected · 1 keystroke typed while disconnected wasn't sent");
+    expect(
+      describePaneConnection({ kind: "ok", droppedKeys: 2, exact: false }, 0)
+        ?.text,
+    ).toContain("may not have been sent");
+  });
+
+  it("input frames round-trip through the server's layout; ack frames decode, anything else is null", () => {
+    const f = encodeInputFrame(7, 1234.6, "héllo");
+    expect(f[0]).toBe(0x01);
+    const v = new DataView(f.buffer);
+    expect(v.getUint32(1)).toBe(7);
+    expect(v.getUint32(5)).toBe(1235);
+    expect(new TextDecoder().decode(f.subarray(9))).toBe("héllo");
+    const a = new ArrayBuffer(5);
+    new DataView(a).setUint8(0, 0x02);
+    new DataView(a).setUint32(1, 42);
+    expect(decodeAckFrame(a)).toBe(42);
+    expect(decodeAckFrame(new ArrayBuffer(4))).toBeNull();
+    const wrongType = new ArrayBuffer(5);
+    new DataView(wrongType).setUint8(0, 0x01);
+    expect(decodeAckFrame(wrongType)).toBeNull();
   });
 });
