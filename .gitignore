@@ -9,6 +9,8 @@ packages/server/src/_embedded_dashboard/
 .env.local
 .DS_Store
 *.tsbuildinfo
+# tsc --build output for the dashboard project (type-check only; Vite owns dist/)
+packages/dashboard/.tsbuild/
 .vite/
 .mcp.json
 deploy/serve.json.deploy
