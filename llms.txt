@@ -22,7 +22,7 @@ If you are an AI assistant helping someone USE autonomOS, read the user guide be
 - [README](README.md): overview, capability matrix, architecture
 - [CONTRIBUTING](CONTRIBUTING.md): building from source, the development loop
 - [CLAUDE.md](CLAUDE.md): the agent/developer guide to the codebase and its key systems
-- [Features](docs/FEATURES.md), [Decisions](docs/DECISIONS.md), [Roadmap](docs/ROADMAP.md), [Research](docs/RESEARCH.md)
+- [Features](docs/FEATURES.md), [Decisions](docs/decisions/README.md), [Roadmap](docs/ROADMAP.md), [Research](docs/RESEARCH.md)
 
 ## Optional
 

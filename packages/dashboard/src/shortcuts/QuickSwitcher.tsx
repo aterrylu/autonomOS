@@ -12,7 +12,7 @@ import { rankAgents } from "./fuzzyAgent";
 const MAX_RESULTS = 12;
 
 /**
- * The ⌘K agent quick-switcher (see the quick-switcher ADR in DECISIONS.md):
+ * The ⌘K agent quick-switcher (see the quick-switcher ADR in docs/decisions/):
  * type a few letters of an agent's name, Enter to switch. The registry's
  * third overlay client — reuses the escape stack for dismissal and the
  * HelpDialog focus-restore pattern. Candidates are ALL live sessions

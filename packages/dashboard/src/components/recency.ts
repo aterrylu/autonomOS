@@ -1,5 +1,5 @@
 // Recency treatment for the sidebar's last-activity timestamp (recency B2; see
-// docs/DECISIONS.md) and, since ADR-101, the passive Idle status label, which
+// docs/decisions/) and, since ADR-101, the passive Idle status label, which
 // rides the same ramp (recencyLabelOpacity at the bottom). The row, name, status
 // icon, repo·branch text, and every attention label are untouched.
 //

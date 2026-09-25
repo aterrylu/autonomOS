@@ -167,7 +167,7 @@ Spawned sessions get a hook relay (inline `curl` on all 13 Claude Code events) t
 telemetry back to the server's status state machine, and an injected system prompt that gives
 each agent its identity, its teammates, and MCP tools to coordinate. The MCP server and the
 gateway live on an internal Unix socket, not the public port. See
-[docs/FEATURES.md](docs/FEATURES.md) and [docs/DECISIONS.md](docs/DECISIONS.md) for the full design.
+[docs/FEATURES.md](docs/FEATURES.md) and [docs/decisions/](docs/decisions/README.md) for the full design.
 
 ## Tech stack
 
@@ -180,7 +180,7 @@ gateway live on an internal Unix socket, not the public port. See
 - [User Guide](docs/guide/README.md) — for people using autonomOS; also the entry point for AI assistants (`llms.txt`)
 - [FEATURES.md](docs/FEATURES.md) — feature specifications and design intent
 - [ROADMAP.md](docs/ROADMAP.md) — what's done, what's next
-- [DECISIONS.md](docs/DECISIONS.md) — architectural decision records
+- [decisions/](docs/decisions/README.md) — architectural decision records, one file per ADR
 - [RELEASE.md](docs/RELEASE.md) — how releases are cut, verified, and rolled out
 - [VISION.md](docs/VISION.md) — where this is headed
 - [RESEARCH.md](docs/RESEARCH.md) — competitor analysis and research

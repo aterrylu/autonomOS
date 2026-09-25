@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy doctor hero build
+.PHONY: dev prod stop restart logs down check fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -171,10 +171,34 @@ VITEST_MAX_WORKERS := $(if $(LOCAL_TEST_CAP),--maxWorkers=$(LOCAL_TEST_CAP))
 endif
 
 check:
+	$(TSX) scripts/decisions.ts check
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
+
+# ── adr: architectural decision records, one file each (docs/decisions/) ───────
+# `make adr NEW="Title"` allocates the next free number across origin/main AND open
+# PRs (via gh, when available) and writes a template. A PR never edits the index;
+# the decisions-index workflow regenerates it after merge (`make adr-index` previews).
+# See docs/decisions/README.md. Arguments are read by the shell as "$$NEW" (make
+# exports command-line variables), so backticks and quotes in a title survive.
+adr:
+	@test -n "$$NEW" || { echo 'usage: make adr NEW="Short decision title"'; exit 2; }
+	$(TSX) scripts/decisions.ts new "$$NEW"
+
+adr-check:
+	$(TSX) scripts/decisions.ts check
+
+adr-index:
+	$(TSX) scripts/decisions.ts index
+
+adr-renumber:
+	@test -n "$$FILE" || { echo 'usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md'; exit 2; }
+	$(TSX) scripts/decisions.ts renumber "$$FILE"
+
+adr-import:
+	$(TSX) scripts/decisions.ts import "$${REF:-HEAD}"
 
 # ── hero: regenerate the README hero screenshot (docs/assets/hero.png) ───────────────
 # Boots an isolated demo instance (own config dir + fake HOME + ephemeral port,

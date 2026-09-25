@@ -168,7 +168,7 @@ export function findCollapses(entries: ReleaseEntry[]): Collapse[] {
 
 /**
  * How hard to react to a collapse (pure; thresholds are the decision record —
- * see the collapse-guard ADR in docs/DECISIONS.md).
+ * see the collapse-guard ADR in docs/decisions/).
  *   - 2 distinct bodies  → "warn": usually a PR that legitimately did two
  *     things; blocking a release on that shape would be a false positive.
  *   - >=3 distinct bodies → "fail": exactly one known cause (retroactive
