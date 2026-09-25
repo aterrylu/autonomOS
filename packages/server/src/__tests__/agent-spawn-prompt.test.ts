@@ -11,6 +11,8 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   waitFor,
 } from "./helpers/test-server.js";
@@ -69,16 +71,18 @@ describe("starting prompt delivery — no manual keystrokes", {
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });
-  });
+  }, HOOK_TIMEOUT);
 
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    if (mock) await mock.close();
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("agent-spawn-prompt", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      if (mock) await mock.close();
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   async function getHookStatus(id: string): Promise<HookStatus> {
     // Reads the BULK endpoint — the per-session single was removed in the

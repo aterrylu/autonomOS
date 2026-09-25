@@ -4,6 +4,8 @@ import { after, before, describe, it } from "node:test";
 import {
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   socketRequest,
 } from "./helpers/test-server.js";
@@ -68,14 +70,16 @@ describe("/mcp is socket-only and authenticated", {
 
   before(async () => {
     server = await bootServer();
-  });
+  }, HOOK_TIMEOUT);
 
-  after(() => {
-    server?.kill();
-    // Remove this boot's config dir (incl. its throwaway HOME) like the other
-    // real-spawn suites do; it was left behind in $TMPDIR on every run.
-    if (server) rmSync(server.configDir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("mcp-auth", async () => {
+      await server?.kill();
+      // Remove this boot's config dir (incl. its throwaway HOME) like the other
+      // real-spawn suites do; it was left behind in $TMPDIR on every run.
+      if (server) rmSync(server.configDir, { recursive: true, force: true });
+    }),
+  );
 
   const publicUrl = (): string => `http://127.0.0.1:${server.port}/mcp`;
 

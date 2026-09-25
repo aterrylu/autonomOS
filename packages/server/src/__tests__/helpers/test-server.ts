@@ -62,7 +62,10 @@ export interface BootedServer {
   configDir: string;
   /** Throwaway HOME the server and every agent it spawns run under. */
   fakeHome: string;
-  kill: () => void;
+  /** SIGTERM the server and resolve once it has EXITED (SIGKILL after 10s).
+   *  Await it before deleting the config dir: the throwaway HOME lives there,
+   *  and deleting it under a still-exiting claude can wedge teardown. */
+  kill: () => Promise<void>;
   /** Throws if this run left anything in the operator's REAL Claude Code
    *  state (a session dir under ~/.claude/projects, or a trust entry in
    *  ~/.claude.json) for a temp-dir cwd. Call in every suite's `after`. */
@@ -320,9 +323,25 @@ export async function bootServer(opts?: {
     token,
     configDir,
     fakeHome,
-    kill: (): void => {
-      if (child.exitCode === null) child.kill("SIGTERM");
-    },
+    kill: (): Promise<void> =>
+      new Promise<void>((resolveKill) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolveKill();
+          return;
+        }
+        const force = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // already gone
+          }
+        }, 10_000);
+        child.once("exit", () => {
+          clearTimeout(force);
+          resolveKill();
+        });
+        child.kill("SIGTERM");
+      }),
     assertNoRealHomeLeak: (): void => {
       const { dirs, paths } = tmpPrefixes();
       const newDirs = [...listRealProjectDirs()].filter(
@@ -430,6 +449,38 @@ export function socketRequest(
     if (init?.body) req.write(init.body);
     req.end();
   });
+}
+
+/** Options for real-spawn suites' before/after hooks. node:test hooks have NO
+ *  timeout by default, and a describe-level timeout does not bound them, so a
+ *  wedged teardown (e.g. awaiting a server/mock that never closes) held CI
+ *  until the 6h job limit with no output. Bounded, it fails fast and the
+ *  failure names the hook. */
+export const HOOK_TIMEOUT = { timeout: 60_000 };
+
+/**
+ * Run a suite's teardown with a bound that FAILS THE RUN. A node:test after()
+ * hook that times out is reported but the run still exits 0 (verified), so a
+ * hook `timeout` alone turns a wedged teardown into a silent green. On timeout
+ * this sets process.exitCode = 1 (the file fails, exit 1) and names the suite.
+ */
+export async function boundedTeardown(
+  label: string,
+  fn: () => Promise<void>,
+  ms = 60_000,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((r) => {
+    timer = setTimeout(() => r("timeout"), ms);
+  });
+  const res = await Promise.race([fn().then(() => "ok" as const), timedOut]);
+  clearTimeout(timer);
+  if (res === "timeout") {
+    process.exitCode = 1;
+    console.error(
+      `[integration] TEARDOWN TIMED OUT after ${ms}ms: ${label} — a server, mock, or spawned agent did not shut down`,
+    );
+  }
 }
 
 export const sleep = (ms: number): Promise<void> =>

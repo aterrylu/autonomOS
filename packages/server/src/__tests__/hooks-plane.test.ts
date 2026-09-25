@@ -5,7 +5,9 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
   controlSocketPath,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   socketRequest,
 } from "./helpers/test-server.js";
@@ -53,14 +55,16 @@ describe("/api/hooks trust boundary", {
 
   before(async () => {
     server = await bootServer();
-  });
+  }, HOOK_TIMEOUT);
 
-  after(() => {
-    server?.kill();
-    // Remove this boot's config dir (incl. its throwaway HOME) like the other
-    // real-spawn suites do; it was left behind in $TMPDIR on every run.
-    if (server) rmSync(server.configDir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("hooks-plane", async () => {
+      await server?.kill();
+      // Remove this boot's config dir (incl. its throwaway HOME) like the other
+      // real-spawn suites do; it was left behind in $TMPDIR on every run.
+      if (server) rmSync(server.configDir, { recursive: true, force: true });
+    }),
+  );
 
   const SESSION = "hook-plane-probe";
 

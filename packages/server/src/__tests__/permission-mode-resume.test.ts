@@ -31,6 +31,8 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   sleep,
 } from "./helpers/test-server.js";
@@ -159,15 +161,17 @@ describe("permission mode — process and record agree across a resume", {
 
   before(async () => {
     server = await bootServer();
-  });
+  }, HOOK_TIMEOUT);
 
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("permission-mode-resume", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   async function spawn(body: Record<string, unknown>): Promise<AgentRecord> {
     const { status, body: agent } = await authedJson<AgentRecord>(
@@ -325,14 +329,16 @@ describe("restart-all preserves per-agent permission modes", {
 
   before(async () => {
     server = await bootServer();
-  });
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  }, HOOK_TIMEOUT);
+  after(() =>
+    boundedTeardown("permission-mode-resume", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   it("does not level a mixed fleet in either direction", async () => {
     // The security question that prompted this work. It must exercise the REAL

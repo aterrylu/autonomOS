@@ -13,6 +13,8 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   sleep,
   waitFor,
@@ -76,16 +78,18 @@ describe("usage-queue auto-fire — real spawn", {
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });
-  });
+  }, HOOK_TIMEOUT);
 
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    if (mock) await mock.close();
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("usage-queue-integration", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      if (mock) await mock.close();
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   async function hookStatus(id: string): Promise<HookStatus> {
     // Reads the BULK endpoint — the per-session single was removed in the
