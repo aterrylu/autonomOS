@@ -12,6 +12,9 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { type IPty, spawn } from "node-pty";
 import {
@@ -24,8 +27,13 @@ import {
 const IGNORE = (sigs: string[]) =>
   sigs.map((s) => `process.on(${JSON.stringify(s)}, () => {});`).join(" ");
 const IDLE = "setInterval(() => {}, 1000);";
+// The child signals readiness only AFTER its body ran (i.e. its signal
+// handlers are installed) by creating a file named in its inherited env —
+// start() waits for it. A fixed sleep here raced a slow child boot under load:
+// a child that hadn't yet installed its SIGHUP ignore just died to the HUP, and
+// the straggler case failed with "no straggler warning" (load ~38).
 const CHILD = (body: string) =>
-  `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(body)}], { stdio: "ignore" });`;
+  `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${body} require("node:fs").writeFileSync(process.env.PTY_TEST_CHILD_READY, "");`)}], { stdio: "ignore" });`;
 
 const STUBS = {
   // Wrapper ignores SIGHUP; its child does not. Mirrors gemini.
@@ -48,11 +56,18 @@ afterEach(() => {
 });
 
 async function start(body: string): Promise<IPty> {
+  const childReady = join(
+    tmpdir(),
+    `pty-term-ready-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
   const pty = spawn(process.execPath, ["-e", body], {
     name: "xterm",
     cols: 80,
     rows: 24,
-    env: process.env as Record<string, string>,
+    env: {
+      ...(process.env as Record<string, string>),
+      PTY_TEST_CHILD_READY: childReady,
+    },
   });
   started.push(pty);
   await new Promise<void>((resolve) => {
@@ -63,8 +78,16 @@ async function start(body: string): Promise<IPty> {
       }
     });
   });
-  // Let a relaunched child finish starting.
-  await new Promise((r) => setTimeout(r, 150));
+  // A stub that spawns a child: wait until the child's handlers are installed
+  // (bounded — a child that never starts fails loudly below, not as a flake).
+  if (body.includes("PTY_TEST_CHILD_READY")) {
+    const t0 = Date.now();
+    while (!existsSync(childReady)) {
+      assert.ok(Date.now() - t0 < 20_000, "stub child never became ready");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    rmSync(childReady, { force: true });
+  }
   return pty;
 }
 
@@ -89,7 +112,7 @@ async function groupEmpty(pgid: number, withinMs = 500): Promise<boolean> {
 
 // A hang guard for the WHOLE suite (node:test applies a describe timeout to
 // the suite, not per test): several cases deliberately wait out the 2s SIGKILL.
-describe("terminatePty", { timeout: 30_000 }, () => {
+describe("terminatePty", { timeout: 60_000 }, () => {
   it("ends a gemini-shaped wrapper that leader-only SIGHUP cannot", async () => {
     const pty = await start(STUBS.gemini);
     assert.equal(group(pty.pid).length, 2, "precondition: wrapper + child");
@@ -167,8 +190,10 @@ describe("terminatePty", { timeout: 30_000 }, () => {
     };
     try {
       await terminatePty(pty, { label: "demo [fake] (00000000)" });
+      // Waits on the warning itself; the bound only turns a hang into a
+      // failure (the async ps can be slow on a loaded box).
       const t0 = Date.now();
-      while (warnings.length === 0 && Date.now() - t0 < 2_000) {
+      while (warnings.length === 0 && Date.now() - t0 < 15_000) {
         await new Promise((r) => setTimeout(r, 25));
       }
     } finally {

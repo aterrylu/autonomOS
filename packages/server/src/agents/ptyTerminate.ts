@@ -48,6 +48,9 @@ export interface TerminatePtyOptions {
 }
 
 const PS_TIMEOUT_MS = 1_000;
+/** The straggler report's ps is async (nothing waits on it), so it can afford
+ *  to outlast a loaded box — a timed-out ps just silently drops the report. */
+const STRAGGLER_PS_TIMEOUT_MS = 10_000;
 const PGID_TABLE_TTL_MS = 500;
 
 /**
@@ -95,7 +98,7 @@ function reportStragglers(pgid: number, label: string): void {
   execFile(
     "ps",
     ["-axo", "pgid=,comm="],
-    { encoding: "utf8", timeout: PS_TIMEOUT_MS },
+    { encoding: "utf8", timeout: STRAGGLER_PS_TIMEOUT_MS },
     (err, out) => {
       if (err) return;
       const names = out
