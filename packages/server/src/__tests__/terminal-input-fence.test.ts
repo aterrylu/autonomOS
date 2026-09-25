@@ -440,6 +440,21 @@ describe("acked input (binary control plane)", () => {
     assert.deepEqual(acks, []);
   });
 
+  it("on a NEGOTIATED socket a malformed binary frame is dropped, never typed into the agent", async () => {
+    // Found live: a harness sending an older frame layout had its header
+    // bytes written into the agent's prompt as text.
+    const id = "00000000-0000-4000-8000-0000000fe035";
+    const { writes } = session(id);
+    const { ws, acks } = await openAck(id);
+    await settle();
+    const short = new Uint8Array([0x01, 0, 0, 0, 9, 0x78]); // old 5-byte header
+    ws.send(short);
+    ws.send(new Uint8Array([0x7f, 1, 2, 3, 4, 5, 6, 7, 8, 9])); // unknown type
+    await settle();
+    assert.deepEqual(writes, []);
+    assert.deepEqual(acks, []);
+  });
+
   it("a socket that did NOT negotiate treats binary as text (the old behavior)", async () => {
     const id = "00000000-0000-4000-8000-0000000fe034";
     const { writes } = session(id);

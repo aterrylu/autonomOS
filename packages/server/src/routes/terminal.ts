@@ -539,6 +539,15 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         } else {
           const bytes = asBytes(event.data);
           const frame = binding.ack && bytes ? decodeInputFrame(bytes) : null;
+          if (binding.ack && !frame) {
+            // A negotiated client sends binary ONLY as acked-input frames, so
+            // anything else on this socket is a malformed/foreign frame —
+            // drop it; writing it would type raw bytes into the agent.
+            console.warn(
+              `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped a malformed binary frame on an acked socket`,
+            );
+            return;
+          }
           if (frame) {
             const age = performance.now() - binding.openedAt - frame.sentAtMs;
             if (age > INPUT_MAX_AGE_MS) {
