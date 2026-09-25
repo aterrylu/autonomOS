@@ -2,6 +2,8 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import "../../test/setup-dom";
+import { act } from "@testing-library/react";
+import { THEMES, useStore } from "../../store";
 import { treeLineGuidesPropsEqual } from "../Sidebar";
 import type { AgentStatus } from "./agent-status-icon";
 import { ProviderAgentIcon, ProviderIcon } from "./provider-icon";
@@ -105,4 +107,37 @@ describe("render fan-out: memoized leaf visuals", () => {
       false,
     );
   });
+});
+
+describe("provider marks render in their CANONICAL colors on every theme", () => {
+  // Brand policy (NOTICE): marks are unaltered. Codex/OpenAI's monochrome mark
+  // has exactly two canonical forms — black on light, white on dark — and must
+  // never take the theme's text gray (Terry: "Codex's icon gets grayed").
+  const mark = (provider: string, label: string) => {
+    const { container, unmount } = render(<ProviderIcon provider={provider} />);
+    const svg = container.querySelector(
+      `svg[aria-label="${label}"]`,
+    ) as SVGElement;
+    const color = svg.style.color;
+    unmount();
+    return color;
+  };
+  const cases = [
+    ["daylight", "rgb(0, 0, 0)"],
+    ["midnight", "rgb(255, 255, 255)"],
+    ["void", "rgb(255, 255, 255)"],
+  ] as const;
+  for (const [theme, codex] of cases) {
+    it(`${theme}: Codex is canonical ${codex === "rgb(0, 0, 0)" ? "black" : "white"}, Claude is its brand clay`, () => {
+      act(() => useStore.setState({ theme }));
+      expect(mark("codex", "Codex")).toBe(codex);
+      expect(mark("claude-code", "Claude")).toBe("rgb(217, 119, 87)");
+      // …and specifically NOT the theme's (gray) text color.
+      const fg = THEMES[theme].page.fg;
+      const r = Number.parseInt(fg.slice(1, 3), 16);
+      const g = Number.parseInt(fg.slice(3, 5), 16);
+      const b = Number.parseInt(fg.slice(5, 7), 16);
+      expect(mark("codex", "Codex")).not.toBe(`rgb(${r}, ${g}, ${b})`);
+    });
+  }
 });

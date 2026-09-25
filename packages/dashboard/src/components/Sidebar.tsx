@@ -2473,12 +2473,11 @@ export const ProjectItem = React.memo(function ProjectItem({
                 // iconStatus), while a DEAD row (stopped/external) is grayed out
                 // — dimmed at rest, restored on hover so its Resume stays legible.
                 // (The rounded-full pills from the first archive look are still
-                // gone; only the dead-row dimming returns. ADR-098.)
-                className={`group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer${
-                  state === "live"
-                    ? ""
-                    : " opacity-60 transition-opacity hover:opacity-100"
-                }`}
+                // gone; only the dead-row dimming returns. ADR-098.) The dim is
+                // on the TEXT column, never the row: a provider mark is shown
+                // unaltered in its canonical form (brand policy — Terry: "the
+                // Codex icon gets grayed as well").
+                className="group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer"
                 style={{ paddingLeft: "20px", paddingRight: "12px" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = `${page.fg}0a`;
@@ -2511,7 +2510,13 @@ export const ProjectItem = React.memo(function ProjectItem({
                   status={iconStatus}
                   size={16}
                 />
-                <div className="flex-1 min-w-0">
+                <div
+                  className={`flex-1 min-w-0${
+                    state === "live"
+                      ? ""
+                      : " opacity-60 transition-opacity group-hover/row:opacity-100"
+                  }`}
+                >
                   <div className="flex items-center gap-1">
                     <span className="flex-1 truncate text-xs">{s.summary}</span>
                     <span

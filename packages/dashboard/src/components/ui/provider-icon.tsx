@@ -1,5 +1,6 @@
 import { memo, type ReactNode, useId } from "react";
 import { THEMES, useStore } from "../../store";
+import { isLightBg } from "../recency";
 import {
   type AgentStatus,
   type StatusCategory,
@@ -30,8 +31,13 @@ const GEMINI_PATH =
   "M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z";
 
 // Claude's mark uses its official brand clay (high-contrast on light + dark).
-// Codex is monochrome, so it follows the theme foreground (see ProviderIcon).
 const CLAUDE_CLAY = "#d97757";
+// OpenAI publishes the Codex/OpenAI mark as MONOCHROME in exactly two canonical
+// forms: pure black on light backgrounds, pure white on dark ones. It must not
+// take the theme's text color (Daylight #2e3440 / Midnight #b3b1ad), which
+// rendered an off-brand gray on every theme (Terry: "Codex's icon gets grayed").
+const CODEX_ON_LIGHT = "#000000";
+const CODEX_ON_DARK = "#ffffff";
 
 /** A single-path mark drawn in one flat color (Codex, Claude). Gemini's
  *  multi-gradient mark renders inline since it can't share this shape. */
@@ -74,8 +80,8 @@ export const ProviderIcon = memo(function ProviderIcon({
   // Strip colons from React's useId() output — they're awkward inside SVG
   // `url(#…)` fragment references.
   const uid = useId().replace(/:/g, "");
-  // Codex (monochrome) and the unknown fallback follow the theme so they stay
-  // legible on both the dark and light (daylight) themes.
+  // Codex picks its canonical black/white variant by the page background; the
+  // unknown fallback follows the theme so it stays legible on both.
   const page = THEMES[useStore((s) => s.theme)].page;
 
   if (provider === "gemini-cli") {
@@ -139,7 +145,7 @@ export const ProviderIcon = memo(function ProviderIcon({
       <MonochromeMark
         size={size}
         label="Codex"
-        color={page.fg}
+        color={isLightBg(page.bg) ? CODEX_ON_LIGHT : CODEX_ON_DARK}
         path={CODEX_PATH}
       />
     );

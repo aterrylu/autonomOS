@@ -70,7 +70,7 @@ describe("isLightBg — classifies theme background by luminance", () => {
 const NOW = 1_700_000_000_000;
 const at = (ageMs: number) => NOW - ageMs; // a lastActive `ageMs` in the past
 
-describe("recencyTimestampStyle — dark ramp (72/52)", () => {
+describe("recencyTimestampStyle — dark ramp (82/64)", () => {
   it("fresh: theme foreground, full opacity (NOT statusFg)", () => {
     const style = recencyTimestampStyle(
       at(10 * 60_000),
@@ -92,13 +92,13 @@ describe("recencyTimestampStyle — dark ramp (72/52)", () => {
   it("stale: neutral statusFg, 72% opacity", () => {
     expect(
       recencyTimestampStyle(at(2 * DAY), NOW, STATUS_FG, FRESH_COLOR, DARK_BG),
-    ).toEqual({ color: STATUS_FG, opacity: 0.72 });
+    ).toEqual({ color: STATUS_FG, opacity: 0.82 });
   });
 
   it("ancient: neutral statusFg, 52% opacity", () => {
     expect(
       recencyTimestampStyle(at(30 * DAY), NOW, STATUS_FG, FRESH_COLOR, DARK_BG),
-    ).toEqual({ color: STATUS_FG, opacity: 0.52 });
+    ).toEqual({ color: STATUS_FG, opacity: 0.64 });
   });
 });
 
@@ -218,7 +218,7 @@ describe("recencyLabelOpacity — passive labels ride the timestamp ramp (T1)", 
     }
     // and the ramp genuinely bites (not a vacuous 1 === 1)
     expect(recencyLabelOpacity("idle", NOW_ - 30 * DAY_, NOW_, DARK)).toBe(
-      0.52,
+      0.64,
     );
     expect(recencyLabelOpacity("ready", NOW_ - 3 * DAY_, NOW_, LIGHT)).toBe(
       0.86,
