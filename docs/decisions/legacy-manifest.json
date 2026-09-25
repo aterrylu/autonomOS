@@ -1,0 +1,647 @@
+{
+  "_comment": "Frozen record of the ADRs migrated from docs/DECISIONS.md. Listed files are append-only history: scripts/decisions.ts check rejects any edit. Order = original log order; tail = the separator bytes removed from each entry. Do not edit.",
+  "source": {
+    "path": "docs/DECISIONS.md",
+    "commit": "c1026ce7385d625a08defd7f67c6fc06a8d1966c",
+    "sha256": "6faf91957970ea92e07cbbab95ef598284ecaa48e835f24c9b28efee49488850"
+  },
+  "preamble": "# Architectural Decision Records\n\nAppend-only log of project decisions. Newest at bottom.\nEach entry includes context, rationale, alternatives considered, and source.\n\n---\n\n",
+  "entries": [
+    {
+      "file": "ADR-001-monorepo-structure.md",
+      "id": "001",
+      "sha256": "f37bf80af90b4a496b1cf49b7ff25ee187ad845dbe6c1b618d511f7a231be5e5",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-002-start-with-observability-add-control-later.md",
+      "id": "002",
+      "sha256": "3d26b9cde464c016af8ba214ef9f41caf84f30891b796b2eccedc012330b74a5",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-003-build-on-openclaw-diverge-if-needed.md",
+      "id": "003",
+      "sha256": "45601602082133f17802d263dd14b22b8ee71889492bcd7de02163fa11d714bf",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-004-name-autonomos.md",
+      "id": "004",
+      "sha256": "497fff42553933a9d801f07e571f0fceefd46ed8fe5ec3bc9250ac296a1555a7",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-005-web-first-desktop-shell-package-as-electron-later.md",
+      "id": "005",
+      "sha256": "11ccda4ce9486404af70833e7fcb58e86c1267081e09aeb3c8173355565b0b63",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-006-agent-first-architecture-claude-code-as-first-provider.md",
+      "id": "006",
+      "sha256": "1384d5936a86ad0948899de1b83943bbe475fc528c51a71dc45190607db9294e",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-009-bun-hono-server-stack.md",
+      "id": "009",
+      "sha256": "49e88ae45623e57f3439e7bd57d3d37b74540e5e7cddc4dad87b65a5b226facf",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-007-typescript-everywhere.md",
+      "id": "007",
+      "sha256": "d3a03674e3c02d6d5ed24737ef8dd0fb498130a2b20941aa4fed63544e5f3b2d",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-008-local-first-with-multi-tenant-future.md",
+      "id": "008",
+      "sha256": "14c5c2cecc59a48e1917dcedc3212d7c288728cc7ef7f527fc78788f54c01303",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-010-react-zustand-tailwind-for-dashboard-ui.md",
+      "id": "010",
+      "sha256": "f38b1b3f08f23a6e65291a82f2041eed9de10abb21fac4ed7947da9ab174d3e9",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-011-zustand-as-single-source-of-truth-for-all-client-state.md",
+      "id": "011",
+      "sha256": "ace1e4f92150ce93aff3daab7198c368e2d96ca98a039777dbfe2b5d4776d0d1",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-012-orchestrator-first-vision-autonomos-as-an-agent-not-just-a.md",
+      "id": "012",
+      "sha256": "2246cc1d9ce6bcb2325f611a4ab17bd08925bf990465880425f89f50c33091d7",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-013-modular-plugin-system-with-vscode-style-status-bar.md",
+      "id": "013",
+      "sha256": "91db261174d2f58ebe47a308d251def421110508f6e6c300b93a020bc13341c6",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-014-multi-cli-provider-adapter-pattern.md",
+      "id": "014",
+      "sha256": "39ef05e2d3ed78e39f57fb3fc9293ce3817bd5a3e1cb24b2cde498b36d302243",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-015-vscode-style-session-lifecycle-keep-terminals-alive.md",
+      "id": "015",
+      "sha256": "e3d822b4837755cb81dccb810e8d71c5461b236e73d904d5a9201ee7dad42dc6",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-016-pinned-sessions-with-stable-ordering.md",
+      "id": "016",
+      "sha256": "dd33dcf8073de8561b887217f8f5bb6aed9d82e40533e0b5b0b91f61321280ac",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-017-simplified-deployment-dev-prod-split-no-tailscale-sidecar.md",
+      "id": "017",
+      "sha256": "cf0e574bf816061a2689e3177de21f60c4ef217812a99a434d258971660a5e93",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-018-dashboard-hosted-file-preview-via-url-route.md",
+      "id": "018",
+      "sha256": "5ebdd1beb6d284f4c9098da7f36d435a30e02014a10f18e787dbd885ea46332e",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-019-agent-platform-folder-based-agent-definitions.md",
+      "id": "019",
+      "sha256": "804aba136d657bf3ffd0e27e1744a513ef697c1ea107fac86f541fe0bb227229",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-020-agent-context-assembly-explicit-systemprompt-over-sdk-parent.md",
+      "id": "020",
+      "sha256": "3ab21755b29f1d8a890530283987906d98924268e2bf6770609661aa2d5acada",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-021-agent-session-model-oneshot-vs-persistent.md",
+      "id": "021",
+      "sha256": "ad5459f2f430d1139089b217c6269c9b778bcefb0de7a8cdfb8b835bd29e02ca",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-022-owner-md-convention-no-formal-audience-types.md",
+      "id": "022",
+      "sha256": "823234f3ed1825b7a2ad38b095b7cfd9013e8248de6229d9af9e3373cb71883a",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-023-vla-runtime-punted-to-roadmap.md",
+      "id": "023",
+      "sha256": "f84e560c90ee9e83e0f228ec8d9a82e5988c06fbbe26b38060e807d8165c56bf",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-024-persist-exited-sessions-instead-of-deleting.md",
+      "id": "024",
+      "sha256": "7848b2cbda8895ed1ba76c437bce4eb836abb2ced83f841f103bd8048d3edb49",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-025-fix-restartallsessions-onexit-race-condition.md",
+      "id": "025",
+      "sha256": "b8321a6d4342901225e620f92b10123b6cf44f768d8899b780bbde465fa5b3bf",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-026-native-cron-scheduler-with-croner.md",
+      "id": "026",
+      "sha256": "a3e409ac6979f4cb8faf303489dddcd084d4f37eeb45a6604bebd72f5c4d58ad",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-027-provider-aware-hook-event-translation-codex-status-blind-for.md",
+      "id": "027",
+      "sha256": "f5f62a554564a3b0e89425c42408c6122c0fe0887c038a12ea3a5ab66afa74a8",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-028-desktop-app-is-a-thin-client-not-a-server.md",
+      "id": "028",
+      "sha256": "a7442ddcda2eafa96c9f70fe46105f828801b7f25d02def1c3b26a0581de9acf",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-029-desktop-embeds-built-in-server-reverses-part-of-adr-028.md",
+      "id": "029",
+      "sha256": "26da65af34660ba1dae6f8c53a458bba4b161e3c6a0d9e7c6da0073b27333d96",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-029b-follow-up-drop-autonomos-deep-link-handler.md",
+      "id": "029-follow-up",
+      "sha256": "bad26ff3589ba21b8d0579af1cf0649e9346f12fe2e462c106dce8e8ed6e312f",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-030-desktop-try-it-out-ephemeral-mode.md",
+      "id": "030",
+      "sha256": "bc6108a4a96f7146ba55a519882f59cd8fd7881cea543264a4ca8157f3cef601",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-031-professional-release-pipeline-changesets-universal-ci-dmg.md",
+      "id": "031",
+      "sha256": "45c6c1af64f5f17f8029cf941153d61995a855da74559a5354ce7f72ebd976d4",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-032-adopt-mit-license.md",
+      "id": "032",
+      "sha256": "4074183518bbde816fd5a05e865c618433e98d24d61cff97a4f3e5ee5368278e",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-033-idle-renderer-cpu-peg-detector-gate-phase-6.md",
+      "id": "033",
+      "sha256": "d8391a63d533aeb097bd2877b2eb8341c508c4c384f95e45f91fc237c2436ec7",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-034-promote-validate-dmg-cdp-check-to-a-hard-release-gate.md",
+      "id": "034",
+      "sha256": "6e52515e563c37dfbdcdc6871f96788b41283aeb02ffdd3043e1cdc47e6c8aeb",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-035-claude-usage-requires-only-a-session-key-drop-org-id.md",
+      "id": "035",
+      "sha256": "3a8f6453732aa375795ca304a606630d53eb52637078493ddf796396f14df34b",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-036-prompt-delivery-receipt-one-shot-fallback-re-delivery.md",
+      "id": "036",
+      "sha256": "d1be93811240df88b6a9934924bacbb6d0877f234602b28ed44f6798ddb082ea",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-037-remove-telegram-discord-plugin-channels-and-the-inbox-agent.md",
+      "id": "037",
+      "sha256": "b97fb154b971736c3a7106cf42c83c44b4f6d1b6cc674da2756151590346584b",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-038-remove-anthropic-api-endpoint-override-test-harness-uses-env.md",
+      "id": "038",
+      "sha256": "177e83611ed6c42118eec3246d9a97fe4e0bbc9cc34466ba438f423c265133a2",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-039-terminal-is-the-only-view-xterm-js-is-the-only-renderer.md",
+      "id": "039",
+      "sha256": "5f5455a086d01d0216f201fce123a813f5425ca47600723f15d5b875ab7254c2",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-040-selectusageorg-heuristic-pick-chat-claude-max-capability-not.md",
+      "id": "040",
+      "sha256": "d83ea6bdb7853f698d26412cdd27a9be801ae9e132df6e85072321437bc5941a",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-041-zero-touch-claude-usage-via-in-memory-cookie-harvest-from.md",
+      "id": "041",
+      "sha256": "1fda5b7ecb1b7f0dbc5cfc7703b3f9d4a45d746ffa3e548bdb49ad06a46e184b",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-042-insecure-context-clipboard-fallback-for-osc-52-auto-copy.md",
+      "id": "042",
+      "sha256": "648272edad4526585f4cfbbcfe6e3a3e0e04ccfaceba0debc30b1f02a2688d18",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-043-dashboard-distribution-contract-embedded-bundle-is-binary.md",
+      "id": "043",
+      "sha256": "cab5612970f5f1fd3c8524a7562379d865cec26b1a4ccf176cc42f56a3537702",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-044-consolidated-release-notes-merge-all-per-package-changelogs.md",
+      "id": "044",
+      "sha256": "08c181ea1b7dc58a9dcf1cbb3138d285b5732fc18830f30df5bdb3225df5f70e",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-045-per-provider-permission-modes-replace-the-autonomousmode.md",
+      "id": "045",
+      "sha256": "aead7b7d58db982b91cfd206110dfd7a5ab46f6359a648b3b4207926317d93ab",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-046-claude-usage-tracks-account-switches-by-scanning-the-user-s.md",
+      "id": "046",
+      "sha256": "d2cb5206a1920e483826c438abeda65dc0601cb879d6e108dc49e4970c193091",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-047-rebuild-the-tabs-split-pane-layout-on-dockview-removing-the.md",
+      "id": "047",
+      "sha256": "b4b5775722d6ecd5dcb5ffe0c480de3cf93b9d4144a01f9cabd6d7d7460723bc",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-048-claude-usage-via-read-only-oauth-token-manual-session-key.md",
+      "id": "048",
+      "sha256": "8314afce731a7cb31ced6dc1fafaf7461132add70c4a74da3536a656296c152e",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-049-provider-parity-resume-fallback-never-let-a-missing-un.md",
+      "id": "049",
+      "sha256": "20f76ee78807bfc7aa7333914a74d015505bf8ce4045f824e014f9447c742363",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-050-retire-pm2-from-the-operator-path-make-prod-deploy-supervise.md",
+      "id": "050",
+      "sha256": "91553c65827b1d4356e34875c0ac537ac9fdd0da491978d5e6df8cb085c5d9d8",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-051-cut-the-electron-desktop-app-remote-always-on-server-is-the.md",
+      "id": "051",
+      "sha256": "73750777294f62318243224b8273e871fa65989ae360cb85ba20f93ceaf25fc2",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-052-first-run-install-ux-post-install-smoke-test-surfaced.md",
+      "id": "052",
+      "sha256": "2afe88a19b265a3e0c65209260252d26033c10f40b0d67dcd34476fc16147681",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-053-compaction-status-is-order-independent-no-assumed-hook.md",
+      "id": "053",
+      "sha256": "ea7e01a7da6626396c5868605052870ed2368a2417809980326d9e0fcdd54799",
+      "tail": "\n\n\n---\n\n"
+    },
+    {
+      "file": "ADR-054-auth-on-mcp-closes-an-unauthenticated-rce-bind-default.md",
+      "id": "054",
+      "sha256": "f2ee9b4da273aa579e9d80813fdb1b26ee74e8a79168084713685ece1a86e85c",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-055-unix-socket-internal-control-plane-per-agent-identity-the.md",
+      "id": "055",
+      "sha256": "0f33d9defa1f95230c66e60454e83d39cc5378ca2c4fc724ede5854e9e17af11",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-056-resume-any-external-claude-code-session-adopt-into-managed.md",
+      "id": "056",
+      "sha256": "5001fe2ff1a3bc9c24e4228d7a5230784238b64ea0c42901cc3ae5e76c48a91a",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-057-the-prompt-delivery-receipt-is-capability-gated-and-queued.md",
+      "id": "057",
+      "sha256": "a657488db2ccd9494c4fd0ab5a357e13307b75f049636bd5cbcf254551fd3612",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-058-deprecate-agent-capabilities-a-tool-visibility-filter-that.md",
+      "id": "058",
+      "sha256": "d844d616ea0f4154c9d276dd22173ee2c6f1216fc48f4aa01e1512fdff9543e6",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-059-remove-the-markdown-file-preview-feature-supersedes-adr-018.md",
+      "id": "059",
+      "sha256": "bb18ad734355294b21be43c68664f963be2b00f461530644d7bd751b35c701bf",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-060-remove-the-codex-idle-gate-it-duplicated-a-guarantee-codex.md",
+      "id": "060",
+      "sha256": "7582bf42d7b83efe89ed2aa3597deb09bf0529caecdc20dc49c86bcdeac9532d",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-061-permission-mode-the-record-follows-the-process-and-default.md",
+      "id": "061",
+      "sha256": "27afee928ca9a372904dbfd8f663fa4b15924e919c67367096b4207b23c93eda",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-062-remove-the-scheduler-s-isolated-target-the-last-execution.md",
+      "id": "062",
+      "sha256": "f2168fb300b61164e2e5923868453d75167628abe718892f6fc79d33c3ffac0b",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-063-keyboard-shortcut-registry-and-the-key-capture-boundary.md",
+      "id": "063",
+      "sha256": "964ea896ba1bfb3e2238d307d3073e4489d0547b872724f22f80ed41104854ac",
+      "tail": "\n"
+    },
+    {
+      "file": "ADR-064-send-acks-delivery-not-routing-and-broadcast-slack-are.md",
+      "id": "064",
+      "sha256": "d22e4c37e87b7747e9a5e7fe57c5c08eb9a0d2929dbb9f7550bfe91cdd6e7412",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-065-key-capture-boundary-cleanup-free-the-dead-ctrl-d-w.md",
+      "id": "065",
+      "sha256": "b824f876c79c162e249b0f70314998e162a736bc08611df7843f2d7e98ee5760",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-066-mod-digit-targets-the-sidebar-agent-list-not-open-pane.md",
+      "id": "066",
+      "sha256": "f6befdbfc1c1685d5225adec989370c8e71ff6ad18a2febfe4eda5c9b006e85e",
+      "tail": "\n"
+    },
+    {
+      "file": "ADR-067-model-override-env-presets-agent-configured-human-keyed.md",
+      "id": "067",
+      "sha256": "0d4a33e3e9cb85fb9ed9c3124ad2b3171ef8c316184f6f71f133ffec6687129a",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-068-usage-queue-auto-enter-is-per-tab-and-per-runtime.md",
+      "id": "068",
+      "sha256": "e13df1ecdaceca532d79e7e0701d9e02eb94f787587dab9a5c379a31d33e2bc9",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-069-changeset-check-is-blocking-for-production-source-prs.md",
+      "id": "069",
+      "sha256": "c9b5051a7df1f6552903844a22be3d355b49238d9407a203e5d0d8ac0bf46e4a",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-070-sync-changelog-collapse-guard-fail-on-the-retroactive.md",
+      "id": "070",
+      "sha256": "30c06cbcc3c851dae6e9a5983f8eb54f63b0b8271ca199b559ef03ffcae04edb",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-071-k-agent-quick-switcher-and-terminal-clear-moves-to-k.md",
+      "id": "071",
+      "sha256": "481d854cff1fa0c9ef7677885238ce93c4612ec880957484f4288b7969822598",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-072-terminal-keep-alive-cache-coalesced-reconnect-replay-agent.md",
+      "id": "072",
+      "sha256": "396e5bc580f14cefa7fd2ad8aa8e78efb6b46509f937d9298421c030963a2462",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-073-escalating-probe-retractable-warnings-for-the-channel-server.md",
+      "id": "073",
+      "sha256": "e03cfe1ef59513630c50d494fa275fd07b6d9d286663babe0492fb4da2126c6e",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-074-settle-gated-prompt-delivery-receipt-with-retractable-give.md",
+      "id": "074",
+      "sha256": "83be63ece874a3737d4f5c160032b19d1f9bdd1376fb9eb681b90b83708728b5",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-075-usage-correctness-the-auto-detect-toggle-selects-the.md",
+      "id": "075",
+      "sha256": "401ebd5441625e39e303282cc7fcd3333c676d30a5e802273a612a4fc00d605d",
+      "tail": "\n"
+    },
+    {
+      "file": "ADR-076-escape-protects-popover-drafts-the-terminal-keymap-becomes.md",
+      "id": "076",
+      "sha256": "1d13ae164d57cdbadcd6568454eeaffd2a6df2187c97f78bc5e927d5ebc91d8f",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-077-release-rollout-mechanism-dual-mode-updater-with-a-recorded.md",
+      "id": "077",
+      "sha256": "67bfdc27077ee43e111a15561b118ecb92bcdc1af1a34a8e58b8278c1aa212ad",
+      "tail": "\n\n\n"
+    },
+    {
+      "file": "ADR-078-api-conventions-for-the-dashboard-gateway-consolidation-and.md",
+      "id": "078",
+      "sha256": "b74096c29acfc84ab7ca0424f99a62c5665a17c25523ee2a9360fa5830bfbd55",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-079-source-mode-upgrades-managed-clone-mechanics-implements-adr.md",
+      "id": "079",
+      "sha256": "dfb4e89dac26a25d3f6d6aca1740302275dff71b5fd2df421a1aada4b5a26ead",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-080-idempotent-supervisor-unit-sync-on-upgrade-drift-detect.md",
+      "id": "080",
+      "sha256": "7cc3b6320828dee08d8a467e2870f6cdbc4210267ef1b956555223f837767203",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-081-test-only-service-label-supervisor-identity-is-the-isolation.md",
+      "id": "081",
+      "sha256": "14fc474d04cd36dec00f800bf4f51953b0d9f884fc3b8b8db7003e28cbb147e2",
+      "tail": "\n"
+    },
+    {
+      "file": "ADR-082-dashboard-api-client-layer-push-over-poll-migration.md",
+      "id": "082",
+      "sha256": "04c88b550ab798d443948a518fb8780cfd8ef952e4e7f60aacbc958eaa71e510",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-083-server-unification-typed-errors-one-zod-source-store-level.md",
+      "id": "083",
+      "sha256": "753e196ff35e70e0653ab7d4cf7004c15aa8a5416eb752728eb5cdb98ad880a8",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-084-route-renames-behind-one-release-compat-aliases.md",
+      "id": "084",
+      "sha256": "a6bd021ba613053da8777dfa88dd0124dd573658713da7639cd13cd17f34e9c6",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-085-codex-mcp-tool-approval-mode-aware-pre-approval-read-only.md",
+      "id": "085",
+      "sha256": "2a149293d27d622bdeaa0726071e8a9eba20374647ea3c609c65c123368d387b",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-086-trailing-edge-frame-coalescing-atomic-repaints-jump-to.md",
+      "id": "086",
+      "sha256": "1eccf441fdbaa956e8d99b05cfd7f2e0541b56254afb3d3256a327270966a141",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-087-no-fake-resize-repaint-nudge-anchor-parked-viewports-across.md",
+      "id": "087",
+      "sha256": "7bec36fa15b8fab25b12329e79faf5e00ec140cede047edd0a673d45eac91247",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-088-sidebar-recency-indication-timestamp-only-fade-b2.md",
+      "id": "088",
+      "sha256": "fcc41c4d14ddd5223468f33459555e6174284a1d1ee5467788b4161d338af2bc",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-089-auth-continuity-across-install-shape-changes-migrate-the.md",
+      "id": "089",
+      "sha256": "4cde2e68b93a88cff97b2269e6c00d0fe25b549133bdd906ac13a83041adadcd",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-090-sidebar-status-label-styling-muted-accent-colors-working.md",
+      "id": "090",
+      "sha256": "5ec9c81967d1108c5e78df205c5afecb75307bb661b0ec5c1a43d8d68216da55",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-091-suppress-codex-s-in-pane-self-update-for-orchestrated.md",
+      "id": "091",
+      "sha256": "2b628ffe30e8ff2e6b6dacbbc96421f33bebab68a323c5b704a0d06ad4c9883c",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-092-schedule-name-scheduled-prompts-carry-the-schedule-s-own.md",
+      "id": "092",
+      "sha256": "fd2a712b8094e6d317b898123e6e18e8b4c40826745d35df078473e584b4bf1b",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-093-agent-row-context-menu-five-items-archive-declined-rename.md",
+      "id": "093",
+      "sha256": "d2c94495d16932b73e7859b59e655ebee32b45c399522918e2fcee1c78cde52a",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-094-hand-off-queue-human-mediated-inbound-for-inbound-less.md",
+      "id": "094",
+      "sha256": "2de55f5be214f8ce7a1a180c25b59d73ae0484c256a7afeaf429ce83fe492c0c",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-095-sidebar-drag-reorder-revamp-whole-row-native-drag-dnd-kit.md",
+      "id": "095",
+      "sha256": "f2b3ff8709e4edec0a2ab3d20907828ee379cf9cf973322dd5974d4308caeb02",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-099-codex-usage-lanes-codex-cli-parity-labels-for-known-lanes.md",
+      "id": "099",
+      "sha256": "e5d7e00ee63acb2dff9591dd38d6a7fb807b59bb14c5e31e78c8c84d5cd85199",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-096-right-click-rename-restart-under-new-name.md",
+      "id": "096",
+      "sha256": "34b1d934a2fc4bad6ba9d24d05f28c0932d4c3638579d43e4e1f93f0d6ce12db",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-100-codex-crash-net-retains-the-resumable-thread-the-destructive.md",
+      "id": "100",
+      "sha256": "f08e6562a1c617f5d2dedc789d10fb780565c3bc85e3bc1299f80a95a772b94d",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-102-claude-usage-says-why-it-has-no-numbers-and-reads-the-limits.md",
+      "id": "102",
+      "sha256": "96175f8e635d4aaaa3754308bcd1ede94774a7e8bec56701ea76f16e85aa95a8",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-101-one-idle-label-for-ready-idle-and-the-passive-label-fades.md",
+      "id": "101",
+      "sha256": "efacb92ac3f17132f115b1e224eb7bae110d541c244d91d57e8360375b5d2572",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-104-codex-agents-survive-a-restart-no-permission-overrides-on.md",
+      "id": "104",
+      "sha256": "1e8e3e2bc7b7b2524246934bad94a32dbafdadc5c8a10cc8f71f8db884f55a60",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-097-restart-reconnects-the-focused-pane-s-terminal-via-a-reload.md",
+      "id": "097",
+      "sha256": "7749bcc3d6e67ce1d01461560768f5e4994e8e78062673981823f3419224a1a9",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-098-projects-panel-revamp-parity-provider-awareness-nine-bug.md",
+      "id": "098",
+      "sha256": "cefc7f3aeb97b35afde38d9fe15c6e1329d814ca8bf8be2adada2b342e3058fd",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-106-claude-spend-display-for-spend-metered-accounts-text-bar.md",
+      "id": "106",
+      "sha256": "40c99dc6799d0ac203a5dd153adcf3af0da455af0044325ef5ffb14b064b60b0",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-111-claude-code-resume-probes-the-realpath-and-a-not-resumable.md",
+      "id": "111",
+      "sha256": "f05c5b193ba68b386e52636bd2b6847466aa1cf82030f816958eeb3e9d25274c",
+      "tail": "\n"
+    }
+  ]
+}
