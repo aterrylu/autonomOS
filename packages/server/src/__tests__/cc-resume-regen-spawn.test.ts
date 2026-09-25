@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
@@ -18,8 +18,14 @@ import type {
   ResolvedSpawnOptions,
   UUID,
 } from "@autonomos/core";
+import { isolateHome } from "./helpers/isolate-home.js";
 
-process.env.AUTONOMOS_CONFIG_DIR = `/tmp/aos-cc-regen-${randomUUID()}`;
+// The fake provider spreads claudeCodeProvider, so every spawn runs the REAL
+// prepareSpawn pre-trust. Isolate BEFORE any server import, or it writes this
+// suite's temp cwd into the operator's real ~/.claude.json on every run.
+const isolated = isolateHome("aos-cc-regen");
+const CONFIG_DIR = `/tmp/aos-cc-regen-${randomUUID()}`;
+process.env.AUTONOMOS_CONFIG_DIR = CONFIG_DIR;
 
 const { setServerPort, setAuthToken, setInternalSocketPath } = await import(
   "../serverState.js"
@@ -99,6 +105,9 @@ afterEach(() => {
 });
 after(() => {
   _resetCacheForTesting();
+  rmSync(cwd, { recursive: true, force: true });
+  rmSync(CONFIG_DIR, { recursive: true, force: true });
+  isolated.restore();
 });
 
 describe("CC reattach pre-flight (ADR-111)", () => {
@@ -151,6 +160,22 @@ describe("CC reattach pre-flight (ADR-111)", () => {
       typeof env.PATH,
       "string",
       "it is the built child env, not undefined",
+    );
+  });
+
+  it("pre-trusts into the throwaway config, NEVER the operator's real ~/.claude.json", async () => {
+    const id = seed();
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    const key = realpathSync(cwd);
+    // Precondition: the pre-trust ran, and landed where isolation points it —
+    // without this, "absent from the real file" could pass because nothing ran.
+    assert.ok(
+      isolated.fakeTrustKeys().has(key),
+      "spawn pre-trusted its cwd in the isolated .claude.json",
+    );
+    assert.ok(
+      !isolated.realTrustKeys().has(key),
+      `leaked a trust entry for ${key} into the real .claude.json`,
     );
   });
 });

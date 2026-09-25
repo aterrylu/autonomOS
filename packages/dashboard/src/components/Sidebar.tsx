@@ -1918,17 +1918,34 @@ function treePaddingLeft(depth: number): number {
  * Renders vertical continuation lines + the branch/elbow connector for one
  * hierarchy row.  Pure presentational — no interactivity.
  */
-function TreeLineGuides({
-  depth,
-  isLastChild,
-  ancestorIsLast,
-  lineColor,
-}: {
+interface TreeLineGuidesProps {
   depth: number;
   isLastChild: boolean;
   ancestorIsLast: boolean[];
   lineColor: string;
-}) {
+}
+
+/** `ancestorIsLast` is rebuilt on every render, so compare it by value; the
+ *  rest are primitives. Lets an unchanged row's guides skip on a status frame. */
+export function treeLineGuidesPropsEqual(
+  a: TreeLineGuidesProps,
+  b: TreeLineGuidesProps,
+): boolean {
+  return (
+    a.depth === b.depth &&
+    a.isLastChild === b.isLastChild &&
+    a.lineColor === b.lineColor &&
+    a.ancestorIsLast.length === b.ancestorIsLast.length &&
+    a.ancestorIsLast.every((v, i) => v === b.ancestorIsLast[i])
+  );
+}
+
+const TreeLineGuides = React.memo(function TreeLineGuides({
+  depth,
+  isLastChild,
+  ancestorIsLast,
+  lineColor,
+}: TreeLineGuidesProps) {
   if (depth === 0) return null;
 
   const branchAtX = guideX(depth);
@@ -1979,7 +1996,7 @@ function TreeLineGuides({
       />
     </div>
   );
-}
+}, treeLineGuidesPropsEqual);
 
 function HierarchyNodeRow({
   node,
@@ -2247,6 +2264,9 @@ interface ProjectItemProps {
  *  `external` = not managed (the adoptable star). */
 type RowState = "live" | "stopped" | "external";
 
+/** Stable empty status map for collapsed projects (see ProjectItem). */
+const NO_STATUSES: ReturnType<typeof useStore.getState>["agentStatuses"] = {};
+
 export const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
@@ -2263,14 +2283,18 @@ export const ProjectItem = React.memo(function ProjectItem({
   const exitedSessions = useStore((s) => s.exitedSessions);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
-  // The SAME live status feed the Agents-tab rows read (GET /api/agent-status),
-  // so a live Projects row shows the real corner dot (green idle / blue working
-  // / amber needs-input) instead of a blank circle — Terry's #369 refinement.
-  const agentStatuses = useStore((s) => s.agentStatuses);
-
   // Expand state lives in the store so it survives the Sidebar's unmount-on-
   // collapse (a per-mount useState reset every open — the old bug #8).
   const expanded = useStore((s) => s.expandedProjects[project.path] ?? false);
+  // The SAME live status feed the Agents-tab rows read (GET /api/agent-status),
+  // so a live Projects row shows the real corner dot (green idle / blue working
+  // / amber needs-input) instead of a blank circle — Terry's #369 refinement.
+  // Only the session rows read it, and they render only when EXPANDED (at most
+  // one project, by the accordion invariant). A collapsed project selects a
+  // constant, so the ~60 collapsed rows don't re-render on every status frame.
+  const agentStatuses = useStore((s) =>
+    expanded ? s.agentStatuses : NO_STATUSES,
+  );
   const toggleProjectExpanded = useStore((s) => s.toggleProjectExpanded);
 
   const accent = THEMES[useStore((s) => s.theme)].terminal.yellow;

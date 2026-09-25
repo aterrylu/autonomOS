@@ -210,6 +210,23 @@ export type AgentDelta =
       unread: number;
       ts: number;
     }
+  /** An agent-to-agent message was ACCEPTED by its destination (the gateway's
+   *  ADR-064 meaning of delivered). Transient — the Org Chart animates it and
+   *  forgets it; nothing on the client stores it. Carries only a SANITIZED,
+   *  length-capped one-line `preview` (the server strips ANSI/markdown and caps
+   *  it before it ever leaves); the full text is never broadcast — it is read
+   *  on demand, per agent, from `GET /api/agents/:id/messages`. `from` is null
+   *  for a non-agent sender (a schedule); `fromName` always names it. */
+  | {
+      type: "message.routed";
+      id: string;
+      from: UUID | null;
+      fromName: string;
+      to: UUID;
+      toName: string;
+      preview: string;
+      ts: number;
+    }
   /** Full snapshot — sent on connect and reconnect. Client replaces local
    *  state wholesale. Statuses arrive via the companion `statuses` map so a
    *  reconnect needs no follow-up poll. */

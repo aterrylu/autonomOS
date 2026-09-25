@@ -39,6 +39,8 @@ export interface MockAnthropic {
   requests: RecordedRequest[];
   /** Stop the server and release the port. */
   close: () => Promise<void>;
+  /** With `holdResponses`: let held and future /v1/messages turns answer. */
+  release: () => void;
 }
 
 export type MockMode = "text" | "tool_use";
@@ -57,6 +59,13 @@ export interface MockOptions {
   toolName?: string;
   /** Tool input object to emit in tool_use mode. Defaults to a noop read. */
   toolInput?: Record<string, unknown>;
+  /**
+   * Record /v1/messages requests but don't answer until `release()` is called.
+   * Freezes a turn mid-flight, so a test can inspect the agent's state while
+   * the model call is pending (e.g. that UserPromptSubmit already landed and
+   * Stop cannot have fired yet). Default false.
+   */
+  holdResponses?: boolean;
 }
 
 /** Server-Sent Events writer for the `/v1/messages` streaming format. */
@@ -180,6 +189,12 @@ export function startMockAnthropic(
   // In tool_use mode we emit the tool_use block exactly once (the first
   // /v1/messages turn); later turns fall back to plain text so the run ends.
   let toolTurnEmitted = false;
+  let releaseGate: () => void = () => {};
+  const gate: Promise<void> = options.holdResponses
+    ? new Promise<void>((r) => {
+        releaseGate = r;
+      })
+    : Promise.resolve();
 
   const server: Server = createServer((req, res) => {
     const url = req.url ?? "";
@@ -197,17 +212,19 @@ export function startMockAnthropic(
 
       // The streaming messages endpoint. claude calls POST /v1/messages?beta=true.
       if (method === "POST" && url.includes("/v1/messages")) {
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
+        void gate.then(() => {
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+          if (mode === "tool_use" && !toolTurnEmitted) {
+            toolTurnEmitted = true;
+            streamToolUse(res, toolName, toolInput);
+          } else {
+            streamText(res, text);
+          }
         });
-        if (mode === "tool_use" && !toolTurnEmitted) {
-          toolTurnEmitted = true;
-          streamToolUse(res, toolName, toolInput);
-        } else {
-          streamText(res, text);
-        }
         return;
       }
 
@@ -223,6 +240,7 @@ export function startMockAnthropic(
       resolveFn({
         url: `http://127.0.0.1:${addr.port}`,
         requests,
+        release: () => releaseGate(),
         close: () =>
           new Promise<void>((res) => {
             server.closeAllConnections?.();

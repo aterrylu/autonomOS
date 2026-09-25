@@ -312,3 +312,75 @@ aside.overflow-y-auto::-webkit-scrollbar {
     transition: none;
   }
 }
+
+/* Org chart message flow (components/orgchart/MessageLayer). Colors come in
+   as CSS variables from the theme tokens. */
+.org-bubble {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  transform-origin: 30px 100%;
+  animation: org-unfurl 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.3);
+  transition: opacity 0.5s;
+}
+.org-bubble::after {
+  content: "";
+  position: absolute;
+  left: 22px;
+  bottom: -6px;
+  width: 10px;
+  height: 10px;
+  background: var(--org-bubble-bg);
+  border-right: 1px solid var(--org-bubble-border);
+  border-bottom: 1px solid var(--org-bubble-border);
+  transform: rotate(45deg);
+}
+.org-bubble-below {
+  transform-origin: 30px 0;
+}
+.org-bubble-below::after {
+  bottom: auto;
+  top: -6px;
+  transform: rotate(225deg);
+}
+.org-bubble-fade {
+  opacity: 0;
+}
+@keyframes org-unfurl {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.org-bump {
+  animation: org-bump 0.35s ease;
+}
+@keyframes org-bump {
+  40% {
+    transform: scale(1.035);
+  }
+}
+/* A just-used edge glows, then settles back into the chart. */
+.org-edge-warm {
+  animation: org-edge-warm 6s ease-out forwards;
+}
+@keyframes org-edge-warm {
+  from {
+    stroke-opacity: 0.9;
+  }
+  to {
+    stroke-opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-bubble,
+  .org-bump,
+  .org-edge-warm {
+    animation: none;
+  }
+  .org-edge-warm {
+    stroke-opacity: 0;
+  }
+}

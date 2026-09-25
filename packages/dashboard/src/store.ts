@@ -14,6 +14,7 @@ import { ApiError } from "./api/core";
 import { agentsPoll, projectsPoll, statusPoll } from "./api/polls";
 import { statusApi } from "./api/status";
 import { isValidActivePane, SINGLETON_TYPES } from "./layout/dockview/paneId";
+import { changeAwareStorage } from "./persistStorage";
 
 /** The project wire types now live in @autonomos/core alongside every other
  *  shape that crosses the HTTP boundary (ADR-078). Re-exported here so the
@@ -616,7 +617,13 @@ export function applyStatusSnapshot(data: AgentStatusMap): void {
   > = {};
   for (const [id, entry] of Object.entries(data)) {
     if (entry.unread) counts[id] = entry.unread;
-    if (entry.status) statuses[id] = entry.status;
+    // Only the declared fields: the wire object also carries updatedAt /
+    // lastEvent / preCompactStatus, which the reuse check below doesn't
+    // compare, so storing them would let them freeze on a reused entry.
+    if (entry.status) {
+      const { status, currentTool, toolDetail } = entry.status;
+      statuses[id] = { status, currentTool, toolDetail };
+    }
   }
   // Desktop notification when an agent needs input and tab isn't focused.
   // Driven by snapshot CHANGES: an already-notified agent whose status is still
@@ -633,17 +640,34 @@ export function applyStatusSnapshot(data: AgentStatusMap): void {
   }
   const prevCounts = get().notificationCounts;
   const prevStatuses = get().agentStatuses;
+  // Structural sharing: every snapshot entry arrives as a NEW object, so an
+  // unchanged agent keeps its PREVIOUS entry, and an unchanged map keeps its
+  // reference (below). Today the render win is map identity on counts-only
+  // frames plus the memoized leaf icons; entry identity is what lets per-entry
+  // selectors and memoized rows bail out.
+  // Any field a consumer reads MUST be compared here and stored above, or a
+  // reused entry would show it stale.
+  for (const [id, next] of Object.entries(statuses)) {
+    const prev = prevStatuses[id];
+    if (
+      prev &&
+      prev.status === next.status &&
+      prev.currentTool === next.currentTool &&
+      prev.toolDetail === next.toolDetail
+    ) {
+      statuses[id] = prev;
+    }
+  }
   const countsChanged = !shallowEqualRecord(counts, prevCounts);
-  const statusesChanged = !shallowEqualRecord(
-    statuses,
-    prevStatuses,
-    (a, b) =>
-      a.status === b.status &&
-      a.currentTool === b.currentTool &&
-      a.toolDetail === b.toolDetail,
-  );
+  // After sharing, an unchanged entry IS its previous object, so reference
+  // equality is enough to detect a status change.
+  const statusesChanged = !shallowEqualRecord(statuses, prevStatuses);
+  // Commit only the map that changed; the other keeps its reference.
   if (countsChanged || statusesChanged) {
-    set({ notificationCounts: counts, agentStatuses: statuses });
+    set({
+      notificationCounts: countsChanged ? counts : prevCounts,
+      agentStatuses: statusesChanged ? statuses : prevStatuses,
+    });
   }
 }
 
@@ -1423,6 +1447,13 @@ export const useStore = create<AppState>()(
     },
     {
       name: "autonomos",
+      // Writes only when a persisted field changed (see persistStorage.ts);
+      // the default re-serialized ~24KB on every status frame.
+      storage: changeAwareStorage(() => window.localStorage),
+      // CONTRACT: every field below must be REPLACED on change, never mutated
+      // in place. The storage skips a write when each field is the same
+      // reference as last time (persistStorage.ts), so an in-place edit
+      // (`s.expandedProjects[k] = true; set({})`) would never be saved.
       partialize: (state) => ({
         theme: state.theme,
         agentIconStyle: state.agentIconStyle,

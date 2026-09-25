@@ -57,7 +57,14 @@ function depth(n: LayoutNode): number {
   return 1 + Math.max(0, ...n.children.map(depth));
 }
 
-export function layoutOrg(roots: LayoutNode[]): OrgLayout {
+export function layoutOrg(
+  roots: LayoutNode[],
+  opts: {
+    /** A root that is a team even with no drawn children — a COLLAPSED lead
+     *  stays in the team row instead of dropping onto the shelf. */
+    isTeam?: (n: LayoutNode) => boolean;
+  } = {},
+): OrgLayout {
   const pos = new Map<string, Box>();
   const edges: OrgLayout["edges"] = [];
 
@@ -76,8 +83,10 @@ export function layoutOrg(roots: LayoutNode[]): OrgLayout {
     }
   };
 
-  const teams = roots.filter((r) => r.children.length > 0);
-  const solos = roots.filter((r) => r.children.length === 0);
+  const isTeam = (r: LayoutNode) =>
+    r.children.length > 0 || (opts.isTeam?.(r) ?? false);
+  const teams = roots.filter(isTeam);
+  const solos = roots.filter((r) => !isTeam(r));
 
   let x = PAD;
   let maxDepth = 0;

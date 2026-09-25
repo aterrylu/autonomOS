@@ -39,6 +39,7 @@ import {
   formatInbound,
 } from "./codexControl.js";
 import { DELIVERY_ACK_MS } from "./deliveryTimings.js";
+import { recordAcceptedMessage } from "./messageLog.js";
 
 // ── Registry ──────────────────────────────────────────────────────
 
@@ -325,6 +326,29 @@ async function awaitDelivery(
   }
 }
 
+/**
+ * Record an ACCEPTED message for the Org Chart (preview broadcast + per-agent
+ * log + counters). Called only after a destination accepted — never on a
+ * failure path — so the chart can't show traffic that didn't happen.
+ */
+function logAccepted(
+  fromSessionId: string,
+  sender: SenderIdentity,
+  toId: string,
+  toFallbackName: string,
+  content: string,
+): void {
+  recordAcceptedMessage({
+    from: fromSessionId.startsWith(SCHEDULE_SENDER_PREFIX)
+      ? null
+      : fromSessionId,
+    fromName: sender.name,
+    to: toId,
+    toName: getAgent(toId)?.name ?? toFallbackName,
+    content,
+  });
+}
+
 async function routeToAgent(
   fromSessionId: string,
   targetName: string,
@@ -353,6 +377,7 @@ async function routeToAgent(
     if (!delivery.delivered) {
       return `Message to Codex agent "${targetName}" was NOT delivered — ${delivery.reason}.`;
     }
+    logAccepted(fromSessionId, sender, codexTarget.id, targetName, content);
     return null;
   }
 
@@ -383,6 +408,8 @@ async function routeToAgent(
       );
     }
     emitPendingHandoffCount(queueTarget.id, enq.count);
+    // Queued for hand-delivery IS accepted (ADR-064) — it shows on the chart.
+    logAccepted(fromSessionId, sender, queueTarget.id, targetName, content);
     // Accepted (null, per ADR-064) — the note rides the out-param so the
     // sender is told it was QUEUED, not delivered live.
     if (meta) {
@@ -469,6 +496,7 @@ async function routeToAgent(
     console.error(`[gateway] failed to send to agent ${targetName}:`, err);
     return `Failed to deliver message to agent "${targetName}"`;
   }
+  logAccepted(fromSessionId, sender, targetSessionId, targetName, content);
   return null;
 }
 
