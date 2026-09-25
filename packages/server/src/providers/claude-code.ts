@@ -12,14 +12,13 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import {
-  type AgentProvider,
-  DEFAULT_PERMISSION_MODE,
-  type PermissionMode,
-  type PrepareSpawnResult,
-  type PtyHandle,
-  type ResolvedSpawnOptions,
-  type WorkdirTrust,
+import type {
+  AgentProvider,
+  PrepareSpawnResult,
+  PtyHandle,
+  ResolvedSpawnOptions,
+  RuntimePermission,
+  WorkdirTrust,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
@@ -31,6 +30,7 @@ import {
   buildBaseEnv,
   buildSystemPrompt,
   commonBinaryCandidates,
+  effectivePermission,
   HOOK_CMD,
   RESERVED_ENV_KEYS,
   resolveBinaryFromCandidates,
@@ -156,28 +156,20 @@ const CHANNELS_NEEDLES = [
   "I am using this for local development",
 ];
 
-// ── Permission mode → Claude Code flags ───────────────────────
-// `bypass` keeps the legacy --dangerously-skip-permissions (which also
-// auto-accepts the trust-folder prompt); `auto`/`plan` go through the explicit
-// --permission-mode flag. Our `ask` emits NO flag — it IS Claude Code's
-// built-in behavior, so passing CC's own `--permission-mode default` would be
-// redundant AND perturbs the interactive TUI's startup enough to break
-// real-spawn timing (the usage-queue auto-Enter), which the old flag-less
-// supervised spawn never did. (Our value is `ask`; the word "default" below
-// refers only to CC's native flag vocabulary and the switch's catch-all.)
-function claudePermissionArgs(
-  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
-): string[] {
-  switch (mode) {
-    case "bypass":
-      return ["--dangerously-skip-permissions"];
-    case "auto":
-      return ["--permission-mode", "acceptEdits"];
-    case "plan":
-      return ["--permission-mode", "plan"];
-    default:
-      return [];
-  }
+// ── Permission → Claude Code flags (ADR-115: CC's own values) ──
+// `bypassPermissions` keeps --dangerously-skip-permissions (which also
+// auto-accepts the trust-folder prompt); every other value goes through CC's
+// own --permission-mode. `manual` — CC's built-in behavior — emits NO flag
+// while PASS_MANUAL_FLAG is off: an explicit value once perturbed the TUI's
+// startup enough to break the usage-queue auto-Enter, so passing it is gated
+// on a measured clean startup (ADR-115 pick 3). With no flag, a user's
+// settings.json `defaultMode` can widen `manual` — the dashboard says so.
+const PASS_MANUAL_FLAG = false;
+function claudePermissionArgs(permission: RuntimePermission): string[] {
+  const value = permission.values["permission-mode"];
+  if (value === "bypassPermissions") return ["--dangerously-skip-permissions"];
+  if (value === "manual" && !PASS_MANUAL_FLAG) return [];
+  return ["--permission-mode", value];
 }
 
 // ── Binary resolution cache ───────────────────────────────────
@@ -214,7 +206,9 @@ export const claudeCodeProvider: AgentProvider = {
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
 
-    args.push(...claudePermissionArgs(options.permissionMode));
+    args.push(
+      ...claudePermissionArgs(effectivePermission("claude-code", options)),
+    );
 
     // Session identity: fork, resume, or new
     if (options.forkFrom) {

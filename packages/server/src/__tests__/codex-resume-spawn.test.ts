@@ -12,11 +12,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
-import type {
-  AgentProvider,
-  PermissionMode,
-  ResolvedSpawnOptions,
-  UUID,
+import {
+  type AgentProvider,
+  completePermission,
+  type PermissionMode,
+  type ResolvedSpawnOptions,
+  type RuntimePermission,
+  type UUID,
 } from "@autonomos/core";
 
 // UNCONDITIONAL: workers inherit AUTONOMOS_CONFIG_DIR=<real dir> (#350).
@@ -46,12 +48,15 @@ const {
 const { getNotifications, clearNotifications } = await import(
   "../routes/hooks.js"
 );
+const { updateSettings } = await import("../settings.js");
 
-const NAME = "fakecodex";
+// Registered AS "codex" (restored in after()): the permission layer is keyed by
+// the runtime, so the fake must speak Codex's vocabulary to exercise its lock.
+const NAME = "codex";
 const cwd = mkdtempSync(join(tmpdir(), "aos-resume-spawn-"));
 let seen: ResolvedSpawnOptions[] = [];
 let threadSaved: boolean | "throw" = true;
-let actualMode: PermissionMode | undefined;
+let actualPermission: RuntimePermission | undefined;
 
 const fake: AgentProvider = {
   ...codexProvider,
@@ -67,7 +72,7 @@ const fake: AgentProvider = {
     if (threadSaved === "throw") throw new Error("EACCES");
     return threadSaved;
   },
-  resumedThreadMode: () => actualMode,
+  resumedThreadPermission: () => actualPermission,
 };
 
 const ids: string[] = [];
@@ -94,7 +99,7 @@ beforeEach(() => {
   _setProviderForTesting(NAME, fake);
   seen = [];
   threadSaved = true;
-  actualMode = undefined;
+  actualPermission = undefined;
 });
 afterEach(() => {
   for (const id of ids.splice(0)) {
@@ -134,24 +139,128 @@ describe("spawnAgent reattach — Codex resume (ADR-104)", () => {
     assert.equal(getAgent(id)?.providerThreadId, "thread-real-123");
   });
 
-  it("a mode change that can't apply is REFUSED: argv + record keep the running mode, user told", async () => {
+  it("a change that can't apply is REFUSED: argv + record keep the running setting, user told", async () => {
+    const id = seed("ask");
+    await spawnAgent({
+      workingDirectory: cwd,
+      resumeAgentId: id,
+      permission: completePermission("codex", { approval_policy: "never" }),
+    });
+    assert.equal(seen.at(-1)?.permission?.values.approval_policy, "on-request");
+    assert.equal(
+      getAgent(id)?.permission?.values.approval_policy,
+      "on-request",
+    );
+    assert.equal(getAgent(id)?.permissionMode, "ask");
+    assert.ok(notices(id).some((m) => m.includes("was not applied")));
+  });
+
+  it("the same refusal for a LEGACY caller (permissionMode: bypass)", async () => {
     const id = seed("ask");
     await spawnAgent({
       workingDirectory: cwd,
       resumeAgentId: id,
       permissionMode: "bypass",
     });
-    assert.equal(seen.at(-1)?.permissionMode, "ask");
+    assert.equal(seen.at(-1)?.permission?.values.approval_policy, "on-request");
     assert.equal(getAgent(id)?.permissionMode, "ask");
-    assert.ok(notices(id).some((m) => m.includes("was not applied")));
   });
 
-  it("a record that lies about the thread's real mode is CORRECTED (silently wider was the bug)", async () => {
-    actualMode = "bypass";
+  it("a record that lies about the thread's real setting is CORRECTED (silently wider was the bug)", async () => {
+    actualPermission = completePermission("codex", {
+      approval_policy: "never",
+    });
     const id = seed("ask");
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    assert.equal(getAgent(id)?.permission?.values.approval_policy, "never");
     assert.equal(getAgent(id)?.permissionMode, "bypass");
-    assert.ok(notices(id).some((m) => m.includes("actually runs as bypass")));
+    assert.ok(
+      notices(id).some((m) =>
+        m.includes("actually runs approval_policy=never"),
+      ),
+    );
+  });
+
+  it("a migrated Codex auto record gets the one-time notice, then never again", async () => {
+    const id = seed("ask");
+    patchAgent(id, { permissionMigratedFrom: "auto" });
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    assert.ok(notices(id).some((m) => m.includes('"auto" was never')));
+    assert.equal(getAgent(id)?.permissionMigratedFrom, undefined);
+    killAttachment(id as UUID);
+    markExited(id, "user_killed");
+    clearNotifications(id);
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    assert.ok(!notices(id).some((m) => m.includes("was never")));
+  });
+
+  it("a fresh spawn with legacy plan is told what it runs, in Codex's own values", async () => {
+    const agent = (
+      await spawnAgent({
+        workingDirectory: cwd,
+        provider: NAME,
+        name: `fc-plan-${randomUUID().slice(0, 4)}`,
+        permissionMode: "plan",
+      })
+    ).agent;
+    ids.push(agent.id);
+    assert.equal(
+      getAgent(agent.id)?.permission?.values.approval_policy,
+      "on-request",
+    );
+    assert.ok(
+      notices(agent.id).some((m) =>
+        m.includes(
+          '"plan" isn\'t a FakeCodex setting, so it runs approval_policy=on-request · sandbox_mode=danger-full-access',
+        ),
+      ),
+      JSON.stringify(notices(agent.id)),
+    );
+  });
+
+  it("a fresh spawn that names nothing gets the OPERATOR's default; a resume ignores a later change to it", async () => {
+    updateSettings({
+      runtimeDefaults: { codex: { approval_policy: "never" } },
+    });
+    try {
+      const { agent } = await spawnAgent({
+        workingDirectory: cwd,
+        provider: NAME,
+        name: `fc-def-${randomUUID().slice(0, 4)}`,
+      });
+      ids.push(agent.id);
+      assert.equal(seen.at(-1)?.permission?.values.approval_policy, "never");
+      assert.equal(getAgent(agent.id)?.permissionMode, "bypass");
+      // The operator changes the default; a body-less resume keeps the record.
+      updateSettings({ runtimeDefaults: undefined });
+      killAttachment(agent.id);
+      markExited(agent.id, "user_killed");
+      await spawnAgent({ workingDirectory: cwd, resumeAgentId: agent.id });
+      assert.equal(seen.at(-1)?.permission?.values.approval_policy, "never");
+    } finally {
+      updateSettings({ runtimeDefaults: undefined });
+    }
+  });
+
+  it("an explicit request beats the operator's default", async () => {
+    updateSettings({
+      runtimeDefaults: { codex: { approval_policy: "never" } },
+    });
+    try {
+      const { agent } = await spawnAgent({
+        workingDirectory: cwd,
+        provider: NAME,
+        name: `fc-exp-${randomUUID().slice(0, 4)}`,
+        permissionMode: "ask",
+      });
+      ids.push(agent.id);
+      assert.equal(
+        getAgent(agent.id)?.permission?.values.approval_policy,
+        "on-request",
+      );
+    } finally {
+      updateSettings({ runtimeDefaults: undefined });
+    }
   });
 
   it("an omitted provider resumes as the RECORD's runtime, never claude-code", async () => {

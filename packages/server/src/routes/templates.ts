@@ -5,8 +5,9 @@
  * Extracted from the legacy routes/hierarchy.ts on the unified-Agent refactor.
  */
 
-import { DEFAULT_PERMISSION_MODE, isPermissionMode } from "@autonomos/core";
+import { isPermissionMode } from "@autonomos/core";
 import { Hono } from "hono";
+import { parseTemplatePermissions } from "../agents/permissionInput.js";
 import {
   DEPRECATED_CAPABILITIES_NOTE,
   deleteTemplate,
@@ -36,14 +37,19 @@ templateRouter.post("/", async (c) => {
   // defect class ADR-058 removed from the tool layer.
   const warnings: string[] = [];
 
+  // Undefined when absent OR invalid: such a template uses the operator's
+  // per-runtime default (ADR-115). The canonical `permissions` below 400s
+  // instead — nobody holds an old spelling of it.
   const permissionMode = isPermissionMode(body.permissionMode)
     ? body.permissionMode
-    : DEFAULT_PERMISSION_MODE;
+    : undefined;
+  const permissions = parseTemplatePermissions(body.permissions);
+  if (!permissions.ok) return c.json({ error: permissions.error }, 400);
   if (
     body.permissionMode !== undefined &&
     !isPermissionMode(body.permissionMode)
   ) {
-    const note = `Invalid permissionMode ${JSON.stringify(body.permissionMode)} ignored — using "${DEFAULT_PERMISSION_MODE}".`;
+    const note = `Invalid permissionMode ${JSON.stringify(body.permissionMode)} ignored — agents from this template use the operator's default.`;
     warnings.push(note);
     console.warn(`[api/templates] ${note}`);
   }
@@ -65,6 +71,7 @@ templateRouter.post("/", async (c) => {
       description,
       systemPrompt,
       permissionMode,
+      permissions: permissions.permissions,
       model: body.model,
     });
     return c.json({

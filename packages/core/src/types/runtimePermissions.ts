@@ -267,6 +267,24 @@ export const DEFAULT_RUNTIME_VALUES: Readonly<
   "gemini-cli": { "approval-mode": "default" },
 };
 
+/** Every runtime with a permission table, in display order. */
+export const PERMISSION_RUNTIMES: readonly Provider[] = [
+  "claude-code",
+  "codex",
+  "gemini-cli",
+];
+
+/** Same runtime and the same value on every axis. */
+export function samePermission(
+  a: RuntimePermission,
+  b: RuntimePermission,
+): boolean {
+  if (a.runtime !== b.runtime) return false;
+  const keys = new Set([...Object.keys(a.values), ...Object.keys(b.values)]);
+  for (const k of keys) if (a.values[k] !== b.values[k]) return false;
+  return true;
+}
+
 /** Fill every axis the partial doesn't name from the runtime's default. */
 export function completePermission(
   runtime: Provider,
@@ -274,7 +292,9 @@ export function completePermission(
 ): RuntimePermission {
   return {
     runtime,
-    values: { ...DEFAULT_RUNTIME_VALUES[runtime], ...partial },
+    // `?? {}`: a record can name a runtime this build no longer has a table
+    // for (a removed provider, a test fake) — it gets no axes, never a crash.
+    values: { ...(DEFAULT_RUNTIME_VALUES[runtime] ?? {}), ...partial },
   };
 }
 
@@ -315,7 +335,7 @@ export function permissionFromLegacyMode(
       bypass: { "approval-mode": "yolo" },
     },
   };
-  return completePermission(runtime, byRuntime[runtime][mode]);
+  return completePermission(runtime, byRuntime[runtime]?.[mode] ?? {});
 }
 
 /** A legacy mode that had no exact native equivalent on this runtime. */
@@ -354,6 +374,8 @@ export function legacyModeFor(
           : v["approval-mode"] === "plan"
             ? "plan"
             : "ask";
+    default:
+      return "ask"; // no table for this runtime (see completePermission)
   }
 }
 
@@ -364,7 +386,7 @@ export function legacyModeFor(
  * default is unambiguous (reviewer `user`, collaboration mode `default`).
  */
 export function formatPermission(p: RuntimePermission): string {
-  const axes = RUNTIME_PERMISSIONS[p.runtime].axes;
+  const axes = RUNTIME_PERMISSIONS[p.runtime]?.axes ?? [];
   if (axes.length === 1) return p.values[axes[0].key] ?? "";
   const quiet: Record<string, string> = {
     approvals_reviewer: "user",
@@ -435,4 +457,24 @@ export function validValuesMessage(runtime: Provider): string {
     )
     .join("; ");
   return `Valid permission values for ${runtime}: ${list}`;
+}
+
+/**
+ * A permission read back from disk, if it's still well-formed for `runtime`:
+ * the right runtime, and every value still in the table. Missing axes are
+ * filled from the default. Undefined means "rebuild it" (from the legacy mode).
+ */
+export function normalizeStoredPermission(
+  runtime: Provider,
+  raw: unknown,
+): RuntimePermission | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as { runtime?: unknown; values?: unknown };
+  if (r.runtime !== runtime || !r.values || typeof r.values !== "object")
+    return undefined;
+  const parsed = parseRuntimePermission(
+    runtime,
+    r.values as Record<string, unknown>,
+  );
+  return parsed.ok ? parsed.permission : undefined;
 }

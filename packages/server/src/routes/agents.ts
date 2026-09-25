@@ -21,6 +21,7 @@ import {
   getAgentAnalytics,
 } from "../agents/analytics.js";
 import { enrichAgent } from "../agents/enrich.js";
+import { parsePermissionInput } from "../agents/permissionInput.js";
 import {
   getAttachment,
   isAgentLive,
@@ -434,6 +435,12 @@ agentsRouter.post("/", async (c) => {
       `[api/agents] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; falling back to template/record/default`,
     );
 
+  // The canonical permission (ADR-115) — in the runtime's own values, so it
+  // needs `provider`. Unlike the legacy field above, a bad value 400s with the
+  // runtime's valid values: nobody holds an old spelling of this one.
+  const permissionInput = parsePermissionInput(body.provider, body.permission);
+  if (!permissionInput.ok) return c.json({ error: permissionInput.error }, 400);
+
   // NOTE: the present-but-empty resume/fork id check lives in `spawnAgent`, not
   // here. It has to be at the shared boundary — the HTTP MCP handler calls
   // spawnAgent directly and would bypass a route-level guard. It surfaces below
@@ -452,9 +459,11 @@ agentsRouter.post("/", async (c) => {
       // external terminal-started session. Distinct id-space from resumeAgentId.
       resumeSessionId: body.resumeSessionId as string | undefined,
       forkFromAgentId: body.forkFromAgentId as UUID | undefined,
+      permission: permissionInput.permission,
       permissionMode,
       // Ranked BELOW the record on a resume — see SpawnParams. Naming a
       // template while resuming must not re-level an existing agent.
+      templatePermissions: tmpl?.permissions,
       templatePermissionMode: tmpl?.permissionMode,
       appendSystemPrompt: systemPrompt,
       template: templateName,

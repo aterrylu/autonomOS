@@ -24,7 +24,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
+  completePermission,
   PERMISSION_MODE_INFO,
+  permissionFromLegacyMode,
   type ResolvedSpawnOptions,
 } from "@autonomos/core";
 
@@ -37,7 +39,8 @@ const { _resetCodexRolloutCacheForTesting } = await import(
 );
 const {
   threadIsResumable,
-  resumePermissionModeLock,
+  resumePermissionLock,
+  requestedPermission,
   resolveSpawnProvider,
   SpawnError,
 } = await import("../agents/runtime.js");
@@ -140,69 +143,97 @@ describe("threadIsResumable (runtime pre-flight decision)", () => {
   });
 });
 
-describe("codexProvider.resumeCannotApplyModeChange", () => {
-  const f = codexProvider.resumeCannotApplyModeChange!;
-  it("a change that alters the Codex policy cannot apply on resume", () => {
-    assert.equal(f("ask", "bypass"), true);
-    assert.equal(f("bypass", "ask"), true);
+const cx = (v: Record<string, string> = {}) => completePermission("codex", v);
+
+describe("codexProvider.resumeCannotApplyChange", () => {
+  const f = codexProvider.resumeCannotApplyChange!;
+  it("a change on an axis the thread keeps from creation cannot apply on resume", () => {
+    assert.equal(f(cx(), cx({ approval_policy: "never" })), true);
+    assert.equal(f(cx({ approval_policy: "never" }), cx()), true);
+    assert.equal(f(cx(), cx({ sandbox_mode: "workspace-write" })), true);
+    assert.equal(f(cx(), cx({ approvals_reviewer: "auto_review" })), true);
   });
-  it("modes that map to the same Codex policy are not a real change", () => {
-    assert.equal(f("ask", "plan"), false); // plan is clamped to ask on Codex
-    assert.equal(f("bypass", "bypass"), false);
+  it("identical settings are not a change", () => {
+    assert.equal(f(cx(), cx()), false);
+    assert.equal(
+      f(cx({ approval_policy: "never" }), cx({ approval_policy: "never" })),
+      false,
+    );
   });
 });
 
-describe("resumePermissionModeLock", () => {
-  const cannot = (a: string, b: string) => a !== b;
+describe("resumePermissionLock", () => {
   const base = {
     isReattach: true,
     resumingThread: true,
-    current: "ask" as const,
-    cannotApply: cannot,
+    current: cx(),
+    cannotApply: () => true,
   };
-  it("LOCKS a change the resumed conversation can't apply — record keeps the running mode", () => {
-    assert.deepEqual(
-      resumePermissionModeLock({ ...base, requested: "bypass" }),
-      {
-        locked: true,
-        effective: "ask",
-      },
-    );
-  });
-  it("no change requested → no lock", () => {
-    assert.deepEqual(resumePermissionModeLock({ ...base, requested: "ask" }), {
-      locked: false,
-      effective: "ask",
+  const never = cx({ approval_policy: "never" });
+  it("LOCKS a change the resumed conversation can't apply — record keeps the running setting", () => {
+    assert.deepEqual(resumePermissionLock({ ...base, requested: never }), {
+      locked: true,
+      effective: cx(),
     });
   });
-  it("a FRESH thread (pre-flight cleared it) takes the new mode — nothing to keep", () => {
-    assert.equal(
-      resumePermissionModeLock({
-        ...base,
-        resumingThread: false,
-        requested: "bypass",
-      }).effective,
-      "bypass",
+  it("no change requested → no lock (compared by VALUE, not identity)", () => {
+    assert.deepEqual(resumePermissionLock({ ...base, requested: cx() }), {
+      locked: false,
+      effective: cx(),
+    });
+  });
+  it("a FRESH thread (pre-flight cleared it) takes the new setting — nothing to keep", () => {
+    assert.deepEqual(
+      resumePermissionLock({ ...base, resumingThread: false, requested: never })
+        .effective,
+      never,
     );
   });
   it("providers that CAN apply a change on resume (no hook) are unaffected", () => {
-    assert.equal(
-      resumePermissionModeLock({
+    assert.deepEqual(
+      resumePermissionLock({
         ...base,
         cannotApply: undefined,
-        requested: "bypass",
+        requested: never,
       }).effective,
-      "bypass",
+      never,
     );
   });
   it("a fresh spawn / adopt is never locked", () => {
     assert.equal(
-      resumePermissionModeLock({
-        ...base,
-        isReattach: false,
-        requested: "bypass",
-      }).locked,
+      resumePermissionLock({ ...base, isReattach: false, requested: never })
+        .locked,
       false,
+    );
+  });
+});
+
+describe("requestedPermission — what the caller asked for, in the runtime's values", () => {
+  it("nothing asked = undefined (ADR-061: never collapse to a default here)", () => {
+    assert.equal(requestedPermission("codex", undefined, undefined), undefined);
+  });
+  it("a legacy mode maps to exactly what it always ran", () => {
+    assert.deepEqual(
+      requestedPermission("codex", undefined, "bypass"),
+      permissionFromLegacyMode("codex", "bypass"),
+    );
+  });
+  it("the canonical permission wins over a legacy mode", () => {
+    const p = cx({ approvals_reviewer: "auto_review" });
+    assert.deepEqual(requestedPermission("codex", p, "bypass"), p);
+  });
+  it("another runtime's values are refused (400), never reinterpreted", () => {
+    assert.throws(
+      () =>
+        requestedPermission(
+          "codex",
+          completePermission("claude-code", { "permission-mode": "plan" }),
+          undefined,
+        ),
+      (e: unknown) =>
+        e instanceof SpawnError &&
+        e.code === "INVALID_PERMISSION" &&
+        e.status === 400,
     );
   });
 });
@@ -230,57 +261,62 @@ describe("resolveSpawnProvider — a reattach runs the RECORD's provider", () =>
   });
 });
 
-describe("Codex auto/plan are HONEST (clamped, and the copy never claims Codex lacks them)", () => {
-  it("auto maps to on-request like ask — never the removed on-failure, never wider", () => {
-    const args = codexProvider.buildArgs(
+describe("Codex argv follows its canonical values (ADR-115)", () => {
+  const argsFor = (v: Record<string, string>) =>
+    codexProvider.buildArgs(
       opts({
         sidecarEndpoint: "ws://127.0.0.1:1",
-        permissionMode: "auto",
+        permission: cx(v),
       }) as ResolvedSpawnOptions,
     );
+  it("the default is today's ask: on-request, no sandbox, never the removed on-failure", () => {
+    const args = argsFor({});
     assert.ok(args.includes('approval_policy="on-request"'));
+    assert.ok(args.includes("danger-full-access"));
     assert.ok(!args.some((a) => a.includes("on-failure")));
     assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
   });
-  it("auto and plan get a user-facing clamp notice; native modes don't", () => {
-    assert.match(
-      codexProvider.clampedModeNotice?.("auto") ?? "",
-      /behaves like Ask.*Bypass/,
+  it("never + danger-full-access = Codex's own all-in-one skip flag", () => {
+    assert.ok(
+      argsFor({ approval_policy: "never" }).includes(
+        "--dangerously-bypass-approvals-and-sandbox",
+      ),
     );
-    assert.match(
-      codexProvider.clampedModeNotice?.("plan") ?? "",
-      /behaves like Ask/,
-    );
-    assert.equal(codexProvider.clampedModeNotice?.("ask"), undefined);
-    assert.equal(codexProvider.clampedModeNotice?.("bypass"), undefined);
   });
-  it("pins the exact notices — they say 'not wired up', never 'Codex has no …'", () => {
-    // Codex 0.154 HAS both: a Plan collaboration mode and automatic approval
-    // review (approvals_reviewer=auto_review). autonomOS just doesn't wire them
-    // up. A notice claiming otherwise shipped once (#398) — pin the truth.
-    assert.equal(
-      codexProvider.clampedModeNotice?.("auto"),
-      "Codex's auto review isn't wired up in autonomOS yet, so this agent behaves like Ask. Pick Bypass for no approvals.",
+  it("never WITH a sandbox keeps the sandbox (the skip flag would drop it)", () => {
+    const args = argsFor({
+      approval_policy: "never",
+      sandbox_mode: "workspace-write",
+    });
+    assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
+    assert.ok(args.includes("workspace-write"));
+    assert.ok(args.includes('approval_policy="never"'));
+  });
+  it("the reviewer is passed through in Codex's own key", () => {
+    assert.ok(
+      argsFor({ approvals_reviewer: "auto_review" }).includes(
+        'approvals_reviewer="auto_review"',
+      ),
     );
-    assert.equal(
-      codexProvider.clampedModeNotice?.("plan"),
-      "Codex's plan mode isn't wired up in autonomOS yet, so this agent behaves like Ask.",
-    );
-    const userFacing = [
-      codexProvider.clampedModeNotice?.("auto"),
-      codexProvider.clampedModeNotice?.("plan"),
-      PERMISSION_MODE_INFO.auto.perProvider.codex,
-      PERMISSION_MODE_INFO.plan.perProvider.codex,
-    ];
-    for (const text of userFacing) {
-      assert.doesNotMatch(text ?? "", /has no|no auto tier|no plan mode/i);
+  });
+  it("legacy auto/plan run exactly what ask runs (what they always ran)", () => {
+    for (const m of ["auto", "plan"] as const) {
+      const args = codexProvider.buildArgs(
+        opts({
+          sidecarEndpoint: "ws://127.0.0.1:1",
+          permissionMode: m,
+        }) as ResolvedSpawnOptions,
+      );
+      assert.deepEqual(args, argsFor({}), m);
     }
   });
-  it("ask ↔ auto is not a real change on resume (same Codex policy)", () => {
-    assert.equal(
-      codexProvider.resumeCannotApplyModeChange?.("ask", "auto"),
-      false,
-    );
+  it("the copy never claims Codex lacks auto review / plan", () => {
+    for (const text of [
+      PERMISSION_MODE_INFO.auto.perProvider.codex,
+      PERMISSION_MODE_INFO.plan.perProvider.codex,
+    ]) {
+      assert.doesNotMatch(text ?? "", /has no|no auto tier|no plan mode/i);
+    }
   });
 });
 
@@ -341,57 +377,46 @@ describe("C1: the probe NEVER turns can't-tell into 'never saved'", () => {
   });
 });
 
-describe("H2: the mode a resumed thread ACTUALLY runs (from its turn_context)", () => {
-  function rolloutWithPolicy(tid: string, policy: string): void {
+describe("H2: the permission a resumed thread ACTUALLY runs (from its turn_context)", () => {
+  function rollout(tid: string, ctx: Record<string, unknown>): void {
     const dir = join(home, "sessions", "2026", "09", "24");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, `rollout-x-${tid}.jsonl`),
-      `${JSON.stringify({ type: "turn_context", payload: { approval_policy: policy, sandbox_policy: { type: "danger-full-access" } } })}\n`,
+      `${JSON.stringify({ type: "turn_context", payload: ctx })}\n`,
     );
   }
-  it("record says ask but the thread runs never → corrected to bypass (was silently WIDER)", () => {
-    rolloutWithPolicy("t-bp", "never");
-    assert.equal(
-      codexProvider.resumedThreadMode?.(
-        opts({ providerThreadId: "t-bp" }),
-        process.env,
-        "ask",
-      ),
-      "bypass",
-    );
+  const ran = (policy: string, sandbox = "danger-full-access") => ({
+    approval_policy: policy,
+    sandbox_policy: { type: sandbox },
   });
-  it("record says bypass but the thread runs on-request → corrected to ask (was silently narrower)", () => {
-    rolloutWithPolicy("t-ask", "on-request");
-    assert.equal(
-      codexProvider.resumedThreadMode?.(
-        opts({ providerThreadId: "t-ask" }),
-        process.env,
-        "bypass",
-      ),
-      "ask",
+  const probe = (tid: string, record = cx()) =>
+    codexProvider.resumedThreadPermission?.(
+      opts({ providerThreadId: tid }),
+      process.env,
+      record,
     );
+  it("record says on-request but the thread runs never → corrected (was silently WIDER)", () => {
+    rollout("t-bp", ran("never"));
+    assert.deepEqual(probe("t-bp"), cx({ approval_policy: "never" }));
   });
-  it("a consistent record (incl. auto/plan ≡ on-request) is left alone", () => {
-    rolloutWithPolicy("t-ok", "on-request");
-    for (const m of ["ask", "auto", "plan"] as const)
-      assert.equal(
-        codexProvider.resumedThreadMode?.(
-          opts({ providerThreadId: "t-ok" }),
-          process.env,
-          m,
-        ),
-        undefined,
-      );
+  it("record says never but the thread runs on-request → corrected (was silently narrower)", () => {
+    rollout("t-ask", ran("on-request"));
+    assert.deepEqual(probe("t-ask", cx({ approval_policy: "never" })), cx());
+  });
+  it("a different SANDBOX is corrected too — the thread keeps it", () => {
+    rollout("t-sb", ran("on-request", "workspace-write"));
+    assert.deepEqual(probe("t-sb"), cx({ sandbox_mode: "workspace-write" }));
+  });
+  it("a consistent record is left alone", () => {
+    rollout("t-ok", ran("on-request"));
+    assert.equal(probe("t-ok"), undefined);
+  });
+  it("a value we don't know → no correction (never guess)", () => {
+    rollout("t-odd", ran("granular-thing"));
+    assert.equal(probe("t-odd"), undefined);
   });
   it("unreadable / no rollout → no correction (never guess)", () => {
-    assert.equal(
-      codexProvider.resumedThreadMode?.(
-        opts({ providerThreadId: "t-none" }),
-        process.env,
-        "ask",
-      ),
-      undefined,
-    );
+    assert.equal(probe("t-none"), undefined);
   });
 });

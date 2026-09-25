@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
+  completePermission,
   PERMISSION_MODES,
   type PermissionMode,
   type ResolvedSpawnOptions,
@@ -196,32 +197,55 @@ describe("codex daemon topology", () => {
       }
     });
 
-    it("warns exactly once when clamping the unsupported 'plan' mode", () => {
-      const warnings: string[] = [];
-      const orig = console.warn;
-      console.warn = (msg?: unknown) => {
-        warnings.push(String(msg));
-      };
-      try {
-        codexProvider.buildSidecar?.(
-          baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "plan" }),
-        );
-      } finally {
-        console.warn = orig;
-      }
-      const planWarnings = warnings.filter((w) => w.includes("plan"));
-      assert.equal(planWarnings.length, 1, "expected exactly one plan warning");
-      assert.match(planWarnings[0], /isn't wired up for Codex yet/);
+    it("canonical values reach the daemon in Codex's own keys (ADR-115)", () => {
+      const cfg = (v: Record<string, string>) =>
+        (
+          codexProvider.buildSidecar?.(
+            baseOptions({
+              sidecarEndpoint: ENDPOINT,
+              permission: completePermission("codex", v),
+            }),
+          )?.args ?? []
+        ).join(" ");
+      const ws = cfg({ sandbox_mode: "workspace-write" });
+      assert.match(ws, /sandbox_mode="workspace-write"/);
+      assert.doesNotMatch(ws, /danger-full-access/);
+      assert.match(
+        cfg({ approvals_reviewer: "auto_review" }),
+        /approvals_reviewer="auto_review"/,
+      );
     });
 
-    it("does NOT warn when clamping is not needed (supported modes)", () => {
+    it("MCP tools are pre-approved iff approval_policy=never — the sandbox doesn't change that", () => {
+      const mcp = (v: Record<string, string>) =>
+        (
+          codexProvider.buildSidecar?.(
+            baseOptions({
+              sidecarEndpoint: ENDPOINT,
+              injectChannelServer: true,
+              permission: completePermission("codex", v),
+            }),
+          )?.args ?? []
+        )
+          .join(" ")
+          .match(/default_tools_approval_mode="(\w+)"/)?.[1];
+      assert.equal(mcp({}), "writes");
+      assert.equal(mcp({ approval_policy: "never" }), "approve");
+      assert.equal(
+        mcp({ approval_policy: "never", sandbox_mode: "read-only" }),
+        "approve",
+      );
+      assert.equal(mcp({ approvals_reviewer: "auto_review" }), "writes");
+    });
+
+    it("the provider never warns about a legacy mode — the runtime's notice does, in Codex's values", () => {
       const warnings: string[] = [];
       const orig = console.warn;
       console.warn = (msg?: unknown) => {
         warnings.push(String(msg));
       };
       try {
-        for (const mode of ["ask", "auto", "bypass"] as const) {
+        for (const mode of ["ask", "auto", "plan", "bypass"] as const) {
           codexProvider.buildSidecar?.(
             baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: mode }),
           );
@@ -229,7 +253,7 @@ describe("codex daemon topology", () => {
       } finally {
         console.warn = orig;
       }
-      assert.equal(warnings.filter((w) => w.includes("plan")).length, 0);
+      assert.deepEqual(warnings, []);
     });
   });
 
@@ -247,7 +271,7 @@ describe("codex daemon topology", () => {
       ]);
     });
 
-    it("supervised TUI drops the sandbox but keeps approval prompts", () => {
+    it("the default (today's ask) drops the sandbox but keeps approval prompts, reviewer explicit", () => {
       const args = codexProvider.buildArgs(
         baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "ask" }),
       );
@@ -260,11 +284,13 @@ describe("codex daemon topology", () => {
         "danger-full-access",
         "-c",
         'approval_policy="on-request"',
+        "-c",
+        'approvals_reviewer="user"',
       ]);
       assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
-    it("auto mode keeps the sandbox off and clamps to ask's on-request (auto review not wired up)", () => {
+    it("legacy auto runs exactly what it always ran: ask's on-request, sandbox off", () => {
       const args = codexProvider.buildArgs(
         baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "auto" }),
       );
@@ -277,6 +303,8 @@ describe("codex daemon topology", () => {
         "danger-full-access",
         "-c",
         'approval_policy="on-request"',
+        "-c",
+        'approvals_reviewer="user"',
       ]);
     });
 

@@ -9,6 +9,7 @@
  */
 
 import type { PermissionMode } from "./permissions";
+import type { RuntimePermission } from "./runtimePermissions";
 
 /** Minimal PTY interface for the startup watcher (avoids node-pty dependency in core) */
 export interface PtyHandle {
@@ -158,38 +159,28 @@ export interface AgentProvider {
   ): boolean;
 
   /**
-   * Optional: the permission mode a RESUMED thread actually runs, when it
-   * disagrees with the record (`recordMode`). A resumed Codex thread keeps its
-   * creation-time policy, and pre-ADR-104 a failed mode-change resume could
-   * leave the record naming a mode the thread never ran. Undefined = record is
-   * consistent (or can't tell). The runtime corrects the record and says so.
+   * Optional: the permission a RESUMED thread actually runs, when it disagrees
+   * with the record (`record`). A resumed Codex thread keeps its creation-time
+   * approval/sandbox policy, so a record that says otherwise is corrected (and
+   * the user told). Undefined = the record is consistent (or can't tell).
    */
-  resumedThreadMode?(
+  resumedThreadPermission?(
     options: ResolvedSpawnOptions,
     env: Record<string, string | undefined>,
-    recordMode: PermissionMode,
-  ): PermissionMode | undefined;
+    record: RuntimePermission,
+  ): RuntimePermission | undefined;
 
   /**
-   * Optional: true when changing permission mode `from` → `to` CANNOT take
-   * effect on a RESUMED conversation. Codex persists a thread's approval/sandbox
+   * Optional: true when changing permission `from` -> `to` CANNOT take effect
+   * on a RESUMED conversation. Codex persists a thread's approval/sandbox
    * policy and rejects permission overrides on a remote resume, so the thread
-   * keeps the policy it started with. The runtime then keeps the record on the
-   * mode the process actually runs and tells the user, rather than recording a
-   * change that never applied.
+   * keeps what it started with; the runtime then keeps the record on what the
+   * process actually runs and tells the user.
    */
-  resumeCannotApplyModeChange?(
-    from: PermissionMode,
-    to: PermissionMode,
+  resumeCannotApplyChange?(
+    from: RuntimePermission,
+    to: RuntimePermission,
   ): boolean;
-
-  /**
-   * Optional: a user-facing notice when `mode` has no native equivalent in this
-   * provider and is clamped to something else (Codex: `plan` and `auto` both
-   * behave like Ask). The runtime surfaces it as a notification on a fresh
-   * spawn, so a clamp is never silent. Undefined = the mode is native.
-   */
-  clampedModeNotice?(mode: PermissionMode): string | undefined;
 
   /**
    * Optional: translate a native hook event into CC-shaped vocabulary so the
@@ -294,8 +285,11 @@ export interface SpawnOptions {
   resumeSessionId?: string;
   /** Provider session ID to fork from — child inherits parent's context */
   forkFrom?: string;
-  /** How much autonomy the agent has over tool use (maps to provider-native
-   *  permission flags). Replaces the old `autonomousMode: boolean`. */
+  /** The agent's permission setting in the runtime's own canonical values
+   *  (ADR-115). What the provider builds its argv from. */
+  permission?: RuntimePermission;
+  /** LEGACY projection of `permission` (ask|auto|plan|bypass) — never used
+   *  to build argv; kept for readers not yet moved to `permission`. */
   permissionMode?: PermissionMode;
   /** Replace the default system prompt entirely */
   systemPrompt?: string;
