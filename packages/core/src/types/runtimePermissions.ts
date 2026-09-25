@@ -48,6 +48,12 @@ export interface RuntimePermissionAxis {
    * so the drift probe doesn't report them as new.
    */
   notOffered?: readonly { value: string; why: string }[];
+  /**
+   * Set PER TURN inside the CLI, not at launch — autonomOS can show it but
+   * cannot choose it for a spawn, so any non-default value is refused rather
+   * than recorded (a record must never claim what the process isn't running).
+   */
+  perTurn?: { why: string };
 }
 
 /** What the drift probe found for one axis of the installed CLI. */
@@ -96,6 +102,14 @@ export const RUNTIME_PERMISSIONS: Readonly<
             value: "manual",
             description:
               "Standard behavior: prompts for permission on first use of each tool.",
+            // Measured (ADR-115 pick 3): passing `--permission-mode manual`
+            // explicitly left the agent's processes writing past teardown in
+            // 3/18 spawns (0/18 without the flag, interleaved) and slowed the
+            // median prompt receipt 691 → 1150ms. So it's spawned with NO flag,
+            // which is Claude Code's own manual — unless settings.json says
+            // otherwise.
+            caveat:
+              "Spawned without a flag (Claude Code's built-in default), so a `defaultMode` in your Claude Code settings.json applies instead.",
           },
           {
             value: "acceptEdits",
@@ -203,10 +217,13 @@ export const RUNTIME_PERMISSIONS: Readonly<
       },
       {
         key: "collaboration_mode",
-        via: "app-server thread/settings/update { collaborationMode } (not a launch setting)",
+        via: "per turn: turn/start { collaborationMode } — the --remote TUI starts its own turns (Shift+Tab); codex 0.154 has no client request to set it per thread",
         source: "codex app-server schema (ModeKind)",
         probe: "schema",
         experimental: true,
+        perTurn: {
+          why: "Codex picks its collaboration mode per turn (Shift+Tab in its TUI); autonomOS can't set it at launch",
+        },
         values: [
           {
             value: "default",
@@ -442,6 +459,9 @@ export function parseRuntimePermission(
     if (!axis || !axis.values.some((v) => v.value === value)) {
       return { ok: false, error: validValuesMessage(runtime) };
     }
+    if (axis.perTurn && value !== DEFAULT_RUNTIME_VALUES[runtime][key]) {
+      return { ok: false, error: `${key}=${value}: ${axis.perTurn.why}.` };
+    }
   }
   return { ok: true, permission: completePermission(runtime, pairs) };
 }
@@ -450,6 +470,7 @@ export function parseRuntimePermission(
 export function validValuesMessage(runtime: Provider): string {
   const axes = RUNTIME_PERMISSIONS[runtime].axes;
   const list = axes
+    .filter((a) => !a.perTurn) // not settable at launch — see perTurn
     .map(
       (a) =>
         (axes.length === 1 ? "" : `${a.key}=`) +

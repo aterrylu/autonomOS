@@ -130,6 +130,16 @@ describe("parseRuntimePermission — the API input", () => {
     assert.equal(r.ok, false);
     assert.match(r.ok ? "" : r.error, /approval_policy=on-request\|never/);
   });
+  it("refuses a PER-TURN axis value autonomOS can't apply at launch (never records it)", () => {
+    const r = parseRuntimePermission("codex", "collaboration_mode=plan");
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.error, /per turn .*can't set it at launch/);
+    // …and the valid-values list doesn't advertise it either.
+    const list = parseRuntimePermission("codex", "never");
+    assert.doesNotMatch(list.ok ? "" : list.error, /collaboration_mode/);
+    // Its default is still accepted (a complete record names every axis).
+    assert.ok(parseRuntimePermission("codex", "collaboration_mode=default").ok);
+  });
   it("rejects an unknown key", () => {
     assert.equal(parseRuntimePermission("codex", "approval=never").ok, false);
   });
@@ -159,7 +169,7 @@ describe("formatPermission — the canonical display string", () => {
   it("format → parse round-trips", () => {
     const p = completePermission("codex", {
       approval_policy: "never",
-      collaboration_mode: "plan",
+      approvals_reviewer: "auto_review",
     });
     const back = parseRuntimePermission("codex", formatPermission(p));
     assert.ok(back.ok);

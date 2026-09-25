@@ -159,11 +159,12 @@ const CHANNELS_NEEDLES = [
 // ── Permission → Claude Code flags (ADR-115: CC's own values) ──
 // `bypassPermissions` keeps --dangerously-skip-permissions (which also
 // auto-accepts the trust-folder prompt); every other value goes through CC's
-// own --permission-mode. `manual` — CC's built-in behavior — emits NO flag
-// while PASS_MANUAL_FLAG is off: an explicit value once perturbed the TUI's
-// startup enough to break the usage-queue auto-Enter, so passing it is gated
-// on a measured clean startup (ADR-115 pick 3). With no flag, a user's
-// settings.json `defaultMode` can widen `manual` — the dashboard says so.
+// own --permission-mode. `manual` — CC's built-in behavior — emits NO flag:
+// ADR-115 pick 3 said to pass it once a clean startup was measured, and the
+// measurement said no (interleaved A/B, 18 real spawns per arm: with the flag,
+// 3 left processes writing past teardown vs 0 without, and the median prompt
+// receipt went 691 → 1150ms). The cost: a user's settings.json `defaultMode`
+// can widen `manual` — the table's caveat says so wherever it's offered.
 const PASS_MANUAL_FLAG = false;
 function claudePermissionArgs(permission: RuntimePermission): string[] {
   const value = permission.values["permission-mode"];

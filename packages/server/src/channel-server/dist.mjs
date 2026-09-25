@@ -24506,13 +24506,16 @@ var TOOL_CREATE_AGENT = {
       permissionMode: {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
-        // NO `default` key. It would say "omitting this yields ask", which is
-        // false on every resume — omission PRESERVES the agent's current mode.
-        // A client that materializes an advertised default would then send
-        // `permissionMode: "ask"` explicitly on a resume and re-level a
-        // deliberately autonomous agent: the exact demotion this schema's own
-        // description tells it to avoid.
-        description: "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation \u2014 not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn \u2014 pass 'bypass' explicitly for full autonomy."
+        // NO `default` key: omission PRESERVES a resumed agent's setting, so an
+        // advertised default would teach clients to re-level it on resume.
+        description: "DEPRECATED \u2014 pass `permission` instead. The old shared ask/auto/plan/bypass vocabulary, still accepted and mapped to exactly what it always ran on each runtime."
+      },
+      permission: {
+        type: "string",
+        // Deliberately free text, not an enum: the valid values depend on
+        // `provider` (JSON Schema can't key one on the other). The server
+        // rejects a bad value with that runtime's valid values.
+        description: "The agent's permission in its runtime's OWN values (ADR-115) \u2014 requires `provider`. Omit to use the operator's default for that runtime (on a resume: keep the agent's current setting). Examples \u2014 claude-code: `acceptEdits`; codex: `approval_policy=never sandbox_mode=danger-full-access`; gemini-cli: `auto_edit`. An invalid value is rejected with the runtime's valid values."
       },
       template: {
         type: "string",
@@ -24652,7 +24655,11 @@ var TOOL_CREATE_TEMPLATE = {
       permissionMode: {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
-        description: "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'."
+        description: "DEPRECATED \u2014 pass `permissions` instead. The old shared ask/auto/plan/bypass vocabulary, still accepted and mapped to exactly what it always ran on each runtime."
+      },
+      permissions: {
+        type: "object",
+        description: `Per-runtime permission for agents spawned from this template, each in that runtime's OWN values (ADR-115), e.g. {"claude-code": "acceptEdits", "codex": "approval_policy=never"}. A runtime not named here uses the operator's default for it.`
       },
       model: {
         type: "string",
@@ -25248,7 +25255,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const lines = agents.map(
         (a) => [
           `${a.name} (${a.uri}) \u2014 ${a.status}`,
-          a.permissionMode ? ` \u2014 ${a.permissionMode}` : ""
+          // The runtime's own values (ADR-115); the legacy mode only from an
+          // older server that doesn't send them.
+          a.permission ? ` \u2014 ${a.permission}` : a.permissionMode ? ` \u2014 ${a.permissionMode}` : ""
         ].join("")
       );
       return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -25262,6 +25271,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         resumeSessionId,
         forkFrom,
         permissionMode,
+        permission,
         template,
         manager,
         project,
@@ -25290,6 +25300,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             // fallback so it can prefer a resumed agent's own record over it —
             // do not substitute a default here.
             permissionMode,
+            permission,
             appendSystemPrompt: systemPrompt,
             template,
             manager: effectiveManager,
