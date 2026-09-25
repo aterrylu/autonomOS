@@ -472,14 +472,33 @@ export async function boundedTeardown(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<"timeout">((r) => {
     timer = setTimeout(() => r("timeout"), ms);
+    // Never let the bound itself hold the event loop open.
+    timer.unref?.();
   });
-  const res = await Promise.race([fn().then(() => "ok" as const), timedOut]);
-  clearTimeout(timer);
-  if (res === "timeout") {
+  let res: "ok" | "timeout";
+  try {
+    res = await Promise.race([fn().then(() => "ok" as const), timedOut]);
+  } catch (err) {
+    // A teardown that THROWS must fail the file. Rethrowing does NOT: it
+    // becomes an after() hook failure, and the runner then computes exit 0
+    // (verified). Name it and set the exit code instead.
     process.exitCode = 1;
-    console.error(
-      `[integration] TEARDOWN TIMED OUT after ${ms}ms: ${label} — a server, mock, or spawned agent did not shut down`,
-    );
+    console.error(`[integration] TEARDOWN FAILED: ${label}:`, err);
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res === "timeout") {
+    // Setting exitCode is NOT enough: whatever wedged teardown is usually a
+    // LIVE handle (a server child that never exited, a socket that never
+    // closed), and it keeps this test-file process alive — the runner would
+    // wait on it until the CI job limit (verified). Name the suite, flush
+    // stderr, then force the file to exit non-zero.
+    process.exitCode = 1;
+    const msg = `[integration] TEARDOWN TIMED OUT after ${ms}ms: ${label} — a server, mock, or spawned agent did not shut down\n`;
+    const force = setTimeout(() => process.exit(1), 1000);
+    force.unref?.();
+    process.stderr.write(msg, () => process.exit(1));
   }
 }
 
