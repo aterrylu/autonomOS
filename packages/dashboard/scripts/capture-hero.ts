@@ -45,8 +45,8 @@
  * CAPTURE-TIME TWEAKS (Playwright only — NOT product-code edits):
  *   - Un-dim: injects `.dv-pane-fill { opacity: 1 !important }` so inactive
  *     dockview groups (normally dimmed to 0.5) render bright.
- *   - Org fit: scales the HierarchyPanel tree down so the whole hierarchy fits
- *     the left pane (the tree centers + overflows rather than auto-fitting).
+ *   - Org fit: scales the org-chart stage ([data-org-stage]) down to the left
+ *     pane's width so the whole side-by-side hierarchy fits (never upscales).
  *   - Host: route-mocks `/api/host` → hostname "dev-server" so the status bar
  *     reads a generic name instead of the operator's machine.
  *   - Gemini MCP is stripped from the generated Gemini settings so it sidesteps
@@ -1103,11 +1103,17 @@ function seedBlob3(
 // opacity 0.5 on .dv-pane-fill) — capture-time visual only.
 const UNDIM_CSS = ".dv-pane-fill { opacity: 1 !important; }";
 
-// The org-chart tree (HierarchyPanel) centers + overflows its pane rather than
-// fitting; scale it down a touch so the whole hierarchy (all provider icons)
-// fits inside the narrower left pane. Capture-time visual only.
-const ORG_FIT_CSS =
-  ".overflow-auto.p-8 > .flex.flex-col.gap-12 { transform: scale(0.8) !important; transform-origin: top center !important; }";
+// The org chart lays teams out side by side on a fixed-size stage; the left
+// pane is narrower than a full fleet, so FIT the stage to the pane width
+// (never upscale). Capture-time visual only — see fitOrgChart().
+const fitOrgChart = () => {
+  const vp = document.querySelector<HTMLElement>("[data-org-viewport]");
+  const stage = document.querySelector<HTMLElement>("[data-org-stage]");
+  if (!vp || !stage) return;
+  const scale = Math.min(1, (vp.clientWidth - 8) / stage.offsetWidth);
+  stage.style.transform = `scale(${scale})`;
+  stage.style.transformOrigin = "top left";
+};
 
 async function shoot(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
@@ -1178,10 +1184,11 @@ async function shoot(
 
     await page.goto(`http://127.0.0.1:${server.port}/`);
     await page
-      .locator("div.backdrop-blur-sm")
+      .locator("[data-org-card]")
       .nth(opts.waitOrgNodes)
       .waitFor({ timeout: 15_000 });
-    await page.addStyleTag({ content: UNDIM_CSS + ORG_FIT_CSS });
+    await page.addStyleTag({ content: UNDIM_CSS });
+    await page.evaluate(fitOrgChart);
     if (HERO_ZOOM !== 1) {
       await page.evaluate((z: number) => {
         (document.body.style as unknown as { zoom: string }).zoom = String(z);
@@ -1189,8 +1196,10 @@ async function shoot(
       await sleep(400);
     }
     await sleep(opts.settleMs);
-    // Re-assert the overrides in case a late re-render re-inlined opacity.
-    await page.addStyleTag({ content: UNDIM_CSS + ORG_FIT_CSS });
+    // Re-assert the overrides in case a late re-render re-inlined opacity, and
+    // re-fit in case the fleet (so the stage width) changed while settling.
+    await page.addStyleTag({ content: UNDIM_CSS });
+    await page.evaluate(fitOrgChart);
 
     // Drift guards — fail loudly instead of committing a broken hero.
     if (dockviewError) {

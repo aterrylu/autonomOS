@@ -26,6 +26,10 @@ export const agentsApi = {
     request<Agent[]>("/api/agents", opts),
   tree: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<AgentTreeNode[]>("/api/agents/tree", opts),
+  /** The tree WITH exited agents (`includeExited=true`) — the org chart's view,
+   *  so an exited manager keeps its reports instead of promoting them to roots. */
+  treeWithExited: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
+    request<AgentTreeNode[]>("/api/agents/tree?includeExited=true", opts),
   spawn: (body: SpawnAgentBody) =>
     request<Agent>("/api/agents", { method: "POST", body }),
   attach: (id: string) =>

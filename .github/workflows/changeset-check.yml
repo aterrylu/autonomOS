@@ -1,7 +1,7 @@
 name: Changeset Check
 
 # FAILS (exit 1) on substantive PRs that ship without a changeset (ADR-069 in
-# docs/DECISIONS.md). v0.5.0 shipped with 5 substantive PRs missing from the
+# docs/decisions/). v0.5.0 shipped with 5 substantive PRs missing from the
 # changelog because this check was advisory-only (::warning, always green).
 # NOTE: a red run hard-blocks the merge only once this job is added to main's
 # ruleset required checks (currently only "check" is required — see the ADR's
@@ -25,6 +25,8 @@ permissions:
 jobs:
   changeset:
     runs-on: ubuntu-latest
+    # p95 9s (max 17s) over the last 30 runs.
+    timeout-minutes: 5
     if: github.head_ref != 'changeset-release/main'
     steps:
       - uses: actions/checkout@v4

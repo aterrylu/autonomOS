@@ -3,11 +3,14 @@ import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { diagnosisLabel, diagnosisTitle } from "./diagnosis";
 import { type SaveValidateResult, saveAndValidate } from "./saveAndValidate";
+import { spendItemView, spendTooltip } from "./spend";
 import {
   type ErrorKind,
   isCredentialError,
   type RateLimitData,
   type RateLimitWindow,
+  type SpendDisplay,
+  type SpendLimit,
   type UsageDiagnosis,
 } from "./types";
 import { UsagePanel } from "./UsagePanel";
@@ -112,6 +115,71 @@ function DiagnosisPanel({
         Check again
       </button>
     </FloatingPanel>
+  );
+}
+
+/**
+ * The spend item for a spend-metered account, in the user's chosen style.
+ * Informational only: spend never pauses or resumes the usage queue.
+ */
+function SpendItem({
+  spend,
+  style,
+  statusFg,
+}: {
+  spend: SpendLimit;
+  style: SpendDisplay;
+  statusFg: string;
+}) {
+  const view = spendItemView(spend, style);
+  const title = spendTooltip(spend, style);
+  const label = <span style={{ fontSize: 10, opacity: 0.85 }}>$</span>;
+  if (view.kind === "bar") {
+    return (
+      <span
+        className="inline-flex items-center gap-1"
+        title={title}
+        data-testid="claude-spend-item"
+      >
+        {label}
+        <span
+          role="img"
+          aria-label={title.split("\n")[0]}
+          className="inline-block h-2 rounded-sm overflow-hidden align-middle"
+          style={{ width: 28, background: `${view.color}22` }}
+        >
+          <span
+            className="block h-full rounded-sm"
+            style={{ width: `${view.fill}%`, background: view.color }}
+          />
+        </span>
+        {view.over && (
+          <span
+            role="img"
+            aria-label="over the spend limit"
+            style={{ color: view.color, fontSize: 9, lineHeight: 1 }}
+          >
+            ▲
+          </span>
+        )}
+      </span>
+    );
+  }
+  if (view.kind === "percent") {
+    return (
+      <span title={title} data-testid="claude-spend-item">
+        {label} <span style={{ color: view.color }}>{view.text}</span>
+      </span>
+    );
+  }
+  return (
+    <span
+      title={title}
+      data-testid="claude-spend-item"
+      style={{ color: view.color ?? statusFg }}
+    >
+      {view.text}
+    </span>
   );
 }
 
@@ -415,7 +483,15 @@ function ErrorPanel({
 export function UsageStatusBarItem() {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
-  const { data, error, displayMode, setDisplayMode, refetch } = useUsageData();
+  const {
+    data,
+    error,
+    displayMode,
+    setDisplayMode,
+    spendDisplay,
+    setSpendDisplay,
+    refetch,
+  } = useUsageData();
   const [panel, setPanel] = useState<"none" | "error" | "setup" | "usage">(
     "none",
   );
@@ -468,7 +544,8 @@ export function UsageStatusBarItem() {
     data.sevenDay ||
     data.sevenDaySonnet ||
     data.sevenDayOpus ||
-    (data.extraWindows?.length ?? 0) > 0;
+    (data.extraWindows?.length ?? 0) > 0 ||
+    Boolean(data.spendLimit);
 
   if (data.error && !hasData) {
     // A bad credential is the user's to fix (red, "err"); a transient outage
@@ -567,6 +644,13 @@ export function UsageStatusBarItem() {
         title="Click for rate limit details"
       >
         <Codicon name="claude" size={14} />
+        {data.spendLimit && (
+          <SpendItem
+            spend={data.spendLimit}
+            style={spendDisplay}
+            statusFg={page.statusFg}
+          />
+        )}
         {data.fiveHour && (
           <WindowLabel label="5h" window={data.fiveHour} mode={displayMode} />
         )}
@@ -600,6 +684,8 @@ export function UsageStatusBarItem() {
           data={data}
           displayMode={displayMode}
           onDisplayModeChange={setDisplayMode}
+          spendDisplay={spendDisplay}
+          onSpendDisplayChange={setSpendDisplay}
           onClose={() => setPanel("none")}
           onRefetch={refetch}
           toggleRef={toggleRef}

@@ -11,6 +11,8 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    # p95 99s over the last 30 runs; bounded so a hang fails fast instead of at the 6h default.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

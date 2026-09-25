@@ -1,6 +1,6 @@
 import { isReservedChord } from "../shortcuts/registry";
 import { matchTerminalKey } from "../shortcuts/terminalKeymap";
-import { THEMES, useStore } from "../store";
+import { restartingIds, THEMES, useStore } from "../store";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
 import { isDegenerate, isPlausibleFit } from "./resize";
@@ -596,7 +596,16 @@ export class LiveTerminal {
         const { activePane } = store;
         if (
           activePane?.type === "session" &&
-          activePane.id === this.sessionId
+          activePane.id === this.sessionId &&
+          // …UNLESS this id is mid-restart: the 4010 here is the kill leg of a
+          // kill→attach under the SAME id, NOT a genuine session end. Routing the
+          // pane away would drop the user to the empty state instead of keeping
+          // the pane put while the fresh PTY comes up — the actual "restart
+          // closes the pane" bug. restartSession bumps the reload nonce right
+          // after attach, which re-acquires a terminal bound to the new PTY in
+          // this same still-mounted pane. (endSession above already freed this
+          // dead socket's slot, which the re-acquire needs.) See restartingIds.
+          !restartingIds.has(this.sessionId)
         ) {
           store.switchPane(null);
         }

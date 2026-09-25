@@ -122,7 +122,7 @@ describe("codex daemon topology", () => {
       // for the readOnlyHint-annotated read-only ones (auto-approved by "writes").
       const expected: Record<PermissionMode, string> = {
         bypass: "approve",
-        // Codex has no auto tier: auto is clamped to Ask on BOTH axes (ADR-104),
+        // Codex's auto review isn't wired up: auto is clamped to Ask on BOTH axes (ADR-104),
         // so "behaves like Ask" is true for MCP tools too — never wider.
         auto: "writes",
         ask: "writes",
@@ -172,7 +172,7 @@ describe("codex daemon topology", () => {
     });
 
     it("maps permissionMode → approval_policy on the daemon (always set)", () => {
-      // Codex has no plan mode and no auto tier — both clamp to ask's policy
+      // Codex's plan mode / auto review aren't wired up — both clamp to ask's policy
       // (on-request). codex 0.15x accepts only on-request | never; "on-failure"
       // was removed and silently coerced, so auto never really was on-failure.
       const cases: Record<PermissionMode, string> = {
@@ -211,7 +211,7 @@ describe("codex daemon topology", () => {
       }
       const planWarnings = warnings.filter((w) => w.includes("plan"));
       assert.equal(planWarnings.length, 1, "expected exactly one plan warning");
-      assert.match(planWarnings[0], /no Codex equivalent/);
+      assert.match(planWarnings[0], /isn't wired up for Codex yet/);
     });
 
     it("does NOT warn when clamping is not needed (supported modes)", () => {
@@ -264,7 +264,7 @@ describe("codex daemon topology", () => {
       assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
     });
 
-    it("auto mode keeps the sandbox off and clamps to ask's on-request (Codex has no auto tier)", () => {
+    it("auto mode keeps the sandbox off and clamps to ask's on-request (auto review not wired up)", () => {
       const args = codexProvider.buildArgs(
         baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "auto" }),
       );

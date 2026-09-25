@@ -13,6 +13,8 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   sleep,
   waitFor,
@@ -76,16 +78,18 @@ describe("usage-queue auto-fire — real spawn", {
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });
-  });
+  }, HOOK_TIMEOUT);
 
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    if (mock) await mock.close();
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("usage-queue-integration", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      if (mock) await mock.close();
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   async function hookStatus(id: string): Promise<HookStatus> {
     // Reads the BULK endpoint — the per-session single was removed in the
@@ -191,5 +195,13 @@ describe("usage-queue auto-fire — real spawn", {
     await authedJson(server, `/api/agents/${agent.id}/kill`, {
       method: "POST",
     });
+  });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
   });
 });

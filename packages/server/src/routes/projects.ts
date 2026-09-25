@@ -47,20 +47,44 @@ projectRouter.get("/", async (c) => {
     }
   }
 
-  // Group sessions by project directory
+  // Group sessions by project directory. A session with NO cwd gets its own
+  // group keyed by sessionId (all displayed as "Unknown") so unrelated cwd-less
+  // sessions don't merge into one pseudo-project.
   const projectMap = new Map<string, ProjectSession[]>();
-  for (const s of sessions) {
-    const cwd = s.cwd || "unknown";
-    const title = s.customTitle || resolvedTitles.get(s.sessionId);
+  const push = (cwd: string, s: ProjectSession) => {
     if (!projectMap.has(cwd)) projectMap.set(cwd, []);
-    projectMap.get(cwd)!.push({
+    projectMap.get(cwd)!.push(s);
+  };
+  for (const s of sessions) {
+    const cwd = s.cwd || `unknown:${s.sessionId}`;
+    // `summary` carries the resolved display title (SDK customTitle → JSONL
+    // title cache → SDK summary). The old redundant `customTitle` wire field is
+    // gone — it duplicated this and was misnamed for a resolved value.
+    const title = s.customTitle || resolvedTitles.get(s.sessionId);
+    push(cwd, {
       sessionId: s.sessionId,
+      provider: "claude-code",
       summary: title || s.summary,
       lastModified: s.lastModified,
       gitBranch: s.gitBranch,
       firstPrompt: s.firstPrompt,
-      customTitle: title,
     });
+  }
+
+  // ── Codex discovery seam (owned by CodexGemini's PR) ────────────────────
+  // Enumerates ~/.codex rollout JSONLs → rows in the SHARED ProjectSession shape
+  // (provider:"codex", summary=derived title, no branch, originator class), each
+  // paired with its cwd for grouping. No-op until that PR lands, so this listing
+  // stays CC-only but already provider-shaped; the UI renders whatever appears.
+  try {
+    for (const { cwd, session } of await listCodexSessionsFn()) {
+      push(cwd || `unknown:${session.sessionId}`, session);
+    }
+  } catch (err) {
+    console.error(
+      "listCodexSessions failed; Codex rows omitted this tick:",
+      err instanceof Error ? err.message : err,
+    );
   }
 
   const projects: ProjectInfo[] = Array.from(
@@ -69,7 +93,7 @@ projectRouter.get("/", async (c) => {
       projectSessions.sort((a, b) => b.lastModified - a.lastModified);
       return {
         path,
-        name: path === "unknown" ? "Unknown" : basename(path) || path,
+        name: path.startsWith("unknown:") ? "Unknown" : basename(path) || path,
         sessions: projectSessions,
         lastActive: projectSessions[0].lastModified,
       };
@@ -102,20 +126,34 @@ projectRouter.get("/", async (c) => {
   return c.json(projects);
 });
 
+/** A Codex session row plus the cwd it groups under. CodexGemini's discovery PR
+ *  implements the enumerator; the shared `ProjectSession` shape is what the UI
+ *  renders (provider:"codex", summary=derived title, no gitBranch, originator). */
+export interface CodexSessionRow {
+  cwd: string;
+  session: ProjectSession;
+}
+
 // Indirection so tests can stub session listing + title resolution without a
 // real SDK or a populated ~/.claude/projects on disk.
 let listSessionsFn: typeof listSessions = listSessions;
 let batchGetTitlesFn: typeof batchGetTitles = batchGetTitles;
+// Codex discovery seam — no-op until CodexGemini's rollout scanner lands.
+let listCodexSessionsFn: () => Promise<CodexSessionRow[]> = async () => [];
 
 export function _setDepsForTesting(overrides: {
   listSessions?: typeof listSessions;
   batchGetTitles?: typeof batchGetTitles;
+  listCodexSessions?: () => Promise<CodexSessionRow[]>;
 }): void {
   if (overrides.listSessions) listSessionsFn = overrides.listSessions;
   if (overrides.batchGetTitles) batchGetTitlesFn = overrides.batchGetTitles;
+  if (overrides.listCodexSessions)
+    listCodexSessionsFn = overrides.listCodexSessions;
 }
 
 export function _resetForTesting(): void {
   listSessionsFn = listSessions;
   batchGetTitlesFn = batchGetTitles;
+  listCodexSessionsFn = async () => [];
 }

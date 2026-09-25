@@ -29,6 +29,7 @@ import {
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
 import {
+  formatAge,
   isLightBg,
   recencyLabelOpacity,
   recencyTimestampStyle,
@@ -39,7 +40,7 @@ import {
   digitForRow,
   flattenHierarchyRows,
 } from "./sidebarRowOrder";
-import { statusLabelStyle } from "./statusLabelStyle";
+import { statusLabelStyle, unreadColor } from "./statusLabelStyle";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -102,6 +103,7 @@ function useSidebarData() {
       theme: s.theme,
       sessions: s.sessions,
       projects: s.projects,
+      expandedProjects: s.expandedProjects,
       activePane: s.activePane,
       pinnedOrder: s.pinnedOrder,
       unpinnedOrder: s.unpinnedOrder,
@@ -131,6 +133,7 @@ function useSidebarActions() {
       openPresets: s.openPresets,
       openCreateAgent: s.openCreateAgent,
       toggleSidebarViewMode: s.toggleSidebarViewMode,
+      collapseAllProjects: s.collapseAllProjects,
     })),
   );
 }
@@ -244,6 +247,7 @@ export function Sidebar() {
     theme,
     sessions,
     projects,
+    expandedProjects,
     activePane,
     pinnedOrder,
     unpinnedOrder,
@@ -267,6 +271,7 @@ export function Sidebar() {
     reorderFlat,
     pinAgent,
     unpinAgent,
+    collapseAllProjects,
   } = useSidebarActions();
   const page = THEMES[theme].page;
   // Theme accent (gold) + icon style — for the slide-apart ghost preview row,
@@ -1015,18 +1020,45 @@ export function Sidebar() {
 
         {/* Projects Section */}
         <div
-          className="flex items-center px-3 py-2"
+          className="flex items-center gap-2 px-3 py-2"
           style={{
             borderTop: `1px solid ${page.border}`,
             borderBottom: `1px solid ${page.border}`,
           }}
         >
           <span
-            className="text-xs font-medium uppercase"
+            className="text-xs font-medium uppercase flex-1"
             style={{ color: page.statusFg }}
           >
             Projects
           </span>
+          {/* The projects·sessions header count was removed at Terry's gate
+              ("what is 16·53 next to the projects? get rid of that, keep it
+              clean"); the per-project row count + collapse-all stay. */}
+          {projects.some((p) => expandedProjects[p.path]) && (
+            <button
+              type="button"
+              onClick={() => collapseAllProjects()}
+              title="Collapse all projects"
+              className="shrink-0 cursor-pointer leading-none rounded px-1 py-0.5 transition-colors"
+              style={{ color: page.statusFg }}
+              aria-label="Collapse all projects"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 9l4-4 4 4M4 13l4-4 4 4" />
+              </svg>
+            </button>
+          )}
         </div>
 
         <div className="flex-1 py-1">
@@ -1464,7 +1496,9 @@ function SessionRow({
             style={{ color: page.statusFg }}
           >
             {notifCount > 0 && (
-              <span style={{ color: "#ea6c73" }}>{notifCount} unread · </span>
+              <span style={{ color: unreadColor(isLightTheme) }}>
+                {notifCount} unread ·{" "}
+              </span>
             )}
             <span
               style={recencyTimestampStyle(
@@ -2208,7 +2242,12 @@ interface ProjectItemProps {
   onAgentContextMenu: (e: React.MouseEvent, target: AgentMenuTarget) => void;
 }
 
-const ProjectItem = React.memo(function ProjectItem({
+/** One session row's derived state. `live` = ours + running (a subordinate
+ *  jump-to-live chip); `stopped` = ours + exited (adoptable with config);
+ *  `external` = not managed (the adoptable star). */
+type RowState = "live" | "stopped" | "external";
+
+export const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
   liveSessionIds,
@@ -2216,15 +2255,30 @@ const ProjectItem = React.memo(function ProjectItem({
 }: ProjectItemProps) {
   const resumeSession = useStore((s) => s.resumeSession);
   const createSession = useStore((s) => s.createSession);
-  // For the row context menu: a Projects row is a session *summary* keyed by CC
-  // session id, not a SessionInfo — resolve the agent record (for id-based
-  // actions) from the store's live/exited lists by matching either id space.
+  const switchPane = useStore((s) => s.switchPane);
+  // For the row context menu + the live-age fix: a Projects row is a session
+  // *summary* keyed by CC/provider session id, not a SessionInfo — resolve the
+  // agent record from the store's live/exited lists by matching either id space.
   const sessions = useStore((s) => s.sessions);
   const exitedSessions = useStore((s) => s.exitedSessions);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
+  // The SAME live status feed the Agents-tab rows read (GET /api/agent-status),
+  // so a live Projects row shows the real corner dot (green idle / blue working
+  // / amber needs-input) instead of a blank circle — Terry's #369 refinement.
+  const agentStatuses = useStore((s) => s.agentStatuses);
 
-  const [expanded, setExpanded] = useState(false);
+  // Expand state lives in the store so it survives the Sidebar's unmount-on-
+  // collapse (a per-mount useState reset every open — the old bug #8).
+  const expanded = useStore((s) => s.expandedProjects[project.path] ?? false);
+  const toggleProjectExpanded = useStore((s) => s.toggleProjectExpanded);
+
+  const accent = THEMES[useStore((s) => s.theme)].terminal.yellow;
+
+  // The "+" quick-spawn must spawn in the project's OWN provider (bug #2 — it
+  // used to always create a Claude agent). Newest session's provider wins for a
+  // mixed project; a homogeneous project is unambiguous.
+  const projectProvider = project.sessions[0]?.provider;
 
   return (
     <div>
@@ -2232,7 +2286,8 @@ const ProjectItem = React.memo(function ProjectItem({
         <button
           type="button"
           className="flex flex-1 items-center gap-2 px-3 py-1.5 cursor-pointer text-left min-w-0"
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => toggleProjectExpanded(project.path)}
+          aria-expanded={expanded}
         >
           <span
             className="text-[10px] shrink-0"
@@ -2243,70 +2298,123 @@ const ProjectItem = React.memo(function ProjectItem({
           <span className="flex-1 truncate text-xs font-medium">
             {project.name}
           </span>
+        </button>
+        {/* Right edge (V1): the count and the quick-spawn "+" share ONE slot
+            flush-right. At rest the count shows; on row hover (or keyboard
+            focus on the "+") the count fades out and the "+" fades into its
+            place — no dead gap to the right of the count. The "+" is
+            pointer-inert while invisible so a click on the count can't spawn. */}
+        <div className="group/slot relative mr-3 flex h-5 w-5 shrink-0 items-center justify-end">
           <span
-            className="shrink-0 text-[10px]"
+            className="text-[10px] tabular-nums transition-opacity duration-150 group-hover:opacity-0 group-focus-within/slot:opacity-0"
             style={{ color: page.statusFg }}
           >
             {project.sessions.length}
           </span>
-        </button>
-        <button
-          type="button"
-          disabled={isBusy}
-          className="shrink-0 rounded px-1.5 mr-2 text-xs opacity-0 transition-opacity group-hover:opacity-100 cursor-pointer disabled:opacity-50"
-          style={{ color: "#238636" }}
-          title={`New session in ${project.name}`}
-          // Fire-and-forget: spawnSession now throws on failure (so panels with
-          // an error UI can show the reason) and already records it in `status`.
-          // This quick-spawn button has no inline error surface, so swallow the
-          // rejection here only to keep it from becoming unhandled.
-          onClick={() => {
-            createSession(project.path).catch(() => {});
-          }}
-        >
-          +
-        </button>
+          <button
+            type="button"
+            disabled={isBusy || !projectProvider}
+            className="absolute inset-0 flex items-center justify-end rounded text-sm leading-none opacity-0 pointer-events-none transition-opacity duration-150 cursor-pointer group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:cursor-default group-hover:disabled:opacity-50"
+            style={{ color: page.statusFg }}
+            title={`New session in ${project.name}`}
+            aria-label={`New session in ${project.name}`}
+            // Fire-and-forget: spawnSession throws on failure and records it in
+            // `status`; this button has no inline error surface, so swallow the
+            // rejection only to keep it from becoming unhandled.
+            onClick={() => {
+              createSession(project.path, {
+                provider: projectProvider,
+              }).catch(() => {});
+            }}
+          >
+            +
+          </button>
+        </div>
       </div>
 
       {expanded && (
-        <div className="pl-4">
+        <div>
           {project.sessions.map((s) => {
+            const all = [...sessions, ...exitedSessions];
+            const rec =
+              all.find(
+                (x) =>
+                  x.claudeSessionId === s.sessionId ||
+                  x.providerSessionId === s.sessionId,
+              ) ?? all.find((x) => x.id === s.sessionId);
             const isLive = liveSessionIds.has(s.sessionId);
-            const isExited = s.autonomosStatus === "exited" && !isLive;
+            const state: RowState = isLive
+              ? "live"
+              : s.autonomosStatus === "exited"
+                ? "stopped"
+                : "external";
+            // Live/managed rows get their age from the live record's activity
+            // (hook-driven, 3s) rather than the 30s projects poll's file mtime,
+            // which lagged and disagreed with the live dot (bugs #5/#6).
+            const age = formatAge(
+              isLive ? (rec?.lastActivityAt ?? s.lastModified) : s.lastModified,
+            );
+            // Live rows carry their REAL fine-grained status from the live feed
+            // (idle/working/needs-input → the colored corner dot), exactly like
+            // the Agents tab — NOT the coarse record `status: "running"` that
+            // renders as a blank circle. Dead rows read "unknown" so the icon
+            // shows no active dot (they're also grayed below).
+            // The prop type is the coarse AgentStatus, but StatusCorner's
+            // statusCategory() reads the fine runtime value (idle/working/
+            // needs-input) — so cast it through exactly like SessionRow does.
+            const liveStatus = rec?.id
+              ? (agentStatuses[rec.id]?.status as AgentStatus | undefined)
+              : undefined;
+            const iconStatus: AgentStatus = isLive
+              ? (liveStatus ?? (rec?.status as AgentStatus) ?? "running")
+              : "unknown";
 
-            let dotColor = "transparent";
-            let tooltip = "Resume this session";
-            if (isLive) {
-              dotColor = "#238636";
-              tooltip = "Switch to live session";
-            } else if (isExited) {
-              dotColor = "#848d97";
-              tooltip = "Resume autonomOS agent with full config";
-            }
+            const onOpen = () => {
+              // A live row IS our running agent — jump straight to its pane
+              // (subordinate chip, decision C). A pure switchPane, so it is NOT
+              // gated on isBusy: jumping to a running agent must work even while
+              // an unrelated spawn is in flight (nox).
+              if (isLive && rec) {
+                switchPane({ type: "session", id: rec.id });
+                return;
+              }
+              // Resume/adopt: no-op while a spawn/resume is already in flight.
+              // The external path is also gated inside spawnSession, but the
+              // Stopped path (isAutonomosAgent → agentsApi.attach) is not.
+              // SessionRow has no disabled state (agent-row parity), so the row
+              // stays visually live and guards here instead of dimming.
+              if (isBusy) return;
+              resumeSession(s.sessionId, project.path, s.summary, {
+                isAutonomosAgent: s.isAutonomosAgent,
+              }).catch(() => {});
+            };
 
             return (
               <button
                 type="button"
                 key={s.sessionId}
-                disabled={isBusy}
-                className="flex w-full items-start gap-2 px-3 py-1.5 text-xs text-left cursor-pointer hover:opacity-80 disabled:opacity-50"
-                style={{
-                  color: page.fg,
-                  opacity: isExited ? 0.6 : 1,
+                // Terry's gate pick + refinement: a Projects row MIRRORS a live
+                // agent row (SessionRow) — same height, spacing, icon size, and
+                // two-line anatomy (name + age on line 1, branch + a trailing
+                // state slot on line 2). State differentiation is SELECTIVE: a
+                // LIVE row is full-strength and carries its real status dot (see
+                // iconStatus), while a DEAD row (stopped/external) is grayed out
+                // — dimmed at rest, restored on hover so its Resume stays legible.
+                // (The rounded-full pills from the first archive look are still
+                // gone; only the dead-row dimming returns. ADR-098.)
+                className={`group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer${
+                  state === "live"
+                    ? ""
+                    : " opacity-60 transition-opacity hover:opacity-100"
+                }`}
+                style={{ paddingLeft: "20px", paddingRight: "12px" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = `${page.fg}0a`;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
                 }}
                 onContextMenu={(e) => {
-                  // A Projects row is keyed by a CC/provider session id, so match
-                  // that id-space FIRST — falling back to the agent-id space only
-                  // if nothing matched. A blind first-match across all three
-                  // spaces could resolve to a different agent whose agent id
-                  // happens to equal this row's CC id, mis-targeting Delete.
-                  const all = [...sessions, ...exitedSessions];
-                  const rec =
-                    all.find(
-                      (x) =>
-                        x.claudeSessionId === s.sessionId ||
-                        x.providerSessionId === s.sessionId,
-                    ) ?? all.find((x) => x.id === s.sessionId);
                   onAgentContextMenu(e, {
                     id: rec?.id,
                     name: rec?.name ?? s.summary,
@@ -2317,49 +2425,60 @@ const ProjectItem = React.memo(function ProjectItem({
                     isAutonomosAgent: s.isAutonomosAgent,
                   });
                 }}
-                onClick={() => {
-                  // Fire-and-forget; spawnSession now throws on failure and
-                  // records it in `status`. Swallow here (no inline error UI on
-                  // this row) only to avoid an unhandled rejection.
-                  resumeSession(s.sessionId, project.path, s.summary, {
-                    isAutonomosAgent: s.isAutonomosAgent,
-                  }).catch(() => {});
-                }}
-                title={tooltip}
+                onClick={onOpen}
+                title={
+                  state === "live"
+                    ? "Jump to the live agent"
+                    : state === "stopped"
+                      ? "Resume this autonomOS agent with its full config"
+                      : "Resume this session as a new managed agent"
+                }
               >
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full mt-1"
-                  style={{ background: dotColor }}
+                <ProviderAgentIcon
+                  provider={s.provider}
+                  status={iconStatus}
+                  size={16}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1">
-                    <p className="truncate flex-1">{s.summary}</p>
-                    {isExited && (
-                      <span
-                        className="shrink-0 text-[10px]"
-                        title={`autonomOS agent${s.template ? ` (${s.template})` : ""}`}
-                      >
-                        stopped
-                      </span>
-                    )}
+                    <span className="flex-1 truncate text-xs">{s.summary}</span>
+                    <span
+                      className="shrink-0 text-[10px]"
+                      style={{ color: page.statusFg }}
+                    >
+                      {age}
+                    </span>
                   </div>
                   <div
-                    className="flex items-center gap-2 mt-0.5"
+                    className="flex items-center text-[10px]"
                     style={{ color: page.statusFg }}
                   >
-                    {s.isAutonomosAgent && (
-                      <span className="text-[10px]">
-                        {s.template ?? "agent"}
-                      </span>
-                    )}
                     {s.gitBranch && (
-                      <span className="text-[10px] truncate max-w-[120px]">
-                        {s.gitBranch}
+                      <span className="min-w-0 truncate">{s.gitBranch}</span>
+                    )}
+                    {state === "live" ? (
+                      // Row-click jumps to the live agent; a subtle trailing ↗
+                      // marks it as a link rather than a resume.
+                      <span
+                        className="ml-auto shrink-0 pl-1.5"
+                        role="img"
+                        aria-label="Jump to the live agent"
+                      >
+                        ↗
+                      </span>
+                    ) : state === "stopped" ? (
+                      <span className="ml-auto shrink-0 pl-1.5">Stopped</span>
+                    ) : (
+                      // External + dormant: hover-revealed Resume, theme accent —
+                      // occupies the same trailing slot SessionRow uses for its
+                      // status label.
+                      <span
+                        className="ml-auto shrink-0 pl-1.5 font-medium opacity-0 transition-opacity group-hover/row:opacity-100"
+                        style={{ color: accent }}
+                      >
+                        Resume
                       </span>
                     )}
-                    <span className="text-[10px]">
-                      {formatAge(s.lastModified)}
-                    </span>
                   </div>
                 </div>
               </button>
@@ -2370,17 +2489,3 @@ const ProjectItem = React.memo(function ProjectItem({
     </div>
   );
 });
-
-function formatAge(timestamp: number): string {
-  // Guard against missing/NaN/negative timestamps — a pre-schema record with
-  // neither exitedAt nor updatedAt would otherwise render as "NaNd".
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 0) return "now"; // clock skew — display cleanly
-  if (seconds < 60) return "now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}

@@ -7,6 +7,8 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # p95 128s over the last 30 runs. Without a bound a hang burns GitHub's 6h default (it did: #388).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -48,10 +50,14 @@ jobs:
 
       - name: Lint, typecheck, test
         # AUTONOMOS_INTEGRATION=1 enables the real-`claude` L3 integration suites
-        # (agent-spawn-prompt + usage-queue). This flag is set ONLY here in CI —
-        # never on a developer machine — so the suites, which spawn a real claude
-        # PTY, can never run on a box that's also hosting a live autonomos
-        # deployment. Local `make check` skips those suites entirely.
+        # (agent-spawn-prompt, hooks-plane, mcp-auth, permission-mode-*,
+        # usage-queue). Local `make check` skips them. They are also safe to run
+        # locally (ADR-103): each boot gets its own config dir, token, ephemeral
+        # port, control socket, and a throwaway HOME / CLAUDE_CONFIG_DIR /
+        # CODEX_HOME; the usage plugin reads no credential store; and every suite
+        # ends with a test that fails if anything landed in the real ~/.claude.
+        # They never touch launchd/systemd/pm2 or port 3100, and signal only
+        # their own children. test-install.sh / service verbs stay CI-ONLY.
         env:
           AUTONOMOS_INTEGRATION: "1"
         run: make check

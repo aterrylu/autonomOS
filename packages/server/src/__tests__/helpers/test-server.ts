@@ -3,21 +3,29 @@
  * REAL server as a child process with an isolated CONFIG_DIR, plus small
  * HTTP helpers.
  *
- * CI-ONLY GATE (load-bearing safety). These suites boot a real autonomos
- * server and spawn REAL `claude` processes under a PTY. On a developer machine
- * that is ALSO running a live autonomos deployment, that is dangerous — a
- * careless cleanup like `pkill -f claude` would kill the operator's real
- * agents (this happened once). So the suites NEVER run unless
- * AUTONOMOS_INTEGRATION=1 is set, which ONLY CI sets (see
- * .github/workflows/test.yml). If you ever run them locally, do so on a
- * machine with no live deployment, and NEVER use a broad pkill — only ever
- * kill scoped PIDs / agent ids.
+ * OPT-IN GATE. These suites boot a real autonomos server and spawn REAL
+ * `claude` processes under a PTY, so they only run with AUTONOMOS_INTEGRATION=1
+ * (CI sets it; see .github/workflows/test.yml). Running them locally next to a
+ * live deployment is safe as audited in ADR-103: every boot is isolated
+ * (own config dir, token, --port=0, control socket, throwaway HOME /
+ * CLAUDE_CONFIG_DIR / CODEX_HOME, no credential-store reads) and each suite
+ * asserts nothing landed in the operator's real ~/.claude. The one rule that
+ * still matters: NEVER clean up with a broad `pkill -f claude` — that kills the
+ * operator's real agents (this happened once). Only kill scoped PIDs.
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,10 +60,109 @@ export interface BootedServer {
   port: number;
   token: string;
   configDir: string;
-  kill: () => void;
+  /** Throwaway HOME the server and every agent it spawns run under. */
+  fakeHome: string;
+  /** SIGTERM the server and resolve once it has EXITED (SIGKILL after 10s).
+   *  Await it before deleting the config dir: the throwaway HOME lives there,
+   *  and deleting it under a still-exiting claude can wedge teardown. */
+  kill: () => Promise<void>;
+  /** Throws if this run left anything in the operator's REAL Claude Code
+   *  state (a session dir under ~/.claude/projects, or a trust entry in
+   *  ~/.claude.json) for a temp-dir cwd. Call in every suite's `after`. */
+  assertNoRealHomeLeak: () => void;
   /** Full stdout+stderr captured so far — include in assertion messages so
    *  the server's prompt-delivery/auto-trust decisions are visible on failure. */
   logs: () => string;
+}
+
+// ── Real-HOME isolation ──────────────────────────────────────────────
+//
+// The suites spawn a REAL `claude`. With the operator's HOME inherited, every
+// run wrote a session dir into the real ~/.claude/projects (they surface in
+// the dashboard's Projects panel as autonomos-usageq-cwd-* / -prompt-cwd-*)
+// and the spawn-time pre-trust wrote a `projects[<tmp cwd>]` entry into the
+// real ~/.claude.json. Each boot now runs under its own throwaway HOME inside
+// its configDir (so the suites' existing rmSync(configDir) cleans it up), and
+// the leak itself is asserted rather than assumed.
+
+/** The operator's real Claude Code config dir, resolved the way CC does. */
+function realClaudeDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+}
+function realClaudeJson(): string {
+  const cfg = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return cfg ? join(cfg, ".claude.json") : join(homedir(), ".claude.json");
+}
+
+/** CC names a project dir by replacing every non-alphanumeric in the cwd with
+ *  "-". A temp-dir cwd therefore starts with the encoded tmpdir (both the
+ *  symlinked and the resolved spelling — /var vs /private/var on macOS). */
+function tmpPrefixes(): { dirs: string[]; paths: string[] } {
+  const paths = [...new Set([tmpdir(), realpathSync(tmpdir())])];
+  return { paths, dirs: paths.map((p) => p.replace(/[^a-zA-Z0-9]/g, "-")) };
+}
+
+function listRealProjectDirs(): Set<string> {
+  try {
+    return new Set(readdirSync(join(realClaudeDir(), "projects")));
+  } catch {
+    return new Set();
+  }
+}
+function listRealTrustKeys(): Set<string> {
+  try {
+    const cfg = JSON.parse(readFileSync(realClaudeJson(), "utf-8")) as {
+      projects?: Record<string, unknown>;
+    };
+    return new Set(Object.keys(cfg.projects ?? {}));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Seed a throwaway HOME the way CI seeds its runner: onboarding complete, so
+ *  the TUI boots straight to the prompt (else SessionStart never fires). The
+ *  config lives at CLAUDE_CONFIG_DIR, which we set explicitly so it wins even
+ *  when the developer exports their own. */
+function seedFakeHome(fakeHome: string): string {
+  const claudeDir = join(fakeHome, ".claude");
+  mkdirSync(claudeDir, { recursive: true });
+  // Probe under the fake HOME too: even `--version` must not start a claude
+  // against the operator's real config. BOUNDED: this is a SYNCHRONOUS spawn,
+  // so if claude stalls (first-run update check / migration in a fresh config
+  // dir), it blocks the event loop and NO test timeout can fire — the file just
+  // hangs until the CI job's 6h limit. A timeout, closed stdin and the same
+  // no-network flags the server env uses keep it from ever freezing a suite;
+  // on any failure we fall back to a fixed onboarding version.
+  const v = spawnSync("claude", ["--version"], {
+    encoding: "utf-8",
+    timeout: 10_000,
+    killSignal: "SIGKILL",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      HOME: fakeHome,
+      CLAUDE_CONFIG_DIR: claudeDir,
+      DISABLE_AUTOUPDATER: "1",
+      DISABLE_TELEMETRY: "1",
+      DISABLE_ERROR_REPORTING: "1",
+    },
+  });
+  const version = /(\d+\.\d+\.\d+)/.exec(v.stdout ?? "")?.[1] ?? "2.1.168";
+  writeFileSync(
+    join(claudeDir, ".claude.json"),
+    `${JSON.stringify(
+      {
+        hasCompletedOnboarding: true,
+        numStartups: 5,
+        theme: "dark",
+        lastOnboardingVersion: version,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return claudeDir;
 }
 
 /**
@@ -77,6 +184,12 @@ export async function bootServer(opts?: {
   anthropicAuthToken?: string;
 }): Promise<BootedServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-integ-"));
+  const fakeHome = join(configDir, "home");
+  const fakeClaudeDir = seedFakeHome(fakeHome);
+  // Snapshot BEFORE anything spawns: only entries NEW since boot count, so the
+  // operator's live fleet writing its own sessions can't trip the assertion.
+  const realDirsBefore = listRealProjectDirs();
+  const realTrustBefore = listRealTrustKeys();
   const token = `integ-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
   if (opts?.anthropicBaseUrl) {
@@ -105,6 +218,19 @@ export async function bootServer(opts?: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: configDir,
       AUTONOMOS_TOKEN: token,
+      // Inherited by every spawned agent (providers/shared.ts buildBaseEnv).
+      HOME: fakeHome,
+      CLAUDE_CONFIG_DIR: fakeClaudeDir,
+      CODEX_HOME: join(fakeHome, ".codex"),
+      // The usage plugin's keychain read is keyed on $USER, not HOME, so the
+      // fake HOME alone does not isolate it. This makes it read no store.
+      AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
+      // No telemetry / error-report / auto-update traffic from test agents.
+      // (Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: the provider strips every
+      // CLAUDE_CODE_* var from agent envs, providers/shared.ts.)
+      DISABLE_TELEMETRY: "1",
+      DISABLE_ERROR_REPORTING: "1",
+      DISABLE_AUTOUPDATER: "1",
       ...(opts?.anthropicBaseUrl
         ? {
             ANTHROPIC_BASE_URL: opts.anthropicBaseUrl,
@@ -196,8 +322,46 @@ export async function bootServer(opts?: {
     port,
     token,
     configDir,
-    kill: (): void => {
-      if (child.exitCode === null) child.kill("SIGTERM");
+    fakeHome,
+    kill: (): Promise<void> =>
+      new Promise<void>((resolveKill) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolveKill();
+          return;
+        }
+        const force = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // already gone
+          }
+        }, 10_000);
+        child.once("exit", () => {
+          clearTimeout(force);
+          resolveKill();
+        });
+        child.kill("SIGTERM");
+      }),
+    assertNoRealHomeLeak: (): void => {
+      const { dirs, paths } = tmpPrefixes();
+      const newDirs = [...listRealProjectDirs()].filter(
+        (d) => !realDirsBefore.has(d) && dirs.some((p) => d.startsWith(p)),
+      );
+      const newTrust = [...listRealTrustKeys()].filter(
+        (k) => !realTrustBefore.has(k) && paths.some((p) => k.startsWith(p)),
+      );
+      if (newDirs.length || newTrust.length) {
+        throw new Error(
+          "Integration run leaked into the operator's REAL Claude Code state " +
+            `(expected everything under ${fakeHome}):\n` +
+            newDirs
+              .map((d) => `  ${realClaudeDir()}/projects/${d}`)
+              .join("\n") +
+            (newTrust.length
+              ? `\n  ${realClaudeJson()} trust keys: ${newTrust.join(", ")}`
+              : ""),
+        );
+      }
     },
     logs: (): string =>
       `stdout:\n${stdoutChunks.join("")}\nstderr:\n${stderrChunks.join("")}`,
@@ -285,6 +449,57 @@ export function socketRequest(
     if (init?.body) req.write(init.body);
     req.end();
   });
+}
+
+/** Options for real-spawn suites' before/after hooks. node:test hooks have NO
+ *  timeout by default, and a describe-level timeout does not bound them, so a
+ *  wedged teardown (e.g. awaiting a server/mock that never closes) held CI
+ *  until the 6h job limit with no output. Bounded, it fails fast and the
+ *  failure names the hook. */
+export const HOOK_TIMEOUT = { timeout: 60_000 };
+
+/**
+ * Run a suite's teardown with a bound that FAILS THE RUN. A node:test after()
+ * hook that times out is reported but the run still exits 0 (verified), so a
+ * hook `timeout` alone turns a wedged teardown into a silent green. On timeout
+ * this sets process.exitCode = 1 (the file fails, exit 1) and names the suite.
+ */
+export async function boundedTeardown(
+  label: string,
+  fn: () => Promise<void>,
+  ms = 60_000,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((r) => {
+    timer = setTimeout(() => r("timeout"), ms);
+    // Never let the bound itself hold the event loop open.
+    timer.unref?.();
+  });
+  let res: "ok" | "timeout";
+  try {
+    res = await Promise.race([fn().then(() => "ok" as const), timedOut]);
+  } catch (err) {
+    // A teardown that THROWS must fail the file. Rethrowing does NOT: it
+    // becomes an after() hook failure, and the runner then computes exit 0
+    // (verified). Name it and set the exit code instead.
+    process.exitCode = 1;
+    console.error(`[integration] TEARDOWN FAILED: ${label}:`, err);
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res === "timeout") {
+    // Setting exitCode is NOT enough: whatever wedged teardown is usually a
+    // LIVE handle (a server child that never exited, a socket that never
+    // closed), and it keeps this test-file process alive — the runner would
+    // wait on it until the CI job limit (verified). Name the suite, flush
+    // stderr, then force the file to exit non-zero.
+    process.exitCode = 1;
+    const msg = `[integration] TEARDOWN TIMED OUT after ${ms}ms: ${label} — a server, mock, or spawned agent did not shut down\n`;
+    const force = setTimeout(() => process.exit(1), 1000);
+    force.unref?.();
+    process.stderr.write(msg, () => process.exit(1));
+  }
 }
 
 export const sleep = (ms: number): Promise<void> =>

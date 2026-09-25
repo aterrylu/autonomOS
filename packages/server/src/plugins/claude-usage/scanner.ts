@@ -34,6 +34,7 @@ import {
   getOAuthUsage,
   invalidateOAuthTokenMemo,
   mapOAuthUsage,
+  mapSpendLimit,
   markOAuthTokenRejected,
   type OAuthToken,
   type OAuthUsageRaw,
@@ -44,6 +45,32 @@ import {
 export interface RateLimitWindow {
   utilization: number;
   resetsAt: string;
+}
+
+/**
+ * Money spent against a spend limit, for accounts metered by spend instead of
+ * rolling windows (usage-based Enterprise). Informational ONLY: it never feeds
+ * the usage queue (see normalizeClaudeUsage) — a spend limit clears only when
+ * an admin raises it or the billing period rolls over, not on its own.
+ */
+export interface SpendLimit {
+  /** Spent this billing period, in major units (dollars). */
+  used: number;
+  /** The limit that applies to you, major units; null when none is set. */
+  limit: number | null;
+  /** used ÷ limit × 100 (can exceed 100); null when no limit is set. */
+  percent: number | null;
+  /** ISO 4217 code from the response (default USD). */
+  currency: string;
+  /** When the period resets, when the response says; null = "next billing period". */
+  resetsAt: string | null;
+  /** Response block it came from. `extra_usage` matches codexbar's Enterprise
+   *  fixtures; `spend` is inferred from Terry's Max payload (limit shape unseen). */
+  source: "extra_usage" | "spend";
+  /** set = a readable limit; none = no limit field at all; unreadable = a
+   *  limit field we couldn't use (0, negative, unknown shape, other currency).
+   *  Only "none" may be described to the user as "no spend limit is set". */
+  limitStatus: "set" | "none" | "unreadable";
 }
 
 /** A usage window beyond the four fixed slots — a model-scoped weekly the
@@ -96,6 +123,9 @@ export interface RateLimitData {
    *  Optional: snapshots cached or simulated before this field existed. */
   extraWindows?: NamedRateWindow[];
   extraUsage: ExtraUsage | null;
+  /** Set ONLY for spend-metered accounts (no rolling window at all). Team or
+   *  Pro with usage credits keep their windows and never get this. */
+  spendLimit?: SpendLimit;
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
@@ -162,7 +192,72 @@ const CACHE_TTL_429 = 5 * 60_000;
  * old account's org — making the NEW key's very first read query the wrong
  * org, 403, and report a valid key as "expired" (in the one read the user is
  * watching after a paste). */
-let cachedOrgId: { orgId: string; fp: string } | null = null;
+let cachedOrgId: {
+  orgId: string;
+  fp: string;
+  /** The chosen org's bootstrap capabilities. "unknown" = bootstrap couldn't
+   *  tell us (failed, or didn't list the org); spend stays OFF then, and the
+   *  lookup is retried on the next poll. */
+  caps?: string[] | "unknown";
+} | null = null;
+
+/** Capabilities that mark a claude.ai WINDOW plan (Pro / Max). The same
+ *  vocabulary selectUsageOrg already relies on ("claude_max"). */
+const WINDOW_PLAN_CAPS = new Set(["claude_max", "claude_pro"]);
+
+/**
+ * May a windowless answer for this session key show a spend meter? The
+ * session-key twin of the OAuth path's subscriptionType guard: NOT for a
+ * Pro/Max org (a windowless answer there is a #387 fault to diagnose), and NOT
+ * when the org's capabilities are unknown — hiding spend is safer than showing
+ * a spend meter to a window-plan user.
+ */
+function spendAllowedForOrg(fp: string): boolean {
+  const caps = cachedOrgId?.fp === fp ? cachedOrgId.caps : undefined;
+  if (caps === "unknown") return false;
+  return !(caps?.some((c) => WINDOW_PLAN_CAPS.has(c)) ?? false);
+}
+
+const warnedCaps = new Set<string>();
+
+/**
+ * The capabilities of a KNOWN org id, from bootstrap — for a pasted full
+ * cookie whose lastActiveOrg already names the org, so selectUsageOrg never
+ * ran. "unknown" (with a once-per-reason log) when bootstrap can't say.
+ */
+async function fetchOrgCaps(
+  cookie: string,
+  orgId: string,
+  fetcher: UsageFetcher,
+): Promise<string[] | "unknown"> {
+  const unknown = (reason: string): "unknown" => {
+    if (!warnedCaps.has(reason)) {
+      warnedCaps.add(reason);
+      console.warn(
+        `[claude-usage] org capabilities unknown for the pasted cookie (${reason}): spend display off, the no-window diagnosis stays`,
+      );
+    }
+    return "unknown";
+  };
+  try {
+    const res = await fetcher(BOOTSTRAP_URL, {
+      headers: { Cookie: buildCookieHeader(cookie) },
+    });
+    if (!res.ok) return unknown(`bootstrap HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      account?: { memberships?: Membership[] };
+    };
+    const org = data?.account?.memberships?.find(
+      (m) => m.organization?.uuid === orgId,
+    )?.organization;
+    if (!org) return unknown("bootstrap did not list the cookie's org");
+    return org.capabilities ?? [];
+  } catch (err) {
+    return unknown(
+      `bootstrap failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+    );
+  }
+}
 
 /**
  * Dev/QA usage override. When set, {@link getRateLimits} returns this snapshot
@@ -366,14 +461,25 @@ export async function fetchOrgId(
 ): Promise<OrgIdResult> {
   const fp = fingerprint(cookie);
   if (cachedOrgId && cachedOrgId.fp === fp) {
+    // Capabilities that bootstrap couldn't supply last time: try again.
+    if (cachedOrgId.caps === "unknown") {
+      cachedOrgId.caps = await fetchOrgCaps(cookie, cachedOrgId.orgId, fetcher);
+    }
     return { orgId: cachedOrgId.orgId, status: "ok" };
   }
 
-  // Honor an explicit lastActiveOrg if present (manual full-cookie paste).
+  // Honor an explicit lastActiveOrg if present (manual full-cookie paste) —
+  // and still ask bootstrap for that org's capabilities, so the Pro/Max spend
+  // guard works on this path too.
   const orgMatch = cookie.match(/lastActiveOrg=([^;]+)/);
   if (orgMatch) {
-    cachedOrgId = { orgId: orgMatch[1], fp };
-    return { orgId: orgMatch[1], status: "ok" };
+    const orgId = orgMatch[1];
+    cachedOrgId = {
+      orgId,
+      fp,
+      caps: await fetchOrgCaps(cookie, orgId, fetcher),
+    };
+    return { orgId, status: "ok" };
   }
 
   // Resolve from the bootstrap API using the session key alone. Same edge
@@ -415,7 +521,9 @@ export async function fetchOrgId(
         );
         return { orgId: null, status: "no_org" };
       }
-      cachedOrgId = { orgId, fp };
+      const caps = memberships.find((m) => m.organization?.uuid === orgId)
+        ?.organization?.capabilities;
+      cachedOrgId = { orgId, fp, caps };
       return { orgId, status: "ok" };
     })();
     bootstrapFetchLog.success();
@@ -493,6 +601,11 @@ export function __resetDiagnosisLogForTests(): void {
   lastLoggedDiagnosis = null;
 }
 
+/** Something to show: a window, or a spend meter on a spend-metered account. */
+function hasNumbers(data: RateLimitData): boolean {
+  return hasWindows(data) || Boolean(data.spendLimit);
+}
+
 function hasWindows(data: RateLimitData): boolean {
   return Boolean(
     data.fiveHour ||
@@ -522,7 +635,7 @@ function finalizeAnswer(data: RateLimitData): RateLimitData {
           errorKind: answer.errorKind,
         }),
       };
-    } else if (!answer.needsSetup && !hasWindows(answer)) {
+    } else if (!answer.needsSetup && !hasNumbers(answer)) {
       answer = {
         ...answer,
         diagnosis: diagnoseNoWindows({
@@ -539,10 +652,10 @@ function finalizeAnswer(data: RateLimitData): RateLimitData {
   const key = answer.diagnosis
     ? `${answer.diagnosis.code}|${answer.diagnosis.summary}`
     : null;
-  const healthy = hasWindows(answer) && !answer.error;
+  const healthy = hasNumbers(answer) && !answer.error;
   if (key !== lastLoggedDiagnosis) {
     if (answer.diagnosis) {
-      const state = hasWindows(answer) ? "usage stale" : "usage unavailable";
+      const state = hasNumbers(answer) ? "usage stale" : "usage unavailable";
       console.warn(
         `[claude-usage] ${state} (${answer.diagnosis.code}): ${answer.diagnosis.summary} Hint: ${answer.diagnosis.hint}`,
       );
@@ -826,23 +939,32 @@ async function fetchOAuthRateLimits(
   };
   // The literal "n/a" case: the call worked but carried no rolling window
   // (neither the flat fields nor `limits[]`). Say why, with the plan label and
-  // spend signals the response itself has.
+  // spend signals the response itself has — unless it is a spend-metered
+  // account, whose spend meter is the number to show.
   if (!hasWindows(data)) {
     const raw = result.data;
-    data.diagnosis = diagnoseNoWindows({
-      plan: {
-        ...readClaudeConfigHints().plan,
-        subscriptionType: token.subscriptionType,
-      },
-      spend: {
-        spendEnabled: raw.spend?.enabled === true,
-        hasSpendLimit:
-          (raw.spend?.limit !== null && raw.spend?.limit !== undefined) ||
-          (raw.extra_usage?.is_enabled === true &&
-            typeof raw.extra_usage.monthly_limit === "number"),
-        hasLimitsArray: Array.isArray(raw.limits) && raw.limits.length > 0,
-      },
-    });
+    // Pro and Max are window plans; a no-window answer there is a fault to
+    // diagnose (#387), not a spend meter to show.
+    const windowPlan = /^(pro|max)$/i.test(token.subscriptionType ?? "");
+    const spend = windowPlan ? null : mapSpendLimit(raw);
+    if (spend) {
+      data.spendLimit = spend;
+    } else {
+      data.diagnosis = diagnoseNoWindows({
+        plan: {
+          ...readClaudeConfigHints().plan,
+          subscriptionType: token.subscriptionType,
+        },
+        spend: {
+          spendEnabled: raw.spend?.enabled === true,
+          hasSpendLimit:
+            (raw.spend?.limit !== null && raw.spend?.limit !== undefined) ||
+            (raw.extra_usage?.is_enabled === true &&
+              typeof raw.extra_usage.monthly_limit === "number"),
+          hasLimitsArray: Array.isArray(raw.limits) && raw.limits.length > 0,
+        },
+      });
+    }
   }
 
   lastGood = { data, fp };
@@ -947,6 +1069,16 @@ async function fetchCookieRateLimits(
     account: {},
     fetchedAt: new Date().toISOString(),
   };
+  // A spend-metered account on a pasted session key gets its spend meter too
+  // (the web body omits extra_usage.is_enabled, hence `web`) — but not a
+  // Pro/Max org, whose windowless answer keeps the #387 diagnosis (the same
+  // guard the OAuth path applies via subscriptionType).
+  if (!hasWindows(data) && spendAllowedForOrg(fp)) {
+    const spend = mapSpendLimit(body as unknown as OAuthUsageRaw, {
+      web: true,
+    });
+    if (spend) data.spendLimit = spend;
+  }
 
   lastGood = { data, fp };
   cached = { data, expiresAt: now + CACHE_TTL, fp };

@@ -1,0 +1,107 @@
+name: Decisions index
+
+# Regenerates docs/decisions/README.md (the ADR index) after pushes to main.
+#
+# PRs never edit the index. Every ADR-bearing PR would add a row at the same
+# spot, so the index would become the shared conflict hotspot that the
+# one-file-per-ADR layout exists to remove. Instead, this job rebuilds it from
+# main and delivers it as ONE rolling bot PR ("docs(decisions): regenerate
+# index"), updated on each push while main's index is stale.
+#
+# Why a PR and not a direct push: the "main: merge requirements (no bypass)"
+# ruleset has no bypass actors, so nothing (a bot included) can push to main.
+# The PR goes through the same gate as every other: required checks plus one
+# approval. It is opened with RELEASE_PAT (Contents + Pull requests, this repo
+# only; see version.yml), so it is AUTHORED BY aterrylu, like the Version
+# Packages PRs. That matters twice. A PR opened by GITHUB_TOKEN triggers no
+# workflows, so its required `check`/`changeset` runs would never start. And
+# aterrylu is on the nox reviewer's allowed-authors list: nox reviews the PR
+# and, for a pure regenerate, approves it. It has approved every merged
+# RELEASE_PAT Version PR (#275, #312, #345, #347). With auto-merge (squash) on,
+# the whole loop needs no human. Fallback if nox is down: approve by hand, or
+# give a dedicated GitHub App a ruleset bypass (Terry's call). Without the
+# secret the job falls back to GITHUB_TOKEN; that PR has to be closed and
+# reopened to start CI, and a human must approve it.
+#
+# Loop safety: merging the bot PR pushes a commit whose subject starts with
+# "docs(decisions): regenerate index", which the job skips; any later run finds
+# the index fresh and exits without pushing.
+#
+# Concurrency is on the JOB, not the workflow: a skipped job (the bot's own merge)
+# never joins the group, so it can't cancel a real regeneration queued behind it.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BRANCH: bot/decisions-index
+  TITLE: "docs(decisions): regenerate index"
+
+jobs:
+  index:
+    if: "!startsWith(github.event.head_commit.message, 'docs(decisions): regenerate index')"
+    runs-on: ubuntu-latest
+    concurrency:
+      group: decisions-index
+      cancel-in-progress: true
+    # A no-op run takes ~15s and a regenerating one ~30s; 5 minutes bounds a hang.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # scripts/decisions.ts uses only node: builtins, so no `bun install` (which
+      # would also run lefthook's prepare script).
+      - name: Validate ADRs
+        run: bun scripts/decisions.ts check
+
+      - name: Regenerate the index
+        run: bun scripts/decisions.ts index
+
+      - name: Open or update the index PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
+          BODY: |
+            **Generated index regenerate. No hand-written content.**
+
+            This PR changes exactly one file, `docs/decisions/README.md`: the ADR index, rebuilt by `scripts/decisions.ts index` from the `docs/decisions/ADR-*.md` files already on main. It adds, removes or updates index rows to match those files. No ADR file, code or config changes.
+
+            Opened by the decisions-index workflow after a push to main. PRs don't edit the index (that would recreate the shared-file conflict the per-file layout removed), so it's regenerated here. Auto-merge (squash) is on; it merges once approved and green. Reproduce locally: `make adr-index`.
+        run: |
+          set -euo pipefail
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::RELEASE_PAT is not set: the index PR is opened by GITHUB_TOKEN, so its required checks won't start (close + reopen it) and nox won't review it (approve it by hand)."
+          fi
+          # Empty = no open PR; a gh failure fails the step (set -e) instead of reading as "none".
+          open_pr="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')"
+          if [ -z "$(git status --porcelain -- docs/decisions/README.md)" ]; then
+            echo "✓ docs/decisions/README.md is already fresh on main"
+            # An open bot PR is now redundant (e.g. the index was regenerated in another PR).
+            if [ -n "$open_pr" ]; then
+              gh pr close "$open_pr" --delete-branch --comment "The index on main is already fresh."
+            fi
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add docs/decisions/README.md
+          git commit -m "$TITLE"
+          git push --force origin "$BRANCH"
+          if [ -z "$open_pr" ]; then
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY"
+          fi
+          # Without auto-merge an approval would merge nothing, so a failure here must be red.
+          gh pr merge "$BRANCH" --auto --squash

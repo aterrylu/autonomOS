@@ -6,6 +6,14 @@ import { Codicon } from "../../components/Codicon";
 import { THEMES, useStore } from "../../store";
 import { saveAndValidate } from "./saveAndValidate";
 import {
+  evenPaceAmount,
+  formatMoney,
+  hasSpendLimit,
+  shownPercent,
+  spendColor,
+  spendTooltip,
+} from "./spend";
+import {
   type AccountInfo,
   type CredentialSource,
   type DisplayMode,
@@ -14,6 +22,8 @@ import {
   isCredentialError,
   type RateLimitData,
   type RateLimitWindow,
+  type SpendDisplay,
+  type SpendLimit,
 } from "./types";
 import { useClickOutside } from "./useClickOutside";
 import { timeAgo, timeUntilReset, utilizationColor } from "./utils";
@@ -23,6 +33,83 @@ type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 function formatPlan(sub?: string): string {
   if (!sub) return "Unknown";
   return `Claude ${sub.charAt(0).toUpperCase()}${sub.slice(1)}`;
+}
+
+/** Spend section of the panel for a spend-metered account. */
+function SpendDetail({
+  spend,
+  style,
+  page,
+}: {
+  spend: SpendLimit;
+  style: SpendDisplay;
+  page: { fg: string; statusFg: string; border: string };
+}) {
+  const now = Date.now();
+  const limited = hasSpendLimit(spend);
+  const pct = limited ? shownPercent(spend) : null;
+  const color = pct !== null ? spendColor(pct) : page.statusFg;
+  const even = evenPaceAmount(spend, now);
+  return (
+    <div className="mb-3" data-testid="claude-spend-detail">
+      <div className="flex items-center justify-between mb-1">
+        <span className="font-medium">Spend this billing period</span>
+        <span style={{ color, fontWeight: 600 }}>
+          {formatMoney(spend.used, spend.currency)}
+          {limited && ` of ${formatMoney(spend.limit, spend.currency)}`}
+        </span>
+      </div>
+      {limited && (
+        <div
+          className="h-3 w-full rounded relative"
+          style={{ background: `${color}22` }}
+        >
+          <div
+            className="h-full rounded"
+            style={{
+              width: `${Math.min(pct ?? 0, 100)}%`,
+              background: color,
+            }}
+          />
+          {even !== null && (
+            <div
+              title="Where even spending would be today"
+              className="absolute"
+              style={{
+                left: `${Math.min((even / spend.limit) * 100, 100)}%`,
+                top: -3,
+                bottom: -3,
+                width: 2,
+                background: page.fg,
+              }}
+            />
+          )}
+        </div>
+      )}
+      {pct !== null && (
+        <div
+          className="flex items-center justify-between mt-1"
+          style={{ color: page.statusFg }}
+        >
+          <span>{pct}% of your limit used</span>
+          <span>{pct >= 100 ? "Limit reached" : `${100 - pct}% left`}</span>
+        </div>
+      )}
+      <div
+        className="mt-1"
+        style={{ color: page.statusFg, whiteSpace: "pre-line" }}
+      >
+        {spendTooltip(spend, style, now, "panel")
+          .split("\n")
+          .slice(limited ? 1 : 0)
+          .join("\n")}
+      </div>
+      <div className="mt-1 text-[11px]" style={{ color: page.statusFg }}>
+        Informational only: the usage queue waits on the 5-hour and weekly
+        windows, never on spend.
+      </div>
+    </div>
+  );
 }
 
 function formatDollars(cents: number): string {
@@ -465,6 +552,9 @@ interface UsagePanelProps {
   data: RateLimitData;
   displayMode: DisplayMode;
   onDisplayModeChange: (mode: DisplayMode) => void;
+  /** Spend item style (spend-metered accounts only); defaults keep old callers valid. */
+  spendDisplay?: SpendDisplay;
+  onSpendDisplayChange?: (style: SpendDisplay) => void;
   onClose: () => void;
   onRefetch?: () => void;
   toggleRef?: React.RefObject<HTMLElement | null>;
@@ -474,6 +564,8 @@ export function UsagePanel({
   data,
   displayMode,
   onDisplayModeChange,
+  spendDisplay = "text",
+  onSpendDisplayChange,
   onClose,
   onRefetch,
   toggleRef,
@@ -597,8 +689,13 @@ export function UsagePanel({
         </div>
       )}
 
-      {/* Extra usage */}
-      {data.extraUsage && (
+      {/* Spend (spend-metered accounts): dollars, limit, percent, reset, pace */}
+      {data.spendLimit && (
+        <SpendDetail spend={data.spendLimit} style={spendDisplay} page={page} />
+      )}
+
+      {/* Extra usage — hidden when the spend section already shows the same money */}
+      {data.extraUsage && !data.spendLimit && (
         <div
           className="mt-1 pt-2 mb-2"
           style={{ borderTop: `1px solid ${page.border}` }}
@@ -619,22 +716,53 @@ export function UsagePanel({
         style={{ borderTop: `1px solid ${page.border}` }}
       >
         <span style={{ color: page.statusFg }}>Status bar display</span>
-        <div className="flex gap-1">
-          {(["text", "bar"] as const).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              className="rounded px-2 py-0.5 cursor-pointer"
-              style={{
-                background: displayMode === mode ? page.border : "transparent",
-                color: displayMode === mode ? page.fg : page.statusFg,
-              }}
-              onClick={() => onDisplayModeChange(mode)}
-            >
-              {mode === "text" ? "%" : "bar"}
-            </button>
-          ))}
-        </div>
+        {data.spendLimit ? (
+          // A spend-metered account has no 5h/7d windows for the %/bar toggle
+          // to act on, so the same row picks the spend style instead.
+          <div className="flex gap-1" data-testid="spend-display-picker">
+            {(
+              [
+                ["text", "Text"],
+                ["percent", "%"],
+                ["bar", "Bar"],
+              ] as const
+            ).map(([style, label]) => (
+              <button
+                key={style}
+                type="button"
+                aria-pressed={spendDisplay === style}
+                aria-label={style === "percent" ? "Percent" : label}
+                className="rounded px-2 py-0.5 cursor-pointer"
+                style={{
+                  background:
+                    spendDisplay === style ? page.border : "transparent",
+                  color: spendDisplay === style ? page.fg : page.statusFg,
+                }}
+                onClick={() => onSpendDisplayChange?.(style)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="flex gap-1">
+            {(["text", "bar"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className="rounded px-2 py-0.5 cursor-pointer"
+                style={{
+                  background:
+                    displayMode === mode ? page.border : "transparent",
+                  color: displayMode === mode ? page.fg : page.statusFg,
+                }}
+                onClick={() => onDisplayModeChange(mode)}
+              >
+                {mode === "text" ? "%" : "bar"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Metadata */}

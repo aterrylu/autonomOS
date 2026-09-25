@@ -49,7 +49,7 @@ Keep the subject imperative and concise; `commitlint` will flag anything malform
 
 ## A few project conventions
 
-- **Architectural decisions go in [`docs/DECISIONS.md`](docs/DECISIONS.md)** — append-only ADRs with context + rationale. If your change makes a non-obvious design choice, record it there.
+- **Architectural decisions go in [`docs/decisions/`](docs/decisions/README.md)**, one append-only ADR file per decision with context + rationale. If your change makes a non-obvious design choice, run `make adr NEW="Short title"` and fill in the template.
 - **Changing the dashboard UI? Re-run `make hero`.** The README hero (`docs/assets/hero.png`) is *generated*, not hand-captured — it must reflect the real product. Any visible change (layout, sidebar, org chart, status bar, themes, provider icons, usage bars) means re-shooting it and committing the updated PNG. See [`packages/dashboard/scripts/capture-hero.ts`](packages/dashboard/scripts/capture-hero.ts).
 - **MCP tool schemas live in `packages/server/src/mcp/tools.ts`** — the single source of truth shared by both MCP transports. Don't define them elsewhere.
 - **Terminology:** the UI says "agents"; the code says "sessions." Both mean the same managed PTY process.

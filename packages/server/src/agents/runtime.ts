@@ -60,7 +60,18 @@ import {
   supportsPromptDeliveryReceipt,
   trackPromptDelivery,
 } from "./promptDelivery.js";
-import { pickFreePort, type Sidecar, startSidecarDaemon } from "./sidecar.js";
+import { awaitPtyExits, terminatePty } from "./ptyTerminate.js";
+import {
+  awaitSidecarExits,
+  pickFreePort,
+  runningSidecarPids,
+  type Sidecar,
+  startSidecarDaemon,
+} from "./sidecar.js";
+import {
+  createStartupNoticeScanner,
+  STARTUP_NOTICE_WINDOW_MS,
+} from "./startupNotices.js";
 import {
   buildAgent,
   deleteAgentRaw,
@@ -201,6 +212,31 @@ export function getAgentSidecarEndpoint(agentId: UUID): string | undefined {
 
 const live = new Map<UUID, ManagedAttachment>();
 let shuttingDown = false;
+/** Set once the SERVER begins shutting down, and never cleared. While it's
+ *  set nothing may start an agent: the shutdown waits (bounded) for sidecar
+ *  daemons to exit, and a spawn racing that window would start a daemon the
+ *  process then exits under — the orphan the wait exists to prevent. */
+let serverStopping = false;
+/** Terminate an agent's PTY process group (see ptyTerminate), labelled for the log. */
+function stopAgentPty(agentId: UUID, pty: IPty): Promise<void> {
+  const agent = getAgent(agentId);
+  return terminatePty(pty, {
+    label: `${agent?.name ?? "agent"} [${agent?.provider ?? "?"}] (${agentId.slice(0, 8)})`,
+  });
+}
+
+/** A restart-all is between its kill pass and its last respawn. */
+let restartInFlight = false;
+/** When the in-flight restart-all began — named in its 409. */
+let restartStartedAt: number | undefined;
+
+function serverStoppingError(): SpawnError {
+  return new SpawnError(
+    "SERVER_STOPPING",
+    503,
+    "The server is shutting down — try again once it is back.",
+  );
+}
 
 export function getAttachment(agentId: UUID): ManagedAttachment | undefined {
   return live.get(agentId);
@@ -217,6 +253,46 @@ export function getLiveAgentIds(): UUID[] {
  *  can carry with no live PTY behind it. */
 export function isAgentLive(agentId: UUID): boolean {
   return live.has(agentId);
+}
+
+/**
+ * Mark an agent crashed after a failed RESPAWN — unless it is live.
+ *
+ * The respawn paths (boot resume sweep, the crash-net fresh respawn,
+ * restart-all) all catch a spawn failure and mark the record crashed so it
+ * doesn't zombie as `status: "running"` with no PTY. But one of their failure
+ * modes is `spawnAgent` refusing because the agent is ALREADY live (the
+ * "already attached" / live-namesake guards) — something else attached it in
+ * the meantime. Marking THAT crashed is not a cleanup, it's a kill without the
+ * kill: `markExited` revokes the per-agent token (ADR-055), so the still-running
+ * process has every hook rejected and its status freezes, while the dashboard
+ * reports it crashed. That was the agent-spawn-prompt CI flake (a spawn landing
+ * inside the boot window before the resume sweep). The rule: a catch never
+ * exits a live agent. Returns the updated record, or undefined when skipped
+ * (or when the record is gone).
+ */
+export function markCrashedUnlessLive(
+  agentId: UUID,
+  context: string,
+): Agent | undefined {
+  if (live.has(agentId)) {
+    console.warn(
+      `[runtime] ${context}: ${agentId.slice(0, 8)} is live (attached elsewhere) — leaving it running, not marking it crashed`,
+    );
+    return undefined;
+  }
+  return markExited(agentId, "crashed");
+}
+
+/**
+ * The agents the boot sweep should resume: every record persisted as running.
+ * Boot MUST take this snapshot synchronously right after the control socket
+ * binds (see run.ts armRuntimeInits) — from the bind on, POST /api/agents can
+ * create fresh live agents, and a sweep that lists the store later would pick
+ * those up as "records from before the restart".
+ */
+export function snapshotResumableAgents(): Agent[] {
+  return listAgents().filter((a) => a.status === "running");
 }
 
 /**
@@ -245,7 +321,12 @@ export function _registerSyntheticAttachment(
     outputBuffer: [],
     outputSize: 0,
     ...(opts?.sidecarEndpoint
-      ? { sidecar: { endpoint: opts.sidecarEndpoint, dispose: () => {} } }
+      ? {
+          sidecar: {
+            endpoint: opts.sidecarEndpoint,
+            dispose: () => Promise.resolve(),
+          },
+        }
       : {}),
   };
   // Mirror spawnAgent's output-buffer onData so replay works.
@@ -379,6 +460,32 @@ export function resolveSpawnProvider(
 }
 
 /**
+ * The last few non-empty lines a process printed before it exited, ANSI
+ * stripped and length-capped — for the "died immediately" log, so it names
+ * the process's own reason (e.g. CC's "Session ID … is already in use")
+ * instead of guessing "likely a bad flag". Pure; exported for tests.
+ */
+export function exitOutputTail(
+  buffer: readonly string[],
+  maxLines = 3,
+  maxChars = 300,
+): string {
+  const text = buffer
+    .join("")
+    // CSI / OSC / other escape sequences, then stray control chars.
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+  const lines = text
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const tail = lines.slice(-maxLines).join(" | ");
+  return tail.length > maxChars ? `…${tail.slice(-maxChars)}` : tail;
+}
+
+/**
  * Thread-resume pre-flight decision (Codex; ADR-100 "Option B"). False only when
  * the provider positively reports nothing was saved for the thread — then the
  * runtime starts a fresh thread instead of a doomed resume. Fail-OPEN: a
@@ -443,8 +550,10 @@ export class SpawnError extends Error {
     | "NOT_ADOPTABLE"
     | "NOTHING_TO_RESUME"
     | "INVALID_WORKING_DIRECTORY"
-    | "PROVIDER_MISMATCH";
-  readonly status: 400 | 409 | 422;
+    | "PROVIDER_MISMATCH"
+    | "SERVER_STOPPING"
+    | "RESTART_IN_PROGRESS";
+  readonly status: 400 | 409 | 422 | 503;
   constructor(
     code: SpawnError["code"],
     status: SpawnError["status"],
@@ -580,6 +689,7 @@ export interface SpawnResult {
  *     the forked agent's providerSessionId then --fork-session's
  */
 export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
+  if (serverStopping) throw serverStoppingError();
   if (
     params.forkFromAgentId &&
     (params.resumeAgentId || params.resumeSessionId)
@@ -936,14 +1046,36 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     providerThreadId: agent.providerThreadId,
   };
 
+  const env = provider.buildEnv(agent.id, agent.name);
+
+  // Apply an env preset (model override, ADR-067): merge the resolved preset's
+  // env into ONLY this agent's process env, AFTER the provider built its base +
+  // customEnvVars (so a per-agent preset outranks a global customEnvVar). The
+  // resolve/merge/refuse logic lives in applyPresetToEnv (unit-tested there); a
+  // preset that is missing or whose API key is unset THROWS here — before the
+  // record is persisted or the PTY launched, so a rejected spawn leaves no
+  // half-started agent.
+  if (envPreset) applyPresetToEnv(env, envPreset);
+
+  // ── Resume decisions (ADR-104) — AFTER the env is final, because a preset or
+  // customEnvVar can give this agent its own CODEX_HOME; probing the server's
+  // would mis-judge a real thread as "never saved". User notices are QUEUED and
+  // pushed only once the record is written, so a spawn that then fails never
+  // leaves behind a notice claiming something that didn't happen.
+  const pendingNotices: string[] = [];
+
   // Pre-flight resume check (provider-parity, ADR-049): a resume only succeeds
   // if the provider actually has a resumable session on disk. Claude Code writes
   // its session JSONL lazily (on the first turn, not at session creation), so a
   // never-conversed agent has no `--resume` target and `claude --resume <id>`
   // exits code 1 on boot — which marks the agent crashed and drops it out of the
   // dashboard (the bug). When the provider reports no resumable session, fall
-  // back to a FRESH session reusing the SAME providerSessionId: nothing is lost
-  // (there was no prior conversation) and the record's id stays stable. Codex
+  // back to a FRESH session under a NEW providerSessionId: nothing is lost
+  // (there was no prior conversation). ADR-111 supersedes ADR-049's "reuse the
+  // SAME id": CC can still know that id (e.g. its JSONL filed under a path our
+  // probe missed), and a fresh `--session-id <known id>` dies with "Session ID
+  // … is already in use" (exit 1) — which the onExit net can't catch, since no
+  // resume was attempted. A new id can never collide. Codex
   // omits this hook — a missing thread id already takes its fresh `--remote`
   // path — so only Claude Code exercises this branch today.
   //
@@ -967,7 +1099,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // Aborting an adopt costs a retry; proceeding costs the user's conversation.
     let resumable = true;
     try {
-      resumable = provider.hasResumableSession(resolved);
+      resumable = provider.hasResumableSession(resolved, env);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       if (resolution === "adopt") {
@@ -994,34 +1126,21 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           `no saved ${provider.displayName} session found for "${params.resumeSessionId}" in ${cwd} — nothing to resume`,
         );
       }
+      // Regenerate the id (ADR-111). Written back to the record by the
+      // reattach markRunning below — the same channel the onExit net uses — so
+      // every consumer that resolves by providerSessionId follows it.
+      const oldSessionId = providerSessionId;
+      providerSessionId = crypto.randomUUID();
+      resolved.providerSessionId = providerSessionId;
       resolved.resumeSessionId = undefined;
-      console.warn(
-        `[runtime] ${agent.id.slice(0, 8)} resume requested but ${provider.displayName} has no resumable session on disk — starting fresh (same id)`,
+      console.info(
+        `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
-      pushSystemNotification(
-        agent.id,
+      pendingNotices.push(
         `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
       );
     }
   }
-
-  const env = provider.buildEnv(agent.id, agent.name);
-
-  // Apply an env preset (model override, ADR-067): merge the resolved preset's
-  // env into ONLY this agent's process env, AFTER the provider built its base +
-  // customEnvVars (so a per-agent preset outranks a global customEnvVar). The
-  // resolve/merge/refuse logic lives in applyPresetToEnv (unit-tested there); a
-  // preset that is missing or whose API key is unset THROWS here — before the
-  // record is persisted or the PTY launched, so a rejected spawn leaves no
-  // half-started agent.
-  if (envPreset) applyPresetToEnv(env, envPreset);
-
-  // ── Resume decisions (ADR-104) — AFTER the env is final, because a preset or
-  // customEnvVar can give this agent its own CODEX_HOME; probing the server's
-  // would mis-judge a real thread as "never saved". User notices are QUEUED and
-  // pushed only once the record is written, so a spawn that then fails never
-  // leaves behind a notice claiming something that didn't happen.
-  const pendingNotices: string[] = [];
 
   // THREAD pre-flight (Codex; ADR-100 "Option B"): codex writes a thread's
   // rollout lazily on its first turn, so a never-prompted agent's thread was
@@ -1154,18 +1273,31 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
   }
 
+  // Shutdown began during one of the awaits above. Nothing below awaits until
+  // the attachment is registered, so this is the last point where the spawn can
+  // stop cleanly: a daemon it started is already in the sidecar registry, and
+  // the shutdown's sweep reaps it.
+  if (serverStopping) {
+    void sidecar?.dispose();
+    throw serverStoppingError();
+  }
+
   let args: string[];
   try {
     args = provider.buildArgs(resolved);
   } catch (err) {
     // buildArgs threw after the daemon was already started — don't leak it.
-    sidecar?.dispose();
+    void sidecar?.dispose();
     throw err;
   }
 
   const logArgs = args.map(redactArgForLog);
+  // Name the agent explicitly: since ADR-111 a not-resumable reattach runs
+  // under a REGENERATED session id, so the argv alone no longer identifies
+  // which agent a spawn belongs to (log readers and permission-mode-resume's
+  // launchedPermission() attribute spawns by agent id).
   console.log(
-    `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
+    `[runtime] spawning: (agent ${agent.id}) ${binary} ${logArgs.join(" ")}` +
       (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
   );
 
@@ -1196,8 +1328,34 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     });
   } catch (err) {
     // PTY spawn failed — don't leak the sidecar daemon we just started.
-    sidecar?.dispose();
+    void sidecar?.dispose();
     throw err;
+  }
+
+  // Startup screens the provider wants surfaced (e.g. Gemini's folder-trust
+  // dialog) — independent of the Auto-Trust setting, because a dialog shows
+  // up exactly when it's off. Observability only; nothing is typed.
+  if (provider.startupNotices?.length) {
+    const agentName = resolved.name ?? resolved.sessionId.slice(0, 8);
+    const feed = createStartupNoticeScanner(provider.startupNotices, (msg) => {
+      // Same staleness guard as the watcher below.
+      if (live.get(resolved.sessionId)?.pty !== pty) return;
+      console.warn(`[runtime] ${agentName}: ${msg}`);
+      pushSystemNotification(resolved.sessionId, `${agentName}: ${msg}`);
+    });
+    const subs: Array<{ dispose(): void }> = [];
+    const stop = (): void => {
+      clearTimeout(timer);
+      for (const sub of subs.splice(0)) sub.dispose();
+    };
+    const timer = setTimeout(stop, STARTUP_NOTICE_WINDOW_MS);
+    timer.unref();
+    subs.push(
+      pty.onData((chunk) => {
+        if (feed(chunk)) stop();
+      }),
+      pty.onExit(stop),
+    );
   }
 
   // The watcher's settle signal gates the prompt-delivery receipt windows —
@@ -1256,12 +1414,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // getAgent() and here — tear down the PTY and daemon we just started so
     // neither is orphaned, then surface the race rather than crashing on a
     // non-null assertion.
-    sidecar?.dispose();
-    try {
-      pty.kill();
-    } catch {
-      // best-effort — the PTY may already be dead
-    }
+    void sidecar?.dispose();
+    void stopAgentPty(agent.id, pty);
     throw new Error(
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
@@ -1434,7 +1588,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // the daemon does not die when the PTY does. Dispose it here unconditionally
     // (idempotent): whether this is the canonical attachment or a stale handler
     // from a replaced PTY, this closure's daemon is now orphaned and must go.
-    sidecar?.dispose();
+    void sidecar?.dispose();
 
     // Guard against stale onExit handlers firing after the same agent.id has
     // been respawned. node-pty's onExit is async, so during restartAllAttachments
@@ -1467,7 +1621,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         `[runtime] ${persisted.id.slice(0, 8)} died immediately (${lifetime}ms), code=${exitCode}` +
           (wasThreadResume
             ? ` — thread-resume crash; thread retained (resumable), likely environmental not a bad flag. Args: ${logArgs.join(" ")}`
-            : ` — likely a bad flag. Args: ${logArgs.join(" ")}`),
+            : ` — last output: ${exitOutputTail(managed.outputBuffer) || "(none)"}. Args: ${logArgs.join(" ")}`),
       );
     } else if (exitCode !== 0 || signal) {
       console.warn(
@@ -1527,7 +1681,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       const record = getAgent(persisted.id);
       if (record) {
         void respawnAgent(record).catch((err) => {
-          const updated = markExited(persisted.id, "crashed");
+          const updated = markCrashedUnlessLive(
+            persisted.id,
+            "fresh respawn after failed resume",
+          );
           if (updated)
             emitAgentDelta({
               type: "agent.exited",
@@ -1622,13 +1779,9 @@ export function killAttachment(
 ): boolean {
   const managed = live.get(agentId);
   if (!managed) return false;
-  try {
-    managed.pty.kill();
-  } catch (err) {
-    console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
-  }
+  void stopAgentPty(agentId, managed.pty);
   // Sidecar daemon is a separate process — kill it alongside the PTY.
-  managed.sidecar?.dispose();
+  void managed.sidecar?.dispose();
   disposeCodexControl(agentId);
   // Mark exited synchronously rather than waiting for onExit to fire — gives
   // the API a deterministic post-condition for the user-killed case.
@@ -1653,12 +1806,8 @@ export function deleteAgent(agentId: UUID): boolean {
   const wasLive = live.has(agentId);
   if (wasLive) {
     const managed = live.get(agentId)!;
-    try {
-      managed.pty.kill();
-    } catch (err) {
-      console.error(`Failed to kill PTY for agent ${agentId}: ${err}`);
-    }
-    managed.sidecar?.dispose();
+    void stopAgentPty(agentId, managed.pty);
+    void managed.sidecar?.dispose();
     live.delete(agentId);
   }
   disposeCodexControl(agentId);
@@ -1683,17 +1832,17 @@ export function deleteAgent(agentId: UUID): boolean {
 /**
  * Kill all PTY processes without marking the Agent records exited.
  * Used during server shutdown so agents auto-resume on next boot.
+ *
+ * Disposes each agent's sidecar daemon but does not wait for it: the caller
+ * must await stopAllSidecars() before exiting the process.
  */
 export function shutdownAllAttachments(): void {
+  serverStopping = true;
   shuttingDown = true;
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [agentId, managed] of live) {
-    try {
-      managed.pty.kill();
-    } catch {
-      // best-effort during shutdown
-    }
+    void stopAgentPty(agentId, managed.pty);
     // Dispose the Codex control client HERE, on the shutdown PATH, rather than
     // leaving it to process exit. Its queue may hold inbound that the sender was
     // told would be retried automatically (ADR-064) — a promise this shutdown is
@@ -1711,7 +1860,7 @@ export function shutdownAllAttachments(): void {
     // own registry, not in `live`.)
     try {
       disposeCodexControl(agentId);
-      managed.sidecar?.dispose();
+      void managed.sidecar?.dispose();
     } catch (err) {
       // A throw here would skip every REMAINING agent's teardown and — since
       // the signal handler that calls this has no catch — removePidFile,
@@ -1724,12 +1873,6 @@ export function shutdownAllAttachments(): void {
     }
   }
   live.clear();
-}
-
-/** Reset shuttingDown — used after restartAllAttachments to permit normal
- *  exit-marking to resume. */
-function resetShuttingDown(): void {
-  shuttingDown = false;
 }
 
 /** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
@@ -1785,13 +1928,34 @@ function confirmResumeSurvived(a: Agent): void {
  * Failures are caught per-agent and the failing agent is marked exited+crashed
  * so a zombie record (status=running with no live PTY) doesn't sit forever.
  */
-export async function resumeActiveAgents(): Promise<void> {
-  const agents = listAgents().filter((a) => a.status === "running");
-  if (agents.length === 0) return;
+export async function resumeActiveAgents(
+  snapshot: readonly Agent[] = snapshotResumableAgents(),
+): Promise<void> {
+  if (snapshot.length === 0) return;
 
-  console.log(`Resuming ${agents.length} agent(s)...`);
+  console.log(`Resuming ${snapshot.length} agent(s)...`);
   let resumed = 0;
-  for (const a of agents) {
+  let skipped = 0;
+  for (const snap of snapshot) {
+    // Re-read: the snapshot is from the moment the control socket bound, and
+    // earlier iterations awaited — the user may have killed, deleted, or
+    // re-attached this agent since.
+    const a = getAgent(snap.id);
+    if (!a || a.status !== "running") {
+      skipped++;
+      continue;
+    }
+    if (live.has(a.id)) {
+      // Already attached by this boot (a spawn or /attach that raced the
+      // sweep). It keeps its PTY, token and status; respawning would only
+      // throw "already attached" and, before this guard, the catch below
+      // marked the LIVE agent crashed and revoked its token.
+      console.log(
+        `  ↷ ${a.name} (${a.id.slice(0, 8)}...) already live — not resuming`,
+      );
+      skipped++;
+      continue;
+    }
     try {
       // Inside the try, deliberately. getTemplate() throws on anything that
       // isn't ENOENT — that is its contract — so one corrupt or truncated
@@ -1814,14 +1978,20 @@ export async function resumeActiveAgents(): Promise<void> {
       confirmResumeSurvived(a);
       resumed++;
     } catch (err) {
+      // Shutdown began mid-boot: leave this and every remaining agent
+      // "running" so they resume on the next boot, not "crashed".
+      if (serverStopping) break;
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
       console.error(`  ✗ Failed to resume ${a.name}: ${message}${stack}`);
       // Surface the reason in the dashboard, not just server logs — otherwise a
       // Codex agent whose sidecar daemon won't come up shows only as "crashed"
       // every boot with no actionable hint (mirrors the prompt-delivery path).
-      pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
-      const updated = markExited(a.id, "crashed");
+      const updated = markCrashedUnlessLive(a.id, "boot resume");
+      // Only notify about a failure that actually left the agent down.
+      if (updated) {
+        pushSystemNotification(a.id, `Failed to resume ${a.name}: ${message}`);
+      }
       if (updated) {
         emitAgentDelta({
           type: "agent.exited",
@@ -1832,8 +2002,8 @@ export async function resumeActiveAgents(): Promise<void> {
       }
     }
   }
-  if (resumed < agents.length) {
-    console.warn(`Resumed ${resumed} of ${agents.length} agents`);
+  if (resumed + skipped < snapshot.length) {
+    console.warn(`Resumed ${resumed} of ${snapshot.length} agents`);
   }
 }
 
@@ -1866,32 +2036,75 @@ export async function restartAllAttachments(): Promise<{
   // Throwing here is clean: nothing has been destroyed, and the route has no
   // local catch, so it reaches agentsRouter.onError as a 503 + Retry-After.
   assertControlPlaneReady();
+  if (serverStopping) throw serverStoppingError();
+  // A second restart-all while one is waiting on the first's exits would see
+  // an empty `live` and "restart" nothing — or, once the first respawns, kill
+  // what it just started. Refuse it.
+  if (restartInFlight) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      `A restart of all agents is already in progress (started ${Math.round((Date.now() - (restartStartedAt ?? Date.now())) / 1000)}s ago).`,
+    );
+  }
+  restartInFlight = true;
+  restartStartedAt = Date.now();
+  try {
+    return await restartAll();
+  } finally {
+    restartInFlight = false;
+  }
+}
 
+async function restartAll(): Promise<{
+  idMap: Record<UUID, UUID>;
+  failures: Array<{ id: UUID; name: string; error: string }>;
+}> {
   // Snapshot live agent ids before killing
   const toRestart: UUID[] = Array.from(live.keys());
   const failures: Array<{ id: UUID; name: string; error: string }> = [];
+  const daemonExits: Promise<void>[] = [];
+  const ptyExits: Promise<void>[] = [];
 
-  // Kill all PTYs under the shuttingDown flag so onExit doesn't mark them exited.
-  shuttingDown = true;
+  // No global `shuttingDown` here: live.clear() below runs synchronously,
+  // before any killed PTY's (async) onExit can fire, so every one of them
+  // takes the stale-attachment early return and none is marked exited. The
+  // global flag protected nothing of ours, and it hid the exit of any agent
+  // STARTED during the wait (create_agent, /attach) — it stayed "running".
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
   for (const [id, managed] of live) {
-    try {
-      managed.pty.kill();
-    } catch (err) {
-      // pty.kill is rare-throw on macOS but reachable on Windows / when the
-      // process is already exiting. Log so operators see the cause; we still
-      // proceed because live.clear() below makes the dead reference unreachable.
-      console.error(
-        `[runtime] restart-all: pty.kill threw for agent ${id}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+    ptyExits.push(stopAgentPty(id, managed.pty));
     // Dispose the sidecar daemon too — it won't die with the PTY.
-    managed.sidecar?.dispose();
+    if (managed.sidecar) daemonExits.push(managed.sidecar.dispose());
   }
   live.clear();
-  resetShuttingDown();
+  // Let the old daemons exit before the respawns resume their threads, so a
+  // daemon that was mid-turn can never still be appending to the thread its
+  // replacement is resuming — two daemons on one thread. ~0.3s measured;
+  // bounded by the SIGKILL backstop.
+  const [daemonsGone, ptysGone] = await Promise.all([
+    awaitSidecarExits(daemonExits),
+    // The old CLI must be gone before its replacement resumes the same
+    // session (a Claude Code --resume of a JSONL the old process still
+    // writes). Same bound as the daemons.
+    awaitSidecarExits(ptyExits),
+  ]);
+  if (!ptysGone) {
+    const alive = await awaitPtyExits(0);
+    console.warn(
+      `[runtime] restart-all: agent process(es) still alive after SIGKILL: ${alive.join(", ")} — respawning anyway`,
+    );
+  }
+  if (!daemonsGone) {
+    console.warn(
+      `[runtime] restart-all: sidecar daemon(s) still alive after SIGKILL (pid ${runningSidecarPids().join(", ")}) — respawning anyway`,
+    );
+  }
+  // The server began shutting down during the wait. Leave every record
+  // "running" so it resumes on next boot; respawning now would fail each one
+  // and mark it crashed.
+  if (serverStopping) return { idMap: {}, failures };
 
   // Respawn each (id stays the same since we resume by agent id).
   const idMap: Record<UUID, UUID> = {};
@@ -1915,11 +2128,13 @@ export async function restartAllAttachments(): Promise<{
         `[runtime] restart-all: respawn failed for ${a.id} (${a.name}):`,
         msg,
       );
-      // The PTYs were killed under shuttingDown, so onExit did NOT mark this
-      // agent exited — and the respawn just failed. Without this, the record
+      // The old PTY's onExit took the stale-attachment return, so it did NOT
+      // mark this agent exited — and the respawn just failed. Without this, the record
       // stays status:"running" with no live PTY (a zombie that tries to resume
-      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents.
-      const updated = markExited(a.id, "crashed");
+      // again next boot). Mark it crashed + emit, mirroring resumeActiveAgents
+      // — unless a concurrent attach made it live, which the respawn's
+      // "already attached" throw lands here as.
+      const updated = markCrashedUnlessLive(a.id, "restart-all");
       if (updated) {
         emitAgentDelta({
           type: "agent.exited",
@@ -1983,6 +2198,7 @@ export async function resolveAgentId(
 export function _resetForTesting(): void {
   live.clear();
   shuttingDown = false;
+  restartInFlight = false;
   cancelAllPromptTracking();
   cancelAllChannelServerChecks();
 }

@@ -75,6 +75,16 @@ export interface AgentProvider {
   ): void;
 
   /**
+   * Optional: startup screens worth telling the operator about, whatever the
+   * Auto-Trust setting. The runtime scans the PTY's early output (ANSI
+   * stripped, whitespace removed on both sides) and pushes `message` as a
+   * dashboard notice the first time `needle` appears. Use the CLI's exact
+   * on-screen text, verified against a real render. Observability only —
+   * nothing is typed into the PTY.
+   */
+  startupNotices?: ReadonlyArray<{ needle: string; message: string }>;
+
+  /**
    * Optional: side-effect setup BEFORE the PTY process is spawned, called only
    * when the auto-trust setting is enabled. The motivating case is claude-code
    * pre-trusting the working directory in CC's own config so the trust dialog
@@ -111,8 +121,15 @@ export interface AgentProvider {
    *
    * Providers that omit this hook are treated as "always resumable" — the
    * runtime keeps its prior unconditional resume behavior for them.
+   *
+   * `env` is the CHILD's final environment (base + customEnvVars + env
+   * preset), so a provider can look where the spawned process will actually
+   * store its sessions (e.g. a preset-relocated CLAUDE_CONFIG_DIR).
    */
-  hasResumableSession?(options: ResolvedSpawnOptions): boolean;
+  hasResumableSession?(
+    options: ResolvedSpawnOptions,
+    env?: Record<string, string | undefined>,
+  ): boolean;
 
   /**
    * Optional: THREAD-resume pre-flight for providers that resume by

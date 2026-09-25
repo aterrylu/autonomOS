@@ -4,7 +4,7 @@
 
 1. Read [`README.md`](README.md) — project overview, monorepo structure
 2. Read [`docs/FEATURES.md`](docs/FEATURES.md) — feature specifications and design intent
-3. Read [`docs/DECISIONS.md`](docs/DECISIONS.md) — all architectural decisions with context and rationale
+3. Browse [`docs/decisions/`](docs/decisions/README.md) — all architectural decisions (one file per ADR, with an index) with context and rationale
 4. Read [`docs/ROADMAP.md`](docs/ROADMAP.md) — current priorities and what to work on
 5. Read [`docs/RESEARCH.md`](docs/RESEARCH.md) — research findings, competitor analysis, learnings
 
@@ -36,7 +36,7 @@ autonomOS/
 │   │   └── src/mcp/            # Shared MCP tool definitions (used by both servers)
 │   └── core/               # Shared agent abstractions & types
 ├── docs/
-│   ├── DECISIONS.md        # Architectural Decision Records (append-only)
+│   ├── decisions/          # Architectural Decision Records, one file per ADR (append-only)
 │   ├── FEATURES.md         # Feature specifications (F-001 through F-016)
 │   ├── ROADMAP.md          # Current priorities
 │   ├── RESEARCH.md         # Research findings & competitor analysis
@@ -61,7 +61,7 @@ Sessions are spawned with: `--session-id` (pre-generated UUID), `--brief` (enabl
 
 What that does and does NOT enforce, precisely: adding a value gives a compile error only where a mode is exhaustively keyed (`PERMISSION_MODE_INFO`'s `Record<PermissionMode, …>`). It does **not** error in the provider mappers — they end in `default:` catch-alls, so a fifth mode would silently map to ask-equivalent behavior. And `mcp/tools.ts` keeps a hand-copy (see below) checked by a test, not the compiler. Adding a mode means: core list, `PERMISSION_MODE_INFO`, all three provider mappers — and note **Codex has TWO** (`codexApprovalPolicy` for shell/exec approval **and** `codexMcpApprovalMode` for MCP-tool approval), both ending in `default:` catch-alls that fall through to the supervised (ask-equivalent) value — plus `mcp/tools.ts`.
 
-**Codex resume (ADR-104):** a resumed Codex thread keeps the approval/sandbox policy it was CREATED with, and codex rejects permission overrides on `resume --remote` — so the resume argv carries none, and a mode change on resume is refused with a notice (the record keeps the mode actually running). Codex has only `on-request | never`: `auto` and `plan` both clamp to ask (`unsupportedBy: ["codex"]` + a spawn notice).
+**Codex resume (ADR-104):** a resumed Codex thread keeps the approval/sandbox policy it was CREATED with, and codex rejects permission overrides on `resume --remote` — so the resume argv carries none, and a mode change on resume is refused with a notice (the record keeps the mode actually running). Codex's `approval_policy` has only `on-request | never`; its auto review (`approvals_reviewer=auto_review`) and Plan collaboration mode exist but aren't wired up, so `auto` and `plan` both clamp to ask (`unsupportedBy: ["codex"]` + a spawn notice that says "isn't wired up yet" — never "Codex has no …").
 
 Two mappings are non-obvious and deliberate: **`ask` emits NO Claude flag** (it IS Claude Code's built-in behavior, and passing `--permission-mode default` perturbs TUI startup enough to break the usage-queue auto-Enter), and **`bypass` emits `--dangerously-skip-permissions` without `--permission-mode`**. Gemini's own flag value for ask-before-acting is the word `default` — an our-name → their-name translation, not an identity.
 
@@ -75,6 +75,8 @@ Persisted layers may still hold the pre-rename spelling `"default"`; every load 
 
 ### Auto-Trust
 `attachStartupWatcher()` monitors PTY output for Claude Code's interactive trust prompts and auto-dismisses them. Watches for "Yes, I trust this folder" and "WARNING: Loading development channels" needles after ANSI stripping. Each Enter is needle-verified (retry if the dialog re-renders or the PTY stays silent, capped attempts) because CC's TUI attaches its stdin handler 100-500ms after first paint — blind early writes get swallowed. Configurable via settings panel toggle (default: ON).
+
+**Gemini** has its own folder trust: in an untrusted folder it shows "Do you trust the files in this folder?" and, until trusted, overrides any `--approval-mode` to `default` (a bypass agent silently runs as ask; "Don't trust" makes it permanent). With Auto-Trust ON the spawn sets `GEMINI_CLI_TRUST_WORKSPACE=true` (read by Gemini's `checkPathTrust()`): process-scoped, no dialog, mode honored, `~/.gemini/trustedFolders.json` NOT written (all measured on 0.46). Deliberately an env var, not the equivalent `--skip-trust` flag: Gemini parses argv strictly, so an older Gemini without the flag would refuse to start, while it simply ignores an unknown env var and falls back to its dialog. With it OFF the dialog shows, and a **startup notice** (`AgentProvider.startupNotices`, needle-verified against a real render, scanned whatever the setting) tells the operator why the agent is waiting. Trust in either CLI lets it load the folder's own config (hooks, MCP servers, commands) — the Settings help text says so.
 
 ### Prompt Delivery Receipt (`agents/promptDelivery.ts`)
 A starting prompt travels only as a CLI arg (`claude ... -- <prompt>`), so a startup-dialog race can silently drop it. Sessions spawned WITH a prompt are tracked through the hook stream: spawn → [startup settles] → SessionStart → UserPromptSubmit confirms delivery. **The windows are SETTLE-GATED** (ADR-074): nothing arms until the auto-trust watcher reports the startup dialogs out of the way (its `cleanup()` fires `onSettled` on every terminal path; a 45s fallback self-settles if no watcher runs, so a wiring regression can't silently disable the detector). The original fixed 15s/20s spawn-anchored windows measured TUI boot latency, not delivery — under a multi-agent boot sweep the argv prompt routinely takes >40s to submit, so every worker spawn got a false "stuck, needs a manual nudge" pair AND the paste fallback double-delivered the brief (both copies queued behind the booting TUI and both submitted). Current shape: SessionStart window 30s from settle; UserPromptSubmit window 90s from the later of SessionStart/settle; then ONE bracketed-paste + Enter re-delivery; then a 90s confirm window. Any turn activity cancels — double-submission is worse than a manual nudge. Giving up is **retractable**: the tracker parks (`given_up`, 10min retention) and a late receipt retracts the failure `SystemWarning` (the factual "was re-delivered" note is never retracted) and logs the correction.
@@ -136,7 +138,9 @@ Named, reusable sets of env vars applied to an agent at spawn to override its mo
 Injection is provider-agnostic in `runtime.ts` after `provider.buildEnv` (base env < global `customEnvVars` < per-agent preset). `RESERVED_ENV_KEYS` (now in `shared.ts`, single source of truth) is stripped at both create-time and injection. A preset whose required secret is unset **refuses to spawn** with a message pointing at the Presets tab. The Agent record persists the preset NAME only; it's resolved once via the "explicit param wins, else the record's value on a body-less resume" rule (like `permissionMode`, ADR-061) and re-applied on resume. `create_agent(envPreset: "kimi-k2.7-code", ...)`. UI: a left "Presets" tab + a gold accent-highlighted pill right after the repo·branch text on each agent row's bottom line (no Kimi icon, no provider relabel — a Kimi-backed agent stays a "Claude Code" agent; the gold is the theme accent, deliberately NOT a provider brand color).
 
 ### Agent Hierarchy (Org Chart)
-Hierarchy metadata (`template`, `manager`, `project`) is stored on persisted sessions in `sessions.json`. The org chart is derived at query time from `manager` references. Configured at runtime via `set_manager` MCP tool — agents or the human can organize the hierarchy after spawning. REST API: `GET /api/org`, `PUT /api/org/manager`, `GET/POST /api/templates`.
+Each agent record (`$configDir/agents/<id>.json`) carries a `managerId`; the hierarchy is derived at query time by ONE algorithm in core (`buildTreeFromRecords` / `buildAgentTreeNodes`, `core/src/tree.ts`) used by `GET /api/agents/tree`, MCP `get_org_chart`, and the dashboard push bridge. Its default filters exited agents and promotes their reports to roots — right for the sidebar and MCP, wrong for the chart. Set at runtime via `set_manager` (MCP) or `POST /api/agents/:id/manager` (cycles → 409).
+
+**The Org Chart tab** (`HierarchyPanel.tsx` + `components/orgchart/`, ADR-112) reads its own `orgTreePoll` (`?includeExited=true`, push-fed via the same derive) and prunes in the client (`pruneExited`): an exited agent is drawn as a dashed ghost only while its subtree still holds a running agent, so a crashed manager keeps its team; other exited agents hide behind "Show N exited". Layout is a tidy tree (`layout.ts`: teams side by side, reportless roots on an "Unassigned" shelf). Every color comes from `orgChartTokens(page)` + `statusLabelStyle` — never add a literal color to a card. A click SELECTS (never navigates away): the chain stays lit, and a docked inspector (`OrgInspector`) shows the agent with explicit actions. Double-click / Enter / the inspector's button opens the terminal; arrows walk the chart; Esc clears through the escape stack. Right-click opens the shared `AgentContextMenu`, **portaled to `<body>`** because dockview's `.dv-render-overlay` (transform + contain) re-anchors `position: fixed` to the pane. Cards expose `data-org-card` / `data-org-status`, and the stage is `data-org-stage` (the hero script fits it by that hook).
 
 ### Base Context Injection
 Every autonomOS-spawned session gets `--append-system-prompt` with a `BASE_CONTEXT` constant covering:
@@ -153,15 +157,17 @@ All app-level chords live in the registry at `packages/dashboard/src/shortcuts/r
 ## Key Conventions
 
 ### Decision Records (CRITICAL)
-Every architectural decision goes in `docs/DECISIONS.md`. Append-only. Each entry must include:
-- **Date** and **who decided** (human vs agent)
-- **Context** — why this decision was needed
-- **Decision** — what was chosen
-- **Rationale** — why this over alternatives
-- **Alternatives considered** — what else was evaluated
-- **Source** — where the decision happened (Discord channel, CC session, etc.)
+Every architectural decision is its own file in [`docs/decisions/`](docs/decisions/README.md): `ADR-NNN-<slug>.md`, listed in the generated index `docs/decisions/README.md`. Start one with `make adr NEW="Short title"`. It takes the next free number (checking origin/main AND open PRs) and writes a template. Don't append to `docs/DECISIONS.md` (it's a pointer stub now, and CI rejects entries there), and don't edit the index (a bot PR regenerates it after merge). Each entry must include:
+- **Date** (YYYY-MM-DD) and **Decided by** (human vs agent)
+- **Context**: why this decision was needed
+- **Decision**: what was chosen
+- **Rationale**: why this over alternatives
+- **Alternatives considered**: what else was evaluated
+- **Source**: where the decision happened (Discord channel, CC session, etc.)
 
-Never delete or modify past entries. If a decision is reversed, add a new entry referencing the old one.
+The labels are exact (`**Alternatives considered:**`, not `**Alternatives:**`). `make check`, and therefore CI and the pre-push gate, rejects a new ADR that is missing a field, still holds a template TODO, or reuses a number.
+
+Never delete or modify past entries; the migrated ones are hash-locked in `docs/decisions/legacy-manifest.json`. If a decision is reversed, add a new entry referencing the old one (an optional `**Supersedes:** ADR-NNN` field feeds the index). If two parallel PRs pick the same number, whoever merges later runs `make adr-renumber FILE=docs/decisions/ADR-NNN-….md`: one file changes, nothing else. A branch that still appended to the old `docs/DECISIONS.md` moves its entry with `make adr-import REF=HEAD` (steps in `docs/decisions/README.md`).
 
 ### Research & Learnings
 All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When investigating competitors, frameworks, or approaches:
@@ -197,7 +203,7 @@ The README's hero screenshot (`docs/assets/hero.png`) is generated, not hand-cap
 
 ## What NOT to Do
 
-- Don't make architectural decisions without recording them in DECISIONS.md
+- Don't make architectural decisions without recording them in `docs/decisions/` (`make adr`)
 - Don't start building without checking ROADMAP.md for priorities
 - Don't ignore existing research — check RESEARCH.md before investigating something
 - Don't over-engineer for the robot path yet — it's aspirational
@@ -208,8 +214,8 @@ The README's hero screenshot (`docs/assets/hero.png`) is generated, not hand-cap
 
 When working on this repo:
 1. Check ROADMAP.md — what's the current priority?
-2. Check DECISIONS.md — has this been decided already?
+2. Check `docs/decisions/` — has this been decided already?
 3. Do the work
 4. Update ROADMAP.md if priorities shifted
-5. Add any new decisions to DECISIONS.md
+5. Add any new decisions to `docs/decisions/` (`make adr NEW="…"`)
 6. Update RESEARCH.md with any new findings

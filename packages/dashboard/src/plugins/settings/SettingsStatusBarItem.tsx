@@ -656,8 +656,11 @@ export function SettingsPanel({
             />
           </div>
           <div className="text-[10px]" style={labelStyle}>
-            Auto-dismiss workspace trust and dev channel prompts on session
-            start.
+            Trust each agent's folder so Claude Code and Gemini start without
+            asking, and Gemini keeps the permission mode you picked (untrusted,
+            it runs as Ask). Trusting lets each CLI load that folder's own
+            config: hooks, MCP servers, commands. Also skips Claude Code's dev
+            channel prompt.
           </div>
 
           <div className="mt-3">

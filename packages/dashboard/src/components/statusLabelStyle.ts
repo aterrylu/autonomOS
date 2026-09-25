@@ -2,7 +2,7 @@ import type { AgentStatus } from "./ui/agent-status-icon";
 
 // Muted-accent coloring for the sidebar's bottom-line status LABEL (the
 // agentStatusLabel text). Labels only — the status DOTS keep their existing
-// bright colors. See docs/DECISIONS.md.
+// bright colors. See docs/decisions/.
 //
 // Active-work statuses (working / tool_running / compacting / orchestrating)
 // render with an animated slate-blue shimmer so an actively-working agent reads
@@ -44,6 +44,17 @@ export const STATUS_COLORS_LIGHT = {
   error: "#b0503a", // darker red (~4.6:1)
   neutral: "#6b7178", // darker gray (~4.5:1)
 } as const;
+
+/** The unread-count color ("2 unread") — one value for every surface that
+ *  shows an agent's unread count (sidebar row, org-chart card). */
+export const UNREAD_COLOR = "#ea6c73";
+/** Its light-theme variant: #ea6c73 is ~3:1 on near-white; this is ~5:1. */
+export const UNREAD_COLOR_LIGHT = "#c4452f";
+
+/** Theme-aware unread color (pick by `isLightBg(page.bg)`). */
+export function unreadColor(isLight: boolean): string {
+  return isLight ? UNREAD_COLOR_LIGHT : UNREAD_COLOR;
+}
 
 export interface StatusLabelStyle {
   /** The label text color. For a shimmer label this is the base/fallback color;

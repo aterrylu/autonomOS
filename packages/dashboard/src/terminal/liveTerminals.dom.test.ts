@@ -2,7 +2,7 @@
 // Must come first: stubs canvas + localStorage before xterm/store imports.
 import "../test/setup-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useStore } from "../store";
+import { restartingIds, useStore } from "../store";
 import {
   _disposeAllTerminals,
   _liveTerminalCount,
@@ -272,6 +272,34 @@ describe("liveTerminals keep-alive cache", () => {
     entry.detach(container);
     expect(backends[0].disposed).toBe(true);
     expect(entry.host.parentElement).toBeNull();
+  });
+
+  it("session-end during a RESTART keeps the pane put (does not route away)", () => {
+    // The 4010 here is the kill leg of a kill→attach under the same id — NOT a
+    // genuine end. restartSession marks the id in restartingIds for the whole
+    // flow; the onclose handler must NOT switchPane(null) then, or the user
+    // drops to the empty state instead of watching the fresh PTY come up. This
+    // is the actual "restart closes the pane" bug Terry hit.
+    const { entry, container } = mount("s1");
+    useStore.setState({
+      activePane: { type: "session", id: "s1" },
+    } as never);
+    const switchPane = vi.fn();
+    useStore.setState({ switchPane: switchPane as never });
+    restartingIds.add("s1");
+    try {
+      FakeWebSocket.instances[0].onclose?.({ code: 4010 });
+      // Slot still freed (the invariant — the dead socket must not hold a slot;
+      // restartSession's reloadTerminal re-acquires a fresh one) …
+      expect(getLiveTerminal("s1")).toBeUndefined();
+      // … but the pane is NOT routed away: it stays on s1 for the reconnect.
+      expect(switchPane).not.toHaveBeenCalled();
+      // Final output survives on screen until the re-acquire replaces it.
+      expect(backends[0].disposed).toBe(false);
+      expect(entry.host.parentElement).toBe(container);
+    } finally {
+      restartingIds.delete("s1");
+    }
   });
 
   it("after a deferred session-end, a visibility-driven reconnect is inert (final output survives)", () => {

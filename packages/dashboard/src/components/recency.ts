@@ -1,5 +1,5 @@
 // Recency treatment for the sidebar's last-activity timestamp (recency B2; see
-// docs/DECISIONS.md) and, since ADR-101, the passive Idle status label, which
+// docs/decisions/) and, since ADR-101, the passive Idle status label, which
 // rides the same ramp (recencyLabelOpacity at the bottom). The row, name, status
 // icon, repo·branch text, and every attention label are untouched.
 //
@@ -137,4 +137,23 @@ export function recencyLabelOpacity(
       : Number.NaN;
   const ramp = isLightBg(bg) ? RECENCY_OPACITY_LIGHT : RECENCY_OPACITY_DARK;
   return ramp[recencyBucket(ageMs)];
+}
+
+/**
+ * Compact age for a last-activity timestamp: "now", "41m", "5h", "11d". Shared
+ * by the sidebar row and the org-chart card so both show the same age for the
+ * same agent. Missing/NaN/non-positive timestamps render "unknown" (a
+ * pre-schema record with neither exitedAt nor updatedAt would otherwise show
+ * "NaNd"); clock skew renders "now".
+ */
+export function formatAge(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 0) return "now"; // clock skew — display cleanly
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }

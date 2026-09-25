@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 import {
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   socketRequest,
 } from "./helpers/test-server.js";
@@ -60,16 +63,23 @@ const INITIALIZE_BODY = JSON.stringify({
 
 describe("/mcp is socket-only and authenticated", {
   skip: !RUN_INTEGRATION,
+  // ~1.3s in CI; 60s is generous yet fails fast and NAMES the suite.
+  timeout: 60_000,
 }, () => {
   let server: BootedServer;
 
   before(async () => {
     server = await bootServer();
-  });
+  }, HOOK_TIMEOUT);
 
-  after(() => {
-    server?.kill();
-  });
+  after(() =>
+    boundedTeardown("mcp-auth", async () => {
+      await server?.kill();
+      // Remove this boot's config dir (incl. its throwaway HOME) like the other
+      // real-spawn suites do; it was left behind in $TMPDIR on every run.
+      if (server) rmSync(server.configDir, { recursive: true, force: true });
+    }),
+  );
 
   const publicUrl = (): string => `http://127.0.0.1:${server.port}/mcp`;
 
@@ -165,5 +175,13 @@ describe("/mcp is socket-only and authenticated", {
       res.headers["mcp-session-id"],
       "authenticated initialize must return a session id",
     );
+  });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
   });
 });

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import {
   type AgentProvider,
   DEFAULT_PERMISSION_MODE,
@@ -23,7 +23,8 @@ import { getConfigDir } from "../configDir.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
-import { cwdToDirName, projectsDir } from "../titleCache.js";
+import { candidateProjectCwds, cwdToDirName } from "../titleCache.js";
+import { ANSI_RE, despace } from "./ptyText.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -59,13 +60,7 @@ const HOOK_EVENTS = [
 ] as const;
 
 // ── Auto-trust: ANSI stripping + prompt needles ───────────────
-// The CSI prefix class includes the private-parameter markers <=>? — without
-// them, sequences like `\x1b[>0q` (DECRQM/mode chatter CC emits around
-// dialogs) strip only partially and leak fragments ("0q", "4m") into the
-// needle buffer. Those fragments once counted as "fresh output" and
-// false-settled a dialog that was still on screen.
-const ANSI_RE =
-  /\x1b[[\]()#;?<=>]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\].*?(?:\x07|\x1b\\)|\r/g;
+// ANSI_RE / despace live in ptyText.ts (shared with the startup notices).
 
 const TRUST_NEEDLES = [
   "Yes,Itrustthisfolder",
@@ -87,11 +82,6 @@ const TRUST_NEEDLES = [
 // were green while CI's real dialog exited every agent.
 const TRUST_NO_SELECTED_NORM = "❯No,exit";
 const TRUST_YES_SELECTED_NORM = "❯Yes,Itrustthisfolder";
-
-/** All whitespace removed — the normal form highlight needles match on. */
-function despace(s: string): string {
-  return s.replace(/\s+/g, "");
-}
 
 const DOWN_ARROW = "\x1b[B";
 
@@ -338,40 +328,71 @@ export const claudeCodeProvider: AgentProvider = {
     attachStartupWatcherCore(pty, options, { expectChannels, onSettled });
   },
 
-  hasResumableSession(options: ResolvedSpawnOptions): boolean {
-    // CC stores each session at ~/.claude/projects/<cwdToDirName>/<id>.jsonl
-    // and writes it LAZILY — on the first turn, not at session creation. So an
-    // agent that hasn't conversed yet has no file here, and `claude --resume
-    // <id>` would exit code 1 on sight. Probe the exact path the SDK uses (same
-    // helpers titleCache resolves titles with) so the runtime can fall back to
-    // a fresh session instead of a doomed resume.
+  hasResumableSession(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined> = process.env,
+  ): boolean {
+    // CC stores each session at <projects>/<cwdToDirName(cwd)>/<id>.jsonl and
+    // writes it LAZILY — on the first turn, not at session creation. So an
+    // agent that hasn't conversed yet has no file, and `claude --resume <id>`
+    // would exit code 1 on sight. Probe where the CHILD will actually look, so
+    // the runtime can start fresh instead of a doomed resume.
+    //
+    // Two layout facts, both verified against the installed CC (2.1.281):
+    // - CC files the session under the REALPATH of its cwd. A symlinked cwd
+    //   (/tmp and every /var/folders tmpdir on macOS, a symlinked home or
+    //   project dir) used to be probed at the unresolved path → ENOENT → a
+    //   fresh `--session-id` reusing a live id → "Session ID … is already in
+    //   use", exit 1. We check the realpath first, then the raw path (older
+    //   layouts, or a cwd that can't be resolved right now).
+    // - The projects root follows the child's CLAUDE_CONFIG_DIR (see
+    //   claudeProjectsDir), not always $HOME/.claude.
     //
     // Distinguish "genuinely absent" (ENOENT → not resumable) from "couldn't
-    // stat it right now" (EACCES/EIO/transient blip → assume resumable). Bare
-    // existsSync collapses both to false, which would let a momentary stat
-    // hiccup discard — and start a fresh session OVER — a real conversation
-    // under the same id. Fail OPEN on any non-ENOENT error: let the real
-    // `--resume` attempt proceed (the onExit safety net is the backstop if it
-    // truly can't resume).
+    // stat it right now" (EACCES/EIO/transient blip → assume resumable). Fail
+    // OPEN on any non-ENOENT error: let the real `--resume` attempt proceed
+    // (the onExit safety net is the backstop if it truly can't resume).
     //
     // Path note: cwdToDirName matches the SDK exactly for cwd ≤ 200 chars (the
-    // normal case). For longer cwds the SDK's truncation hash may diverge
-    // (titleCache keeps a prefix-match fallback for exactly this reason); we
-    // accept a rare false-negative there rather than make this probe async.
-    const file = join(
-      projectsDir(),
-      cwdToDirName(options.cwd),
-      `${options.providerSessionId}.jsonl`,
-    );
-    try {
-      statSync(file);
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-      return true; // transient/unexpected error → don't discard a real session
+    // normal case). For longer cwds the SDK's truncation hash may diverge; the
+    // runtime no longer reuses the id on a "not resumable" answer, so a false
+    // negative there costs a fresh session, never a crash.
+    const root = claudeProjectsDir(options.cwd, env);
+    for (const dir of candidateProjectCwds(options.cwd)) {
+      const file = join(
+        root,
+        cwdToDirName(dir),
+        `${options.providerSessionId}.jsonl`,
+      );
+      try {
+        statSync(file);
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") return true;
+      }
     }
+    return false;
   },
 };
+
+/**
+ * The directory CC files session JSONLs under for a child with this env and
+ * cwd: `$CLAUDE_CONFIG_DIR/projects` when set, else `$HOME/.claude/projects`.
+ * Matches CC's own resolution (verified via `claude auth status`
+ * `projectsDirectory`): a RELATIVE CLAUDE_CONFIG_DIR resolves against the
+ * child's cwd, and `~` is NOT expanded (the spawn env has no shell, so CC sees
+ * a literal `~` path segment). Exported for tests.
+ */
+export function claudeProjectsDir(
+  cwd: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const cfg = env.CLAUDE_CONFIG_DIR?.trim();
+  if (cfg) return join(resolvePath(cwd, cfg), "projects");
+  const home = env.HOME?.trim() || process.env.HOME;
+  if (!home) throw new Error("HOME environment variable is not set");
+  return join(home, ".claude", "projects");
+}
 
 /**
  * Where CC keeps `.claude.json` for the session about to spawn: under

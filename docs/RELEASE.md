@@ -319,5 +319,5 @@ re-point users:
 ## Reference
 
 - Versioning + changelog mechanics: [`.changeset/README.md`](../.changeset/README.md)
-- Consolidated release notes: ADR-044 in [`docs/DECISIONS.md`](DECISIONS.md)
+- Consolidated release notes: ADR-044 in [`docs/decisions/`](decisions/README.md)
 - Always-on server lifecycle: ADR-050; Electron desktop cut: ADR-051

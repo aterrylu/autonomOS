@@ -48,6 +48,22 @@ export interface ExtraUsage {
   utilization: number | null;
 }
 
+/** Spend against a spend limit, for spend-metered accounts (mirrors the
+ *  server's SpendLimit). Informational only; never drives the usage queue. */
+export interface SpendLimit {
+  used: number;
+  limit: number | null;
+  percent: number | null;
+  currency: string;
+  resetsAt: string | null;
+  source: "extra_usage" | "spend";
+  /** set / none (no limit field) / unreadable (a limit we couldn't use). */
+  limitStatus: "set" | "none" | "unreadable";
+}
+
+/** How the spend item renders on the status bar (per user, default text). */
+export type SpendDisplay = "text" | "percent" | "bar";
+
 export interface AccountInfo {
   email?: string;
   organization?: string;
@@ -92,6 +108,8 @@ export interface RateLimitData {
   /** Named windows from the response's `limits[]` beyond the fixed slots. */
   extraWindows?: NamedRateWindow[];
   extraUsage: ExtraUsage | null;
+  /** Set only for spend-metered accounts (no rolling window at all). */
+  spendLimit?: SpendLimit;
   account: AccountInfo;
   fetchedAt: string;
   error?: string;
