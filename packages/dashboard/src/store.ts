@@ -14,6 +14,7 @@ import { ApiError } from "./api/core";
 import { agentsPoll, projectsPoll, statusPoll } from "./api/polls";
 import { statusApi } from "./api/status";
 import { isValidActivePane, SINGLETON_TYPES } from "./layout/dockview/paneId";
+import { changeAwareStorage } from "./persistStorage";
 
 /** The project wire types now live in @autonomos/core alongside every other
  *  shape that crosses the HTTP boundary (ADR-078). Re-exported here so the
@@ -1423,6 +1424,13 @@ export const useStore = create<AppState>()(
     },
     {
       name: "autonomos",
+      // Writes only when a persisted field changed (see persistStorage.ts);
+      // the default re-serialized ~24KB on every status frame.
+      storage: changeAwareStorage(() => window.localStorage),
+      // CONTRACT: every field below must be REPLACED on change, never mutated
+      // in place. The storage skips a write when each field is the same
+      // reference as last time (persistStorage.ts), so an in-place edit
+      // (`s.expandedProjects[k] = true; set({})`) would never be saved.
       partialize: (state) => ({
         theme: state.theme,
         agentIconStyle: state.agentIconStyle,
