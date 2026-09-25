@@ -39,6 +39,10 @@ import {
 } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
+  forgetAgentMessages,
+  getAgentMessageStats,
+} from "../gateway/messageLog.js";
+import {
   emitPendingHandoffCount,
   injectAllHandoffs,
   injectHandoffItem,
@@ -256,6 +260,18 @@ agentsRouter.get("/:id", (c) => {
   // Enrich with the pending hand-off count too, so a single-agent fetch agrees
   // with the list endpoint (same corrupt-file-safe helper).
   return c.json(enrichAgent(agent));
+});
+
+// One agent's recent traffic (sent/received counts, top peers, and the last
+// messages with sanitized, capped text) for the Org Chart inspector. Full
+// message text is served ONLY here, per agent, on demand — never broadcast.
+agentsRouter.get("/:id/messages", (c) => {
+  const id = c.req.param("id");
+  const agent = resolveAgent(id);
+  if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
+  const raw = Number.parseInt(c.req.query("limit") ?? "", 10);
+  const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 50) : 20;
+  return c.json(getAgentMessageStats(agent.id, limit));
 });
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -1030,6 +1046,7 @@ agentsRouter.delete("/:id", (c) => {
   revokeAgentToken(id);
   clearAgentState(id);
   clearNotifications(id);
+  forgetAgentMessages(id);
   // Disarm any queued auto-Enter: an armed pane for a DELETED agent would
   // otherwise fire hours later against a gone PTY and push a notification
   // under an id nothing can resolve (same invariant as the clears). Lives in
