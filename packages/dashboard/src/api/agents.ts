@@ -2,6 +2,7 @@
 
 import type {
   Agent,
+  AgentAnalytics,
   AgentMessageStats,
   AgentTreeNode,
   HandoffQueueItem,
@@ -35,6 +36,12 @@ export const agentsApi = {
    *  so an exited manager keeps its reports instead of promoting them to roots. */
   treeWithExited: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<AgentTreeNode[]>("/api/agents/tree?includeExited=true", opts),
+  /** One agent's analytics (counts since the server started). */
+  analytics: (id: string, opts?: { signal?: AbortSignal }) =>
+    request<AgentAnalytics>(`/api/agents/${encodeURIComponent(id)}/analytics`, {
+      signal: opts?.signal,
+      fresh: true,
+    }),
   /** One agent's recent traffic (counts, top peers, last messages). Read on
    *  demand by the Org Chart inspector; full text is never broadcast. */
   messages: (id: string, opts?: { signal?: AbortSignal; limit?: number }) =>

@@ -7,6 +7,7 @@ import type {
 } from "@autonomos/core";
 import { type Context, Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
+import { observeStatus, observeTool } from "../agents/analytics.js";
 import { notePromptHookEvent } from "../agents/promptDelivery.js";
 import { getAgent, listAgents, markActivity } from "../agents/store.js";
 import { emitAgentDelta } from "../events/agents.js";
@@ -171,6 +172,8 @@ export function getUnreadCount(sessionId: string): number {
 function emitStatusDelta(sessionId: string): void {
   const state = agentStates.get(sessionId);
   if (!state) return;
+  // Every activity-state change passes through here — the analytics' one tap.
+  observeStatus(sessionId, state.status);
   emitAgentDelta({
     type: "agent.status",
     id: sessionId,
@@ -609,6 +612,16 @@ hooksIngestRouter.post("/:sessionId", async (c) => {
           version: flushed.version,
         });
       }
+    }
+
+    if (
+      event === "PreToolUse" &&
+      body.tool_name !== "SendUserMessage" &&
+      body.tool_name !== "Brief"
+    ) {
+      observeTool(sessionId, "call", body.tool_name);
+    } else if (event === "PostToolUseFailure") {
+      observeTool(sessionId, "failure", body.tool_name);
     }
 
     const statusUpdate = deriveStatus(body);
