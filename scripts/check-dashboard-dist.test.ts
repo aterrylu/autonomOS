@@ -50,6 +50,18 @@ describe("check-dashboard-dist", () => {
     assert.deepEqual(unexpectedDistEntries(dist, pub), ["assets/index.d.ts"]);
   });
 
+  it("precompressed siblings of allowed files are allowed (the build writes .br/.gz for files ≥1KB)", () => {
+    writeFileSync(join(dist, "sw.js.br"), "x");
+    writeFileSync(join(dist, "manifest.json.gz"), "x");
+    writeFileSync(join(dist, "index.html.br"), "x");
+    assert.deepEqual(unexpectedDistEntries(dist, pub), []);
+  });
+
+  it("a compressed sibling does NOT whitelist an unexpected base name", () => {
+    writeFileSync(join(dist, "store.js.br"), "x");
+    assert.deepEqual(unexpectedDistEntries(dist, pub), ["store.js.br"]);
+  });
+
   it("a NEW public/ file is allowed automatically (the allow-list is derived, not hand-kept)", () => {
     writeFileSync(join(pub, "robots.txt"), "x");
     writeFileSync(join(dist, "robots.txt"), "x");

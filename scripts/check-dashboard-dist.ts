@@ -42,7 +42,9 @@ export function unexpectedDistEntries(dist: string, publicDir: string): string[]
   ]);
   const bad: string[] = [];
   for (const name of readdirSync(dist)) {
-    if (!allowed.has(name)) bad.push(name);
+    // The build precompresses files ≥1KB (dashboard/vite-plugins/precompress.ts),
+    // so an allowed file may have a .br/.gz sibling next to it.
+    if (!allowed.has(name.replace(/\.(?:br|gz|zst)$/, ""))) bad.push(name);
   }
   // Declarations anywhere (incl. under assets/) are tsc output by definition.
   for (const file of walk(dist)) {
