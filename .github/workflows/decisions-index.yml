@@ -41,7 +41,7 @@ env:
 
 jobs:
   index:
-    if: ${{ !startsWith(github.event.head_commit.message, 'docs(decisions): regenerate index') }}
+    if: "!startsWith(github.event.head_commit.message, 'docs(decisions): regenerate index')"
     runs-on: ubuntu-latest
     # A no-op run takes ~15s and a regenerating one ~30s; 5 minutes bounds a hang.
     timeout-minutes: 5
