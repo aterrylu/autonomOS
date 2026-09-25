@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatAge,
   isLightBg,
   recencyBucket,
   recencyLabelOpacity,
@@ -243,5 +244,16 @@ describe("recencyLabelOpacity — passive labels ride the timestamp ramp (T1)", 
   it("an unknown timestamp never fades a passive label", () => {
     expect(recencyLabelOpacity("idle", 0, NOW_, DARK)).toBe(1);
     expect(recencyLabelOpacity("idle", Number.NaN, NOW_, DARK)).toBe(1);
+  });
+});
+
+describe("formatAge — reads the caller's clock", () => {
+  // The row passes the same useNow() value it buckets the fade with, so the
+  // text ("1d") and its fade ("stale") can't disagree between ticks.
+  it("formats against the passed `now`, not the wall clock", () => {
+    const now = 1_800_000_000_000;
+    expect(formatAge(now - DAY + 15_000, now)).toBe("23h");
+    expect(formatAge(now - DAY, now)).toBe("1d");
+    expect(formatAge(now - 90_000, now)).toBe("1m");
   });
 });
