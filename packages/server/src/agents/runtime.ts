@@ -430,6 +430,32 @@ export function resolveSpawnProvider(
 }
 
 /**
+ * The last few non-empty lines a process printed before it exited, ANSI
+ * stripped and length-capped — for the "died immediately" log, so it names
+ * the process's own reason (e.g. CC's "Session ID … is already in use")
+ * instead of guessing "likely a bad flag". Pure; exported for tests.
+ */
+export function exitOutputTail(
+  buffer: readonly string[],
+  maxLines = 3,
+  maxChars = 300,
+): string {
+  const text = buffer
+    .join("")
+    // CSI / OSC / other escape sequences, then stray control chars.
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+  const lines = text
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const tail = lines.slice(-maxLines).join(" | ");
+  return tail.length > maxChars ? `…${tail.slice(-maxChars)}` : tail;
+}
+
+/**
  * Thread-resume pre-flight decision (Codex; ADR-100 "Option B"). False only when
  * the provider positively reports nothing was saved for the thread — then the
  * runtime starts a fresh thread instead of a doomed resume. Fail-OPEN: a
@@ -989,14 +1015,36 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     providerThreadId: agent.providerThreadId,
   };
 
+  const env = provider.buildEnv(agent.id, agent.name);
+
+  // Apply an env preset (model override, ADR-067): merge the resolved preset's
+  // env into ONLY this agent's process env, AFTER the provider built its base +
+  // customEnvVars (so a per-agent preset outranks a global customEnvVar). The
+  // resolve/merge/refuse logic lives in applyPresetToEnv (unit-tested there); a
+  // preset that is missing or whose API key is unset THROWS here — before the
+  // record is persisted or the PTY launched, so a rejected spawn leaves no
+  // half-started agent.
+  if (envPreset) applyPresetToEnv(env, envPreset);
+
+  // ── Resume decisions (ADR-104) — AFTER the env is final, because a preset or
+  // customEnvVar can give this agent its own CODEX_HOME; probing the server's
+  // would mis-judge a real thread as "never saved". User notices are QUEUED and
+  // pushed only once the record is written, so a spawn that then fails never
+  // leaves behind a notice claiming something that didn't happen.
+  const pendingNotices: string[] = [];
+
   // Pre-flight resume check (provider-parity, ADR-049): a resume only succeeds
   // if the provider actually has a resumable session on disk. Claude Code writes
   // its session JSONL lazily (on the first turn, not at session creation), so a
   // never-conversed agent has no `--resume` target and `claude --resume <id>`
   // exits code 1 on boot — which marks the agent crashed and drops it out of the
   // dashboard (the bug). When the provider reports no resumable session, fall
-  // back to a FRESH session reusing the SAME providerSessionId: nothing is lost
-  // (there was no prior conversation) and the record's id stays stable. Codex
+  // back to a FRESH session under a NEW providerSessionId: nothing is lost
+  // (there was no prior conversation). ADR-111 supersedes ADR-049's "reuse the
+  // SAME id": CC can still know that id (e.g. its JSONL filed under a path our
+  // probe missed), and a fresh `--session-id <known id>` dies with "Session ID
+  // … is already in use" (exit 1) — which the onExit net can't catch, since no
+  // resume was attempted. A new id can never collide. Codex
   // omits this hook — a missing thread id already takes its fresh `--remote`
   // path — so only Claude Code exercises this branch today.
   //
@@ -1020,7 +1068,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // Aborting an adopt costs a retry; proceeding costs the user's conversation.
     let resumable = true;
     try {
-      resumable = provider.hasResumableSession(resolved);
+      resumable = provider.hasResumableSession(resolved, env);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       if (resolution === "adopt") {
@@ -1047,34 +1095,21 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           `no saved ${provider.displayName} session found for "${params.resumeSessionId}" in ${cwd} — nothing to resume`,
         );
       }
+      // Regenerate the id (ADR-111). Written back to the record by the
+      // reattach markRunning below — the same channel the onExit net uses — so
+      // every consumer that resolves by providerSessionId follows it.
+      const oldSessionId = providerSessionId;
+      providerSessionId = crypto.randomUUID();
+      resolved.providerSessionId = providerSessionId;
       resolved.resumeSessionId = undefined;
-      console.warn(
-        `[runtime] ${agent.id.slice(0, 8)} resume requested but ${provider.displayName} has no resumable session on disk — starting fresh (same id)`,
+      console.info(
+        `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
-      pushSystemNotification(
-        agent.id,
+      pendingNotices.push(
         `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
       );
     }
   }
-
-  const env = provider.buildEnv(agent.id, agent.name);
-
-  // Apply an env preset (model override, ADR-067): merge the resolved preset's
-  // env into ONLY this agent's process env, AFTER the provider built its base +
-  // customEnvVars (so a per-agent preset outranks a global customEnvVar). The
-  // resolve/merge/refuse logic lives in applyPresetToEnv (unit-tested there); a
-  // preset that is missing or whose API key is unset THROWS here — before the
-  // record is persisted or the PTY launched, so a rejected spawn leaves no
-  // half-started agent.
-  if (envPreset) applyPresetToEnv(env, envPreset);
-
-  // ── Resume decisions (ADR-104) — AFTER the env is final, because a preset or
-  // customEnvVar can give this agent its own CODEX_HOME; probing the server's
-  // would mis-judge a real thread as "never saved". User notices are QUEUED and
-  // pushed only once the record is written, so a spawn that then fails never
-  // leaves behind a notice claiming something that didn't happen.
-  const pendingNotices: string[] = [];
 
   // THREAD pre-flight (Codex; ADR-100 "Option B"): codex writes a thread's
   // rollout lazily on its first turn, so a never-prompted agent's thread was
@@ -1226,8 +1261,12 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   }
 
   const logArgs = args.map(redactArgForLog);
+  // Name the agent explicitly: since ADR-111 a not-resumable reattach runs
+  // under a REGENERATED session id, so the argv alone no longer identifies
+  // which agent a spawn belongs to (log readers and permission-mode-resume's
+  // launchedPermission() attribute spawns by agent id).
   console.log(
-    `[runtime] spawning: ${binary} ${logArgs.join(" ")}` +
+    `[runtime] spawning: (agent ${agent.id}) ${binary} ${logArgs.join(" ")}` +
       (sidecar ? ` (sidecar ${sidecar.endpoint})` : ""),
   );
 
@@ -1525,7 +1564,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         `[runtime] ${persisted.id.slice(0, 8)} died immediately (${lifetime}ms), code=${exitCode}` +
           (wasThreadResume
             ? ` — thread-resume crash; thread retained (resumable), likely environmental not a bad flag. Args: ${logArgs.join(" ")}`
-            : ` — likely a bad flag. Args: ${logArgs.join(" ")}`),
+            : ` — last output: ${exitOutputTail(managed.outputBuffer) || "(none)"}. Args: ${logArgs.join(" ")}`),
       );
     } else if (exitCode !== 0 || signal) {
       console.warn(

@@ -111,8 +111,15 @@ export interface AgentProvider {
    *
    * Providers that omit this hook are treated as "always resumable" — the
    * runtime keeps its prior unconditional resume behavior for them.
+   *
+   * `env` is the CHILD's final environment (base + customEnvVars + env
+   * preset), so a provider can look where the spawned process will actually
+   * store its sessions (e.g. a preset-relocated CLAUDE_CONFIG_DIR).
    */
-  hasResumableSession?(options: ResolvedSpawnOptions): boolean;
+  hasResumableSession?(
+    options: ResolvedSpawnOptions,
+    env?: Record<string, string | undefined>,
+  ): boolean;
 
   /**
    * Optional: THREAD-resume pre-flight for providers that resume by

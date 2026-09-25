@@ -10,6 +10,7 @@
  *   SDK customTitle → mtime-validated cache → JSONL fallback → SDK summary
  */
 
+import { realpathSync } from "node:fs";
 import { open, opendir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -56,6 +57,19 @@ export function cwdToDirName(cwd: string): string {
   return `${replaced.slice(0, MAX)}-${hash}`;
 }
 
+/** The cwd spellings CC may have filed a session under: the realpath first
+ *  (what current CC writes), then the path as given. Deduplicated; an
+ *  unresolvable cwd just yields the raw path. Exported for tests. */
+export function candidateProjectCwds(cwd: string): string[] {
+  let real: string | undefined;
+  try {
+    real = realpathSync(cwd);
+  } catch {
+    real = undefined;
+  }
+  return real && real !== cwd ? [real, cwd] : [cwd];
+}
+
 /**
  * Resolve the project directory for a given cwd.
  * Results are cached in memory to avoid repeated stat() calls
@@ -70,16 +84,24 @@ async function resolveProjectDir(cwd: string): Promise<string | null> {
   }
 
   const base = projectsDir();
-  const dirName = cwdToDirName(cwd);
   const now = Date.now();
 
-  // Try exact match first
-  const exact = join(base, dirName);
-  try {
-    await stat(exact);
-    projectDirCache.set(cwd, { path: exact, at: now });
-    return exact;
-  } catch {
+  // Try exact matches first: CC files a session under the REALPATH of its cwd,
+  // so a symlinked cwd (/tmp or any /var/folders tmpdir on macOS, a symlinked
+  // project dir) must be looked up resolved; the raw spelling covers older
+  // layouts. Without this, titles for symlinked cwds were silently missing.
+  for (const spelling of candidateProjectCwds(cwd)) {
+    const exact = join(base, cwdToDirName(spelling));
+    try {
+      await stat(exact);
+      projectDirCache.set(cwd, { path: exact, at: now });
+      return exact;
+    } catch {
+      // try the next spelling
+    }
+  }
+  const dirName = cwdToDirName(cwd);
+  {
     // If the dirname was truncated, look for prefix match
     if (dirName.length <= 200) {
       projectDirCache.set(cwd, { path: null, at: now });
