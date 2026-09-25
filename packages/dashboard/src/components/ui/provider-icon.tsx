@@ -1,4 +1,4 @@
-import { type ReactNode, useId } from "react";
+import { memo, type ReactNode, useId } from "react";
 import { THEMES, useStore } from "../../store";
 import {
   type AgentStatus,
@@ -35,7 +35,7 @@ const CLAUDE_CLAY = "#d97757";
 
 /** A single-path mark drawn in one flat color (Codex, Claude). Gemini's
  *  multi-gradient mark renders inline since it can't share this shape. */
-function MonochromeMark({
+const MonochromeMark = memo(function MonochromeMark({
   size,
   label,
   color,
@@ -58,12 +58,12 @@ function MonochromeMark({
       <path d={path} fill="currentColor" />
     </svg>
   );
-}
+});
 
 /** The provider's official mark, sized to `size` px. `provider` is the raw
  *  string from the session/org payload; unknown values fall back to a neutral
  *  glyph so the icon never disappears. */
-export function ProviderIcon({
+export const ProviderIcon = memo(function ProviderIcon({
   provider,
   size = 18,
 }: {
@@ -184,7 +184,7 @@ export function ProviderIcon({
       />
     </svg>
   );
-}
+});
 
 // ── Corner status badge ──────────────────────────────────────────────────
 //
@@ -222,7 +222,7 @@ function CornerSvg({
   );
 }
 
-function StatusCorner({
+const StatusCorner = memo(function StatusCorner({
   category,
   size,
   page,
@@ -338,14 +338,14 @@ function StatusCorner({
       />
     </CornerSvg>
   );
-}
+});
 
 /**
  * Provider mark + corner status badge. Drop-in alternative to `AgentStatusIcon`
  * for agent rows that carry a provider. Default `size` matches the sidebar
  * (18px glyph; the corner badge overhangs slightly).
  */
-export function ProviderAgentIcon({
+export const ProviderAgentIcon = memo(function ProviderAgentIcon({
   provider,
   status,
   size = 18,
@@ -365,4 +365,4 @@ export function ProviderAgentIcon({
       <StatusCorner category={category} size={size} page={page} />
     </span>
   );
-}
+});
