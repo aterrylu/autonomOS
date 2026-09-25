@@ -43,7 +43,12 @@ interface HookState {
   lastEvent: string;
 }
 
-describe("/api/hooks trust boundary", { skip: !RUN_INTEGRATION }, () => {
+// timeout: ~1.3s in CI; 60s is generous yet fails fast and NAMES the suite
+// (a hang here otherwise held CI until the job limit).
+describe("/api/hooks trust boundary", {
+  skip: !RUN_INTEGRATION,
+  timeout: 60_000,
+}, () => {
   let server: BootedServer;
 
   before(async () => {

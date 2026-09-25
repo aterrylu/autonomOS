@@ -158,13 +158,20 @@ fmt:
 ifndef CI
 LOCAL_TEST_CAP := $(shell node -e "process.stdout.write(String(Math.max(1, Math.floor(require('os').availableParallelism() / 2))))" 2>/dev/null)
 NODE_TEST_CONCURRENCY := $(if $(LOCAL_TEST_CAP),--test-concurrency=$(LOCAL_TEST_CAP))
+# Per-test backstop: a test stuck on an await fails at 5 min, NAMED, instead
+# of silently holding the run until the CI job timeout. 5 min sits above every
+# real-agent suite's own diagnostic budget (agent-spawn-prompt waits 180s in a
+# 200s describe), so it never pre-empts their better failure messages. It can
+# NOT catch a synchronous block (the event loop is frozen); the CI job's
+# timeout-minutes is the backstop for that.
+NODE_TEST_TIMEOUT := --test-timeout=300000
 VITEST_MAX_WORKERS := $(if $(LOCAL_TEST_CAP),--maxWorkers=$(LOCAL_TEST_CAP))
 endif
 
 check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
-	$(TSX) --test $(NODE_TEST_CONCURRENCY) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # ── hero: regenerate the README hero screenshot (docs/assets/hero.png) ───────────────
