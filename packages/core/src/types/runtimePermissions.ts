@@ -432,7 +432,7 @@ export function parseRuntimePermission(
   runtime: Provider,
   input: string | Readonly<Record<string, unknown>>,
 ): PermissionParseResult {
-  const axes = RUNTIME_PERMISSIONS[runtime].axes;
+  const axes = RUNTIME_PERMISSIONS[runtime]?.axes ?? []; // no table: see completePermission
   let pairs: Record<string, string> = {};
   if (typeof input === "string") {
     const s = input.trim();
@@ -468,7 +468,7 @@ export function parseRuntimePermission(
 
 /** "Valid permission values for codex: approval_policy=on-request|never; …" */
 export function validValuesMessage(runtime: Provider): string {
-  const axes = RUNTIME_PERMISSIONS[runtime].axes;
+  const axes = RUNTIME_PERMISSIONS[runtime]?.axes ?? []; // no table: see completePermission
   const list = axes
     .filter((a) => !a.perTurn) // not settable at launch — see perTurn
     .map(

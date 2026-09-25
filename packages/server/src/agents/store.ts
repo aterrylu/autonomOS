@@ -35,6 +35,7 @@ import {
   legacyModeFor,
   legacyModeWasClamped,
   normalizeStoredPermission,
+  PERMISSION_RUNTIMES,
   type PermissionMode,
   type Provider,
   permissionFromLegacyMode,
@@ -160,7 +161,11 @@ function loadFromDisk(): Map<UUID, Agent> {
       // as on-request, so they're marked for a one-time notice at next spawn.
       const provider = data.provider as Provider;
       const stored = normalizeStoredPermission(provider, data.permission);
-      if (stored) {
+      if (!PERMISSION_RUNTIMES.includes(provider)) {
+        // No permission table for this runtime (e.g. a removed provider): keep
+        // the record exactly as stored — never rewrite what it says (the
+        // projection would fall back to "ask" and quietly relabel it).
+      } else if (stored) {
         data.permission = stored;
       } else {
         data.permission = permissionFromLegacyMode(
@@ -173,7 +178,8 @@ function loadFromDisk(): Map<UUID, Agent> {
         migratedPermission++;
       }
       // Keep the legacy projection consistent with what actually runs.
-      data.permissionMode = legacyModeFor(data.permission);
+      if (PERMISSION_RUNTIMES.includes(provider) && data.permission)
+        data.permissionMode = legacyModeFor(data.permission);
       map.set(data.id, data);
     } catch (err) {
       console.warn(`Skipping unreadable agent file ${entry}: ${err}`);
