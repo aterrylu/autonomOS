@@ -85,7 +85,7 @@ export function CreateAgentPanel() {
     }
   }, [templates, selectedTemplate, autoDefaulted, nameManuallyEdited]);
 
-  // Codex can't represent every mode (e.g. plan, which has no Codex equivalent).
+  // autonomOS doesn't wire up every mode for Codex yet (plan, auto).
   // If the selected provider doesn't support the current mode, fall back to the
   // safe mode so the dropdown and the eventual spawn agree — the option is also
   // disabled in the dropdown, but a provider switch can strand a prior pick.
