@@ -1,7 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { precompress } from "./build/precompress";
+import { precompress } from "./vite-plugins/precompress";
 
 const apiPort = process.env.VITE_API_PORT || "3101";
 const apiTarget = `http://localhost:${apiPort}`;

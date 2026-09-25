@@ -7,7 +7,7 @@
   - Vite's content-hashed files under `/assets/*` are served with `Cache-Control: public, max-age=31536000, immutable`.
   - Everything else (`index.html` for `/`, `/index.html` and every SPA route; `sw.js`, `manifest.json`, `favicon.svg`) is served with `Cache-Control: no-cache`, so it revalidates on every load.
   - `index.html` carries a content ETag and answers 304 (weak comparison). The server re-reads it when it changes on disk, and `/api/host` reports the build being served NOW.
-  - A build step (`dashboard/build/precompress.ts`) writes brotli and gzip siblings for compressible outputs of 1KB or more, written atomically. `serveStatic({ precompressed: true })` sends them with `Vary: Accept-Encoding`.
+  - A build step (`dashboard/vite-plugins/precompress.ts`) writes brotli and gzip siblings for compressible outputs of 1KB or more, written atomically. `serveStatic({ precompressed: true })` sends them with `Vary: Accept-Encoding`.
   - A missing `/assets/*` file is a `404` with `no-store`, never the SPA HTML.
   - Implemented in `server/src/dashboardStatic.ts`.
 - **Rationale:**

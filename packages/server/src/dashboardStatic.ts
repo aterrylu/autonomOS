@@ -21,7 +21,7 @@ export const CACHE_IMMUTABLE = "public, max-age=31536000, immutable";
  *  a cached copy would pin an old build after an upgrade. */
 export const CACHE_REVALIDATE = "no-cache";
 
-/** Types the build precompresses (keep in sync with dashboard/build/precompress.ts). */
+/** Types the build precompresses (keep in sync with dashboard/vite-plugins/precompress.ts). */
 const COMPRESSIBLE =
   /\.(?:js|mjs|css|html|svg|json|webmanifest|txt)(?:\.(?:br|gz|zst))?$/;
 

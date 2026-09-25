@@ -13,9 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { precompressDir } from "../build/precompress";
+import { precompressDir } from "../vite-plugins/precompress";
 
-/** Build-time precompression (build/precompress.ts): the server serves these
+/** Build-time precompression (vite-plugins/precompress.ts): the server serves these
  *  siblings to clients that accept them, so they must decode to the original. */
 describe("precompressDir", () => {
   let dir = "";
