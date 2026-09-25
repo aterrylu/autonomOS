@@ -84,6 +84,7 @@ const card = (id: string) =>
 
 beforeEach(() => {
   lastTreeUrl = "";
+  localStorage.clear();
   useStore.setState({
     theme: "void",
     sessions: [],
@@ -524,6 +525,161 @@ describe("selection + inspector", () => {
     expect(inspector()?.dataset.orgInspector).toBe("Mgr");
     fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowRight" });
     expect(inspector()?.dataset.orgInspector).toBe("Other");
+  });
+});
+
+describe("PR 2 — team rollups + collapse", () => {
+  const fleet = () =>
+    tree([
+      node("Lead", "running", [
+        node("Sub", "running", [node("Deep", "running")]),
+        node("Busy", "running"),
+        node("Gone", "exited"),
+      ]),
+      node("Solo", "running"),
+    ]);
+  const statuses = () =>
+    useStore.setState({
+      sessions: ["Lead", "Sub", "Deep", "Busy", "Solo"].map((id) =>
+        session(id),
+      ),
+      agentStatuses: {
+        Deep: { status: "needs_input" } as never,
+        Busy: { status: "working" } as never,
+        Sub: { status: "idle" } as never,
+      },
+    });
+  const rollup = (id: string) =>
+    document.querySelector(`[data-org-rollup="${id}"]`)?.textContent ?? null;
+  const toggle = (id: string) =>
+    document.querySelector(`[data-org-collapse="${id}"]`) as HTMLElement | null;
+
+  it("a lead's card summarizes its WHOLE team; leaves and solo agents get none", async () => {
+    fleet();
+    statuses();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
+    // Deep (needs you) is two levels down; Gone is exited and HIDDEN, so it
+    // doesn't count (a reaping manager must not read "N exited" forever).
+    expect(rollup("Lead")).toBe("1 needs you1 working1 idle");
+    expect(rollup("Sub")).toBe("1 needs you");
+    expect(rollup("Busy")).toBeNull();
+    expect(rollup("Solo")).toBeNull();
+  });
+
+  it("the needs-you chip is the sidebar's amber", async () => {
+    fleet();
+    statuses();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
+    // Scope to the rollup: the toolbar strip ALSO reads "1 needs you".
+    const chip = document.querySelector(
+      '[data-org-rollup="Lead"] span',
+    ) as HTMLElement;
+    expect(chip.textContent).toBe("1 needs you");
+    expect(chip.style.color).toBe(hexToRgb(STATUS_COLORS_DARK.needsInput));
+  });
+
+  it("collapsing folds the team into a +N stack, keeps the rollup, and stays in the team row", async () => {
+    fleet();
+    statuses();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
+    const top = card("Lead")?.style.top;
+
+    const t = toggle("Lead") as HTMLElement;
+    expect(t.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(t);
+
+    expect(card("Sub")).toBeNull();
+    expect(card("Deep")).toBeNull();
+    expect(card("Lead")?.style.top).toBe(top); // not dropped onto the shelf
+    expect(toggle("Lead")?.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle("Lead")?.textContent).toBe("+3");
+    expect(rollup("Lead")).toBe("1 needs you1 working1 idle");
+    expect(
+      document.querySelectorAll('[data-org-stack="Lead"]').length,
+    ).toBeGreaterThan(0);
+    // Still reachable: the needs-you strip lists the hidden agent.
+    expect(document.querySelector('[data-org-waiting="Deep"]')).not.toBeNull();
+
+    fireEvent.click(toggle("Lead") as HTMLElement);
+    expect(card("Deep")).not.toBeNull();
+  });
+
+  it("a lead with every bucket shows at most 3 chips (priority order) + a +N chip", async () => {
+    tree([
+      node("Big", "running", [
+        node("n1", "running"),
+        node("e1", "running"),
+        node("w1", "running"),
+        node("i1", "running"),
+        node("x1", "exited", [node("keep", "running")]),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["Big", "n1", "e1", "w1", "i1", "keep"].map((id) =>
+        session(id),
+      ),
+      agentStatuses: {
+        n1: { status: "needs_input" } as never,
+        e1: { status: "error" } as never,
+        w1: { status: "working" } as never,
+        i1: { status: "idle" } as never,
+        keep: { status: "idle" } as never,
+      },
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("keep")).not.toBeNull());
+    const r = document.querySelector('[data-org-rollup="Big"]') as HTMLElement;
+    const chips = [...r.querySelectorAll("span")].map((c) => c.textContent);
+    // Exactly three status chips, then the "+N" overflow chip — never five.
+    expect(chips).toEqual(["1 needs you", "1 error", "1 working", "+2"]);
+    const more = r.querySelector("[data-org-rollup-more]") as HTMLElement;
+    expect(more.textContent).toBe("+2");
+    expect(more.title).toBe("2 idle · 1 exited");
+  });
+
+  it("folding the team of a SELECTED agent keeps its lead lit, not dimmed (nox, #391)", async () => {
+    fleet();
+    statuses();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
+    fireEvent.click(card("Deep") as HTMLElement);
+    fireEvent.click(toggle("Sub") as HTMLElement);
+    expect(card("Deep")).toBeNull();
+    // Sub (the folded lead) and Lead are Deep's chain: lit. Busy is not: dim.
+    expect(card("Sub")?.style.opacity).toBe("");
+    expect(card("Lead")?.style.opacity).toBe("");
+    expect(card("Busy")?.style.opacity).not.toBe("");
+    expect(
+      document.querySelector('[data-org-inspector="Deep"]'),
+    ).not.toBeNull();
+  });
+
+  it("remembers folded teams across mounts (per browser)", async () => {
+    fleet();
+    statuses();
+    const first = render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
+    fireEvent.click(toggle("Sub") as HTMLElement);
+    expect(card("Deep")).toBeNull();
+    first.unmount();
+
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Sub")).not.toBeNull());
+    expect(card("Deep")).toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem("autonomos.orgchart.collapsed") ?? "[]"),
+    ).toEqual(["Sub"]);
+  });
+
+  it("a corrupt persisted value is ignored, not fatal", async () => {
+    localStorage.setItem("autonomos.orgchart.collapsed", "{not json");
+    fleet();
+    statuses();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("Deep")).not.toBeNull());
   });
 });
 
