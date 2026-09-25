@@ -1318,13 +1318,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw err;
   }
 
-  // The watcher's settle signal gates the prompt-delivery receipt windows —
-  // they measure nothing meaningful while a startup dialog may still be
-  // blocking the TUI. resolved.sessionId IS the agent id (pre-generated,
-  // passed as --session-id), and noteStartupSettled no-ops for sessions that
-  // are never tracked (promptless spawns) or not yet tracked — though the
-  // latter can't happen: trackPromptDelivery below runs in this same
-  // synchronous block, before any watcher timer can fire.
   // Startup screens the provider wants surfaced (e.g. Gemini's folder-trust
   // dialog) — independent of the Auto-Trust setting, because a dialog shows
   // up exactly when it's off. Observability only; nothing is typed.
@@ -1351,6 +1344,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
   }
 
+  // The watcher's settle signal gates the prompt-delivery receipt windows —
+  // they measure nothing meaningful while a startup dialog may still be
+  // blocking the TUI. resolved.sessionId IS the agent id (pre-generated,
+  // passed as --session-id), and noteStartupSettled no-ops for sessions that
+  // are never tracked (promptless spawns) or not yet tracked — though the
+  // latter can't happen: trackPromptDelivery below runs in this same
+  // synchronous block, before any watcher timer can fire.
   const startupWatcherAttached =
     getSettings().autoTrust !== false && provider.attachStartupWatcher != null;
   if (startupWatcherAttached) {

@@ -3,9 +3,9 @@
  *
  * In a folder it doesn't trust, Gemini 0.46 shows "Do you trust the files in
  * this folder?" and, until trusted, overrides any --approval-mode to "default"
- * (measured: a yolo agent ran as default). With Auto-Trust on we pass
- * --skip-trust (session-scoped); with it off, a startup notice says why the
- * agent is waiting.
+ * (measured: a yolo agent ran as default). With Auto-Trust on the spawn sets
+ * GEMINI_CLI_TRUST_WORKSPACE=true (process-scoped); with it off, a startup
+ * notice says why the agent is waiting.
  *
  * The notice is checked against REAL Gemini output: the fixture is the raw PTY
  * byte stream of the dialog (fresh HOME, untrusted folder; temp path renamed),
@@ -21,6 +21,13 @@ import type { ResolvedSpawnOptions } from "@autonomos/core";
 // UNCONDITIONAL: workers inherit AUTONOMOS_CONFIG_DIR=<real dir> (#350).
 process.env.AUTONOMOS_CONFIG_DIR = `/tmp/aos-gemini-trust-${randomUUID()}`;
 
+// buildEnv asserts the control plane is ready (ADR-055); nothing connects here.
+const { setServerPort, setAuthToken, setInternalSocketPath } = await import(
+  "../serverState.js"
+);
+setServerPort(53925);
+setAuthToken("test-token-gemini-trust-abcdef");
+setInternalSocketPath(`/tmp/aos-gt-${randomUUID().slice(0, 8)}.sock`);
 const { geminiCliProvider } = await import("../providers/gemini-cli.js");
 const { createStartupNoticeScanner } = await import(
   "../agents/startupNotices.js"
@@ -91,7 +98,8 @@ describe("Gemini trust dialog notice (real render)", () => {
   });
 });
 
-describe("--skip-trust follows the Auto-Trust setting", () => {
+describe("GEMINI_CLI_TRUST_WORKSPACE follows the Auto-Trust setting", () => {
+  const env = () => geminiCliProvider.buildEnv(randomUUID(), "demo");
   const args = () =>
     geminiCliProvider.buildArgs({
       cwd: "/tmp",
@@ -99,15 +107,26 @@ describe("--skip-trust follows the Auto-Trust setting", () => {
       sessionId: randomUUID(),
     } as unknown as ResolvedSpawnOptions);
 
-  it("Auto-Trust on: --skip-trust, and the requested mode is still passed", () => {
+  it("Auto-Trust on: the workspace is trusted for the process, and the requested mode is still passed", () => {
     updateSettings({ autoTrust: true });
-    const a = args();
-    assert.ok(a.includes("--skip-trust"));
-    assert.deepEqual(a.slice(0, 2), ["--approval-mode", "yolo"]);
+    assert.equal(env().GEMINI_CLI_TRUST_WORKSPACE, "true");
+    assert.deepEqual(args().slice(0, 2), ["--approval-mode", "yolo"]);
   });
 
-  it("Auto-Trust off: no --skip-trust (the user answers Gemini's own dialog)", () => {
+  it("Auto-Trust off: not set (the user answers Gemini's own dialog)", () => {
     updateSettings({ autoTrust: false });
-    assert.ok(!args().includes("--skip-trust"));
+    assert.equal(env().GEMINI_CLI_TRUST_WORKSPACE, undefined);
+  });
+
+  it("never puts a trust flag on argv — an older Gemini would refuse to start", () => {
+    // Gemini parses argv strictly: an unknown flag is a startup failure, while
+    // an unknown env var is ignored. So trust travels only in the env.
+    for (const autoTrust of [true, false]) {
+      updateSettings({ autoTrust });
+      assert.ok(
+        !args().some((a) => a.includes("trust")),
+        `autoTrust=${autoTrust}`,
+      );
+    }
   });
 });

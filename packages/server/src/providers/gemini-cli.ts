@@ -141,20 +141,6 @@ export const geminiCliProvider: AgentProvider = {
     // own default, so this is behavior-preserving for supervised spawns).
     args.push("--approval-mode", geminiApprovalMode(options.permissionMode));
 
-    // Folder trust. In a folder Gemini doesn't trust, it shows a "Do you trust
-    // the files in this folder?" dialog and — until trusted — overrides ANY
-    // --approval-mode to "default" (measured on 0.46 in a fresh HOME: yolo
-    // ran as default; "Don't trust" keeps it there for good). --skip-trust
-    // trusts the workspace for THIS session only: no dialog, the requested
-    // mode applies (measured: yolo / auto_edit / default all honored), and
-    // ~/.gemini/trustedFolders.json is not written. Gated on the same
-    // Auto-Trust setting as Claude Code's pre-trust (#374); with it off, the
-    // user answers Gemini's own dialog — and startupNotices says why the agent
-    // is waiting. Trusting also lets Gemini load the folder's own .gemini
-    // config (MCP servers, hooks, commands), the same class of trust as
-    // Claude Code's.
-    if (getSettings().autoTrust !== false) args.push("--skip-trust");
-
     // Filter MCP servers to only autonomOS (if injected)
     if (options.injectChannelServer) {
       args.push("--allowed-mcp-server-names", "autonomos");
@@ -178,6 +164,25 @@ export const geminiCliProvider: AgentProvider = {
 
     // Point Gemini at the autonomOS-managed settings file (hooks + MCP)
     env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = geminiSettingsPath();
+
+    // Folder trust. In a folder Gemini doesn't trust, it shows a "Do you trust
+    // the files in this folder?" dialog and — until trusted — overrides ANY
+    // --approval-mode to "default" (measured on 0.46 in a fresh HOME: yolo ran
+    // as default; "Don't trust" keeps it there for good).
+    // GEMINI_CLI_TRUST_WORKSPACE=true is read by Gemini's checkPathTrust() and
+    // trusts the workspace for THIS process only: no dialog, the requested mode
+    // applies (measured: yolo and default both honored), and
+    // ~/.gemini/trustedFolders.json is not written. An env var rather than the
+    // equivalent --skip-trust flag on purpose: Gemini parses argv strictly, so
+    // an older Gemini without the flag would refuse to START, while an unknown
+    // env var is simply ignored — that Gemini falls back to its own dialog, and
+    // startupNotices says why the agent is waiting. Gated on the same Auto-Trust
+    // setting as Claude Code's pre-trust (#374). Trusting also lets Gemini load
+    // the folder's own .gemini config (MCP servers, hooks, commands), the same
+    // class of trust as Claude Code's.
+    if (getSettings().autoTrust !== false) {
+      env.GEMINI_CLI_TRUST_WORKSPACE = "true";
+    }
 
     return env;
   },
