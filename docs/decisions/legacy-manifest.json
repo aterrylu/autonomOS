@@ -2,8 +2,8 @@
   "_comment": "Frozen record of the ADRs migrated from docs/DECISIONS.md. Listed files are append-only history: scripts/decisions.ts check rejects any edit. Order = original log order; tail = the separator bytes removed from each entry. Do not edit.",
   "source": {
     "path": "docs/DECISIONS.md",
-    "commit": "c1026ce7385d625a08defd7f67c6fc06a8d1966c",
-    "sha256": "6faf91957970ea92e07cbbab95ef598284ecaa48e835f24c9b28efee49488850"
+    "commit": "b3bc068bfce997c4ccf40746995c18d500008b1d",
+    "sha256": "38dd4847e64f0b7bd3202b286421f76de15e938ccfd72107a2e6d3c56a39f7a8"
   },
   "preamble": "# Architectural Decision Records\n\nAppend-only log of project decisions. Newest at bottom.\nEach entry includes context, rationale, alternatives considered, and source.\n\n---\n\n",
   "entries": [
@@ -641,6 +641,18 @@
       "file": "ADR-111-claude-code-resume-probes-the-realpath-and-a-not-resumable.md",
       "id": "111",
       "sha256": "f05c5b193ba68b386e52636bd2b6847466aa1cf82030f816958eeb3e9d25274c",
+      "tail": "\n\n---\n\n"
+    },
+    {
+      "file": "ADR-103-real-spawn-integration-suites-run-under-a-throwaway-home-and.md",
+      "id": "103",
+      "sha256": "0c280c95b6ba406ed95178b949c35563164c6587c4a8235b2c406b63908f1fff",
+      "tail": "\n\n"
+    },
+    {
+      "file": "ADR-112-org-chart-rebuilt-on-the-sidebar-s-vocabulary-exited.md",
+      "id": "112",
+      "sha256": "19d2a67eb02cb29acdc3d1fa72a73832c877537fbc5afa6b94b1fe234078f8db",
       "tail": "\n"
     }
   ]

@@ -600,11 +600,13 @@ Branches opened before the split carry their ADR inside the old file. Move it on
 git fetch origin && git merge origin/main       # conflicts only in docs/DECISIONS.md
 make adr-import REF=HEAD                         # writes your entry to docs/decisions/ADR-NNN-….md
 git checkout origin/main -- docs/DECISIONS.md    # keep main's stub
-git add -A && git commit --no-edit && make adr-check
+git add docs/decisions docs/DECISIONS.md && git commit --no-edit && make adr-check
 \`\`\`
 
 \`adr-import\` keeps your number if it's free and otherwise takes the next free one (it
-says so; update any references to the old number in your PR).
+says so; update any references to the old number in your PR). It refuses to guess: an
+ADR-like header it can't parse, or a past entry your branch edited in place, is reported
+rather than dropped. Already committed the merge? Use \`REF=HEAD^1\`.
 
 ## Rules
 

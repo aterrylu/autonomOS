@@ -7,7 +7,7 @@ existing "ADR-NNN" references (code comments, PRs, notes) still point at the sam
 decision: open `docs/decisions/ADR-NNN-*.md`.
 
 - **Add a decision:** `make adr NEW="Short title"`. Do not append here; CI rejects
-  new entries in this file.
+  any change to this file.
 - **Have an open PR that appended an entry here?** Run `make adr-import REF=HEAD`
   while merging main, then keep main's version of this file. See the steps in
   [`docs/decisions/README.md`](decisions/README.md).

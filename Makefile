@@ -181,10 +181,11 @@ check:
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open
 # PRs (via gh, when available) and writes a template. A PR never edits the index;
 # the decisions-index workflow regenerates it after merge (`make adr-index` previews).
-# See docs/decisions/README.md.
+# See docs/decisions/README.md. Arguments are read by the shell as "$$NEW" (make
+# exports command-line variables), so backticks and quotes in a title survive.
 adr:
-	@test -n "$(NEW)" || { echo 'usage: make adr NEW="Short decision title"'; exit 2; }
-	$(TSX) scripts/decisions.ts new "$(NEW)"
+	@test -n "$$NEW" || { echo 'usage: make adr NEW="Short decision title"'; exit 2; }
+	$(TSX) scripts/decisions.ts new "$$NEW"
 
 adr-check:
 	$(TSX) scripts/decisions.ts check
@@ -193,11 +194,11 @@ adr-index:
 	$(TSX) scripts/decisions.ts index
 
 adr-renumber:
-	@test -n "$(FILE)" || { echo 'usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md'; exit 2; }
-	$(TSX) scripts/decisions.ts renumber "$(FILE)"
+	@test -n "$$FILE" || { echo 'usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md'; exit 2; }
+	$(TSX) scripts/decisions.ts renumber "$$FILE"
 
 adr-import:
-	$(TSX) scripts/decisions.ts import "$(or $(REF),HEAD)"
+	$(TSX) scripts/decisions.ts import "$${REF:-HEAD}"
 
 # ── hero: regenerate the README hero screenshot (docs/assets/hero.png) ───────────────
 # Boots an isolated demo instance (own config dir + fake HOME + ephemeral port,

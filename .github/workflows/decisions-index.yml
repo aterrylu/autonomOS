@@ -26,15 +26,14 @@ name: Decisions index
 # Loop safety: merging the bot PR pushes a commit whose subject starts with
 # "docs(decisions): regenerate index", which the job skips; any later run finds
 # the index fresh and exits without pushing.
+#
+# Concurrency is on the JOB, not the workflow: a skipped job (the bot's own merge)
+# never joins the group, so it can't cancel a real regeneration queued behind it.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: decisions-index
-  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -48,6 +47,9 @@ jobs:
   index:
     if: "!startsWith(github.event.head_commit.message, 'docs(decisions): regenerate index')"
     runs-on: ubuntu-latest
+    concurrency:
+      group: decisions-index
+      cancel-in-progress: true
     # A no-op run takes ~15s and a regenerating one ~30s; 5 minutes bounds a hang.
     timeout-minutes: 5
     steps:
@@ -70,6 +72,7 @@ jobs:
       - name: Open or update the index PR
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
           BODY: |
             **Generated index regenerate. No hand-written content.**
 
@@ -78,20 +81,27 @@ jobs:
             Opened by the decisions-index workflow after a push to main. PRs don't edit the index (that would recreate the shared-file conflict the per-file layout removed), so it's regenerated here. Auto-merge (squash) is on; it merges once approved and green. Reproduce locally: `make adr-index`.
         run: |
           set -euo pipefail
-          if git diff --quiet -- docs/decisions/README.md; then
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::RELEASE_PAT is not set: the index PR is opened by GITHUB_TOKEN, so its required checks won't start (close + reopen it) and nox won't review it (approve it by hand)."
+          fi
+          # Empty = no open PR; a gh failure fails the step (set -e) instead of reading as "none".
+          open_pr="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')"
+          if [ -z "$(git status --porcelain -- docs/decisions/README.md)" ]; then
             echo "✓ docs/decisions/README.md is already fresh on main"
             # An open bot PR is now redundant (e.g. the index was regenerated in another PR).
-            if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || true)" = "OPEN" ]; then
-              gh pr close "$BRANCH" --delete-branch --comment "The index on main is already fresh."
+            if [ -n "$open_pr" ]; then
+              gh pr close "$open_pr" --delete-branch --comment "The index on main is already fresh."
             fi
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
-          git commit -m "$TITLE" -- docs/decisions/README.md
+          git add docs/decisions/README.md
+          git commit -m "$TITLE"
           git push --force origin "$BRANCH"
-          if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || true)" != "OPEN" ]; then
+          if [ -z "$open_pr" ]; then
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY"
           fi
-          gh pr merge "$BRANCH" --auto --squash || echo "::warning::could not enable auto-merge on the index PR"
+          # Without auto-merge an approval would merge nothing, so a failure here must be red.
+          gh pr merge "$BRANCH" --auto --squash

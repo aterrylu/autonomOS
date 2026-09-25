@@ -32,11 +32,13 @@ Branches opened before the split carry their ADR inside the old file. Move it on
 git fetch origin && git merge origin/main       # conflicts only in docs/DECISIONS.md
 make adr-import REF=HEAD                         # writes your entry to docs/decisions/ADR-NNN-….md
 git checkout origin/main -- docs/DECISIONS.md    # keep main's stub
-git add -A && git commit --no-edit && make adr-check
+git add docs/decisions docs/DECISIONS.md && git commit --no-edit && make adr-check
 ```
 
 `adr-import` keeps your number if it's free and otherwise takes the next free one (it
-says so; update any references to the old number in your PR).
+says so; update any references to the old number in your PR). It refuses to guess: an
+ADR-like header it can't parse, or a past entry your branch edited in place, is reported
+rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 
 ## Rules
 
@@ -159,6 +161,8 @@ says so; update any references to the old number in your PR).
 | [ADR-100](ADR-100-codex-crash-net-retains-the-resumable-thread-the-destructive.md) | Codex crash-net retains the resumable thread — the destructive force-fresh arms only behind a pre-flight | 2026-09-17 | Accepted |  |  |
 | [ADR-101](ADR-101-one-idle-label-for-ready-idle-and-the-passive-label-fades.md) | One "Idle" label for ready + idle, and the passive label fades with recency | 2026-09-24 | Accepted |  |  |
 | [ADR-102](ADR-102-claude-usage-says-why-it-has-no-numbers-and-reads-the-limits.md) | Claude usage says WHY it has no numbers, and reads the `limits[]` window list | 2026-09-24 | Accepted |  |  |
+| [ADR-103](ADR-103-real-spawn-integration-suites-run-under-a-throwaway-home-and.md) | Real-spawn integration suites run under a throwaway HOME, and are safe to run locally | 2026-09-24 | Accepted |  |  |
 | [ADR-104](ADR-104-codex-agents-survive-a-restart-no-permission-overrides-on.md) | Codex agents survive a restart — no permission overrides on remote resume, a thread pre-flight, and honest mode handling | 2026-09-24 | Accepted |  |  |
 | [ADR-106](ADR-106-claude-spend-display-for-spend-metered-accounts-text-bar.md) | Claude spend display for spend-metered accounts (text \| % \| bar), never a queue input | 2026-09-24 | Accepted |  |  |
 | [ADR-111](ADR-111-claude-code-resume-probes-the-realpath-and-a-not-resumable.md) | Claude Code resume probes the realpath, and a "not resumable" reattach never reuses the session id (supersedes ADR-049's "fresh with the same --session-id") | 2026-09-24 | Accepted | ADR-049 (in part) |  |
+| [ADR-112](ADR-112-org-chart-rebuilt-on-the-sidebar-s-vocabulary-exited.md) | Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu | 2026-09-24 | Accepted |  |  |
