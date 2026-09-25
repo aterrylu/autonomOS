@@ -75,6 +75,16 @@ export interface AgentProvider {
   ): void;
 
   /**
+   * Optional: startup screens worth telling the operator about, whatever the
+   * Auto-Trust setting. The runtime scans the PTY's early output (ANSI
+   * stripped, whitespace removed on both sides) and pushes `message` as a
+   * dashboard notice the first time `needle` appears. Use the CLI's exact
+   * on-screen text, verified against a real render. Observability only —
+   * nothing is typed into the PTY.
+   */
+  startupNotices?: ReadonlyArray<{ needle: string; message: string }>;
+
+  /**
    * Optional: side-effect setup BEFORE the PTY process is spawned, called only
    * when the auto-trust setting is enabled. The motivating case is claude-code
    * pre-trusting the working directory in CC's own config so the trust dialog
