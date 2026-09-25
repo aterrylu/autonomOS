@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -11,6 +12,7 @@ process.env.AUTONOMOS_CONFIG_DIR = mkdtempSync(
 import type { ResolvedSpawnOptions } from "@autonomos/core";
 import { mintAgentToken } from "../agentCredentials.js";
 import { claudeCodeProvider } from "../providers/claude-code.js";
+import { HOOK_CMD } from "../providers/shared.js";
 import {
   clearAgentState,
   clearNotifications,
@@ -124,5 +126,37 @@ describe("hook ingest is last-writer-wins by arrival (why the source must order)
     await post("UserPromptSubmit");
     assert.equal(getAgentState(sid).status, "working");
     assert.equal(getAgentState(sid).lastEvent, "UserPromptSubmit");
+  });
+});
+
+describe("the hook relay never steers the agent", () => {
+  // A synchronous hook's exit code 2 means "block" (UserPromptSubmit: the
+  // prompt is erased; Stop: the turn continues). curl exits 2 on an init
+  // failure. Run the real HOOK_CMD through sh with a curl that exits 2.
+  it("HOOK_CMD exits 0 even when curl exits 2", () => {
+    const bin = mkdtempSync(join(tmpdir(), "aos-fakecurl-"));
+    writeFileSync(join(bin, "curl"), "#!/bin/sh\nexit 2\n");
+    chmodSync(join(bin, "curl"), 0o755);
+    const probe = spawnSync("sh", ["-c", "curl; echo $?"], {
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+      encoding: "utf8",
+    });
+    assert.equal(
+      probe.stdout.trim(),
+      "2",
+      "precondition: the fake curl exits 2",
+    );
+
+    const r = spawnSync("sh", ["-c", HOOK_CMD], {
+      input: '{"hook_event_name":"UserPromptSubmit"}',
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+        AUTONOMOS_AGENT_TOKEN: "t",
+        AUTONOMOS_INTERNAL_SOCKET: "/nonexistent.sock",
+        AUTONOMOS_SESSION_ID: "s",
+      },
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, "the hook must exit 0 whatever curl does");
   });
 });

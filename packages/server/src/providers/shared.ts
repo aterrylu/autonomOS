@@ -73,7 +73,13 @@ export const HOOK_CMD =
   ' --unix-socket "${AUTONOMOS_INTERNAL_SOCKET}"' +
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell env var expansion
   ' -d @- "http://localhost/api/hooks/${AUTONOMOS_SESSION_ID}"' +
-  " >/dev/null 2>&1";
+  // Always exit 0. Synchronous hooks (Claude Code's turn hooks; every Gemini
+  // hook, which gemini-cli awaits) treat exit code 2 as "block": on
+  // UserPromptSubmit it erases the prompt, on Stop it keeps the turn going.
+  // curl exits 2 on an init failure, so without this a broken curl would
+  // silently kill every starting prompt (verified on CC 2.1.282). The relay
+  // is best-effort telemetry; it must never steer the agent.
+  " >/dev/null 2>&1 || true";
 
 // ── Binary discovery helpers ─────────────────────────────────
 
