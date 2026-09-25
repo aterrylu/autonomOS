@@ -10,6 +10,12 @@ import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
 import { pruneExited } from "./orgchart/pruneExited";
+import {
+  applyCollapse,
+  computeRollups,
+  type RollupBucket,
+  type TeamRollup,
+} from "./orgchart/teams";
 import { type OrgChartTokens, orgChartTokens } from "./orgchart/theme";
 import {
   formatAge,
@@ -432,27 +438,44 @@ function selectionChain(flat: Flat[], selectedId: string): Set<string> {
 
 function OrgCanvas({
   roots,
+  rollups,
+  collapsed,
+  onToggleCollapse,
   tokens,
   page,
   statusMap,
   selectedId,
+  selectionChainIds,
   onSelect,
   onOpen,
   onResume,
   onMenu,
 }: {
+  /** The tree AS DRAWN — collapsed teams already folded. */
   roots: AgentTreeNode[];
+  /** Per-manager rollups, computed BEFORE folding. */
+  rollups: Map<string, TeamRollup>;
+  collapsed: ReadonlySet<string>;
+  onToggleCollapse: (id: string) => void;
   tokens: OrgChartTokens;
   page: PageTheme;
   statusMap: Record<string, AgentInfo>;
   selectedId: string | null;
+  /** Selected agent + manager chain + team, from the unfolded tree. */
+  selectionChainIds: Set<string> | null;
   onSelect: (id: string | null) => void;
   onOpen: (node: AgentTreeNode) => void;
   onResume: (node: AgentTreeNode, info?: AgentInfo) => void;
   onMenu: (target: AgentMenuTarget, x: number, y: number) => void;
 }) {
   const notificationCounts = useStore((s) => s.notificationCounts);
-  const layout = useMemo(() => layoutOrg(roots), [roots]);
+  const layout = useMemo(
+    () =>
+      layoutOrg(roots, {
+        isTeam: (n) => collapsed.has(n.id) && rollups.has(n.id),
+      }),
+    [roots, collapsed, rollups],
+  );
   const flat = useMemo(() => flatten(roots), [roots]);
   const exitedIds = useMemo(
     () =>
@@ -461,10 +484,9 @@ function OrgCanvas({
       ),
     [flat],
   );
-  const chain = useMemo(
-    () => (selectedId ? selectionChain(flat, selectedId) : null),
-    [flat, selectedId],
-  );
+  // The chain comes from the panel, computed on the UNFOLDED tree: a selected
+  // agent folded away still lights its (drawn) lead instead of dimming all.
+  const chain = selectionChainIds;
 
   // Arrow keys walk the chart: ↑ manager, ↓ first report, ←/→ the neighbor on
   // the same row. Focus follows the selection so the keys keep working.
@@ -562,6 +584,29 @@ function OrgCanvas({
             Unassigned · {layout.shelf.count}
           </div>
         )}
+        {/* A folded team reads as a small stack of cards behind its lead. */}
+        {flat.map(({ node }) => {
+          const p = layout.pos.get(node.id);
+          if (!p || !collapsed.has(node.id) || !rollups.has(node.id))
+            return null;
+          return [10, 5].map((d) => (
+            <div
+              key={`${node.id}-stack-${d}`}
+              data-org-stack={node.id}
+              aria-hidden="true"
+              className="org-card absolute rounded-[9px]"
+              style={{
+                left: p.x + d,
+                top: p.y + d,
+                width: CARD_W,
+                height: CARD_H,
+                background: tokens.card,
+                border: `1px solid ${tokens.cardBorder}`,
+                opacity: d === 10 ? 0.45 : 0.75,
+              }}
+            />
+          ));
+        })}
         {flat.map(({ node, managerName }) => {
           const p = layout.pos.get(node.id);
           if (!p) return null;
@@ -595,6 +640,24 @@ function OrgCanvas({
               onNavigate={navigate}
               onResume={onResume}
               onMenu={onMenu}
+            />
+          );
+        })}
+        {flat.map(({ node }) => {
+          const p = layout.pos.get(node.id);
+          const rollup = rollups.get(node.id);
+          if (!p || !rollup) return null;
+          const folded = collapsed.has(node.id);
+          return (
+            <TeamControls
+              key={`${node.id}-team`}
+              node={node}
+              x={p.x}
+              y={p.y}
+              rollup={rollup}
+              folded={folded}
+              tokens={tokens}
+              onToggle={onToggleCollapse}
             />
           );
         })}
@@ -863,6 +926,138 @@ function OrgInspector({
   );
 }
 
+/**
+ * A lead's team summary (chips above the card) and its collapse toggle (on the
+ * card's bottom edge, where the connector leaves). Siblings of the card, not
+ * children: the card is a <button> and can't contain another button.
+ */
+function TeamControls({
+  node,
+  x,
+  y,
+  rollup,
+  folded,
+  tokens,
+  onToggle,
+}: {
+  node: AgentTreeNode;
+  x: number;
+  y: number;
+  rollup: TeamRollup;
+  folded: boolean;
+  tokens: OrgChartTokens;
+  onToggle: (id: string) => void;
+}) {
+  const chips: Array<{
+    key: string;
+    text: string;
+    color: string;
+    strong?: boolean;
+  }> = [];
+  if (rollup.needsYou > 0)
+    chips.push({
+      key: "needs",
+      text: `${rollup.needsYou} need${rollup.needsYou === 1 ? "s" : ""} you`,
+      color: tokens.status.needsInput,
+      strong: true,
+    });
+  if (rollup.error > 0)
+    chips.push({
+      key: "error",
+      text: `${rollup.error} error`,
+      color: tokens.status.error,
+    });
+  if (rollup.working > 0)
+    chips.push({
+      key: "working",
+      text: `${rollup.working} working`,
+      color: tokens.status.active,
+    });
+  if (rollup.idle > 0)
+    chips.push({
+      key: "idle",
+      text: `${rollup.idle} idle`,
+      color: tokens.status.ready,
+    });
+  if (rollup.exited > 0)
+    chips.push({
+      key: "exited",
+      text: `${rollup.exited} exited`,
+      color: tokens.muted,
+    });
+
+  // At most three chips, by priority (needs-you, error, working first): five
+  // would run under the neighbor lead's chips (cards sit CARD_W + H_GAP apart)
+  // and could hide ITS amber. The rest fold into a "+N" chip with a tooltip.
+  const shown = chips.slice(0, 3);
+  const rest = chips.slice(3);
+  return (
+    <>
+      <div
+        data-org-rollup={node.id}
+        className="org-card pointer-events-none absolute flex gap-1 whitespace-nowrap text-[10px] tabular-nums"
+        style={{
+          left: x + 2,
+          top: y - 19,
+          maxWidth: CARD_W,
+          overflow: "hidden",
+        }}
+      >
+        {shown.map((c) => (
+          <span
+            key={c.key}
+            className="rounded-full px-1.5 leading-4"
+            style={{
+              color: c.color,
+              // Opaque: the chips sit over the incoming connector.
+              background: tokens.bg,
+              border: `1px solid ${c.strong ? c.color : tokens.cardBorder}`,
+              fontWeight: c.strong ? 600 : undefined,
+            }}
+          >
+            {c.text}
+          </span>
+        ))}
+        {rest.length > 0 && (
+          <span
+            data-org-rollup-more
+            title={rest.map((c) => c.text).join(" · ")}
+            className="rounded-full px-1.5 leading-4"
+            style={{
+              color: tokens.muted,
+              background: tokens.bg,
+              border: `1px solid ${tokens.cardBorder}`,
+            }}
+          >
+            +{rest.length}
+          </span>
+        )}
+      </div>
+      <button
+        type="button"
+        data-org-collapse={node.id}
+        aria-expanded={!folded}
+        aria-label={`${folded ? "Expand" : "Collapse"} ${node.name}'s team (${rollup.total})`}
+        title={folded ? `Show ${rollup.total} in team` : "Collapse team"}
+        className="org-card absolute flex h-[18px] min-w-[22px] cursor-pointer items-center justify-center rounded-full px-1.5 text-[10px] leading-none tabular-nums focus-visible:outline-2 focus-visible:outline-offset-1"
+        style={{
+          left: x + CARD_W / 2 - 11,
+          top: y + CARD_H - 9,
+          color: tokens.muted,
+          // Opaque page color so the toggle sits cleanly ON the connector.
+          background: tokens.bg,
+          border: `1px solid ${tokens.cardBorder}`,
+          outlineColor: tokens.status.active,
+          zIndex: 1,
+        }}
+        onClick={() => onToggle(node.id)}
+      >
+        {folded ? `+${rollup.total}` : "▾"}
+      </button>
+    </>
+  );
+}
+
 // ── Toolbar: who needs you + exited toggle ───────────────────────
 
 function Toolbar({
@@ -933,6 +1128,53 @@ function Toolbar({
   );
 }
 
+// ── Team state ───────────────────────────────────────────────────
+
+function rollupBucket(node: AgentTreeNode, info?: AgentInfo): RollupBucket {
+  if (node.status !== "running") return "exited";
+  const status = info?.agentStatus ?? "unknown";
+  if (status === "needs_input") return "needsYou";
+  if (status === "error") return "error";
+  // "Working" is the sidebar's shimmer set — one definition (ADR-090).
+  if (statusLabelStyle(status, false).shimmer) return "working";
+  return "idle";
+}
+
+const COLLAPSED_KEY = "autonomos.orgchart.collapsed";
+
+/**
+ * Which teams are folded, remembered per manager id in this browser. Storage
+ * can be unavailable (private window, blocked site data) — then it just
+ * doesn't persist. A stale id (a deleted manager) is ignored by applyCollapse.
+ */
+function useCollapsedTeams(): [ReadonlySet<string>, (id: string) => void] {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_KEY);
+      const ids: unknown = raw ? JSON.parse(raw) : [];
+      return new Set(
+        Array.isArray(ids) ? ids.filter((x) => typeof x === "string") : [],
+      );
+    } catch {
+      return new Set();
+    }
+  });
+  const toggle = useCallback((id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      } catch {
+        // Not persisted this session; the toggle still works.
+      }
+      return next;
+    });
+  }, []);
+  return [collapsed, toggle];
+}
+
 // ── Main Panel ───────────────────────────────────────────────────
 
 export function HierarchyPanel() {
@@ -965,8 +1207,26 @@ export function HierarchyPanel() {
     () => pruneExited(chart, showAllExited),
     [chart, showAllExited],
   );
+  const [collapsed, toggleCollapsed] = useCollapsedTeams();
+  // Rollups count the tree as DRAWN (after pruning) but BEFORE folding, so a
+  // collapsed lead still says who in its team needs you.
+  const rollups = useMemo(
+    () =>
+      computeRollups(roots, (node) =>
+        rollupBucket(node, statusMap[node.claudeSessionId]),
+      ),
+    [roots, statusMap],
+  );
+  const drawn = useMemo(
+    () => applyCollapse(roots, collapsed),
+    [roots, collapsed],
+  );
 
   const flatRoots = useMemo(() => flatten(roots), [roots]);
+  const selectionChainIds = useMemo(
+    () => (selectedId ? selectionChain(flatRoots, selectedId) : null),
+    [flatRoots, selectedId],
+  );
   const selected = selectedId
     ? flatRoots.find((f) => f.node.id === selectedId)
     : undefined;
@@ -1087,8 +1347,12 @@ export function HierarchyPanel() {
   } else {
     body = (
       <OrgCanvas
-        roots={roots}
+        roots={drawn}
+        rollups={rollups}
+        collapsed={collapsed}
+        onToggleCollapse={toggleCollapsed}
         selectedId={selectedId}
+        selectionChainIds={selectionChainIds}
         onSelect={select}
         tokens={tokens}
         page={page}
