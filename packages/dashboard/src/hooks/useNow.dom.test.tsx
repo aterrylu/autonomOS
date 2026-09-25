@@ -27,12 +27,13 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("useNow", () => {
   it("many subscribers share ONE interval", () => {
-    const setInterval = vi.spyOn(globalThis, "setInterval");
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const { unmount } = render(
       <>
         <Probe onValue={() => {}} />
@@ -40,9 +41,8 @@ describe("useNow", () => {
         <Probe onValue={() => {}} />
       </>,
     );
-    expect(setInterval).toHaveBeenCalledTimes(1);
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
     unmount();
-    setInterval.mockRestore();
   });
 
   it("re-renders subscribers with the new time every tick", () => {
@@ -84,11 +84,10 @@ describe("useNow", () => {
   });
 
   it("clears its interval when the last subscriber unmounts", () => {
-    const clearInterval = vi.spyOn(globalThis, "clearInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
     const { unmount } = render(<Probe onValue={() => {}} />);
     unmount();
-    expect(clearInterval).toHaveBeenCalled();
-    clearInterval.mockRestore();
+    expect(clearIntervalSpy).toHaveBeenCalled();
   });
 
   it("mounting while HIDDEN starts no ticking until the tab is visible", () => {
@@ -104,12 +103,11 @@ describe("useNow", () => {
   });
 
   it("a duplicate 'visible' event does not stack a second interval", () => {
-    const setInterval = vi.spyOn(globalThis, "setInterval");
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const { unmount } = render(<Probe onValue={() => {}} />);
     act(() => setVisibility("visible"));
     act(() => setVisibility("visible"));
-    expect(setInterval).toHaveBeenCalledTimes(1);
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
     unmount();
-    setInterval.mockRestore();
   });
 });

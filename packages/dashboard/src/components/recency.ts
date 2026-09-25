@@ -12,9 +12,10 @@
 // (<1h → "Xm", <24h → "Xh", ≥24h → "Xd"); the stale→ancient step at 7d is a
 // recency threshold, not a unit change (both render "Xd").
 //
-// Buckets are computed from the same `lastActive` the timestamp text already
-// renders from, on the same render pass — so the bucket re-evaluates on the
-// sidebar's existing ~5s poll cadence. No new timer.
+// Buckets are computed from the same `lastActive` and `now` as the timestamp
+// text. The sidebar row reads `now` from the shared useNow() clock, so the
+// text and bucket re-evaluate together every NOW_TICK_MS (and whenever the
+// row's own data changes), not on unrelated sidebar re-renders.
 
 export type RecencyBucket = "fresh" | "recent" | "stale" | "ancient";
 
@@ -144,11 +145,12 @@ export function recencyLabelOpacity(
  * by the sidebar row and the org-chart card so both show the same age for the
  * same agent. Missing/NaN/non-positive timestamps render "unknown" (a
  * pre-schema record with neither exitedAt nor updatedAt would otherwise show
- * "NaNd"); clock skew renders "now".
+ * "NaNd"); clock skew renders "now". Pass `now` from the same clock as the
+ * recency bucket so the text and its fade can never disagree.
  */
-export function formatAge(timestamp: number): string {
+export function formatAge(timestamp: number, now = Date.now()): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  const seconds = Math.floor((now - timestamp) / 1000);
   if (seconds < 0) return "now"; // clock skew — display cleanly
   if (seconds < 60) return "now";
   const minutes = Math.floor(seconds / 60);
