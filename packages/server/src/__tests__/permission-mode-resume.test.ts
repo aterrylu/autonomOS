@@ -31,6 +31,8 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   sleep,
 } from "./helpers/test-server.js";
@@ -159,15 +161,17 @@ describe("permission mode — process and record agree across a resume", {
 
   before(async () => {
     server = await bootServer();
-  });
+  }, HOOK_TIMEOUT);
 
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  after(() =>
+    boundedTeardown("permission-mode-resume", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   async function spawn(body: Record<string, unknown>): Promise<AgentRecord> {
     const { status, body: agent } = await authedJson<AgentRecord>(
@@ -293,6 +297,14 @@ describe("permission mode — process and record agree across a resume", {
       "the normalized legacy spelling must launch as ask (no permission flag)",
     );
   });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
+  });
 });
 
 /**
@@ -317,14 +329,16 @@ describe("restart-all preserves per-agent permission modes", {
 
   before(async () => {
     server = await bootServer();
-  });
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    rmSync(workdir, { recursive: true, force: true });
-  });
+  }, HOOK_TIMEOUT);
+  after(() =>
+    boundedTeardown("permission-mode-resume", async () => {
+      if (server) {
+        await server.kill();
+        rmSync(server.configDir, { recursive: true, force: true });
+      }
+      rmSync(workdir, { recursive: true, force: true });
+    }),
+  );
 
   it("does not level a mixed fleet in either direction", async () => {
     // The security question that prompted this work. It must exercise the REAL
@@ -506,5 +520,13 @@ describe("restart-all preserves per-agent permission modes", {
       );
       return;
     }
+  });
+
+  // Runs LAST in this describe (tests run in order), after every spawn above.
+  // A real test, not an after() hook: node's runner reports a failing after()
+  // as "not ok" but does NOT count it or fail the exit code, so a leak there
+  // would pass CI silently (verified by mutation).
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
   });
 });

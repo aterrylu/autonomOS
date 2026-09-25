@@ -120,6 +120,29 @@ describe("oauthUsage — readOAuthToken (token-reader precedence)", () => {
     assert.equal(tok?.subscriptionType, "max");
   });
 
+  it("AUTONOMOS_DISABLE_CREDENTIAL_READS=1 skips the user's credential stores (integration isolation)", async () => {
+    delete process.env.USER; // keep the real macOS keychain out of this test
+    writeFileSync(
+      CREDENTIALS_FILE,
+      JSON.stringify({
+        claudeAiOauth: { accessToken: "file-token", expiresAt: 1893456000000 },
+      }),
+    );
+    process.env.AUTONOMOS_DISABLE_CREDENTIAL_READS = "1";
+    try {
+      assert.equal(await readOAuthToken(), null, "a store read leaked through");
+      // An explicit env token is not a user store and still applies.
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = "env-oauth-token";
+      assert.equal((await readOAuthToken())?.source, "env");
+    } finally {
+      delete process.env.AUTONOMOS_DISABLE_CREDENTIAL_READS;
+    }
+    // Precondition: without the opt-out the same fixture DOES resolve, so the
+    // null above is the guard and not a broken fixture.
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    assert.equal((await readOAuthToken())?.source, "file");
+  });
+
   it("returns null when no token is available anywhere", async () => {
     delete process.env.USER; // no keychain
     // No file written, no env token.
