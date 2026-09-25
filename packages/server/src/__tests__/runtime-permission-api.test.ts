@@ -284,6 +284,19 @@ describe("load-time migration of legacy agent records (keeps exact behavior)", (
     assert.equal(load(id)?.permission?.values.approval_policy, "never");
   });
 
+  it("a record whose provider has no permission table still LOADS (never skipped)", () => {
+    // Regression: the load migration indexed the table unguarded, threw, and
+    // the store skipped the whole record — an agent silently dropped.
+    const id = randomUUID();
+    writeRecord(id, "some-removed-cli", {
+      permissionMode: "bypass",
+      permission: { runtime: "some-removed-cli", values: { x: "y" } },
+    });
+    const a = load(id);
+    assert.ok(a, "the record must load");
+    assert.equal(a.permissionMode, "bypass", "never relabeled");
+  });
+
   it("a well-formed stored permission is kept as-is (legacy mode re-derived from it)", () => {
     const id = randomUUID();
     writeRecord(id, "claude-code", {
