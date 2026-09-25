@@ -28,7 +28,14 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -59,7 +66,8 @@ const NEW_HEADER_RE = /^## ADR-(\d{3,}): (\S.*)$/;
 const NEW_FILE_RE = /^ADR-(\d{3,})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const ANY_ADR_FILE_RE = /^adr/i;
 
-export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+export const sha256 = (s: string) =>
+  createHash("sha256").update(s).digest("hex");
 const pad = (n: number) => String(n).padStart(3, "0");
 
 // ── shared parsing ──────────────────────────────────────────────────────────
@@ -71,7 +79,10 @@ export interface LegacyChunk {
 }
 
 /** Split the old single-file log at its `## ADR-…` headers. Lossless: preamble + Σ text === log. */
-export function splitLog(log: string): { preamble: string; chunks: LegacyChunk[] } {
+export function splitLog(log: string): {
+  preamble: string;
+  chunks: LegacyChunk[];
+} {
   let preamble = "";
   const chunks: LegacyChunk[] = [];
   for (const line of log.split(/(?<=\n)/)) {
@@ -131,7 +142,10 @@ export interface Manifest {
 }
 
 /** Split the log into per-decision files. A repeated number gets a letter suffix: 029, 029b, 029c. */
-export function migrate(log: string, commit: string): { files: Map<string, string>; manifest: Manifest } {
+export function migrate(
+  log: string,
+  commit: string,
+): { files: Map<string, string>; manifest: Manifest } {
   const { preamble, chunks } = splitLog(log);
   const files = new Map<string, string>();
   const seen = new Map<number, number>();
@@ -161,7 +175,10 @@ export function migrate(log: string, commit: string): { files: Map<string, strin
 }
 
 /** Rebuild the original single-file log from the migrated files. */
-export function reassemble(manifest: Manifest, read: (file: string) => string): string {
+export function reassemble(
+  manifest: Manifest,
+  read: (file: string) => string,
+): string {
   let out = manifest.preamble;
   for (const e of manifest.entries) out += read(e.file).slice(0, -1) + e.tail;
   return out;
@@ -198,7 +215,14 @@ export function loadEntries(dir: string, manifest: Manifest): Entry[] {
     const known = legacy.get(file);
     const m = (known ? LEGACY_HEADER_RE : NEW_HEADER_RE).exec(first);
     if (!m) continue;
-    out.push({ file, id: m[1]!, num: numberOf(m[1]!), title: m[2]!.trim(), text, legacy: !!known });
+    out.push({
+      file,
+      id: m[1]!,
+      num: numberOf(m[1]!),
+      title: m[2]!.trim(),
+      text,
+      legacy: !!known,
+    });
   }
   return out;
 }
@@ -226,13 +250,15 @@ export function checkDecisions(root: string): string[] {
   for (const e of manifest.entries) {
     const path = join(dir, e.file);
     if (!existsSync(path)) {
-      errors.push(`${rel(e.file)} is missing. Migrated ADRs are permanent history; restore it.`);
+      errors.push(
+        `${rel(e.file)} is missing. Migrated ADRs are permanent history; restore it.`,
+      );
       continue;
     }
     if (sha256(readFileSync(path, "utf8")) !== e.sha256) {
       errors.push(
         `${rel(e.file)} was modified. Past ADRs are append-only history: never edit one. ` +
-          "To reverse or amend it, write a NEW ADR (make adr NEW=\"…\") that references it.",
+          'To reverse or amend it, write a NEW ADR (make adr NEW="…") that references it.',
       );
     }
   }
@@ -267,21 +293,32 @@ export function checkDecisions(root: string): string[] {
     const first = text.split("\n", 1)[0] ?? "";
     const hm = NEW_HEADER_RE.exec(first);
     if (!hm) {
-      errors.push(`${rel(file)}: the first line must be the header "## ADR-${fm[1]}: <Title>" (found: ${JSON.stringify(first)}).`);
+      errors.push(
+        `${rel(file)}: the first line must be the header "## ADR-${fm[1]}: <Title>" (found: ${JSON.stringify(first)}).`,
+      );
       continue;
     }
     if (hm[1] !== fm[1]) {
-      errors.push(`${rel(file)}: header says ADR-${hm[1]} but the filename says ADR-${fm[1]}. Make them agree.`);
+      errors.push(
+        `${rel(file)}: header says ADR-${hm[1]} but the filename says ADR-${fm[1]}. Make them agree.`,
+      );
     }
     for (const label of REQUIRED_FIELDS) {
       const v = fieldValue(text, label);
-      if (v === undefined) errors.push(`${rel(file)}: missing required field **${label}:**`);
-      else if (v === "" && !hasBlockValue(text, label)) errors.push(`${rel(file)}: **${label}:** is empty`);
-      else if (/\bTODO\b/.test(v)) errors.push(`${rel(file)}: **${label}:** still holds the template's TODO`);
+      if (v === undefined)
+        errors.push(`${rel(file)}: missing required field **${label}:**`);
+      else if (v === "" && !hasBlockValue(text, label))
+        errors.push(`${rel(file)}: **${label}:** is empty`);
+      else if (/\bTODO\b/.test(v))
+        errors.push(
+          `${rel(file)}: **${label}:** still holds the template's TODO`,
+        );
     }
     const date = fieldValue(text, "Date");
     if (date !== undefined && !/^\d{4}-\d{2}-\d{2}\b/.test(date)) {
-      errors.push(`${rel(file)}: **Date:** must start with YYYY-MM-DD (found: ${JSON.stringify(date)}).`);
+      errors.push(
+        `${rel(file)}: **Date:** must start with YYYY-MM-DD (found: ${JSON.stringify(date)}).`,
+      );
     }
   }
 
@@ -306,7 +343,11 @@ export function checkDecisions(root: string): string[] {
 /** A field whose value starts on the next lines (e.g. `**Rationale:**` then a bullet list). */
 function hasBlockValue(text: string, label: string): boolean {
   const i = text.indexOf(`**${label}:**`);
-  const after = text.slice(i + label.length + 6).split("\n").slice(1, 4).join("\n");
+  const after = text
+    .slice(i + label.length + 6)
+    .split("\n")
+    .slice(1, 4)
+    .join("\n");
   return after.trim() !== "" && !after.trimStart().startsWith("**");
 }
 
@@ -321,16 +362,23 @@ export interface Supersession {
  * Supersession, where parseable: the title's "(supersedes ADR-X)" / "(reverses part of ADR-X)"
  * and the first clause of a `**Supersedes:**` field. `ADR-X's …` means only part of X.
  */
-export function supersessions(e: Pick<Entry, "title" | "text">): Supersession[] {
+export function supersessions(
+  e: Pick<Entry, "title" | "text">,
+): Supersession[] {
   const found = new Map<string, Supersession>();
   const add = (clause: string, partialClause: boolean) => {
     for (const m of clause.matchAll(/ADR-(\d{3,}(?:-follow-up)?)('s)?/g)) {
       const partial = partialClause || !!m[2];
       const prev = found.get(m[1]!);
-      found.set(m[1]!, { target: m[1]!, partial: prev ? prev.partial && partial : partial });
+      found.set(m[1]!, {
+        target: m[1]!,
+        partial: prev ? prev.partial && partial : partial,
+      });
     }
   };
-  for (const m of e.title.matchAll(/\b(supersedes|reverses(?: part of)?|replaces)\s+(ADR-\d{3,}(?:'s)?)/gi)) {
+  for (const m of e.title.matchAll(
+    /\b(supersedes|reverses(?: part of)?|replaces)\s+(ADR-\d{3,}(?:'s)?)/gi,
+  )) {
     add(m[2]!, /part of/i.test(m[1]!));
   }
   const field = fieldValue(e.text, "Supersedes");
@@ -342,7 +390,9 @@ const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
 const label = (id: string) => `ADR-${id}`;
 
 export function renderIndex(entries: Entry[]): string {
-  const sorted = [...entries].sort((a, b) => a.num - b.num || a.file.localeCompare(b.file));
+  const sorted = [...entries].sort(
+    (a, b) => a.num - b.num || a.file.localeCompare(b.file),
+  );
   const by = new Map<string, { full: string[]; part: string[] }>();
   const sup = new Map<string, Supersession[]>();
   for (const e of sorted) {
@@ -355,7 +405,8 @@ export function renderIndex(entries: Entry[]): string {
     }
   }
   const rows = sorted.map((e) => {
-    const date = /\*\*Date:\*\*[^0-9\n]*(\d{4}-\d{2}-\d{2})/.exec(e.text)?.[1] ?? "";
+    const date =
+      /\*\*Date:\*\*[^0-9\n]*(\d{4}-\d{2}-\d{2})/.exec(e.text)?.[1] ?? "";
     const inbound = by.get(e.id) ?? { full: [], part: [] };
     const explicit = e.legacy ? undefined : fieldValue(e.text, "Status");
     const status =
@@ -365,8 +416,13 @@ export function renderIndex(entries: Entry[]): string {
         : inbound.part.length
           ? `Amended by ${inbound.part.map(label).join(", ")}`
           : "Accepted");
-    const supersedes = (sup.get(e.file) ?? []).map((s) => `${label(s.target)}${s.partial ? " (in part)" : ""}`).join(", ");
-    const supersededBy = [...inbound.full.map(label), ...inbound.part.map((id) => `${label(id)} (in part)`)].join(", ");
+    const supersedes = (sup.get(e.file) ?? [])
+      .map((s) => `${label(s.target)}${s.partial ? " (in part)" : ""}`)
+      .join(", ");
+    const supersededBy = [
+      ...inbound.full.map(label),
+      ...inbound.part.map((id) => `${label(id)} (in part)`),
+    ].join(", ");
     return `| [${label(e.id)}](${e.file}) | ${cell(e.title)} | ${date} | ${cell(status)} | ${supersedes} | ${supersededBy} |`;
   });
   return `${INDEX_PREAMBLE}| ADR | Title | Date | Status | Supersedes | Superseded by |
@@ -436,13 +492,18 @@ says so; update any references to the old number in your PR).
 // ── numbering ───────────────────────────────────────────────────────────────
 
 const git = (root: string, args: string[]) =>
-  execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  execFileSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
 
 /** ADR numbers in a list of paths (docs/decisions/ADR-NNN-*.md) and in `+## ADR-NNN` diff lines. */
 export function numbersIn(text: string): number[] {
   const out: number[] = [];
-  for (const m of text.matchAll(/(?:^|\/)ADR-(\d{3,})[a-z]?-[^/\s]*\.md$/gm)) out.push(numberOf(m[1]!));
-  for (const m of text.matchAll(/^\+## ADR-(\d{3,})/gm)) out.push(numberOf(m[1]!));
+  for (const m of text.matchAll(/(?:^|\/)ADR-(\d{3,})[a-z]?-[^/\s]*\.md$/gm))
+    out.push(numberOf(m[1]!));
+  for (const m of text.matchAll(/^\+## ADR-(\d{3,})/gm))
+    out.push(numberOf(m[1]!));
   return out;
 }
 
@@ -451,7 +512,10 @@ export function numbersIn(text: string): number[] {
  * legacy `+## ADR-NNN` appends to docs/DECISIONS.md during the transition). Sources that
  * are unavailable (offline, no gh) are skipped with a warning, never fatal.
  */
-export function claimedNumbers(root: string, opts: { excludeFile?: string } = {}): { nums: number[]; warnings: string[] } {
+export function claimedNumbers(
+  root: string,
+  opts: { excludeFile?: string } = {},
+): { nums: number[]; warnings: string[] } {
   const warnings: string[] = [];
   const dir = join(root, DECISIONS_DIR);
   const nums = adrFiles(dir)
@@ -460,26 +524,62 @@ export function claimedNumbers(root: string, opts: { excludeFile?: string } = {}
   try {
     git(root, ["fetch", "--quiet", "origin", "main"]);
   } catch {
-    warnings.push("could not fetch origin/main; using the local origin/main ref");
+    warnings.push(
+      "could not fetch origin/main; using the local origin/main ref",
+    );
   }
   try {
-    nums.push(...numbersIn(git(root, ["ls-tree", "-r", "--name-only", "origin/main", `${DECISIONS_DIR}/`])));
-    nums.push(...numbersIn(git(root, ["show", `origin/main:${LEGACY_LOG}`]).replace(/^## /gm, "+## ")));
+    nums.push(
+      ...numbersIn(
+        git(root, [
+          "ls-tree",
+          "-r",
+          "--name-only",
+          "origin/main",
+          `${DECISIONS_DIR}/`,
+        ]),
+      ),
+    );
+    nums.push(
+      ...numbersIn(
+        git(root, ["show", `origin/main:${LEGACY_LOG}`]).replace(
+          /^## /gm,
+          "+## ",
+        ),
+      ),
+    );
   } catch {
     warnings.push("origin/main unavailable; skipped it");
   }
   try {
     const prs = JSON.parse(
-      execFileSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number,files"], {
-        cwd: root,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 30_000,
-      }),
+      execFileSync(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--state",
+          "open",
+          "--limit",
+          "100",
+          "--json",
+          "number,files",
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 30_000,
+        },
+      ),
     ) as { number: number; files: { path: string }[] }[];
     for (const pr of prs) {
       const paths = pr.files.map((f) => f.path);
-      nums.push(...numbersIn(paths.filter((p) => p.startsWith(`${DECISIONS_DIR}/`)).join("\n")));
+      nums.push(
+        ...numbersIn(
+          paths.filter((p) => p.startsWith(`${DECISIONS_DIR}/`)).join("\n"),
+        ),
+      );
       if (paths.includes(LEGACY_LOG)) {
         try {
           const diff = execFileSync("gh", ["pr", "diff", String(pr.number)], {
@@ -496,12 +596,15 @@ export function claimedNumbers(root: string, opts: { excludeFile?: string } = {}
       }
     }
   } catch {
-    warnings.push("gh unavailable or unauthenticated; open PRs NOT checked (CI still catches a collision)");
+    warnings.push(
+      "gh unavailable or unauthenticated; open PRs NOT checked (CI still catches a collision)",
+    );
   }
   return { nums, warnings };
 }
 
-export const nextNumber = (nums: number[]) => (nums.length ? Math.max(...nums) : 0) + 1;
+export const nextNumber = (nums: number[]) =>
+  (nums.length ? Math.max(...nums) : 0) + 1;
 
 export function template(num: number, title: string, today: string): string {
   return `## ADR-${pad(num)}: ${title}
@@ -532,12 +635,16 @@ function renumber(root: string, fileArg: string): string {
   const dir = join(root, DECISIONS_DIR);
   const file = fileArg.split("/").pop()!;
   const m = NEW_FILE_RE.exec(file);
-  if (!m) throw new Error(`${fileArg}: not a new-style ADR file (ADR-NNN-slug.md)`);
+  if (!m)
+    throw new Error(`${fileArg}: not a new-style ADR file (ADR-NNN-slug.md)`);
   const { nums, warnings } = claimedNumbers(root, { excludeFile: file });
   for (const w of warnings) console.warn(`warning: ${w}`);
   const n = pad(nextNumber(nums));
   const target = `ADR-${n}-${m[2]}.md`;
-  const text = readFileSync(join(dir, file), "utf8").replace(new RegExp(`^## ADR-${m[1]}: `), `## ADR-${n}: `);
+  const text = readFileSync(join(dir, file), "utf8").replace(
+    new RegExp(`^## ADR-${m[1]}: `),
+    `## ADR-${n}: `,
+  );
   writeFileSync(join(dir, file), text);
   try {
     git(root, ["mv", join(DECISIONS_DIR, file), join(DECISIONS_DIR, target)]);
@@ -547,12 +654,26 @@ function renumber(root: string, fileArg: string): string {
   return `${DECISIONS_DIR}/${target}`;
 }
 
-/** Entries in an old-style log whose migrated form isn't in the manifest: what a branch appended. */
-export function appendedEntries(log: string, manifest: Manifest): { id: string; title: string; content: string }[] {
-  const known = new Set(manifest.entries.map((e) => e.sha256));
+/**
+ * Entries in an old-style log that aren't recorded yet: what a branch appended. An entry is
+ * already recorded if its bytes match a migrated one, or its title matches any ADR file.
+ * Matching on title covers a branch forked before a past entry was amended (an older copy),
+ * and a stacked branch whose base PR already imported the entry under a new number. A reused
+ * number under a different title is a new entry.
+ */
+export function appendedEntries(
+  log: string,
+  manifest: Manifest,
+  knownTitles: Set<string>,
+): { id: string; title: string; content: string }[] {
+  const hashes = new Set(manifest.entries.map((e) => e.sha256));
   return splitLog(log)
-    .chunks.map((c) => ({ id: c.id, title: c.title, content: trimSeparator(c.text).content }))
-    .filter((c) => !known.has(sha256(c.content)));
+    .chunks.map((c) => ({
+      id: c.id,
+      title: c.title,
+      content: trimSeparator(c.text).content,
+    }))
+    .filter((c) => !hashes.has(sha256(c.content)) && !knownTitles.has(c.title));
 }
 
 /**
@@ -562,18 +683,27 @@ export function appendedEntries(log: string, manifest: Manifest): { id: string; 
 function importFrom(root: string, ref: string): string[] {
   const dir = join(root, DECISIONS_DIR);
   const log = git(root, ["show", `${ref}:${LEGACY_LOG}`]);
+  const manifest = loadManifest(dir);
+  const titles = new Set(loadEntries(dir, manifest).map((e) => e.title));
   const written: string[] = [];
-  for (const entry of appendedEntries(log, loadManifest(dir))) {
+  for (const entry of appendedEntries(log, manifest, titles)) {
+    if (titles.has(entry.title)) continue; // the same entry twice in one log
+    titles.add(entry.title);
     const taken = adrFiles(dir).flatMap((f) => numbersIn(f));
     let num = numberOf(entry.id);
     if (taken.includes(num) || !/^\d+$/.test(entry.id)) {
       const { nums, warnings } = claimedNumbers(root);
       for (const w of warnings) console.warn(`warning: ${w}`);
       num = nextNumber([...nums, ...taken]);
-      console.warn(`ADR-${entry.id} is taken; imported as ADR-${pad(num)}. Update references to ADR-${entry.id} in your PR.`);
+      console.warn(
+        `ADR-${entry.id} is taken; imported as ADR-${pad(num)}. Update references to ADR-${entry.id} in your PR.`,
+      );
     }
     // The header takes the new-entry form; the body is kept as written.
-    const content = entry.content.replace(/^[^\n]*/, `## ADR-${pad(num)}: ${entry.title}`);
+    const content = entry.content.replace(
+      /^[^\n]*/,
+      `## ADR-${pad(num)}: ${entry.title}`,
+    );
     const file = `ADR-${pad(num)}-${slugify(entry.title)}.md`;
     writeFileSync(join(dir, file), content);
     written.push(`${DECISIONS_DIR}/${file}`);
@@ -599,10 +729,14 @@ function main(argv: string[]): number {
       const checkOnly = args.includes("--check");
       const ok = writeIndex(root, checkOnly);
       if (checkOnly && !ok) {
-        console.error(`✗ ${DECISIONS_DIR}/${INDEX_FILE} is stale; run: make adr-index`);
+        console.error(
+          `✗ ${DECISIONS_DIR}/${INDEX_FILE} is stale; run: make adr-index`,
+        );
         return 1;
       }
-      console.log(checkOnly ? "✓ index is fresh" : `wrote ${DECISIONS_DIR}/${INDEX_FILE}`);
+      console.log(
+        checkOnly ? "✓ index is fresh" : `wrote ${DECISIONS_DIR}/${INDEX_FILE}`,
+      );
       return 0;
     }
     case "new": {
@@ -615,22 +749,30 @@ function main(argv: string[]): number {
       for (const w of warnings) console.warn(`warning: ${w}`);
       const num = nextNumber(nums);
       const file = join(DECISIONS_DIR, `ADR-${pad(num)}-${slugify(title)}.md`);
-      writeFileSync(join(root, file), template(num, title, new Date().toISOString().slice(0, 10)));
+      writeFileSync(
+        join(root, file),
+        template(num, title, new Date().toISOString().slice(0, 10)),
+      );
       console.log(file);
       return 0;
     }
     case "renumber": {
       if (!args[0]) {
-        console.error("usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md");
+        console.error(
+          "usage: make adr-renumber FILE=docs/decisions/ADR-NNN-slug.md",
+        );
         return 2;
       }
       const to = renumber(root, args[0]);
-      console.log(`→ ${to}\nUpdate any references to the old number in your PR (code comments, PR body).`);
+      console.log(
+        `→ ${to}\nUpdate any references to the old number in your PR (code comments, PR body).`,
+      );
       return 0;
     }
     case "import": {
       const written = importFrom(root, args[0] || "HEAD");
-      if (written.length === 0) console.log(`no new ADRs in ${args[0] || "HEAD"}:${LEGACY_LOG}`);
+      if (written.length === 0)
+        console.log(`no new ADRs in ${args[0] || "HEAD"}:${LEGACY_LOG}`);
       for (const f of written) console.log(`wrote ${f}`);
       return 0;
     }
@@ -638,14 +780,25 @@ function main(argv: string[]): number {
       const dir = join(root, DECISIONS_DIR);
       mkdirSync(dir, { recursive: true });
       const commit = git(root, ["rev-parse", "HEAD"]).trim();
-      const { files, manifest } = migrate(readFileSync(join(root, LEGACY_LOG), "utf8"), commit);
-      for (const [file, content] of files) writeFileSync(join(dir, file), content);
-      writeFileSync(join(dir, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
-      console.log(`migrated ${files.size} ADRs into ${relative(root, dir)}/ (source ${commit.slice(0, 7)})`);
+      const { files, manifest } = migrate(
+        readFileSync(join(root, LEGACY_LOG), "utf8"),
+        commit,
+      );
+      for (const [file, content] of files)
+        writeFileSync(join(dir, file), content);
+      writeFileSync(
+        join(dir, MANIFEST_FILE),
+        `${JSON.stringify(manifest, null, 2)}\n`,
+      );
+      console.log(
+        `migrated ${files.size} ADRs into ${relative(root, dir)}/ (source ${commit.slice(0, 7)})`,
+      );
       return 0;
     }
     default:
-      console.error("usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | migrate");
+      console.error(
+        "usage: decisions.ts check | index [--check] | new <title> | renumber <file> | import [<ref>] | migrate",
+      );
       return 2;
   }
 }

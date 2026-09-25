@@ -4,7 +4,7 @@
 
 1. Read [`README.md`](README.md) — project overview, monorepo structure
 2. Read [`docs/FEATURES.md`](docs/FEATURES.md) — feature specifications and design intent
-3. Read [`docs/DECISIONS.md`](docs/DECISIONS.md) — all architectural decisions with context and rationale
+3. Browse [`docs/decisions/`](docs/decisions/README.md) — all architectural decisions (one file per ADR, with an index) with context and rationale
 4. Read [`docs/ROADMAP.md`](docs/ROADMAP.md) — current priorities and what to work on
 5. Read [`docs/RESEARCH.md`](docs/RESEARCH.md) — research findings, competitor analysis, learnings
 
@@ -36,7 +36,7 @@ autonomOS/
 │   │   └── src/mcp/            # Shared MCP tool definitions (used by both servers)
 │   └── core/               # Shared agent abstractions & types
 ├── docs/
-│   ├── DECISIONS.md        # Architectural Decision Records (append-only)
+│   ├── decisions/          # Architectural Decision Records, one file per ADR (append-only)
 │   ├── FEATURES.md         # Feature specifications (F-001 through F-016)
 │   ├── ROADMAP.md          # Current priorities
 │   ├── RESEARCH.md         # Research findings & competitor analysis
@@ -155,15 +155,17 @@ All app-level chords live in the registry at `packages/dashboard/src/shortcuts/r
 ## Key Conventions
 
 ### Decision Records (CRITICAL)
-Every architectural decision goes in `docs/DECISIONS.md`. Append-only. Each entry must include:
-- **Date** and **who decided** (human vs agent)
-- **Context** — why this decision was needed
-- **Decision** — what was chosen
-- **Rationale** — why this over alternatives
-- **Alternatives considered** — what else was evaluated
-- **Source** — where the decision happened (Discord channel, CC session, etc.)
+Every architectural decision is its own file in [`docs/decisions/`](docs/decisions/README.md): `ADR-NNN-<slug>.md`, listed in the generated index `docs/decisions/README.md`. Start one with `make adr NEW="Short title"`. It takes the next free number (checking origin/main AND open PRs) and writes a template. Don't append to `docs/DECISIONS.md` (it's a pointer stub now, and CI rejects entries there), and don't edit the index (a bot PR regenerates it after merge). Each entry must include:
+- **Date** (YYYY-MM-DD) and **Decided by** (human vs agent)
+- **Context**: why this decision was needed
+- **Decision**: what was chosen
+- **Rationale**: why this over alternatives
+- **Alternatives considered**: what else was evaluated
+- **Source**: where the decision happened (Discord channel, CC session, etc.)
 
-Never delete or modify past entries. If a decision is reversed, add a new entry referencing the old one.
+The labels are exact (`**Alternatives considered:**`, not `**Alternatives:**`). `make check`, and therefore CI and the pre-push gate, rejects a new ADR that is missing a field, still holds a template TODO, or reuses a number.
+
+Never delete or modify past entries; the migrated ones are hash-locked in `docs/decisions/legacy-manifest.json`. If a decision is reversed, add a new entry referencing the old one (an optional `**Supersedes:** ADR-NNN` field feeds the index). If two parallel PRs pick the same number, whoever merges later runs `make adr-renumber FILE=docs/decisions/ADR-NNN-….md`: one file changes, nothing else. A branch that still appended to the old `docs/DECISIONS.md` moves its entry with `make adr-import REF=HEAD` (steps in `docs/decisions/README.md`).
 
 ### Research & Learnings
 All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When investigating competitors, frameworks, or approaches:
@@ -199,7 +201,7 @@ The README's hero screenshot (`docs/assets/hero.png`) is generated, not hand-cap
 
 ## What NOT to Do
 
-- Don't make architectural decisions without recording them in DECISIONS.md
+- Don't make architectural decisions without recording them in `docs/decisions/` (`make adr`)
 - Don't start building without checking ROADMAP.md for priorities
 - Don't ignore existing research — check RESEARCH.md before investigating something
 - Don't over-engineer for the robot path yet — it's aspirational
@@ -210,8 +212,8 @@ The README's hero screenshot (`docs/assets/hero.png`) is generated, not hand-cap
 
 When working on this repo:
 1. Check ROADMAP.md — what's the current priority?
-2. Check DECISIONS.md — has this been decided already?
+2. Check `docs/decisions/` — has this been decided already?
 3. Do the work
 4. Update ROADMAP.md if priorities shifted
-5. Add any new decisions to DECISIONS.md
+5. Add any new decisions to `docs/decisions/` (`make adr NEW="…"`)
 6. Update RESEARCH.md with any new findings

@@ -276,7 +276,7 @@ async function fetchCodexUsageSnapshot(
     // (source: rollout + snapshotAt for age) AND carrying the cause, like
     // every other fallback in this file: an unmarked re-serve was the last
     // silent-stale path left after the usage-correctness pass (see the
-    // stale-marking ADR in docs/DECISIONS.md — number omitted on purpose so
+    // stale-marking ADR in docs/decisions/ — number omitted on purpose so
     // ADR renumbering stays docs-only).
     if (lastGood && lastGood.fp === fp) {
       const stale: CodexUsageData = {

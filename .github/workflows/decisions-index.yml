@@ -1,0 +1,86 @@
+name: Decisions index
+
+# Regenerates docs/decisions/README.md (the ADR index) after pushes to main.
+#
+# PRs never edit the index. Every ADR-bearing PR would add a row at the same
+# spot, so the index would become the shared conflict hotspot that the
+# one-file-per-ADR layout exists to remove. Instead, this job rebuilds it from
+# main and delivers it as ONE rolling bot PR ("docs(decisions): regenerate
+# index"), updated on each push while main's index is stale.
+#
+# Why a PR and not a direct push: the "main: merge requirements (no bypass)"
+# ruleset has no bypass actors, so nothing (a bot included) can push to main.
+# The PR goes through the same gate as every other: required checks plus one
+# approval. Auto-merge (squash) is enabled, so the approval is the only manual
+# step. The PR is opened with RELEASE_PAT (Contents + Pull requests, this repo
+# only; see version.yml) because a PR opened by GITHUB_TOKEN triggers no
+# workflows, so its required `check`/`changeset` runs would never start. Without
+# the secret it falls back to GITHUB_TOKEN, and the PR has to be closed and
+# reopened to start CI.
+#
+# Loop safety: merging the bot PR pushes a commit whose subject starts with
+# "docs(decisions): regenerate index", which the job skips; any later run finds
+# the index fresh and exits without pushing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: decisions-index
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BRANCH: bot/decisions-index
+  TITLE: "docs(decisions): regenerate index"
+
+jobs:
+  index:
+    if: ${{ !startsWith(github.event.head_commit.message, 'docs(decisions): regenerate index') }}
+    runs-on: ubuntu-latest
+    # A no-op run takes ~15s and a regenerating one ~30s; 5 minutes bounds a hang.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # scripts/decisions.ts uses only node: builtins, so no `bun install` (which
+      # would also run lefthook's prepare script).
+      - name: Validate ADRs
+        run: bun scripts/decisions.ts check
+
+      - name: Regenerate the index
+        run: bun scripts/decisions.ts index
+
+      - name: Open or update the index PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/decisions/README.md; then
+            echo "✓ docs/decisions/README.md is already fresh on main"
+            # An open bot PR is now redundant (e.g. the index was regenerated in another PR).
+            if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || true)" = "OPEN" ]; then
+              gh pr close "$BRANCH" --delete-branch --comment "The index on main is already fresh."
+            fi
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git commit -m "$TITLE" -- docs/decisions/README.md
+          git push --force origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || true)" != "OPEN" ]; then
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "Automated: regenerates the ADR index (\`docs/decisions/README.md\`) from the ADR files on main. Produced by \`scripts/decisions.ts index\` in the decisions-index workflow. The content is generated, so review is a glance. It merges itself (squash) once approved."
+          fi
+          gh pr merge "$BRANCH" --auto --squash || echo "::warning::could not enable auto-merge on the index PR"

@@ -16,5 +16,5 @@
 
 - [ ] `make check` passes locally (lint + typecheck + tests)
 - [ ] Conventional-commit title (`feat:` / `fix:` / `docs:` / …)
-- [ ] Architectural decision recorded in `docs/DECISIONS.md` (if this makes a non-obvious design choice)
+- [ ] Architectural decision recorded as its own file in `docs/decisions/` via `make adr NEW="…"` (if this makes a non-obvious design choice)
 - [ ] Re-ran `make hero` + committed `docs/assets/hero.png` (if this changes the dashboard UI)
