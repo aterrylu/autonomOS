@@ -125,10 +125,25 @@ function seedFakeHome(fakeHome: string): string {
   const claudeDir = join(fakeHome, ".claude");
   mkdirSync(claudeDir, { recursive: true });
   // Probe under the fake HOME too: even `--version` must not start a claude
-  // against the operator's real config.
+  // against the operator's real config. BOUNDED: this is a SYNCHRONOUS spawn,
+  // so if claude stalls (first-run update check / migration in a fresh config
+  // dir), it blocks the event loop and NO test timeout can fire — the file just
+  // hangs until the CI job's 6h limit. A timeout, closed stdin and the same
+  // no-network flags the server env uses keep it from ever freezing a suite;
+  // on any failure we fall back to a fixed onboarding version.
   const v = spawnSync("claude", ["--version"], {
     encoding: "utf-8",
-    env: { ...process.env, HOME: fakeHome, CLAUDE_CONFIG_DIR: claudeDir },
+    timeout: 10_000,
+    killSignal: "SIGKILL",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      HOME: fakeHome,
+      CLAUDE_CONFIG_DIR: claudeDir,
+      DISABLE_AUTOUPDATER: "1",
+      DISABLE_TELEMETRY: "1",
+      DISABLE_ERROR_REPORTING: "1",
+    },
   });
   const version = /(\d+\.\d+\.\d+)/.exec(v.stdout ?? "")?.[1] ?? "2.1.168";
   writeFileSync(
