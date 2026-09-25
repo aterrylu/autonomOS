@@ -236,3 +236,203 @@ export const RUNTIME_PERMISSIONS: Readonly<
     ],
   },
 };
+
+// ── An agent's permission setting, in its runtime's vocabulary ─────────────
+
+/**
+ * One agent's permission setting: a canonical value for EVERY axis of its
+ * runtime (e.g. Codex: approval_policy, sandbox_mode, approvals_reviewer,
+ * collaboration_mode). Always complete — `completePermission` fills any axis a
+ * caller didn't name from the runtime's effective default.
+ */
+export interface RuntimePermission {
+  runtime: Provider;
+  values: Readonly<Record<string, string>>;
+}
+
+/**
+ * What each runtime runs when nobody chose anything: exactly today's `ask`
+ * behavior (ADR-115: migration keeps every agent's effective behavior).
+ */
+export const DEFAULT_RUNTIME_VALUES: Readonly<
+  Record<Provider, Readonly<Record<string, string>>>
+> = {
+  "claude-code": { "permission-mode": "manual" },
+  codex: {
+    approval_policy: "on-request",
+    sandbox_mode: "danger-full-access",
+    approvals_reviewer: "user",
+    collaboration_mode: "default",
+  },
+  "gemini-cli": { "approval-mode": "default" },
+};
+
+/** Fill every axis the partial doesn't name from the runtime's default. */
+export function completePermission(
+  runtime: Provider,
+  partial: Readonly<Record<string, string>> = {},
+): RuntimePermission {
+  return {
+    runtime,
+    values: { ...DEFAULT_RUNTIME_VALUES[runtime], ...partial },
+  };
+}
+
+/** The runtime's default setting (see DEFAULT_RUNTIME_VALUES). */
+export function defaultRuntimePermission(runtime: Provider): RuntimePermission {
+  return completePermission(runtime);
+}
+
+/**
+ * The shared-vocabulary mode an agent record carried before ADR-115, mapped to
+ * the native setting it ACTUALLY ran — never a wider or narrower one. Codex
+ * never supported `auto`/`plan`: both always ran as on-request.
+ */
+export function permissionFromLegacyMode(
+  runtime: Provider,
+  mode: "ask" | "auto" | "plan" | "bypass",
+): RuntimePermission {
+  const byRuntime: Record<
+    Provider,
+    Record<typeof mode, Record<string, string>>
+  > = {
+    "claude-code": {
+      ask: { "permission-mode": "manual" },
+      auto: { "permission-mode": "acceptEdits" },
+      plan: { "permission-mode": "plan" },
+      bypass: { "permission-mode": "bypassPermissions" },
+    },
+    codex: {
+      ask: {},
+      auto: {},
+      plan: {},
+      bypass: { approval_policy: "never" },
+    },
+    "gemini-cli": {
+      ask: { "approval-mode": "default" },
+      auto: { "approval-mode": "auto_edit" },
+      plan: { "approval-mode": "plan" },
+      bypass: { "approval-mode": "yolo" },
+    },
+  };
+  return completePermission(runtime, byRuntime[runtime][mode]);
+}
+
+/** A legacy mode that had no exact native equivalent on this runtime. */
+export function legacyModeWasClamped(
+  runtime: Provider,
+  mode: "ask" | "auto" | "plan" | "bypass",
+): boolean {
+  return runtime === "codex" && (mode === "auto" || mode === "plan");
+}
+
+/**
+ * The closest shared-vocabulary mode for a native setting — ONLY for readers
+ * that haven't moved to `permission` yet (the dashboard until the redesign's
+ * UI PR). Lossy by nature; never used to spawn.
+ */
+export function legacyModeFor(
+  p: RuntimePermission,
+): "ask" | "auto" | "plan" | "bypass" {
+  const v = p.values;
+  switch (p.runtime) {
+    case "claude-code":
+      return v["permission-mode"] === "bypassPermissions"
+        ? "bypass"
+        : v["permission-mode"] === "acceptEdits"
+          ? "auto"
+          : v["permission-mode"] === "plan"
+            ? "plan"
+            : "ask";
+    case "codex":
+      return v.approval_policy === "never" ? "bypass" : "ask";
+    case "gemini-cli":
+      return v["approval-mode"] === "yolo"
+        ? "bypass"
+        : v["approval-mode"] === "auto_edit"
+          ? "auto"
+          : v["approval-mode"] === "plan"
+            ? "plan"
+            : "ask";
+  }
+}
+
+/**
+ * The canonical display string: the CLI's own values, nothing invented.
+ * Single-axis runtimes show the bare value (`acceptEdits`, `yolo`); Codex shows
+ * `key=value` pairs, omitting axes still at Codex's own default where that
+ * default is unambiguous (reviewer `user`, collaboration mode `default`).
+ */
+export function formatPermission(p: RuntimePermission): string {
+  const axes = RUNTIME_PERMISSIONS[p.runtime].axes;
+  if (axes.length === 1) return p.values[axes[0].key] ?? "";
+  const quiet: Record<string, string> = {
+    approvals_reviewer: "user",
+    collaboration_mode: "default",
+  };
+  return axes
+    .filter(
+      (a) => p.values[a.key] !== undefined && quiet[a.key] !== p.values[a.key],
+    )
+    .map((a) => `${a.key}=${p.values[a.key]}`)
+    .join(" · ");
+}
+
+export type PermissionParseResult =
+  | { ok: true; permission: RuntimePermission }
+  | { ok: false; error: string };
+
+/**
+ * Parse a runtime's canonical value as an API caller gives it:
+ * - single-axis runtimes: the bare value (`"acceptEdits"`, `"yolo"`);
+ * - any runtime: `"key=value key=value"` (Codex's own `-c` spelling; spaces,
+ *   commas or " · " between pairs) or an object `{ key: value }`.
+ * Unnamed axes keep the runtime default. The error lists the valid values.
+ */
+export function parseRuntimePermission(
+  runtime: Provider,
+  input: string | Readonly<Record<string, unknown>>,
+): PermissionParseResult {
+  const axes = RUNTIME_PERMISSIONS[runtime].axes;
+  let pairs: Record<string, string> = {};
+  if (typeof input === "string") {
+    const s = input.trim();
+    if (!s.includes("=")) {
+      if (axes.length !== 1)
+        return { ok: false, error: validValuesMessage(runtime) };
+      pairs = { [axes[0].key]: s };
+    } else {
+      for (const part of s.split(/\s*(?:·|,|\s)\s*/).filter(Boolean)) {
+        const eq = part.indexOf("=");
+        if (eq <= 0) return { ok: false, error: validValuesMessage(runtime) };
+        pairs[part.slice(0, eq)] = part.slice(eq + 1);
+      }
+    }
+  } else {
+    for (const [k, v] of Object.entries(input)) {
+      if (typeof v !== "string")
+        return { ok: false, error: validValuesMessage(runtime) };
+      pairs[k] = v;
+    }
+  }
+  for (const [key, value] of Object.entries(pairs)) {
+    const axis = axes.find((a) => a.key === key);
+    if (!axis || !axis.values.some((v) => v.value === value)) {
+      return { ok: false, error: validValuesMessage(runtime) };
+    }
+  }
+  return { ok: true, permission: completePermission(runtime, pairs) };
+}
+
+/** "Valid permission values for codex: approval_policy=on-request|never; …" */
+export function validValuesMessage(runtime: Provider): string {
+  const axes = RUNTIME_PERMISSIONS[runtime].axes;
+  const list = axes
+    .map(
+      (a) =>
+        (axes.length === 1 ? "" : `${a.key}=`) +
+        a.values.map((v) => v.value).join("|"),
+    )
+    .join("; ");
+  return `Valid permission values for ${runtime}: ${list}`;
+}
