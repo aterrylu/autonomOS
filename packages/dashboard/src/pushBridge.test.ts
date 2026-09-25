@@ -40,6 +40,7 @@ const pollStub = () => ({
 vi.mock("./api/polls", () => ({
   agentsPoll: pollStub(),
   treePoll: pollStub(),
+  orgTreePoll: pollStub(),
   statusPoll: pollStub(),
 }));
 
@@ -48,7 +49,9 @@ vi.mock("./store", () => ({
   applyStatusSnapshot: vi.fn(),
 }));
 
-const { agentsPoll, statusPoll, treePoll } = await import("./api/polls");
+const { agentsPoll, orgTreePoll, statusPoll, treePoll } = await import(
+  "./api/polls"
+);
 const { applyAgentsSnapshot, applyStatusSnapshot } = await import("./store");
 const { startPushBridge } = await import("./pushBridge");
 const { buildAgentTreeNodes } = await import("@autonomos/core");
@@ -140,6 +143,35 @@ describe("startPushBridge", () => {
     });
     expect(agentsPoll.inject).toHaveBeenCalledWith([a]);
     expect(treePoll.inject).toHaveBeenCalledWith(buildAgentTreeNodes([a]));
+    expect(orgTreePoll.setSuspended).toHaveBeenCalledWith(true);
+    expect(orgTreePoll.inject).toHaveBeenCalledWith(
+      buildAgentTreeNodes([a], { includeExited: true }),
+    );
+  });
+
+  it("org tree keeps an EXITED manager with its reports; the plain tree promotes them", () => {
+    const mgr = agent({ id: "mgr", status: "exited" } as Partial<Agent> & {
+      id: string;
+    });
+    const rep = agent({ id: "rep", managerId: "mgr" } as Partial<Agent> & {
+      id: string;
+    });
+    fakeSocket.snapshot = {
+      connected: true,
+      agents: new Map([
+        [mgr.id, mgr],
+        [rep.id, rep],
+      ]),
+      statuses: new Map(),
+    };
+    stop = startPushBridge();
+    const org = vi.mocked(orgTreePoll.inject).mock.calls.at(-1)?.[0];
+    const plain = vi.mocked(treePoll.inject).mock.calls.at(-1)?.[0];
+    // Precondition: the fixture really is exited-manager + running report.
+    expect(mgr.status).toBe("exited");
+    expect(org?.map((n) => n.id)).toEqual(["mgr"]);
+    expect(org?.[0].children.map((n) => n.id)).toEqual(["rep"]);
+    expect(plain?.map((n) => n.id)).toEqual(["rep"]);
   });
 
   it("a statuses-only frame (same agents map by REFERENCE) skips the agents/tree re-derive", () => {
@@ -178,6 +210,7 @@ describe("startPushBridge", () => {
     fakeSocket.emit();
     expect(agentsPoll.setSuspended).toHaveBeenLastCalledWith(false);
     expect(treePoll.setSuspended).toHaveBeenLastCalledWith(false);
+    expect(orgTreePoll.setSuspended).toHaveBeenLastCalledWith(false);
     expect(statusPoll.setSuspended).toHaveBeenLastCalledWith(false);
   });
 

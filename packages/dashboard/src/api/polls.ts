@@ -47,6 +47,15 @@ export const treePoll = createPoll<AgentTreeNode[]>({
   intervalMs: 5000,
 });
 
+/** 5s — the ORG CHART's tree, including exited agents. Separate from `treePoll`
+ * (which the sidebar reads, exited-free) so the chart can keep a crashed
+ * manager's team together without changing what the sidebar or the MCP
+ * `get_org_chart` see. Subscribed only while the Org Chart pane is mounted. */
+export const orgTreePoll = createPoll<AgentTreeNode[]>({
+  source: (o) => agentsApi.treeWithExited(o),
+  intervalMs: 5000,
+});
+
 /** 30s — the 86KB payload; subscribed only while the Projects UI is in use. */
 export const projectsPoll = createPoll<ProjectInfo[]>({
   source: (o) => projectsApi.list(o),

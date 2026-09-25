@@ -251,3 +251,64 @@ aside.overflow-y-auto::-webkit-scrollbar {
     -webkit-text-fill-color: #3f5f85;
   }
 }
+
+/* Org chart cards (components/orgchart). Colors arrive as CSS variables set
+   inline from orgChartTokens(), so these rules hold no palette of their own and
+   follow every theme. Working cards "breathe" a slate ring; needs-input cards
+   pulse an amber ring — the sidebar's attention color (ADR-090). Reduced motion
+   keeps the STATIC ring (the state stays visible), only the pulse stops. */
+.org-card-working {
+  box-shadow:
+    var(--org-shadow),
+    0 0 0 1px var(--org-ring);
+  animation: org-breathe 2.6s ease-in-out infinite;
+}
+.org-card-attention {
+  box-shadow:
+    var(--org-shadow),
+    0 0 0 3px var(--org-ring);
+  animation: org-attention 1.8s ease-in-out infinite;
+}
+@keyframes org-breathe {
+  50% {
+    box-shadow:
+      var(--org-shadow),
+      0 0 0 1px var(--org-ring),
+      0 0 18px var(--org-glow);
+  }
+}
+@keyframes org-attention {
+  50% {
+    box-shadow:
+      var(--org-shadow),
+      0 0 0 5px var(--org-ring),
+      0 0 22px var(--org-glow);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-card-working,
+  .org-card-attention {
+    animation: none;
+  }
+}
+/* Re-layout (a new report, a reparent, a toggle) glides instead of jumping. */
+.org-card {
+  transition:
+    left 0.35s cubic-bezier(0.3, 0.7, 0.2, 1),
+    top 0.35s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-card {
+    transition: none;
+  }
+}
+/* Connectors glide WITH their cards (CSS `d` transition; browsers that can't
+   animate `d` just snap, which is the old behavior). */
+.org-edge {
+  transition: d 0.35s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .org-edge {
+    transition: none;
+  }
+}

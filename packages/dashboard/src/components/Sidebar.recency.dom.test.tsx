@@ -106,6 +106,19 @@ describe("Sidebar recency — timestamp fade wiring", () => {
     expect(age.contains(unread)).toBe(false);
   });
 
+  it("the unread prefix uses the theme-aware unread red (darker on daylight)", async () => {
+    // #ea6c73 is ~3:1 on near-white; the shared unreadColor() switches to the
+    // ~5:1 variant on light themes — the same definition the org chart uses.
+    useStore.setState({
+      theme: "daylight",
+      notificationCounts: { "ancient-agent": 3 },
+    });
+    render(<Sidebar />);
+    await screen.findByText("30d");
+    const unread = screen.getByText(/3 unread/);
+    expect(unread).toHaveStyle({ color: "rgb(196, 69, 47)" }); // #c4452f
+  });
+
   it("uses the shallower LIGHT ramp on the daylight theme (ancient → 0.74)", async () => {
     // Opacity fades toward the bg; on a light theme that washes out fast, so the
     // ramp is theme-aware. daylight's light bg must select 0.74 for ancient, not

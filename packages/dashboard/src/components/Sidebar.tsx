@@ -29,6 +29,7 @@ import {
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
 import {
+  formatAge,
   isLightBg,
   recencyLabelOpacity,
   recencyTimestampStyle,
@@ -39,7 +40,7 @@ import {
   digitForRow,
   flattenHierarchyRows,
 } from "./sidebarRowOrder";
-import { statusLabelStyle } from "./statusLabelStyle";
+import { statusLabelStyle, unreadColor } from "./statusLabelStyle";
 import {
   type AgentStatus,
   AgentStatusIcon,
@@ -1495,7 +1496,9 @@ function SessionRow({
             style={{ color: page.statusFg }}
           >
             {notifCount > 0 && (
-              <span style={{ color: "#ea6c73" }}>{notifCount} unread · </span>
+              <span style={{ color: unreadColor(isLightTheme) }}>
+                {notifCount} unread ·{" "}
+              </span>
             )}
             <span
               style={recencyTimestampStyle(
@@ -2486,17 +2489,3 @@ export const ProjectItem = React.memo(function ProjectItem({
     </div>
   );
 });
-
-function formatAge(timestamp: number): string {
-  // Guard against missing/NaN/negative timestamps — a pre-schema record with
-  // neither exitedAt nor updatedAt would otherwise render as "NaNd".
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 0) return "now"; // clock skew — display cleanly
-  if (seconds < 60) return "now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
