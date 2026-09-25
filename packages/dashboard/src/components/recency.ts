@@ -66,6 +66,9 @@ export function isLightBg(bg: string): boolean {
  * as "unknown"/"now") fall back to `recent` — full opacity, neutral color — so an
  * unknown age is never faded into near-invisibility.
  */
+// The sidebar re-evaluates these on a NOW_TICK_MS (30s) clock, so a crossing
+// can land up to one tick late. Fine for hour/day thresholds; a sub-minute
+// bucket would need NOW_TICK_MS to shrink with it.
 export function recencyBucket(ageMs: number): RecencyBucket {
   if (!Number.isFinite(ageMs) || ageMs < 0) return "recent";
   if (ageMs < HOUR_MS) return "fresh";

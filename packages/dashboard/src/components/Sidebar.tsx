@@ -1332,6 +1332,8 @@ const SessionRowBody = React.memo(function SessionRowBody({
   pendingHandoffCount?: number;
   notifCount: number;
   lastActive: number;
+  // Must be referentially stable per theme (THEMES[theme].page). A page
+  // object built inline would bust the memo and re-render every row per tick.
   page: PageTheme;
   projectLabel: string;
   branch?: string;
