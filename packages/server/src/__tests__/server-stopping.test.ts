@@ -63,7 +63,7 @@ const fake: AgentProvider = {
   }),
   buildArgs: () => ["-e", "setInterval(() => {}, 1000)"],
   hasResumableThread: undefined,
-  resumedThreadMode: undefined,
+  resumedThreadPermission: undefined,
 };
 _setProviderForTesting(NAME, fake);
 

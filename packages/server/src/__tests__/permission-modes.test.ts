@@ -6,6 +6,7 @@ import { tmpdir as __tmpdir } from "node:os";
 import { join as __join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  completePermission,
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
   PERMISSION_MODE_INFO,
@@ -14,6 +15,7 @@ import {
   permissionModeFromLegacy,
   permissionModeFromStored,
   type ResolvedSpawnOptions,
+  RUNTIME_PERMISSIONS,
 } from "@autonomos/core";
 import { claudeCodeProvider } from "../providers/claude-code.js";
 import { geminiCliProvider } from "../providers/gemini-cli.js";
@@ -198,4 +200,52 @@ describe("gemini-cli permission mapping", () => {
       assert.equal(args[idx + 1], expected[mode]);
     });
   }
+});
+
+describe("canonical values → argv (ADR-115): every value in the table", () => {
+  it("claude-code: bypassPermissions = the skip flag, manual = no flag, the rest = --permission-mode <value>", () => {
+    for (const { value } of RUNTIME_PERMISSIONS["claude-code"].axes[0].values) {
+      const args = claudeCodeProvider.buildArgs(
+        baseOptions({
+          permission: completePermission("claude-code", {
+            "permission-mode": value,
+          }),
+        }),
+      );
+      const i = args.indexOf("--permission-mode");
+      if (value === "bypassPermissions") {
+        assert.ok(args.includes("--dangerously-skip-permissions"), value);
+        assert.equal(i, -1, value);
+      } else if (value === "manual") {
+        assert.equal(i, -1, value);
+        assert.ok(!args.includes("--dangerously-skip-permissions"), value);
+      } else {
+        assert.equal(args[i + 1], value, value);
+      }
+    }
+  });
+  it("gemini-cli: --approval-mode carries Gemini's own value verbatim", () => {
+    for (const { value } of RUNTIME_PERMISSIONS["gemini-cli"].axes[0].values) {
+      const args = geminiCliProvider.buildArgs(
+        baseOptions({
+          permission: completePermission("gemini-cli", {
+            "approval-mode": value,
+          }),
+        }),
+      );
+      assert.equal(args[args.indexOf("--approval-mode") + 1], value);
+    }
+  });
+  it("the canonical permission wins over a stale legacy permissionMode", () => {
+    const args = claudeCodeProvider.buildArgs(
+      baseOptions({
+        permissionMode: "bypass",
+        permission: completePermission("claude-code", {
+          "permission-mode": "dontAsk",
+        }),
+      }),
+    );
+    assert.ok(!args.includes("--dangerously-skip-permissions"));
+    assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
+  });
 });

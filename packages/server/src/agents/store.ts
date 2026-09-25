@@ -32,10 +32,15 @@ import {
   DEFAULT_PERMISSION_MODE,
   type ExitReason,
   isPermissionMode,
+  legacyModeFor,
+  legacyModeWasClamped,
+  normalizeStoredPermission,
   type PermissionMode,
   type Provider,
+  permissionFromLegacyMode,
   permissionModeFromLegacy,
   permissionModeFromStored,
+  type RuntimePermission,
   type UUID,
 } from "@autonomos/core";
 import { revokeAgentToken } from "../agentCredentials.js";
@@ -93,6 +98,7 @@ function loadFromDisk(): Map<UUID, Agent> {
   const dir = getAgentsDir();
   const map = new Map<UUID, Agent>();
   let migratedPermissionMode = 0;
+  let migratedPermission = 0;
 
   let entries: string[];
   try {
@@ -148,6 +154,26 @@ function loadFromDisk(): Map<UUID, Agent> {
         migratedPermissionMode++;
       }
       if ("autonomousMode" in legacy) delete legacy.autonomousMode;
+      // ADR-115: the runtime-native permission. A record that predates it (or
+      // carries a malformed one) gets the native setting its legacy mode
+      // ACTUALLY ran — never wider, never narrower. Codex auto/plan always ran
+      // as on-request, so they're marked for a one-time notice at next spawn.
+      const provider = data.provider as Provider;
+      const stored = normalizeStoredPermission(provider, data.permission);
+      if (stored) {
+        data.permission = stored;
+      } else {
+        data.permission = permissionFromLegacyMode(
+          provider,
+          data.permissionMode,
+        );
+        if (legacyModeWasClamped(provider, data.permissionMode)) {
+          data.permissionMigratedFrom = data.permissionMode;
+        }
+        migratedPermission++;
+      }
+      // Keep the legacy projection consistent with what actually runs.
+      data.permissionMode = legacyModeFor(data.permission);
       map.set(data.id, data);
     } catch (err) {
       console.warn(`Skipping unreadable agent file ${entry}: ${err}`);
@@ -166,6 +192,12 @@ function loadFromDisk(): Map<UUID, Agent> {
     }
   }
 
+  if (migratedPermission > 0) {
+    console.warn(
+      `[agents/store] gave ${migratedPermission} agent record(s) their runtime-native permission ` +
+        "(ADR-115), each exactly what it already ran. Written back on the next save.",
+    );
+  }
   if (migratedPermissionMode > 0) {
     console.warn(
       `[agents/store] migrated legacy 'autonomousMode' → 'permissionMode' on ` +
@@ -376,8 +408,10 @@ export function patchAgent(
       | "name"
       | "template"
       | "project"
+      | "permission"
       | "permissionMode"
       | "providerThreadId"
+      | "permissionMigratedFrom"
       | "envPreset"
     >
   >,
@@ -389,7 +423,10 @@ export function patchAgent(
   if (expectedVersion !== undefined && existing.version !== expectedVersion) {
     return "stale";
   }
-  return saveAgent({ ...existing, ...patch });
+  const merged = { ...existing, ...patch };
+  // The legacy projection always follows the native permission (ADR-115).
+  if (patch.permission) merged.permissionMode = legacyModeFor(patch.permission);
+  return saveAgent(merged);
 }
 
 /** Set or clear an agent's manager. Cycle-checked.
@@ -494,7 +531,9 @@ export function markRunning(
       | "providerSessionId"
       | "startedAt"
       | "providerThreadId"
+      | "permission"
       | "permissionMode"
+      | "permissionMigratedFrom"
       | "envPreset"
     >
   >,
@@ -515,7 +554,10 @@ export function markRunning(
     // differs from the record. Before this, markRunning could not express a
     // mode, so such a resume spawned the PTY with the caller's mode while the
     // record kept the old one — permanently. See ADR (permission-mode refactor).
-    permissionMode: patch.permissionMode ?? existing.permissionMode,
+    permission: patch.permission ?? existing.permission,
+    permissionMode: patch.permission
+      ? legacyModeFor(patch.permission)
+      : (patch.permissionMode ?? existing.permissionMode),
     status: "running" as AgentStatus,
     exitReason: undefined,
     exitedAt: undefined,
@@ -604,6 +646,9 @@ export function buildAgent(params: {
   provider: Provider;
   providerSessionId: string;
   permissionMode: PermissionMode;
+  /** The runtime-native setting (ADR-115). Given → the legacy projection is
+   *  derived from it; omitted → derived from \`permissionMode\`. */
+  permission?: RuntimePermission;
   template?: string;
   managerId?: UUID | null;
   project?: string;
@@ -622,7 +667,12 @@ export function buildAgent(params: {
     template: params.template,
     project: params.project,
     workingDirectory: params.workingDirectory,
-    permissionMode: params.permissionMode,
+    permission:
+      params.permission ??
+      permissionFromLegacyMode(params.provider, params.permissionMode),
+    permissionMode: params.permission
+      ? legacyModeFor(params.permission)
+      : params.permissionMode,
     status: params.status ?? "running",
     provider: params.provider,
     providerSessionId: params.providerSessionId,

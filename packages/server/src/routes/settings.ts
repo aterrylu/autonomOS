@@ -1,4 +1,10 @@
-import type { MaskedSettings } from "@autonomos/core";
+import {
+  type MaskedSettings,
+  PERMISSION_RUNTIMES,
+  type Provider,
+  parseRuntimePermission,
+  type RuntimePermission,
+} from "@autonomos/core";
 import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
@@ -6,6 +12,7 @@ import {
   type AppSettings,
   getSettings,
   isAutoDetectAccountEnabled,
+  runtimeDefaultPermission,
   updateSettings,
 } from "../settings.js";
 import { parseBody, restUpdateSettingsSchema } from "../validation.js";
@@ -28,6 +35,12 @@ function maskSettings(settings: AppSettings): MaskedSettings {
     updateCheck: settings.updateCheck !== false,
     customEnvVars: settings.customEnvVars ?? {},
     statusLine: { enabled: settings.statusLine?.enabled !== false },
+    runtimeDefaults: Object.fromEntries(
+      PERMISSION_RUNTIMES.map((r) => [
+        r,
+        runtimeDefaultPermission(r, settings),
+      ]),
+    ) as Record<Provider, RuntimePermission>,
   };
 }
 
@@ -96,6 +109,26 @@ settingsRouter.put("/", async (c) => {
       }
     }
     partial.customEnvVars = vars;
+  }
+
+  if (body.runtimeDefaults !== undefined) {
+    // Merge per runtime: naming one runtime leaves the others' defaults alone;
+    // `null` resets a runtime to the built-in default. Stored as the COMPLETE
+    // canonical values, so a later table default change can't shift it.
+    const next = { ...(getSettings().runtimeDefaults ?? {}) };
+    for (const [runtime, input] of Object.entries(body.runtimeDefaults) as [
+      Provider,
+      string | Record<string, string> | null,
+    ][]) {
+      if (input === null) {
+        delete next[runtime];
+        continue;
+      }
+      const parsed = parseRuntimePermission(runtime, input);
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+      next[runtime] = { ...parsed.permission.values };
+    }
+    partial.runtimeDefaults = next;
   }
 
   let updated: AppSettings;

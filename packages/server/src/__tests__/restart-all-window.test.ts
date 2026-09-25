@@ -48,7 +48,7 @@ const base = {
   ...codexProvider,
   resolveBinary: () => process.execPath,
   hasResumableThread: undefined,
-  resumedThreadMode: undefined,
+  resumedThreadPermission: undefined,
 } satisfies Partial<AgentProvider>;
 
 // A daemon that ignores SIGTERM holds restart-all in its wait (~2s).
