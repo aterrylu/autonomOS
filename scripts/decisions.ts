@@ -854,8 +854,10 @@ export function renumber(root: string, fileArg: string): string {
     tracked = false;
   }
   // A tracked file must move in the index too, or the commit would lose it; surface git's error.
-  if (tracked) git(root, ["mv", from, join(DECISIONS_DIR, target)]);
-  else renameSync(join(dir, file), join(dir, target));
+  if (tracked) {
+    git(root, ["mv", from, join(DECISIONS_DIR, target)]);
+    git(root, ["add", join(DECISIONS_DIR, target)]); // stage the header rewrite with the move
+  } else renameSync(join(dir, file), join(dir, target));
   return relPath(target);
 }
 
