@@ -66,7 +66,12 @@ describe("starting prompt delivery — no manual keystrokes", {
   const workdir = mkdtempSync(join(tmpdir(), "autonomos-prompt-cwd-"));
 
   before(async () => {
-    mock = await startMockAnthropic({ mode: "text", text: "Done." });
+    // Held: the test inspects the agent mid-turn, then releases the reply.
+    mock = await startMockAnthropic({
+      mode: "text",
+      text: "Done.",
+      holdResponses: true,
+    });
     server = await bootServer({
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
@@ -113,40 +118,63 @@ describe("starting prompt delivery — no manual keystrokes", {
     );
     assert.equal(status, 201, "POST /api/agents must create the agent");
 
-    // The full receipt chain, hands-off: SessionStart proves the hook relay,
-    // UserPromptSubmit proves the prompt was SUBMITTED (the bug was exactly
-    // this event never firing), Stop proves the turn ran to completion
-    // against the mock. lastEvent is a moving cursor, so wait for the
-    // terminal state of the turn rather than each intermediate event.
-    const turnCompleted = await waitFor(
-      async () => {
-        const s = await getHookStatus(agent.id);
-        return s.lastEvent === "Stop" || s.status === "idle";
-      },
-      { timeoutMs: TURN_TIMEOUT_MS },
-    );
-    const finalState = await getHookStatus(agent.id);
+    // Ground truth first: the prompt TEXT reached the model backend. That
+    // can only happen if the prompt was actually submitted into the session,
+    // with no keystroke. Waiting on this, not on the final hook status, keeps
+    // the test independent of hook arrival order (the old wait on Stop|idle
+    // failed under concurrent boots when async hooks landed out of order).
+    const promptReachedModel = () =>
+      mock.requests.some(
+        (r) =>
+          r.method === "POST" &&
+          r.url.includes("/v1/messages") &&
+          !r.url.includes("count_tokens") &&
+          JSON.stringify(r.body ?? {}).includes(PROMPT_MARKER),
+      );
+    const submitted = await waitFor(async () => promptReachedModel(), {
+      timeoutMs: TURN_TIMEOUT_MS,
+    });
+    const atSubmit = await getHookStatus(agent.id);
     assert.ok(
-      turnCompleted,
-      `the starting prompt must execute WITHOUT any manual keystroke ` +
-        `(last hook event: "${finalState.lastEvent}", status: "${finalState.status}"). ` +
+      submitted,
+      `the starting prompt must reach the model WITHOUT any manual keystroke ` +
+        `(last hook event: "${atSubmit.lastEvent}", status: "${atSubmit.status}"). ` +
         `If this fails, prompt delivery regressed — the agent is sitting at an ` +
         `empty input box again.\nServer logs:\n${server.logs()}`,
     );
 
-    // The strongest receipt: the prompt TEXT reached the model backend. This
-    // can only happen if the prompt was actually submitted into the session.
-    const sawMarker = mock.requests.some(
-      (r) =>
-        r.method === "POST" &&
-        r.url.includes("/v1/messages") &&
-        !r.url.includes("count_tokens") &&
-        JSON.stringify(r.body ?? {}).includes(PROMPT_MARKER),
+    // The mock is holding its reply, so the turn is frozen mid-flight: Stop
+    // cannot have fired. UserPromptSubmit is a SYNCHRONOUS hook (claude-code
+    // ORDERED_HOOK_EVENTS), so Claude Code waited for it to land before making
+    // this model call. The server has therefore already recorded it, and it is
+    // the latest event. With async turn hooks this could read SessionStart.
+    // Read once, no grace window: a synchronous hook's curl has returned, so
+    // the server finished ingesting it, before Claude Code made this call.
+    const midTurn = await getHookStatus(agent.id);
+    assert.equal(
+      midTurn.lastEvent,
+      "UserPromptSubmit",
+      `UserPromptSubmit must already be recorded when the model call is made ` +
+        `(status: "${midTurn.status}") — the turn hooks must be synchronous ` +
+        `so they arrive in order.`,
     );
+    assert.equal(midTurn.status, "working");
+
+    // Release the reply; the turn completes and Stop lands after UPS.
+    mock.release();
+    const turnCompleted = await waitFor(
+      async () => {
+        const st = await getHookStatus(agent.id);
+        return st.lastEvent === "Stop" && st.status === "idle";
+      },
+      { timeoutMs: 60_000 },
+    );
+    const finalState = await getHookStatus(agent.id);
     assert.ok(
-      sawMarker,
-      "the starting prompt text must appear in a /v1/messages request body — " +
-        "proves the exact prompt (argv or re-delivered) reached the model",
+      turnCompleted,
+      `after the reply, the agent must end idle on Stop ` +
+        `(last hook event: "${finalState.lastEvent}", status: "${finalState.status}").\n` +
+        `Server logs:\n${server.logs()}`,
     );
 
     // The fallback must NOT have been needed: re-delivery pushes a
