@@ -53,6 +53,7 @@ import {
   trackChannelServerRegistration,
 } from "./channelServerCheck.js";
 import { enrichAgent } from "./enrich.js";
+import { noteFreshStart } from "./freshStarts.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -1136,6 +1137,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       console.info(
         `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
+      if (oldSessionId) noteFreshStart(agent.id, "session", oldSessionId);
       pendingNotices.push(
         `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
       );
@@ -1158,6 +1160,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
     resolved.providerThreadId = undefined;
     startedFreshThread = true;
+    noteFreshStart(agent.id, "thread", oldThread);
     pendingNotices.push(
       `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
     );

@@ -21,6 +21,7 @@
 // this runs in the NEW daemon and waits for that "done" before writing, so
 // the two writers never race on the file (read-merge-write, atomic).
 
+import { wasFreshStart } from "./agents/freshStarts.js";
 import { listAgents } from "./agents/store.js";
 import { listSnapshots, type SnapshotAgent } from "./snapshots.js";
 import {
@@ -36,6 +37,7 @@ import { getServerVersion } from "./version.js";
 export function verifyAgainstBaseline(
   baseline: SnapshotAgent[],
   live: ReturnType<typeof listAgents>,
+  isFreshStart: typeof wasFreshStart = wasFreshStart,
 ): UpgradeVerification["problems"] {
   const byId = new Map(live.map((a) => [a.id, a]));
   const problems: UpgradeVerification["problems"] = [];
@@ -49,7 +51,13 @@ export function verifyAgainstBaseline(
       });
       continue;
     }
-    if (b.providerSessionId && a.providerSessionId !== b.providerSessionId) {
+    // An agent that never conversed had nothing saved, so its resume started
+    // fresh under a new id — nothing was lost (agents/freshStarts.ts).
+    if (
+      b.providerSessionId &&
+      a.providerSessionId !== b.providerSessionId &&
+      !isFreshStart(b.id, "session", b.providerSessionId)
+    ) {
       problems.push({
         id: b.id,
         name: b.name,
@@ -57,7 +65,11 @@ export function verifyAgainstBaseline(
       });
       continue;
     }
-    if (b.providerThreadId && a.providerThreadId !== b.providerThreadId) {
+    if (
+      b.providerThreadId &&
+      a.providerThreadId !== b.providerThreadId &&
+      !isFreshStart(b.id, "thread", b.providerThreadId)
+    ) {
       problems.push({
         id: b.id,
         name: b.name,

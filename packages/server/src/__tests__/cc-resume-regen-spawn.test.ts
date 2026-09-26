@@ -36,6 +36,7 @@ setInternalSocketPath(
   join(tmpdir(), `aos-rg-${randomUUID().slice(0, 8)}.sock`),
 );
 const { spawnAgent, killAttachment } = await import("../agents/runtime.js");
+const { wasFreshStart } = await import("../agents/freshStarts.js");
 const { _setProviderForTesting } = await import("../providers/index.js");
 const { claudeCodeProvider } = await import("../providers/claude-code.js");
 const {
@@ -138,6 +139,9 @@ describe("CC reattach pre-flight (ADR-111)", () => {
       ),
       "fresh-start notice pushed",
     );
+    // …and the post-update verifier is told this id was never saved, so it
+    // won't report a lost conversation (ADR-105).
+    assert.ok(wasFreshStart(id, "session", old as string));
   });
 
   it("resumable → --resume with the SAME id (unchanged)", async () => {
@@ -149,6 +153,7 @@ describe("CC reattach pre-flight (ADR-111)", () => {
     assert.equal(argv?.resumeSessionId, old);
     assert.equal(argv?.providerSessionId, old);
     assert.equal(getAgent(id)?.providerSessionId, old);
+    assert.equal(wasFreshStart(id, "session", old as string), false);
   });
 
   it("the probe receives the CHILD's final env (so a preset-relocated CLAUDE_CONFIG_DIR is honored)", async () => {

@@ -16,6 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Hono } from "hono";
+import {
+  _resetFreshStartsForTesting,
+  noteFreshStart,
+} from "../agents/freshStarts.js";
 import { _resetCacheForTesting, listAgents } from "../agents/store.js";
 import {
   _resetConfigDirForTesting,
@@ -337,6 +341,23 @@ describe("verifyAgainstBaseline", () => {
       live({ a: { status: "exited", exitReason: "resume-failed" } }),
     );
     assert.match(p2[0].issue, /didn't come back.*resume-failed/);
+  });
+  it("a never-conversed agent that the runtime started fresh is NOT a problem (session and thread)", () => {
+    _resetFreshStartsForTesting();
+    const changed = live({
+      a: { providerSessionId: "fresh-a" },
+      c: { providerThreadId: "fresh-t" },
+    });
+    // Without the runtime's record, both look like lost conversations.
+    assert.equal(verifyAgainstBaseline(base, changed).length, 2);
+    noteFreshStart("a", "session", "s-a");
+    noteFreshStart("c", "thread", "t-c");
+    assert.deepEqual(verifyAgainstBaseline(base, changed), []);
+    // Keyed by the EXACT old id: a fresh start of some other id excuses nothing.
+    _resetFreshStartsForTesting();
+    noteFreshStart("a", "session", "some-other-id");
+    assert.equal(verifyAgainstBaseline(base, changed).length, 2);
+    _resetFreshStartsForTesting();
   });
   it("an agent that was already exited before the update isn't expected to be running", () => {
     assert.deepEqual(
