@@ -951,7 +951,13 @@ function useCollapsedTeams(): [ReadonlySet<string>, (id: string) => void] {
 
 // ── Main Panel ───────────────────────────────────────────────────
 
-export function HierarchyPanel() {
+export function HierarchyPanel({
+  visible = true,
+}: {
+  /** Dockview visibility. Leaving the pane (another tab over it) closes the
+   *  inspector; a canvas click does not (Terry's call). */
+  visible?: boolean;
+} = {}) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const tokens = useMemo(() => orgChartTokens(page), [page]);
@@ -1026,6 +1032,13 @@ export function HierarchyPanel() {
   const selected = selectedId
     ? flatRoots.find((f) => f.node.id === selectedId)
     : undefined;
+  // Leaving the pane closes the inspector: dockview keeps this panel mounted
+  // while another tab covers it, so a selection would otherwise linger unseen.
+  useEffect(() => {
+    if (visible) return;
+    setSelectedId(null);
+    setEngaged(false);
+  }, [visible]);
   // A selection whose agent left the drawn tree (deleted, or hidden by the
   // exited toggle) clears itself.
   useEffect(() => {

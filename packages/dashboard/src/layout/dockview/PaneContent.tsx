@@ -126,7 +126,7 @@ export function PaneContent(props: IDockviewPanelProps<PaneParams>) {
       case "session":
         return <SessionPane sessionId={pane.id} visible={visible} />;
       case "orgchart":
-        return <HierarchyPanel />;
+        return <HierarchyPanel visible={visible} />;
       case "templates":
         return <TemplatesPanel />;
       case "schedules":

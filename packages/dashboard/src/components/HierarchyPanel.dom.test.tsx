@@ -503,12 +503,35 @@ describe("selection + inspector", () => {
     outside.remove();
   });
 
-  it("clicking empty canvas clears the selection", async () => {
+  it("the inspector STICKS: clicks on empty canvas don't close it (Terry)", async () => {
     fleet();
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
     fireEvent.click(card("R1") as HTMLElement);
     fireEvent.click(document.querySelector("[data-org-stage]") as HTMLElement);
+    fireEvent.click(
+      document.querySelector("[data-org-viewport]") as HTMLElement,
+    );
+    expect(inspector()?.dataset.orgInspector).toBe("R1");
+    // Another card switches it; the × closes it.
+    fireEvent.click(card("O1") as HTMLElement);
+    expect(inspector()?.dataset.orgInspector).toBe("O1");
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
+    expect(inspector()).toBeNull();
+  });
+
+  it("leaving the pane (dockview hides it) closes the inspector", async () => {
+    fleet();
+    const { rerender } = render(<HierarchyPanel visible />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("R1") as HTMLElement);
+    expect(hasEscapeCloser()).toBe(true);
+    rerender(<HierarchyPanel visible={false} />);
+    expect(inspector()).toBeNull();
+    // Nothing on the hidden chart keeps Escape reserved.
+    expect(hasEscapeCloser()).toBe(false);
+    // Coming back shows the chart with nothing selected.
+    rerender(<HierarchyPanel visible />);
     expect(inspector()).toBeNull();
   });
 
