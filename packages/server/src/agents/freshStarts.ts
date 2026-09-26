@@ -9,6 +9,8 @@
 // The runtime's pre-flight is the only place that knows the difference (it
 // probes where the CHILD looks, with the child's env), so it records the fact
 // here and the verifier asks, instead of re-probing and guessing the env.
+// It records ONLY never-used agents (no lastActivityAt): an agent that did
+// converse and still has no saved session lost it, and must stay flagged.
 // In-memory by design: the verifier runs in the same boot that resumed.
 
 type Kind = "session" | "thread";

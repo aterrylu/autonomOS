@@ -1150,7 +1150,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       console.info(
         `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
-      if (oldSessionId) noteFreshStart(agent.id, "session", oldSessionId);
+      // Only a NEVER-USED agent's fresh start is "nothing lost" (no genuine
+      // activity ever: lastActivityAt is set only by real work). An agent that
+      // conversed and still has no saved session DID lose it — the
+      // post-update check must keep flagging that. Same rule as the notice
+      // gate in #437 (hadActivity); unify once both are on main.
+      if (oldSessionId && agent.lastActivityAt === undefined)
+        noteFreshStart(agent.id, "session", oldSessionId);
       pendingNotices.push(
         `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
       );
@@ -1173,7 +1179,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
     resolved.providerThreadId = undefined;
     startedFreshThread = true;
-    noteFreshStart(agent.id, "thread", oldThread);
+    if (agent.lastActivityAt === undefined)
+      noteFreshStart(agent.id, "thread", oldThread);
     pendingNotices.push(
       `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
     );
