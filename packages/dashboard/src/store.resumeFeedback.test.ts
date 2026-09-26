@@ -60,6 +60,22 @@ describe("resumeSession feedback", () => {
     expect(get().actionToast).toBeNull();
   });
 
+  it("an external CLAUDE CODE resume the server refuses shows the reason (the Projects row swallows the throw)", async () => {
+    stubFetch((_u, method) =>
+      method === "POST"
+        ? new Response(
+            JSON.stringify({ error: "no saved Claude Code session found" }),
+            { status: 422 },
+          )
+        : new Response("[]", { status: 200 }),
+    );
+    await get().resumeSession("cc-2", "/w", "x", { provider: "claude-code" });
+    expect(get().actionToast).toMatchObject({
+      ok: false,
+      text: "Resume failed: no saved Claude Code session found",
+    });
+  });
+
   it("a managed agent whose resume FAILS shows the server's reason", async () => {
     stubFetch((u) =>
       u.includes("/attach")
