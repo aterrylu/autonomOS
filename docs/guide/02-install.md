@@ -64,13 +64,21 @@ Stopping the service does not delete anything. autonomOS records which agents we
 
 ## Updating
 
-When a newer release exists, the bottom bar shows "Update available (v0.7.0 → v0.8.0)". Nothing updates by itself. When you want it, click **Update**:
+When a newer release exists, the bottom bar shows **Update to v0.8.0**. Nothing updates by itself. Click it to open one screen that shows:
 
-1. **What's new** — the release notes for every version since yours.
-2. **Check agents** — which agents are mid-task and what a restart would cost each one. By default autonomOS waits until every agent has been idle for 30 seconds, then updates; you can also update right away.
-3. **Update** — it saves a snapshot of your agents' setup, downloads and verifies the release, restarts, and checks that the new version starts. If it does not, it puts the old version back on its own. The page reloads onto the new version and checks that every agent came back.
+- **Your agents, live.** If they're all idle, they reopen where they left off. If one is mid-task, it's named, with what a restart would cost it.
+- **What's safe.** A snapshot of your agents, schedules, templates, presets and settings is saved first. If the new version doesn't start, autonomOS goes back to the old one on its own. You stay signed in.
+- **What's new.** The release notes for every version since yours. A breaking change is quoted at the top.
 
-Settings → Updates has **Check now** (look for a release right away) and **Restore**, which puts back the previous version together with your agents' setup from before the update. If autonomOS is not running as a service, the dialog shows the terminal command instead.
+Then pick one:
+
+- **Update and restart** when every agent is idle.
+- **Update when idle** when an agent is busy. autonomOS waits until every agent has been idle for 30 seconds, then updates. The amber pill in the bottom bar shows who it's waiting for; click it to update right away or cancel.
+- **Update now** when an agent is busy and you'd rather not wait. The button names who it interrupts.
+
+Progress shows on the same screen: Preparing, Restarting, Reopening agents. The page reloads onto the new version and confirms your agents reopened.
+
+Settings → Updates has **Check for updates** (look for a release right away), **Update…** when one is available, and **Restore v…**, which puts back the previous version together with the snapshot from before the update. If autonomOS is not running as a service, the dialog shows the terminal command instead.
 
 From a terminal, the same update:
 
