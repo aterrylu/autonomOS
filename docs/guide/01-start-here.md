@@ -25,17 +25,19 @@ It downloads autonomOS, checks the download, sets it up as a background service 
 ```
   ✓ autonomOS is running.
     Dashboard:  http://localhost:3000
-    Token:      3f9a…   ← paste this at the login screen
+    Sign in:    http://localhost:3000/#token=3f9a…   ← open this link to sign in
     Manage:     autonomos status · autonomos logs -f · autonomos restart
 ```
 
-It also opens the dashboard in your browser. If it did not, open the "Dashboard" address yourself.
+It also opens the dashboard in your browser, at the login page. Open the "Sign in" link to log in without pasting anything. The link holds your token, so treat it like a password: don't paste it into chats or tickets.
 
 If the installer stops early with "Error: Claude Code is required and was not found on PATH.", it has not downloaded anything yet: install Claude Code, run `claude` once to log in, and run the installer again. If it gets further and ends with "⚠️ autonomOS installed, but the daemon isn't responding yet", go to [Troubleshooting](07-troubleshooting.md#the-installer-says-the-daemon-isnt-responding); that message now prints the daemon's last log lines under it, which usually name the cause.
 
 ## 2. Log in
 
-The browser shows a page titled "autonomOS" with one field, "Paste token here...". Paste the token the installer printed and press Enter or click "Authenticate".
+Open the "Sign in" link the installer printed. The page shows "Signing you in…" for a moment, then the dashboard; the token is removed from the address bar, and the browser stays logged in.
+
+Or log in by hand: the login page is titled "autonomOS" and has one field, "Paste token here...". Paste the token (the part of the link after `#token=`, or the file below) and press Enter or click "Authenticate".
 
 Lost the token? It is in a file. In a terminal on the same machine:
 

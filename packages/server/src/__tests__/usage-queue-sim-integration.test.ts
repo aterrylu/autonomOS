@@ -127,8 +127,12 @@ describe("usage-queue timed simulation — real spawn auto-fire", {
     await sleep(2500);
 
     // Type the prompt into CC's input box WITHOUT submitting.
+    // Node's WebSocket (undici) accepts upgrade headers; the DOM typings don't.
     const ws = new WebSocket(
-      `ws://127.0.0.1:${server.port}/ws/terminal/${agent.id}?token=${server.token}`,
+      `ws://127.0.0.1:${server.port}/ws/terminal/${agent.id}`,
+      {
+        headers: { Authorization: `Bearer ${server.token}` },
+      } as unknown as string[],
     );
     await new Promise<void>((res, rej) => {
       ws.addEventListener("open", () => res(), { once: true });

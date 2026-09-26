@@ -2,6 +2,61 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Sign-in link (…/#token=…), the FIRST script on the page: read the
+      // token, strip it from the address bar BEFORE anything else runs (so a
+      // failed bundle load can't leave it there), then exchange it at
+      // POST /api/auth for the session cookie. The app only ever sees the
+      // result promise, never the token. A legacy ?token= is stripped too and
+      // honored for one release (deprecated). See ADR-117.
+      (function () {
+        var loc = window.location;
+        var hp = new URLSearchParams(loc.hash.slice(1));
+        var sp = new URLSearchParams(loc.search);
+        var inHash = hp.has("token");
+        if (!inHash && !sp.has("token")) return;
+        // The fragment wins over a legacy ?token=; both are stripped.
+        var token = inHash ? hp.get("token") : sp.get("token");
+        sp.delete("token");
+        var hash = loc.hash; // kept VERBATIM unless it carried the token
+        if (inHash) {
+          hp.delete("token");
+          var restHash = hp.toString();
+          hash = restHash ? "#" + restHash : "";
+        }
+        var search = sp.toString();
+        try {
+          history.replaceState(history.state, "", loc.pathname + (search ? "?" + search : "") + hash);
+        } catch (e) {
+          console.warn("[auth] could not remove the sign-in token from the address bar", e);
+        }
+        if (!inHash)
+          console.warn("[auth] a ?token= sign-in link is deprecated and stops working next release; use the #token= link");
+        window.__autonomosLinkLogin = !token
+          ? Promise.resolve({ ok: false, status: 400 })
+          : fetch("/api/auth", {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: token }),
+              // Never leave the page on "Signing you in…" forever.
+              signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined,
+            }).then(
+              function (r) { return { ok: r.ok, status: r.status }; },
+              function () { return { ok: false, status: 0 }; },
+            );
+        token = null;
+      })();
+      // A link opened in a tab ALREADY showing the dashboard is a same-document
+      // hash change: no page load, so the block above never runs and the
+      // token would sit in the address bar. Reload instead — the fragment is
+      // not sent with the request, and the fresh load takes the path above.
+      window.addEventListener("hashchange", function () {
+        var h = window.location.hash;
+        if (h.length > 1 && new URLSearchParams(h.slice(1)).has("token"))
+          window.location.reload();
+      });
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.json" />
