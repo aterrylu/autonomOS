@@ -74,21 +74,28 @@ export function formatReleaseDate(iso: string | null): string | null {
 }
 
 /** What restarting autonomOS right now costs an agent in `status`. */
-export function consequenceFor(status: string, provider?: string): string {
+export function consequenceFor(status: string, _provider?: string): string {
   switch (status) {
     case "working":
     case "compacting":
     case "orchestrating":
-      return "Turn in progress — stops mid-turn, won't resume on its own";
+      return "Its current task stops. Prompt it to continue.";
     case "tool_running":
-      return provider === "codex"
-        ? "Running a command — it is killed; the thread is kept"
-        : "Running a command — the command is killed";
+      return "Its running command stops. Prompt it to continue.";
     case "needs_input":
-      return "Its pending question is dismissed — it will need re-asking";
+      return "Its question to you is cleared. Tell it how to go on afterwards.";
     default:
-      return "Nothing lost";
+      return "Reopens where it left off";
   }
+}
+
+/** The text for an agent whose first task hasn't started yet. */
+export const FIRST_TASK_CONSEQUENCE =
+  "Its first prompt is lost. Send it again afterwards.";
+
+/** "1 agent" / "3 agents". */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** "a", "a and b", "a, b and c". */
@@ -96,6 +103,11 @@ export function joinNames(names: string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
+
+/** What a snapshot holds — one wording everywhere (mirrors the server's
+ *  SNAPSHOT_ENTRIES: agents, schedules, templates, env presets, settings). */
+export const SNAPSHOT_CONTENTS =
+  "Agents, schedules, templates, presets and settings";
 
 export interface UpdateStep {
   id: string;
@@ -120,15 +132,19 @@ export function stepsFor(
   const restart: UpdateStep = {
     id: "restart",
     label: "Restart autonomOS",
-    detail: "Agents close now and reopen after",
+    detail: "Agents close for a few seconds",
   };
-  const reopen: UpdateStep = { id: "reopen", label: "Reopen agents" };
+  const reopen: UpdateStep = {
+    id: "reopen",
+    label: "Reopen agents",
+    detail: "Each one on its conversation",
+  };
   if (mode === "rollback") {
     return [
       {
         id: "swap",
-        label: `Put back v${to}`,
-        detail: "The previous code, and its snapshot when one pairs with it",
+        label: `Restore v${to}`,
+        detail: "And the snapshot saved before you updated, when there is one",
       },
       restart,
       reopen,
@@ -136,23 +152,23 @@ export function stepsFor(
   }
   const snapshot: UpdateStep = {
     id: "snapshot",
-    label: "Save snapshot",
+    label: "Save a snapshot",
     detail: opts.snapshotId
-      ? `Agents, schedules, settings → snapshots/${opts.snapshotId}`
-      : "Agents, schedules, settings",
+      ? `${SNAPSHOT_CONTENTS} → snapshots/${opts.snapshotId}`
+      : SNAPSHOT_CONTENTS,
   };
   const tail: UpdateStep[] = [
     restart,
     {
       id: "health",
-      label: "Health check",
-      detail: `Confirm v${to} is serving, or roll back`,
+      label: `Make sure v${to} started`,
+      detail: "If it didn't, autonomOS restores the previous version",
     },
     reopen,
     {
       id: "verify-agents",
-      label: "Verify agents",
-      detail: "Every agent that was resumable still is",
+      label: "Check agents reopened",
+      detail: "Each one is back on its conversation",
     },
   ];
   // The job re-checks idle and THEN snapshots, right before the change: the
@@ -161,10 +177,10 @@ export function stepsFor(
     ? [
         {
           id: "wait",
-          label: "Wait for idle",
+          label: "Wait for agents to finish",
           detail:
             opts.waitingMessage ??
-            "Every agent idle for 30 seconds — a new turn pushes it back",
+            "Starts after every agent has been idle for 30 seconds",
         },
       ]
     : [];
@@ -173,7 +189,11 @@ export function stepsFor(
       { id: "fetch", label: `Fetch v${to}` },
       ...wait,
       snapshot,
-      { id: "build", label: "Build", detail: "Rebuilds from source (1–3 min)" },
+      {
+        id: "build",
+        label: `Build v${to}`,
+        detail: "From source, 1–3 minutes",
+      },
       ...tail,
     ];
   }
@@ -181,15 +201,15 @@ export function stepsFor(
     { id: "download", label: `Download v${to}`, detail: opts.asset },
     {
       id: "verify",
-      label: "Verify checksum",
-      detail: "SHA256 checked against the release",
+      label: "Check the download",
+      detail: "SHA-256 matched against the release",
     },
     ...wait,
     snapshot,
     {
       id: "install",
-      label: "Install",
-      detail: "Previous version kept for rollback",
+      label: `Install v${to}`,
+      detail: "The previous version is kept so you can restore it",
     },
     ...tail,
   ];
@@ -227,6 +247,123 @@ export function activeStepIndex(
   const i = id ? steps.findIndex((s) => s.id === id) : -1;
   if (phase === "done" && (verified || i === -1)) return steps.length;
   return i === -1 ? 0 : i;
+}
+
+// ── the three honest stages (what the dialog shows) ──────────────────────
+
+/** 0 Preparing · 1 Restarting · 2 Reopening agents. Everything the job does
+ *  before the swap is one stage: its sub-steps fly by too fast to follow
+ *  (the fine-grained list lives behind "Show details"). */
+export type Stage = 0 | 1 | 2;
+
+export function stageFor(phase: UpgradePhase | undefined): Stage {
+  switch (phase) {
+    case "restarting":
+    case "health_check":
+      return 1;
+    case "done":
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+/** One line for what the job is doing right now, inside its stage. */
+export function stageDetail(
+  phase: UpgradePhase | undefined,
+  to: string,
+  opts: { rollback?: boolean; message?: string } = {},
+): string {
+  switch (phase) {
+    case "fetching":
+      return `Fetching v${to}`;
+    case "downloading":
+      return `Downloading v${to}`;
+    case "verifying":
+      return "Checking the download";
+    case "waiting_idle":
+      return opts.message ?? "Waiting for agents to finish";
+    case "snapshotting":
+      return "Saving a snapshot";
+    case "installing":
+      return opts.rollback
+        ? `Putting v${to} back in place`
+        : `Installing v${to}`;
+    case "building":
+      return "Building from source (1–3 minutes)";
+    case "restarting":
+      return "Agents close for a few seconds";
+    case "health_check":
+      return `Making sure v${to} started`;
+    case "done":
+      return "Each agent reopens on its conversation";
+    default:
+      return "Starting…";
+  }
+}
+
+// ── the breaking-change sentence, quoted instead of pointed at ───────────
+
+const EMOJI = /\p{Extended_Pictographic}\uFE0F?/gu;
+
+/** Markdown line → plain text: links keep their text, markers go. */
+function plainText(line: string): string {
+  return line
+    .replace(/^\s*(?:[-*+]|\d+\.|>)\s+/, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|`)/g, "")
+    .replace(EMOJI, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function firstSentence(text: string): string {
+  const t = text.replace(/\s*\([^)]*\)/g, "").trim();
+  const m = /^(.+?[.!?])(\s|$)/.exec(t);
+  const out = (m ? m[1] : t).trim();
+  return out.length > 220 ? `${out.slice(0, 217).trimEnd()}…` : out;
+}
+
+const endWithPeriod = (t: string) => (/[.!?…]$/.test(t) ? t : `${t}.`);
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
+/** The breaking change itself, as one or two plain sentences — so the
+ *  callout can say WHAT changed instead of "look for it below". Handles a
+ *  `## Breaking change` heading (the bullets under it) and an inline
+ *  "… Breaking change, <context>: <what> …" bullet. Null when none. */
+export function breakingSummary(body: string): string | null {
+  const lines = body.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/breaking change/i.test(line)) continue;
+    if (/^\s*#{1,6}\s/.test(line)) {
+      const items: string[] = [];
+      for (let j = i + 1; j < lines.length && items.length < 2; j++) {
+        if (/^\s*#{1,6}\s/.test(lines[j])) break;
+        const t = plainText(lines[j]);
+        if (t) items.push(endWithPeriod(cap(firstSentence(t))));
+      }
+      if (items.length) return items.join(" ");
+      continue;
+    }
+    // A bold lead-in names the change ("**#360 — Old API routes removed.**").
+    const bold = /\*\*(.+?)\*\*/.exec(line)?.[1];
+    const title = bold
+      ? plainText(bold)
+          .replace(/^#?\d+\s*[—–-]\s*/, "")
+          .replace(/[.:]$/, "")
+      : null;
+    const flat = plainText(line);
+    const after = /breaking change[^:]*:\s*(.+)/i.exec(flat)?.[1];
+    const what = after
+      ? cap(firstSentence(after))
+      : firstSentence(flat.replace(/^.*?breaking change[.:,]?\s*/i, "")) ||
+        null;
+    if (title && what && !/breaking change/i.test(title))
+      return `${title}: ${what.charAt(0).toLowerCase()}${what.slice(1)}`;
+    if (what) return cap(what);
+  }
+  return null;
 }
 
 // ── post-reload "Updated" flag ────────────────────────────────────────────

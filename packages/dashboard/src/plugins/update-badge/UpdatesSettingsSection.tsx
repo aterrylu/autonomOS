@@ -14,7 +14,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { type SystemSnapshots, systemApi } from "../../api/system";
 import { THEMES, useStore } from "../../store";
-import { GREEN } from "./UpdateDialog";
+import { accentsFor } from "./UpdateDialog";
 import { useUpdateBus } from "./updateBus";
 import {
   formatBytes,
@@ -27,15 +27,18 @@ const KEPT = 5;
 
 export function UpdatesSettingsSection({
   updateCheckToggle,
-  onRestore,
+  onHandOff,
 }: {
   /** The existing Update Check toggle row. */
   updateCheckToggle: ReactNode;
-  /** Called after a Restore was requested (the panel closes itself). */
-  onRestore: () => void;
+  /** Called after this section hands off to the update dialog (Restore or
+   *  Update…): the settings panel closes itself. */
+  onHandOff: () => void;
 }) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const { green: GREEN, blue: BLUE } = accentsFor(page.bg);
+  const requestOpen = useUpdateBus((s) => s.requestOpen);
   const requestRestore = useUpdateBus((s) => s.requestRestore);
   const refreshVersion = useUpdateBus((s) => s.refreshVersion);
   type Check =
@@ -53,6 +56,7 @@ export function UpdatesSettingsSection({
         latest: r.latest,
         available: r.updateAvailable,
       });
+      setOffer(r.updateAvailable && r.latest ? r.latest : null);
       // The status-bar pill reads /api/system/version on its own cadence —
       // nudge it so a found update shows up right away.
       refreshVersion();
@@ -64,6 +68,8 @@ export function UpdatesSettingsSection({
     }
   };
   const [version, setVersion] = useState<string | null>(null);
+  /** The server's cached answer, so an available update shows here too. */
+  const [offer, setOffer] = useState<string | null>(null);
   const [data, setData] = useState<SystemSnapshots | null>(null);
   const [error, setError] = useState(false);
 
@@ -71,7 +77,10 @@ export function UpdatesSettingsSection({
     const ctrl = new AbortController();
     systemApi
       .version({ signal: ctrl.signal })
-      .then((v) => setVersion(v.version))
+      .then((v) => {
+        setVersion(v.version);
+        if (v.updateAvailable && v.latest) setOffer(v.latest);
+      })
       .catch(() => {});
     systemApi
       .snapshots({ signal: ctrl.signal })
@@ -110,23 +119,40 @@ export function UpdatesSettingsSection({
           style={label}
           data-testid="settings-check-result"
         >
-          {check.kind === "checking" && "Checking GitHub…"}
-          {check.kind === "done" &&
-            (check.available && check.latest
-              ? `v${check.latest} is available — Update is in the status bar`
-              : "You're on the latest version")}
+          {check.kind === "checking" && "Checking…"}
+          {check.kind !== "checking" &&
+            check.kind !== "error" &&
+            (offer
+              ? `v${offer} is available`
+              : check.kind === "done" && "You're on the latest version")}
           {check.kind === "error" && `Couldn't check: ${check.message}`}
         </span>
-        <button
-          type="button"
-          className="shrink-0 cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium hover:brightness-110 disabled:opacity-60"
-          style={{ border: `1px solid ${page.border}`, color: page.fg }}
-          onClick={() => void checkNow()}
-          disabled={check.kind === "checking"}
-          data-testid="settings-check-now"
-        >
-          Check now
-        </button>
+        <span className="flex shrink-0 gap-1.5">
+          {offer && check.kind !== "checking" && (
+            <button
+              type="button"
+              className="cursor-pointer rounded px-2 py-0.5 text-[11px] font-semibold hover:brightness-110"
+              style={{ border: `1px solid ${BLUE}`, color: BLUE }}
+              onClick={() => {
+                requestOpen();
+                onHandOff();
+              }}
+              data-testid="settings-open-update"
+            >
+              Update…
+            </button>
+          )}
+          <button
+            type="button"
+            className="cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium hover:brightness-110 disabled:opacity-60"
+            style={{ border: `1px solid ${page.border}`, color: page.fg }}
+            onClick={() => void checkNow()}
+            disabled={check.kind === "checking"}
+            data-testid="settings-check-now"
+          >
+            {check.kind === "checking" ? "Checking…" : "Check for updates"}
+          </button>
+        </span>
       </div>
       {updateCheckToggle}
 
@@ -134,7 +160,7 @@ export function UpdatesSettingsSection({
         className="text-[10px] font-medium uppercase tracking-wide pt-1"
         style={label}
       >
-        Snapshots · kept: last {KEPT}
+        Snapshots
       </div>
       {error ? (
         <div className="text-[10px]" style={label}>
@@ -178,7 +204,7 @@ export function UpdatesSettingsSection({
                         className="rounded px-1 text-[9px]"
                         style={{ color: GREEN, border: `1px solid ${GREEN}66` }}
                       >
-                        latest
+                        newest
                       </span>
                     )}
                   </span>
@@ -193,11 +219,11 @@ export function UpdatesSettingsSection({
                     style={{ background: page.border, color: page.fg }}
                     onClick={() => {
                       requestRestore();
-                      onRestore();
+                      onHandOff();
                     }}
                     data-testid="settings-restore"
                   >
-                    Restore
+                    Restore v{data?.rollback?.version}
                   </button>
                 )}
               </li>
@@ -206,11 +232,9 @@ export function UpdatesSettingsSection({
         </ul>
       )}
       <div className="text-[10px]" style={label}>
-        Restore is offered on the snapshot that pairs with the previous version
-        kept on disk. Older ones are kept for manual recovery — see{" "}
-        <span className="font-mono">autonomos snapshots list</span>. Stored in
-        your autonomOS config folder under{" "}
-        <span className="font-mono">snapshots/</span>.
+        The last {KEPT} are kept. autonomOS keeps one previous version, so only
+        its snapshot can be restored here; older ones can be recovered from a
+        terminal (<span className="font-mono">autonomos snapshots list</span>).
       </div>
     </div>
   );

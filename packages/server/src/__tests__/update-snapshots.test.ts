@@ -319,7 +319,7 @@ describe("verifyAgainstBaseline", () => {
     );
     assert.deepEqual(
       p.map((x) => [x.name, x.issue]),
-      [["codex-tests", "Its Codex thread id is missing from its record"]],
+      [["codex-tests", "Its Codex conversation is missing from its record"]],
     );
   });
   it("missing record, changed session id, and didn't-come-back are each reported", () => {
@@ -330,7 +330,7 @@ describe("verifyAgainstBaseline", () => {
     assert.equal(p.length, 2);
     assert.match(
       p.find((x) => x.id === "a")?.issue ?? "",
-      /conversation id changed/,
+      /came back on a different conversation/,
     );
     assert.match(
       p.find((x) => x.id === "c")?.issue ?? "",

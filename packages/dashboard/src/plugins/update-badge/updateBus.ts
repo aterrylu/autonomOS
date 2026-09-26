@@ -17,6 +17,9 @@ interface UpdateBus {
    *  version it will actually install. */
   versionNonce: number;
   refreshVersion: () => void;
+  /** Bumped by Settings → Updates' "Update…": open the update dialog. */
+  openNonce: number;
+  requestOpen: () => void;
 }
 
 export const useUpdateBus = create<UpdateBus>((set) => ({
@@ -24,4 +27,6 @@ export const useUpdateBus = create<UpdateBus>((set) => ({
   requestRestore: () => set((s) => ({ restoreNonce: s.restoreNonce + 1 })),
   versionNonce: 0,
   refreshVersion: () => set((s) => ({ versionNonce: s.versionNonce + 1 })),
+  openNonce: 0,
+  requestOpen: () => set((s) => ({ openNonce: s.openNonce + 1 })),
 }));

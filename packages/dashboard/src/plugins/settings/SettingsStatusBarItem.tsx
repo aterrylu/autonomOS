@@ -668,7 +668,7 @@ export function SettingsPanel({
                 (unchanged behavior, rendered inside the section) and the
                 kept snapshots with the in-app Restore. */}
             <UpdatesSettingsSection
-              onRestore={onClose}
+              onHandOff={onClose}
               updateCheckToggle={
                 <>
                   <div className="flex items-center justify-between">

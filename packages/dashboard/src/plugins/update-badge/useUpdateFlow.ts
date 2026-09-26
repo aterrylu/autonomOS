@@ -4,6 +4,9 @@
  * Two independent axes:
  *  - `view`     — which modal screen is showing (or "closed"). Purely UI;
  *                 closing it never affects a run (the job runs on the server).
+ *                 `confirm` is the one decision screen (notes, the live agent
+ *                 check and the buttons together); `waiting` is an armed
+ *                 wait-for-idle, reopened from the amber pill.
  *  - `tracking` — what we are following on the server:
  *      none         nothing scheduled or running
  *      armed        waiting-for-idle; poll GET /api/system/upgrade (~2s)
@@ -41,8 +44,8 @@ export const updateTiming = {
 
 export type FlowView =
   | "closed"
-  | "notes"
-  | "check"
+  | "confirm"
+  | "waiting"
   | "notSupervised"
   | "updating"
   | "failed"
@@ -160,11 +163,18 @@ export function useUpdateFlow(enabled: boolean) {
             setRecord({
               ...rec,
               phase: "failed",
-              message: `The ${rec.kind === "rollback" ? "restore" : "update"} job stopped reporting at "${rec.phase}". It may have died on the host — check autonomos status there.`,
+              message: `The ${rec.kind === "rollback" ? "restore" : "update"} stopped responding (last step: ${rec.phase}). Run autonomos status on the machine running autonomOS.`,
             });
             setTracking("none");
             setReconnectStart(null);
             setView("failed");
+            return;
+          }
+          // Post-restart, the new daemon is up but not yet proven: still part
+          // of "Restarting", so the overlay stays up until the reload instead
+          // of flashing away and leaving a spinner behind it.
+          if (rec.phase === "health_check") {
+            enterReconnect();
             return;
           }
           // A live pre-restart phase answered: we're connected. A blip that
@@ -294,7 +304,7 @@ export function useUpdateFlow(enabled: boolean) {
     };
   }, [tracking, isOurs, handleRecord]);
 
-  // ── check screen ──
+  // ── the confirm screen's live agent check ──
   const loadCheck = useCallback(async (quiet = false) => {
     if (!quiet) {
       setUpgrade(null);
@@ -317,14 +327,15 @@ export function useUpdateFlow(enabled: boolean) {
 
   // Keep the busy list live while the operator is deciding.
   useEffect(() => {
-    if (view !== "check") return;
+    if (view !== "confirm") return;
     const id = setInterval(() => void loadCheck(true), updateTiming.pollMs);
     return () => clearInterval(id);
   }, [view, loadCheck]);
 
-  const goCheck = useCallback(() => {
+  /** Open (or return to) the decision screen with a fresh agent check. */
+  const review = useCallback(() => {
     setActionError(null);
-    setView("check");
+    setView("confirm");
     void loadCheck();
   }, [loadCheck]);
 
@@ -340,7 +351,7 @@ export function useUpdateFlow(enabled: boolean) {
         if ("armed" in r) {
           setUpgrade((u) => (u ? { ...u, armed: r.armed } : u));
           setTracking("armed");
-          setView("closed");
+          setView("waiting");
         } else {
           setRecord(null);
           setTracking("running");
@@ -357,17 +368,17 @@ export function useUpdateFlow(enabled: boolean) {
           setTracking("running");
           setView("updating");
         } else if (code === "NO_UPDATE") {
-          setActionError("autonomOS is already up to date.");
-          setView((v) => (v === "closed" ? "check" : v));
+          setActionError("You're already on the latest version.");
+          setView((v) => (v === "closed" ? "confirm" : v));
         } else if (code === "VERSION_CHANGED") {
           // A newer release appeared since the notes were shown: show ITS
           // notes (the notes screen refetches on mount) before any install.
           setActionError(errText(err));
           useUpdateBus.getState().refreshVersion();
-          setView("notes");
+          setView("confirm");
         } else {
           setActionError(errText(err));
-          setView((v) => (v === "closed" ? "check" : v));
+          setView((v) => (v === "closed" ? "confirm" : v));
         }
       } finally {
         setPending(false);
@@ -382,6 +393,7 @@ export function useUpdateFlow(enabled: boolean) {
       await systemApi.cancelUpgrade();
       setUpgrade((u) => (u ? { ...u, armed: null } : u));
       setTracking("none");
+      setView("closed");
     } catch (err) {
       if (err instanceof ApiError && err.code === "LAUNCHED") {
         // The idle window closed first: the update is already running —
@@ -392,7 +404,7 @@ export function useUpdateFlow(enabled: boolean) {
         setView("updating");
         return;
       }
-      setActionError(`Couldn't cancel: ${errText(err)}`);
+      setActionError(`Couldn't cancel the scheduled update: ${errText(err)}`);
     }
   }, []);
 
@@ -446,9 +458,15 @@ export function useUpdateFlow(enabled: boolean) {
   }, [restore]);
 
   const open = useCallback(() => {
-    setActionError(null);
-    setView(tracking === "running" ? "updating" : "notes");
-  }, [tracking]);
+    if (tracking === "running" || tracking === "reconnecting") {
+      setActionError(null);
+      setView("updating");
+    } else if (tracking === "armed") {
+      setView("waiting");
+    } else {
+      review();
+    }
+  }, [tracking, review]);
 
   const close = useCallback(() => setView("closed"), []);
 
@@ -466,7 +484,7 @@ export function useUpdateFlow(enabled: boolean) {
     gaveUp: tracking === "reconnecting" && elapsedMs >= updateTiming.giveUpMs,
     open,
     close,
-    goCheck,
+    review,
     restore,
     terminalFor,
     openRestore,

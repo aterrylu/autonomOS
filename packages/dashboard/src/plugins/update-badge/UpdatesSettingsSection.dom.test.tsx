@@ -71,7 +71,7 @@ async function renderSection(onRestore = vi.fn()) {
   await act(async () => {
     render(
       <UpdatesSettingsSection
-        onRestore={onRestore}
+        onHandOff={onRestore}
         updateCheckToggle={<div data-testid="toggle-slot" />}
       />,
     );
@@ -112,6 +112,10 @@ describe("UpdatesSettingsSection", () => {
       "false",
     ]);
     expect(screen.getAllByTestId("settings-restore")).toHaveLength(1);
+    // It names the version it lands on — after a Restore that can be FORWARD.
+    expect(screen.getByTestId("settings-restore").textContent).toMatch(
+      /^Restore v\d/,
+    );
     expect(rows[1].contains(screen.getByTestId("settings-restore"))).toBe(true);
 
     const before = useUpdateBus.getState().restoreNonce;
@@ -126,15 +130,19 @@ describe("UpdatesSettingsSection", () => {
     expect(screen.getAllByTestId("settings-snapshot")).toHaveLength(4);
     expect(screen.queryByTestId("settings-restore")).toBeNull();
   });
-  it("Check now runs the check, says what it found, and nudges the status-bar pill", async () => {
+  it("Check for updates runs the check, says what it found, nudges the pill, and offers Update… right here", async () => {
     await renderSection();
     const before = useUpdateBus.getState().versionNonce;
     await act(async () => {
       fireEvent.click(screen.getByTestId("settings-check-now"));
     });
     expect(screen.getByTestId("settings-check-result").textContent).toBe(
-      "v0.7.2 is available — Update is in the status bar",
+      "v0.7.2 is available",
     );
     expect(useUpdateBus.getState().versionNonce).toBe(before + 1);
+    // "Update…" opens the same dialog as the pill and closes the panel.
+    const openBefore = useUpdateBus.getState().openNonce;
+    fireEvent.click(screen.getByTestId("settings-open-update"));
+    expect(useUpdateBus.getState().openNonce).toBe(openBefore + 1);
   });
 });

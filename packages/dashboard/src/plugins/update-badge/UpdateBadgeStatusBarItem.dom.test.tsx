@@ -18,8 +18,8 @@ import { updateTiming } from "./useUpdateFlow";
  * UpdateBadgeStatusBarItem — the update pill + the in-app update flow
  * (ADR-105). The pill reads the server's cached update-check answer off
  * /api/system/version and renders only when an update is known; clicking it
- * walks What's new → Check agents → Update, then follows the server-side job
- * through the restart gap.
+ * opens ONE decision screen (notes + a live agent check + the buttons), then
+ * follows the server-side job through the restart gap on the same surface.
  *
  * The server is faked at the fetch boundary with REAL Response objects (the
  * api client core parses res.text()).
@@ -120,11 +120,22 @@ async function renderPill() {
   return screen.findByTestId("update-badge");
 }
 
-async function openToCheck() {
+/** Click the pill: the decision screen opens and starts its agent check. */
+async function openDialog() {
   fireEvent.click(await renderPill());
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Next: check agents →" }),
-  );
+}
+
+/** The Update button stays disabled until the agent check has answered —
+ *  never offer a restart before knowing who it would interrupt. */
+async function startButton(): Promise<HTMLElement> {
+  // Re-query each time: when the check lands the button can be a different
+  // element ("Update and restart" → "Update when idle").
+  let btn: HTMLElement | null = null;
+  await waitFor(() => {
+    btn = screen.getByTestId("update-start");
+    expect(btn).not.toBeDisabled();
+  });
+  return btn as unknown as HTMLElement;
 }
 
 const saved = { ...updateTiming };
@@ -150,11 +161,11 @@ afterEach(() => {
 });
 
 describe("UpdateBadgeStatusBarItem — the pill", () => {
-  it("renders the pill with an Update affordance and never calls anywhere but /api/system", async () => {
+  it("renders one 'Update to vX' pill and never calls anywhere but /api/system", async () => {
     installServer();
     const badge = await renderPill();
-    expect(badge.textContent).toContain("Update available (v0.6.1 → v0.7.0)");
-    expect(badge.textContent).toContain("Update");
+    expect(badge.textContent).toBe("Update to v0.7.0");
+    expect(badge.getAttribute("title")).toContain("You're on v0.6.1");
     // No icon, no GitHub link on the pill itself.
     expect(badge.querySelector("svg")).toBeNull();
     expect(badge.querySelector("a")).toBeNull();
@@ -208,18 +219,108 @@ describe("UpdateBadgeStatusBarItem — the pill", () => {
   });
 });
 
-describe("UpdateBadgeStatusBarItem — What's new", () => {
-  it("clicking the pill opens the modal (not GitHub); GitHub moves to the footer", async () => {
+describe("UpdateBadgeStatusBarItem — the decision screen", () => {
+  it("clicking the pill opens 'Update autonomOS to vX' (not GitHub), named by its heading", async () => {
     installServer();
     fireEvent.click(await renderPill());
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog");
     expect(
-      screen.getByText("Update available: v0.6.1 → v0.7.0"),
+      screen.getByRole("heading", { name: "Update autonomOS to v0.7.0" }),
     ).toBeInTheDocument();
-    const gh = screen.getByTestId("update-github-link");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("update-dialog-title");
+    expect(screen.getByTestId("update-subtitle").textContent).toContain(
+      "You're on v0.6.1",
+    );
+    const gh = await screen.findByTestId("update-github-link");
     expect(gh.getAttribute("href")).toBe(VERSION.releaseUrl);
     expect(gh.getAttribute("target")).toBe("_blank");
-    expect(gh.textContent).toBe("Full notes on GitHub");
+    expect(gh.textContent).toContain("Full release notes");
+    // No "Next": the decision and its button are on this first screen.
+    expect(screen.queryByRole("button", { name: /next/i })).toBeNull();
+    expect((await startButton()).textContent).toBe("Update and restart");
+  });
+
+  it("never offers the restart before the agent check has answered", async () => {
+    let answer: (r: Response) => void = () => {};
+    installServer({
+      "GET /api/system/upgrade": () =>
+        new Promise<Response>((r) => {
+          answer = r;
+        }),
+    });
+    await openDialog();
+    const agents = await screen.findByTestId("update-agents");
+    expect(agents.getAttribute("data-state")).toBe("checking");
+    expect(screen.getByTestId("update-start")).toBeDisabled();
+    await act(async () => answer(json(IDLE_UPGRADE)));
+    expect((await startButton()).textContent).toBe("Update and restart");
+  });
+
+  it("idle agents: one live line (plural-correct) with the per-agent table behind Details", async () => {
+    useStore.setState({
+      sessions: [session("a", "idle-ivy")],
+      agentStatuses: { a: { status: "idle" } },
+    });
+    installServer();
+    await openDialog();
+    const agents = await screen.findByTestId("update-agents");
+    await waitFor(() =>
+      expect(agents.getAttribute("data-state")).toBe("clear"),
+    );
+    expect(agents.textContent).toContain("idle-ivy is idle.");
+    expect(agents.textContent).toContain("It reopens where it left off.");
+    expect(agents.textContent).not.toContain("All 1");
+    expect(agents.querySelector("details")).not.toBeNull();
+  });
+
+  it("the three safety facts show in the busy case too (they used to vanish there)", async () => {
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          busy: [{ id: "a", name: "api-refactor", status: "working" }],
+        }),
+    });
+    await openDialog();
+    await screen.findByTestId("update-now-interrupt");
+    const safety = screen.getByTestId("update-safety");
+    expect(safety.textContent).toContain("Under a minute.");
+    expect(safety.textContent).toContain("is saved first");
+    expect(safety.textContent).toContain("restores v0.6.1 on its own");
+    expect(safety.textContent).toContain("You stay signed in");
+  });
+
+  it("release-note links leave the Tab order; the notes box is one focusable region", async () => {
+    installServer({
+      "GET /api/system/releases": () =>
+        json({
+          current: "0.6.1",
+          latest: "0.7.0",
+          updateAvailable: true,
+          releaseUrl: VERSION.releaseUrl,
+          releases: [
+            {
+              version: "0.7.0",
+              name: "v0.7.0",
+              body: "- [#1](https://example.com/1) one\n- [#2](https://example.com/2) two",
+              url: null,
+              publishedAt: null,
+            },
+          ],
+        }),
+    });
+    await openDialog();
+    const box = await screen.findByTestId("update-notes");
+    await waitFor(() => expect(box.querySelectorAll("a").length).toBe(2));
+    await waitFor(() =>
+      expect(
+        [...box.querySelectorAll("a")].every(
+          (a) => a.getAttribute("tabindex") === "-1",
+        ),
+      ).toBe(true),
+    );
+    expect(box.getAttribute("tabindex")).toBe("0");
+    expect(box.getAttribute("aria-label")).toBe("Release notes");
   });
 
   it("stacks every release since the user's version newest-first, with a breaking-change callout", async () => {
@@ -266,11 +367,19 @@ describe("UpdateBadgeStatusBarItem — What's new", () => {
         .map((s) => s.getAttribute("data-version")),
     ).toEqual(["0.7.0", "0.6.10", "0.6.2"]);
     expect(screen.getByTestId("breaking-callout").textContent).toContain(
-      "v0.7.0 has a breaking change",
+      "Breaking change in v0.7.0",
     );
+    // It QUOTES the change instead of pointing into the notes.
+    expect(screen.getByTestId("breaking-quote").textContent).toBe(
+      "Old routes 404.",
+    );
+    // The newest release is open; older ones fold.
+    const [newest, ...older] = screen.getAllByTestId("release-section");
+    expect(newest.tagName).toBe("SECTION");
+    for (const o of older) expect(o.tagName).toBe("DETAILS");
   });
 
-  it("falls back to a GitHub link when notes are unavailable, and never blocks Continue", async () => {
+  it("falls back to a GitHub link when notes are unavailable, and never blocks the update", async () => {
     installServer({
       "GET /api/system/releases": () =>
         json({
@@ -287,15 +396,12 @@ describe("UpdateBadgeStatusBarItem — What's new", () => {
     expect(fallback.querySelector("a")?.getAttribute("href")).toBe(
       VERSION.releaseUrl,
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Next: check agents →" }),
-    );
-    expect(await screen.findByTestId("update-check-clear")).toBeInTheDocument();
+    expect((await startButton()).textContent).toBe("Update and restart");
   });
 });
 
-describe("UpdateBadgeStatusBarItem — Check agents", () => {
-  it("lists every agent, highlights the busy ones, preselects 'when idle', and arms on submit", async () => {
+describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => {
+  it("lists every agent, leads with 'Update when idle', names who 'Update now' interrupts, and arms into the waiting view", async () => {
     useStore.setState({
       sessions: [
         session("a", "api-refactor"),
@@ -330,10 +436,10 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
         });
       },
     });
-    await openToCheck();
-    expect(
-      await screen.findByText("3 agents are mid-task"),
-    ).toBeInTheDocument();
+    await openDialog();
+    const agents = await screen.findByTestId("update-agents");
+    await waitFor(() => expect(agents.getAttribute("data-state")).toBe("busy"));
+    expect(agents.textContent).toContain("3 agents are mid-task.");
 
     const rows = screen.getAllByTestId("update-agent-row");
     expect(rows).toHaveLength(4);
@@ -344,33 +450,76 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
       "false",
     ]);
     expect(rows[0].textContent).toContain(
-      "Turn in progress — stops mid-turn, won't resume on its own",
+      "Its current task stops. Prompt it to continue.",
     );
     expect(rows[1].textContent).toContain(
-      "Running a command — it is killed; the thread is kept",
+      "Its running command stops. Prompt it to continue.",
     );
-    expect(rows[2].textContent).toContain(
-      "Its pending question is dismissed — it will need re-asking",
-    );
-    expect(rows[3].textContent).toContain("Nothing lost");
+    expect(rows[2].textContent).toContain("Its question to you is cleared.");
+    expect(rows[3].textContent).toContain("Reopens where it left off");
 
-    // Terry's default: wait for idle, preselected; idle window from the server.
-    expect(screen.getByTestId("update-when-idle")).toBeChecked();
-    expect(screen.getByTestId("update-when-now")).not.toBeChecked();
-    expect(screen.getByText(/idle for 30 seconds/)).toBeInTheDocument();
-    // "Update now" spells out what it interrupts.
-    expect(
-      screen.getByText(
-        /Interrupts api-refactor and codex-tests mid-task and dismisses Planner's question/,
-      ),
-    ).toBeInTheDocument();
+    // Terry's default is the primary: wait for idle. "Update now" is the
+    // secondary and says who it interrupts.
+    expect((await startButton()).textContent).toBe("Update when idle");
+    expect(screen.getByTestId("update-now-interrupt").textContent).toBe(
+      "Update now · interrupts 3 agents",
+    );
 
     fireEvent.click(screen.getByTestId("update-start"));
     const armed = await screen.findByTestId("update-badge-armed");
     // The version whose notes were shown rides along (R11).
     expect(posted).toEqual({ when: "idle", expectedVersion: "0.7.0" });
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(armed.textContent).toContain("Update to v0.7.0 waiting on 3 agents");
+    // The dialog stays, now as the waiting view (it used to just vanish).
+    expect(await screen.findByTestId("update-waiting")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "v0.7.0 is waiting for 3 agents" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/idle for 30 seconds/)).toBeInTheDocument();
+    expect(armed.textContent).toContain("v0.7.0 waits for 3 agents");
+  });
+
+  it("the amber pill reopens the waiting view; Cancel update there disarms and closes", async () => {
+    const armedRec = {
+      target: "0.7.0",
+      armedAt: "2026-09-23T10:00:00Z",
+      idleSince: null,
+    };
+    let armed = false;
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          busy: [{ id: "a", name: "busy-bee", status: "tool_running" }],
+          armed: armed ? armedRec : null,
+        }),
+      "POST /api/system/upgrade": () => {
+        armed = true;
+        return json({ ok: true, armed: armedRec });
+      },
+      "DELETE /api/system/upgrade": () => {
+        armed = false;
+        return json({ ok: true });
+      },
+    });
+    await openDialog();
+    fireEvent.click(await startButton());
+    await screen.findByTestId("update-waiting");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(await screen.findByTestId("update-armed-open"));
+    expect(
+      await screen.findByRole("heading", {
+        name: "v0.7.0 is waiting for busy-bee",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("update-waiting-now").textContent).toBe(
+      "Update now · interrupts busy-bee",
+    );
+    fireEvent.click(screen.getByTestId("update-cancel-armed"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByTestId("update-badge")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-badge-armed")).toBeNull();
   });
 
   it("keeps polling while armed: follows the agents going idle, then the launch", async () => {
@@ -404,17 +553,17 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
         return json({ ok: true, armed: armedRec });
       },
     });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     const armed = await screen.findByTestId("update-badge-armed");
     await waitFor(() =>
-      expect(armed.textContent).toContain("waiting on 1 agent"),
+      expect(armed.textContent).toContain("waits for api-refactor"),
     );
 
     phase = "idle";
     await waitFor(() =>
       expect(screen.getByTestId("update-badge-armed").textContent).toContain(
-        "starting shortly",
+        "starts shortly",
       ),
     );
 
@@ -445,10 +594,10 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
             : null,
         }),
     });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     expect(
-      await screen.findByText(/stopped reporting at "launching"/),
+      await screen.findByText(/stopped responding \(last step: launching\)/),
     ).toBeInTheDocument();
   });
 
@@ -457,7 +606,7 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
       "GET /api/system/upgrade": () =>
         json({ ...IDLE_UPGRADE, supervised: false }),
     });
-    await openToCheck();
+    await openDialog();
     expect(
       await screen.findByTestId("update-not-supervised"),
     ).toBeInTheDocument();
@@ -472,7 +621,7 @@ describe("UpdateBadgeStatusBarItem — Check agents", () => {
       "GET /api/system/upgrade": () =>
         json({ ...IDLE_UPGRADE, supervised: false, installMode: null }),
     });
-    await openToCheck();
+    await openDialog();
     expect((await screen.findByTestId("update-command")).textContent).toBe(
       "git pull && make prod",
     );
@@ -490,8 +639,8 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
       posted = JSON.parse(String(init?.body));
       return json({ ok: true, launched: true });
     };
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
   }
 
   it("reconnects through the restart and reloads once the new version answers 'done'", async () => {
@@ -512,7 +661,17 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     await waitFor(() =>
       expect(posted).toEqual({ when: "now", expectedVersion: "0.7.0" }),
     );
-    expect(await screen.findByText("Updating to v0.7.0")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Updating to v0.7.0" }),
+    ).toBeInTheDocument();
+    // Three honest stages; the fine-grained list is behind "Show details".
+    const stages = screen.getByTestId("update-stages");
+    expect(
+      stages.querySelector('[aria-current="step"]')?.textContent,
+    ).toContain("Preparing");
+    await waitFor(() =>
+      expect(stages.textContent).toContain("Downloading v0.7.0"),
+    );
     await waitFor(() =>
       expect(
         screen
@@ -549,6 +708,49 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     expect(
       JSON.parse(sessionStorage.getItem("autonomos:updated") ?? ""),
     ).toEqual({ kind: "upgrade", updatedTo: "0.7.0", interruptedNames: [] });
+  });
+
+  it("the restart overlay stays up through the new version's health check, then reloads", async () => {
+    installServer();
+    let phase = "downloading";
+    let daemonUp = true;
+    let serving = "0.6.1";
+    routes["GET /api/system/upgrade"] = () => {
+      if (!daemonUp) throw new TypeError("Failed to fetch");
+      return json({
+        ...IDLE_UPGRADE,
+        current: serving,
+        status: posted ? record(phase) : null,
+        inFlight: posted && phase !== "done",
+      });
+    };
+    routes["GET /api/system/version"] = () =>
+      daemonUp
+        ? json({ ...VERSION, version: serving })
+        : Promise.reject(new TypeError("Failed to fetch"));
+    await launch();
+    await screen.findByRole("heading", { name: "Updating to v0.7.0" });
+
+    phase = "restarting";
+    daemonUp = false;
+    const overlay = await screen.findByTestId("update-reconnecting");
+    // The NEW daemon answers but hasn't passed its health check yet: this
+    // used to drop the overlay and leave "Health check" spinning behind it.
+    serving = "0.7.0";
+    phase = "health_check";
+    daemonUp = true;
+    await waitFor(() =>
+      expect(overlay.textContent).toContain("Making sure v0.7.0 started"),
+    );
+    await act(() => new Promise((r) => setTimeout(r, 80)));
+    expect(screen.getByTestId("update-reconnecting")).toBeInTheDocument();
+    expect(
+      overlay.querySelector('[aria-current="step"]')?.textContent,
+    ).toContain("Restarting");
+    expect(reload).not.toHaveBeenCalled();
+
+    phase = "done";
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   });
 
   it("shows the rolled-back modal with the job's message", async () => {
@@ -588,7 +790,7 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
       return json({ ...IDLE_UPGRADE, status: null });
     };
     await launch();
-    await screen.findByText("Updating to v0.7.0");
+    await screen.findByRole("heading", { name: "Updating to v0.7.0" });
     down = true;
     routes["GET /api/system/version"] = () => {
       throw new TypeError("Failed to fetch");
@@ -598,9 +800,7 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     routes["GET /api/system/version"] = () =>
       json({ error: "Unauthorized" }, 401);
     expect(
-      await screen.findByText(
-        "Your session token was rejected after the update",
-      ),
+      await screen.findByRole("heading", { name: "Sign in again" }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("update-reconnecting")).toBeNull();
     expect(reload).not.toHaveBeenCalled();
@@ -615,7 +815,7 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
       return json({ ...IDLE_UPGRADE, status: null });
     };
     await launch();
-    await screen.findByText("Updating to v0.7.0");
+    await screen.findByRole("heading", { name: "Updating to v0.7.0" });
     down = true;
     routes["GET /api/system/version"] = () => {
       throw new TypeError("Failed to fetch");
@@ -666,7 +866,7 @@ describe("UpdateBadgeStatusBarItem — snapshots (ADR-105 amendment)", () => {
     expect(callout.textContent).toContain(
       "This update changes how agents are stored",
     );
-    expect(callout.textContent).toContain("won't carry back");
+    expect(callout.textContent).toContain("won't carry over");
     // The marker itself never renders.
     expect(screen.getByRole("dialog").textContent).not.toContain(
       "autonomos:storage-format-change",
@@ -689,34 +889,19 @@ describe("UpdateBadgeStatusBarItem — snapshots (ADR-105 amendment)", () => {
     expect(screen.queryByTestId("storage-format-callout")).toBeNull();
   });
 
-  it("CheckClear promises the snapshot and the paired rollback", async () => {
+  it("the safety line names what the snapshot holds and the automatic restore", async () => {
     installServer();
-    await openToCheck();
-    const clear = await screen.findByTestId("update-check-clear");
-    expect(clear.textContent).toContain("Snapshot first");
-    expect(clear.textContent).toContain(
-      "restore it any time from Settings → Updates",
+    await openDialog();
+    const safety = await screen.findByTestId("update-safety");
+    expect(safety.textContent).toContain(
+      "A snapshot of your agents, schedules, templates, presets and settings is saved first.",
     );
-    expect(clear.textContent).toContain("code and snapshot together");
+    expect(safety.textContent).toContain(
+      "If v0.7.0 doesn't start, autonomOS restores v0.6.1 on its own.",
+    );
   });
 
-  it("CheckBusy says a snapshot is saved first", async () => {
-    installServer({
-      "GET /api/system/upgrade": () =>
-        json({
-          ...IDLE_UPGRADE,
-          busy: [{ id: "a", name: "api-refactor", status: "working" }],
-        }),
-    });
-    await openToCheck();
-    expect(
-      await screen.findByText(
-        /A snapshot of your agents' setup is saved before anything changes/,
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("shows Save snapshot (with its id) right before Install, and ends with Verify agents", async () => {
+  it("the detailed steps show the snapshot (with its id) right before Install, and end with the agent check", async () => {
     installServer();
     let posted = false;
     routes["POST /api/system/upgrade"] = () => {
@@ -732,8 +917,8 @@ describe("UpdateBadgeStatusBarItem — snapshots (ADR-105 amendment)", () => {
             })
           : null,
       });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     const steps = await screen.findByTestId("update-steps");
     await waitFor(() =>
       expect(
@@ -772,13 +957,11 @@ describe("UpdateBadgeStatusBarItem — snapshots (ADR-105 amendment)", () => {
             })
           : null,
       });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     expect(
       (await screen.findByTestId("update-failed-summary")).textContent,
-    ).toContain(
-      "restored the previous version and your agents' setup from the snapshot taken just before",
-    );
+    ).toContain("autonomOS restored v0.6.1 and the snapshot from just before");
   });
 });
 
@@ -863,18 +1046,20 @@ describe("UpdateBadgeStatusBarItem — Restore", () => {
     expect(screen.queryByTestId("update-badge")).toBeNull();
     const confirm = await screen.findByTestId("restore-confirm");
     expect(
-      screen.getByText("Restore v0.6.1 and your agents' setup?"),
+      screen.getByRole("heading", { name: "Restore v0.6.1?" }),
     ).toBeInTheDocument();
     expect(screen.getByTestId("restore-snapshot").textContent).toContain(
       "214 KB",
     );
     expect(confirm.textContent).toContain("snapshots/0.6.1-2026-09-24T0712/");
-    expect(confirm.textContent).toContain("Won't carry back");
-    expect(confirm.textContent).toContain("Never touched");
+    expect(confirm.textContent).toContain("Changes since the update");
+    expect(confirm.textContent).toContain("Not affected");
     expect(confirm.textContent).toContain("autonomos rollback");
 
     fireEvent.click(screen.getByTestId("restore-confirm-button"));
-    expect(await screen.findByText("Restoring v0.6.1")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Restoring v0.6.1" }),
+    ).toBeInTheDocument();
     // The old upgrade's "done" record must not trigger a reload.
     expect(reload).not.toHaveBeenCalled();
 
@@ -907,12 +1092,12 @@ describe("UpdateBadgeStatusBarItem — Restore", () => {
     await requestRestore();
     const note = await screen.findByTestId("restore-no-snapshot");
     expect(note.textContent).toContain(
-      "No snapshot pairs with v0.6.0 (it was installed before snapshots existed) — only the code is restored; agent records stay as they are.",
+      "v0.6.0 predates snapshots, so only the version is restored. Your agents, schedules and settings stay as they are.",
     );
     // No snapshot rows claimed.
     expect(screen.queryByTestId("restore-snapshot")).toBeNull();
     expect(screen.getByTestId("restore-confirm").textContent).not.toContain(
-      "Won't carry back",
+      "Changes since the update",
     );
   });
 
@@ -947,13 +1132,13 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
           ],
         }),
     });
-    await openToCheck();
+    await openDialog();
     const warn = await screen.findByTestId("update-background-warning");
     expect(warn.textContent).toContain(
-      "api-refactor: 1 background process will be stopped: npm run dev",
+      "api-refactor: Stops 1 background process: npm run dev.",
     );
     // Warn-only: the update stays one click away.
-    expect(screen.getByTestId("update-start")).not.toBeDisabled();
+    expect((await startButton()).textContent).toBe("Update and restart");
   });
 
   it("an agent whose first task hasn't started reads 'Starting' and counts as mid-task", async () => {
@@ -975,11 +1160,14 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
           ],
         }),
     });
-    await openToCheck();
-    expect(await screen.findByText("1 agent is mid-task")).toBeInTheDocument();
+    await openDialog();
+    const agents = await screen.findByTestId("update-agents");
+    await waitFor(() =>
+      expect(agents.textContent).toContain("new-worker is mid-task."),
+    );
     const row = screen.getAllByTestId("update-agent-row")[0];
     expect(row.textContent).toContain("Starting");
-    expect(row.textContent).toContain("first task hasn't started");
+    expect(row.textContent).toContain("Its first prompt is lost.");
   });
 
   it("R4: a cancel that lost the race to the launch follows the running update", async () => {
@@ -1024,15 +1212,15 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
         );
       },
     });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     fireEvent.click(await screen.findByTestId("update-armed-cancel"));
     expect(await screen.findByTestId("update-steps")).toBeInTheDocument();
     expect(launched).toBe(true);
     expect(screen.queryByText(/Couldn't cancel/)).toBeNull();
   });
 
-  it("R11: a newer release mid-flow goes back to What's new, says why, and asks for the NEW version", async () => {
+  it("R11: a newer release mid-flow re-shows the decision screen for it, says why, and asks for the NEW version", async () => {
     const bodies: unknown[] = [];
     let latest = "0.7.0";
     installServer({
@@ -1051,18 +1239,17 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
         );
       },
     });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     expect(
       await screen.findByText(/A newer release \(v0\.7\.1\) appeared/),
     ).toBeInTheDocument();
     expect(
-      await screen.findByText("Update available: v0.6.1 → v0.7.1"),
+      await screen.findByRole("heading", {
+        name: "Update autonomOS to v0.7.1",
+      }),
     ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Next: check agents →" }),
-    );
-    fireEvent.click(await screen.findByTestId("update-start"));
+    fireEvent.click(await startButton());
     await waitFor(() => expect(bodies).toHaveLength(2));
     expect(bodies[1]).toMatchObject({ expectedVersion: "0.7.1" });
   });
@@ -1090,10 +1277,86 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
           inFlight: posted, // …but the server, which wrote it, says live.
         }),
     });
-    await openToCheck();
-    fireEvent.click(await screen.findByTestId("update-start"));
+    await openDialog();
+    fireEvent.click(await startButton());
     expect(await screen.findByTestId("update-steps")).toBeInTheDocument();
     await act(() => new Promise((r) => setTimeout(r, 80)));
     expect(screen.queryByText(/stopped reporting/)).toBeNull();
+  });
+});
+
+describe("UpdateBadgeStatusBarItem — keyboard and screen reader", () => {
+  let appRoot: HTMLDivElement;
+  beforeEach(() => {
+    appRoot = document.createElement("div");
+    appRoot.id = "root";
+    document.body.append(appRoot);
+  });
+  afterEach(() => appRoot.remove());
+
+  it("makes the app behind inert while open, and gives it back on close", async () => {
+    installServer();
+    expect(appRoot.hasAttribute("inert")).toBe(false);
+    await openDialog();
+    await screen.findByRole("dialog");
+    expect(appRoot.hasAttribute("inert")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(appRoot.hasAttribute("inert")).toBe(false);
+  });
+
+  it("lands focus on the heading on open and on every screen change — never on <body>", async () => {
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          busy: [{ id: "a", name: "busy-bee", status: "working" }],
+        }),
+      "POST /api/system/upgrade": () =>
+        json({
+          ok: true,
+          armed: {
+            target: "0.7.0",
+            armedAt: "2026-09-23T10:00:00Z",
+            idleSince: null,
+          },
+        }),
+    });
+    await openDialog();
+    const h1 = await screen.findByRole("heading", {
+      name: "Update autonomOS to v0.7.0",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(h1));
+    fireEvent.click(await startButton());
+    const h2 = await screen.findByRole("heading", {
+      name: "v0.7.0 is waiting for busy-bee",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(h2));
+  });
+
+  it("Tab wraps inside the dialog in both directions", async () => {
+    installServer();
+    await openDialog();
+    const dialog = await screen.findByRole("dialog");
+    const last = await startButton();
+    last.focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    const first = document.activeElement as HTMLElement;
+    expect(first).not.toBe(last);
+    expect(dialog.contains(first)).toBe(true);
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it("announces the agent check politely", async () => {
+    installServer();
+    await openDialog();
+    const dialog = await screen.findByRole("dialog");
+    const live = dialog.querySelector('output[aria-live="polite"]');
+    await waitFor(() =>
+      expect(live?.textContent).toBe(
+        "No agents running. Nothing to interrupt.",
+      ),
+    );
   });
 });

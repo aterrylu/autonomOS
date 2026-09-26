@@ -1,19 +1,39 @@
 /**
- * The in-app update modal (ADR-105) — every screen of the flow except the
- * status-bar pill and the full-screen Reconnecting overlay. Presentational:
- * all state and server calls live in useUpdateFlow; the one exception is the
- * What's-new screen, which fetches the release notes it renders.
+ * The in-app update modal (ADR-105): one decision screen, then progress on
+ * the same surface. Presentational: all state and server calls live in
+ * useUpdateFlow; the one exception is the release notes, fetched here.
+ *
+ * Shape (Terry picked "Option A" from the 2026-09-26 redesign):
+ *  - confirm   "Update autonomOS to vX": a live agent line (+ the per-agent
+ *              table when something is busy), one safety line, a callout that
+ *              QUOTES any breaking change, capped notes, and the buttons.
+ *              Idle: [Not now][Update and restart]. Busy: [Not now]
+ *              [Update now · interrupts X][Update when idle].
+ *  - waiting   an armed wait-for-idle (the amber pill reopens it)
+ *  - updating  three honest stages; the fine-grained steps behind a disclosure
+ *
+ * Accessibility lives in the shell, so every screen gets it: the app behind
+ * is inert, Tab wraps, the heading takes focus on every view change and names
+ * the dialog, and a polite status region carries what changes.
  *
  * Rendered through a portal to <body> so it stacks above the status bar's
- * own stacking context.
+ * own stacking context (and sits outside the inert app root).
  */
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   type ReleaseNote,
   type SystemReleases,
   systemApi,
+  type UpgradePhase,
   type UpgradeState,
   type UpgradeStatusRecord,
 } from "../../api/system";
@@ -23,6 +43,7 @@ import {
   type AgentStatus,
   agentStatusLabel,
 } from "../../components/ui/agent-status-icon";
+import { holdAppInert, trapTab } from "../../hooks/modalFocus";
 import { useBackdropDismiss } from "../../hooks/useBackdropDismiss";
 import { pushEscapeCloser } from "../../shortcuts/escapeStack";
 import { THEMES, useStore } from "../../store";
@@ -30,20 +51,59 @@ import { ReleaseMarkdown } from "./releaseMarkdown";
 import {
   activeStepIndex,
   breakingReleases,
+  breakingSummary,
   consequenceFor,
+  FIRST_TASK_CONSEQUENCE,
   formatBytes,
   formatReleaseDate,
   formatSnapshotDate,
   joinNames,
+  plural,
+  SNAPSHOT_CONTENTS,
+  type Stage,
   sortNewestFirst,
+  stageDetail,
+  stageFor,
   stepsFor,
 } from "./updateFlow";
 import type { UpdateFlow } from "./useUpdateFlow";
 
-export const GREEN = "#16825d";
-export const AMBER = "#e6b450";
-export const RED = "#ea6c73";
-export const BLUE = "#58a6ff";
+// ── colors: from the theme, never one set for every background ──────────
+
+export interface Accents {
+  /** Text/icon green. */
+  green: string;
+  /** Fill behind white text (primary button). */
+  greenFill: string;
+  amber: string;
+  red: string;
+  /** Fill behind white text (danger button). */
+  redFill: string;
+  blue: string;
+}
+
+/** Every value clears 4.5:1 as text on its theme's page background (and the
+ *  fills clear 4.5:1 under white text). The old single set measured 1.74:1
+ *  (amber) and 2.28:1 (blue) on Daylight. */
+export function accentsFor(bg: string): Accents {
+  return isLightBg(bg)
+    ? {
+        green: "#1a7f37",
+        greenFill: "#1a7f37",
+        amber: "#8a6100",
+        red: "#b31d28",
+        redFill: "#b31d28",
+        blue: "#0366d6",
+      }
+    : {
+        green: "#3fb27f",
+        greenFill: "#16825d",
+        amber: "#e6b450",
+        red: "#f0868c",
+        redFill: "#c42b35",
+        blue: "#58a6ff",
+      };
+}
 
 export interface VersionInfo {
   version: string;
@@ -61,6 +121,12 @@ function usePage(): Page {
   return THEMES[theme].page;
 }
 
+export function useAccents(): Accents {
+  return accentsFor(usePage().bg);
+}
+
+const TITLE_ID = "update-dialog-title";
+
 // ── small building blocks ───────────────────────────────────────────────
 
 function Button({
@@ -72,11 +138,20 @@ function Button({
   children: ReactNode;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const page = usePage();
+  const a = useAccents();
   const style =
     kind === "primary"
-      ? { background: GREEN, color: "#fff", border: `1px solid ${GREEN}` }
+      ? {
+          background: a.greenFill,
+          color: "#fff",
+          border: `1px solid ${a.greenFill}`,
+        }
       : kind === "danger"
-        ? { background: RED, color: "#fff", border: `1px solid ${RED}` }
+        ? {
+            background: "transparent",
+            color: a.red,
+            border: `1px solid ${a.red}`,
+          }
         : {
             background: "transparent",
             color: page.fg,
@@ -85,7 +160,7 @@ function Button({
   return (
     <button
       type="button"
-      className="rounded px-3 py-1.5 text-xs font-medium cursor-pointer hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
+      className="min-h-[30px] rounded px-3 py-1.5 text-xs font-medium cursor-pointer hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
       style={style}
       {...rest}
     >
@@ -105,7 +180,7 @@ function Spinner({ size = 14, color }: { size?: number; color?: string }) {
       stroke={color ?? "currentColor"}
       strokeWidth="2.4"
       strokeLinecap="round"
-      className="animate-spin"
+      className="motion-safe:animate-spin"
     >
       <path d="M12 3a9 9 0 1 0 9 9" />
     </svg>
@@ -124,13 +199,14 @@ function CheckIcon({ size = 14 }: { size?: number }) {
       strokeWidth="2.4"
       strokeLinecap="round"
       strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
     >
       <path d="M5 12.5l4.5 4.5L19 7.5" />
     </svg>
   );
 }
 
-function InfoIcon({ size = 18 }: { size?: number }) {
+function InfoIcon({ size = 16 }: { size?: number }) {
   return (
     <svg
       aria-hidden="true"
@@ -151,7 +227,7 @@ function InfoIcon({ size = 18 }: { size?: number }) {
   );
 }
 
-function WarnIcon({ size = 18 }: { size?: number }) {
+function WarnIcon({ size = 16 }: { size?: number }) {
   return (
     <svg
       aria-hidden="true"
@@ -172,70 +248,45 @@ function WarnIcon({ size = 18 }: { size?: number }) {
   );
 }
 
-const STEP_NAMES = ["What's new", "Check agents", "Update"] as const;
-
-/** The 1 · 2 · 3 progress header shared by the three main screens. */
-function Stepper({ current }: { current: 0 | 1 | 2 }) {
-  const page = usePage();
+function Dot({ color }: { color: string }) {
   return (
-    <ol className="flex items-center gap-2 text-[11px]" aria-label="Progress">
-      {STEP_NAMES.map((name, i) => {
-        const done = i < current;
-        const active = i === current;
-        return (
-          <li key={name} className="flex items-center gap-2">
-            {i > 0 && (
-              <span
-                aria-hidden="true"
-                style={{ width: 22, height: 1, background: page.border }}
-              />
-            )}
-            <span
-              className="inline-flex items-center justify-center rounded-full font-semibold"
-              style={{
-                width: 18,
-                height: 18,
-                background: done || active ? GREEN : page.border,
-                color: done || active ? "#fff" : page.statusFg,
-              }}
-            >
-              {done ? <CheckIcon size={11} /> : i + 1}
-            </span>
-            <span
-              aria-current={active ? "step" : undefined}
-              style={{
-                color: done ? GREEN : active ? page.fg : page.statusFg,
-              }}
-            >
-              {name}
-            </span>
-          </li>
-        );
-      })}
-    </ol>
+    <span
+      aria-hidden="true"
+      className="inline-block shrink-0 rounded-full"
+      style={{ width: 8, height: 8, background: color }}
+    />
   );
 }
 
+/** The screen's heading. It names the dialog (aria-labelledby) and takes
+ *  focus on every view change, so a screen reader hears where it landed. */
 function Header({
-  step,
   title,
   subtitle,
+  icon,
 }: {
-  step?: 0 | 1 | 2;
   title: ReactNode;
   subtitle?: ReactNode;
+  icon?: ReactNode;
 }) {
   const page = usePage();
   return (
-    <div
-      className="flex flex-col gap-3 px-5 pt-4 pb-3"
-      style={{ borderBottom: `1px solid ${page.border}` }}
-    >
-      {step !== undefined && <Stepper current={step} />}
-      <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold">{title}</h2>
+    <div className="flex gap-3 px-4 pt-4 pb-2 sm:px-5">
+      {icon}
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2
+          id={TITLE_ID}
+          tabIndex={-1}
+          className="text-base font-semibold outline-none"
+        >
+          {title}
+        </h2>
         {subtitle && (
-          <div className="text-xs" style={{ color: page.statusFg }}>
+          <div
+            className="text-xs"
+            style={{ color: page.statusFg }}
+            data-testid="update-subtitle"
+          >
             {subtitle}
           </div>
         )}
@@ -244,27 +295,35 @@ function Header({
   );
 }
 
+/** Sticky, so the actions stay reachable when the dialog has to scroll
+ *  (400% zoom leaves ~256 CSS px of height). */
 function Footer({ left, children }: { left?: ReactNode; children: ReactNode }) {
   const page = usePage();
   return (
     <div
-      className="flex items-center justify-between gap-3 px-5 py-3"
-      style={{ borderTop: `1px solid ${page.border}` }}
+      className="sticky bottom-0 flex flex-wrap items-center justify-end gap-2 px-4 py-3 sm:px-5"
+      style={{ borderTop: `1px solid ${page.border}`, background: page.bg }}
     >
-      <div className="min-w-0 text-xs" style={{ color: page.statusFg }}>
-        {left}
-      </div>
-      <div className="flex shrink-0 gap-2">{children}</div>
+      {left && (
+        <div
+          className="mr-auto min-w-0 text-xs"
+          style={{ color: page.statusFg }}
+        >
+          {left}
+        </div>
+      )}
+      {children}
     </div>
   );
 }
 
 function ErrorLine({ children }: { children: ReactNode }) {
+  const a = useAccents();
   return (
     <div
       role="alert"
       className="rounded px-2 py-1.5 text-xs"
-      style={{ background: `${RED}18`, color: RED }}
+      style={{ border: `1px solid ${a.red}66`, color: a.red }}
     >
       {children}
     </div>
@@ -292,34 +351,50 @@ function useCopy(): [boolean, (text: string) => void] {
 // ── the shell ───────────────────────────────────────────────────────────
 
 function DialogShell({
-  label,
+  viewKey,
+  status,
   onClose,
   children,
 }: {
-  label: string;
+  /** Changes when the screen changes: focus moves to the new heading. */
+  viewKey: string;
+  /** Read out politely when it changes (agent check, progress). */
+  status: string;
   onClose: () => void;
   children: ReactNode;
 }) {
   const page = usePage();
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  // The app behind can't be reached while this is open; focus returns to
+  // where it was (the pill) once the app is interactive again.
   useEffect(() => {
     const prev = document.activeElement;
-    dialogRef.current?.focus();
+    const release = holdAppInert();
     return () => {
+      release();
       if (prev instanceof HTMLElement && prev.isConnected) prev.focus();
     };
   }, []);
 
+  // Every screen change lands on its heading — never on <body>.
+  useEffect(() => {
+    void viewKey;
+    const heading = dialogRef.current?.querySelector<HTMLElement>(
+      `#${TITLE_ID}`,
+    );
+    (heading ?? dialogRef.current)?.focus();
+  }, [viewKey]);
+
   // Escape rides the registry's ui.dismiss entry (ADR-065).
   useEffect(() => pushEscapeCloser(onClose), [onClose]);
-  // Survives a text selection that ends over the backdrop (Terry's bug).
+  // Survives a text selection that starts or ends over the backdrop.
   const backdrop = useBackdropDismiss(onClose);
 
   return createPortal(
     // Backdrop: mouse dismissal via useBackdropDismiss; keyboard dismissal is Escape (the registry's ui.dismiss).
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center pt-[6vh] font-sans"
+      className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-3 pt-[6vh] font-sans"
       style={{ background: "rgba(0,0,0,0.55)" }}
       {...backdrop}
     >
@@ -327,16 +402,21 @@ function DialogShell({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label={label}
+        aria-labelledby={TITLE_ID}
         tabIndex={-1}
         data-testid="update-dialog"
-        className="flex w-[640px] max-w-[92vw] max-h-[86vh] flex-col overflow-hidden rounded-lg shadow-xl outline-none"
+        data-view={viewKey}
+        onKeyDown={(e) => trapTab(e, dialogRef.current)}
+        className="flex w-[640px] max-w-full max-h-[90dvh] flex-col overflow-y-auto rounded-lg shadow-xl outline-none"
         style={{
           background: page.bg,
           color: page.fg,
           border: `1px solid ${page.border}`,
         }}
       >
+        <output aria-live="polite" className="sr-only">
+          {status}
+        </output>
         {children}
       </div>
     </div>,
@@ -344,32 +424,21 @@ function DialogShell({
   );
 }
 
-// ── screen 1: what's new ────────────────────────────────────────────────
+// ── release notes ───────────────────────────────────────────────────────
 
 type NotesState =
   | { kind: "loading" }
   | { kind: "ok"; data: SystemReleases; releases: ReleaseNote[] }
   | { kind: "unavailable" };
 
-function NotesScreen({
-  info,
-  notice,
-  onLater,
-  onContinue,
-}: {
-  info: VersionInfo;
-  /** Why we're back here (e.g. a newer release appeared mid-flow). */
-  notice?: string | null;
-  onLater: () => void;
-  onContinue: () => void;
-}) {
-  const page = usePage();
+/** Refetches when the target moves (VERSION_CHANGED → new `latest`). */
+function useReleaseNotes(latest: string, enabled: boolean): NotesState {
   const [notes, setNotes] = useState<NotesState>({ kind: "loading" });
-
-  // Refetch when the target moves (VERSION_CHANGED → new `latest`).
   useEffect(() => {
-    void info.latest;
+    void latest;
+    if (!enabled) return;
     const ctrl = new AbortController();
+    setNotes({ kind: "loading" });
     systemApi
       .releases({ signal: ctrl.signal })
       .then((data) => {
@@ -387,39 +456,68 @@ function NotesScreen({
         if (!ctrl.signal.aborted) setNotes({ kind: "unavailable" });
       });
     return () => ctrl.abort();
-  }, [info.latest]);
+  }, [latest, enabled]);
+  return notes;
+}
 
-  const releases = notes.kind === "ok" ? notes.releases : [];
-  const breaking = breakingReleases(releases);
-  // Structured server flag (a body marker) — never prose-sniffed here.
-  const storageChange = releases.filter((r) => r.storageFormatChange === true);
-  const newestDate = releases[0]
-    ? formatReleaseDate(releases[0].publishedAt)
-    : null;
-  const releaseUrl =
-    (notes.kind === "ok" ? notes.data.releaseUrl : null) ?? info.releaseUrl;
-
+function releaseUrlOf(notes: NotesState, info: VersionInfo): string | null {
   return (
-    <>
-      <Header
-        step={0}
-        title={`Update available: v${info.version} → v${info.latest}`}
-        subtitle="Review what's new, then autonomOS updates itself and reopens. Your agents are checked first."
-      />
-      <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
-        <div
-          className="text-[11px]"
-          style={{ color: page.statusFg }}
-          data-testid="update-notes-meta"
-        >
-          {[
-            `What's new in v${info.latest}`,
-            newestDate && `released ${newestDate}`,
-            releases.length > 1 && `${releases.length} releases since yours`,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </div>
+    (notes.kind === "ok" ? notes.data.releaseUrl : null) ?? info.releaseUrl
+  );
+}
+
+function ExternalLink({
+  href,
+  children,
+  testId,
+}: {
+  href: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  const a = useAccents();
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline"
+      style={{ color: a.blue }}
+      data-testid={testId}
+    >
+      {children}
+    </a>
+  );
+}
+
+/** Capped, so the buttons never sink below the fold. The newest release is
+ *  open; older ones fold. Links inside leave the Tab order (27 PR links used
+ *  to sit between the heading and the buttons) — the box itself is one
+ *  focusable, scrollable region, and "Full release notes" stays a tab stop. */
+function NotesBox({ notes, info }: { notes: NotesState; info: VersionInfo }) {
+  const page = usePage();
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    for (const a of ref.current?.querySelectorAll("a") ?? []) {
+      a.setAttribute("tabindex", "-1");
+    }
+  });
+  const releases = notes.kind === "ok" ? notes.releases : [];
+  const releaseUrl = releaseUrlOf(notes, info);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <section
+        ref={ref}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable to scroll it (WCAG 2.1.1).
+        tabIndex={0}
+        aria-label="Release notes"
+        data-testid="update-notes"
+        className="flex flex-col gap-3 overflow-y-auto rounded-md px-3 py-2.5"
+        style={{
+          maxHeight: "min(34vh, 300px)",
+          border: `1px solid ${page.border}`,
+        }}
+      >
         {notes.kind === "loading" && (
           <div
             className="flex items-center gap-2 text-xs"
@@ -428,7 +526,6 @@ function NotesScreen({
             <Spinner size={12} /> Loading release notes…
           </div>
         )}
-        {notice && <ErrorLine>{notice}</ErrorLine>}
         {notes.kind === "unavailable" && (
           <div
             className="text-xs"
@@ -439,15 +536,7 @@ function NotesScreen({
             {releaseUrl ? (
               <>
                 {" — "}
-                <a
-                  href={releaseUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline"
-                  style={{ color: BLUE }}
-                >
-                  view on GitHub
-                </a>
+                <ExternalLink href={releaseUrl}>view on GitHub</ExternalLink>
               </>
             ) : (
               "."
@@ -459,111 +548,124 @@ function NotesScreen({
             No release notes were published for this update.
           </div>
         )}
-        {storageChange.length > 0 && (
-          <div
-            data-testid="storage-format-callout"
-            className="flex gap-3 rounded-md px-3 py-2.5"
-            style={{
-              background: `${BLUE}14`,
-              border: `1px solid ${BLUE}55`,
-              color: BLUE,
-            }}
-          >
-            <InfoIcon />
-            <div className="flex flex-col gap-0.5">
-              <div className="text-xs font-semibold">
-                This update changes how agents are stored
-              </div>
-              <div className="text-xs" style={{ color: page.fg }}>
-                Older versions can't read the new format. Going back restores
-                your pre-update snapshot, so changes made after updating won't
-                carry back.
-              </div>
-            </div>
-          </div>
-        )}
-        {breaking.length > 0 && (
-          <div
-            data-testid="breaking-callout"
-            className="flex gap-3 rounded-md px-3 py-2.5"
-            style={{
-              background: `${AMBER}14`,
-              border: `1px solid ${AMBER}55`,
-              color: AMBER,
-            }}
-          >
-            <WarnIcon />
-            <div className="flex flex-col gap-0.5">
-              <div className="text-xs font-semibold">
-                {breaking.length === 1
-                  ? `v${breaking[0].version} has a breaking change`
-                  : `Breaking changes in ${joinNames(breaking.map((r) => `v${r.version}`))}`}
-              </div>
-              <div className="text-xs" style={{ color: page.fg }}>
-                Look for “Breaking change” in the notes below before updating.
-              </div>
-            </div>
-          </div>
-        )}
-        {releases.map((r) => {
+        {releases.map((r, i) => {
           const date = formatReleaseDate(r.publishedAt);
           const showName =
             r.name && r.name !== r.version && r.name !== `v${r.version}`;
-          return (
+          const head = (
+            <>
+              <span className="text-sm font-semibold">v{r.version}</span>
+              {showName && <span className="truncate text-xs">{r.name}</span>}
+              {date && (
+                <span
+                  className="ml-auto shrink-0 text-[11px]"
+                  style={{ color: page.statusFg }}
+                >
+                  {date}
+                </span>
+              )}
+            </>
+          );
+          return i === 0 ? (
             <section
               key={r.version}
               data-testid="release-section"
               data-version={r.version}
               className="flex flex-col gap-1.5"
             >
-              <div
-                className="flex items-baseline gap-2 pb-1"
-                style={{ borderBottom: `1px solid ${page.border}` }}
-              >
-                <h3 className="text-sm font-semibold">v{r.version}</h3>
-                {showName && <span className="truncate text-xs">{r.name}</span>}
-                {date && (
-                  <span
-                    className="ml-auto shrink-0 text-[11px]"
-                    style={{ color: page.statusFg }}
-                  >
-                    {date}
-                  </span>
-                )}
-              </div>
+              <h3 className="flex items-baseline gap-2">{head}</h3>
               <ReleaseMarkdown body={r.body ?? ""} />
             </section>
+          ) : (
+            <details
+              key={r.version}
+              data-testid="release-section"
+              data-version={r.version}
+              className="flex flex-col gap-1.5"
+              style={{ borderTop: `1px solid ${page.border}` }}
+            >
+              <summary className="flex cursor-pointer items-baseline gap-2 pt-2">
+                {head}
+              </summary>
+              <ReleaseMarkdown body={r.body ?? ""} />
+            </details>
           );
         })}
-      </div>
-      <Footer
-        left={
-          releaseUrl && (
-            <a
-              href={releaseUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-              style={{ color: BLUE }}
-              data-testid="update-github-link"
+      </section>
+      {releaseUrl && (
+        <div className="text-xs">
+          <ExternalLink href={releaseUrl} testId="update-github-link">
+            Full release notes <span aria-hidden="true">↗</span>
+          </ExternalLink>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Storage-format and breaking-change callouts. The breaking one QUOTES the
+ *  change; it used to say "look for it in the notes below" (nobody could). */
+function Callouts({ notes, info }: { notes: NotesState; info: VersionInfo }) {
+  const page = usePage();
+  const a = useAccents();
+  const releases = notes.kind === "ok" ? notes.releases : [];
+  const breaking = breakingReleases(releases);
+  // Structured server flag (a body marker) — never prose-sniffed here.
+  const storageChange = releases.some((r) => r.storageFormatChange === true);
+  const quotes = breaking
+    .map((r) => breakingSummary(r.body ?? ""))
+    .filter((q): q is string => !!q);
+  return (
+    <>
+      {breaking.length > 0 && (
+        <div
+          data-testid="breaking-callout"
+          className="flex gap-3 rounded-md px-3 py-2.5"
+          style={{ border: `1px solid ${a.amber}88`, color: a.amber }}
+        >
+          <WarnIcon />
+          <div className="flex flex-col gap-0.5">
+            <div className="text-xs font-semibold">
+              {breaking.length === 1
+                ? `Breaking change in v${breaking[0].version}`
+                : `Breaking changes in ${joinNames(breaking.map((r) => `v${r.version}`))}`}
+            </div>
+            <div
+              className="text-xs"
+              style={{ color: page.fg }}
+              data-testid="breaking-quote"
             >
-              Full notes on GitHub
-            </a>
-          )
-        }
-      >
-        <Button onClick={onLater}>Not now</Button>
-        {/* Never gated on the notes loading — notes are a courtesy. The
-            label names where it goes: the next step of the update. */}
-        <Button kind="primary" onClick={onContinue} data-testid="update-next">
-          Next: check agents →
-        </Button>
-      </Footer>
+              {quotes.length > 0
+                ? quotes.join(" ")
+                : "The release notes describe it; read them before updating."}
+            </div>
+          </div>
+        </div>
+      )}
+      {storageChange && (
+        <div
+          data-testid="storage-format-callout"
+          className="flex gap-3 rounded-md px-3 py-2.5"
+          style={{ border: `1px solid ${a.blue}88`, color: a.blue }}
+        >
+          <InfoIcon />
+          <div className="flex flex-col gap-0.5">
+            <div className="text-xs font-semibold">
+              This update changes how agents are stored
+            </div>
+            <div className="text-xs" style={{ color: page.fg }}>
+              Older versions can't read the new format. If you restore v
+              {info.version} later, you get the snapshot from before this
+              update, so changes made after updating won't carry over.
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
-// ── screen 2: check agents ──────────────────────────────────────────────
+// ── agents ──────────────────────────────────────────────────────────────
 
 interface AgentRow {
   id: string;
@@ -615,8 +717,26 @@ function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
   }, [sessions, statuses, upgrade]);
 }
 
-function AgentList({ rows }: { rows: AgentRow[] }) {
+/** "Stops 1 background process: npm run dev". */
+function backgroundLine(procs: { command: string }[]): string {
+  return `Stops ${plural(procs.length, "background process", "background processes")}: ${procs
+    .map((p) => p.command)
+    .join(" · ")}`;
+}
+
+/** Who the busy agents are, in a button or a heading: "busy-bee",
+ *  "a and b", "3 agents". */
+function busyWho(busy: { name: string }[]): string {
+  return busy.length <= 2
+    ? joinNames(busy.map((b) => b.name))
+    : `${busy.length} agents`;
+}
+
+/** One row per agent: name · status · what the restart costs it. Stacks
+ *  below 640px so nothing clips ("Nothin lost" at 390px). */
+function AgentTable({ rows }: { rows: AgentRow[] }) {
   const page = usePage();
+  const a = useAccents();
   const light = isLightBg(page.bg);
   return (
     <ul
@@ -631,35 +751,29 @@ function AgentList({ rows }: { rows: AgentRow[] }) {
             key={r.id}
             data-testid="update-agent-row"
             data-busy={r.busy ? "true" : "false"}
-            className="flex items-center gap-3 px-3 py-2 text-xs"
+            className="grid grid-cols-1 gap-x-3 gap-y-0.5 px-3 py-2 text-xs sm:grid-cols-[9rem_8rem_1fr]"
             style={{
               borderTop: i === 0 ? undefined : `1px solid ${page.border}`,
-              background: r.busy ? `${color}10` : undefined,
             }}
           >
-            <span
-              aria-hidden="true"
-              className="rounded-full shrink-0"
-              style={{ width: 7, height: 7, background: color }}
-            />
-            <span className="w-32 shrink-0 truncate font-medium">{r.name}</span>
-            <span className="w-24 shrink-0" style={{ color }}>
+            <span className="flex min-w-0 items-center gap-2 font-medium">
+              <Dot color={color} />
+              <span className="truncate">{r.name}</span>
+            </span>
+            <span style={{ color }}>
               {r.reason === "first_task"
                 ? "Starting"
                 : agentStatusLabel(r.status as AgentStatus) || "Unknown"}
             </span>
-            <span
-              className="min-w-0 flex flex-col"
-              style={{ color: page.statusFg }}
-            >
+            <span className="flex min-w-0 flex-col">
               <span>
                 {r.reason === "first_task"
-                  ? "Its first task hasn't started yet — it would be lost"
+                  ? FIRST_TASK_CONSEQUENCE
                   : consequenceFor(r.status, r.provider)}
               </span>
               {r.background && r.background.length > 0 && (
                 <span
-                  style={{ color: AMBER }}
+                  style={{ color: a.amber }}
                   data-testid="update-agent-background"
                 >
                   {backgroundLine(r.background)}
@@ -673,290 +787,542 @@ function AgentList({ rows }: { rows: AgentRow[] }) {
   );
 }
 
-function Radio({
-  checked,
-  onSelect,
-  title,
-  badge,
-  children,
-  testId,
-}: {
-  checked: boolean;
-  onSelect: () => void;
-  title: string;
-  badge?: string;
-  children: ReactNode;
-  testId: string;
-}) {
-  const page = usePage();
-  return (
-    <label
-      className="flex cursor-pointer gap-3 rounded-md px-3 py-2.5"
-      style={{
-        border: `1px solid ${checked ? GREEN : page.border}`,
-        background: checked ? `${GREEN}14` : "transparent",
-      }}
-    >
-      <input
-        type="radio"
-        name="update-when"
-        checked={checked}
-        onChange={onSelect}
-        className="sr-only"
-        data-testid={testId}
-      />
-      <span
-        aria-hidden="true"
-        className="mt-0.5 flex shrink-0 items-center justify-center rounded-full"
-        style={{
-          width: 14,
-          height: 14,
-          border: `2px solid ${checked ? GREEN : page.statusFg}`,
-        }}
-      >
-        {checked && (
-          <span
-            className="rounded-full"
-            style={{ width: 6, height: 6, background: GREEN }}
-          />
-        )}
-      </span>
-      <span className="flex flex-col gap-0.5">
-        <span className="flex items-center gap-2">
-          <span className="text-xs font-semibold">{title}</span>
-          {badge && (
-            <span
-              className="rounded px-1.5 text-[10px]"
-              style={{ color: GREEN, border: `1px solid ${GREEN}66` }}
-            >
-              {badge}
-            </span>
-          )}
-        </span>
-        <span
-          className="text-xs leading-relaxed"
-          style={{ color: page.statusFg }}
-        >
-          {children}
-        </span>
-      </span>
-    </label>
-  );
-}
-
-/** "1 background process will be stopped: npm run dev". */
-function backgroundLine(procs: { command: string }[]): string {
-  const n = procs.length;
-  return `${n} background process${n === 1 ? "" : "es"} will be stopped: ${procs
-    .map((p) => p.command)
-    .join(" · ")}`;
-}
-
 /** Warn-only: agents that read idle but left work running in a background
  *  shell, which the restart stops. Never blocks the update. */
 function BackgroundWarning({ rows }: { rows: AgentRow[] }) {
+  const a = useAccents();
   const withBg = rows.filter((r) => r.background && r.background.length > 0);
   if (withBg.length === 0) return null;
   return (
     <div
       className="flex flex-col gap-1 rounded-md px-3 py-2 text-xs"
-      style={{ border: `1px solid ${AMBER}55`, background: `${AMBER}12` }}
+      style={{ border: `1px solid ${a.amber}88` }}
       data-testid="update-background-warning"
     >
       {withBg.map((r) => (
         <div key={r.id}>
-          <span className="font-semibold" style={{ color: AMBER }}>
+          <span className="font-semibold" style={{ color: a.amber }}>
             {r.name}:
           </span>{" "}
           {backgroundLine(r.background ?? [])}.
         </div>
       ))}
       <div>
-        The update stops it and nothing brings it back — start it again
-        afterwards if you still need it.
+        These don't restart on their own. Start them again afterwards if you
+        need them.
       </div>
     </div>
   );
 }
 
-/** "Interrupts a and b mid-task and dismisses c's question." */
-function interruptSummary(rows: AgentRow[]): string {
+/** The live agent check as a sentence. Also the dialog's status text. */
+function agentHeadline(
+  rows: AgentRow[],
+  busy: AgentRow[],
+): { title: string; detail: string } {
+  if (busy.length === 0) {
+    if (rows.length === 0)
+      return { title: "No agents running.", detail: "Nothing to interrupt." };
+    if (rows.length === 1)
+      return {
+        title: `${rows[0].name} is idle.`,
+        detail: "It reopens where it left off.",
+      };
+    return {
+      title: `All ${rows.length} agents are idle.`,
+      detail: "They reopen where they left off.",
+    };
+  }
+  return {
+    title: `${busyWho(busy)} ${busy.length === 1 ? "is" : "are"} mid-task.`,
+    detail: `Updating now stops ${busy.length === 1 ? "its" : "their"} current work.`,
+  };
+}
+
+function AgentCheck({
+  upgrade,
+  rows,
+  checkError,
+  onRetry,
+}: {
+  upgrade: UpgradeState | null;
+  rows: AgentRow[];
+  checkError: string | null;
+  onRetry: () => void;
+}) {
+  const page = usePage();
+  const a = useAccents();
   const busy = rows.filter((r) => r.busy);
-  const asking = busy
-    .filter((r) => r.status === "needs_input")
-    .map((r) => r.name);
-  const starting = busy
-    .filter((r) => r.reason === "first_task")
-    .map((r) => r.name);
-  const working = busy
-    .filter((r) => r.status !== "needs_input" && r.reason !== "first_task")
-    .map((r) => r.name);
-  const parts: string[] = [];
-  if (working.length) parts.push(`Interrupts ${joinNames(working)} mid-task`);
-  if (asking.length) {
-    const who =
-      asking.length === 1
-        ? `${asking[0]}'s question`
-        : `the questions from ${joinNames(asking)}`;
-    parts.push(`${working.length ? "dismisses" : "Dismisses"} ${who}`);
+  const box = {
+    border: `1px solid ${page.border}`,
+  };
+  if (!upgrade) {
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2 rounded-md px-3 py-2.5 text-xs"
+        style={box}
+        data-testid="update-agents"
+        data-state={checkError ? "error" : "checking"}
+      >
+        {checkError ? (
+          <>
+            <span style={{ color: a.red }}>
+              Couldn't check your agents: {checkError}
+            </span>
+            <Button onClick={onRetry}>Try again</Button>
+          </>
+        ) : (
+          <span
+            className="flex items-center gap-2"
+            style={{ color: page.statusFg }}
+          >
+            <Spinner size={12} /> Checking your agents…
+          </span>
+        )}
+      </div>
+    );
   }
-  if (starting.length) {
-    const whose =
-      starting.length === 1
-        ? `${starting[0]}'s first task`
-        : `the first tasks of ${joinNames(starting)}`;
-    parts.push(`${parts.length ? "loses" : "Loses"} ${whose}`);
-  }
-  return `${parts.join(" and ")}. Files they already wrote stay on disk.`;
+  const { title, detail } = agentHeadline(rows, busy);
+  return (
+    <div
+      className="flex flex-col gap-2 rounded-md px-3 py-2.5 text-xs"
+      style={box}
+      data-testid="update-agents"
+      data-state={busy.length ? "busy" : "clear"}
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span
+          className="flex items-center gap-1.5 font-semibold"
+          style={{ color: busy.length ? a.amber : a.green }}
+        >
+          {busy.length ? <Dot color={a.amber} /> : <CheckIcon />}
+          {title}
+        </span>
+        <span>{detail}</span>
+      </div>
+      {busy.length > 0 ? (
+        <AgentTable rows={rows} />
+      ) : (
+        rows.length > 0 && (
+          <details>
+            <summary
+              className="cursor-pointer"
+              style={{ color: page.statusFg }}
+            >
+              Details
+            </summary>
+            <div className="pt-2">
+              <AgentTable rows={rows} />
+            </div>
+          </details>
+        )
+      )}
+    </div>
+  );
 }
 
 function takesAbout(mode: VersionInfo["installMode"]): string {
-  if (mode === "bundle") return "30–60 seconds";
-  if (mode === "source") return "1–3 minutes (rebuilds from source)";
-  return "30–60 seconds (installed bundle) · 1–3 minutes (source install: rebuilds)";
+  if (mode === "bundle") return "Under a minute.";
+  if (mode === "source") return "About 1–3 minutes (it builds from source).";
+  return "About a minute.";
 }
 
-function CheckScreen({ info, flow }: { info: VersionInfo; flow: UpdateFlow }) {
+function SafetyLine({
+  info,
+  mode,
+}: {
+  info: VersionInfo;
+  mode: VersionInfo["installMode"];
+}) {
   const page = usePage();
+  return (
+    <p
+      className="text-xs leading-relaxed"
+      style={{ color: page.statusFg }}
+      data-testid="update-safety"
+    >
+      <span className="font-semibold" style={{ color: page.fg }}>
+        {takesAbout(mode)}
+      </span>{" "}
+      A snapshot of your{" "}
+      {SNAPSHOT_CONTENTS.charAt(0).toLowerCase() + SNAPSHOT_CONTENTS.slice(1)}{" "}
+      is saved first. If v{info.latest} doesn't start, autonomOS restores v
+      {info.version} on its own. You stay signed in.
+    </p>
+  );
+}
+
+// ── confirm: the one decision ───────────────────────────────────────────
+
+function ConfirmScreen({
+  info,
+  flow,
+  notes,
+}: {
+  info: VersionInfo;
+  flow: UpdateFlow;
+  notes: NotesState;
+}) {
   const { upgrade, checkError, actionError, pending } = flow;
   const rows = useAgentRows(upgrade);
-  const busyCount = upgrade?.busy.length ?? 0;
-  const [when, setWhen] = useState<"idle" | "now">("idle");
-
-  if (!upgrade) {
-    return (
-      <>
-        <Header step={1} title="Checking agents…" />
-        <div className="px-5 py-4 flex flex-col gap-3">
-          {checkError ? (
-            <ErrorLine>
-              Couldn't read the fleet's status: {checkError}
-            </ErrorLine>
-          ) : (
-            <div
-              className="flex items-center gap-2 text-xs"
-              style={{ color: page.statusFg }}
-            >
-              <Spinner size={12} /> Reading each agent's status…
-            </div>
-          )}
-        </div>
-        <Footer>
-          <Button onClick={flow.close}>Cancel</Button>
-          {checkError && <Button onClick={flow.retryCheck}>Retry</Button>}
-        </Footer>
-      </>
-    );
-  }
-
-  if (busyCount === 0) {
-    const n = rows.length;
-    return (
-      <>
-        <Header
-          step={1}
-          title={
-            <span className="flex items-center gap-2">
-              <span style={{ color: GREEN }}>
-                <CheckIcon size={16} />
-              </span>
-              {n === 0
-                ? "No agents are running"
-                : `All ${n} agent${n === 1 ? " is" : "s are"} idle`}
-            </span>
-          }
-          subtitle={
-            n === 0
-              ? "Safe to update."
-              : "Safe to update. They'll close briefly and reopen on their conversations."
-          }
-        />
-        <div
-          className="px-5 py-4 flex flex-col gap-3"
-          data-testid="update-check-clear"
-        >
-          <dl className="grid grid-cols-[9rem_1fr] gap-x-3 gap-y-2 text-xs">
-            <dt style={{ color: page.statusFg }}>Takes about</dt>
-            <dd>{takesAbout(upgrade.installMode ?? info.installMode)}</dd>
-            <dt style={{ color: page.statusFg }}>You stay signed in</dt>
-            <dd>Your access token doesn't change</dd>
-            <dt style={{ color: page.statusFg }}>Snapshot first</dt>
-            <dd>
-              Your agents' setup is saved before anything changes — restore it
-              any time from Settings → Updates
-            </dd>
-            <dt style={{ color: page.statusFg }}>If it goes wrong</dt>
-            <dd>
-              autonomOS rolls itself back to v{info.version} — code and snapshot
-              together
-            </dd>
-          </dl>
-          <BackgroundWarning rows={rows} />
-          {actionError && <ErrorLine>{actionError}</ErrorLine>}
-        </div>
-        <Footer>
-          <Button onClick={flow.open}>Back</Button>
-          <Button
-            kind="primary"
-            disabled={pending}
-            onClick={() => void flow.start("now", info.latest)}
-            data-testid="update-start"
-          >
-            Update to v{info.latest}
-          </Button>
-        </Footer>
-      </>
-    );
-  }
-
-  const idleSecs = Math.round((upgrade.idleWindowMs || 30_000) / 1000);
+  const busy = rows.filter((r) => r.busy);
+  const releases = notes.kind === "ok" ? notes.releases : [];
+  const newestDate = releases[0]
+    ? formatReleaseDate(releases[0].publishedAt)
+    : null;
+  const subtitle = [
+    `You're on v${info.version}`,
+    newestDate && `released ${newestDate}`,
+    releases.length > 1 && `${releases.length} releases since yours`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  // Never offer the restart before we know who it would interrupt.
+  const known = upgrade !== null;
   return (
     <>
       <Header
-        step={1}
-        title={`${busyCount} agent${busyCount === 1 ? " is" : "s are"} mid-task`}
-        subtitle="Updating restarts autonomOS. Every agent's terminal closes and reopens on its saved conversation. A snapshot of your agents' setup is saved before anything changes."
+        title={`Update autonomOS to v${info.latest}`}
+        subtitle={subtitle}
+      />
+      <div className="flex flex-col gap-3 px-4 pb-4 sm:px-5">
+        {actionError && <ErrorLine>{actionError}</ErrorLine>}
+        <AgentCheck
+          upgrade={upgrade}
+          rows={rows}
+          checkError={checkError}
+          onRetry={flow.retryCheck}
+        />
+        <BackgroundWarning rows={rows} />
+        <SafetyLine
+          info={info}
+          mode={upgrade?.installMode ?? info.installMode}
+        />
+        <Callouts notes={notes} info={info} />
+        <NotesBox notes={notes} info={info} />
+      </div>
+      <Footer>
+        <Button onClick={flow.close}>Not now</Button>
+        {busy.length > 0 ? (
+          <>
+            <Button
+              kind="danger"
+              disabled={pending}
+              onClick={() => void flow.start("now", info.latest)}
+              data-testid="update-now-interrupt"
+            >
+              Update now · interrupts {busyWho(busy)}
+            </Button>
+            <Button
+              kind="primary"
+              disabled={pending}
+              onClick={() => void flow.start("idle", info.latest)}
+              data-testid="update-start"
+            >
+              Update when idle
+            </Button>
+          </>
+        ) : (
+          <Button
+            kind="primary"
+            disabled={pending || !known}
+            onClick={() => void flow.start("now", info.latest)}
+            data-testid="update-start"
+          >
+            Update and restart
+          </Button>
+        )}
+      </Footer>
+    </>
+  );
+}
+
+// ── waiting for idle ────────────────────────────────────────────────────
+
+function WaitingScreen({
+  info,
+  flow,
+}: {
+  info: VersionInfo;
+  flow: UpdateFlow;
+}) {
+  const page = usePage();
+  const a = useAccents();
+  const { upgrade, actionError, pending } = flow;
+  const rows = useAgentRows(upgrade);
+  const busy = rows.filter((r) => r.busy);
+  const target = upgrade?.armed?.target ?? info.latest;
+  const idleSecs = Math.round((upgrade?.idleWindowMs || 30_000) / 1000);
+  return (
+    <>
+      <Header
+        title={
+          busy.length
+            ? `v${target} is waiting for ${busyWho(busy)}`
+            : `v${target} starts in a moment`
+        }
+        subtitle={`It starts once every agent has been idle for ${idleSecs} seconds. Keep working; new activity resets the wait.`}
+        icon={
+          <span className="pt-1" style={{ color: a.amber }}>
+            <Spinner size={16} />
+          </span>
+        }
       />
       <div
-        className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3"
-        data-testid="update-check-busy"
+        className="flex flex-col gap-3 px-4 pb-4 sm:px-5"
+        data-testid="update-waiting"
       >
-        <AgentList rows={rows} />
-        <div
-          className="flex flex-col gap-2"
-          role="radiogroup"
-          aria-label="When to update"
-        >
-          <Radio
-            checked={when === "idle"}
-            onSelect={() => setWhen("idle")}
-            title="Update when they're idle"
-            badge="Recommended"
-            testId="update-when-idle"
-          >
-            We wait until every agent has been idle for {idleSecs} seconds, then
-            update automatically. Keep working — a new turn just pushes it back.
-          </Radio>
-          <Radio
-            checked={when === "now"}
-            onSelect={() => setWhen("now")}
-            title="Update now"
-            testId="update-when-now"
-          >
-            {interruptSummary(rows)}
-          </Radio>
-        </div>
         {actionError && <ErrorLine>{actionError}</ErrorLine>}
+        {busy.length > 0 ? (
+          <AgentTable rows={busy} />
+        ) : (
+          <div
+            className="flex items-center gap-1.5 text-xs font-semibold"
+            style={{ color: a.green }}
+          >
+            <CheckIcon /> Every agent is idle.
+          </div>
+        )}
+        <SafetyLine
+          info={{ ...info, latest: target }}
+          mode={upgrade?.installMode ?? info.installMode}
+        />
       </div>
-      <Footer left="Status is read live from each agent.">
-        <Button onClick={flow.close}>Cancel</Button>
+      <Footer
+        left={
+          <span style={{ color: page.statusFg }}>
+            Closing this keeps the wait going.
+          </span>
+        }
+      >
         <Button
-          kind={when === "now" ? "danger" : "primary"}
-          disabled={pending}
-          onClick={() => void flow.start(when, info.latest)}
-          data-testid="update-start"
+          onClick={() => void flow.cancelArmed()}
+          data-testid="update-cancel-armed"
         >
-          {when === "idle" ? "Wait, then update" : "Update now"}
+          Cancel update
+        </Button>
+        <Button
+          kind={busy.length ? "danger" : "secondary"}
+          disabled={pending}
+          onClick={() => void flow.start("now", target)}
+          data-testid="update-waiting-now"
+        >
+          {busy.length
+            ? `Update now · interrupts ${busyWho(busy)}`
+            : "Update now"}
+        </Button>
+        <Button kind="primary" onClick={flow.close}>
+          Close
+        </Button>
+      </Footer>
+    </>
+  );
+}
+
+// ── progress ────────────────────────────────────────────────────────────
+
+const STAGE_NAMES = ["Preparing", "Restarting", "Reopening agents"] as const;
+
+function stageHints(mode: VersionInfo["installMode"] | "rollback"): string[] {
+  const first =
+    mode === "rollback"
+      ? "Save today's state, put the old version back"
+      : mode === "source"
+        ? "Fetch, snapshot, build"
+        : "Download, check, snapshot, install";
+  return [first, "About 10 seconds", "Each one on its conversation"];
+}
+
+/** The three stages. State is text too (not only color or an icon). */
+function Stages({
+  stage,
+  detail,
+  hints,
+}: {
+  stage: Stage;
+  detail: string;
+  hints: string[];
+}) {
+  const page = usePage();
+  const a = useAccents();
+  return (
+    <ol
+      aria-label="Progress"
+      className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+      data-testid="update-stages"
+    >
+      {STAGE_NAMES.map((name, i) => {
+        const state = i < stage ? "done" : i === stage ? "active" : "todo";
+        return (
+          <li
+            key={name}
+            data-stage={i}
+            data-state={state}
+            aria-current={state === "active" ? "step" : undefined}
+            className="flex flex-col gap-0.5 rounded-md px-3 py-2 text-xs"
+            style={{
+              border: `1px solid ${state === "active" ? a.blue : state === "done" ? `${a.green}88` : page.border}`,
+              opacity: state === "todo" ? 0.7 : 1,
+            }}
+          >
+            <span className="flex items-center gap-1.5 font-semibold">
+              {state === "done" ? (
+                <span style={{ color: a.green }}>
+                  <CheckIcon />
+                </span>
+              ) : state === "active" ? (
+                <Spinner size={12} color={a.blue} />
+              ) : null}
+              {name}
+              <span className="sr-only">
+                {state === "done"
+                  ? " (done)"
+                  : state === "active"
+                    ? " (in progress)"
+                    : " (not started)"}
+              </span>
+            </span>
+            <span style={{ color: page.statusFg }}>
+              {state === "active"
+                ? detail
+                : state === "done"
+                  ? "Done"
+                  : hints[i]}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function UpdatingScreen({
+  info,
+  flow,
+  notes,
+}: {
+  info: VersionInfo;
+  flow: UpdateFlow;
+  notes: NotesState;
+}) {
+  const page = usePage();
+  const a = useAccents();
+  const rec = flow.record;
+  const to = rec?.to ?? flow.upgrade?.armed?.target ?? info.latest;
+  const mode = flow.upgrade?.installMode ?? info.installMode;
+  const asset =
+    info.platform && info.arch
+      ? `autonomos-${info.platform}-${info.arch}.tar.gz`
+      : undefined;
+  const rollback = rec?.kind === "rollback";
+  const steps = stepsFor(rollback ? "rollback" : mode, to, {
+    asset,
+    snapshotId: rec?.snapshotId,
+    waitIdle: rec?.waitIdle,
+    waitingMessage: rec?.phase === "waiting_idle" ? rec.message : undefined,
+  });
+  // Monotonic within a run: a source job re-checks idle and refreshes its
+  // snapshot AFTER the build — that must not walk anything backwards.
+  const furthest = useRef<{ run: string | undefined; i: number; s: Stage }>({
+    run: undefined,
+    i: 0,
+    s: 0,
+  });
+  const computed = activeStepIndex(steps, rec?.phase, !!rec?.verification);
+  const computedStage = stageFor(rec?.phase);
+  if (furthest.current.run !== rec?.startedAt) {
+    furthest.current = { run: rec?.startedAt, i: computed, s: computedStage };
+  } else {
+    furthest.current.i = Math.max(furthest.current.i, computed);
+    furthest.current.s = Math.max(furthest.current.s, computedStage) as Stage;
+  }
+  const active = furthest.current.i;
+  const stage = furthest.current.s;
+  const detail = stageDetail(rec?.phase, to, {
+    rollback,
+    message: rec?.message,
+  });
+  return (
+    <>
+      <Header
+        title={rollback ? `Restoring v${to}` : `Updating to v${to}`}
+        subtitle="Runs on the server. Closing this won't stop it."
+      />
+      <div className="flex flex-col gap-3 px-4 pb-4 sm:px-5">
+        <Stages
+          stage={stage}
+          detail={detail}
+          hints={stageHints(rollback ? "rollback" : mode)}
+        />
+        {rec?.message && rec.phase !== "waiting_idle" && (
+          <div className="text-xs" style={{ color: page.statusFg }}>
+            {rec.message}
+          </div>
+        )}
+        <details className="text-xs">
+          <summary className="cursor-pointer" style={{ color: a.blue }}>
+            Show details
+          </summary>
+          <ol className="flex flex-col gap-2 pt-2" data-testid="update-steps">
+            {steps.map((s, i) => {
+              const state =
+                i < active ? "done" : i === active ? "active" : "pending";
+              return (
+                <li
+                  key={s.id}
+                  data-step={s.id}
+                  data-state={state}
+                  aria-current={state === "active" ? "step" : undefined}
+                  className="flex items-start gap-2"
+                >
+                  <span
+                    className="mt-px flex w-3.5 shrink-0 justify-center"
+                    style={{
+                      color:
+                        state === "done"
+                          ? a.green
+                          : state === "active"
+                            ? a.blue
+                            : page.statusFg,
+                    }}
+                  >
+                    {state === "done" ? (
+                      <CheckIcon size={13} />
+                    ) : state === "active" ? (
+                      <Spinner size={12} />
+                    ) : (
+                      "·"
+                    )}
+                  </span>
+                  <span className="flex flex-col">
+                    <span
+                      style={{
+                        color: state === "pending" ? page.statusFg : page.fg,
+                      }}
+                    >
+                      {s.label}
+                      <span className="sr-only">
+                        {state === "done"
+                          ? " (done)"
+                          : state === "active"
+                            ? " (in progress)"
+                            : ""}
+                      </span>
+                    </span>
+                    {s.detail && (
+                      <span style={{ color: page.statusFg }}>{s.detail}</span>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </details>
+        {!rollback && <NotesBox notes={notes} info={{ ...info, latest: to }} />}
+      </div>
+      <Footer>
+        <Button kind="primary" onClick={flow.close}>
+          Close
         </Button>
       </Footer>
     </>
@@ -992,16 +1358,16 @@ function NotSupervisedScreen({
         subtitle={
           devCheckout && !forRollback
             ? "This is a development checkout, so it can't update itself. Run this in the checkout:"
-            : "This autonomOS isn't running as a background service, so it can't restart itself. Run this on the machine it's running on:"
+            : "autonomOS isn't running as a background service, so it can't restart itself. Run this on the machine running it:"
         }
       />
       <div
-        className="px-5 py-4 flex flex-col gap-3"
+        className="px-4 pb-4 sm:px-5 flex flex-col gap-3"
         data-testid="update-not-supervised"
       >
         <div
           className="flex items-center justify-between gap-3 rounded px-3 py-2 font-mono text-xs"
-          style={{ background: page.border }}
+          style={{ border: `1px solid ${page.border}` }}
         >
           <span data-testid="update-command">{command}</span>
           <Button onClick={() => copy(command)}>
@@ -1024,115 +1390,6 @@ function NotSupervisedScreen({
   );
 }
 
-// ── updating ────────────────────────────────────────────────────────────
-
-function UpdatingScreen({
-  info,
-  flow,
-}: {
-  info: VersionInfo;
-  flow: UpdateFlow;
-}) {
-  const page = usePage();
-  const rec = flow.record;
-  const to = rec?.to ?? flow.upgrade?.armed?.target ?? info.latest;
-  const mode = flow.upgrade?.installMode ?? info.installMode;
-  const asset =
-    info.platform && info.arch
-      ? `autonomos-${info.platform}-${info.arch}.tar.gz`
-      : undefined;
-  const rollback = rec?.kind === "rollback";
-  const steps = stepsFor(rollback ? "rollback" : mode, to, {
-    asset,
-    snapshotId: rec?.snapshotId,
-    waitIdle: rec?.waitIdle,
-    waitingMessage: rec?.phase === "waiting_idle" ? rec.message : undefined,
-  });
-  // Monotonic within a run: a source job re-checks idle and refreshes its
-  // snapshot AFTER the build — that must not walk the list backwards.
-  const furthest = useRef<{ run: string | undefined; i: number }>({
-    run: undefined,
-    i: 0,
-  });
-  const computed = activeStepIndex(steps, rec?.phase, !!rec?.verification);
-  if (furthest.current.run !== rec?.startedAt) {
-    furthest.current = { run: rec?.startedAt, i: computed };
-  } else if (computed > furthest.current.i) {
-    furthest.current.i = computed;
-  }
-  const active = furthest.current.i;
-  return (
-    <>
-      <Header
-        step={rollback ? undefined : 2}
-        title={rollback ? `Restoring v${to}` : `Updating to v${to}`}
-        subtitle="Runs on the server — closing this tab won't stop it."
-      />
-      <ol className="px-5 py-4 flex flex-col gap-3" data-testid="update-steps">
-        {steps.map((s, i) => {
-          const state =
-            i < active ? "done" : i === active ? "active" : "pending";
-          return (
-            <li
-              key={s.id}
-              data-step={s.id}
-              data-state={state}
-              className="flex items-start gap-3 text-xs"
-            >
-              <span
-                className="mt-px flex shrink-0 items-center justify-center rounded-full"
-                style={{
-                  width: 16,
-                  height: 16,
-                  color:
-                    state === "done"
-                      ? GREEN
-                      : state === "active"
-                        ? BLUE
-                        : page.statusFg,
-                  border:
-                    state === "pending"
-                      ? `1.5px solid ${page.border}`
-                      : undefined,
-                }}
-              >
-                {state === "done" ? (
-                  <CheckIcon size={14} />
-                ) : state === "active" ? (
-                  <Spinner size={14} />
-                ) : null}
-              </span>
-              <span className="flex flex-col gap-0.5">
-                <span
-                  className={state === "active" ? "font-semibold" : undefined}
-                  style={{
-                    color: state === "pending" ? page.statusFg : page.fg,
-                  }}
-                >
-                  {s.label}
-                </span>
-                {s.detail && (
-                  <span style={{ color: page.statusFg }}>{s.detail}</span>
-                )}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-      {/* While waiting for idle, the "Wait for idle" step already carries
-          the job's word — don't say it twice. */}
-      {rec?.message && rec.phase !== "waiting_idle" && (
-        <div className="px-5 pb-3 text-xs" style={{ color: page.statusFg }}>
-          {rec.message}
-        </div>
-      )}
-      <Footer>
-        <Button onClick={flow.close}>Hide</Button>
-      </Footer>
-    </>
-  );
-}
-
 // ── rolled back / failed ────────────────────────────────────────────────
 
 function detailsText(rec: UpgradeStatusRecord): string {
@@ -1145,6 +1402,7 @@ function detailsText(rec: UpgradeStatusRecord): string {
 
 function FailedScreen({ flow }: { flow: UpdateFlow }) {
   const page = usePage();
+  const a = useAccents();
   const [copied, copy] = useCopy();
   const rec = flow.record;
   if (!rec) return null;
@@ -1152,38 +1410,34 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
   const restore = rec.kind === "rollback";
   return (
     <>
-      <div
-        className="flex gap-3 px-5 pt-4 pb-3"
-        style={{ borderBottom: `1px solid ${page.border}` }}
-      >
-        <span style={{ color: rolledBack ? AMBER : RED }}>
-          <WarnIcon size={20} />
-        </span>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-base font-semibold">
-            {restore
-              ? `Restoring v${rec.to} didn't finish`
-              : rolledBack
-                ? `v${rec.to} didn't start — you're back on v${rec.from}`
-                : `The update to v${rec.to} failed`}
-          </h2>
-          <div
-            className="text-xs"
-            style={{ color: page.statusFg }}
-            data-testid="update-failed-summary"
+      <Header
+        icon={
+          <span
+            className="pt-0.5"
+            style={{ color: rolledBack ? a.amber : a.red }}
           >
-            {restore
-              ? "See what happened below. Run autonomos status on the host to see which version is running."
-              : rolledBack
-                ? rec.snapshotId
-                  ? "autonomOS restored the previous version and your agents' setup from the snapshot taken just before, and your agents reopened. Nothing else changed."
-                  : "autonomOS restored the previous version automatically and your agents reopened. Nothing else changed."
-                : "The update didn't finish. See what happened below, and run autonomos status on the host to see which version is running."}
-          </div>
-        </div>
-      </div>
+            <WarnIcon size={20} />
+          </span>
+        }
+        title={
+          restore
+            ? `Restoring v${rec.to} didn't finish`
+            : rolledBack
+              ? `v${rec.to} didn't start — you're back on v${rec.from}`
+              : `The update to v${rec.to} didn't finish`
+        }
+        subtitle={
+          <span data-testid="update-failed-summary">
+            {rolledBack && !restore
+              ? rec.snapshotId
+                ? `autonomOS restored v${rec.from} and the snapshot from just before, and your agents reopened. Nothing else changed.`
+                : `autonomOS restored v${rec.from} on its own and your agents reopened. Nothing else changed.`
+              : "autonomOS may be on either version. Run autonomos status on the machine running it."}
+          </span>
+        }
+      />
       <div
-        className="px-5 py-4 flex flex-col gap-2"
+        className="px-4 pb-4 sm:px-5 flex flex-col gap-2"
         data-testid="update-failed"
       >
         <div
@@ -1194,7 +1448,7 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
         </div>
         <pre
           className="whitespace-pre-wrap rounded px-3 py-2 font-mono text-xs"
-          style={{ background: page.border }}
+          style={{ border: `1px solid ${page.border}` }}
           data-testid="update-failed-message"
         >
           {rec.message ?? "No details were recorded."}
@@ -1210,7 +1464,7 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
         <Button onClick={flow.close}>Close</Button>
         <Button
           kind="primary"
-          onClick={restore ? flow.openRestore : flow.goCheck}
+          onClick={restore ? flow.openRestore : flow.review}
         >
           Try again
         </Button>
@@ -1222,33 +1476,25 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
 // ── 401 after reconnect ─────────────────────────────────────────────────
 
 function AuthRejectedScreen({ flow }: { flow: UpdateFlow }) {
-  const page = usePage();
+  const a = useAccents();
   return (
     <>
-      <div
-        className="flex gap-3 px-5 pt-4 pb-3"
-        style={{ borderBottom: `1px solid ${page.border}` }}
-      >
-        <span style={{ color: RED }}>
-          <WarnIcon size={20} />
-        </span>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-base font-semibold">
-            Your session token was rejected after the update
-          </h2>
-          <div
-            className="text-xs"
-            style={{ color: page.statusFg }}
-            data-testid="update-auth-rejected"
-          >
-            autonomOS is answering again, but it no longer accepts this
-            browser's sign-in. Updates are meant to keep your access token, so
-            this is unexpected — check{" "}
-            <span className="font-mono">autonomos status</span> on the host.
-            Reloading will ask you to sign in again.
-          </div>
-        </div>
-      </div>
+      <Header
+        icon={
+          <span className="pt-0.5" style={{ color: a.red }}>
+            <WarnIcon size={20} />
+          </span>
+        }
+        title="Sign in again"
+        subtitle={
+          <span data-testid="update-auth-rejected">
+            autonomOS restarted but didn't accept this browser's access token.
+            Updates keep your token, so this isn't expected — check{" "}
+            <span className="font-mono">autonomos status</span> on the machine
+            running it.
+          </span>
+        }
+      />
       <Footer>
         <Button onClick={flow.close}>Close</Button>
         <Button kind="primary" onClick={() => window.location.reload()}>
@@ -1263,12 +1509,13 @@ function AuthRejectedScreen({ flow }: { flow: UpdateFlow }) {
 
 function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
   const page = usePage();
+  const a = useAccents();
   const { restore, pending, actionError } = flow;
   if (restore.kind !== "ok") {
     return (
       <>
-        <Header title="Restore previous version" />
-        <div className="px-5 py-4 flex flex-col gap-3">
+        <Header title="Restore a previous version" />
+        <div className="px-4 pb-4 sm:px-5 flex flex-col gap-3">
           {restore.kind === "loading" ? (
             <div
               className="flex items-center gap-2 text-xs"
@@ -1283,7 +1530,7 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
           )}
         </div>
         <Footer>
-          <Button onClick={flow.close}>Cancel</Button>
+          <Button onClick={flow.close}>Not now</Button>
         </Footer>
       </>
     );
@@ -1309,38 +1556,33 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
   return (
     <>
       <Header
-        title={`Restore v${target.version} and your agents' setup?`}
+        title={`Restore v${target.version}?`}
         subtitle={
           target.snapshotId
-            ? "Puts back the version you had and the snapshot taken just before updating, together — old code never runs on newer records."
+            ? `Brings back v${target.version} and the snapshot saved just before you updated.`
             : undefined
         }
       />
       <div
-        className="px-5 py-4 flex flex-col gap-3"
+        className="px-4 pb-4 sm:px-5 flex flex-col gap-3"
         data-testid="restore-confirm"
       >
         {!target.snapshotId && (
           <div
             data-testid="restore-no-snapshot"
             className="flex gap-3 rounded-md px-3 py-2.5 text-xs"
-            style={{
-              background: `${AMBER}14`,
-              border: `1px solid ${AMBER}55`,
-              color: page.fg,
-            }}
+            style={{ border: `1px solid ${a.amber}88` }}
           >
-            <span style={{ color: AMBER }}>
-              <WarnIcon size={16} />
+            <span style={{ color: a.amber }}>
+              <WarnIcon />
             </span>
             <span>
-              No snapshot pairs with v{target.version} (it was installed before
-              snapshots existed) — only the code is restored; agent records stay
-              as they are.
+              v{target.version} predates snapshots, so only the version is
+              restored. Your agents, schedules and settings stay as they are.
             </span>
           </div>
         )}
-        <dl className="grid grid-cols-[9rem_1fr] gap-x-3 gap-y-2 text-xs">
+        <dl className="grid grid-cols-1 gap-x-3 gap-y-1 text-xs sm:grid-cols-[10rem_1fr] sm:gap-y-2">
           {target.snapshotId && (
             <>
               <dt style={dt}>Snapshot</dt>
@@ -1349,33 +1591,41 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
                   ? `${formatSnapshotDate(snap.createdAt)} · ${formatBytes(snap.bytes)}`
                   : target.snapshotId}
               </dd>
-              <dt style={dt}>Location</dt>
+              <dt style={dt}>Changes since the update</dt>
               <dd>
-                <span className="font-mono">
-                  snapshots/{target.snapshotId}/
-                </span>{" "}
-                in your autonomOS config folder
-              </dd>
-              <dt style={dt}>Won't carry back</dt>
-              <dd>
-                Changes made since the update — agents, schedules, presets,
-                settings. They aren't lost: today's setup is saved as its own
-                snapshot first, and rolling forward again restores it.
+                {SNAPSHOT_CONTENTS} changed since then aren't carried over.
+                They're saved as a new snapshot first, so updating again brings
+                them back.
               </dd>
             </>
           )}
-          <dt style={dt}>Never touched</dt>
-          <dd>
-            Conversations themselves (Claude Code, Codex and Gemini keep their
-            own history)
-          </dd>
-          <dt style={dt}>From a terminal</dt>
-          <dd className="font-mono">autonomos rollback</dd>
+          <dt style={dt}>Not affected</dt>
+          <dd>Conversations. Each CLI keeps its own history.</dd>
         </dl>
+        <details className="text-xs">
+          <summary className="cursor-pointer" style={{ color: a.blue }}>
+            Show details
+          </summary>
+          <dl className="grid grid-cols-1 gap-x-3 gap-y-1 pt-2 sm:grid-cols-[10rem_1fr]">
+            {target.snapshotId && (
+              <>
+                <dt style={dt}>Location</dt>
+                <dd>
+                  <span className="font-mono">
+                    snapshots/{target.snapshotId}/
+                  </span>{" "}
+                  in your autonomOS config folder
+                </dd>
+              </>
+            )}
+            <dt style={dt}>From a terminal</dt>
+            <dd className="font-mono">autonomos rollback</dd>
+          </dl>
+        </details>
         {actionError && <ErrorLine>{actionError}</ErrorLine>}
       </div>
       <Footer>
-        <Button onClick={flow.close}>Cancel</Button>
+        <Button onClick={flow.close}>Not now</Button>
         <Button
           kind="primary"
           disabled={pending}
@@ -1391,15 +1641,39 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
 
 // ── the switch ──────────────────────────────────────────────────────────
 
-const LABELS: Record<Exclude<UpdateFlow["view"], "closed">, string> = {
-  notes: "What's new",
-  check: "Check agents",
-  notSupervised: "Update from a terminal",
-  updating: "Updating autonomOS",
-  failed: "Update failed",
-  authRejected: "Session rejected",
-  restoreConfirm: "Restore previous version",
-};
+/** What the polite status region says for the current screen. */
+function statusText(
+  flow: UpdateFlow,
+  info: VersionInfo,
+  rows: AgentRow[],
+): string {
+  switch (flow.view) {
+    case "confirm": {
+      if (!flow.upgrade)
+        return flow.checkError
+          ? `Couldn't check your agents: ${flow.checkError}`
+          : "Checking your agents…";
+      const h = agentHeadline(
+        rows,
+        rows.filter((r) => r.busy),
+      );
+      return `${h.title} ${h.detail}`;
+    }
+    case "waiting": {
+      const n = flow.upgrade?.busy.length ?? 0;
+      return n
+        ? `Waiting for ${plural(n, "agent")} to finish.`
+        : "Every agent is idle. Starting shortly.";
+    }
+    case "updating": {
+      const rec = flow.record;
+      const to = rec?.to ?? info.latest;
+      return `${STAGE_NAMES[stageFor(rec?.phase)]}: ${stageDetail(rec?.phase, to, { rollback: rec?.kind === "rollback", message: rec?.message })}`;
+    }
+    default:
+      return "";
+  }
+}
 
 export function UpdateDialog({
   info,
@@ -1408,18 +1682,24 @@ export function UpdateDialog({
   info: VersionInfo;
   flow: UpdateFlow;
 }) {
-  if (flow.view === "closed") return null;
+  const open = flow.view !== "closed";
+  const notes = useReleaseNotes(
+    info.latest,
+    open && (flow.view === "confirm" || flow.view === "updating"),
+  );
+  const rows = useAgentRows(flow.upgrade);
+  const onClose = useCallback(() => flow.close(), [flow.close]);
+  if (!open) return null;
   return (
-    <DialogShell label={LABELS[flow.view]} onClose={flow.close}>
-      {flow.view === "notes" && (
-        <NotesScreen
-          info={info}
-          notice={flow.actionError}
-          onLater={flow.close}
-          onContinue={flow.goCheck}
-        />
+    <DialogShell
+      viewKey={flow.view}
+      status={statusText(flow, info, rows)}
+      onClose={onClose}
+    >
+      {flow.view === "confirm" && (
+        <ConfirmScreen info={info} flow={flow} notes={notes} />
       )}
-      {flow.view === "check" && <CheckScreen info={info} flow={flow} />}
+      {flow.view === "waiting" && <WaitingScreen info={info} flow={flow} />}
       {flow.view === "notSupervised" && (
         <NotSupervisedScreen
           info={info}
@@ -1427,7 +1707,9 @@ export function UpdateDialog({
           onDone={flow.close}
         />
       )}
-      {flow.view === "updating" && <UpdatingScreen info={info} flow={flow} />}
+      {flow.view === "updating" && (
+        <UpdatingScreen info={info} flow={flow} notes={notes} />
+      )}
       {flow.view === "failed" && <FailedScreen flow={flow} />}
       {flow.view === "authRejected" && <AuthRejectedScreen flow={flow} />}
       {flow.view === "restoreConfirm" && <RestoreConfirmScreen flow={flow} />}
@@ -1437,48 +1719,83 @@ export function UpdateDialog({
 
 // ── full-screen reconnecting overlay ────────────────────────────────────
 
+/** Up from the moment the daemon goes down until the page reloads — through
+ *  the new version's health check, so "Restarting" never flashes away and
+ *  leaves a spinner behind it. */
 export function ReconnectingOverlay({
   to,
+  phase,
+  rollback,
   elapsedMs,
   gaveUp,
 }: {
   to: string;
+  phase?: UpgradePhase;
+  rollback?: boolean;
   elapsedMs: number;
   gaveUp: boolean;
 }) {
   const page = usePage();
+  const a = useAccents();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement;
+    const release = holdAppInert();
+    ref.current?.querySelector<HTMLElement>("h2")?.focus();
+    return () => {
+      release();
+      if (prev instanceof HTMLElement && prev.isConnected) prev.focus();
+    };
+  }, []);
+  const stage: Stage = phase === "done" ? 2 : 1;
+  const detail = stageDetail(phase ?? "restarting", to, { rollback });
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center font-sans"
+      ref={ref}
+      className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto p-4 font-sans"
       style={{ background: `${page.bg}f2`, color: page.fg }}
-      role="alertdialog"
+      role="dialog"
       aria-modal="true"
-      aria-label="Reconnecting"
+      aria-labelledby="update-reconnect-title"
       data-testid="update-reconnecting"
+      onKeyDown={(e) => trapTab(e, ref.current)}
     >
-      <div className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
-        <span style={{ color: BLUE }}>
-          <Spinner size={28} />
-        </span>
-        <div className="text-base font-semibold">
-          autonomOS is restarting on v{to}
-        </div>
-        <div className="font-mono text-xs" style={{ color: page.statusFg }}>
+      <div className="flex w-[560px] max-w-full flex-col gap-4">
+        <h2
+          id="update-reconnect-title"
+          tabIndex={-1}
+          className="text-base font-semibold outline-none"
+        >
+          {rollback ? `Restoring v${to}` : `Restarting autonomOS on v${to}`}
+        </h2>
+        <Stages
+          stage={stage}
+          detail={detail}
+          hints={stageHints(rollback ? "rollback" : null)}
+        />
+        <output aria-live="polite" className="sr-only">
+          {`${STAGE_NAMES[stage]}: ${detail}`}
+        </output>
+        <div
+          className="font-mono text-xs"
+          style={{ color: page.statusFg }}
+          aria-hidden="true"
+        >
           Reconnecting… {Math.floor(elapsedMs / 1000)}s
         </div>
         {gaveUp ? (
           <div
+            role="alert"
             className="text-xs"
-            style={{ color: AMBER }}
+            style={{ color: a.amber }}
             data-testid="update-gave-up"
           >
-            autonomOS isn't responding. On the host, run{" "}
+            autonomOS hasn't come back. On the machine running it, run{" "}
             <span className="font-mono">autonomos status</span>.
           </div>
         ) : (
           <div className="text-xs" style={{ color: page.statusFg }}>
-            You'll stay signed in. This page reloads itself when the new version
-            answers.
+            You'll stay signed in. This page reloads when autonomOS is back.
           </div>
         )}
       </div>

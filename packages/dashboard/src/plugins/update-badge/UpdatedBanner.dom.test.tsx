@@ -102,7 +102,9 @@ describe("UpdatedBanner", () => {
       interruptedNames: [],
     });
     await vi.waitFor(() =>
-      expect(banner.textContent).toContain("didn't report back"),
+      expect(banner.textContent).toContain(
+        "Couldn't confirm your agents reopened",
+      ),
     );
     expect(banner.getAttribute("data-tone")).toBe("attention");
   });
@@ -157,24 +159,24 @@ describe("UpdatedBanner", () => {
     });
   });
 
-  it("shows 'Verifying agents…' until the check lands, then a green all-verified line", async () => {
+  it("says it's checking until the check lands, then a green all-reopened line", async () => {
     status = doneRecord(); // no verification yet
     const banner = await renderWith({
       updatedTo: "0.7.0",
       interruptedNames: ["api-refactor", "codex-tests"],
     });
     expect(banner.textContent).toContain("Updated to v0.7.0.");
-    expect(banner.textContent).toContain("Verifying agents…");
+    expect(banner.textContent).toContain("Checking that your agents reopened…");
     // Read-and-clear: a manual reload must not re-announce.
     expect(sessionStorage.getItem("autonomos:updated")).toBeNull();
 
     status = doneRecord({
       verification: { checkedAt: "x", checked: 5, problems: [] },
     });
-    await screen.findByText(/All 5 agents verified/);
+    await screen.findByText(/All 5 agents reopened/);
     expect(banner.getAttribute("data-tone")).toBe("ok");
     expect(banner.textContent).toContain(
-      "api-refactor and codex-tests were interrupted mid-task",
+      "api-refactor and codex-tests were interrupted. Prompt them to continue",
     );
     expect(screen.queryByTestId("banner-restore")).toBeNull();
 
@@ -203,9 +205,12 @@ describe("UpdatedBanner", () => {
       updatedTo: "0.7.0",
       interruptedNames: [],
     });
-    await screen.findByText(/1 agent needs attention/);
+    await screen.findByText(/but codex-tests needs a look/);
     expect(banner.getAttribute("data-tone")).toBe("attention");
-    expect(banner.textContent).toContain("codex-tests couldn't be verified");
+    // The Restore action names the version it goes back to.
+    expect(screen.getByTestId("banner-restore").textContent).toBe(
+      "Restore v0.6.1",
+    );
     // Nothing was requested just by showing the problem.
     expect(useUpdateBus.getState().restoreNonce).toBe(nonceBefore);
 
@@ -216,7 +221,7 @@ describe("UpdatedBanner", () => {
       "Codex thread id missing from its record",
     );
     expect(screen.getByTestId("updated-banner-details").textContent).toContain(
-      "puts back v0.6.1",
+      "Restore v0.6.1 goes back to the version and snapshot from before this update",
     );
 
     fireEvent.click(screen.getByTestId("banner-restore"));
@@ -231,7 +236,7 @@ describe("UpdatedBanner", () => {
       interruptedNames: [],
     });
     await screen.findByText(/2 agents reopened/);
-    expect(banner.textContent).not.toContain("Verifying");
+    expect(banner.textContent).not.toContain("Checking that");
   });
 
   it("gives up waiting after the bound and says where to look", async () => {
@@ -239,7 +244,7 @@ describe("UpdatedBanner", () => {
     status = doneRecord();
     await renderWith({ updatedTo: "0.7.0", interruptedNames: [] });
     expect(
-      await screen.findByText(/agent check didn't report back/),
+      await screen.findByText(/Couldn't confirm your agents reopened/),
     ).toBeInTheDocument();
   });
 
@@ -251,7 +256,7 @@ describe("UpdatedBanner", () => {
       withSnapshot: true,
     });
     expect(banner.textContent).toContain(
-      "Restored v0.6.1 and your agents' setup.",
+      "Restored v0.6.1 and the snapshot from before the update.",
     );
     // A restore has no agent check to wait for.
     expect(fetchMock).not.toHaveBeenCalled();
@@ -265,9 +270,9 @@ describe("UpdatedBanner", () => {
       withSnapshot: false,
     });
     expect(banner.textContent).toContain("Restored v0.6.1.");
-    expect(banner.textContent).not.toContain("agents' setup");
+    expect(banner.textContent).not.toContain("snapshot");
     expect(banner.textContent).toContain(
-      "Agent records were left as they are.",
+      "Your agents, schedules and settings were left as they are.",
     );
   });
 });

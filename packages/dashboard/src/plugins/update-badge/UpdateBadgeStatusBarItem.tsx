@@ -8,7 +8,8 @@
 // the cache changed, so the cadence is hours, and rendering null is the
 // normal state (which also keeps the README hero unaffected).
 //
-// Clicking the pill opens the flow: What's new → Check agents → Update. The
+// Clicking the pill opens the flow: one decision screen (notes + a live agent
+// check + the buttons), then progress on the same surface. The
 // update itself NEVER runs in the daemon: POST /api/system/upgrade launches
 // `autonomos upgrade` as its own supervisor job, which keeps the CLI's health
 // gate + auto-rollback. This component only follows that job's status file.
@@ -17,8 +18,7 @@ import { useEffect, useRef, useState } from "react";
 import { request } from "../../api/core";
 import { THEMES, useStore } from "../../store";
 import {
-  AMBER,
-  BLUE,
+  accentsFor,
   ReconnectingOverlay,
   UpdateDialog,
   type VersionInfo,
@@ -120,6 +120,7 @@ export function UpdateBadgeStatusBarItem() {
   const info = useUpdateAvailable();
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
+  const { amber: AMBER, blue: BLUE } = accentsFor(page.bg);
   const known = info?.updateAvailable && info.latest ? info : null;
   const flow = useUpdateFlow(info !== null);
 
@@ -128,12 +129,20 @@ export function UpdateBadgeStatusBarItem() {
   // an old request.
   const restoreNonce = useUpdateBus((s) => s.restoreNonce);
   const seenNonce = useRef(restoreNonce);
-  const { openRestore } = flow;
+  const { openRestore, open } = flow;
   useEffect(() => {
     if (restoreNonce === seenNonce.current) return;
     seenNonce.current = restoreNonce;
     openRestore();
   }, [restoreNonce, openRestore]);
+  // "Update…" from Settings → Updates opens the same dialog as the pill.
+  const openNonce = useUpdateBus((s) => s.openNonce);
+  const seenOpen = useRef(openNonce);
+  useEffect(() => {
+    if (openNonce === seenOpen.current) return;
+    seenOpen.current = openNonce;
+    open();
+  }, [openNonce, open]);
 
   // The flow (modal + reconnect overlay) must work with NO update available
   // — a Restore runs after the update already landed — so only the pill
@@ -146,42 +155,51 @@ export function UpdateBadgeStatusBarItem() {
       to={
         flow.record?.to ?? flow.upgrade?.armed?.target ?? (info.latest || "…")
       }
+      phase={flow.record?.phase}
+      rollback={flow.record?.kind === "rollback"}
       elapsedMs={flow.elapsedMs}
       gaveUp={flow.gaveUp}
     />
   );
 
   if (flow.tracking === "armed" && known) {
-    const n = flow.upgrade?.busy.length ?? 0;
+    const busy = flow.upgrade?.busy ?? [];
     const target = flow.upgrade?.armed?.target ?? known.latest;
-    const idleSecs = Math.round((flow.upgrade?.idleWindowMs ?? 30_000) / 1000);
-    const names = (flow.upgrade?.busy ?? []).map((b) => b.name).join(", ");
+    const who =
+      busy.length === 0
+        ? null
+        : busy.length === 1
+          ? busy[0].name
+          : `${busy.length} agents`;
     return (
       <span
-        className="flex items-center gap-1.5 rounded-full pl-2 pr-1"
+        className="flex items-center gap-1 whitespace-nowrap rounded-full pl-0.5 pr-0.5"
         style={{
           color: AMBER,
-          border: `1px solid ${AMBER}55`,
+          border: `1px solid ${AMBER}66`,
           background: `${AMBER}14`,
           height: 18,
         }}
         data-testid="update-badge-armed"
-        title={
-          `Update scheduled. It starts on its own once every agent has been idle for ${idleSecs}s` +
-          (names ? ` (waiting on ${names}).` : ".") +
-          (flow.actionError ? ` ${flow.actionError}` : "")
-        }
       >
-        <ClockIcon />
-        <span>
-          {n > 0
-            ? `Update to v${target} waiting on ${n} agent${n === 1 ? "" : "s"}`
-            : `Update to v${target} starting shortly`}
-        </span>
+        {/* The label opens the waiting view: who it's waiting for, and the
+            same Update now / Cancel choices with room to explain them. */}
         <button
           type="button"
-          className="cursor-pointer rounded-full px-1.5 font-semibold hover:brightness-125"
-          style={{ color: page.fg, borderLeft: `1px solid ${AMBER}55` }}
+          onClick={flow.open}
+          className="flex h-full cursor-pointer items-center gap-1.5 rounded-full px-1.5 hover:brightness-125"
+          style={{ color: AMBER }}
+          data-testid="update-armed-open"
+        >
+          <ClockIcon />
+          <span>
+            {who ? `v${target} waits for ${who}` : `v${target} starts shortly`}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="h-full cursor-pointer rounded-full px-2 font-semibold hover:brightness-125"
+          style={{ color: page.fg, borderLeft: `1px solid ${AMBER}66` }}
           disabled={flow.pending}
           onClick={() => void flow.start("now", target)}
           data-testid="update-armed-now"
@@ -191,7 +209,8 @@ export function UpdateBadgeStatusBarItem() {
         <button
           type="button"
           aria-label="Cancel scheduled update"
-          className="cursor-pointer px-1 hover:brightness-125"
+          title="Cancel scheduled update"
+          className="h-full cursor-pointer rounded-full px-2 hover:brightness-125"
           style={{ color: page.statusFg }}
           onClick={() => void flow.cancelArmed()}
           data-testid="update-armed-cancel"
@@ -216,14 +235,14 @@ export function UpdateBadgeStatusBarItem() {
   const runTo = flow.record?.to ?? known?.latest ?? "…";
   const label = running
     ? `${flow.record?.kind === "rollback" ? "Restoring" : "Updating to"} v${runTo}…`
-    : `Update available (v${info.version} → v${info.latest})`;
+    : `Update to v${info.latest}`;
 
   return (
     <>
       <button
         type="button"
         onClick={flow.open}
-        className="flex cursor-pointer items-center gap-1.5 rounded-full pl-2 pr-0.5 hover:brightness-125"
+        className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full px-2 font-semibold hover:brightness-125"
         style={{
           color: BLUE,
           border: `1px solid ${BLUE}44`,
@@ -232,8 +251,8 @@ export function UpdateBadgeStatusBarItem() {
         }}
         title={
           running
-            ? "An update is running on the server. Click to see its progress."
-            : "See what's new and update autonomOS."
+            ? "Updating on the server. Click to see progress."
+            : `You're on v${info.version}. See what's new and update.`
         }
         data-testid="update-badge"
       >
@@ -242,14 +261,6 @@ export function UpdateBadgeStatusBarItem() {
           style={{ width: 7, height: 7, background: BLUE }}
         />
         <span>{label}</span>
-        {!running && (
-          <span
-            className="px-1.5 font-semibold"
-            style={{ color: page.fg, borderLeft: `1px solid ${BLUE}44` }}
-          >
-            Update
-          </span>
-        )}
       </button>
       {dialog}
       {overlay}

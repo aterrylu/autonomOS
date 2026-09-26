@@ -61,7 +61,7 @@ export function verifyAgainstBaseline(
       problems.push({
         id: b.id,
         name: b.name,
-        issue: "Its conversation id changed during the update",
+        issue: "It came back on a different conversation",
       });
       continue;
     }
@@ -74,8 +74,8 @@ export function verifyAgainstBaseline(
         id: b.id,
         name: b.name,
         issue: a.providerThreadId
-          ? "Its Codex thread id changed during the update"
-          : "Its Codex thread id is missing from its record",
+          ? "It came back on a different Codex conversation"
+          : "Its Codex conversation is missing from its record",
       });
       continue;
     }

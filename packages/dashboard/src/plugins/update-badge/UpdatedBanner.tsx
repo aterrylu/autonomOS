@@ -7,16 +7,16 @@
  * After an UPGRADE the new daemon checks every agent against the pre-update
  * snapshot and writes `verification` onto the status record ~20s after
  * "done". The banner polls for it (bounded) and reports:
- *   - no problems → green "All N agents verified"
- *   - problems    → AMBER "K agents need attention" with [Details] and
- *                   [Restore previous version]. Restore is ALWAYS the
+ *   - no problems → green "All N agents reopened"
+ *   - problems    → AMBER "<name> needs a look" with [Details] and
+ *                   [Restore v<previous>]. Restore is ALWAYS the
  *                   operator's click — never automatic.
  */
 
 import { useEffect, useState } from "react";
 import { systemApi, type UpgradeStatusRecord } from "../../api/system";
 import { THEMES, useStore } from "../../store";
-import { AMBER, GREEN } from "./UpdateDialog";
+import { accentsFor } from "./UpdateDialog";
 import { useUpdateBus } from "./updateBus";
 import {
   joinNames,
@@ -124,6 +124,7 @@ export function UpdatedBanner() {
   const theme = useStore((s) => s.theme);
   const requestRestore = useUpdateBus((s) => s.requestRestore);
   const page = THEMES[theme].page;
+  const { amber: AMBER, green: GREEN } = accentsFor(page.bg);
 
   // No flag from this tab's own update → ask the server whether an update
   // with unacknowledged verification problems is what's running now.
@@ -150,7 +151,7 @@ export function UpdatedBanner() {
   const names = flag.interruptedNames;
   const interruptedClause =
     names.length > 0 &&
-    `${joinNames(names)} ${names.length === 1 ? "was" : "were"} interrupted mid-task`;
+    `${joinNames(names)} ${names.length === 1 ? "was interrupted. Prompt it" : "were interrupted. Prompt them"} to continue`;
 
   const problems =
     verify.kind === "done" ? (verify.record.verification?.problems ?? []) : [];
@@ -163,31 +164,31 @@ export function UpdatedBanner() {
   if (flag.kind === "rollback") {
     headline =
       flag.withSnapshot === true
-        ? `Restored v${flag.updatedTo} and your agents' setup.`
+        ? `Restored v${flag.updatedTo} and the snapshot from before the update.`
         : flag.withSnapshot === false
           ? `Restored v${flag.updatedTo}.`
           : (flag.message ?? `Restored v${flag.updatedTo}.`);
     if (flag.withSnapshot === false) {
-      details = ["Agent records were left as they are."];
+      details = ["Your agents, schedules and settings were left as they are."];
     }
   } else if (problems.length > 0) {
     const k = problems.length;
-    headline = `Updated to v${flag.updatedTo} — ${k} agent${k === 1 ? " needs" : "s need"} attention.`;
-    details = [
-      `${joinNames(problems.map((p) => p.name))} couldn't be verified`,
-      interruptedClause,
-    ];
+    const who = k <= 2 ? joinNames(problems.map((p) => p.name)) : `${k} agents`;
+    headline = `Updated to v${flag.updatedTo}, but ${who} ${k === 1 ? "needs" : "need"} a look.`;
+    details = [interruptedClause];
   } else {
     headline = `Updated to v${flag.updatedTo}.`;
     const checked =
       verify.kind === "done" ? (verify.record.verification?.checked ?? 0) : 0;
     details = [
-      verify.kind === "waiting" && "Verifying agents…",
+      verify.kind === "waiting" && "Checking that your agents reopened…",
       verify.kind === "done" &&
         checked > 0 &&
-        `All ${checked} agent${checked === 1 ? "" : "s"} verified`,
+        (checked === 1
+          ? "Your agent reopened"
+          : `All ${checked} agents reopened`),
       verify.kind === "timeout" &&
-        "The agent check didn't report back — run autonomos status on the host",
+        "Couldn't confirm your agents reopened. Check the sidebar, or run autonomos status",
       (verify.kind === "none" || (verify.kind === "done" && checked === 0)) &&
         agentCount > 0 &&
         `${agentCount} agent${agentCount === 1 ? "" : "s"} reopened`,
@@ -234,7 +235,8 @@ export function UpdatedBanner() {
                 onClick={requestRestore}
                 data-testid="banner-restore"
               >
-                Restore previous version
+                Restore v
+                {verify.kind === "done" ? verify.record.from : "previous"}
               </button>
             </>
           )}
@@ -262,9 +264,9 @@ export function UpdatedBanner() {
           data-testid="updated-banner-details"
         >
           <div style={{ color: page.statusFg }}>
-            Each agent that was resumable before the update, checked on v
-            {flag.updatedTo}: {verify.record.verification?.checked ?? 0}{" "}
-            checked, {problems.length} with a problem.
+            Checked {verify.record.verification?.checked ?? 0} agent
+            {(verify.record.verification?.checked ?? 0) === 1 ? "" : "s"} after
+            updating. {problems.length} came back differently:
           </div>
           <ul className="flex flex-col gap-1">
             {problems.map((p) => (
@@ -282,8 +284,9 @@ export function UpdatedBanner() {
             ))}
           </ul>
           <div style={{ color: page.statusFg }}>
-            Their conversations are still on disk. Restore previous version puts
-            back v{verify.record.from} and the snapshot from before the update.
+            {problems.length === 1 ? "Its" : "Their"} conversation history is
+            still saved. Restore v{verify.record.from} goes back to the version
+            and snapshot from before this update.
           </div>
         </div>
       )}
