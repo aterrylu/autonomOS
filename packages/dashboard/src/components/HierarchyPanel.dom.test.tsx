@@ -300,9 +300,10 @@ describe('Daylight contrast (Terry: "the words look so faint")', () => {
     });
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("Kid")).not.toBeNull());
-    expect(screen.getByText("2 unread").style.color).toBe(
-      hexToRgb(UNREAD_COLOR_LIGHT),
-    );
+    // The Balanced card shows unread as a count pill titled "N unread".
+    const pill = screen.getByTitle("2 unread");
+    expect(pill.textContent).toBe("2");
+    expect(pill.style.color).toBe(hexToRgb(UNREAD_COLOR_LIGHT));
     const ghostName = card("Lead")?.querySelector(".truncate") as HTMLElement;
     expect(Number(ghostName.style.opacity)).toBeGreaterThan(0.6);
     fireEvent.click(card("Kid") as HTMLElement);
@@ -323,7 +324,7 @@ describe("F4 + F5 — click SELECTS (Terry's pick), explicit open, right-click m
     });
     render(<HierarchyPanel />);
     await screen.findByText("A");
-    expect(screen.getByText("3 unread")).toBeInTheDocument(); // F9 parity
+    expect(screen.getByTitle("3 unread").textContent).toBe("3"); // F9 parity
     fireEvent.click(card("A") as HTMLElement);
     expect(switchPane).not.toHaveBeenCalled();
     expect(card("A")?.getAttribute("aria-pressed")).toBe("true");

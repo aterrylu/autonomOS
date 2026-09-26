@@ -1,13 +1,16 @@
-import type { AgentTreeNode } from "@autonomos/core";
+import type { AgentActivityBatch, AgentTreeNode } from "@autonomos/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { orgTreePoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
+import { useNow } from "../hooks/useNow";
 import { focusTerminal } from "../hooks/useTerminal";
 import { pushEscapeCloser } from "../shortcuts/escapeStack";
 import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
+import { segmentColor, stripLayout } from "./orgchart/activityStrip";
+import { Identicon } from "./orgchart/Identicon";
 import { OrgInspector } from "./orgchart/Inspector";
 import { CARD_H, CARD_W, edgePath, layoutOrg, PAD } from "./orgchart/layout";
 import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
@@ -27,6 +30,7 @@ import {
 } from "./orgchart/teams";
 import { type OrgChartTokens, orgChartTokens } from "./orgchart/theme";
 import { useCanvasView } from "./orgchart/useCanvasView";
+import { useFleetActivity } from "./orgchart/useFleetActivity";
 import {
   formatAge,
   recencyLabelOpacity,
@@ -125,6 +129,8 @@ interface CardProps {
   /** Short id suffix, set only when another drawn card has the same name
    *  (agents may legitimately share one) so the two read as distinct. */
   idHint?: string;
+  /** This agent's status history from the fleet batch (null = not known). */
+  activity?: CardActivity;
   onOpen: (node: AgentTreeNode) => void;
   onSelect: (id: string | null) => void;
   onNavigate: (id: string, dir: NavDir) => void;
@@ -133,6 +139,8 @@ interface CardProps {
 }
 
 type NavDir = "up" | "down" | "left" | "right";
+/** One agent's entry in the fleet activity batch. */
+type CardActivity = AgentActivityBatch["agents"][string];
 const NAV_KEYS: Record<string, NavDir> = {
   ArrowUp: "up",
   ArrowDown: "down",
@@ -151,6 +159,7 @@ function OrgCard({
   page,
   selection,
   idHint,
+  activity,
   onOpen,
   onSelect,
   onNavigate,
@@ -158,6 +167,7 @@ function OrgCard({
   onMenu,
 }: CardProps) {
   const agentIconStyle = useStore((s) => s.agentIconStyle);
+  const now = useNow();
   const exited = node.status !== "running";
   const status = nodeStatus(node, info);
   const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
@@ -200,7 +210,7 @@ function OrgCard({
       exited ? "" : "Enter opens the terminal; "
     }arrows move; Shift+F10 for actions.`,
     title: `${node.name}${idHint ? ` #${idHint}` : ""}${node.template ? ` · ${node.template}` : ""}`,
-    className: `org-card absolute flex flex-col justify-between rounded-[9px] px-2.5 py-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 ${
+    className: `org-card absolute flex items-center gap-2.5 overflow-hidden rounded-[9px] px-2.5 pt-1.5 pb-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 ${
       working ? "org-card-working" : ""
     }${attention ? " org-card-attention" : ""}`,
     style: {
@@ -261,99 +271,164 @@ function OrgCard({
     },
   };
 
+  // Balanced card (Terry's pick): an identicon with the provider/status icon
+  // as its badge; name + unread; a pulsing dot, the live action and the time
+  // in state; the 24h strip along the bottom edge. Every field is a real
+  // reading or absent — never a placeholder number.
+  const since = activity?.status?.since ?? null;
+  const shownAge = !exited && since !== null ? since : lastActive;
+  const pulse = working || attention;
+  const strip =
+    !exited && activity && activity.activity.length > 0
+      ? stripLayout(activity.activity, now)
+      : null;
   const content = (
     <>
-      <span className="flex min-w-0 items-center gap-2">
+      <span
+        className="relative flex-none"
+        style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
+      >
+        <Identicon id={node.id} size={30} isLight={tokens.isLight} />
         <span
-          className="flex-none"
-          style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
+          data-org-badge
+          className="absolute -right-1 -bottom-1 flex items-center justify-center rounded-full"
+          style={{
+            width: 16,
+            height: 16,
+            background: exited ? tokens.bg : tokens.card,
+            boxShadow: `0 0 0 1.5px ${exited ? tokens.bg : tokens.card}`,
+          }}
         >
           {agentIconStyle === "provider" ? (
             <ProviderAgentIcon
               provider={node.provider}
               status={status}
-              size={16}
+              size={13}
             />
           ) : (
-            <AgentStatusIcon status={status} size={14} />
+            <AgentStatusIcon status={status} size={12} />
           )}
         </span>
-        <span
-          className="min-w-0 flex-1 truncate text-[12.5px] font-semibold tracking-tight"
-          style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
-        >
-          {node.name}
-          {idHint && (
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span
+            className="min-w-0 flex-1 truncate text-[12.5px] font-semibold tracking-tight"
+            style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
+          >
+            {node.name}
+            {idHint && (
+              <span
+                data-org-id-hint
+                className="ml-1 font-normal tabular-nums"
+                style={{ color: tokens.muted }}
+              >
+                #{idHint}
+              </span>
+            )}
+          </span>
+          {unread > 0 && (
             <span
-              data-org-id-hint
-              className="ml-1 font-normal tabular-nums"
-              style={{ color: tokens.muted }}
+              data-org-unread
+              title={`${unread} unread`}
+              className="flex-none rounded-full px-1.5 text-[10px] leading-4 font-semibold tabular-nums"
+              style={{
+                color: tokens.unread,
+                background: `${tokens.unread}26`,
+              }}
             >
-              #{idHint}
+              {unread}
             </span>
           )}
         </span>
-        {unread > 0 && (
+        <span className="flex min-w-0 items-center gap-1.5 text-[10.5px]">
+          {pulse && (
+            <span
+              data-org-pulse
+              aria-hidden="true"
+              className="org-dot-pulse size-1.5 flex-none rounded-full"
+              style={{ background: labelStyle.color }}
+            />
+          )}
           <span
-            className="flex-none text-[10px] font-semibold tabular-nums"
-            style={{ color: tokens.unread }}
-          >
-            {unread} unread
-          </span>
-        )}
-      </span>
-      <span className="flex min-w-0 items-center gap-1.5 text-[10.5px]">
-        <span
-          data-org-label
-          className={`min-w-0 flex-1 truncate ${
-            working
-              ? tokens.isLight
-                ? "status-shimmer-light"
-                : "status-shimmer"
-              : ""
-          }`}
-          style={{
-            color: labelStyle.color,
-            fontWeight: attention ? 600 : undefined,
-            // #383's rule, shared with the sidebar: only an at-rest (idle)
-            // label fades with age; attention and work never recede.
-            opacity: exited
-              ? undefined
-              : recencyLabelOpacity(status, lastActive, Date.now(), page.bg),
-          }}
-        >
-          {label}
-        </span>
-        {exited ? (
-          <button
-            type="button"
-            className="flex-none cursor-pointer rounded px-1.5 text-[10px] leading-4"
+            data-org-label
+            className={`min-w-0 flex-1 truncate ${
+              working
+                ? tokens.isLight
+                  ? "status-shimmer-light"
+                  : "status-shimmer"
+                : ""
+            }`}
             style={{
-              color: tokens.status.ready,
-              border: `1px solid ${tokens.status.ready}`,
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onResume(node, info);
+              color: labelStyle.color,
+              fontWeight: attention ? 600 : undefined,
+              // #383's rule, shared with the sidebar: only an at-rest (idle)
+              // label fades with age; attention and work never recede.
+              opacity: exited
+                ? undefined
+                : recencyLabelOpacity(status, lastActive, Date.now(), page.bg),
             }}
           >
-            Resume
-          </button>
-        ) : (
-          <span
-            className="flex-none tabular-nums"
-            style={recencyTimestampStyle(
-              lastActive,
-              Date.now(),
-              page.statusFg,
-              page.fg,
-              page.bg,
-            )}
-          >
-            {formatAge(lastActive)}
+            {label}
           </span>
-        )}
+          {exited ? (
+            <button
+              type="button"
+              className="flex-none cursor-pointer rounded px-1.5 text-[10px] leading-4"
+              style={{
+                color: tokens.status.ready,
+                border: `1px solid ${tokens.status.ready}`,
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onResume(node, info);
+              }}
+            >
+              Resume
+            </button>
+          ) : (
+            <span
+              data-org-age={since !== null ? "in-state" : "last-active"}
+              title={
+                since !== null
+                  ? `${label} for ${formatAge(since)}`
+                  : `Last active ${formatAge(lastActive)} ago`
+              }
+              className="flex-none tabular-nums"
+              style={recencyTimestampStyle(
+                lastActive,
+                Date.now(),
+                page.statusFg,
+                page.fg,
+                page.bg,
+              )}
+            >
+              {formatAge(shownAge)}
+            </span>
+          )}
+        </span>
       </span>
+      {strip && (
+        <span
+          data-org-card-strip
+          aria-hidden="true"
+          className="absolute right-0 bottom-0 left-0 h-[3px]"
+          style={{ background: tokens.chip }}
+        >
+          {strip.segments.map((seg) => (
+            <span
+              key={`${seg.from}-${seg.status}`}
+              data-org-card-segment={seg.status}
+              className="absolute top-0 bottom-0"
+              style={{
+                left: `${seg.left}%`,
+                width: `${seg.width}%`,
+                background: segmentColor(seg.status, tokens),
+              }}
+            />
+          ))}
+        </span>
+      )}
     </>
   );
 
@@ -419,6 +494,7 @@ function selectionChain(flat: Flat[], selectedId: string): Set<string> {
 }
 
 function OrgCanvas({
+  fleetActivity,
   zoomSlot,
   onViewGesture,
   roots,
@@ -437,6 +513,8 @@ function OrgCanvas({
   onResume,
   onMenu,
 }: {
+  /** The whole fleet's status history (one batched request), or null. */
+  fleetActivity: AgentActivityBatch | null;
   /** Toolbar element the zoom controls portal into (null until mounted). */
   zoomSlot: HTMLElement | null;
   /** A pan/zoom began: close anything anchored to the old view (the menu). */
@@ -683,6 +761,7 @@ function OrgCanvas({
               idHint={
                 sharedNames.has(node.name) ? node.id.slice(0, 4) : undefined
               }
+              activity={fleetActivity?.agents[node.id]}
               x={p.x}
               y={p.y}
               managerName={managerName}
@@ -1229,6 +1308,17 @@ export function HierarchyPanel({
   // Stable identity: the menu registers onClose on the ADR-065 escape stack
   // keyed by it — a fresh function per render would churn that registration.
   const closeMenu = useCallback(() => setMenu(null), []);
+  // The cards' status history: ONE batched request for the whole fleet,
+  // refetched soon after any status change.
+  const statusKey = useMemo(
+    () =>
+      Object.values(statusMap)
+        .map((i) => `${i.session.id}:${i.agentStatus}`)
+        .sort()
+        .join("|"),
+    [statusMap],
+  );
+  const fleetActivity = useFleetActivity(statusKey);
   // The toolbar slot the canvas portals its zoom controls into.
   const [zoomSlot, setZoomSlot] = useState<HTMLElement | null>(null);
 
@@ -1270,6 +1360,7 @@ export function HierarchyPanel({
   } else {
     body = (
       <OrgCanvas
+        fleetActivity={fleetActivity}
         zoomSlot={zoomSlot}
         onViewGesture={closeMenu}
         roots={drawn}
