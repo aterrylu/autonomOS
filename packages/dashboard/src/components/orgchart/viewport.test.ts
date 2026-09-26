@@ -52,6 +52,8 @@ describe("fit and the opening view", () => {
     const small = fitView({ w: 400, h: 200 }, vp);
     expect(small.k).toBe(1);
     expect(small.x).toBe(250);
+    // Top-anchored, not vertically centered: the tree hangs from its root.
+    expect(small.y).toBe(12);
     const big = fitView({ w: 2400, h: 600 }, vp);
     expect(big.k).toBeLessThan(1);
     expect(fitsInView(big, { w: 2400, h: 600 }, vp)).toBe(true);
