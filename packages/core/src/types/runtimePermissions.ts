@@ -102,7 +102,7 @@ export const RUNTIME_PERMISSIONS: Readonly<
             value: "manual",
             description:
               "Standard behavior: prompts for permission on first use of each tool.",
-            // Measured (ADR-115 pick 3): passing `--permission-mode manual`
+            // Measured (ADR-119, reversing ADR-115 pick 3): passing `--permission-mode manual`
             // explicitly left the agent's processes writing past teardown in
             // 3/18 spawns (0/18 without the flag, interleaved) and slowed the
             // median prompt receipt 691 → 1150ms. So it's spawned with NO flag,
