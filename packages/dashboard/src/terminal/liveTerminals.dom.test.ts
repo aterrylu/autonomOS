@@ -835,6 +835,30 @@ describe("pane connection watch", () => {
     expect(last()).toEqual({ kind: "ok", droppedKeys: 0 });
   });
 
+  it("reconnecting → disconnected does NOT re-cut a pane that already recovered on its own (nox)", () => {
+    const { ws } = mount();
+    _setTransportHealthForTesting("reconnecting"); // cut: socket #2 created
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    // The link came back: the pane's own backoff reopened its socket while
+    // /ws/agents is still waiting on its longer backoff.
+    const recovered = ws();
+    recovered.readyState = FakeWebSocket.OPEN;
+    recovered.onopen?.();
+    expect(last().kind).toBe("ok");
+    const before = states.length;
+
+    // The same outage escalates. Not a new loss for this pane.
+    _setTransportHealthForTesting("disconnected");
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(recovered.closed).toBe(false);
+    expect(states.slice(before).some((c) => c.kind === "lost")).toBe(false);
+
+    // A genuinely NEW loss after recovery still cuts it.
+    _setTransportHealthForTesting("connected");
+    _setTransportHealthForTesting("reconnecting");
+    expect(recovered.closed).toBe(true);
+  });
+
   it("keys carried by a replacement socket that then closes are still counted (already-lost pane)", () => {
     const { ws, backend } = mount();
     _setTransportHealthForTesting("reconnecting"); // lost, socket #2 created
@@ -1126,6 +1150,31 @@ describe("acked input — per-keystroke detection", () => {
       data: b,
     });
   };
+
+  it("sentAtMs is measured from BEFORE the socket existed, so a late onopen dispatch can't age every frame past the server's cutoff (nox)", () => {
+    let now = 1_000;
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const entry = acquireTerminal("a1");
+      if (!entry) throw new Error("acquire returned null");
+      entry.attach(container, null); // socket created at t=1000
+      const ws = FakeWebSocket.instances.at(-1)!;
+      now = 4_000; // main thread busy: onopen dispatched 3s late
+      ws.onopen?.();
+      backends.at(-1)!.parseOsc(7777, ACK_MARK);
+      now = 4_100;
+      backends.at(-1)!.type("a");
+      const f = frames(ws)[0];
+      // Relative to the pre-socket zero: 3100ms, which errs toward "younger
+      // than the server thinks is impossible". Anchored at onopen it would
+      // read 100ms and the server would see the key as ~3s old and drop it.
+      expect(new DataView(f.buffer).getUint32(5)).toBe(3_100);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   it("NEGOTIATED: plain text until the server advertises input-ack; binary acked frames after", () => {
     const { ws, backend } = mount({ negotiate: false });

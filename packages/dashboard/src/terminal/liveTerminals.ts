@@ -235,7 +235,13 @@ function applyTransportHealth(h: TransportHealth): void {
       }
     }
   };
-  if (h === "reconnecting" || h === "disconnected") {
+  const lost = (x: TransportHealth) =>
+    x === "reconnecting" || x === "disconnected";
+  if (lost(h) && !lost(prev)) {
+    // Only on the transition INTO a lost state. reconnecting → disconnected
+    // is the same outage escalating; a pane that already reopened its own
+    // socket in between must not be cut again (it would replay its whole
+    // scrollback and report keys typed since as "may not have been sent").
     each((e) => e.transportLost());
   } else if (h === "connected" && prev !== "connected") {
     each((e) => e.transportRecovered());
@@ -1005,6 +1011,13 @@ export class LiveTerminal {
     this.strandInFlight();
     this.ackMode = false; // re-negotiated per socket, via the replay marker
     this.ackSeq = 0;
+    // The zero for sentAtMs is taken BEFORE the socket exists, so it always
+    // precedes the server's own open. The server then under-estimates a
+    // frame's age by at most the handshake time. Taken in onopen instead, a
+    // late dispatch (main thread busy with other panes' replays) would make
+    // every frame look older than it is, and past INPUT_MAX_AGE_MS the server
+    // would silently drop every key on a healthy socket.
+    this.openedAt = performance.now();
     const ws = new WebSocket(
       `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1`,
     );
@@ -1024,7 +1037,6 @@ export class LiveTerminal {
       // duplication would be permanent and cumulative.
       if (this.everConnected) this.terminal.reset();
       this.everConnected = true;
-      this.openedAt = performance.now();
       // The full-scrollback replay starts now (first connect too — a page
       // reload replays exactly the same way).
       this.droppedReplies = 0;
