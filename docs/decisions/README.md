@@ -103,7 +103,7 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-042](ADR-042-insecure-context-clipboard-fallback-for-osc-52-auto-copy.md) | Insecure-context clipboard fallback for OSC 52 auto-copy | 2026-06-19 | Accepted |  |  |
 | [ADR-043](ADR-043-dashboard-distribution-contract-embedded-bundle-is-binary.md) | Dashboard distribution contract — embedded bundle is binary-only; hosted server serves `dashboard/dist` | 2026-06-20 | Accepted |  |  |
 | [ADR-044](ADR-044-consolidated-release-notes-merge-all-per-package-changelogs.md) | Consolidated release notes merge all per-package CHANGELOGs (one line per PR) | 2026-06-22 | Accepted |  |  |
-| [ADR-045](ADR-045-per-provider-permission-modes-replace-the-autonomousmode.md) | Per-provider permission modes replace the `autonomousMode` boolean | 2026-06-26 | Accepted |  |  |
+| [ADR-045](ADR-045-per-provider-permission-modes-replace-the-autonomousmode.md) | Per-provider permission modes replace the `autonomousMode` boolean | 2026-06-26 | Superseded by ADR-115 |  | ADR-115 |
 | [ADR-046](ADR-046-claude-usage-tracks-account-switches-by-scanning-the-user-s.md) | Claude Usage tracks account switches by scanning the user's live Claude sessions (not env inheritance) | 2026-06-26 | Superseded by ADR-048 | ADR-041 (in part) | ADR-048 |
 | [ADR-047](ADR-047-rebuild-the-tabs-split-pane-layout-on-dockview-removing-the.md) | Rebuild the tabs + split-pane layout on dockview, removing the binary-tree model, the detached overlay, and the `groups` system | 2026-06-27 | Accepted |  |  |
 | [ADR-048](ADR-048-claude-usage-via-read-only-oauth-token-manual-session-key.md) | Claude Usage via read-only OAuth token + manual session-key override; cookie-scan/harvest removed | 2026-06-28 | Accepted | ADR-046 |  |
@@ -170,4 +170,5 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-112](ADR-112-org-chart-rebuilt-on-the-sidebar-s-vocabulary-exited.md) | Org chart rebuilt on the sidebar's vocabulary — exited-inclusive tree, tidy-tree layout, shared palette, shared agent menu | 2026-09-24 | Accepted |  |  |
 | [ADR-113](ADR-113-honest-connection-status-per-keystroke-acks-say-not-reaching.md) | Honest connection status — per-keystroke acks say "Not reaching server" in ~1s; a heartbeat covers idle time; no keystroke is ever delivered late | 2026-09-24 | Accepted |  |  |
 | [ADR-114](ADR-114-decision-records-live-one-file-per-adr-the-index-is.md) | Decision records live one file per ADR; the index is regenerated after merge | 2026-09-25 | Accepted |  |  |
+| [ADR-115](ADR-115-per-runtime-canonical-permission-modes.md) | Per-runtime canonical permission modes | 2026-09-25 | Accepted | ADR-045 |  |
 | [ADR-116](ADR-116-dashboard-asset-caching-hashed-assets-immutable-everything.md) | Dashboard asset caching: hashed assets immutable, everything else revalidates | 2026-09-25 | Accepted |  |  |
