@@ -80,26 +80,41 @@ describe("Daylight text contrast (Terry: 'the words look so faint')", () => {
   });
 });
 
-describe("dark themes: no regression below today's floor", () => {
-  // Not part of this fix (Terry's report is the white theme). Pinned so a
-  // future token change can't quietly make them worse. Midnight's statusFg is
-  // 3.53:1 today (below AA) — flagged as a follow-up, not silently accepted.
-  it.each(["midnight", "void"] as const)("%s muted text >= 3.5:1", (t) => {
-    const { bg, statusFg } = THEMES[t].page;
-    expect(contrast(statusFg, bg)).toBeGreaterThanOrEqual(3.5);
+describe.each([
+  "midnight",
+  "void",
+] as const)("%s text contrast (same standard as Daylight)", (t) => {
+  const { bg, fg, statusFg } = THEMES[t].page;
+
+  it("muted text (statusFg) meets WCAG AA unfaded", () => {
+    expect(contrast(statusFg, bg)).toBeGreaterThanOrEqual(4.5);
   });
-  it.each(["midnight", "void"] as const)("%s status labels meet AA", (t) => {
-    const { bg } = THEMES[t].page;
+
+  it("primary text is comfortably high contrast", () => {
+    expect(contrast(fg, bg)).toBeGreaterThanOrEqual(7);
+  });
+
+  it("recency-faded timestamps stay legible (>= 3:1) at every faded bucket", () => {
+    for (const b of FADED) {
+      expect(
+        contrast(statusFg, bg, RECENCY_OPACITY_DARK[b]),
+        `timestamp @ ${b}`,
+      ).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("the recency-faded Idle label stays legible (>= 3:1) at every faded bucket", () => {
+    for (const b of FADED) {
+      expect(
+        contrast(STATUS_COLORS_DARK.ready, bg, RECENCY_OPACITY_DARK[b]),
+        `Idle label @ ${b}`,
+      ).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("unfaded status labels meet AA", () => {
     for (const [k, c] of Object.entries(STATUS_COLORS_DARK)) {
       expect(contrast(c, bg), k).toBeGreaterThanOrEqual(4.5);
     }
-  });
-  it("dark ramp is untouched by this fix", () => {
-    expect(RECENCY_OPACITY_DARK).toEqual({
-      fresh: 1,
-      recent: 1,
-      stale: 0.72,
-      ancient: 0.52,
-    });
   });
 });

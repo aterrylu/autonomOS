@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test/setup-dom";
 import type { ProjectInfo } from "../store";
@@ -159,12 +160,37 @@ describe("ProjectItem — redesigned rows", () => {
     const live = screen.getByText("live session").closest("button");
     const ext = screen.getByText("external session").closest("button");
     const stop = screen.getByText("stopped session").closest("button");
+    if (!live || !ext || !stop) throw new Error("rows missing");
     // Live = full-strength (no dim); dead = grayed (dimmed at rest, restored on
-    // hover). Same parity skeleton for all three.
-    expect(live?.className).not.toMatch(/opacity-60/);
-    expect(ext?.className).toMatch(/opacity-60/);
-    expect(ext?.className).toMatch(/hover:opacity-100/);
-    expect(stop?.className).toMatch(/opacity-60/);
+    // hover). The dim is on the TEXT column only — never the row — so the
+    // provider mark always renders unaltered (brand policy; Terry's Codex report).
+    const textCol = (row: HTMLElement) =>
+      within(row)
+        .getByText(/session$/)
+        .closest("div.min-w-0") as HTMLElement;
+    expect(textCol(live).className).not.toMatch(/opacity-60/);
+    expect(textCol(ext).className).toMatch(/opacity-60/);
+    expect(textCol(ext).className).toMatch(/group-hover\/row:opacity-100/);
+    expect(textCol(stop).className).toMatch(/opacity-60/);
+    for (const row of [live, ext, stop]) {
+      expect(row.className).not.toMatch(/opacity-/);
+      // No element between the row and the provider mark carries a dim.
+      // The PROVIDER mark itself (Codex is OpenAI's raster icon), never the
+      // status-corner svg a generic selector would hit first.
+      const mark = row.querySelector(
+        'svg[aria-label="Claude"], img[alt="Codex"], svg[aria-label="Gemini"]',
+      );
+      if (!mark) throw new Error("provider mark missing");
+      for (
+        let el: Element | null = mark;
+        el && el !== row;
+        el = el.parentElement
+      ) {
+        expect((el as HTMLElement).className?.toString() ?? "").not.toMatch(
+          /opacity-/,
+        );
+      }
+    }
   });
 
   it("collapsing routes through the store, not per-mount state (bug #8)", () => {
@@ -210,5 +236,69 @@ describe("ProjectItem — redesigned rows", () => {
     act(() => useStore.setState({ expandedProjects: {} }));
     const collapsed = screen.getByRole("button", { expanded: false });
     expect(collapsed.textContent?.startsWith("▶")).toBe(true);
+  });
+});
+
+describe("ProjectItem — status frames (render fan-out)", () => {
+  /** Render inside a Profiler and return a live commit counter. */
+  function renderCounted() {
+    let commits = 0;
+    render(
+      <Profiler
+        id="project-item"
+        onRender={() => {
+          commits += 1;
+        }}
+      >
+        <ProjectItem
+          project={PROJECT}
+          page={page}
+          liveSessionIds={new Set(["cc-live"])}
+          onAgentContextMenu={vi.fn()}
+        />
+      </Profiler>,
+    );
+    return () => commits;
+  }
+
+  it("a COLLAPSED project does not re-render when an agent's status changes", () => {
+    useStore.setState({ expandedProjects: {} });
+    const commits = renderCounted();
+    const before = commits();
+    act(() => {
+      useStore.setState({ agentStatuses: { "live-1": { status: "idle" } } });
+    });
+    expect(commits()).toBe(before);
+  });
+
+  it("an EXPANDED project re-renders and shows the new status", () => {
+    const commits = renderCounted();
+    const live = screen.getByText("live session").closest("button");
+    if (!live) throw new Error("no row");
+    // Seeded "working" → the aria-labelled Working badge.
+    expect(within(live).queryByLabelText("Working")).toBeTruthy();
+    const before = commits();
+    act(() => {
+      useStore.setState({ agentStatuses: { "live-1": { status: "idle" } } });
+    });
+    expect(commits()).toBeGreaterThan(before);
+    // The rendered dot follows the new status (the badge is gone).
+    expect(within(live).queryByLabelText("Working")).toBeNull();
+  });
+
+  it("a status change while COLLAPSED shows up as soon as the project is expanded", () => {
+    useStore.setState({ expandedProjects: {} });
+    renderCounted();
+    act(() => {
+      useStore.setState({ agentStatuses: { "live-1": { status: "idle" } } });
+      useStore.setState({ agentStatuses: { "live-1": { status: "working" } } });
+    });
+    act(() => {
+      useStore.setState({ expandedProjects: { "/repo/autonomOS": true } });
+    });
+    const live = screen.getByText("live session").closest("button");
+    if (!live) throw new Error("no row");
+    // The CURRENT status (working → the Working badge), not a stale one.
+    expect(within(live).getByLabelText("Working")).toBeTruthy();
   });
 });

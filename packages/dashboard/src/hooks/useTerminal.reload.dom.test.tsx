@@ -19,6 +19,7 @@ const { acquireTerminal, disposeTerminal, getLiveTerminal, focusTerminal } =
       attach: vi.fn(),
       detach: vi.fn(),
       bindFollowIndicator: vi.fn(),
+      bindConnectionIndicator: vi.fn(),
       jumpToLatest: vi.fn(),
       terminal: { focus: vi.fn(), options: {} },
     });

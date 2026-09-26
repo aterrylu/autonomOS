@@ -32,6 +32,7 @@ import {
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
 import { getProvider } from "../providers/index.js";
+import { instrumentPtyInput, withPtyInputSource } from "../ptyInputLog.js";
 import {
   clearAgentState,
   clearNotifications,
@@ -47,6 +48,7 @@ import {
 import { getSettings } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
+import { observeExitCode, observeStart } from "./analytics.js";
 import {
   cancelAllChannelServerChecks,
   cancelChannelServerCheck,
@@ -111,9 +113,13 @@ export function redactArgForLog(a: string): string {
  * `_registerSyntheticAttachment` so both exercise identical replay behavior.
  */
 function appendToOutputBuffer(
-  managed: Pick<ManagedAttachment, "outputBuffer" | "outputSize">,
+  managed: Pick<
+    ManagedAttachment,
+    "outputBuffer" | "outputSize" | "lastOutputAt"
+  >,
   data: string,
 ): void {
+  managed.lastOutputAt = Date.now();
   managed.outputBuffer.push(data);
   managed.outputSize += data.length;
   if (managed.outputSize <= OUTPUT_BUFFER_LIMIT) return;
@@ -176,6 +182,13 @@ export interface ManagedAttachment {
   pty: IPty;
   outputBuffer: string[];
   outputSize: number;
+  /** Epoch ms of the PTY's last output chunk / the last terminal-socket
+   *  keystroke written to it. Read by `GET /api/agents/:id/io`, which the
+   *  dashboard's per-pane input watchdog uses to tell "my socket is dead"
+   *  (the server never saw my keys, or produced output I never got) from
+   *  "the agent is silent" (it got my keys and printed nothing). */
+  lastOutputAt?: number;
+  lastInputAt?: number;
   /**
    * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
    * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
@@ -1011,7 +1024,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // Build provider args + env
   const { channels } = getSettings();
 
-  const resolved = {
+  const resolved: ResolvedSpawnOptions = {
     ...params,
     // Must come AFTER the spread: params.permissionMode may be undefined, and
     // the provider argv has to reflect the same resolved mode the record holds.
@@ -1308,7 +1321,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // halves of the auto-trust feature (prevent the dialog; else dismiss it).
   if (getSettings().autoTrust !== false && provider.prepareSpawn) {
     try {
-      provider.prepareSpawn(resolved, env);
+      const prep = provider.prepareSpawn(resolved, env);
+      if (prep.workdirTrust) resolved.workdirTrust = prep.workdirTrust;
     } catch (err) {
       // Best-effort by contract; the watcher is the fallback path.
       console.warn(
@@ -1334,6 +1348,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     void sidecar?.dispose();
     throw err;
   }
+
+  // Opt-in input forensics (AUTONOMOS_PTY_INPUT_LOG): wrap write() BEFORE any
+  // watcher or route can reach this PTY, so every byte is seen. No-op when off.
+  instrumentPtyInput(pty, {
+    sessionId: resolved.sessionId,
+    label: resolved.name ?? resolved.sessionId.slice(0, 8),
+  });
 
   // Startup screens the provider wants surfaced (e.g. Gemini's folder-trust
   // dialog) — independent of the Auto-Trust setting, because a dialog shows
@@ -1423,6 +1444,10 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       `Agent record ${agent.id} vanished before it could be marked running`,
     );
   }
+  // Counted HERE — where a PTY actually started, fresh or reattached — not in
+  // markRunning, which a fresh spawn never calls and the crash net also uses
+  // for an identity-only reset.
+  observeStart(persisted.id);
 
   // The spawn succeeded and the record is written — now the queued notices are
   // true statements about what happened.
@@ -1506,7 +1531,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           // (exited or replaced) — never paste into the wrong process.
           if (live.get(persisted.id)?.pty !== pty) return false;
           try {
-            pty.write(data);
+            withPtyInputSource("prompt-delivery", () => pty.write(data));
             return true;
           } catch (err) {
             // A throw on a still-canonical PTY is anomalous (vs the expected
@@ -1611,6 +1636,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     if (live.get(persisted.id)?.pty !== pty) {
       return;
     }
+    // After the stale guard: an old PTY exiting late must not overwrite the
+    // current process's exit code.
+    observeExitCode(persisted.id, exitCode);
 
     cancelPromptTracking(persisted.id);
     cancelChannelServerCheck(persisted.id);

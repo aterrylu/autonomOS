@@ -503,27 +503,36 @@ describe("selection + inspector", () => {
     outside.remove();
   });
 
-  it("clicking empty canvas clears the selection", async () => {
+  it("the inspector STICKS: clicks on empty canvas don't close it (Terry)", async () => {
     fleet();
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
     fireEvent.click(card("R1") as HTMLElement);
-    const stage = document.querySelector("[data-org-stage]") as HTMLElement;
-    fireEvent.mouseDown(stage);
-    fireEvent.click(stage);
+    fireEvent.click(document.querySelector("[data-org-stage]") as HTMLElement);
+    fireEvent.click(
+      document.querySelector("[data-org-viewport]") as HTMLElement,
+    );
+    expect(inspector()?.dataset.orgInspector).toBe("R1");
+    // Another card switches it; the × closes it.
+    fireEvent.click(card("O1") as HTMLElement);
+    expect(inspector()?.dataset.orgInspector).toBe("O1");
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
     expect(inspector()).toBeNull();
   });
 
-  it("a drag-select from a card that ends on empty canvas keeps the selection", async () => {
+  it("leaving the pane (dockview hides it) closes the inspector", async () => {
     fleet();
-    render(<HierarchyPanel />);
+    const { rerender } = render(<HierarchyPanel visible />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
     fireEvent.click(card("R1") as HTMLElement);
-    // Press on the card, release over the canvas: the browser dispatches that
-    // `click` to the common ancestor — the stage.
-    fireEvent.mouseDown(card("R1") as HTMLElement);
-    fireEvent.click(document.querySelector("[data-org-stage]") as HTMLElement);
-    expect(inspector()?.dataset.orgInspector).toBe("R1");
+    expect(hasEscapeCloser()).toBe(true);
+    rerender(<HierarchyPanel visible={false} />);
+    expect(inspector()).toBeNull();
+    // Nothing on the hidden chart keeps Escape reserved.
+    expect(hasEscapeCloser()).toBe(false);
+    // Coming back shows the chart with nothing selected.
+    rerender(<HierarchyPanel visible />);
+    expect(inspector()).toBeNull();
   });
 
   it("arrow keys walk the chart: ↑ manager, ↓ first report, → sibling", async () => {
@@ -791,3 +800,61 @@ function hexToRgb(hex: string): string {
   const b = Number.parseInt(v.slice(4, 6), 16);
   return `rgb(${r}, ${g}, ${b})`;
 }
+
+describe("same-named agents are distinct (keyed by id, never by name)", () => {
+  const hint = (id: string) =>
+    card(id)?.querySelector("[data-org-id-hint]")?.textContent ?? null;
+
+  it("two top-level agents with the same name both appear, each with an id hint", async () => {
+    tree([
+      node("aaaa1111", "running", [], { name: "Twin" }),
+      node("bbbb2222", "running", [], { name: "Twin" }),
+      node("cccc3333", "running", [], { name: "Solo" }),
+    ]);
+    useStore.setState({
+      sessions: [
+        session("aaaa1111", { name: "Twin" }),
+        session("bbbb2222", { name: "Twin" }),
+        session("cccc3333", { name: "Solo" }),
+      ],
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("aaaa1111")).not.toBeNull());
+    expect(card("bbbb2222")).not.toBeNull();
+    expect(hint("aaaa1111")).toBe("#aaaa");
+    expect(hint("bbbb2222")).toBe("#bbbb");
+    expect(card("aaaa1111")?.getAttribute("aria-label")).toMatch(
+      /^Twin \(aaaa\),/,
+    );
+    // A unique name reads plainly.
+    expect(hint("cccc3333")).toBeNull();
+  });
+
+  it("same-named agents under DIFFERENT managers stay under their own managers", async () => {
+    tree([
+      node("m1", "running", [
+        node("aaaa1111", "running", [], { name: "Twin" }),
+      ]),
+      node("m2", "running", [
+        node("bbbb2222", "running", [], { name: "Twin" }),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["m1", "m2"]
+        .map((id) => session(id))
+        .concat([
+          session("aaaa1111", { name: "Twin" }),
+          session("bbbb2222", { name: "Twin" }),
+        ]),
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("bbbb2222")).not.toBeNull());
+    expect(hint("aaaa1111")).toBe("#aaaa");
+    expect(hint("bbbb2222")).toBe("#bbbb");
+    // Selecting one lights ITS manager, not the other twin's.
+    fireEvent.click(card("aaaa1111") as HTMLElement);
+    expect(card("m1")?.style.opacity).toBe("");
+    expect(card("m2")?.style.opacity).toBe("0.45");
+    expect(card("bbbb2222")?.style.opacity).toBe("0.45");
+  });
+});

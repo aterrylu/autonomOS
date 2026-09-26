@@ -17,8 +17,23 @@
 
 import type { Agent, AgentActivityState, AgentDelta } from "@autonomos/core";
 
+/**
+ * Transport health, as the status-bar indicator reports it:
+ * - `connecting`   — no connection has opened yet this page load.
+ * - `connected`    — open, and a frame arrived within {@link STALE_AFTER_MS}.
+ * - `reconnecting` — we HAD a connection and lost it (closed, or silent past
+ *                    the stale window); retrying.
+ * - `disconnected` — reconnecting for longer than {@link DISCONNECTED_AFTER_MS}.
+ */
+export type TransportHealth =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected";
+
 export interface AgentsSnapshot {
   connected: boolean;
+  health: TransportHealth;
   /** Agent records by id — null until the first reconcile. */
   agents: Map<string, Agent> | null;
   /** Activity state + unread by id. */
@@ -35,6 +50,7 @@ const MAX_RETRY_MS = 15_000;
 
 let snapshot: AgentsSnapshot = {
   connected: false,
+  health: "connecting",
   agents: null,
   statuses: new Map(),
 };
@@ -146,20 +162,116 @@ function applyDelta(delta: AgentDelta): void {
   }
 }
 
-// Half-open detection: the server heartbeats every 30s, so a healthy socket
-// is never frameless for long. If an OPEN socket goes silent past ~2.5 beats
-// (VPN drop, Wi-Fi switch, sleep/wake — the OS can take minutes to notice),
-// force-close it: onclose resets the baseline and resumes the polls, which
-// is the "degrade to polling, never below it" rule applied to a connection
-// that LOOKS alive but isn't.
-const STALE_AFTER_MS = 75_000;
-const WATCHDOG_CHECK_MS = 20_000;
+// Half-open detection: the server heartbeats every 2s, so a healthy socket
+// is never frameless for long. An OPEN socket silent past ~2 beats (VPN drop,
+// Wi-Fi switch, sleep/wake, a stalled server — TCP can take minutes to
+// notice) is ABANDONED: we stop listening to it and open a fresh one at once.
+// Not "close and wait for onclose" — measured on a half-open link, close()
+// leaves the socket in CLOSING indefinitely and onclose never fires, so a
+// reconnect gated on it never happens.
+// Terry: 12s "is a little bit too long". This covers IDLE time only — while
+// typing, per-keystroke acks answer within ~1s (liveTerminals.ts).
+export const STALE_AFTER_MS = 5_000;
+/** Reconnecting this long (since the last frame) escalates to disconnected. */
+export const DISCONNECTED_AFTER_MS = 20_000;
+/** A handshake that hasn't opened by then is abandoned and retried — on a
+ *  half-open path the upgrade can hang with no error. */
+const CONNECT_TIMEOUT_MS = 5_000;
+const WATCHDOG_CHECK_MS = 500;
 let lastFrameAt = 0;
+let connectStartedAt = 0;
+let everOpened = false;
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+const healthListeners = new Set<(h: TransportHealth) => void>();
 
-function closeIfStale(): void {
-  if (ws && snapshot.connected && Date.now() - lastFrameAt > STALE_AFTER_MS) {
-    ws.close();
+function setHealth(health: TransportHealth): void {
+  if (snapshot.health === health) return;
+  commit({ health });
+  for (const l of healthListeners) {
+    try {
+      l(health);
+    } catch (err) {
+      console.warn("[agentsSocket] health listener threw:", err);
+    }
+  }
+}
+
+/** Stop listening to the current socket and reconnect NOW. Its handlers are
+ *  superseded-guarded, so whatever it does later (a late close, a late
+ *  frame) is ignored. */
+function abandonAndReconnect(): void {
+  const dead = ws;
+  ws = null;
+  try {
+    dead?.close();
+  } catch {
+    // already closing
+  }
+  if (snapshot.connected) {
+    commit({ connected: false, agents: null, statuses: new Map() });
+  }
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  if (started) connect();
+}
+
+function watchdog(): void {
+  const now = Date.now();
+  if (ws && snapshot.connected && now - lastFrameAt > STALE_AFTER_MS) {
+    setHealth("reconnecting");
+    retryMs = BASE_RETRY_MS;
+    abandonAndReconnect();
+  } else if (
+    ws &&
+    !snapshot.connected &&
+    ws.readyState === WebSocket.CONNECTING &&
+    now - connectStartedAt > CONNECT_TIMEOUT_MS
+  ) {
+    // Hung handshake: treat like a failed attempt (backoff applies).
+    const dead = ws;
+    ws = null;
+    try {
+      dead.close();
+    } catch {
+      // ignore
+    }
+    scheduleReconnect();
+  }
+  if (
+    snapshot.health === "reconnecting" &&
+    now - lastFrameAt >= DISCONNECTED_AFTER_MS
+  ) {
+    setHealth("disconnected");
+  }
+}
+
+function markLost(): void {
+  if (everOpened) {
+    setHealth(
+      Date.now() - lastFrameAt >= DISCONNECTED_AFTER_MS
+        ? "disconnected"
+        : "reconnecting",
+    );
+  }
+}
+
+function handleOffline(): void {
+  if (!started) return;
+  // The OS says the network is gone — no need to wait out the stale window.
+  if (ws && snapshot.connected) {
+    markLost();
+    abandonAndReconnect();
+  }
+}
+
+function handleOnline(): void {
+  if (!started) return;
+  // Network is back: retry now instead of waiting out the backoff.
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    retryMs = BASE_RETRY_MS;
+    abandonAndReconnect();
   }
 }
 
@@ -168,6 +280,7 @@ function connect(): void {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${proto}//${location.host}/ws/agents`);
   ws = socket;
+  connectStartedAt = Date.now();
 
   // Every handler is superseded-socket guarded (the invariant the terminal
   // socket learned the hard way): close events are ASYNC, so a torn-down
@@ -179,7 +292,9 @@ function connect(): void {
     if (ws !== socket) return;
     retryMs = BASE_RETRY_MS;
     lastFrameAt = Date.now();
+    everOpened = true;
     commit({ connected: true });
+    setHealth("connected");
   };
   socket.onmessage = (ev) => {
     if (ws !== socket) return;
@@ -200,6 +315,7 @@ function connect(): void {
     // agents briefly resurrected). `agents: null` re-arms the "open ≠ live"
     // guard for every connection, not just the first.
     commit({ connected: false, agents: null, statuses: new Map() });
+    markLost();
     scheduleReconnect();
   };
   socket.onerror = () => {
@@ -223,7 +339,7 @@ function handleVisibility(): void {
   if (document.visibilityState !== "visible" || !started) return;
   // Wake/return with a socket that still LOOKS open: check staleness now
   // rather than waiting a watchdog cycle — sleep froze the timers too.
-  closeIfStale();
+  watchdog();
   if (!ws) {
     if (retryTimer) {
       clearTimeout(retryTimer);
@@ -239,8 +355,13 @@ export const agentsSocket = {
     listeners.add(listener);
     if (!started) {
       started = true;
+      // A fresh start gets a fresh backoff — not whatever the previous
+      // subscription's failures had grown it to.
+      retryMs = BASE_RETRY_MS;
       document.addEventListener("visibilitychange", handleVisibility);
-      watchdogTimer = setInterval(closeIfStale, WATCHDOG_CHECK_MS);
+      window.addEventListener("online", handleOnline);
+      window.addEventListener("offline", handleOffline);
+      watchdogTimer = setInterval(watchdog, WATCHDOG_CHECK_MS);
       connect();
     }
     return () => {
@@ -248,6 +369,8 @@ export const agentsSocket = {
       if (listeners.size === 0) {
         started = false;
         document.removeEventListener("visibilitychange", handleVisibility);
+        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("offline", handleOffline);
         if (watchdogTimer) {
           clearInterval(watchdogTimer);
           watchdogTimer = null;
@@ -256,13 +379,21 @@ export const agentsSocket = {
           clearTimeout(retryTimer);
           retryTimer = null;
         }
-        ws?.close();
+        // Detach BEFORE closing, so the superseded guard below holds by
+        // construction rather than by onclose happening to be async.
+        const closing = ws;
         ws = null;
+        closing?.close();
         // The closed socket's onclose is superseded-guarded (ws is already
         // null ≠ socket), so IT won't reset the baseline — do it here, or a
         // resubscribe would treat this stale snapshot as live before the new
         // connection's reconcile lands.
+        everOpened = false;
         commit({ connected: false, agents: null, statuses: new Map() });
+        // Through setHealth, not commit: onHealthChange listeners (the status
+        // bar, the terminal cache's transport view) must hear this too, or
+        // they keep a stale "connected" while no socket exists.
+        setHealth("connecting");
       }
     };
   },
@@ -277,6 +408,18 @@ export const agentsSocket = {
   },
   getSnapshot(): AgentsSnapshot {
     return snapshot;
+  },
+  /** Epoch ms of the last frame (heartbeat or delta); 0 before the first. */
+  lastHeardAt(): number {
+    return lastFrameAt;
+  },
+  /** Observe health transitions WITHOUT holding the socket open (unlike
+   *  subscribe) — the terminal cache reconnects its panes on recovery. */
+  onHealthChange(listener: (h: TransportHealth) => void): () => void {
+    healthListeners.add(listener);
+    return () => {
+      healthListeners.delete(listener);
+    };
   },
   /** Test hook: apply a frame as if received. */
   _applyForTests(delta: AgentDelta): void {

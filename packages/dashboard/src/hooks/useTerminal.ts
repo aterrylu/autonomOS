@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CopyToastState } from "../components/CopyToast";
 import { THEMES, useStore } from "../store";
+import { PANE_OK, type PaneConnection } from "../terminal/connectionWatch";
 import {
   acquireTerminal,
   disposeTerminal,
@@ -41,6 +42,9 @@ export function useTerminal(
   // True while the viewport is parked off-bottom (trackpad flick /
   // Shift+PageUp) — drives the "Jump to latest" recovery pill.
   const [followOff, setFollowOff] = useState(false);
+  // Pane-level connection chip: "Connection lost · reconnecting…" /
+  // "Agent not responding · Ns" / the post-reconnect dropped-keys notice.
+  const [connection, setConnection] = useState<PaneConnection>(PANE_OK);
   // The mount's OWN entry — jumpToLatest must not go through the cache: a
   // deferred-ended session (final output on screen, 4010 freed its slot) is
   // uncached but very much clickable, and a cache-miss ?. would render the
@@ -147,6 +151,7 @@ export function useTerminal(
 
     entry.attach(container, handleClipboardCopy);
     entry.bindFollowIndicator(setFollowOff);
+    entry.bindConnectionIndicator(setConnection);
     entryRef.current = entry;
 
     return () => {
@@ -186,5 +191,5 @@ export function useTerminal(
 
   const jumpToLatest = useCallback(() => entryRef.current?.jumpToLatest(), []);
 
-  return { copyToast, followOff, jumpToLatest };
+  return { copyToast, followOff, jumpToLatest, connection };
 }

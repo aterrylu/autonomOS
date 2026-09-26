@@ -76,7 +76,7 @@ const GIT_ENV_ALLOWLIST = new Set([
   "GIT_TERMINAL_PROMPT",
 ]);
 
-function gitEnv(): NodeJS.ProcessEnv {
+export function gitEnv(): NodeJS.ProcessEnv {
   // Allowlist, not denylist: ANY unrecognized GIT_* is scrubbed. The
   // original 5-key denylist missed GIT_NAMESPACE (redirects what tag --list
   // sees), GIT_OBJECT_DIRECTORY, GIT_CONFIG_* (config/hook injection), and

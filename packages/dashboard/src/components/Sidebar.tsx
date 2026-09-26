@@ -9,6 +9,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { Poll } from "../api/poll";
 import { agentsPoll, projectsPoll, statusPoll, treePoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
+import { useNow } from "../hooks/useNow";
 import { focusTerminal } from "../hooks/useTerminal";
 import { DRAG_TYPE, encodeDragData } from "../layout/DragContext";
 import type { ActivePane, ProjectInfo, SessionInfo } from "../store";
@@ -1306,6 +1307,163 @@ function runningTarget(s: SessionInfo): AgentMenuTarget {
   };
 }
 
+/**
+ * The row's CONTENT: name, hand-off badge, unread + age, repo · branch, env
+ * preset, status label. Memoized with primitive props only, so a status frame
+ * for ANOTHER agent (which re-renders every row shell) skips it. The shell
+ * (SessionRow) keeps every event handler and all drag styling, so handlers are
+ * never stale and the drag model (ADR-095) is untouched. Ages and the recency
+ * fade read the shared useNow() clock, so they still advance while skipped.
+ */
+const SessionRowBody = React.memo(function SessionRowBody({
+  name,
+  pendingHandoffCount,
+  notifCount,
+  lastActive,
+  page,
+  projectLabel,
+  branch,
+  envPreset,
+  accent,
+  status,
+  currentTool,
+}: {
+  name: string;
+  pendingHandoffCount?: number;
+  notifCount: number;
+  lastActive: number;
+  // Must be referentially stable per theme (THEMES[theme].page). A page
+  // object built inline would bust the memo and re-render every row per tick.
+  page: PageTheme;
+  projectLabel: string;
+  branch?: string;
+  envPreset?: string;
+  accent: string;
+  status: AgentStatus;
+  currentTool?: string;
+}) {
+  // The shared clock can be up to a tick behind a row that JUST became active;
+  // clamp so that row reads as fresh (age 0), not as a negative "skewed" age.
+  const now = Math.max(useNow(), lastActive);
+  const isLightTheme = isLightBg(page.bg);
+  const labelStyle = statusLabelStyle(status, isLightTheme);
+  let shimmerClass = "";
+  if (labelStyle.shimmer) {
+    shimmerClass = isLightTheme ? " status-shimmer-light" : " status-shimmer";
+  }
+  return (
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-1">
+        <span className="flex-1 truncate text-xs">{name}</span>
+        {/* Hand-off pending badge (ADR-094): messages queued for human
+              hand-delivery to this manual-queue (Gemini) agent. Gold accent
+              (theme yellow), NOT a status color — independent of the status
+              dot/label, like the env-preset pill. Absent when the queue is
+              empty. The overlay itself lives in the terminal pane. */}
+        {(pendingHandoffCount ?? 0) > 0 && (
+          <span
+            className="shrink-0 text-[10px] font-semibold leading-[14px]"
+            style={{
+              color: "#e6b450",
+              border: "1px solid #e6b450",
+              background: "#e6b4501f",
+              borderRadius: 999,
+              padding: "0 5px",
+            }}
+            title={`${pendingHandoffCount} awaiting your delivery`}
+          >
+            ✉ {pendingHandoffCount}
+          </span>
+        )}
+        {/* Recency treatment (B2): the AGE TEXT fades (and, per ADR-101, a
+              passive Idle label below rides the same ramp)
+              with age so wildly-stale sessions recede. The unread prefix stays
+              full-strength (an attention signal, like the status dot/label) —
+              only the formatAge() text is wrapped in the faded span. Both read
+              the shared useNow() clock. */}
+        <span className="shrink-0 text-[10px]" style={{ color: page.statusFg }}>
+          {notifCount > 0 && (
+            <span style={{ color: unreadColor(isLightTheme) }}>
+              {notifCount} unread ·{" "}
+            </span>
+          )}
+          <span
+            style={recencyTimestampStyle(
+              lastActive,
+              now,
+              page.statusFg,
+              page.fg,
+              page.bg,
+            )}
+          >
+            {formatAge(lastActive, now)}
+          </span>
+        </span>
+      </div>
+      <div
+        className="flex items-center text-[10px]"
+        style={{ color: page.statusFg }}
+      >
+        {/* NOT flex-1: shrink to content so the pill sits immediately right
+              of the repo·branch text (Terry's spec), rather than being pushed
+              to the far corner. min-w-0 keeps long branch names truncatable. */}
+        <span className="min-w-0 truncate">
+          {projectLabel}
+          {branch && ` · ${branch}`}
+        </span>
+        {/* shrink-0 with NO width cap — the preset name always renders in
+              full (Terry's spec); the repo text and status label are the
+              members that give way on narrow rows. */}
+        {envPreset && (
+          <span
+            className="shrink-0 ml-1.5 px-1 rounded"
+            style={{
+              color: accent,
+              background: `${accent}1f`,
+              border: `1px solid ${accent}`,
+            }}
+            title={`Env preset: ${envPreset}`}
+          >
+            {envPreset}
+          </span>
+        )}
+        {/* ml-auto keeps the transient label right-aligned; min-w-0 +
+              truncate (NOT shrink-0) because currentTool is a raw hook
+              tool_name ("Running mcp__autonomos__create_schedule") and the
+              sidebar clips on x — a non-shrinking label would crowd out the
+              repo text and the pill on narrow rows. Muted-accent color per
+              status (theme-aware); active-work statuses shimmer via the
+              theme-appropriate CSS class (the inline color is skipped so the
+              class wins). */}
+        {status && status !== "unknown" && (
+          <span
+            className={`ml-auto min-w-0 truncate pl-1.5${shimmerClass}`}
+            style={
+              labelStyle.shimmer
+                ? undefined
+                : {
+                    color: labelStyle.color,
+                    // T1 (Terry's pick): a passive Idle label fades on the
+                    // SAME ramp as the timestamp beside it; attention
+                    // statuses return 1. Same lastActive + render cadence as
+                    // the timestamp, so the two can never disagree.
+                    opacity: recencyLabelOpacity(
+                      status,
+                      lastActive,
+                      now,
+                      page.bg,
+                    ),
+                  }
+            }
+          >
+            {agentStatusLabel(status, currentTool)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+});
+
 function SessionRow({
   session: s,
   pane,
@@ -1336,11 +1494,11 @@ function SessionRow({
   // over the CC transcript mtime — a resumed CC process touches its JSONL at
   // boot, which is exactly the "every session shows 1m after upgrade" bug.
   const lastActive = s.lastActivityAt ?? meta?.lastModified ?? s.createdAt;
+  const projectLabel =
+    meta?.projectName ?? s.workingDirectory.split("/").pop() ?? "";
   const paddingLeft = paddingLeftOverride ?? 9 + indent * 10;
   const agentIconStyle = useStore((st) => st.agentIconStyle);
   const status = (agentState?.status as AgentStatus) ?? "unknown";
-  const isLightTheme = isLightBg(page.bg);
-  const labelStyle = statusLabelStyle(status, isLightTheme);
   const accent = THEMES[useStore((st) => st.theme)].terminal.yellow;
 
   // Hold-mod hints (useModKeyHold): the digit that switches to THIS row, and
@@ -1461,129 +1619,19 @@ function SessionRow({
       ) : (
         <AgentStatusIcon status={status} size={14} />
       )}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1">
-          <span className="flex-1 truncate text-xs">{s.name}</span>
-          {/* Hand-off pending badge (ADR-094): messages queued for human
-              hand-delivery to this manual-queue (Gemini) agent. Gold accent
-              (theme yellow), NOT a status color — independent of the status
-              dot/label, like the env-preset pill. Absent when the queue is
-              empty. The overlay itself lives in the terminal pane. */}
-          {(s.pendingHandoffCount ?? 0) > 0 && (
-            <span
-              className="shrink-0 text-[10px] font-semibold leading-[14px]"
-              style={{
-                color: "#e6b450",
-                border: "1px solid #e6b450",
-                background: "#e6b4501f",
-                borderRadius: 999,
-                padding: "0 5px",
-              }}
-              title={`${s.pendingHandoffCount} awaiting your delivery`}
-            >
-              ✉ {s.pendingHandoffCount}
-            </span>
-          )}
-          {/* Recency treatment (B2): the AGE TEXT fades (and, per ADR-101, a
-              passive Idle label below rides the same ramp)
-              with age so wildly-stale sessions recede. The unread prefix stays
-              full-strength (an attention signal, like the status dot/label) —
-              only the formatAge() text is wrapped in the faded span. Computed
-              from the same lastActive the text renders from, so it rides the
-              sidebar's existing ~5s render cadence — no new timer. */}
-          <span
-            className="shrink-0 text-[10px]"
-            style={{ color: page.statusFg }}
-          >
-            {notifCount > 0 && (
-              <span style={{ color: unreadColor(isLightTheme) }}>
-                {notifCount} unread ·{" "}
-              </span>
-            )}
-            <span
-              style={recencyTimestampStyle(
-                lastActive,
-                Date.now(),
-                page.statusFg,
-                page.fg,
-                page.bg,
-              )}
-            >
-              {formatAge(lastActive)}
-            </span>
-          </span>
-        </div>
-        <div
-          className="flex items-center text-[10px]"
-          style={{ color: page.statusFg }}
-        >
-          {/* NOT flex-1: shrink to content so the pill sits immediately right
-              of the repo·branch text (Terry's spec), rather than being pushed
-              to the far corner. min-w-0 keeps long branch names truncatable. */}
-          <span className="min-w-0 truncate">
-            {meta?.projectName ?? s.workingDirectory.split("/").pop()}
-            {rowBranch(s.gitBranch, meta?.gitBranch) &&
-              ` · ${rowBranch(s.gitBranch, meta?.gitBranch)}`}
-          </span>
-          {/* shrink-0 with NO width cap — the preset name always renders in
-              full (Terry's spec); the repo text and status label are the
-              members that give way on narrow rows. */}
-          {s.envPreset && (
-            <span
-              className="shrink-0 ml-1.5 px-1 rounded"
-              style={{
-                color: accent,
-                background: `${accent}1f`,
-                border: `1px solid ${accent}`,
-              }}
-              title={`Env preset: ${s.envPreset}`}
-            >
-              {s.envPreset}
-            </span>
-          )}
-          {/* ml-auto keeps the transient label right-aligned; min-w-0 +
-              truncate (NOT shrink-0) because currentTool is a raw hook
-              tool_name ("Running mcp__autonomos__create_schedule") and the
-              sidebar clips on x — a non-shrinking label would crowd out the
-              repo text and the pill on narrow rows. Muted-accent color per
-              status (theme-aware); active-work statuses shimmer via the
-              theme-appropriate CSS class (the inline color is skipped so the
-              class wins). */}
-          {agentState?.status && agentState.status !== "unknown" && (
-            <span
-              className={`ml-auto min-w-0 truncate pl-1.5${
-                labelStyle.shimmer
-                  ? isLightTheme
-                    ? " status-shimmer-light"
-                    : " status-shimmer"
-                  : ""
-              }`}
-              style={
-                labelStyle.shimmer
-                  ? undefined
-                  : {
-                      color: labelStyle.color,
-                      // T1 (Terry's pick): a passive Idle label fades on the
-                      // SAME ramp as the timestamp beside it; attention
-                      // statuses return 1. Same lastActive + render cadence as
-                      // the timestamp, so the two can never disagree.
-                      opacity: recencyLabelOpacity(
-                        agentState.status,
-                        lastActive,
-                        Date.now(),
-                        page.bg,
-                      ),
-                    }
-              }
-            >
-              {agentStatusLabel(
-                agentState.status as AgentStatus,
-                agentState.currentTool,
-              )}
-            </span>
-          )}
-        </div>
-      </div>
+      <SessionRowBody
+        name={s.name}
+        pendingHandoffCount={s.pendingHandoffCount}
+        notifCount={notifCount}
+        lastActive={lastActive}
+        page={page}
+        projectLabel={projectLabel}
+        branch={rowBranch(s.gitBranch, meta?.gitBranch)}
+        envPreset={s.envPreset}
+        accent={accent}
+        status={status}
+        currentTool={agentState?.currentTool}
+      />
       {onTogglePin && (
         <button
           type="button"
@@ -1918,17 +1966,34 @@ function treePaddingLeft(depth: number): number {
  * Renders vertical continuation lines + the branch/elbow connector for one
  * hierarchy row.  Pure presentational — no interactivity.
  */
-function TreeLineGuides({
-  depth,
-  isLastChild,
-  ancestorIsLast,
-  lineColor,
-}: {
+interface TreeLineGuidesProps {
   depth: number;
   isLastChild: boolean;
   ancestorIsLast: boolean[];
   lineColor: string;
-}) {
+}
+
+/** `ancestorIsLast` is rebuilt on every render, so compare it by value; the
+ *  rest are primitives. Lets an unchanged row's guides skip on a status frame. */
+export function treeLineGuidesPropsEqual(
+  a: TreeLineGuidesProps,
+  b: TreeLineGuidesProps,
+): boolean {
+  return (
+    a.depth === b.depth &&
+    a.isLastChild === b.isLastChild &&
+    a.lineColor === b.lineColor &&
+    a.ancestorIsLast.length === b.ancestorIsLast.length &&
+    a.ancestorIsLast.every((v, i) => v === b.ancestorIsLast[i])
+  );
+}
+
+const TreeLineGuides = React.memo(function TreeLineGuides({
+  depth,
+  isLastChild,
+  ancestorIsLast,
+  lineColor,
+}: TreeLineGuidesProps) {
   if (depth === 0) return null;
 
   const branchAtX = guideX(depth);
@@ -1979,7 +2044,7 @@ function TreeLineGuides({
       />
     </div>
   );
-}
+}, treeLineGuidesPropsEqual);
 
 function HierarchyNodeRow({
   node,
@@ -2247,6 +2312,9 @@ interface ProjectItemProps {
  *  `external` = not managed (the adoptable star). */
 type RowState = "live" | "stopped" | "external";
 
+/** Stable empty status map for collapsed projects (see ProjectItem). */
+const NO_STATUSES: ReturnType<typeof useStore.getState>["agentStatuses"] = {};
+
 export const ProjectItem = React.memo(function ProjectItem({
   project,
   page,
@@ -2263,14 +2331,18 @@ export const ProjectItem = React.memo(function ProjectItem({
   const exitedSessions = useStore((s) => s.exitedSessions);
   const status = useStore((s) => s.status);
   const isBusy = status === "resuming..." || status === "spawning...";
-  // The SAME live status feed the Agents-tab rows read (GET /api/agent-status),
-  // so a live Projects row shows the real corner dot (green idle / blue working
-  // / amber needs-input) instead of a blank circle — Terry's #369 refinement.
-  const agentStatuses = useStore((s) => s.agentStatuses);
-
   // Expand state lives in the store so it survives the Sidebar's unmount-on-
   // collapse (a per-mount useState reset every open — the old bug #8).
   const expanded = useStore((s) => s.expandedProjects[project.path] ?? false);
+  // The SAME live status feed the Agents-tab rows read (GET /api/agent-status),
+  // so a live Projects row shows the real corner dot (green idle / blue working
+  // / amber needs-input) instead of a blank circle — Terry's #369 refinement.
+  // Only the session rows read it, and they render only when EXPANDED (at most
+  // one project, by the accordion invariant). A collapsed project selects a
+  // constant, so the ~60 collapsed rows don't re-render on every status frame.
+  const agentStatuses = useStore((s) =>
+    expanded ? s.agentStatuses : NO_STATUSES,
+  );
   const toggleProjectExpanded = useStore((s) => s.toggleProjectExpanded);
 
   const accent = THEMES[useStore((s) => s.theme)].terminal.yellow;
@@ -2401,12 +2473,11 @@ export const ProjectItem = React.memo(function ProjectItem({
                 // iconStatus), while a DEAD row (stopped/external) is grayed out
                 // — dimmed at rest, restored on hover so its Resume stays legible.
                 // (The rounded-full pills from the first archive look are still
-                // gone; only the dead-row dimming returns. ADR-098.)
-                className={`group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer${
-                  state === "live"
-                    ? ""
-                    : " opacity-60 transition-opacity hover:opacity-100"
-                }`}
+                // gone; only the dead-row dimming returns. ADR-098.) The dim is
+                // on the TEXT column, never the row: a provider mark is shown
+                // unaltered in its canonical form (brand policy — Terry: "the
+                // Codex icon gets grayed as well").
+                className="group/row flex w-full items-center gap-1.5 py-1 text-left cursor-pointer"
                 style={{ paddingLeft: "20px", paddingRight: "12px" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = `${page.fg}0a`;
@@ -2439,7 +2510,13 @@ export const ProjectItem = React.memo(function ProjectItem({
                   status={iconStatus}
                   size={16}
                 />
-                <div className="flex-1 min-w-0">
+                <div
+                  className={`flex-1 min-w-0${
+                    state === "live"
+                      ? ""
+                      : " opacity-60 transition-opacity group-hover/row:opacity-100"
+                  }`}
+                >
                   <div className="flex items-center gap-1">
                     <span className="flex-1 truncate text-xs">{s.summary}</span>
                     <span

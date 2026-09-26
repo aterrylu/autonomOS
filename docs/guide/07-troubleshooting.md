@@ -102,6 +102,24 @@ rm -rf ~/.autonomos
 
 Then run the installer again. All agents, templates, schedules, presets, and the token are gone; Claude Code and its login are untouched. See [Installing](02-install.md#uninstalling).
 
+## Something is typing into my agents' terminals
+
+For example, blank lines or stray characters show up in an agent's input box after a restart. autonomOS can record every keystroke it sends into agent terminals, and who sent it: the dashboard (your typing, plus the terminal's automatic replies), the auto-trust helper, prompt re-delivery, the usage queue, or a handoff. It is off unless you turn it on.
+
+To record the next start:
+
+```bash
+touch ~/.autonomos/pty-input-log.on
+autonomos restart
+```
+
+Reproduce the problem, then read `~/.autonomos/logs/pty-input.log`. Each line shows the time, the agent, the sender, and the keys. Enter shows as `\r`, a newline as `\n`, and `\e[…` sequences are escape codes.
+
+- The recording covers that one start only: autonomOS deletes the `pty-input-log.on` file as it turns recording on. It also stops by itself 30 minutes after the start, and `autonomos logs` shows a line when it turns on and when it turns off.
+- Anything you type appears only as its length, for example `<printable×12>`, never as the text itself. Only the control keys and escape codes are written out, since those are what explain stray lines.
+- The file is readable only by you, and old recordings are rotated away automatically.
+- If you use a different config folder (`AUTONOMOS_CONFIG_DIR`), put the file there instead of `~/.autonomos`.
+
 ## Something else
 
 - `autonomos status` says whether it is running and where.

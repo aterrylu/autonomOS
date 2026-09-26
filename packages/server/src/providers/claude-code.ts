@@ -16,10 +16,13 @@ import {
   type AgentProvider,
   DEFAULT_PERMISSION_MODE,
   type PermissionMode,
+  type PrepareSpawnResult,
   type PtyHandle,
   type ResolvedSpawnOptions,
+  type WorkdirTrust,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
+import { withPtyInputSource } from "../ptyInputLog.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
@@ -38,10 +41,48 @@ import {
 const STATUSLINE_REFRESH_SECONDS = 5;
 
 // ── Hook relay ─────────────────────────────────────────────────
-const HOOK_ENTRY = {
-  matcher: "",
-  hooks: [{ type: "command", command: HOOK_CMD, timeout: 3, async: true }],
-} as const;
+/**
+ * The three events the status machine derives a turn's state from. They run
+ * SYNCHRONOUSLY; everything else stays async.
+ *
+ * Every hook is its own `curl`, and async hooks are fired and forgotten, so
+ * their arrival order at the server is not guaranteed: measured, an async
+ * SessionStart/UserPromptSubmit/Stop trio all start within ~190ms, and a
+ * UserPromptSubmit can land AFTER its turn's Stop. `deriveStatus` is
+ * last-writer-wins by arrival, so that left an idle agent showing "working"
+ * forever (the agent-spawn-prompt flake under concurrent boots). A sync hook
+ * blocks Claude Code until its curl returns, so these three can't overtake
+ * each other (verified on CC 2.1.282: strictly serialized).
+ *
+ * Cost (the hook's own curl, measured against the control socket): healthy
+ * p50 11ms / p99 ~100ms at turn start and end; server down fails as fast;
+ * server frozen ~2.2s per hook, bounded by curl --max-time 2, and CC also cuts
+ * a hook at its 3s `timeout` and carries on (verified), so a turn can never
+ * hang on it. Tool events stay async: they fire per tool call, and their order
+ * relative to each other doesn't decide status the same way.
+ *
+ * Gemini needs no counterpart: gemini-cli awaits its SessionStart/BeforeAgent/
+ * AfterAgent hooks (it reads their output), so they are already ordered.
+ */
+const ORDERED_HOOK_EVENTS: ReadonlySet<string> = new Set([
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+]);
+
+function hookEntry(event: string) {
+  return {
+    matcher: "",
+    hooks: [
+      {
+        type: "command",
+        command: HOOK_CMD,
+        timeout: 3,
+        async: !ORDERED_HOOK_EVENTS.has(event),
+      },
+    ],
+  };
+}
 
 const HOOK_EVENTS = [
   "SessionStart",
@@ -271,7 +312,7 @@ export const claudeCodeProvider: AgentProvider = {
     //     of the CC terminal. Replaces the user's personal statusLine for
     //     spawned sessions only. CC merges these as parallel keys at the root.
     const settingsPayload: Record<string, unknown> = {
-      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [HOOK_ENTRY]])),
+      hooks: Object.fromEntries(HOOK_EVENTS.map((e) => [e, [hookEntry(e)]])),
     };
     if (settings.statusLine?.enabled !== false) {
       // JSON.stringify produces a properly-escaped, double-quoted path —
@@ -312,8 +353,8 @@ export const claudeCodeProvider: AgentProvider = {
   prepareSpawn(
     options: ResolvedSpawnOptions,
     env: Record<string, string>,
-  ): void {
-    preTrustWorkdir(options.cwd, claudeJsonPath(env));
+  ): PrepareSpawnResult {
+    return { workdirTrust: preTrustWorkdir(options.cwd, claudeJsonPath(env)) };
   },
 
   attachStartupWatcher(
@@ -325,7 +366,13 @@ export const claudeCodeProvider: AgentProvider = {
     const { channels } = getSettings();
     const expectChannels =
       channels?.some((c) => c.startsWith("server:")) ?? false;
-    attachStartupWatcherCore(pty, options, { expectChannels, onSettled });
+    attachStartupWatcherCore(pty, options, {
+      expectChannels,
+      // Pre-trust wrote (or found) "trusted": the dialog shouldn't render, so
+      // don't make settle wait for it. declined/unknown keep it required.
+      trustOptional: options.workdirTrust === "trusted",
+      onSettled,
+    });
   },
 
   hasResumableSession(
@@ -435,20 +482,24 @@ export function claudeJsonPath(
  *
  * Exported for tests, which drive it against a temp config path.
  */
-export function preTrustWorkdir(cwd: string, claudeJsonPath: string): void {
+export function preTrustWorkdir(
+  cwd: string,
+  claudeJsonPath: string,
+): WorkdirTrust {
   let raw: string;
   try {
     raw = readFileSync(claudeJsonPath, "utf8");
   } catch {
-    return; // no CC config yet — onboarding owns it
+    return "unknown"; // no CC config yet — onboarding owns it
   }
   let config: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return "unknown";
     config = parsed as Record<string, unknown>;
   } catch {
-    return; // malformed — not ours to repair
+    return "unknown"; // malformed — not ours to repair
   }
 
   // CC keys projects by RESOLVED path (macOS /var/... → /private/var/...).
@@ -468,7 +519,11 @@ export function preTrustWorkdir(cwd: string, claudeJsonPath: string): void {
       ? (projects[real] as Record<string, unknown>)
       : {};
   // Idempotent: any existing value (a deliberate decline included) is kept.
-  if ("hasTrustDialogAccepted" in entry) return;
+  if ("hasTrustDialogAccepted" in entry) {
+    if (entry.hasTrustDialogAccepted === true) return "trusted";
+    if (entry.hasTrustDialogAccepted === false) return "declined";
+    return "unknown";
+  }
 
   entry.hasTrustDialogAccepted = true;
   projects[real] = entry;
@@ -486,11 +541,17 @@ export function preTrustWorkdir(cwd: string, claudeJsonPath: string): void {
       "[auto-trust] pre-trust write failed (the startup watcher remains the fallback):",
       err instanceof Error ? err.message : err,
     );
+    return "unknown";
   }
+  return "trusted";
 }
 
 export interface StartupWatcherConfig {
   expectChannels: boolean;
+  /** The trust dialog is not expected (pre-trust established "trusted"): it is
+   *  still answered if it renders, but settle doesn't wait for it and its
+   *  absence is never reported. Default false (trust required). */
+  trustOptional?: boolean;
   /** How long to wait after an Enter before checking whether it landed.
    *  Also the length of the post-dismissal confirmation window. */
   retryDelayMs?: number;
@@ -504,11 +565,14 @@ export interface StartupWatcherConfig {
   minDismissEvidenceChars?: number;
   /** Hard deadline for the whole watcher. */
   timeoutMs?: number;
-  /** Fired exactly once when the watcher reaches ANY terminal state (all
-   *  dialogs handled, gave up, hard timeout, or a PTY write failure — a PTY
-   *  that dies without a write settles via the hard timeout; the watcher has
-   *  no exit listener). Guarded: a throw must not escape into the watcher's
-   *  timer callbacks. */
+  /** Fired exactly once: one tick after attach when no dialog is required
+   *  (pre-trusted, no channels), otherwise when the
+   *  watcher reaches ANY terminal state (all dialogs handled, gave up, hard
+   *  timeout, or a PTY write failure — a PTY that dies without a write settles
+   *  via the hard timeout; the watcher has no exit listener). An early settle
+   *  keeps the watcher listening for an optional dialog until it is answered
+   *  or the timeout. Guarded: a throw must
+   *  not escape into the watcher's timer callbacks. */
   onSettled?: () => void;
 }
 
@@ -561,6 +625,10 @@ export function attachStartupWatcherCore(
     channels: CHANNELS_NEEDLES,
   };
   const expected = config.expectChannels ? ["trust", "channels"] : ["trust"];
+  // Dialogs settle must wait for. Optional ones are still watched and answered.
+  const required = config.trustOptional
+    ? expected.filter((id) => id !== "trust")
+    : expected;
 
   interface DialogState {
     /** Needle seen — keys sent, awaiting confirmation they landed. */
@@ -590,12 +658,18 @@ export function attachStartupWatcherCore(
   let buf = "";
   const MAX_BUF = 8192;
   let disposed = false;
+  let settledFired = false;
+  // Nothing required (pre-trusted, no channels): settle right away — but on
+  // the next tick, never synchronously: the runtime registers the agent as
+  // live a few sync lines after attaching us, and its settle callback ignores
+  // a call that arrives before that.
+  let settleNoneRequiredTimer: NodeJS.Timeout | null = null;
   let ptyDead = false;
 
   function writeKey(key: string): boolean {
     if (ptyDead) return false;
     try {
-      pty.write(key);
+      withPtyInputSource("auto-trust", () => pty.write(key));
       return true;
     } catch (err) {
       ptyDead = true;
@@ -805,9 +879,22 @@ export function attachStartupWatcherCore(
     }
   });
 
+  if (required.length === 0) {
+    settleNoneRequiredTimer = setTimeout(() => {
+      settleNoneRequiredTimer = null;
+      fireSettled();
+    }, 0);
+  }
+
   const timer = setTimeout(() => {
     if (disposed) return;
-    const unanswered = expected.filter((id) => !dialogs.get(id)?.settled);
+    // Report required dialogs never answered, plus optional ones that DID
+    // render (engaged) and are still stuck: optional means "absence is fine",
+    // not "a visible, unanswered dialog is fine".
+    const unanswered = expected.filter((id) => {
+      const d = dialogs.get(id);
+      return !d?.settled && (required.includes(id) || d?.engaged);
+    });
     const engaged = unanswered.filter((id) => dialogs.get(id)?.engaged);
     if (unanswered.length > 0) {
       console.warn(
@@ -825,9 +912,18 @@ export function attachStartupWatcherCore(
     for (const d of dialogs.values()) {
       if (d.checkTimer) clearTimeout(d.checkTimer);
     }
+    if (settleNoneRequiredTimer) clearTimeout(settleNoneRequiredTimer);
     disposable.dispose();
     // cleanup() is the watcher's single terminal point (all-settled, hard
-    // timeout, PTY death), so the once-guarantee rides the `disposed` flag.
+    // timeout, PTY death): settle has happened by now at the latest.
+    fireSettled();
+  }
+
+  /** The ONE place onSettled is called; `settledFired` makes it exactly-once
+   *  across the early (nothing required) and terminal (cleanup) paths. */
+  function fireSettled(): void {
+    if (settledFired) return;
+    settledFired = true;
     try {
       config.onSettled?.();
     } catch (err) {

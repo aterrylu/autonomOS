@@ -30,7 +30,7 @@ function sess(id: string, ageMs = 60_000): SessionInfo {
 
 const WORKER = sess("worker");
 const BLOCKED = sess("blocked");
-const DEAD = sess("dead", 34 * DAY); // ancient timestamp → recency fade at 0.52 (void)
+const DEAD = sess("dead", 34 * DAY); // ancient timestamp → recency fade at 0.64 (void)
 const AGENTS = [WORKER, BLOCKED, DEAD];
 
 function stubFetch() {
@@ -95,7 +95,7 @@ describe("Sidebar status label styling", () => {
     render(<Sidebar />);
     // DEAD is 34d old → the recency treatment fades its TIMESTAMP…
     const age = await screen.findByText("34d");
-    expect(age).toHaveStyle({ opacity: "0.52" });
+    expect(age).toHaveStyle({ opacity: "0.64" });
     // …while its "Stopped" LABEL stays full-strength gray (orthogonal signals).
     const label = await screen.findByText("Stopped");
     expect(label).toHaveStyle({ color: "rgb(163, 163, 163)" });

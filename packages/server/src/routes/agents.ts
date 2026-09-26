@@ -9,14 +9,20 @@
 import {
   type AgentTreeNode,
   type ExitReason,
+  hierarchyOf,
   isExitReason,
   permissionModeFromStored,
   type UUID,
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
+import {
+  forgetAgentAnalytics,
+  getAgentAnalytics,
+} from "../agents/analytics.js";
 import { enrichAgent } from "../agents/enrich.js";
 import {
+  getAttachment,
   isAgentLive,
   killAttachment,
   restartAllAttachments,
@@ -74,6 +80,22 @@ export const agentsRouter = new Hono();
 // UserPromptSubmit hook (see handoffDelivery.ts) — so "send" returning ok means
 // the injection STARTED, not that it's been confirmed yet.
 
+/** Terminal I/O recency for the dashboard's per-pane input watchdog: how long
+ *  ago the PTY last received a terminal-socket keystroke and last produced
+ *  output. AGES, not timestamps — the dashboard compares them against its own
+ *  "keystroke sent N ms ago", and ages survive browser/server clock skew.
+ *  `null` = never. 404 when the agent has no live PTY. */
+agentsRouter.get("/:id/io", (c) => {
+  const managed = getAttachment(c.req.param("id") as UUID);
+  if (!managed) return c.json({ error: "not live" }, 404);
+  const now = Date.now();
+  const age = (t: number | undefined) => (t === undefined ? null : now - t);
+  return c.json({
+    inputAgeMs: age(managed.lastInputAt),
+    outputAgeMs: age(managed.lastOutputAt),
+  });
+});
+
 /** Per-agent SELF metadata for the statusline (#297 follow-up). The PTY env
  *  deliberately carries NO server token, so this route authenticates with
  *  the PER-AGENT token (file-delivered at spawn) — and grants exactly one
@@ -83,22 +105,19 @@ agentsRouter.get("/:id/self", (c) => {
   const id = c.req.param("id");
   if (!verifyAgentToken(id, c.req.header("X-Agent-Token")))
     return c.json({ error: "unauthorized" }, 401);
-  const agents = listAgents();
-  const me = agents.find((a) => a.id === id);
-  if (!me) return c.json({ error: "not found" }, 404);
-  // Field names + semantics mirror the statusline's legacy /api/agents
-  // derivation (getAutonomosMeta): `manager` is a display NAME, and
-  // exited reports don't count — records persist until deleted, so a
-  // manager that reaped short-lived workers must not read ↓N forever.
+  // ONE definition of "manager" / "live reports", shared with the org tree
+  // (core `hierarchyOf`), so the statusline and the chart can't disagree.
+  // `manager` stays a display NAME for the statusline; `managerStatus` lets it
+  // mark a dead manager the chart draws as a ghost.
+  const h = hierarchyOf(listAgents(), id);
+  if (!h) return c.json({ error: "not found" }, 404);
+  const { self: me, manager } = h;
   return c.json({
     name: me.name,
-    manager: me.managerId
-      ? (agents.find((a) => a.id === me.managerId)?.name ?? null)
-      : null,
+    manager: manager?.name ?? null,
+    managerStatus: manager?.status ?? null,
     project: me.project ?? null,
-    directReports: agents.filter(
-      (a) => a.managerId === me.id && a.status !== "exited",
-    ).length,
+    directReports: h.liveReports.length,
     permissionMode: me.permissionMode,
     status: me.status,
   });
@@ -272,6 +291,22 @@ agentsRouter.get("/:id/messages", (c) => {
   const raw = Number.parseInt(c.req.query("limit") ?? "", 10);
   const limit = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 50) : 20;
   return c.json(getAgentMessageStats(agent.id, limit));
+});
+
+// One agent's analytics for the Org Chart inspector: counters since the
+// server started (status time, turns, waits, tools, restarts/crashes, a 24h
+// activity strip) plus its git branch. Never estimated — see agents/analytics.
+agentsRouter.get("/:id/analytics", async (c) => {
+  const id = c.req.param("id");
+  const agent = resolveAgent(id);
+  if (!agent) return c.json({ error: `Agent "${id}" not found` }, 404);
+  return c.json(
+    await getAgentAnalytics(agent.id, {
+      provider: agent.provider,
+      workingDirectory: agent.workingDirectory,
+      startedAt: agent.status === "running" ? agent.startedAt : undefined,
+    }),
+  );
 });
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -1047,6 +1082,7 @@ agentsRouter.delete("/:id", (c) => {
   clearAgentState(id);
   clearNotifications(id);
   forgetAgentMessages(id);
+  forgetAgentAnalytics(id);
   // Disarm any queued auto-Enter: an armed pane for a DELETED agent would
   // otherwise fire hours later against a gone PTY and push a notification
   // under an id nothing can resolve (same invariant as the clears). Lives in

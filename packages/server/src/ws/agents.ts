@@ -19,11 +19,14 @@ import { getAgentStatusSnapshot } from "../routes/hooks.js";
 
 const clients = new Set<WSContext>();
 
-/** Heartbeat cadence. A dashboard client watchdog force-closes its socket
- *  after ~2.5 missed beats — that is what turns a HALF-OPEN socket (VPN
- *  drop, Wi-Fi→cellular, sleep/wake) into a real close, so the client's
- *  polls resume instead of sitting suspended behind a dead connection. */
-export const HEARTBEAT_INTERVAL_MS = 30_000;
+/** Heartbeat cadence. The dashboard treats 5s of silence (2 missed beats +
+ *  slack) as stale: it shows "Reconnecting…", abandons the socket and
+ *  reconnects. That is what turns a HALF-OPEN socket (VPN drop, Wi-Fi→
+ *  cellular, sleep/wake) or a stalled server into a visible state within
+ *  seconds — TCP itself can take minutes to notice. It covers the time you
+ *  are NOT typing; while you type, per-keystroke acks (routes/terminal.ts)
+ *  answer within a second. One tiny frame per dashboard tab every 2s. */
+export const HEARTBEAT_INTERVAL_MS = 2_000;
 const heartbeats = new Map<WSContext, ReturnType<typeof setInterval>>();
 
 function dropClient(ws: WSContext): void {

@@ -2,7 +2,8 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../../test/setup-dom";
-import { ConnectionStatusBarItem } from "./ConnectionStatusBarItem";
+import { agentsSocket } from "../../api/agentsSocket";
+import { ConnectionStatusBarItem, classify } from "./ConnectionStatusBarItem";
 
 /**
  * ConnectionStatusBarItem — the bottom-left server indicator. It polls
@@ -68,7 +69,8 @@ async function advance(ms: number): Promise<void> {
 }
 
 function label(): string | null {
-  return screen.getByText(/Connected|Disconnected|Checking/).textContent;
+  return screen.getByText(/Connected|Disconnected|Checking|Reconnecting/)
+    .textContent;
 }
 
 beforeEach(() => {
@@ -165,5 +167,79 @@ describe("ConnectionStatusBarItem", () => {
     await advance(2_000); // fast-cadence reschedule fires the next probe
     await advance(PROBE_TIMEOUT_MS); // it times out too
     expect(label()).toBe("Disconnected");
+  });
+});
+
+describe("classify — heartbeat health wins once the socket has opened", () => {
+  it("maps each transport state, falling back to the poll only while connecting", () => {
+    expect(classify("connected", "disconnected", 0).label).toBe("Connected");
+    expect(classify("reconnecting", "connected", 12).label).toBe(
+      "Reconnecting… last heard 12s ago",
+    );
+    expect(classify("disconnected", "connected", 40).label).toBe(
+      "Disconnected · retrying",
+    );
+    expect(classify("connecting", "checking", 0).label).toBe("Checking...");
+    expect(classify("connecting", "connected", 0).label).toBe("Connected");
+    expect(classify("connecting", "disconnected", 0).label).toBe(
+      "Disconnected",
+    );
+  });
+});
+
+describe("ConnectionStatusBarItem driven by the /ws/agents heartbeat", () => {
+  class FakeWS {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    static all: FakeWS[] = [];
+    readyState = 0;
+    onopen: (() => void) | null = null;
+    onmessage: ((e: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(_url: string) {
+      FakeWS.all.push(this);
+    }
+    close() {
+      // half-open: never completes (measured)
+      this.readyState = 2;
+    }
+  }
+  let unsubscribe: (() => void) | null = null;
+  afterEach(() => {
+    unsubscribe?.();
+    unsubscribe = null;
+  });
+
+  it("a stalled server reads 'Reconnecting… last heard Ns ago' at ~5s and escalates at 20s — even while the HTTP poll would still say Connected", async () => {
+    FakeWS.all = [];
+    vi.stubGlobal("WebSocket", FakeWS);
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    unsubscribe = agentsSocket.subscribe(() => {});
+    const ws = FakeWS.all[0];
+    ws.readyState = 1;
+    ws.onopen?.();
+
+    render(<ConnectionStatusBarItem />);
+    await advance(0);
+    expect(label()).toBe("Connected");
+
+    // Heartbeats flowing: stays Connected.
+    await advance(2_000);
+    ws.onmessage?.({ data: JSON.stringify({ type: "ping", ts: 1 }) });
+    // That was the LAST frame. The server now stops answering (SIGSTOP /
+    // half-open) while the /api/host poll still succeeds — the old indicator
+    // would have said Connected for up to ~30s.
+    await advance(4_500);
+    expect(label()).toBe("Connected"); // 4.5s silent: inside the window
+    await advance(1_000);
+    expect(label()).toBe("Reconnecting… last heard 6s ago");
+    await advance(3_000);
+    expect(label()).toBe("Reconnecting… last heard 9s ago"); // counts up
+    await advance(12_000);
+    expect(label()).toBe("Disconnected · retrying");
+    vi.restoreAllMocks();
   });
 });

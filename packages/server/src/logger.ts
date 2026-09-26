@@ -24,6 +24,7 @@
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   mkdirSync,
   openSync,
   renameSync,
@@ -59,6 +60,9 @@ export function createRotatingWriter(
   filePath: string,
   maxBytes: number = DEFAULT_MAX_BYTES,
   keep: number = DEFAULT_KEEP,
+  /** Permission bits for every segment (the active file AND each fresh one
+   *  after a rotation). Omitted = the process default, as before. */
+  fileMode?: number,
 ): RotatingWriter {
   // 0700: the log dir lives under the config root; server logs can carry agent
   // names, paths and diagnostics. Owner-only, creation-time only.
@@ -66,7 +70,14 @@ export function createRotatingWriter(
 
   // Synchronous fd appends (not a WriteStream): writes are durable immediately
   // and rotation is atomic — no buffered-flush race between rename and write.
-  let fd = openSync(filePath, "a"); // "a" creates the file if absent
+  const open = (): number => {
+    const f = openSync(filePath, "a", fileMode); // "a" creates the file if absent
+    // The mode argument only applies when the file is CREATED; a file left by
+    // an earlier run keeps its old bits unless we set them.
+    if (fileMode !== undefined) fchmodSync(f, fileMode);
+    return f;
+  };
+  let fd = open();
   let bytesWritten = statSync(filePath).size;
   let rotating = false;
 
@@ -80,12 +91,12 @@ export function createRotatingWriter(
         if (existsSync(src)) renameSync(src, `${filePath}.${i + 1}`);
       }
       if (existsSync(filePath)) renameSync(filePath, `${filePath}.1`);
-      fd = openSync(filePath, "a");
+      fd = open();
       bytesWritten = 0;
     } catch {
       // If rotation fails, reopen the base file and keep going rather than crash.
       try {
-        fd = openSync(filePath, "a");
+        fd = open();
         bytesWritten = 0;
       } catch {
         // Give up on the file writer. Surface it once — console.error still

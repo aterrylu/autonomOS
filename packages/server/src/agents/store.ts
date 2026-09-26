@@ -41,6 +41,7 @@ import {
 import { revokeAgentToken } from "../agentCredentials.js";
 import { ensureConfigDir, getConfigDir } from "../configDir.js";
 import { clearHandoffQueue } from "../handoffQueue.js";
+import { observeExit } from "./analytics.js";
 
 // ── Paths ──────────────────────────────────────────────────────────
 
@@ -484,6 +485,7 @@ export function markExited(id: UUID, reason: ExitReason): Agent | undefined {
     return undefined;
   }
   if (existing.status === "exited" && existing.exitReason) return existing;
+  observeExit(id, reason);
   // Drop the per-agent credential (ADR-055 PR B). markExited is the single
   // chokepoint every exit path funnels through (onExit, kill, resume-failure,
   // restart-all), so revoking here guarantees a dead session's token can't be

@@ -118,15 +118,15 @@ describe("Sidebar — one Idle label (pick a)", () => {
 });
 
 describe("Sidebar — passive label recency fade (pick T1)", () => {
-  it("an ancient Idle label fades to the same opacity as its timestamp (void → 0.52)", async () => {
+  it("an ancient Idle label fades to the same opacity as its timestamp (void → 0.64)", async () => {
     render(<Sidebar />);
     for (const [id, age] of [
       ["cc-ready", "30d"],
       ["codex-idle", "32d"],
       ["gem-idle", "34d"],
     ]) {
-      expect(await labelOf(id)).toHaveStyle({ opacity: "0.52" });
-      expect(screen.getByText(age)).toHaveStyle({ opacity: "0.52" });
+      expect(await labelOf(id)).toHaveStyle({ opacity: "0.64" });
+      expect(screen.getByText(age)).toHaveStyle({ opacity: "0.64" });
     }
   });
 
@@ -149,6 +149,6 @@ describe("Sidebar — passive label recency fade (pick T1)", () => {
     expect(busy).toHaveClass("status-shimmer");
     expect(busy.style.opacity).toBe("");
     // their timestamps still fade — only the label is exempt
-    expect(screen.getByText("35d")).toHaveStyle({ opacity: "0.52" });
+    expect(screen.getByText("35d")).toHaveStyle({ opacity: "0.64" });
   });
 });

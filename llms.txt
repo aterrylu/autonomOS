@@ -13,7 +13,7 @@ If you are an AI assistant helping someone USE autonomOS, read the user guide be
 - [Reading the dashboard](docs/guide/04-reading-the-dashboard.md): every part of the window, the status vocabulary, shortcuts
 - [Working as a team](docs/guide/05-working-as-a-team.md): agents creating agents, messages, "Needs input", org chart, templates, schedules, presets
 - [Permissions and settings](docs/guide/06-permissions-and-settings.md): the four permission modes per runtime, every Settings control
-- [Troubleshooting](docs/guide/07-troubleshooting.md): install failures, lost token, "Needs input", known display issues
+- [Troubleshooting](docs/guide/07-troubleshooting.md): install failures, lost token, "Needs input", known display issues, recording stray keystrokes
 - [Other runtimes](docs/guide/08-other-runtimes.md): Codex and Gemini differences, hand-delivering messages to Gemini
 - [Glossary](docs/guide/09-glossary.md): app terms, and the developer terms an assistant may encounter
 

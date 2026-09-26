@@ -120,6 +120,9 @@ describe("buildBaseEnv — host CLAUDE_CODE_* contamination strip", () => {
     "CLAUDECODE",
     "ANTHROPIC_BASE_URL",
     "MY_UNRELATED_VAR",
+    "AUTONOMOS_PTY_INPUT_LOG",
+    "AUTONOMOS_PTY_INPUT_LOG_TEXT",
+    "AUTONOMOS_PTY_INPUT_LOG_MINUTES",
   ] as const;
   const saved: Record<string, string | undefined> = {};
 
@@ -135,6 +138,16 @@ describe("buildBaseEnv — host CLAUDE_CODE_* contamination strip", () => {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
+  });
+
+  it("never passes the keystroke recorder's switches on to an agent", () => {
+    process.env.AUTONOMOS_PTY_INPUT_LOG = "1";
+    process.env.AUTONOMOS_PTY_INPUT_LOG_TEXT = "1";
+    process.env.AUTONOMOS_PTY_INPUT_LOG_MINUTES = "90";
+    const env = buildBaseEnv("agent-session-id", "Agent1");
+    assert.equal(env.AUTONOMOS_PTY_INPUT_LOG, undefined);
+    assert.equal(env.AUTONOMOS_PTY_INPUT_LOG_TEXT, undefined);
+    assert.equal(env.AUTONOMOS_PTY_INPUT_LOG_MINUTES, undefined);
   });
 
   it("removes CLAUDE_CODE_* and CLAUDECODE while preserving ANTHROPIC_* and unrelated vars", () => {

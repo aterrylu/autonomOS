@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -40,7 +41,7 @@ describe("preTrustWorkdir — CC config pre-seeding", () => {
     const work = join(dir, "work");
     mkdirSync(work);
 
-    preTrustWorkdir(work, cfg);
+    assert.equal(preTrustWorkdir(work, cfg), "trusted", "a successful write");
 
     const out = JSON.parse(readFileSync(cfg, "utf8"));
     // realpathSync resolves the tmpdir symlink (/var → /private/var on
@@ -69,7 +70,7 @@ describe("preTrustWorkdir — CC config pre-seeding", () => {
     );
     const before = readFileSync(cfg, "utf8");
 
-    preTrustWorkdir(work, cfg);
+    assert.equal(preTrustWorkdir(work, cfg), "declined", "a recorded decline");
 
     assert.equal(
       readFileSync(cfg, "utf8"),
@@ -81,7 +82,7 @@ describe("preTrustWorkdir — CC config pre-seeding", () => {
   it("skips silently when the config file does not exist (fresh CC install)", () => {
     const dir = tmp();
     // must not throw, must not create the file
-    preTrustWorkdir(dir, join(dir, ".claude.json"));
+    assert.equal(preTrustWorkdir(dir, join(dir, ".claude.json")), "unknown");
     assert.throws(() => statSync(join(dir, ".claude.json")));
   });
 
@@ -89,8 +90,50 @@ describe("preTrustWorkdir — CC config pre-seeding", () => {
     const dir = tmp();
     const cfg = join(dir, ".claude.json");
     writeFileSync(cfg, "{ not json !!!");
-    preTrustWorkdir(dir, cfg);
+    assert.equal(preTrustWorkdir(dir, cfg), "unknown");
     assert.equal(readFileSync(cfg, "utf8"), "{ not json !!!");
+  });
+
+  it("reports an existing acceptance as trusted without rewriting", () => {
+    const dir = tmp();
+    const cfg = join(dir, ".claude.json");
+    const real = realpathSync(dir);
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        projects: { [real]: { hasTrustDialogAccepted: true } },
+      }),
+    );
+    const before = readFileSync(cfg, "utf8");
+    assert.equal(preTrustWorkdir(dir, cfg), "trusted");
+    assert.equal(readFileSync(cfg, "utf8"), before);
+  });
+
+  it("reports a non-boolean recorded value as unknown (trust stays required)", () => {
+    const dir = tmp();
+    const cfg = join(dir, ".claude.json");
+    const real = realpathSync(dir);
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        projects: { [real]: { hasTrustDialogAccepted: "yes" } },
+      }),
+    );
+    assert.equal(preTrustWorkdir(dir, cfg), "unknown");
+  });
+
+  it("reports unknown when the write fails (the watcher must still require trust)", () => {
+    const dir = tmp();
+    const confDir = join(dir, "conf");
+    mkdirSync(confDir);
+    const cfg = join(confDir, ".claude.json");
+    writeFileSync(cfg, JSON.stringify({ projects: {} }));
+    chmodSync(confDir, 0o555); // temp file + rename cannot be created
+    try {
+      assert.equal(preTrustWorkdir(dir, cfg), "unknown");
+    } finally {
+      chmodSync(confDir, 0o755);
+    }
   });
 
   it("keys by resolved path when cwd is reached through a symlink", () => {
