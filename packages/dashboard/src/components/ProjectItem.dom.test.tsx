@@ -175,7 +175,11 @@ describe("ProjectItem — redesigned rows", () => {
     for (const row of [live, ext, stop]) {
       expect(row.className).not.toMatch(/opacity-/);
       // No element between the row and the provider mark carries a dim.
-      const mark = row.querySelector("svg[role='img']");
+      // The PROVIDER mark itself (Codex is OpenAI's raster icon), never the
+      // status-corner svg a generic selector would hit first.
+      const mark = row.querySelector(
+        'svg[aria-label="Claude"], img[alt="Codex"], svg[aria-label="Gemini"]',
+      );
       if (!mark) throw new Error("provider mark missing");
       for (
         let el: Element | null = mark;
