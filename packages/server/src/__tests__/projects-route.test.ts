@@ -419,6 +419,54 @@ describe("GET /api/projects — managed agents of EVERY runtime (Codex/Gemini)",
     }
   });
 
+  it("the INVERSE split: Claude Code's realpath group + a managed agent's raw path are ONE project", async (t) => {
+    const { mkdtempSync, realpathSync, rmSync, symlinkSync } = await import(
+      "node:fs"
+    );
+    const real = mkdtempSync(join(tmpdir(), "aos-inv-real-"));
+    const link = join(tmpdir(), `aos-inv-link-${randomUUID()}`);
+    try {
+      symlinkSync(real, link);
+    } catch {
+      return t.skip("no symlinks here");
+    }
+    try {
+      const id = randomUUID();
+      insertAgent(
+        buildAgent({
+          id: id as never,
+          name: "inv",
+          workingDirectory: link, // the raw spelling
+          provider: "codex",
+          providerSessionId: id,
+          permissionMode: "ask",
+          status: "running",
+        }),
+      );
+      markExited(id as never, "user_killed");
+      _setDepsForTesting({
+        // Claude Code recorded the REALPATH for this directory.
+        listSessions: async () =>
+          fakeSessions([{ sessionId: "cc-inv", cwd: realpathSync(real) }]),
+        listGeminiSessions: async () => [],
+        listCodexSessions: async () => [],
+      });
+      const ps = await get(createApp());
+      const groups = ps.filter((x) =>
+        x.sessions.some((s) => s.sessionId === "cc-inv" || s.sessionId === id),
+      );
+      assert.equal(groups.length, 1, "one directory, one project");
+      assert.equal(
+        groups[0].path,
+        realpathSync(real),
+        "Claude Code's own spelling is kept",
+      );
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+
   it("a scanned realpath cwd joins the project the user knows by its raw path (/tmp vs /private/tmp)", async (t) => {
     const { mkdtempSync, realpathSync, rmSync, symlinkSync } = await import(
       "node:fs"

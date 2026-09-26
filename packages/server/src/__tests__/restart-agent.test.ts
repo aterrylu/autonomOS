@@ -31,6 +31,8 @@ setInternalSocketPath(
 );
 const {
   spawnAgent,
+  killAttachment,
+  assertAdoptable,
   restartAgent,
   restartAllAttachments,
   SpawnError,
@@ -46,6 +48,8 @@ const { _resetCodexControlForTesting } = await import(
 );
 const { codexProvider } = await import("../providers/codex.js");
 const { getAgent, _resetCacheForTesting } = await import("../agents/store.js");
+const { getNotifications } = await import("../routes/hooks.js");
+const { geminiCliProvider } = await import("../providers/gemini-cli.js");
 
 const cwd = mkdtempSync(join(tmpdir(), "aos-restart-agent-"));
 const READY = "listening on ws://stub";
@@ -65,13 +69,13 @@ const alive = (pid: number) => {
 // still alive.
 let aliveAtRespawn: number[] | undefined;
 let daemonsBefore: number[] = [];
-let failRespawn = false;
+let failRespawn: false | Error = false;
 const hung: AgentProvider = {
   ...codexProvider,
   name: "fakerestart" as never,
   displayName: "FakeRestart",
   resolveBinary: () => {
-    if (failRespawn) throw new Error("binary vanished");
+    if (failRespawn) throw failRespawn;
     return process.execPath;
   },
   hasResumableThread: undefined,
@@ -150,7 +154,7 @@ describe("restartAgent", { timeout: 30_000 }, () => {
       name: `ra-${randomUUID().slice(0, 4)}`,
     });
     daemonsBefore = runningSidecarPids();
-    failRespawn = true;
+    failRespawn = new Error("binary vanished");
     try {
       await assert.rejects(restartAgent(agent.id), /binary vanished/);
     } finally {
@@ -159,5 +163,110 @@ describe("restartAgent", { timeout: 30_000 }, () => {
     const rec = getAgent(agent.id);
     assert.equal(rec?.status, "exited");
     assert.equal(rec?.exitReason, "crashed");
+    // …and it's SAID where it persists, not only in a toast that fades.
+    assert.ok(
+      getNotifications(agent.id).some((n) =>
+        (n.message ?? "").includes("failed — it is stopped: binary vanished"),
+      ),
+    );
+  });
+
+  it("a TYPED failure after the kill (e.g. the working directory is gone) also leaves a notice", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakerestart" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    failRespawn = new SpawnError(
+      "INVALID_WORKING_DIRECTORY",
+      400,
+      "Invalid working directory: /gone",
+    );
+    try {
+      await assert.rejects(restartAgent(agent.id), /Invalid working directory/);
+    } finally {
+      failRespawn = false;
+    }
+    assert.equal(getAgent(agent.id)?.exitReason, "crashed");
+    assert.ok(
+      getNotifications(agent.id).some((n) =>
+        (n.message ?? "").includes("it is stopped: Invalid working directory"),
+      ),
+    );
+  });
+
+  it("the server stopping mid-respawn leaves the record RUNNING (the next boot resumes it), no notice", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakerestart" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    failRespawn = new SpawnError("SERVER_STOPPING", 503, "server stopping");
+    try {
+      await assert.rejects(restartAgent(agent.id), /server stopping/);
+    } finally {
+      failRespawn = false;
+    }
+    assert.equal(getAgent(agent.id)?.status, "running");
+    assert.ok(
+      !getNotifications(agent.id).some((n) =>
+        (n.message ?? "").includes("it is stopped"),
+      ),
+    );
+  });
+
+  it("a KILL during the restart wait wins: the agent stays stopped, nothing respawns", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakerestart" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    daemonsBefore = runningSidecarPids();
+    aliveAtRespawn = undefined;
+    const restarting = restartAgent(agent.id);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(
+      killAttachment(agent.id),
+      true,
+      "the kill is accepted, not a 409",
+    );
+    await assert.rejects(restarting, /stopped while it restarted/);
+    assert.equal(aliveAtRespawn, undefined, "no new daemon was requested");
+    const rec = getAgent(agent.id);
+    assert.equal(rec?.status, "exited");
+    assert.equal(rec?.exitReason, "user_killed");
+  });
+
+  it("an ATTACH during the restart wait is refused (409), never spawned over the exiting process", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakerestart" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    const restarting = restartAgent(agent.id);
+    await new Promise((r) => setTimeout(r, 100));
+    await assert.rejects(
+      spawnAgent({
+        workingDirectory: cwd,
+        resumeAgentId: agent.id,
+        provider: "fakerestart" as never,
+      }),
+      (e: unknown) =>
+        e instanceof SpawnError &&
+        e.code === "RESTART_IN_PROGRESS" &&
+        e.status === 409,
+    );
+    assert.equal((await restarting).status, "running");
+  });
+
+  it("Gemini's resume pre-flight doesn't make it ADOPTABLE (adopt is its own capability)", () => {
+    assert.throws(
+      () =>
+        assertAdoptable(
+          geminiCliProvider,
+          "6579618b-70f4-4830-9c63-646b23b7f3d9",
+        ),
+      (e: unknown) => e instanceof SpawnError && e.code === "NOT_ADOPTABLE",
+    );
   });
 });

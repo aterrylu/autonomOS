@@ -70,9 +70,34 @@ projectRouter.get("/", async (c) => {
   // group keyed by sessionId (all displayed as "Unknown") so unrelated cwd-less
   // sessions don't merge into one pseudo-project.
   const projectMap = new Map<string, ProjectSession[]>();
+  // ONE project per real directory. The runtimes disagree on spelling: Codex,
+  // Gemini — and Claude Code for some paths — record the REALPATH
+  // (/private/tmp/x on macOS), while agent records keep the path as typed
+  // (/tmp/x). The first spelling seen for a directory becomes its key and
+  // every later one joins it; Claude Code rows are pushed first, so their own
+  // paths are never rewritten. (An unresolvable path — deleted — keys as is.)
+  const keyByReal = new Map<string, string>();
+  const realOf = new Map<string, string>();
+  const keyFor = (cwd: string): string => {
+    if (cwd.startsWith("unknown:")) return cwd;
+    let real = realOf.get(cwd);
+    if (real === undefined) {
+      try {
+        real = realpathSync(cwd);
+      } catch {
+        real = cwd;
+      }
+      realOf.set(cwd, real);
+    }
+    const known = keyByReal.get(real);
+    if (known) return known;
+    keyByReal.set(real, cwd);
+    return cwd;
+  };
   const push = (cwd: string, s: ProjectSession) => {
-    if (!projectMap.has(cwd)) projectMap.set(cwd, []);
-    projectMap.get(cwd)!.push(s);
+    const key = keyFor(cwd);
+    if (!projectMap.has(key)) projectMap.set(key, []);
+    projectMap.get(key)!.push(s);
   };
   for (const s of sessions) {
     const cwd = s.cwd || `unknown:${s.sessionId}`;
@@ -104,22 +129,6 @@ projectRouter.get("/", async (c) => {
       agentByRuntimeId.set(a.providerSessionId, a);
     }
   }
-  // Codex and Gemini record a session's cwd as its REALPATH (/private/tmp/x on
-  // macOS), while Claude Code rows and agent records keep the path as typed
-  // (/tmp/x). Map a scanned cwd back to the raw path already known for it, so
-  // one directory is one project — never rewriting Claude Code's own paths.
-  const rawFor = new Map<string, string>();
-  const learn = (raw: string | undefined) => {
-    if (!raw || raw.startsWith("unknown:")) return;
-    try {
-      const real = realpathSync(raw);
-      if (real !== raw && !rawFor.has(real)) rawFor.set(real, raw);
-    } catch {
-      // gone or unresolvable: nothing to alias
-    }
-  };
-  for (const key of projectMap.keys()) learn(key);
-  for (const a of agents) learn(a.workingDirectory);
 
   for (const [label, scan] of scans) {
     const { rows, err } = (await scan) as {
@@ -144,8 +153,7 @@ projectRouter.get("/", async (c) => {
       const row = managed
         ? { ...session, sessionId: managed.providerSessionId }
         : { ...session };
-      const dir =
-        managed?.workingDirectory || (cwd && (rawFor.get(cwd) ?? cwd));
+      const dir = managed?.workingDirectory || cwd;
       push(dir || `unknown:${row.sessionId}`, row);
     }
   }

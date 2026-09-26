@@ -129,6 +129,14 @@ export interface AgentProvider {
    * preset), so a provider can look where the spawned process will actually
    * store its sessions (e.g. a preset-relocated CLAUDE_CONFIG_DIR).
    */
+  /**
+   * Optional: can this provider ADOPT a session started outside autonomOS
+   * (resume it by the CLI's own id into a new managed record)? Separate from
+   * `hasResumableSession`: a resume pre-flight alone is not a working adopt
+   * path. Claude Code only, until Codex/Gemini adopt lands.
+   */
+  adoptsExternalSession?: boolean;
+
   hasResumableSession?(
     options: ResolvedSpawnOptions,
     env?: Record<string, string | undefined>,

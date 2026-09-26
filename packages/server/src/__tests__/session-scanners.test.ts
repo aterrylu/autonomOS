@@ -288,6 +288,28 @@ describe("listCodexSessions", () => {
     assert.equal(rows.length, MAX_FILES);
     assert.equal(rows[0].session.sessionId, `id-${n - 1}`, "newest first");
   });
+  it("an UNREADABLE sessions root throws (so the route logs the omission) — only absent is []", async (t) => {
+    if (process.getuid?.() === 0) return t.skip("root reads anything");
+    writeRollout("2026/09/25", "t", "/w", "p");
+    chmodSync(join(home, "sessions"), 0o000);
+    try {
+      await assert.rejects(listCodexSessions({ CODEX_HOME: home }));
+    } finally {
+      chmodSync(join(home, "sessions"), 0o755);
+    }
+  });
+  it("a file that couldn't be READ isn't cached as nothing — it lists once readable again", async (t) => {
+    if (process.getuid?.() === 0) return t.skip("root reads anything");
+    const f = writeRollout("2026/09/25", "t", "/w", "p");
+    chmodSync(f, 0o000);
+    try {
+      assert.deepEqual(await listCodexSessions({ CODEX_HOME: home }), []);
+    } finally {
+      chmodSync(f, 0o644);
+    }
+    const rows = await listCodexSessions({ CODEX_HOME: home });
+    assert.equal(rows.length, 1, "re-read, not served from a cached null");
+  });
   it("a file whose mtime changed is re-read (the cache follows the file)", async () => {
     const f = writeRollout(
       "2026/09/25",
@@ -400,6 +422,18 @@ describe("findGeminiSession — three-state, where `gemini --resume` looks", () 
     assert.equal(
       findGeminiSession("/w/g", id, { GEMINI_CLI_HOME: home }),
       false,
+    );
+  });
+  it("a candidate whose header is corrupt is CAN'T TELL (throws), not absent — never a fresh chat over a real one", () => {
+    const dir = join(home, ".gemini", "tmp", "proj");
+    mkdirSync(join(dir, "chats"), { recursive: true });
+    writeFileSync(join(dir, ".project_root"), "/w/g");
+    writeFileSync(
+      join(dir, "chats", `session-2026-09-26T00-00-${id.slice(0, 8)}.jsonl`),
+      "{not json\n",
+    );
+    assert.throws(() =>
+      findGeminiSession("/w/g", id, { GEMINI_CLI_HOME: home }),
     );
   });
   it("an id that only shares the 8-char file prefix is NOT a match", () => {
