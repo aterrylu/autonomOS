@@ -24,6 +24,8 @@ import {
   authedJson,
   type BootedServer,
   bootServer,
+  boundedTeardown,
+  HOOK_TIMEOUT,
   RUN_INTEGRATION,
   sleep,
   waitFor,
@@ -52,16 +54,22 @@ describe("CC resume on a symlinked cwd — real spawn", {
       anthropicBaseUrl: mock.url,
       anthropicAuthToken: "sk-mock",
     });
-  });
+  }, HOOK_TIMEOUT);
 
-  after(async () => {
-    if (server) {
-      server.kill();
-      rmSync(server.configDir, { recursive: true, force: true });
-    }
-    await mock?.close();
-    rmSync(root, { recursive: true, force: true });
-  });
+  // Await the server's EXIT before removing anything: its shutdown reaps every
+  // agent's PTY group, so no claude is still writing into the config dir (its
+  // throwaway HOME) or the cwd. Firing kill() and rm-ing at once raced a live
+  // claude → rmdir ENOTEMPTY in CI. The rm retries are the belt to that brace
+  // (a straggler flushing after the leader's exit), bounded.
+  const RM = { recursive: true, force: true, maxRetries: 10, retryDelay: 200 };
+  after(() =>
+    boundedTeardown("cc-resume-symlink", async () => {
+      await server?.kill();
+      if (server) rmSync(server.configDir, RM);
+      await mock?.close();
+      rmSync(root, RM);
+    }),
+  );
 
   const status = async (id: string): Promise<string | undefined> => {
     const r = await authedJson<AgentRecord[]>(server, "/api/agents");
@@ -116,5 +124,10 @@ describe("CC resume on a symlinked cwd — real spawn", {
       resumes.length >= 2,
       `expected both reattaches to --resume, saw ${resumes.length}\n${server.logs()}`,
     );
+  });
+
+  // A real test, not an after() hook: a failing after() doesn't fail the run.
+  it("leaves nothing in the operator's real ~/.claude (fake-HOME harness)", () => {
+    server.assertNoRealHomeLeak();
   });
 });
