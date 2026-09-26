@@ -535,19 +535,28 @@ describe("selection + inspector", () => {
     expect(inspector()).toBeNull();
   });
 
-  it("arrow keys walk the chart: ↑ manager, ↓ first report, → sibling", async () => {
+  it("arrow keys walk the chart: ↓ into the stacked column, ↑/↓ along it, ↑ off the top to the manager, → the next team", async () => {
     fleet();
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
     fireEvent.click(card("Mgr") as HTMLElement);
-    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowDown" });
-    expect(inspector()?.dataset.orgInspector).toBe("R1");
-    fireEvent.keyDown(card("R1") as HTMLElement, { key: "ArrowRight" });
-    expect(inspector()?.dataset.orgInspector).toBe("R2");
-    fireEvent.keyDown(card("R2") as HTMLElement, { key: "ArrowUp" });
-    expect(inspector()?.dataset.orgInspector).toBe("Mgr");
-    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowRight" });
-    expect(inspector()?.dataset.orgInspector).toBe("Other");
+    key("Mgr", "ArrowDown");
+    expect(sel()).toBe("R1"); // the column's top
+    key("R1", "ArrowDown");
+    expect(sel()).toBe("R2"); // down the column (R1, R2 stack)
+    key("R2", "ArrowDown");
+    expect(sel()).toBe("R2"); // the column's end: stays
+    key("R2", "ArrowUp");
+    expect(sel()).toBe("R1"); // back up the column
+    key("R1", "ArrowUp");
+    expect(sel()).toBe("Mgr"); // off the top → the manager
+    key("Mgr", "ArrowRight");
+    expect(sel()).toBe("Other"); // the next team on the same row
+    key("Other", "ArrowDown");
+    expect(sel()).toBe("O1");
   });
 });
 

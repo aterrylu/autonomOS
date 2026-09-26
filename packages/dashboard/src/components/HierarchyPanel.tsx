@@ -9,7 +9,7 @@ import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { OrgInspector } from "./orgchart/Inspector";
-import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
+import { CARD_H, CARD_W, edgePath, layoutOrg, PAD } from "./orgchart/layout";
 import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
 import { type MapCard, Minimap, ZoomControls } from "./orgchart/Minimap";
 import { pruneExited } from "./orgchart/pruneExited";
@@ -540,8 +540,20 @@ function OrgCanvas({
       const at = layout.pos.get(id);
       if (!me || !at) return;
       let to: string | undefined;
-      if (dir === "up") to = me.managerId;
-      else if (dir === "down") to = me.node.children[0]?.id;
+      // In a stacked column, ↑ / ↓ walk the column (↑ off its top goes to
+      // the manager); ↓ from a lead enters its column first, since the column
+      // is the leftmost thing under it.
+      const col = layout.stacked.get(id)?.column;
+      const i = col ? col.indexOf(id) : -1;
+      const firstReport = me.node.children[0]?.id;
+      const ownColumn = firstReport
+        ? me.node.children
+            .map((c) => layout.stacked.get(c.id)?.column[0])
+            .find(Boolean)
+        : undefined;
+      if (dir === "up") to = col && i > 0 ? col[i - 1] : me.managerId;
+      else if (dir === "down")
+        to = col ? col[i + 1] : (ownColumn ?? firstReport);
       else {
         const row = flat
           .map((f) => ({ id: f.node.id, p: layout.pos.get(f.node.id) }))
@@ -615,7 +627,7 @@ function OrgCanvas({
               <path
                 key={`${from}>${to}`}
                 data-org-edge={`${from}>${to}`}
-                d={elbowPath(a, b)}
+                d={edgePath(layout, from, to)}
                 fill="none"
                 className="org-edge"
                 stroke={lit ? tokens.status.active : tokens.edge}

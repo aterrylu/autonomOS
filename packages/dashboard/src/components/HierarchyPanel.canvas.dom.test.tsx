@@ -93,18 +93,22 @@ const session = (id: string) =>
     provider: "claude-code",
   }) as never;
 
-/** A lead with `n` reports: wide enough not to fit at the 60% floor. */
-function bigFleet(n = 16) {
-  const ids = Array.from({ length: n }, (_, i) => `W${i}`);
-  stubTree([
-    node(
-      "Lead",
-      ids.map((i) => node(i)),
-    ),
-  ]);
+/**
+ * `n` teams side by side under one root. Reports STACK (density pick C), so a
+ * chart grows wide with TEAMS: 8 teams are too wide for the 60% floor but fit
+ * above 30%; 16 are too wide even at 30%.
+ */
+function bigFleet(n = 8) {
+  const leads = Array.from({ length: n }, (_, i) =>
+    node(`L${i}`, [node(`L${i}a`), node(`L${i}b`)]),
+  );
+  stubTree([node("Lead", leads)]);
   useStore.setState({
     theme: "void",
-    sessions: ["Lead", ...ids].map(session),
+    sessions: [
+      "Lead",
+      ...leads.flatMap((l) => [l.id, ...l.children.map((c) => c.id)]),
+    ].map(session),
     exitedSessions: [],
     agentStatuses: {},
     notificationCounts: {},
@@ -195,7 +199,7 @@ describe("opening view (pick 4A: fit, never below 60%)", () => {
     expect(pct()).toBe("60%");
     expect($("[data-org-minimap]")).not.toBeNull();
     expect(document.querySelectorAll("[data-org-minimap-card]").length).toBe(
-      17,
+      1 + 8 * 3,
     );
   });
 });
@@ -203,14 +207,14 @@ describe("opening view (pick 4A: fit, never below 60%)", () => {
 describe("pan (drag EMPTY canvas)", () => {
   it("dragging empty canvas pans; the selection and inspector stay (the #425 rule)", async () => {
     await mount(bigFleet);
-    fireEvent.click(card("W0") as HTMLElement);
+    fireEvent.click(card("L0a") as HTMLElement);
     expect($("[data-org-inspector]")).not.toBeNull();
     const before = view();
     drag(stage(), -120, 40);
     const after = view();
     expect(after.x).toBeCloseTo(before.x - 120, 6);
     expect(after.y).toBeCloseTo(before.y + 40, 6);
-    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("W0");
+    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("L0a");
   });
 
   it("a press that moves under 4 px is a click: the view doesn't move", async () => {
@@ -223,7 +227,7 @@ describe("pan (drag EMPTY canvas)", () => {
   it("a drag that starts ON a card doesn't pan (reserved for PR 4's reassign)", async () => {
     await mount(bigFleet);
     const before = view();
-    drag(card("W0") as HTMLElement, -150, 0);
+    drag(card("L0a") as HTMLElement, -150, 0);
     expect(view()).toEqual(before);
   });
 
@@ -231,7 +235,7 @@ describe("pan (drag EMPTY canvas)", () => {
     // A drag already closes it (the menu's own outside-pointerdown); a wheel
     // sends no pointerdown, so the canvas must close it itself.
     await mount(bigFleet);
-    fireEvent.contextMenu(card("W0") as HTMLElement, {
+    fireEvent.contextMenu(card("L0a") as HTMLElement, {
       clientX: 10,
       clientY: 10,
     });
@@ -271,7 +275,7 @@ describe("zoom (pick 1A: scroll pans, pinch / ⌘ zooms)", () => {
   });
 
   it("buttons: + zooms in, the % resets to 100, Fit shows everyone and the map hides", async () => {
-    // 8 reports: too wide for the 60% floor, but Fit can show them all.
+    // 8 teams: too wide for the 60% floor, but Fit can show them all.
     await mount(() => bigFleet(8));
     expect(pct()).toBe("60%");
     expect($("[data-org-minimap]")).not.toBeNull();
@@ -328,14 +332,14 @@ describe("the map and following the selection", () => {
   });
 
   it("arrow-walking to an off-screen card pans just enough to show it", async () => {
-    await mount(bigFleet);
-    fireEvent.click(card("W0") as HTMLElement);
+    await mount(() => bigFleet(8));
+    fireEvent.click(card("L0") as HTMLElement);
     const before = view();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 7; i++) {
       const sel = $("[data-org-inspector]")?.dataset.orgInspector as string;
       fireEvent.keyDown(card(sel) as HTMLElement, { key: "ArrowRight" });
     }
-    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("W12");
+    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("L7");
     expect(view().x).toBeLessThan(before.x);
   });
 });
