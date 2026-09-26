@@ -43,6 +43,8 @@ export const MAX_FILES = 400;
 export const MAX_HEAD_BYTES = 256 * 1024;
 /** Stats in flight at once per scan. */
 const STAT_CONCURRENCY = 64;
+/** A session whose prompt couldn't be found (none yet, or past the head). */
+export const NO_PROMPT_YET = "(no prompt yet)";
 /** Summary length on the wire. */
 const SUMMARY_CHARS = 120;
 
@@ -237,7 +239,7 @@ export function parseCodexHead(head: Head): ScannedSession | null {
     session: {
       sessionId: meta.id,
       provider: "codex",
-      summary: prompt ? clip(prompt) : "(no prompt yet)",
+      summary: prompt ? clip(prompt) : NO_PROMPT_YET,
       lastModified: 0,
       firstPrompt: prompt ? clip(prompt) : undefined,
       // "autonomos" when an autonomOS daemon created it (its originator names
@@ -331,7 +333,7 @@ export function parseGeminiHead(
     session: {
       sessionId: header.sessionId,
       provider: "gemini-cli",
-      summary: prompt ? clip(prompt) : "(no prompt yet)",
+      summary: prompt ? clip(prompt) : NO_PROMPT_YET,
       lastModified: 0,
       firstPrompt: prompt ? clip(prompt) : undefined,
     },

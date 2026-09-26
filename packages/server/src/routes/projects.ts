@@ -7,7 +7,11 @@ import {
 import type { ProjectInfo, ProjectSession } from "@autonomos/core";
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
-import { listCodexSessions, listGeminiSessions } from "../sessionScanners.js";
+import {
+  listCodexSessions,
+  listGeminiSessions,
+  NO_PROMPT_YET,
+} from "../sessionScanners.js";
 import { batchGetTitles } from "../titleCache";
 
 // Wire shapes live in @autonomos/core (types/api.ts) — one declaration
@@ -189,6 +193,9 @@ projectRouter.get("/", async (c) => {
       const entry = byProviderSessionId.get(s.sessionId);
       if (entry) {
         s.isAutonomosAgent = true;
+        // A managed session with no prompt yet reads as its agent's name —
+        // what the person knows it by — not as a placeholder.
+        if (s.summary === NO_PROMPT_YET) s.summary = entry.name;
         s.autonomosStatus = entry.status;
         s.template = entry.template;
         s.manager = entry.managerId
