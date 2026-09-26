@@ -85,6 +85,13 @@ A starting prompt travels only as a CLI arg (`claude ... -- <prompt>`), so a sta
 
 **Hook-relay providers only** (`hooks.eventCount > 0` — Claude Code, Gemini). Codex derives status from its app-server event stream and emits no hook events, so it can never produce a receipt; tracking it fired a false "may have failed to boot" warning on every prompted Codex agent. Consequence: **Codex spawn-with-prompt has no delivery detector** — a `--remote` TUI that fails to attach loses the prompt, and the daemon reports the thread idle, so it looks identical to a finished agent. A daemon-side receipt via `statusLoop` is possible follow-up work.
 
+### Restart & Projects across runtimes (ADR-118)
+**Restart is ONE server call**, `POST /api/agents/:id/restart` (`restartAgent`). It stops the agent, WAITS for its process and daemon to exit (`killAttachment` only signals, so a kill → attach could respawn over a still-running Codex daemon), then respawns from the record in the same conversation. Refusals are typed (409 restarting, 404, 503 stopping); a failed respawn leaves the agent crashed plus a notice. The dashboard shows every outcome in the **action toast** (`showActionToast`, `ActionToast.tsx`). Don't write user-facing outcomes only to the store's `status` string: it is read as a busy flag and never rendered.
+
+**Gemini keeps its chat:** fresh spawns pass `--session-id <agent's providerSessionId>` and respawns pass `--resume <id>`, behind `findGeminiSession`, a three-state pre-flight on the cwd's project under the CHILD's `GEMINI_CLI_HOME`. Each `--resume` writes a stub file reusing the session id, so the scanner collapses by id.
+
+**Projects** lists Claude Code (SDK), Codex (`$CODEX_HOME/sessions` rollouts) and Gemini (`~/.gemini/tmp/*/chats`) via `sessionScanners.ts`: read-only, capped (400 files, 256KB each), mtime-cached, and the route never mutates a scanned row (a mutated cache entry broke matching after the first poll). Managed agents are matched by thread (Codex) or session id (Gemini), and a managed row carries the agent's providerSessionId (what `/attach` resolves) under the agent's own directory. External Codex/Gemini rows can't be resumed yet (the next PR adopts them).
+
 ### Terminal Streaming & Render Efficiency (ADR-072)
 The terminal pipeline is **PTY → per-connection coalescer → WebSocket → keep-alive client terminal**. Three mechanisms, all measured by the harness in `packages/server/perf/` (read its README before touching any of this):
 
