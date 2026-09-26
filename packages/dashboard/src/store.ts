@@ -1172,6 +1172,10 @@ export const useStore = create<AppState>()(
                   set({ status: "connected" });
                 } else {
                   set({ status: "session resumed — click to switch" });
+                  get().showActionToast(
+                    "Resumed — select it in the sidebar to open it.",
+                    true,
+                  );
                 }
               }, 1000);
             }
@@ -1202,16 +1206,25 @@ export const useStore = create<AppState>()(
           // this browser tab's dropdown last said. Omitting it lets the server
           // preserve the record on a reattach and apply the default only where
           // there is genuinely no record to preserve.
-          await spawnSession(
-            set,
-            get,
-            "resuming...",
-            "failed to resume session",
-            {
-              workingDirectory: cwd,
-              resumeSessionId: claudeSessionId,
-            },
-          );
+          // spawnSession rethrows so a caller CAN show the reason — but the
+          // Projects row and the context menu swallow it, so show it here.
+          try {
+            await spawnSession(
+              set,
+              get,
+              "resuming...",
+              "failed to resume session",
+              {
+                workingDirectory: cwd,
+                resumeSessionId: claudeSessionId,
+              },
+            );
+          } catch (err) {
+            get().showActionToast(
+              `Resume failed: ${actionErrorReason(err)}`,
+              false,
+            );
+          }
         },
         killSession: async (id) => {
           // Only give optimistic feedback if the kill was actually accepted —

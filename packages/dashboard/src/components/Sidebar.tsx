@@ -2494,6 +2494,7 @@ export const ProjectItem = React.memo(function ProjectItem({
                     status: isLive ? "running" : "exited",
                     manager: rec?.manager,
                     resumeKey: s.sessionId,
+                    provider: s.provider,
                     workingDirectory: project.path,
                     isAutonomosAgent: s.isAutonomosAgent,
                   });
