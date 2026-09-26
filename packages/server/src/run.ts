@@ -31,6 +31,7 @@ import {
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
 import { resolveAuthToken } from "./auth.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
+import { getConfigDir } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
 import { mountDashboard } from "./dashboardStatic.js";
 import { installErrorHandling } from "./httpError.js";
@@ -48,6 +49,7 @@ import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { codexUsageRouter } from "./plugins/codex-usage/route.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
+import { initPtyInputLog } from "./ptyInputLog.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
@@ -161,6 +163,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // supervisor's own stdout goes to /dev/null — see service-templates.ts). Best
   // effort: a logging failure never blocks startup.
   initFileLogging();
+  // Opt-in keystroke forensics: off unless AUTONOMOS_PTY_INPUT_LOG=1 or the
+  // one-shot $configDir/pty-input-log.on exists. After file logging so its
+  // loud ON line lands in autonomos.log too.
+  initPtyInputLog({ configDir: getConfigDir() });
 
   // Seed default templates on fresh install
   seedDefaultTemplates();

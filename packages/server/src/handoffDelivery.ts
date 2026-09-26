@@ -37,6 +37,7 @@ import {
   listHandoffQueue,
   removeHandoffItem,
 } from "./handoffQueue.js";
+import { withPtyInputSource } from "./ptyInputLog.js";
 
 // The submitting Enter is sent slightly after the paste so the TUI has finished
 // processing the bracketed block first (mirrors promptDelivery's enter delay).
@@ -186,7 +187,9 @@ function injectPaste(
     return { ok: false, reason: "Agent has no live PTY to deliver into." };
 
   try {
-    pty.write(`\x1b[200~${paste}\x1b[201~`);
+    withPtyInputSource("handoff", () =>
+      pty.write(`\x1b[200~${paste}\x1b[201~`),
+    );
   } catch (err) {
     const reason = `PTY write failed: ${err instanceof Error ? err.message : err}`;
     console.error(
@@ -219,7 +222,7 @@ function injectPaste(
     // already queued on the event loop (nox review).
     if (inFlight.get(agentId) !== entry) return;
     try {
-      pty.write("\r");
+      withPtyInputSource("handoff", () => pty.write("\r"));
       // Arm the receipt ONLY now — the injected text is submitted at this point,
       // so its UserPromptSubmit is the next confirming event we should accept.
       entry.armed = true;

@@ -1,6 +1,7 @@
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import type { IDisposable, IPty } from "node-pty";
 import { getAttachment as getSession } from "../agents/runtime.js";
+import { withPtyInputSource } from "../ptyInputLog.js";
 
 interface PtyBinding {
   sessionId: string;
@@ -618,7 +619,7 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         }
 
         try {
-          managed.pty.write(msg);
+          withPtyInputSource("terminal", () => managed.pty.write(msg));
           // After the write: a throw (PTY fd just died) must not make /io
           // report "the agent received your key".
           managed.lastInputAt = Date.now();
