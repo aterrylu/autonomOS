@@ -24,6 +24,15 @@
      - A managed agent with no discoverable session still gets a row.
      - Codex and Gemini report cwd as a realpath, so a scanned cwd is mapped back to the raw path the user knows.
      - External (never-managed) Codex/Gemini rows are listed, and clicking one says resume isn't supported yet; adopting them is the next PR.
+  4. **The restart's wait window is owned** (from review):
+     - A kill during it WINS: it's recorded, and the agent stays stopped instead of being respawned.
+     - A reattach during it is refused (409).
+     - The "it is stopped" notice fires only when the agent really was marked stopped.
+     - A server stopping mid-respawn leaves the record `running` for the next boot.
+     - Adoption is its own provider capability (`adoptsExternalSession`, Claude Code only), because Gemini's new resume pre-flight must not open the adopt path early.
+  5. **Deferred, deliberately:**
+     - A post-restart survival check ("Restarted" means it launched; the existing crash nets cover early exits).
+     - Keeping Codex/Gemini rows when the Claude Code listing fails (today that's a visible 500, pinned by a test).
 - **Rationale:** a restart is a server lifecycle operation.
   - Only the server can wait for the old process to exit, and only a single call has a single outcome to report.
   - The Gemini pre-flight meets ADR-100's rule: the destructive onExit net arms only behind a pre-flight that proved the session exists. It finds the session file, as Claude Code's does.
