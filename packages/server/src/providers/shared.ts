@@ -198,6 +198,11 @@ export function buildBaseEnv(
   // Perf-harness mode must not propagate: an agent that later launches its own
   // autonomOS server (make dev/prod) would silently inherit the auth bypass.
   delete env.AUTONOMOS_PERF;
+  // Same for the keystroke recorder (ptyInputLog.ts): a nested autonomOS an
+  // agent starts must not come up recording because the outer one was.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("AUTONOMOS_PTY_INPUT_LOG")) delete env[key];
+  }
 
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");
   delete env.PORT;
