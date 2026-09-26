@@ -9,6 +9,7 @@
 import {
   type AgentTreeNode,
   type ExitReason,
+  hierarchyOf,
   isExitReason,
   permissionModeFromStored,
   type UUID,
@@ -104,22 +105,19 @@ agentsRouter.get("/:id/self", (c) => {
   const id = c.req.param("id");
   if (!verifyAgentToken(id, c.req.header("X-Agent-Token")))
     return c.json({ error: "unauthorized" }, 401);
-  const agents = listAgents();
-  const me = agents.find((a) => a.id === id);
-  if (!me) return c.json({ error: "not found" }, 404);
-  // Field names + semantics mirror the statusline's legacy /api/agents
-  // derivation (getAutonomosMeta): `manager` is a display NAME, and
-  // exited reports don't count — records persist until deleted, so a
-  // manager that reaped short-lived workers must not read ↓N forever.
+  // ONE definition of "manager" / "live reports", shared with the org tree
+  // (core `hierarchyOf`), so the statusline and the chart can't disagree.
+  // `manager` stays a display NAME for the statusline; `managerStatus` lets it
+  // mark a dead manager the chart draws as a ghost.
+  const h = hierarchyOf(listAgents(), id);
+  if (!h) return c.json({ error: "not found" }, 404);
+  const { self: me, manager } = h;
   return c.json({
     name: me.name,
-    manager: me.managerId
-      ? (agents.find((a) => a.id === me.managerId)?.name ?? null)
-      : null,
+    manager: manager?.name ?? null,
+    managerStatus: manager?.status ?? null,
     project: me.project ?? null,
-    directReports: agents.filter(
-      (a) => a.managerId === me.id && a.status !== "exited",
-    ).length,
+    directReports: h.liveReports.length,
     permissionMode: me.permissionMode,
     status: me.status,
   });

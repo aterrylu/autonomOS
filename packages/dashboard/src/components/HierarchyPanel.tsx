@@ -120,6 +120,9 @@ interface CardProps {
   /** Selection role: the selected card, a card on its manager chain / in its
    *  team, a card outside it (dimmed), or no selection at all. */
   selection: "self" | "chain" | "dim" | null;
+  /** Short id suffix, set only when another drawn card has the same name
+   *  (agents may legitimately share one) so the two read as distinct. */
+  idHint?: string;
   onOpen: (node: AgentTreeNode) => void;
   onSelect: (id: string | null) => void;
   onNavigate: (id: string, dir: NavDir) => void;
@@ -145,6 +148,7 @@ function OrgCard({
   tokens,
   page,
   selection,
+  idHint,
   onOpen,
   onSelect,
   onNavigate,
@@ -190,10 +194,10 @@ function OrgCard({
     tabIndex: 0,
     "data-org-card": node.id,
     "data-org-status": exited ? "exited" : status,
-    "aria-label": `${node.name}, ${label}${unread > 0 ? `, ${unread} unread` : ""}. ${
+    "aria-label": `${node.name}${idHint ? ` (${idHint})` : ""}, ${label}${unread > 0 ? `, ${unread} unread` : ""}. ${
       exited ? "" : "Enter opens the terminal; "
     }arrows move; Shift+F10 for actions.`,
-    title: node.template ? `${node.name} · ${node.template}` : node.name,
+    title: `${node.name}${idHint ? ` #${idHint}` : ""}${node.template ? ` · ${node.template}` : ""}`,
     className: `org-card absolute flex flex-col justify-between rounded-[9px] px-2.5 py-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 ${
       working ? "org-card-working" : ""
     }${attention ? " org-card-attention" : ""}`,
@@ -277,6 +281,15 @@ function OrgCard({
           style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
         >
           {node.name}
+          {idHint && (
+            <span
+              data-org-id-hint
+              className="ml-1 font-normal tabular-nums"
+              style={{ color: tokens.muted }}
+            >
+              #{idHint}
+            </span>
+          )}
         </span>
         {unread > 0 && (
           <span
@@ -450,6 +463,13 @@ function OrgCanvas({
     [roots, collapsed, rollups],
   );
   const flat = useMemo(() => flatten(roots), [roots]);
+  // Names drawn more than once get an id hint on every card that shares them.
+  const sharedNames = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const f of flat)
+      count.set(f.node.name, (count.get(f.node.name) ?? 0) + 1);
+    return new Set([...count].filter(([, n]) => n > 1).map(([name]) => name));
+  }, [flat]);
   const exitedIds = useMemo(
     () =>
       new Set(
@@ -498,27 +518,10 @@ function OrgCanvas({
     [flat, layout, onSelect],
   );
 
-  // Clicking empty canvas clears the selection (a pointer nicety — the
-  // keyboard path is Esc via the escape stack). Native listener: the viewport
-  // is a plain scroll container, not an interactive element.
-  const viewportRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const onClick = (e: MouseEvent) => {
-      const t = e.target as HTMLElement;
-      if (!t.closest("[data-org-card], button")) onSelect(null);
-    };
-    el.addEventListener("click", onClick);
-    return () => el.removeEventListener("click", onClick);
-  }, [onSelect]);
-
+  // Clicking empty canvas does NOT clear the selection (Terry: the inspector
+  // should stick). It closes via its × button, Esc, or leaving the pane.
   return (
-    <div
-      ref={viewportRef}
-      className="min-h-0 flex-1 overflow-auto"
-      data-org-viewport
-    >
+    <div className="min-h-0 flex-1 overflow-auto" data-org-viewport>
       <div
         data-org-stage
         className="relative"
@@ -596,6 +599,9 @@ function OrgCanvas({
             <OrgCard
               key={node.id}
               node={node}
+              idHint={
+                sharedNames.has(node.name) ? node.id.slice(0, 4) : undefined
+              }
               x={p.x}
               y={p.y}
               managerName={managerName}
@@ -968,7 +974,13 @@ function useCollapsedTeams(): [ReadonlySet<string>, (id: string) => void] {
 
 // ── Main Panel ───────────────────────────────────────────────────
 
-export function HierarchyPanel() {
+export function HierarchyPanel({
+  visible = true,
+}: {
+  /** Dockview visibility. Leaving the pane (another tab over it) closes the
+   *  inspector; a canvas click does not (Terry's call). */
+  visible?: boolean;
+} = {}) {
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const tokens = useMemo(() => orgChartTokens(page), [page]);
@@ -1043,6 +1055,13 @@ export function HierarchyPanel() {
   const selected = selectedId
     ? flatRoots.find((f) => f.node.id === selectedId)
     : undefined;
+  // Leaving the pane closes the inspector: dockview keeps this panel mounted
+  // while another tab covers it, so a selection would otherwise linger unseen.
+  useEffect(() => {
+    if (visible) return;
+    setSelectedId(null);
+    setEngaged(false);
+  }, [visible]);
   // A selection whose agent left the drawn tree (deleted, or hidden by the
   // exited toggle) clears itself.
   useEffect(() => {

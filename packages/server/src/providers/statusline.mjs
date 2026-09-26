@@ -177,7 +177,8 @@ async function getAutonomosMeta(sessionId, serverUrl, token) {
     : null;
 
   const directReports = agents.filter(
-    (a) => a?.managerId === me.id && a?.status !== "exited",
+    // Same "live" rule as core hierarchyOf()/isLiveAgent() (this file can't import core).
+    (a) => a?.managerId === me.id && a?.status === "running",
   ).length;
 
   return {
