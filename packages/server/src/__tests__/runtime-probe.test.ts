@@ -19,7 +19,9 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { RUNTIME_PERMISSIONS } from "@autonomos/core";
 import {
+  _resetRuntimeProbeCacheForTesting,
   compareAxis,
+  getPermissionCheck,
   parseClaudeChoices,
   parseCodexSchemaEnum,
   parseCodexVariants,
@@ -208,6 +210,45 @@ exit 0
       assert.deepEqual(check.axes[0].rejected, []);
       assert.ok(check.axes[0].accepted?.includes("manual"));
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a probe that couldn't tell is NOT cached — the next request re-probes", async () => {
+    // The marker is OUTSIDE the binary on purpose: editing the binary would
+    // change its mtime, i.e. the cache key, and hide the bug.
+    const dir = mkdtempSync(join(tmpdir(), "aos-probe-flaky-"));
+    const down = join(dir, "down");
+    try {
+      const bin = join(dir, "claude");
+      writeFileSync(
+        bin,
+        `#!/bin/sh
+if [ -e "${down}" ]; then exit 1; fi
+if [ "$1" = "--version" ]; then echo "2.1.282 (Claude Code)"; exit 0; fi
+exit 0
+`,
+      );
+      chmodSync(bin, 0o755);
+      writeFileSync(down, "");
+      _resetRuntimeProbeCacheForTesting();
+      const first = await getPermissionCheck("claude-code", bin);
+      assert.equal(
+        first.version,
+        null,
+        "precondition: the first probe couldn't tell",
+      );
+      rmSync(down);
+      const second = await getPermissionCheck("claude-code", bin);
+      assert.equal(
+        second.version,
+        "2.1.282",
+        "re-probed, not served from cache",
+      );
+      // …and a GOOD result IS cached (same object back, no re-probe).
+      assert.equal(await getPermissionCheck("claude-code", bin), second);
+    } finally {
+      _resetRuntimeProbeCacheForTesting();
       rmSync(dir, { recursive: true, force: true });
     }
   });

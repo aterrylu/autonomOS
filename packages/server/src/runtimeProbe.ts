@@ -312,6 +312,13 @@ export async function getPermissionCheck(
       console.log(
         `[runtime-probe] ${runtime} ${c.version} (permission table verified on ${RUNTIME_PERMISSIONS[runtime].verifiedOn})`,
       );
+    // A probe that couldn't tell (it threw, or the CLI didn't even report a
+    // version — e.g. a timeout on a busy box right after boot) must not stick
+    // until the binary changes or the server restarts: drop it so the next
+    // request re-probes. In-flight callers still share this one probe.
+    if (c.error || c.version === null) {
+      if (cache.get(runtime)?.check === check) cache.delete(runtime);
+    }
     return c;
   });
   cache.set(runtime, { key, check });
