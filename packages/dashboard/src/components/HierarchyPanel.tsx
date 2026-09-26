@@ -498,27 +498,10 @@ function OrgCanvas({
     [flat, layout, onSelect],
   );
 
-  // Clicking empty canvas clears the selection (a pointer nicety — the
-  // keyboard path is Esc via the escape stack). Native listener: the viewport
-  // is a plain scroll container, not an interactive element.
-  const viewportRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const onClick = (e: MouseEvent) => {
-      const t = e.target as HTMLElement;
-      if (!t.closest("[data-org-card], button")) onSelect(null);
-    };
-    el.addEventListener("click", onClick);
-    return () => el.removeEventListener("click", onClick);
-  }, [onSelect]);
-
+  // Clicking empty canvas does NOT clear the selection (Terry: the inspector
+  // should stick). It closes via its × button, Esc, or leaving the pane.
   return (
-    <div
-      ref={viewportRef}
-      className="min-h-0 flex-1 overflow-auto"
-      data-org-viewport
-    >
+    <div className="min-h-0 flex-1 overflow-auto" data-org-viewport>
       <div
         data-org-stage
         className="relative"
