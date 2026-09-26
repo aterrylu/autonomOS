@@ -19,6 +19,7 @@ import { revokeAgentToken, verifyAgentToken } from "../agentCredentials.js";
 import {
   forgetAgentAnalytics,
   getAgentAnalytics,
+  getAgentsActivity,
 } from "../agents/analytics.js";
 import { enrichAgent } from "../agents/enrich.js";
 import {
@@ -270,6 +271,25 @@ agentsRouter.get("/tree", (c) => {
     }),
   });
   return c.json(tree);
+});
+
+// The Org Chart cards' status + 24h strip for MANY agents in one response
+// (never one request per card). Registered before "/:id" so "analytics" can't
+// be read as an agent id. `?ids=a,b` narrows it; unknown ids are ignored.
+agentsRouter.get("/analytics", (c) => {
+  const wanted = c.req.query("ids");
+  const known = listAgents().map((a) => a.id as string);
+  const filter = wanted
+    ? new Set(
+        wanted
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+      )
+    : null;
+  return c.json(
+    getAgentsActivity(filter ? known.filter((id) => filter.has(id)) : known),
+  );
 });
 
 agentsRouter.get("/:id", (c) => {

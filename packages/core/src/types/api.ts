@@ -230,3 +230,20 @@ export interface AgentAnalytics {
   branch: string | null;
   support: { tools: boolean; needsInput: boolean; failedTools: boolean };
 }
+
+// ── Batched card strip (GET /api/agents/analytics) ────────────────
+
+/** Each agent's current status + 24h strip, for the Org Chart cards, in ONE
+ *  response (never one request per agent). Strips longer than `maxSegments`
+ *  are down-sampled (a needs-input bucket always shows as needs-input). */
+export interface AgentActivityBatch {
+  since: number;
+  maxSegments: number;
+  agents: Record<
+    string,
+    {
+      status: AgentAnalytics["status"];
+      activity: AgentAnalytics["activity"];
+    }
+  >;
+}
