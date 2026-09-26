@@ -16,8 +16,21 @@ export type { ProjectInfo, ProjectSession } from "@autonomos/core";
 
 export const projectRouter = new Hono();
 
-/** GET /api/projects — all Claude Code sessions grouped by project */
+/** GET /api/projects — Claude Code, Codex and Gemini sessions (plus every
+ *  managed agent) grouped by project directory. */
 projectRouter.get("/", async (c) => {
+  // The three listings are independent — start the Codex/Gemini scans now so
+  // they overlap the Claude Code listing instead of queuing behind it. Each
+  // settles to rows or to its error; one failing costs only its own rows.
+  const settle = (f: () => Promise<CodexSessionRow[]>) =>
+    f().then(
+      (rows) => ({ rows }),
+      (err: unknown) => ({ rows: [] as CodexSessionRow[], err }),
+    );
+  const scans = [
+    ["Codex", settle(listCodexSessionsFn)],
+    ["Gemini", settle(listGeminiSessionsFn)],
+  ] as const;
   let sessions: SDKSessionInfo[];
   try {
     sessions = await listSessionsFn();
@@ -104,31 +117,32 @@ projectRouter.get("/", async (c) => {
   for (const key of projectMap.keys()) learn(key);
   for (const a of agents) learn(a.workingDirectory);
 
-  for (const [label, scan] of [
-    ["Codex", listCodexSessionsFn],
-    ["Gemini", listGeminiSessionsFn],
-  ] as const) {
-    try {
-      for (const { cwd, session } of await scan()) {
-        const managed = agentByRuntimeId.get(session.sessionId);
-        // A managed agent's row carries the AGENT's providerSessionId — the id
-        // the dashboard's Resume (POST /attach) resolves; a Codex thread id
-        // would 404 there. Grouped under the agent's own working directory.
-        // Never mutate what the scanner handed us (it may be a cache entry —
-        // mutating it made every later poll miss this match): copy.
-        // (Always a copy: the enrichment below writes onto rows, too.)
-        const row = managed
-          ? { ...session, sessionId: managed.providerSessionId }
-          : { ...session };
-        const dir =
-          managed?.workingDirectory || (cwd && (rawFor.get(cwd) ?? cwd));
-        push(dir || `unknown:${row.sessionId}`, row);
-      }
-    } catch (err) {
+  for (const [label, scan] of scans) {
+    const { rows, err } = (await scan) as {
+      rows: CodexSessionRow[];
+      err?: unknown;
+    };
+    if (err) {
       console.error(
         `list${label}Sessions failed; ${label} rows omitted this tick:`,
         err instanceof Error ? err.message : err,
       );
+      continue;
+    }
+    for (const { cwd, session } of rows) {
+      const managed = agentByRuntimeId.get(session.sessionId);
+      // A managed agent's row carries the AGENT's providerSessionId — the id
+      // the dashboard's Resume (POST /attach) resolves; a Codex thread id
+      // would 404 there. Grouped under the agent's own working directory.
+      // Never mutate what the scanner handed us (it may be a cache entry —
+      // mutating it made every later poll miss this match): copy.
+      // (Always a copy: the enrichment below writes onto rows, too.)
+      const row = managed
+        ? { ...session, sessionId: managed.providerSessionId }
+        : { ...session };
+      const dir =
+        managed?.workingDirectory || (cwd && (rawFor.get(cwd) ?? cwd));
+      push(dir || `unknown:${row.sessionId}`, row);
     }
   }
 
