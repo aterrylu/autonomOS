@@ -15,6 +15,7 @@
 import type { AgentStatus, Provider } from "./agent";
 import type { PermissionMode } from "./permissions";
 import type { ProviderCapabilities } from "./provider";
+import type { RuntimePermissionCheck } from "./runtimePermissions";
 
 // ── Agent activity status (the hooks read surface) ────────────────
 
@@ -98,6 +99,8 @@ export interface ProviderInfo {
   version: string | null;
   recommended: boolean;
   capabilities: ProviderCapabilities;
+  /** Drift probe verdict for the installed CLI's permission options. */
+  permissionCheck?: RuntimePermissionCheck;
 }
 
 /** `GET /api/settings` — the MASKED projection (never raw credentials). */

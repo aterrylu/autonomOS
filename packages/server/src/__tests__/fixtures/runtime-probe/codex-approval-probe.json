@@ -1,0 +1,11 @@
+{
+ "argv": [
+  "codex",
+  "features",
+  "list",
+  "-c",
+  "approval_policy=__probe__"
+ ],
+ "exit": 1,
+ "output": "Error: failed to load bootstrap configuration\n\nCaused by:\n    unknown variant `__probe__`, expected one of `untrusted`, `on-failure`, `on-request`, `granular`, `never`\n    in `approval_policy`\n    \n"
+}

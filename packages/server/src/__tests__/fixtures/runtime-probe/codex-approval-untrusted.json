@@ -1,0 +1,11 @@
+{
+ "argv": [
+  "codex",
+  "features",
+  "list",
+  "-c",
+  "approval_policy=untrusted"
+ ],
+ "exit": 1,
+ "output": "Error: failed to load configuration\n\nCaused by:\n    approval_policy = \"untrusted\" is no longer supported; remove this setting\n"
+}
