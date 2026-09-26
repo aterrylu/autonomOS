@@ -11,6 +11,51 @@ that predates the changesets pipeline.
 
 <!-- changeset-insert-anchor -->
 
+## [0.8.0] — 2026-09-26
+
+### Minor Changes
+
+- [#369](https://github.com/aterrylu/autonomOS/pull/369) `652d1af` — feat(dashboard): Projects panel revamp — provider-aware rows + 9 bug fixes (ADR-098)
+- [#390](https://github.com/aterrylu/autonomOS/pull/390) `0073f67` — feat(orgchart): rebuild on the sidebar's vocabulary — ghosts keep teams, amber attention, side-by-side layout, click-to-select inspector, shared agent menu (ADR-104)
+- [#391](https://github.com/aterrylu/autonomOS/pull/391) `ea720b1` — feat(orgchart): team rollups + collapse — each lead summarizes its whole team, folded teams still say who needs you
+- [#399](https://github.com/aterrylu/autonomOS/pull/399) `5f95a0a` — feat(orgchart): message flow — envelopes + speech bubbles for agent-to-agent messages, inspector Communication (ADR-108)
+- [#402](https://github.com/aterrylu/autonomOS/pull/402) `bbfb267` — feat(orgchart): rich inspector — per-agent analytics (ADR-110)
+- [#428](https://github.com/aterrylu/autonomOS/pull/428) `bd0a15f` — feat(auth): sign in by opening a link — token in the URL fragment, exchanged for the session cookie
+
+### Patch Changes
+
+- [#362](https://github.com/aterrylu/autonomOS/pull/362) `e1cecfd` — fix(dashboard): reconnect the focused pane's terminal on restart (ADR-097)
+- [#382](https://github.com/aterrylu/autonomOS/pull/382) `ca90b3d` — fix(agents): project · branch on every agent row, not just Claude Code
+- [#383](https://github.com/aterrylu/autonomOS/pull/383) `de0f69d` — feat(dashboard): one "Idle" label for ready+idle; passive label fades with recency (ADR-101)
+- [#384](https://github.com/aterrylu/autonomOS/pull/384) `17416df` — perf(usage): async + memoized Claude keychain read — no event-loop freeze
+- [#387](https://github.com/aterrylu/autonomOS/pull/387) `0c57ed8` — fix(claude-usage): say why usage is unavailable + read the limits[] window list
+- [#388](https://github.com/aterrylu/autonomOS/pull/388) `4b66500` — test(integration): run real-spawn suites under a throwaway HOME; assert nothing lands in real ~/.claude (ADR-103)
+- [#394](https://github.com/aterrylu/autonomOS/pull/394) `2c9a230` — feat(claude-usage): spend display for spend-metered accounts — text | % | bar
+- [#396](https://github.com/aterrylu/autonomOS/pull/396) `5493a53` — fix(dashboard): Daylight muted text meets WCAG AA (statusFg 2.63:1 → 5.19:1)
+- [#397](https://github.com/aterrylu/autonomOS/pull/397) `ed184cb` — fix(dashboard): honest connection status — per-keystroke acks, 'Not reaching server' in 1s, no late keystrokes
+- [#398](https://github.com/aterrylu/autonomOS/pull/398) `bb8455f` — fix(codex): Codex agents survive a server/daemon restart
+- [#401](https://github.com/aterrylu/autonomOS/pull/401) `743d6b2` — fix(runtime): the boot resume sweep never crashes a live agent
+- [#403](https://github.com/aterrylu/autonomOS/pull/403) `c1026ce` — fix(claude-code): resume probes the realpath; a not-resumable reattach never reuses the session id (ADR-111)
+- [#404](https://github.com/aterrylu/autonomOS/pull/404) `eaf5d8e` — fix(server): stopping the server no longer orphans a mid-turn Codex agent
+- [#405](https://github.com/aterrylu/autonomOS/pull/405) `b3bc068` — fix(server): kills end the agent's whole process group, so Gemini can't survive them
+- [#406](https://github.com/aterrylu/autonomOS/pull/406) `78b9bd1` — fix(codex): the auto/plan notices say 'not wired up yet', never 'Codex has no …'
+- [#407](https://github.com/aterrylu/autonomOS/pull/407) `635d500` — fix(gemini): keep the picked permission mode in untrusted folders (--skip-trust under Auto-Trust)
+- [#408](https://github.com/aterrylu/autonomOS/pull/408) `ad4abb8` — fix(claude-usage): Pro/Max spend guard on the full-cookie (lastActiveOrg) path too
+- [#410](https://github.com/aterrylu/autonomOS/pull/410) `269160e` — fix(dashboard): dark-theme muted text meets AA; Codex shows OpenAI's official icon, never dimmed
+- [#412](https://github.com/aterrylu/autonomOS/pull/412) `d4ff9c7` — feat(permissions): each CLI's permission options in its own words + a drift check (per-runtime PR 1)
+- [#414](https://github.com/aterrylu/autonomOS/pull/414) `1e93f1f` — perf(dashboard): cache + precompress dashboard assets (ADR-116)
+- [#415](https://github.com/aterrylu/autonomOS/pull/415) `377256d` — fix(dashboard): tsc output out of the served dist/ + guard
+- [#419](https://github.com/aterrylu/autonomOS/pull/419) `a029213` — fix(claude-code): turn hooks run in order, so an idle agent can't be left showing Working
+- [#420](https://github.com/aterrylu/autonomOS/pull/420) `84e3809` — perf(dashboard): persist writes only when persisted state changes
+- [#422](https://github.com/aterrylu/autonomOS/pull/422) `ac2ae38` — perf(dashboard): a status frame no longer re-renders the whole sidebar
+- [#423](https://github.com/aterrylu/autonomOS/pull/423) `22c22be` — fix(claude-code): no false "never dismissed: trust" when the folder is pre-trusted
+- [#424](https://github.com/aterrylu/autonomOS/pull/424) `7cca939` — perf(dashboard): memoize sidebar row bodies; age labels tick on a shared clock
+- [#425](https://github.com/aterrylu/autonomOS/pull/425) `5c9cfad` — fix(orgchart): sticky inspector, same-name id hints, one manager/live-reports definition
+- [#427](https://github.com/aterrylu/autonomOS/pull/427) `32d18e7` — feat(server): opt-in log of every keystroke sent into agent terminals
+- [#436](https://github.com/aterrylu/autonomOS/pull/436) `8ede630` — fix(dashboard): Projects labels same-named directories apart instead of listing duplicate rows
+- [#437](https://github.com/aterrylu/autonomOS/pull/437) `128e9aa` — fix(server): a restart no longer marks never-used agents unread
+
+
 ## [0.7.0] — 2026-09-19
 
 ### Minor Changes
