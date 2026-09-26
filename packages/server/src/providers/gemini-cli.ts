@@ -21,6 +21,7 @@ import {
 import { getConfigDir } from "../configDir.js";
 import { getControlSocketPath } from "../internalSocket.js";
 import { getAuthToken, getServerPort } from "../serverState.js";
+import { findGeminiSession } from "../sessionScanners.js";
 import { getSettings } from "../settings.js";
 import {
   buildBaseEnv,
@@ -134,8 +135,33 @@ export const geminiCliProvider: AgentProvider = {
     );
   },
 
+  // Is this agent's Gemini session saved where `gemini --resume` will look
+  // (its cwd's project, under the CHILD's GEMINI_CLI_HOME)? Three-state via
+  // findGeminiSession: false only when POSITIVELY absent (→ the runtime starts
+  // fresh with a notice); it throws when it can't tell (→ fail open, resume).
+  // Declaring this also arms the onExit force-fresh net, which ADR-100 allows
+  // only behind a pre-flight that proved the session exists — this one does.
+  hasResumableSession(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined> = process.env,
+  ): boolean {
+    if (!options.resumeSessionId) return false;
+    return findGeminiSession(options.cwd, options.resumeSessionId, env);
+  },
+
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
+
+    // Conversation identity (measured on 0.46): a fresh spawn names its session
+    // with OUR id (`--session-id`), so a later restart can `--resume` exactly
+    // that chat — before this, every restart silently started a new one.
+    // resumeSessionId is set on every respawn and cleared by the pre-flight
+    // above when nothing is saved.
+    if (options.resumeSessionId) {
+      args.push("--resume", options.resumeSessionId);
+    } else if (options.providerSessionId) {
+      args.push("--session-id", options.providerSessionId);
+    }
 
     // Permission mode → --approval-mode (always set; "default" is Gemini's
     // own default, so this is behavior-preserving for supervised spawns).
