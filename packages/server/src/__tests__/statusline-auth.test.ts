@@ -58,6 +58,53 @@ describe("GET /api/agents/:id/self — per-agent-token statusline metadata (#297
     assert.equal((await res.json()).directReports, 1);
   });
 
+  it("/self and the org tree agree — ONE definition of manager + live reports", async () => {
+    const { buildAgentTreeNodes } = await import("@autonomos/core");
+    const { listAgents } = await import("../agents/store.js");
+    const id = (n: number) =>
+      `0000c222-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const lead = fix(id(1), { name: "Lead" });
+    const dead = fix(id(2), { name: "Dead", status: "exited" });
+    // Lead's reports: live, killed, and a FUTURE status (unknown ⇒ exited).
+    fix(id(3), { name: "Twin", managerId: lead.id });
+    fix(id(4), { name: "Killed", managerId: lead.id, status: "exited" });
+    fix(id(5), { name: "Future", managerId: lead.id, status: "archived" });
+    // Same name as a Lead report, under a DIFFERENT (dead) manager.
+    fix(id(6), { name: "Twin", managerId: dead.id });
+    const self = async (who: string) =>
+      (
+        await agentsRouter.request(`/${who}/self`, {
+          headers: { "X-Agent-Token": mintAgentToken(who) },
+        })
+      ).json();
+
+    // Live reports: /self count === the running-only tree's children.
+    const liveTree = buildAgentTreeNodes(listAgents());
+    const leadNode = liveTree.find((n) => n.id === lead.id);
+    assert.equal((await self(lead.id)).directReports, 1);
+    assert.equal(leadNode?.children.length, 1);
+
+    // A dead manager: /self names it AND says it's exited; the exited-inclusive
+    // tree (what the chart draws) keeps the report under that ghost.
+    const orphan = await self(id(6));
+    assert.equal(orphan.manager, "Dead");
+    assert.equal(orphan.managerStatus, "exited");
+    const fullTree = buildAgentTreeNodes(listAgents(), { includeExited: true });
+    const deadNode = fullTree.find((n) => n.id === dead.id);
+    assert.deepEqual(
+      deadNode?.children.map((c) => c.id),
+      [id(6)],
+    );
+    // Same-named agents stay two distinct nodes (keyed by id, never name).
+    const twins = [
+      ...(leadNode?.children ?? []),
+      ...(deadNode?.children ?? []),
+    ].filter((n) => n.name === "Twin");
+    assert.equal(new Set(twins.map((t) => t.id)).size, 2);
+    // A live manager reads as running.
+    assert.equal((await self(id(3))).managerStatus, "running");
+  });
+
   it("route payload → getSelfMeta → formatHierarchy renders ↑manager (SHAPE contract)", async () => {
     // The shape drift class: getSelfMeta once returned `managerName` while
     // formatHierarchy reads `ctx.manager`, so a managed worker rendered a
