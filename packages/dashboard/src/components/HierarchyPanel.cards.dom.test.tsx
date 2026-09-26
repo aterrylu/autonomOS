@@ -237,6 +237,24 @@ describe("Balanced card", () => {
     expect($in("Gone", "[data-org-card-strip]")).toBeNull();
   });
 
+  it("a chart that mounts in a HIDDEN tab still loads the batch once (only refreshes pause)", async () => {
+    const vis = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    batch = fleetBatch({
+      A: {
+        status: { current: "idle", since: NOW - 3 * MIN },
+        activity: [{ from: NOW - 20 * MIN, to: NOW, status: "idle" }],
+      },
+    });
+    await mount([node("A")], { sessions: [session("A")] });
+    await waitFor(() =>
+      expect($in("A", "[data-org-card-strip]")).not.toBeNull(),
+    );
+    expect($in("A", "[data-org-age]")?.dataset.orgAge).toBe("in-state");
+    vis.mockRestore();
+  });
+
   it("a malformed batch never blanks the cards (no strip, nothing thrown)", async () => {
     batch = { nope: true };
     await mount([node("A")], { sessions: [session("A")] });

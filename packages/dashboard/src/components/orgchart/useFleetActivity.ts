@@ -17,9 +17,12 @@ const DEBOUNCE_MS = 800;
 export function useFleetActivity(statusKey: string): AgentActivityBatch | null {
   const [data, setData] = useState<AgentActivityBatch | null>(null);
   const latest = useRef(0);
-  const load = useRef(() => {});
-  load.current = () => {
+  const load = useRef((_always?: boolean) => {});
+  load.current = (always = false) => {
+    // Periodic refreshes pause while the tab is hidden; the first load never
+    // does, so a chart that mounts in a background tab still has its data.
     if (
+      !always &&
       typeof document !== "undefined" &&
       document.visibilityState === "hidden"
     )
@@ -37,7 +40,7 @@ export function useFleetActivity(statusKey: string): AgentActivityBatch | null {
   };
 
   useEffect(() => {
-    load.current();
+    load.current(true);
     const t = setInterval(() => load.current(), REFRESH_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") load.current();
