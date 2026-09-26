@@ -142,21 +142,20 @@ async function cachedRow(
   size: number,
   parse: (head: Head) => ScannedSession | null,
 ): Promise<ScannedSession | null> {
+  // Callers get a COPY: the route rewrites a managed row's sessionId, and
+  // mutating the cached object made every later poll miss the match.
+  const copy = (r: ScannedSession | null): ScannedSession | null =>
+    r && { cwd: r.cwd, session: { ...r.session, lastModified: mtimeMs } };
   const hit = cache.get(path);
-  if (hit && hit.mtimeMs === mtimeMs && hit.size === size) {
-    // lastModified follows the file even when the parse is reused.
-    if (hit.row) hit.row.session.lastModified = mtimeMs;
-    return hit.row;
-  }
+  if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return copy(hit.row);
   let row: ScannedSession | null = null;
   try {
     row = parse(await readHead(path, MAX_HEAD_BYTES));
-    if (row) row.session.lastModified = mtimeMs;
   } catch {
     row = null;
   }
   cache.set(path, { mtimeMs, size, row });
-  return row;
+  return copy(row);
 }
 
 /** Newest-first by mtime, capped — stat is the only per-file cost for the
@@ -187,6 +186,11 @@ export function codexHome(env: Env = process.env): string {
 export function parseCodexHead(head: Head): ScannedSession | null {
   let meta: { id?: unknown; cwd?: unknown; originator?: unknown } | undefined;
   let prompt: string | undefined;
+  // Two places a prompt can be, both seen on 0.154: an `event_msg`
+  // `user_message` (the interactive TUI), or — for a thread driven through the
+  // app-server, as every autonomOS agent is — ONLY a `response_item` user
+  // message, after synthetic `<environment_context>`-style blocks we skip.
+  let itemPrompt: string | undefined;
   for (const line of jsonLines(head)) {
     const payload = line.payload as Record<string, unknown> | undefined;
     if (!payload) continue;
@@ -198,9 +202,21 @@ export function parseCodexHead(head: Head): ScannedSession | null {
       typeof payload.message === "string"
     ) {
       prompt = payload.message;
+    } else if (
+      !itemPrompt &&
+      line.type === "response_item" &&
+      payload.role === "user" &&
+      Array.isArray(payload.content)
+    ) {
+      const text = (payload.content as Array<{ text?: unknown }>)
+        .map((c) => (typeof c?.text === "string" ? c.text : ""))
+        .join(" ")
+        .trim();
+      if (text && !text.startsWith("<")) itemPrompt = text;
     }
     if (meta && prompt) break;
   }
+  prompt ??= itemPrompt;
   if (!meta || typeof meta.id !== "string" || typeof meta.cwd !== "string")
     return null;
   const originator =

@@ -132,6 +132,61 @@ describe("parseCodexHead", () => {
       "external",
     );
   });
+  it("an app-server-driven thread (every autonomOS agent) has its prompt ONLY as a response_item — found, skipping synthetic blocks", () => {
+    const text = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "t9", cwd: "/w", originator: "autonomos-gateway" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "<environment_context>\n  <cwd>/w</cwd>\n</environment_context>",
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "Reply with just the word PINEAPPLE." },
+          ],
+        },
+      }),
+    ].join("\n");
+    assert.equal(
+      parseCodexHead(whole(`${text}\n`))?.session.summary,
+      "Reply with just the word PINEAPPLE.",
+    );
+  });
+  it("prefers the TUI's user_message when both shapes exist", () => {
+    const text = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "t8", cwd: "/w" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: { role: "user", content: [{ text: "item text" }] },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "user_message", message: "typed text" },
+      }),
+    ].join("\n");
+    assert.equal(
+      parseCodexHead(whole(`${text}\n`))?.session.summary,
+      "typed text",
+    );
+  });
   it("no session_meta, or one without id/cwd → skipped (null), never a crash", () => {
     assert.equal(parseCodexHead(whole('not json\n{"type":"x"}\n')), null);
     assert.equal(

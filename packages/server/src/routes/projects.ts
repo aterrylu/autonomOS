@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import {
   listSessions,
@@ -86,6 +87,23 @@ projectRouter.get("/", async (c) => {
       agentByRuntimeId.set(a.providerSessionId, a);
     }
   }
+  // Codex and Gemini record a session's cwd as its REALPATH (/private/tmp/x on
+  // macOS), while Claude Code rows and agent records keep the path as typed
+  // (/tmp/x). Map a scanned cwd back to the raw path already known for it, so
+  // one directory is one project — never rewriting Claude Code's own paths.
+  const rawFor = new Map<string, string>();
+  const learn = (raw: string | undefined) => {
+    if (!raw || raw.startsWith("unknown:")) return;
+    try {
+      const real = realpathSync(raw);
+      if (real !== raw && !rawFor.has(real)) rawFor.set(real, raw);
+    } catch {
+      // gone or unresolvable: nothing to alias
+    }
+  };
+  for (const key of projectMap.keys()) learn(key);
+  for (const a of agents) learn(a.workingDirectory);
+
   for (const [label, scan] of [
     ["Codex", listCodexSessionsFn],
     ["Gemini", listGeminiSessionsFn],
@@ -96,9 +114,15 @@ projectRouter.get("/", async (c) => {
         // A managed agent's row carries the AGENT's providerSessionId — the id
         // the dashboard's Resume (POST /attach) resolves; a Codex thread id
         // would 404 there. Grouped under the agent's own working directory.
-        if (managed) session.sessionId = managed.providerSessionId;
-        const dir = managed?.workingDirectory || cwd;
-        push(dir || `unknown:${session.sessionId}`, session);
+        // Never mutate what the scanner handed us (it may be a cache entry —
+        // mutating it made every later poll miss this match): copy.
+        // (Always a copy: the enrichment below writes onto rows, too.)
+        const row = managed
+          ? { ...session, sessionId: managed.providerSessionId }
+          : { ...session };
+        const dir =
+          managed?.workingDirectory || (cwd && (rawFor.get(cwd) ?? cwd));
+        push(dir || `unknown:${row.sessionId}`, row);
       }
     } catch (err) {
       console.error(
