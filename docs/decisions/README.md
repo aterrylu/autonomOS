@@ -110,7 +110,7 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-049](ADR-049-provider-parity-resume-fallback-never-let-a-missing-un.md) | Provider-parity resume fallback — never let a missing/un-resumable session drop a Claude Code agent on restart | 2026-06-28 | Amended by ADR-111 |  | ADR-111 (in part) |
 | [ADR-050](ADR-050-retire-pm2-from-the-operator-path-make-prod-deploy-supervise.md) | Retire pm2 from the operator path — `make prod`/`deploy` supervise via launchd/systemd-user (Option B) | 2026-06-29 | Accepted |  |  |
 | [ADR-051](ADR-051-cut-the-electron-desktop-app-remote-always-on-server-is-the.md) | Cut the Electron desktop app — remote always-on server is the canonical deployment | 2026-06-29 | Accepted |  |  |
-| [ADR-052](ADR-052-first-run-install-ux-post-install-smoke-test-surfaced.md) | First-run install UX — post-install smoke test + surfaced connect panel | 2026-06-29 | Accepted |  |  |
+| [ADR-052](ADR-052-first-run-install-ux-post-install-smoke-test-surfaced.md) | First-run install UX — post-install smoke test + surfaced connect panel | 2026-06-29 | Amended by ADR-117 |  | ADR-117 (in part) |
 | [ADR-053](ADR-053-compaction-status-is-order-independent-no-assumed-hook.md) | Compaction status is order-independent — no assumed hook delivery order (structural fix, no watchdog) | 2026-07-11 | Accepted |  |  |
 | [ADR-054](ADR-054-auth-on-mcp-closes-an-unauthenticated-rce-bind-default.md) | Auth on /mcp closes an unauthenticated RCE; bind default unchanged | 2026-07-17 | Accepted |  |  |
 | [ADR-055](ADR-055-unix-socket-internal-control-plane-per-agent-identity-the.md) | Unix-socket internal control plane + per-agent identity (the "secure by construction" end state) | 2026-07-18 | Accepted |  |  |
@@ -172,3 +172,4 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-114](ADR-114-decision-records-live-one-file-per-adr-the-index-is.md) | Decision records live one file per ADR; the index is regenerated after merge | 2026-09-25 | Accepted |  |  |
 | [ADR-115](ADR-115-per-runtime-canonical-permission-modes.md) | Per-runtime canonical permission modes | 2026-09-25 | Accepted | ADR-045 |  |
 | [ADR-116](ADR-116-dashboard-asset-caching-hashed-assets-immutable-everything.md) | Dashboard asset caching: hashed assets immutable, everything else revalidates | 2026-09-25 | Accepted |  |  |
+| [ADR-117](ADR-117-sign-in-link-token-in-the-url-fragment-exchanged-for-the.md) | Sign-in link: token in the URL fragment, exchanged for the cookie (supersedes ADR-052's no-link position) | 2026-09-26 | Accepted | ADR-052 (in part) |  |
