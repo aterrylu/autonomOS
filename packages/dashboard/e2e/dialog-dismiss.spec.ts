@@ -44,10 +44,22 @@ async function openWith(page: Page, chord: string, dialog: Locator) {
   }).toPass({ timeout: 15_000 });
 }
 
+/** The reverse: press on the backdrop, release inside the dialog. */
+async function dragIn(page: Page, dialog: Locator): Promise<void> {
+  const box = await dialog.boundingBox();
+  if (!box) throw new Error("dialog has no box");
+  await page.mouse.move(5, 5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 40, box.y + 40, { steps: 6 });
+  await page.mouse.up();
+}
+
 async function checkDialog(page: Page, dialog: Locator): Promise<void> {
   await expect(dialog).toBeVisible();
   await dragSelectOut(page, dialog);
   await expect(dialog).toBeVisible(); // the regression
+  await dragIn(page, dialog);
+  await expect(dialog).toBeVisible(); // press outside, release inside
   // A real backdrop click (press AND release outside) still dismisses.
   await page.mouse.click(5, 5);
   await expect(dialog).toBeHidden();
