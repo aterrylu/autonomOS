@@ -800,3 +800,61 @@ function hexToRgb(hex: string): string {
   const b = Number.parseInt(v.slice(4, 6), 16);
   return `rgb(${r}, ${g}, ${b})`;
 }
+
+describe("same-named agents are distinct (keyed by id, never by name)", () => {
+  const hint = (id: string) =>
+    card(id)?.querySelector("[data-org-id-hint]")?.textContent ?? null;
+
+  it("two top-level agents with the same name both appear, each with an id hint", async () => {
+    tree([
+      node("aaaa1111", "running", [], { name: "Twin" }),
+      node("bbbb2222", "running", [], { name: "Twin" }),
+      node("cccc3333", "running", [], { name: "Solo" }),
+    ]);
+    useStore.setState({
+      sessions: [
+        session("aaaa1111", { name: "Twin" }),
+        session("bbbb2222", { name: "Twin" }),
+        session("cccc3333", { name: "Solo" }),
+      ],
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("aaaa1111")).not.toBeNull());
+    expect(card("bbbb2222")).not.toBeNull();
+    expect(hint("aaaa1111")).toBe("#aaaa");
+    expect(hint("bbbb2222")).toBe("#bbbb");
+    expect(card("aaaa1111")?.getAttribute("aria-label")).toMatch(
+      /^Twin \(aaaa\),/,
+    );
+    // A unique name reads plainly.
+    expect(hint("cccc3333")).toBeNull();
+  });
+
+  it("same-named agents under DIFFERENT managers stay under their own managers", async () => {
+    tree([
+      node("m1", "running", [
+        node("aaaa1111", "running", [], { name: "Twin" }),
+      ]),
+      node("m2", "running", [
+        node("bbbb2222", "running", [], { name: "Twin" }),
+      ]),
+    ]);
+    useStore.setState({
+      sessions: ["m1", "m2"]
+        .map((id) => session(id))
+        .concat([
+          session("aaaa1111", { name: "Twin" }),
+          session("bbbb2222", { name: "Twin" }),
+        ]),
+    });
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("bbbb2222")).not.toBeNull());
+    expect(hint("aaaa1111")).toBe("#aaaa");
+    expect(hint("bbbb2222")).toBe("#bbbb");
+    // Selecting one lights ITS manager, not the other twin's.
+    fireEvent.click(card("aaaa1111") as HTMLElement);
+    expect(card("m1")?.style.opacity).toBe("");
+    expect(card("m2")?.style.opacity).toBe("0.45");
+    expect(card("bbbb2222")?.style.opacity).toBe("0.45");
+  });
+});
