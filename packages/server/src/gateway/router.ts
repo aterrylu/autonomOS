@@ -24,7 +24,7 @@ import type {
   GatewayMessage,
   GatewayWsMessage,
 } from "@autonomos/core";
-import { HANDOFF_QUEUE_CAP } from "@autonomos/core";
+import { formatPermission, HANDOFF_QUEUE_CAP } from "@autonomos/core";
 import type { WSContext, WSReadyState } from "hono/ws";
 import { noteChannelServerRegistered } from "../agents/channelServerCheck.js";
 import { getAgentSidecarEndpoint } from "../agents/runtime.js";
@@ -554,6 +554,7 @@ export async function getAgentList(): Promise<AgentInfo[]> {
       uri: `agent://${name}`,
       status: "running",
       permissionMode: a.permissionMode,
+      permission: a.permission ? formatPermission(a.permission) : undefined,
     };
   });
 }

@@ -7,6 +7,12 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  defaultRuntimePermission,
+  type Provider,
+  parseRuntimePermission,
+  type RuntimePermission,
+} from "@autonomos/core";
 import { isValidChannelId } from "./channels.js";
 import { ensureConfigDir, getConfigDir } from "./configDir.js";
 
@@ -64,6 +70,13 @@ export interface AppSettings {
   statusLine?: {
     enabled: boolean;
   };
+  /**
+   * The operator's default permission per runtime, in that runtime's own
+   * canonical values (ADR-115), e.g. `{ codex: { approval_policy: "never" } }`.
+   * Replaces the dashboard's browser-local default so agent-initiated spawns
+   * use it too. A runtime absent here uses DEFAULT_RUNTIME_VALUES.
+   */
+  runtimeDefaults?: Partial<Record<Provider, Record<string, string>>>;
 }
 
 function settingsFile(): string {
@@ -251,4 +264,24 @@ export function updateSettings(partial: Partial<AppSettings>): AppSettings {
     mode: 0o600,
   });
   return updated;
+}
+
+/**
+ * The default permission for a spawn on `runtime` that names none (ADR-115):
+ * the operator's saved choice, else the built-in default. A saved value that
+ * no longer parses (the CLI's vocabulary drifted, or a hand-edit) falls back
+ * to the built-in default LOUDLY — never silently to something wider.
+ */
+export function runtimeDefaultPermission(
+  runtime: Provider,
+  settings: AppSettings = getSettings(),
+): RuntimePermission {
+  const saved = settings.runtimeDefaults?.[runtime];
+  if (!saved) return defaultRuntimePermission(runtime);
+  const parsed = parseRuntimePermission(runtime, saved);
+  if (parsed.ok) return parsed.permission;
+  console.warn(
+    `[settings] Ignoring the saved ${runtime} default permission ${JSON.stringify(saved)}: ${parsed.error}. Using the built-in default.`,
+  );
+  return defaultRuntimePermission(runtime);
 }

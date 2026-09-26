@@ -50,6 +50,10 @@ export interface AgentInfo {
    *  had no way to confirm it took effect. Optional so a channel server from a
    *  NEWER build stays readable against an older server that doesn't send it. */
   permissionMode?: PermissionMode;
+  /** The same, in the agent's runtime's OWN canonical values (ADR-115) —
+   *  e.g. `acceptEdits`, `approval_policy=never · sandbox_mode=…`, `yolo`.
+   *  What list_agents shows; `permissionMode` is only the legacy projection. */
+  permission?: string;
 }
 
 // ── Gateway WebSocket Protocol ────────────────────────────────────

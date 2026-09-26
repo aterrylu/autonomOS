@@ -141,7 +141,13 @@ export const createAgentShape = {
     .enum(PERMISSION_MODES)
     .optional()
     .describe(
-      "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
+      "DEPRECATED — pass `permission` instead. The old shared ask/auto/plan/bypass vocabulary, still accepted and mapped to exactly what it always ran on each runtime.",
+    ),
+  permission: z
+    .string()
+    .optional()
+    .describe(
+      "The agent's permission in its runtime's OWN values (ADR-115) — requires `provider`. Omit to use the operator's default for that runtime (on a resume: keep the agent's current setting). Examples — claude-code: `acceptEdits`; codex: `approval_policy=never sandbox_mode=danger-full-access`; gemini-cli: `auto_edit`. An invalid value is rejected with the runtime's valid values.",
     ),
 };
 export const CreateAgentBody = z.object(createAgentShape);
@@ -158,6 +164,9 @@ export const restCreateAgentSchema = z.object({
   // rejection ("invalid session id" → 400). Coercing a mistyped id to
   // undefined here would answer a resume request with a brand-new empty agent.
   resumeAgentId: z.unknown().optional(),
+  // REST also takes Codex's axes as an object; parsed (and 400'd with the
+  // runtime's valid values) by parsePermissionInput, not here.
+  permission: z.unknown().optional(),
   resumeSessionId: z.unknown().optional(),
   forkFromAgentId: z.unknown().optional(),
   // Normalized by `permissionModeFromStored` in the route: the pre-rename
@@ -254,7 +263,13 @@ export const createTemplateShape = {
     .enum(PERMISSION_MODES)
     .optional()
     .describe(
-      "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'.",
+      "DEPRECATED — pass `permissions` instead. The old shared ask/auto/plan/bypass vocabulary, still accepted and mapped to exactly what it always ran on each runtime.",
+    ),
+  permissions: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      'Per-runtime permission for agents spawned from this template, each in that runtime\'s OWN values (ADR-115), e.g. {"claude-code": "acceptEdits", "codex": "approval_policy=never"}. A runtime not named here uses the operator\'s default for it.',
     ),
   model: z
     .string()
@@ -287,6 +302,7 @@ export const restCreateTemplateSchema = z.object({
   name: z.string().trim().min(1),
   role: z.string().trim().min(1),
   permissionMode: z.unknown().optional(),
+  permissions: z.unknown().optional(),
   capabilities: z.unknown().optional(),
 });
 
@@ -534,6 +550,19 @@ export const restUpdateSettingsSchema = z.object({
   channels: z.array(z.string()).optional(),
   statusLine: z.object({ enabled: z.boolean().optional() }).optional(),
   customEnvVars: z.record(z.string(), z.string()).optional(),
+  /**
+   * Per-runtime default permission (ADR-115): runtime → its canonical value, as
+   * a string (`"acceptEdits"`, `"approval_policy=never"`) or `{ axis: value }`.
+   * `null` resets that runtime to the built-in default. Values are checked
+   * against the runtime's table in the route (the error lists the valid ones).
+   */
+  // partialRecord: zod 4's record over an enum requires EVERY key.
+  runtimeDefaults: z
+    .partialRecord(
+      z.enum(PROVIDER_VALUES),
+      z.union([z.string(), z.record(z.string(), z.string()), z.null()]),
+    )
+    .optional(),
 });
 
 // ── The parse boundary ──────────────────────────────────────────

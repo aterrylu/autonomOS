@@ -9,6 +9,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
+  type Provider,
+  permissionFromLegacyMode,
+  type RuntimePermission,
+} from "@autonomos/core";
 import { mintAgentToken } from "../agentCredentials.js";
 import { getConfigDir } from "../configDir.js";
 import { MCP_INSTRUCTIONS } from "../mcp/tools.js";
@@ -288,4 +295,22 @@ export function buildSystemPrompt(
     parts.push("", "---", "", appendSystemPrompt);
   }
   return parts.join("\n");
+}
+
+/**
+ * The canonical permission a spawn runs with (ADR-115): the resolved
+ * `options.permission`, or — for a caller that still passes only the legacy
+ * mode — that mode mapped to exactly what it always ran.
+ */
+export function effectivePermission(
+  runtime: Provider,
+  options: { permission?: RuntimePermission; permissionMode?: PermissionMode },
+): RuntimePermission {
+  return (
+    options.permission ??
+    permissionFromLegacyMode(
+      runtime,
+      options.permissionMode ?? DEFAULT_PERMISSION_MODE,
+    )
+  );
 }

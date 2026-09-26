@@ -460,7 +460,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const lines = agents.map((a) =>
         [
           `${a.name} (${a.uri}) — ${a.status}`,
-          a.permissionMode ? ` — ${a.permissionMode}` : "",
+          // The runtime's own values (ADR-115); the legacy mode only from an
+          // older server that doesn't send them.
+          a.permission
+            ? ` — ${a.permission}`
+            : a.permissionMode
+              ? ` — ${a.permissionMode}`
+              : "",
         ].join(""),
       );
       return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -477,6 +483,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         resumeSessionId,
         forkFrom,
         permissionMode,
+        permission,
         template,
         manager,
         project,
@@ -490,6 +497,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         resumeSessionId?: string;
         forkFrom?: string;
         permissionMode?: PermissionMode;
+        permission?: string;
         template?: string;
         manager?: string;
         project?: string;
@@ -520,6 +528,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             // fallback so it can prefer a resumed agent's own record over it —
             // do not substitute a default here.
             permissionMode,
+            permission,
             appendSystemPrompt: systemPrompt,
             template,
             manager: effectiveManager,
