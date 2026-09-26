@@ -184,10 +184,17 @@ export async function bootServer(opts?: {
   anthropicAuthToken?: string;
   /** Extra server CLI flags (e.g. `--print-url`). */
   extraArgs?: string[];
+  /** Boot AGAIN on a previous boot's config dir (and its throwaway HOME) —
+   *  a real server restart, which resumes that boot's persisted agents. The
+   *  previous server must have EXITED (await its kill()) first. */
+  reuseConfigDir?: string;
 }): Promise<BootedServer> {
-  const configDir = mkdtempSync(join(tmpdir(), "autonomos-integ-"));
+  const configDir =
+    opts?.reuseConfigDir ?? mkdtempSync(join(tmpdir(), "autonomos-integ-"));
   const fakeHome = join(configDir, "home");
-  const fakeClaudeDir = seedFakeHome(fakeHome);
+  const fakeClaudeDir = opts?.reuseConfigDir
+    ? join(fakeHome, ".claude")
+    : seedFakeHome(fakeHome);
   // Snapshot BEFORE anything spawns: only entries NEW since boot count, so the
   // operator's live fleet writing its own sessions can't trip the assertion.
   const realDirsBefore = listRealProjectDirs();

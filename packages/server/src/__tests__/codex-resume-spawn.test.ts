@@ -38,6 +38,7 @@ const { codexProvider } = await import("../providers/codex.js");
 const {
   buildAgent,
   insertAgent,
+  markActivity,
   patchAgent,
   getAgent,
   markExited,
@@ -71,7 +72,11 @@ const fake: AgentProvider = {
 };
 
 const ids: string[] = [];
-function seed(mode: PermissionMode, thread = "thread-real-123"): UUID {
+function seed(
+  mode: PermissionMode,
+  thread = "thread-real-123",
+  conversed = true,
+): UUID {
   const id = randomUUID() as UUID;
   ids.push(id);
   insertAgent(
@@ -86,6 +91,7 @@ function seed(mode: PermissionMode, thread = "thread-real-123"): UUID {
     }),
   );
   patchAgent(id, { providerThreadId: thread });
+  if (conversed) markActivity(id, Date.now() - 60_000);
   markExited(id, "user_killed");
   return id;
 }
@@ -124,6 +130,17 @@ describe("spawnAgent reattach — Codex resume (ADR-104)", () => {
     assert.equal(seen.at(-1)?.providerThreadId, undefined);
     assert.equal(getAgent(id)?.providerThreadId, undefined);
     assert.ok(notices(id).some((m) => m.includes("thread-real-123")));
+  });
+
+  it("a never-saved thread of a NEVER-USED agent starts fresh silently (no notice, no unread)", async () => {
+    threadSaved = false;
+    const id = seed("ask", "thread-never-used", false);
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    assert.equal(seen.at(-1)?.providerThreadId, undefined, "still fresh");
+    assert.ok(
+      !notices(id).some((m) => m.includes("thread-never-used")),
+      `no fresh-thread notice for a never-used agent: ${JSON.stringify(notices(id))}`,
+    );
   });
 
   it("a probe that CAN'T TELL fails open: thread kept, resumed", async () => {

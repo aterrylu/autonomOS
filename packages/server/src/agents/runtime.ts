@@ -216,6 +216,14 @@ let shuttingDown = false;
  *  daemons to exit, and a spawn racing that window would start a daemon the
  *  process then exits under — the orphan the wait exists to prevent. */
 let serverStopping = false;
+/** Did this agent ever do genuine work? `lastActivityAt` is set only by real
+ *  activity (a prompt, a tool call, a turn end; for Codex, the daemon's
+ *  "working"), never by lifecycle events, and a turn end flushes it to disk. So
+ *  absent means the agent never had a conversation that a resume could lose. */
+export function hadActivity(agent: { lastActivityAt?: number }): boolean {
+  return agent.lastActivityAt !== undefined;
+}
+
 /** Terminate an agent's PTY process group (see ptyTerminate), labelled for the log. */
 function stopAgentPty(agentId: UUID, pty: IPty): Promise<void> {
   const agent = getAgent(agentId);
@@ -1135,9 +1143,15 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       console.info(
         `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
-      pendingNotices.push(
-        `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
-      );
+      // Tell the operator only when a conversation was actually lost. A
+      // never-used agent (no genuine activity ever) has no saved session BY
+      // CONSTRUCTION, so the notice carried no news, yet it landed as an unread
+      // badge on every restart (ReleaseRollout's forge repro).
+      if (hadActivity(agent)) {
+        pendingNotices.push(
+          `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
+        );
+      }
     }
   }
 
@@ -1157,9 +1171,14 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
     resolved.providerThreadId = undefined;
     startedFreshThread = true;
-    pendingNotices.push(
-      `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
-    );
+    // Same rule as the session pre-flight: a thread that never had a turn was
+    // never saved (codex writes the rollout lazily), so there is nothing lost
+    // to report. The fresh start is still logged above.
+    if (hadActivity(agent)) {
+      pendingNotices.push(
+        `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
+      );
+    }
   }
 
   // The mode a resumed thread ACTUALLY runs. A resumed Codex thread keeps its
