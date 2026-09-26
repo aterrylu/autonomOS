@@ -143,7 +143,7 @@ describe("ProjectItem — redesigned rows", () => {
       "cc-ext",
       "/repo/autonomOS",
       "external session",
-      { isAutonomosAgent: undefined },
+      { isAutonomosAgent: undefined, provider: "claude-code" },
     );
     expect(useStore.getState().switchPane).not.toHaveBeenCalled();
   });

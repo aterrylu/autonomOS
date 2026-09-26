@@ -47,6 +47,8 @@ export interface AgentMenuTarget {
   resumeKey?: string;
   workingDirectory?: string;
   isAutonomosAgent?: boolean;
+  /** The session's runtime — an external Codex/Gemini one can't be resumed yet. */
+  provider?: string;
 }
 
 export interface AgentContextMenuProps {
@@ -770,6 +772,7 @@ export function AgentContextMenu({
             target.name,
             {
               isAutonomosAgent: target.isAutonomosAgent,
+              provider: target.provider,
             },
           ).catch(() => {});
         }

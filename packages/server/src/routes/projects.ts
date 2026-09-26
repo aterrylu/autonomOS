@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import {
   listSessions,
@@ -6,6 +7,11 @@ import {
 import type { ProjectInfo, ProjectSession } from "@autonomos/core";
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
+import {
+  listCodexSessions,
+  listGeminiSessions,
+  NO_PROMPT_YET,
+} from "../sessionScanners.js";
 import { batchGetTitles } from "../titleCache";
 
 // Wire shapes live in @autonomos/core (types/api.ts) — one declaration
@@ -14,8 +20,21 @@ export type { ProjectInfo, ProjectSession } from "@autonomos/core";
 
 export const projectRouter = new Hono();
 
-/** GET /api/projects — all Claude Code sessions grouped by project */
+/** GET /api/projects — Claude Code, Codex and Gemini sessions (plus every
+ *  managed agent) grouped by project directory. */
 projectRouter.get("/", async (c) => {
+  // The three listings are independent — start the Codex/Gemini scans now so
+  // they overlap the Claude Code listing instead of queuing behind it. Each
+  // settles to rows or to its error; one failing costs only its own rows.
+  const settle = (f: () => Promise<CodexSessionRow[]>) =>
+    f().then(
+      (rows) => ({ rows }),
+      (err: unknown) => ({ rows: [] as CodexSessionRow[], err }),
+    );
+  const scans = [
+    ["Codex", settle(listCodexSessionsFn)],
+    ["Gemini", settle(listGeminiSessionsFn)],
+  ] as const;
   let sessions: SDKSessionInfo[];
   try {
     sessions = await listSessionsFn();
@@ -51,9 +70,34 @@ projectRouter.get("/", async (c) => {
   // group keyed by sessionId (all displayed as "Unknown") so unrelated cwd-less
   // sessions don't merge into one pseudo-project.
   const projectMap = new Map<string, ProjectSession[]>();
+  // ONE project per real directory. The runtimes disagree on spelling: Codex,
+  // Gemini — and Claude Code for some paths — record the REALPATH
+  // (/private/tmp/x on macOS), while agent records keep the path as typed
+  // (/tmp/x). The first spelling seen for a directory becomes its key and
+  // every later one joins it; Claude Code rows are pushed first, so their own
+  // paths are never rewritten. (An unresolvable path — deleted — keys as is.)
+  const keyByReal = new Map<string, string>();
+  const realOf = new Map<string, string>();
+  const keyFor = (cwd: string): string => {
+    if (cwd.startsWith("unknown:")) return cwd;
+    let real = realOf.get(cwd);
+    if (real === undefined) {
+      try {
+        real = realpathSync(cwd);
+      } catch {
+        real = cwd;
+      }
+      realOf.set(cwd, real);
+    }
+    const known = keyByReal.get(real);
+    if (known) return known;
+    keyByReal.set(real, cwd);
+    return cwd;
+  };
   const push = (cwd: string, s: ProjectSession) => {
-    if (!projectMap.has(cwd)) projectMap.set(cwd, []);
-    projectMap.get(cwd)!.push(s);
+    const key = keyFor(cwd);
+    if (!projectMap.has(key)) projectMap.set(key, []);
+    projectMap.get(key)!.push(s);
   };
   for (const s of sessions) {
     const cwd = s.cwd || `unknown:${s.sessionId}`;
@@ -71,20 +115,66 @@ projectRouter.get("/", async (c) => {
     });
   }
 
-  // ── Codex discovery seam (owned by CodexGemini's PR) ────────────────────
-  // Enumerates ~/.codex rollout JSONLs → rows in the SHARED ProjectSession shape
-  // (provider:"codex", summary=derived title, no branch, originator class), each
-  // paired with its cwd for grouping. No-op until that PR lands, so this listing
-  // stays CC-only but already provider-shaped; the UI renders whatever appears.
-  try {
-    for (const { cwd, session } of await listCodexSessionsFn()) {
-      push(cwd || `unknown:${session.sessionId}`, session);
+  // ── Codex + Gemini sessions, read from each CLI's own storage ──────────
+  // (sessionScanners.ts: bounded, mtime-cached, malformed files skipped). A
+  // failing scanner costs only its own rows, never the listing.
+  const agents = listAgents();
+  // A managed agent's conversation id in its runtime's own storage: Codex keys
+  // by THREAD, Gemini (like Claude Code) by providerSessionId.
+  const agentByRuntimeId = new Map<string, (typeof agents)[number]>();
+  for (const a of agents) {
+    if (a.provider === "codex") {
+      if (a.providerThreadId) agentByRuntimeId.set(a.providerThreadId, a);
+    } else if (a.providerSessionId) {
+      agentByRuntimeId.set(a.providerSessionId, a);
     }
-  } catch (err) {
-    console.error(
-      "listCodexSessions failed; Codex rows omitted this tick:",
-      err instanceof Error ? err.message : err,
-    );
+  }
+
+  for (const [label, scan] of scans) {
+    const { rows, err } = (await scan) as {
+      rows: CodexSessionRow[];
+      err?: unknown;
+    };
+    if (err) {
+      console.error(
+        `list${label}Sessions failed; ${label} rows omitted this tick:`,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
+    for (const { cwd, session } of rows) {
+      const managed = agentByRuntimeId.get(session.sessionId);
+      // A managed agent's row carries the AGENT's providerSessionId — the id
+      // the dashboard's Resume (POST /attach) resolves; a Codex thread id
+      // would 404 there. Grouped under the agent's own working directory.
+      // Never mutate what the scanner handed us (it may be a cache entry —
+      // mutating it made every later poll miss this match): copy.
+      // (Always a copy: the enrichment below writes onto rows, too.)
+      const row = managed
+        ? { ...session, sessionId: managed.providerSessionId }
+        : { ...session };
+      const dir = managed?.workingDirectory || cwd;
+      push(dir || `unknown:${row.sessionId}`, row);
+    }
+  }
+
+  // Managed agents with NO discoverable session still get a row — e.g. a
+  // Codex agent killed before its first turn (codex saves a thread lazily) or a
+  // Gemini agent from before sessions were named — so an exited agent of ANY
+  // runtime shows under its directory and can be resumed from here. Claude
+  // Code agents keep their SDK-listed rows; this only fills the gaps.
+  const listed = new Set<string>();
+  for (const list of projectMap.values())
+    for (const s of list) listed.add(s.sessionId);
+  for (const a of agents) {
+    if (!a.providerSessionId || listed.has(a.providerSessionId)) continue;
+    if (a.id !== a.providerSessionId && listed.has(a.id)) continue;
+    push(a.workingDirectory || `unknown:${a.id}`, {
+      sessionId: a.providerSessionId,
+      provider: a.provider,
+      summary: a.name,
+      lastModified: a.exitedAt ?? a.updatedAt ?? a.createdAt ?? 0,
+    });
   }
 
   const projects: ProjectInfo[] = Array.from(
@@ -103,7 +193,6 @@ projectRouter.get("/", async (c) => {
   // Cross-reference with autonomOS agent records to enrich metadata.
   // Agent.id === providerSessionId for migrated agents; for fresh agents the
   // providerSessionId is the canonical CC sessionId, so we key off that.
-  const agents = listAgents();
   const byProviderSessionId = new Map(
     agents.map((a) => [a.providerSessionId, a]),
   );
@@ -112,6 +201,9 @@ projectRouter.get("/", async (c) => {
       const entry = byProviderSessionId.get(s.sessionId);
       if (entry) {
         s.isAutonomosAgent = true;
+        // A managed session with no prompt yet reads as its agent's name —
+        // what the person knows it by — not as a placeholder.
+        if (s.summary === NO_PROMPT_YET) s.summary = entry.name;
         s.autonomosStatus = entry.status;
         s.template = entry.template;
         s.manager = entry.managerId
@@ -126,9 +218,8 @@ projectRouter.get("/", async (c) => {
   return c.json(projects);
 });
 
-/** A Codex session row plus the cwd it groups under. CodexGemini's discovery PR
- *  implements the enumerator; the shared `ProjectSession` shape is what the UI
- *  renders (provider:"codex", summary=derived title, no gitBranch, originator). */
+/** A Codex/Gemini session row plus the cwd it groups under (sessionScanners.ts);
+ *  the shared `ProjectSession` shape is what the UI renders. */
 export interface CodexSessionRow {
   cwd: string;
   session: ProjectSession;
@@ -138,22 +229,28 @@ export interface CodexSessionRow {
 // real SDK or a populated ~/.claude/projects on disk.
 let listSessionsFn: typeof listSessions = listSessions;
 let batchGetTitlesFn: typeof batchGetTitles = batchGetTitles;
-// Codex discovery seam — no-op until CodexGemini's rollout scanner lands.
-let listCodexSessionsFn: () => Promise<CodexSessionRow[]> = async () => [];
+let listCodexSessionsFn: () => Promise<CodexSessionRow[]> = () =>
+  listCodexSessions();
+let listGeminiSessionsFn: () => Promise<CodexSessionRow[]> = () =>
+  listGeminiSessions();
 
 export function _setDepsForTesting(overrides: {
   listSessions?: typeof listSessions;
   batchGetTitles?: typeof batchGetTitles;
   listCodexSessions?: () => Promise<CodexSessionRow[]>;
+  listGeminiSessions?: () => Promise<CodexSessionRow[]>;
 }): void {
   if (overrides.listSessions) listSessionsFn = overrides.listSessions;
   if (overrides.batchGetTitles) batchGetTitlesFn = overrides.batchGetTitles;
   if (overrides.listCodexSessions)
     listCodexSessionsFn = overrides.listCodexSessions;
+  if (overrides.listGeminiSessions)
+    listGeminiSessionsFn = overrides.listGeminiSessions;
 }
 
 export function _resetForTesting(): void {
   listSessionsFn = listSessions;
   batchGetTitlesFn = batchGetTitles;
-  listCodexSessionsFn = async () => [];
+  listCodexSessionsFn = () => listCodexSessions();
+  listGeminiSessionsFn = () => listGeminiSessions();
 }
