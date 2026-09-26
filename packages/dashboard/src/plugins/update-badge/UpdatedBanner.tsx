@@ -146,6 +146,21 @@ export function UpdatedBanner() {
     };
   }, [hadSessionFlag]);
 
+  // A Restore lands on the OLDER version, whose fresh daemon hasn't run its
+  // update check yet (first one ~5 min after boot): ask now, so the newer
+  // release is offered again instead of silently gone.
+  const refreshVersion = useUpdateBus((s) => s.refreshVersion);
+  const restored = flag?.kind === "rollback";
+  useEffect(() => {
+    if (!restored) return;
+    systemApi
+      .checkUpdates()
+      .then(() => refreshVersion())
+      .catch(() => {
+        // Best effort: the daily check will find it.
+      });
+  }, [restored, refreshVersion]);
+
   if (!flag) return null;
 
   const names = flag.interruptedNames;
@@ -181,7 +196,8 @@ export function UpdatedBanner() {
     const checked =
       verify.kind === "done" ? (verify.record.verification?.checked ?? 0) : 0;
     details = [
-      verify.kind === "waiting" && "Checking that your agents reopened…",
+      verify.kind === "waiting" &&
+        `Checking that your agent${agentCount === 1 ? "" : "s"} reopened…`,
       verify.kind === "done" &&
         checked > 0 &&
         (checked === 1

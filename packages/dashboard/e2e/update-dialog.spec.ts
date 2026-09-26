@@ -203,3 +203,35 @@ async function contrastOf(page: Page, sel: string): Promise<number> {
     return (a + 0.05) / (b + 0.05);
   }, sel);
 }
+
+test("the waiting view's actions fit on one row at desktop width", async ({
+  page,
+}) => {
+  await mockUpdate(page, [
+    { id: "a", name: "busy-bee", status: "tool_running" },
+  ]);
+  const armed = {
+    target: "0.7.99",
+    armedAt: "2026-09-26T00:00:00Z",
+    idleSince: null,
+  };
+  await page.route("**/api/system/upgrade", (r) =>
+    r.request().method() === "POST"
+      ? r.fulfill(json({ ok: true, armed }))
+      : r.fallback(),
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByTestId("update-badge").click();
+  await page.getByTestId("update-start").click();
+  await expect(page.getByTestId("update-waiting")).toBeVisible();
+  const ys = await Promise.all(
+    ["update-cancel-armed", "update-waiting-now"].map(async (id) =>
+      Math.round((await page.getByTestId(id).boundingBox())?.y ?? -1),
+    ),
+  );
+  const close = await page
+    .getByRole("button", { name: "Close", exact: true })
+    .boundingBox();
+  expect(new Set([...ys, Math.round(close?.y ?? -2)]).size).toBe(1);
+});

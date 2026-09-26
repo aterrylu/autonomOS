@@ -258,8 +258,14 @@ describe("UpdatedBanner", () => {
     expect(banner.textContent).toContain(
       "Restored v0.6.1 and the snapshot from before the update.",
     );
-    // A restore has no agent check to wait for.
-    expect(fetchMock).not.toHaveBeenCalled();
+    // A restore has no agent check to wait for — its only request asks the
+    // server to check for updates, so the newer release is offered again
+    // (a restored daemon hasn't run its own check yet).
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const calls = fetchMock.mock.calls.map(
+      (c) => `${(c[1] as RequestInit | undefined)?.method ?? "GET"} ${c[0]}`,
+    );
+    expect(new Set(calls)).toEqual(new Set(["POST /api/system/check-updates"]));
   });
 
   it("is honest about a code-only Restore", async () => {

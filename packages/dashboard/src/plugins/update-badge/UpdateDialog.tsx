@@ -258,6 +258,56 @@ function Dot({ color }: { color: string }) {
   );
 }
 
+/** A <details> that always shows its state: a chevron that turns, and a
+ *  label that can flip ("Show details" → "Hide details"). The native marker
+ *  disappears under display:flex, which left folded releases unmarked. */
+function Disclosure({
+  label,
+  openLabel,
+  children,
+  className,
+  summaryClassName,
+  summaryStyle,
+  detailsProps,
+}: {
+  label: ReactNode;
+  openLabel?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  summaryClassName?: string;
+  summaryStyle?: React.CSSProperties;
+  detailsProps?: Record<string, string>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className={className}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+      {...detailsProps}
+    >
+      <summary
+        className={[
+          "flex cursor-pointer list-none items-baseline gap-1.5 [&::-webkit-details-marker]:hidden",
+          summaryClassName,
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        style={summaryStyle}
+      >
+        <span
+          aria-hidden="true"
+          className="inline-block w-2.5 shrink-0 motion-safe:transition-transform"
+          style={{ transform: open ? "rotate(90deg)" : undefined }}
+        >
+          ▸
+        </span>
+        {open && openLabel ? openLabel : label}
+      </summary>
+      {children}
+    </details>
+  );
+}
+
 /** The screen's heading. It names the dialog (aria-labelledby) and takes
  *  focus on every view change, so a screen reader hears where it landed. */
 function Header({
@@ -577,18 +627,19 @@ function NotesBox({ notes, info }: { notes: NotesState; info: VersionInfo }) {
               <ReleaseMarkdown body={r.body ?? ""} />
             </section>
           ) : (
-            <details
+            <Disclosure
               key={r.version}
-              data-testid="release-section"
-              data-version={r.version}
-              className="flex flex-col gap-1.5"
-              style={{ borderTop: `1px solid ${page.border}` }}
+              label={head}
+              className="flex flex-col gap-1.5 pt-2"
+              summaryClassName="w-full"
+              summaryStyle={{ borderTop: `1px solid ${page.border}` }}
+              detailsProps={{
+                "data-testid": "release-section",
+                "data-version": r.version,
+              }}
             >
-              <summary className="flex cursor-pointer items-baseline gap-2 pt-2">
-                {head}
-              </summary>
               <ReleaseMarkdown body={r.body ?? ""} />
-            </details>
+            </Disclosure>
           );
         })}
       </section>
@@ -671,6 +722,8 @@ interface AgentRow {
   id: string;
   name: string;
   status: string;
+  /** Same detail the sidebar shows ("Running Bash"). */
+  currentTool?: string;
   provider?: string;
   busy: boolean;
   /** Just spawned; its first task hasn't started yet. */
@@ -694,10 +747,13 @@ function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
         id: s.id,
         name: s.name,
         status,
+        currentTool: statuses[s.id]?.currentTool,
         provider: s.provider,
         busy: busy.has(s.id),
         reason: server?.reason,
-        background: bg.get(s.id),
+        // A busy agent's row already says its running work stops, and its
+        // foreground command would read as "background" here.
+        background: busy.has(s.id) ? undefined : bg.get(s.id),
       };
     });
     // A busy agent the store doesn't know yet still has to be shown.
@@ -709,7 +765,7 @@ function useAgentRows(upgrade: UpgradeState | null): AgentRow[] {
           status: b.status,
           busy: true,
           reason: b.reason,
-          background: bg.get(b.id),
+          background: undefined,
         });
       }
     }
@@ -763,7 +819,8 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
             <span style={{ color }}>
               {r.reason === "first_task"
                 ? "Starting"
-                : agentStatusLabel(r.status as AgentStatus) || "Unknown"}
+                : agentStatusLabel(r.status as AgentStatus, r.currentTool) ||
+                  "Unknown"}
             </span>
             <span className="flex min-w-0 flex-col">
               <span>
@@ -904,17 +961,15 @@ function AgentCheck({
         <AgentTable rows={rows} />
       ) : (
         rows.length > 0 && (
-          <details>
-            <summary
-              className="cursor-pointer"
-              style={{ color: page.statusFg }}
-            >
-              Details
-            </summary>
+          <Disclosure
+            label="Details"
+            openLabel="Hide details"
+            summaryStyle={{ color: page.statusFg }}
+          >
             <div className="pt-2">
               <AgentTable rows={rows} />
             </div>
-          </details>
+          </Disclosure>
         )
       )}
     </div>
@@ -993,7 +1048,8 @@ function ConfirmScreen({
           checkError={checkError}
           onRetry={flow.retryCheck}
         />
-        <BackgroundWarning rows={rows} />
+        {/* When busy, each idle agent's row already carries its line. */}
+        {busy.length === 0 && <BackgroundWarning rows={rows} />}
         <SafetyLine
           info={info}
           mode={upgrade?.installMode ?? info.installMode}
@@ -1046,7 +1102,6 @@ function WaitingScreen({
   info: VersionInfo;
   flow: UpdateFlow;
 }) {
-  const page = usePage();
   const a = useAccents();
   const { upgrade, actionError, pending } = flow;
   const rows = useAgentRows(upgrade);
@@ -1061,7 +1116,7 @@ function WaitingScreen({
             ? `v${target} is waiting for ${busyWho(busy)}`
             : `v${target} starts in a moment`
         }
-        subtitle={`It starts once every agent has been idle for ${idleSecs} seconds. Keep working; new activity resets the wait.`}
+        subtitle={`It starts once every agent has been idle for ${idleSecs} seconds. Keep working: new activity resets the wait, and closing this doesn't cancel it.`}
         icon={
           <span className="pt-1" style={{ color: a.amber }}>
             <Spinner size={16} />
@@ -1088,13 +1143,7 @@ function WaitingScreen({
           mode={upgrade?.installMode ?? info.installMode}
         />
       </div>
-      <Footer
-        left={
-          <span style={{ color: page.statusFg }}>
-            Closing this keeps the wait going.
-          </span>
-        }
-      >
+      <Footer>
         <Button
           onClick={() => void flow.cancelArmed()}
           data-testid="update-cancel-armed"
@@ -1259,10 +1308,12 @@ function UpdatingScreen({
             {rec.message}
           </div>
         )}
-        <details className="text-xs">
-          <summary className="cursor-pointer" style={{ color: a.blue }}>
-            Show details
-          </summary>
+        <Disclosure
+          className="text-xs"
+          label="Show details"
+          openLabel="Hide details"
+          summaryStyle={{ color: a.blue }}
+        >
           <ol className="flex flex-col gap-2 pt-2" data-testid="update-steps">
             {steps.map((s, i) => {
               const state =
@@ -1317,7 +1368,7 @@ function UpdatingScreen({
               );
             })}
           </ol>
-        </details>
+        </Disclosure>
         {!rollback && <NotesBox notes={notes} info={{ ...info, latest: to }} />}
       </div>
       <Footer>
@@ -1602,10 +1653,12 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
           <dt style={dt}>Not affected</dt>
           <dd>Conversations. Each CLI keeps its own history.</dd>
         </dl>
-        <details className="text-xs">
-          <summary className="cursor-pointer" style={{ color: a.blue }}>
-            Show details
-          </summary>
+        <Disclosure
+          className="text-xs"
+          label="Show details"
+          openLabel="Hide details"
+          summaryStyle={{ color: a.blue }}
+        >
           <dl className="grid grid-cols-1 gap-x-3 gap-y-1 pt-2 sm:grid-cols-[10rem_1fr]">
             {target.snapshotId && (
               <>
@@ -1621,7 +1674,7 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
             <dt style={dt}>From a terminal</dt>
             <dd className="font-mono">autonomos rollback</dd>
           </dl>
-        </details>
+        </Disclosure>
         {actionError && <ErrorLine>{actionError}</ErrorLine>}
       </div>
       <Footer>
@@ -1753,7 +1806,7 @@ export function ReconnectingOverlay({
     <div
       ref={ref}
       className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto p-4 font-sans"
-      style={{ background: `${page.bg}f2`, color: page.fg }}
+      style={{ background: page.bg, color: page.fg }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="update-reconnect-title"
@@ -1777,7 +1830,7 @@ export function ReconnectingOverlay({
           {`${STAGE_NAMES[stage]}: ${detail}`}
         </output>
         <div
-          className="font-mono text-xs"
+          className="text-xs tabular-nums"
           style={{ color: page.statusFg }}
           aria-hidden="true"
         >
