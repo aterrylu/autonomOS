@@ -11,6 +11,7 @@ import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { OrgInspector } from "./orgchart/Inspector";
 import { CARD_H, CARD_W, elbowPath, layoutOrg, PAD } from "./orgchart/layout";
 import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
+import { type MapCard, Minimap, ZoomControls } from "./orgchart/Minimap";
 import { pruneExited } from "./orgchart/pruneExited";
 import {
   type AgentInfo,
@@ -25,6 +26,7 @@ import {
   type TeamRollup,
 } from "./orgchart/teams";
 import { type OrgChartTokens, orgChartTokens } from "./orgchart/theme";
+import { useCanvasView } from "./orgchart/useCanvasView";
 import {
   formatAge,
   recencyLabelOpacity,
@@ -417,6 +419,8 @@ function selectionChain(flat: Flat[], selectedId: string): Set<string> {
 }
 
 function OrgCanvas({
+  zoomSlot,
+  onViewGesture,
   roots,
   rollups,
   collapsed,
@@ -433,6 +437,10 @@ function OrgCanvas({
   onResume,
   onMenu,
 }: {
+  /** Toolbar element the zoom controls portal into (null until mounted). */
+  zoomSlot: HTMLElement | null;
+  /** A pan/zoom began: close anything anchored to the old view (the menu). */
+  onViewGesture: () => void;
   /** The tree AS DRAWN — collapsed teams already folded. */
   roots: AgentTreeNode[];
   /** Per-manager rollups, computed BEFORE folding. */
@@ -489,6 +497,41 @@ function OrgCanvas({
     [flat],
   );
 
+  // PR 5 canvas: pan / zoom / fit. The view lives outside React state (see
+  // useCanvasView); the stage transform is written straight to the DOM.
+  const viewportRef = useRef<HTMLElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const content = useMemo(
+    () => ({ w: layout.width, h: layout.height }),
+    [layout.width, layout.height],
+  );
+  const firstRoot = roots[0] ? layout.pos.get(roots[0].id) : undefined;
+  const { api: view, store: viewStore } = useCanvasView({
+    viewportRef,
+    stageRef,
+    content,
+    anchorX: firstRoot ? firstRoot.x + CARD_W / 2 : layout.width / 2,
+    onGestureStart: onViewGesture,
+  });
+  const mapCards = useMemo<MapCard[]>(
+    () =>
+      flat.flatMap(({ node }) => {
+        const p = layout.pos.get(node.id);
+        return p
+          ? [
+              {
+                id: node.id,
+                x: p.x,
+                y: p.y,
+                bucket: rollupBucket(node, statusMap[node.claudeSessionId]),
+                selected: node.id === selectedId,
+              },
+            ]
+          : [];
+      }),
+    [flat, layout, statusMap, selectedId],
+  );
+
   // Arrow keys walk the chart: ↑ manager, ↓ first report, ←/→ the neighbor on
   // the same row. Focus follows the selection so the keys keep working.
   const navigate = useCallback(
@@ -509,26 +552,52 @@ function OrgCanvas({
       }
       if (!to) return;
       onSelect(to);
+      // The view follows the selection when it leaves the screen.
+      const p = layout.pos.get(to);
+      if (p) view.reveal({ x: p.x, y: p.y, w: CARD_W, h: CARD_H });
       requestAnimationFrame(() =>
         document
           .querySelector<HTMLElement>(`[data-org-card="${CSS.escape(to)}"]`)
           ?.focus(),
       );
     },
-    [flat, layout, onSelect],
+    [flat, layout, onSelect, view],
   );
 
   // Clicking empty canvas does NOT clear the selection (Terry: the inspector
   // should stick). It closes via its × button, Esc, or leaving the pane.
   return (
-    <div className="min-h-0 flex-1 overflow-auto" data-org-viewport>
+    <section
+      ref={viewportRef}
+      // Focusable (not tabbable) so a click on empty canvas lets F / 0 / + / −
+      // work; the cards stay the tab stops.
+      tabIndex={-1}
+      aria-label="Org chart canvas. Drag empty space to pan; F fits, 0 is 100%, plus and minus zoom."
+      className="org-viewport relative min-h-0 flex-1 overflow-hidden outline-none"
+      data-org-viewport
+    >
+      {zoomSlot &&
+        createPortal(
+          <ZoomControls store={viewStore} api={view} tokens={tokens} />,
+          zoomSlot,
+        )}
+      <Minimap
+        cards={mapCards}
+        cardSize={{ w: CARD_W, h: CARD_H }}
+        content={content}
+        tokens={tokens}
+        store={viewStore}
+        api={view}
+      />
       <div
+        ref={stageRef}
         data-org-stage
-        className="relative"
-        // Centered while it fits; auto margins collapse to 0 once the stage
-        // is wider than the pane, so an overflowing fleet still scrolls from
-        // its left edge.
-        style={{ width: layout.width, height: layout.height, margin: "0 auto" }}
+        className="absolute top-0 left-0"
+        style={{
+          width: layout.width,
+          height: layout.height,
+          transformOrigin: "0 0",
+        }}
       >
         <svg
           aria-hidden="true"
@@ -659,7 +728,7 @@ function OrgCanvas({
           onSelect={onSelect}
         />
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -804,6 +873,7 @@ const MESSAGE_MODES: Array<{ mode: MessageMode; label: string }> = [
 ];
 
 function Toolbar({
+  zoomSlotRef,
   waiting,
   hiddenExited,
   showAllExited,
@@ -813,6 +883,8 @@ function Toolbar({
   onMessageMode,
   tokens,
 }: {
+  /** Where the canvas portals its zoom controls. */
+  zoomSlotRef: (el: HTMLElement | null) => void;
   waiting: Array<{ node: AgentTreeNode; tool?: string }>;
   hiddenExited: number;
   showAllExited: boolean;
@@ -855,6 +927,11 @@ function Toolbar({
         </>
       )}
       <span className="flex-1" />
+      <span
+        ref={zoomSlotRef}
+        data-org-zoom-slot
+        className="flex items-center"
+      />
       <fieldset
         data-org-message-mode
         className="m-0 flex items-center gap-1.5 border-0 p-0"
@@ -1140,6 +1217,8 @@ export function HierarchyPanel({
   // Stable identity: the menu registers onClose on the ADR-065 escape stack
   // keyed by it — a fresh function per render would churn that registration.
   const closeMenu = useCallback(() => setMenu(null), []);
+  // The toolbar slot the canvas portals its zoom controls into.
+  const [zoomSlot, setZoomSlot] = useState<HTMLElement | null>(null);
 
   let body: React.ReactNode;
   if (loading) {
@@ -1179,6 +1258,8 @@ export function HierarchyPanel({
   } else {
     body = (
       <OrgCanvas
+        zoomSlot={zoomSlot}
+        onViewGesture={closeMenu}
         roots={drawn}
         rollups={rollups}
         collapsed={collapsed}
@@ -1207,6 +1288,7 @@ export function HierarchyPanel({
     >
       {!loading && !error && (
         <Toolbar
+          zoomSlotRef={setZoomSlot}
           waiting={waiting}
           hiddenExited={hiddenExited}
           showAllExited={showAllExited}
