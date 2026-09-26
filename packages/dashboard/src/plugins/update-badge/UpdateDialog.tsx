@@ -403,16 +403,23 @@ function NotesScreen({
     <>
       <Header
         step={0}
-        title={`What's new in v${info.latest}`}
-        subtitle={[
-          `You're on v${info.version}`,
-          newestDate && `released ${newestDate}`,
-          releases.length > 1 && `${releases.length} releases`,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
+        title={`Update available: v${info.version} → v${info.latest}`}
+        subtitle="Review what's new, then autonomOS updates itself and reopens. Your agents are checked first."
       />
       <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+        <div
+          className="text-[11px]"
+          style={{ color: page.statusFg }}
+          data-testid="update-notes-meta"
+        >
+          {[
+            `What's new in v${info.latest}`,
+            newestDate && `released ${newestDate}`,
+            releases.length > 1 && `${releases.length} releases since yours`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
         {notes.kind === "loading" && (
           <div
             className="flex items-center gap-2 text-xs"
@@ -545,10 +552,11 @@ function NotesScreen({
           )
         }
       >
-        <Button onClick={onLater}>Later</Button>
-        {/* Never gated on the notes loading — notes are a courtesy. */}
-        <Button kind="primary" onClick={onContinue}>
-          Continue
+        <Button onClick={onLater}>Not now</Button>
+        {/* Never gated on the notes loading — notes are a courtesy. The
+            label names where it goes: the next step of the update. */}
+        <Button kind="primary" onClick={onContinue} data-testid="update-next">
+          Next: check agents →
         </Button>
       </Footer>
     </>

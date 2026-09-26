@@ -216,7 +216,7 @@ export function UpdateBadgeStatusBarItem() {
   const runTo = flow.record?.to ?? known?.latest ?? "…";
   const label = running
     ? `${flow.record?.kind === "rollback" ? "Restoring" : "Updating to"} v${runTo}…`
-    : `New release available (v${info.version} → v${info.latest})`;
+    : `Update available (v${info.version} → v${info.latest})`;
 
   return (
     <>

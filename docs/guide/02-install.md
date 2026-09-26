@@ -64,19 +64,27 @@ Stopping the service does not delete anything. autonomOS records which agents we
 
 ## Updating
 
-The dashboard shows a small badge in the bottom bar when a newer release exists: "New release available (v0.6.1 → v0.7.0)". Nothing updates by itself. When you want it:
+When a newer release exists, the bottom bar shows "Update available (v0.7.0 → v0.8.0)". Nothing updates by itself. When you want it, click **Update**:
+
+1. **What's new** — the release notes for every version since yours.
+2. **Check agents** — which agents are mid-task and what a restart would cost each one. By default autonomOS waits until every agent has been idle for 30 seconds, then updates; you can also update right away.
+3. **Update** — it saves a snapshot of your agents' setup, downloads and verifies the release, restarts, and checks that the new version starts. If it does not, it puts the old version back on its own. The page reloads onto the new version and checks that every agent came back.
+
+Settings → Updates has **Check now** (look for a release right away) and **Restore**, which puts back the previous version together with your agents' setup from before the update. If autonomOS is not running as a service, the dialog shows the terminal command instead.
+
+From a terminal, the same update:
 
 ```bash
 autonomos upgrade
 ```
 
-This downloads the new release, verifies it, swaps it in, restarts the service, and checks that the new version starts. If it does not, it puts the old version back on its own. Your agents, token, and settings are untouched, and agents that were running come back.
-
-If an upgrade works but you want the previous version anyway:
+Your token and settings are untouched, and agents that were running come back. If an upgrade works but you want the previous version anyway:
 
 ```bash
 autonomos rollback
 ```
+
+This restores the previous version and your agents' setup from before the update.
 
 Re-running the one-line installer is also a supported way to upgrade.
 

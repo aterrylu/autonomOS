@@ -122,7 +122,9 @@ async function renderPill() {
 
 async function openToCheck() {
   fireEvent.click(await renderPill());
-  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Next: check agents →" }),
+  );
 }
 
 const saved = { ...updateTiming };
@@ -151,9 +153,7 @@ describe("UpdateBadgeStatusBarItem — the pill", () => {
   it("renders the pill with an Update affordance and never calls anywhere but /api/system", async () => {
     installServer();
     const badge = await renderPill();
-    expect(badge.textContent).toContain(
-      "New release available (v0.6.1 → v0.7.0)",
-    );
+    expect(badge.textContent).toContain("Update available (v0.6.1 → v0.7.0)");
     expect(badge.textContent).toContain("Update");
     // No icon, no GitHub link on the pill itself.
     expect(badge.querySelector("svg")).toBeNull();
@@ -213,7 +213,9 @@ describe("UpdateBadgeStatusBarItem — What's new", () => {
     installServer();
     fireEvent.click(await renderPill());
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("What's new in v0.7.0")).toBeInTheDocument();
+    expect(
+      screen.getByText("Update available: v0.6.1 → v0.7.0"),
+    ).toBeInTheDocument();
     const gh = screen.getByTestId("update-github-link");
     expect(gh.getAttribute("href")).toBe(VERSION.releaseUrl);
     expect(gh.getAttribute("target")).toBe("_blank");
@@ -285,7 +287,9 @@ describe("UpdateBadgeStatusBarItem — What's new", () => {
     expect(fallback.querySelector("a")?.getAttribute("href")).toBe(
       VERSION.releaseUrl,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next: check agents →" }),
+    );
     expect(await screen.findByTestId("update-check-clear")).toBeInTheDocument();
   });
 });
@@ -1052,8 +1056,12 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
     expect(
       await screen.findByText(/A newer release \(v0\.7\.1\) appeared/),
     ).toBeInTheDocument();
-    expect(await screen.findByText("What's new in v0.7.1")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(
+      await screen.findByText("Update available: v0.6.1 → v0.7.1"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next: check agents →" }),
+    );
     fireEvent.click(await screen.findByTestId("update-start"));
     await waitFor(() => expect(bodies).toHaveLength(2));
     expect(bodies[1]).toMatchObject({ expectedVersion: "0.7.1" });
