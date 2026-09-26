@@ -51,7 +51,9 @@ export function fitView(
   );
   return {
     x: (viewport.w - content.w * k) / 2,
-    y: Math.max(pad, (viewport.h - content.h * k) / 2),
+    // Top-anchored: a hierarchy reads down from its root, so a short chart
+    // hangs from the top instead of floating mid-pane.
+    y: pad,
     k,
   };
 }
