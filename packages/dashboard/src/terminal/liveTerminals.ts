@@ -1,8 +1,32 @@
+import { agentsSocket, type TransportHealth } from "../api/agentsSocket";
+import { ApiError, request } from "../api/core";
 import { isReservedChord } from "../shortcuts/registry";
 import { matchTerminalKey } from "../shortcuts/terminalKeymap";
 import { restartingIds, THEMES, useStore } from "../store";
 import { deduplicatedOpen } from "../utils/deduplicatedOpen";
 import { hasPrimaryModifier, isMac } from "../utils/platform";
+import {
+  ACK_GIVE_UP_MS,
+  ACK_LATE_MS,
+  classifyIoProbe,
+  DROPPED_NOTICE_MS,
+  decodeAckFrame,
+  encodeInputFrame,
+  INPUT_ACK_TOKEN,
+  type IoProbe,
+  isCountableInput,
+  isTerminalReply,
+  isUserInput,
+  PANE_OK,
+  type PaneConnection,
+  REPLAY_END_OSC,
+  REPLAY_REPLY_CAP_MS,
+  REPLAY_REPLY_CAP_UNCONFIRMED_MS,
+  SILENT_CHIP_PROVIDERS,
+  TERMINAL_CLIENT_ID,
+  WAITING_MS,
+  WATCHDOG_MS,
+} from "./connectionWatch";
 import { isDegenerate, isPlausibleFit } from "./resize";
 import type {
   IFitAddon,
@@ -30,6 +54,10 @@ import { createXtermBackend } from "./xterm-backend";
 // visibility path always used), so hidden terminals hold no GPU context.
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+/** /io probe back-off after a failure, and how many failures cut the pane
+ *  loose (the server can't vouch for an unanswered key). */
+const PROBE_RETRY_MS = 5_000;
+const MAX_PROBE_FAILURES = 3;
 const MAX_RETRY_DELAY = 10000;
 
 /** Cap on live cached terminals. Each holds a scrollback buffer (10k lines)
@@ -151,6 +179,85 @@ export function _disposeAllTerminals(): void {
   for (const id of [...cache.keys()]) disposeTerminal(id);
 }
 
+// ── Pane connection watch (see connectionWatch.ts) ──────────────────────
+// Two drivers, both module-level so N panes share one timer + one listener:
+// 1. Transport health (the /ws/agents heartbeat). When it goes stale, every
+//    pane's socket rode the same dead path — abandon them all at once (their
+//    late input is fenced server-side) instead of leaving each to discover it
+//    alone, which a half-open socket never does. On recovery, reconnect every
+//    pane that was cut loose.
+// 2. A 1s tick running each attached pane's input watchdog.
+let watchInstalled = false;
+let transportHealth: TransportHealth = "connecting";
+/** Fast enough that "Not reaching server…" lands at ~1s, not ~2s; the loop
+ *  is a few field reads over ≤8 cached panes. */
+const WATCH_TICK_MS = 250;
+/** Socket generations are PAGE-wide, never per instance: the server fences
+ *  by session + page client id, so a re-created pane (LRU eviction, a session
+ *  restarted) starting over at 1 would sit BELOW a stale binding from before
+ *  and have its healthy socket's input fenced. */
+let nextGen = 0;
+/** Learned from the first end-of-replay marker: this server sends one, so a
+ *  replay's reply window can safely wait for it (see REPLAY_REPLY_CAP_MS). */
+let serverSendsReplayMark = false;
+
+function installConnectionWatch(): void {
+  if (watchInstalled) return;
+  watchInstalled = true;
+  transportHealth = agentsSocket.getSnapshot().health;
+  agentsSocket.onHealthChange(applyTransportHealth);
+  setInterval(() => {
+    const now = Date.now();
+    for (const entry of cache.values()) entry.watchdogTick(now);
+  }, WATCH_TICK_MS);
+}
+
+/** Test hook: run one watchdog pass at a chosen clock (the module interval
+ *  is created once per module load and can't follow fake timers). */
+export function _watchdogTickForTesting(now: number): void {
+  for (const entry of cache.values()) entry.watchdogTick(now);
+}
+
+function applyTransportHealth(h: TransportHealth): void {
+  const prev = transportHealth;
+  transportHealth = h;
+  const each = (fn: (e: LiveTerminal) => void) => {
+    // Per-entry isolation: one pane throwing (e.g. `new WebSocket` inside
+    // connect()) must not leave the remaining panes un-cut.
+    for (const entry of [...cache.values()]) {
+      try {
+        fn(entry);
+      } catch (err) {
+        console.warn(
+          `[terminal] session ${entry.sessionId.slice(0, 8)}: transport ${h} handling threw:`,
+          err,
+        );
+      }
+    }
+  };
+  const lost = (x: TransportHealth) =>
+    x === "reconnecting" || x === "disconnected";
+  if (lost(h) && !lost(prev)) {
+    // Only on the transition INTO a lost state. reconnecting → disconnected
+    // is the same outage escalating; a pane that already reopened its own
+    // socket in between must not be cut again (it would replay its whole
+    // scrollback and report keys typed since as "may not have been sent").
+    each((e) => e.transportLost());
+  } else if (h === "connected" && prev !== "connected") {
+    each((e) => e.transportRecovered());
+  }
+}
+
+/** Test hook: forget that this page has seen a replay-end marker. */
+export function _resetReplayMarkForTesting(): void {
+  serverSendsReplayMark = false;
+}
+
+/** Test hook: drive the transport-health listener without a real socket. */
+export function _setTransportHealthForTesting(h: TransportHealth): void {
+  applyTransportHealth(h);
+}
+
 export class LiveTerminal {
   readonly sessionId: string;
   /** xterm renders into this; attach() reparents it into the pane. */
@@ -193,6 +300,47 @@ export class LiveTerminal {
   /** Armed on WebGL (re)creation; consumed by applyFit's settled branch for
    *  a second full-viewport refresh against the SETTLED atlas. */
   private pendingRecreateRefresh = false;
+
+  /** Pane connection chip sink (per mount, like onFollowChange). */
+  private onConnectionChange: ((c: PaneConnection) => void) | null = null;
+  private connection: PaneConnection = PANE_OK;
+  /** This pane's current socket generation (from the page-wide counter). */
+  private gen = 0;
+  /** When an unanswered keystroke was sent; null = disarmed. */
+  private armedAt: number | null = null;
+  /** Whether that keystroke should visibly produce output. Only then can a
+   *  silent agent be blamed; any key can still prove the SOCKET dead. */
+  private armedCountable = false;
+  private probing = false;
+  private probeFailures = 0;
+  private nextProbeAt = 0;
+  /** The dropped-keys notice is waiting for a pane to show it on. */
+  private noticePending = false;
+  /** Terminal replies dropped during the current replay (debug breadcrumb). */
+  private droppedReplies = 0;
+  /** This socket's server advertised acked input (OSC 7777 …input-ack=1). */
+  private ackMode = false;
+  private ackSeq = 0;
+  /** performance.now() at this socket's onopen — the zero of sentAtMs. */
+  private openedAt = 0;
+  /** Acked frames in flight: seq → when sent, and what kind of key. */
+  private readonly pending = new Map<
+    number,
+    { t: number; user: boolean; countable: boolean }
+  >();
+  /** Every counted drop is KNOWN unsent (so the notice can say "weren't"
+   *  instead of "may not have been"). */
+  private droppedExact = true;
+  /** Countable keystrokes sent since the last byte back — they may be
+   *  stranded if this socket is abandoned. */
+  private unconfirmedKeys = 0;
+  /** Countable keystrokes refused (socket not open) or stranded, since the
+   *  pane was last healthy — surfaced so a drop is never silent. */
+  private droppedKeys = 0;
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Until this time, terminal query replies are replay artifacts — drop
+   *  them (see REPLAY_END_OSC). */
+  private replayUntil = 0;
 
   private userScrolledUp = false;
   private programmaticScroll = false;
@@ -265,8 +413,11 @@ export class LiveTerminal {
   /** Constructor tail — split out solely so the rollback catch above can
    *  wrap it without indenting 100 lines. Runs exactly once. */
   private installLifecycle(): void {
+    installConnectionWatch();
     this.terminal.attachCustomKeyEventHandler((event) =>
-      handleKeyEvent(event, this.terminal, this.wsRef),
+      handleKeyEvent(event, this.terminal, this.wsRef, (data) =>
+        this.sendInput(data),
+      ),
     );
     this.terminal.registerLinkProvider(new UrlLinkProvider(this.terminal));
     // ED3 = erase scrollback. Never consumed (xterm's own handling proceeds);
@@ -293,9 +444,25 @@ export class LiveTerminal {
     });
 
     this.terminal.onData((data) => {
-      if (this.wsRef.current?.readyState === WebSocket.OPEN) {
-        this.wsRef.current.send(data);
+      // xterm answering a query it parsed in the REPLAYED scrollback is not
+      // input — sending it would type "1;2c" into the agent's prompt.
+      if (Date.now() < this.replayUntil && isTerminalReply(data)) {
+        this.droppedReplies++;
+        return;
       }
+      this.sendInput(data);
+    });
+    // End of the replay: the server's OSC 7777 marker was just PARSED — every
+    // replayed query has been answered (and dropped) by now, so live replies
+    // from here on are real.
+    this.terminal.parser.registerOscHandler(REPLAY_END_OSC, (data) => {
+      serverSendsReplayMark = true;
+      // Capability negotiation rides on the same marker: only a server that
+      // SAYS it understands binary acked frames ever gets one. Everything
+      // typed before this point went as plain text, the old way.
+      if (data.includes(INPUT_ACK_TOKEN)) this.ackMode = true;
+      this.endReplayWindow();
+      return true; // consumed; nothing to render
     });
 
     this.handleVisibility = () => {
@@ -398,6 +565,7 @@ export class LiveTerminal {
     this.detachedAt = Date.now();
     this.onClipboardCopy = null;
     this.onFollowChange = null;
+    this.onConnectionChange = null;
     if (this.webglAddon) {
       this.webglAddon.dispose();
       this.webglAddon = null;
@@ -418,6 +586,7 @@ export class LiveTerminal {
     if (this.inertiaRaf !== null) cancelAnimationFrame(this.inertiaRaf);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
     if (this.handleVisibility)
       document.removeEventListener("visibilitychange", this.handleVisibility);
     if (this.handleFocus) window.removeEventListener("focus", this.handleFocus);
@@ -452,6 +621,333 @@ export class LiveTerminal {
   bindFollowIndicator(cb: ((followOff: boolean) => void) | null): void {
     this.onFollowChange = cb;
     cb?.(this.userScrolledUp);
+  }
+
+  /** Every byte the user sends goes through here (xterm onData AND the
+   *  mod-key bindings), so no input path can bypass the accounting. */
+  private sendInput(data: string): void {
+    const user = isUserInput(data);
+    if (this.wsRef.current?.readyState === WebSocket.OPEN && this.ackMode) {
+      // Acked path: the server writes it and says so; silence is measured
+      // per keystroke by the tick (see ackTick).
+      const seq = ++this.ackSeq;
+      this.wsRef.current.send(
+        encodeInputFrame(seq, performance.now() - this.openedAt, data),
+      );
+      if (user) {
+        this.pending.set(seq, {
+          t: Date.now(),
+          user: true,
+          countable: isCountableInput(data),
+        });
+      }
+      return;
+    }
+    if (this.wsRef.current?.readyState === WebSocket.OPEN) {
+      this.wsRef.current.send(data);
+      if (user) {
+        this.unconfirmedKeys++;
+        if (this.armedAt === null) {
+          this.armedAt = Date.now();
+          this.armedCountable = isCountableInput(data);
+        } else if (isCountableInput(data)) {
+          this.armedCountable = true;
+        }
+      }
+    } else if (user) {
+      // Input stays live while reconnecting (Terry's call), but a key the
+      // socket can't carry is DROPPED — counted and shown, never buffered for
+      // a late burst. Esc / Ctrl+C count too: an interrupt that didn't land
+      // is the one the user most needs to know about.
+      this.droppedKeys++;
+      if (this.connection.kind === "lost") {
+        this.setConnection(this.lostState());
+      }
+    }
+  }
+
+  private endReplayWindow(): void {
+    this.replayUntil = 0;
+    if (this.droppedReplies > 0) {
+      console.debug(
+        `[terminal] session ${this.sessionId.slice(0, 8)}: dropped ${this.droppedReplies} terminal repl${this.droppedReplies === 1 ? "y" : "ies"} provoked by the scrollback replay`,
+      );
+    }
+    this.droppedReplies = 0;
+  }
+
+  /** Bind (or clear) the mount's pane-connection chip; fires immediately. A
+   *  dropped-keys notice that arrived while no pane showed it starts its
+   *  dismiss timer only now — it must be SEEN, not just emitted. */
+  bindConnectionIndicator(cb: ((c: PaneConnection) => void) | null): void {
+    this.onConnectionChange = cb;
+    cb?.(this.connection);
+    if (cb && this.noticePending) this.startNoticeTimer();
+  }
+
+  private startNoticeTimer(): void {
+    this.noticePending = false;
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => {
+      this.noticeTimer = null;
+      if (this.connection.kind === "ok") this.setConnection(PANE_OK);
+    }, DROPPED_NOTICE_MS);
+  }
+
+  private lostState(): PaneConnection {
+    return {
+      kind: "lost",
+      droppedKeys: this.droppedKeys,
+      exact: this.droppedExact,
+    };
+  }
+
+  /** Move every in-flight keystroke into the dropped count. Acked frames the
+   *  pane gave up on (≥ ACK_GIVE_UP_MS) are KNOWN unwritten — the server
+   *  refuses frames that old; anything younger, or sent the old unacked
+   *  way, only MAY be. */
+  private strandInFlight(now = Date.now()): void {
+    let n = this.unconfirmedKeys;
+    if (this.unconfirmedKeys > 0) this.droppedExact = false;
+    for (const p of this.pending.values()) {
+      if (!p.user) continue;
+      n++;
+      if (now - p.t < ACK_GIVE_UP_MS) this.droppedExact = false;
+    }
+    this.droppedKeys += n;
+    this.unconfirmedKeys = 0;
+    this.pending.clear();
+  }
+
+  private agentNeedsInput(): boolean {
+    // A permission / choice dialog is on screen: a letter may legitimately
+    // print nothing, and the dialog already says the agent is waiting on you.
+    return (
+      agentsSocket.getSnapshot().statuses.get(this.sessionId)?.state.status ===
+      "needs_input"
+    );
+  }
+
+  private providerMeasured(): boolean {
+    const provider = useStore
+      .getState()
+      .sessions.find((x) => x.id === this.sessionId)?.provider;
+    return !!provider && SILENT_CHIP_PROVIDERS.has(provider);
+  }
+
+  private setConnection(c: PaneConnection): void {
+    this.connection = c;
+    this.onConnectionChange?.(c);
+  }
+
+  /** Abandon this pane's socket and reconnect now. Keys already sent on it
+   *  but never answered may be stranded (the server fences them if they
+   *  arrive late), so they're counted with the refused ones. */
+  forceReconnect(): void {
+    if (this.disposed || this.ended) return;
+    this.strandInFlight();
+    this.disarm();
+    this.setConnection(this.lostState());
+    this.retryDelay = 1000;
+    this.connect();
+  }
+
+  /** Transport went stale: this pane's socket shares the dead path. */
+  transportLost(): void {
+    if (this.disposed || this.ended || this.connection.kind === "lost") return;
+    this.forceReconnect();
+  }
+
+  /** Transport recovered: reconnect a pane that was cut loose now, instead
+   *  of waiting out its backoff (or a handshake that hung during the outage). */
+  transportRecovered(): void {
+    if (this.disposed || this.ended) return;
+    if (this.connection.kind === "lost") {
+      this.retryDelay = 1000;
+      this.connect();
+    }
+  }
+
+  /** Input watchdog, driven by the module tick. Only attached panes — a
+   *  hidden pane can't be typed into. Skipped while the transport itself is
+   *  down: the status bar already says so, and a per-pane chip on top would
+   *  just repeat it once per pane. */
+  watchdogTick(now: number): void {
+    if (this.ackMode) {
+      this.ackTick(now);
+      return;
+    }
+    if (
+      this.armedAt === null ||
+      this.probing ||
+      this.disposed ||
+      this.ended ||
+      !this.isAttached() ||
+      transportHealth !== "connected" ||
+      this.connection.kind !== "ok" ||
+      now - this.armedAt < WATCHDOG_MS ||
+      now < this.nextProbeAt
+    ) {
+      return;
+    }
+    void this.probeIo(this.armedAt);
+  }
+
+  /** The acked-input watchdog. Every threshold is 15–30× the worst healthy
+   *  answer measured under load (see connectionWatch.ts). */
+  private ackTick(now: number): void {
+    if (
+      this.disposed ||
+      this.ended ||
+      !this.isAttached() ||
+      transportHealth !== "connected" ||
+      this.connection.kind === "lost"
+    ) {
+      return;
+    }
+    // 1. Is my typing reaching the server?
+    let oldest = Number.POSITIVE_INFINITY;
+    let userKeys = 0;
+    for (const p of this.pending.values()) {
+      if (!p.user) continue;
+      userKeys++;
+      if (p.t < oldest) oldest = p.t;
+    }
+    if (userKeys > 0) {
+      const age = now - oldest;
+      if (age >= ACK_GIVE_UP_MS) {
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: ${userKeys} keystroke(s) unacknowledged for ${age}ms — reconnecting the pane`,
+        );
+        this.forceReconnect();
+        return;
+      }
+      if (age >= ACK_LATE_MS) {
+        if (
+          this.connection.kind !== "unacked" ||
+          this.connection.keys !== userKeys
+        ) {
+          this.setConnection({ kind: "unacked", keys: userKeys });
+        }
+        return;
+      }
+    }
+    if (this.connection.kind === "unacked") this.setConnection(PANE_OK);
+    // 2. The server has it — is the agent answering?
+    if (this.armedAt === null || !this.armedCountable) return;
+    if (this.agentNeedsInput() || !this.providerMeasured()) {
+      if (
+        this.connection.kind === "waiting" ||
+        this.connection.kind === "silent"
+      )
+        this.setConnection(PANE_OK);
+      return;
+    }
+    const age = now - this.armedAt;
+    if (age >= WATCHDOG_MS) {
+      if (this.connection.kind !== "silent") {
+        this.setConnection({ kind: "silent", since: this.armedAt });
+      }
+    } else if (age >= WAITING_MS && this.connection.kind === "ok") {
+      this.setConnection({ kind: "waiting", since: this.armedAt });
+    }
+  }
+
+  /** A server ack: the keystroke is in the agent's PTY. A printing key now
+   *  waits for the agent's echo (the "waiting / not responding" clock). */
+  private onAck(seq: number): void {
+    const p = this.pending.get(seq);
+    if (!p) return;
+    this.pending.delete(seq);
+    if (p.user && p.countable && this.armedAt === null) {
+      this.armedAt = Date.now();
+      this.armedCountable = true;
+    }
+    if (this.connection.kind === "unacked") {
+      let overdue = false;
+      const now = Date.now();
+      for (const q of this.pending.values()) {
+        if (q.user && now - q.t >= ACK_LATE_MS) overdue = true;
+      }
+      if (!overdue) this.setConnection(PANE_OK);
+    }
+  }
+
+  private disarm(): void {
+    this.armedAt = null;
+    this.armedCountable = false;
+    this.probeFailures = 0;
+    this.nextProbeAt = 0;
+  }
+
+  private async probeIo(armedAt: number): Promise<void> {
+    this.probing = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3_000);
+    let io: IoProbe;
+    try {
+      io = await request<IoProbe>(
+        `/api/agents/${encodeURIComponent(this.sessionId)}/io`,
+        { fresh: true, signal: controller.signal },
+      );
+    } catch (err) {
+      if (this.armedAt !== armedAt || this.disposed || this.ended) return;
+      // 404: no live PTY (session ending — its 4010 is on the way) or a
+      // server too old to have /io. Nothing to judge; stand down.
+      if (err instanceof ApiError && err.status === 404) {
+        this.disarm();
+        return;
+      }
+      // Anything else (401, 5xx, timeout) with the transport still "healthy":
+      // the server can't vouch for our unanswered key. Back off, say so, and
+      // after a few tries cut the pane loose — a reconnect is cheap and its
+      // own failure is visible, whereas waiting forever is not.
+      this.probeFailures++;
+      this.nextProbeAt = Date.now() + PROBE_RETRY_MS;
+      if (this.probeFailures === 1) {
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: /io probe failed (${err instanceof ApiError ? (err.status ?? err.code) : String(err)}); retrying`,
+        );
+      }
+      if (this.probeFailures >= MAX_PROBE_FAILURES) {
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: input unanswered and the server can't confirm it after ${this.probeFailures} probes — reconnecting the pane`,
+        );
+        this.forceReconnect();
+      }
+      return;
+    } finally {
+      clearTimeout(timeout);
+      this.probing = false;
+    }
+    // A byte (or a reconnect) landed while we asked — already answered.
+    if (this.armedAt !== armedAt || this.disposed || this.ended) return;
+    this.probeFailures = 0;
+    const verdict = classifyIoProbe(io, Date.now() - armedAt);
+    if (verdict === "socket-dead") {
+      console.warn(
+        `[terminal] session ${this.sessionId.slice(0, 8)}: input unanswered and the server never saw it — reconnecting the pane`,
+      );
+      this.forceReconnect();
+      return;
+    }
+    const provider = useStore
+      .getState()
+      .sessions.find((x) => x.id === this.sessionId)?.provider;
+    if (
+      this.armedCountable &&
+      provider &&
+      SILENT_CHIP_PROVIDERS.has(provider) &&
+      !this.agentNeedsInput()
+    ) {
+      this.setConnection({ kind: "silent", since: armedAt });
+    } else {
+      // The server has the key but it can't prove the agent stuck (an arrow
+      // at a boundary legitimately prints nothing; an unmeasured provider may
+      // go quiet mid-turn). No chip; stop re-probing until the next byte
+      // re-arms us.
+      this.disarm();
+    }
   }
 
   /** One-click recovery for a parked viewport: back to the live tail. Works
@@ -506,7 +1002,27 @@ export class LiveTerminal {
     }
     this.wsRef.current?.close();
 
-    const ws = new WebSocket(`${WS_URL}/ws/terminal/${this.sessionId}`);
+    // client + gen let the server fence input that arrives late on a socket
+    // this pane has already replaced (routes/terminal.ts). Query params, not
+    // a socket message: an unknown message would be typed into the agent by
+    // an older server.
+    this.gen = ++nextGen;
+    // Anything still in flight belonged to the socket being replaced.
+    this.strandInFlight();
+    this.ackMode = false; // re-negotiated per socket, via the replay marker
+    this.ackSeq = 0;
+    // The zero for sentAtMs is taken BEFORE the socket exists, so it always
+    // precedes the server's own open. The server then under-estimates a
+    // frame's age by at most the handshake time. Taken in onopen instead, a
+    // late dispatch (main thread busy with other panes' replays) would make
+    // every frame look older than it is, and past INPUT_MAX_AGE_MS the server
+    // would silently drop every key on a healthy socket.
+    this.openedAt = performance.now();
+    const ws = new WebSocket(
+      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1`,
+    );
+    // Acks arrive as binary frames; ArrayBuffer keeps decoding synchronous.
+    ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
       // Superseded-socket guard: connect() may replace this socket before its
@@ -521,6 +1037,14 @@ export class LiveTerminal {
       // duplication would be permanent and cumulative.
       if (this.everConnected) this.terminal.reset();
       this.everConnected = true;
+      // The full-scrollback replay starts now (first connect too — a page
+      // reload replays exactly the same way).
+      this.droppedReplies = 0;
+      this.replayUntil =
+        Date.now() +
+        (serverSendsReplayMark
+          ? REPLAY_REPLY_CAP_MS
+          : REPLAY_REPLY_CAP_UNCONFIRMED_MS);
       // Follow-state resets ONLY once the socket actually opened (reset +
       // full replay re-pin the bottom). Resetting at connect START would
       // dismiss the pill during a FAILED reconnect attempt while the
@@ -532,6 +1056,25 @@ export class LiveTerminal {
       // frame.
       this.repinAfterWrite = false;
       this.setStatusIfActive(`connected: ${this.sessionId.slice(0, 8)}`);
+      // Healthy again. Keys that couldn't be carried stay visible for a
+      // moment ("N keystrokes may not have been sent") rather than vanishing
+      // with the chip.
+      this.disarm();
+      this.unconfirmedKeys = 0;
+      const dropped = this.droppedKeys;
+      const exact = this.droppedExact;
+      this.droppedKeys = 0;
+      this.droppedExact = true;
+      this.setConnection({ kind: "ok", droppedKeys: dropped, exact });
+      if (this.noticeTimer) {
+        clearTimeout(this.noticeTimer);
+        this.noticeTimer = null;
+      }
+      this.noticePending = false;
+      if (dropped > 0) {
+        if (this.onConnectionChange) this.startNoticeTimer();
+        else this.noticePending = true; // shown on the next attach
+      }
       // The reconnect-path repaint nudge is RETAINED — this is where it was
       // born (#16: "fixes cursor-below-rendering after buffer replay"): the
       // replayed bytes can leave a full-screen TUI's cursor/screen state
@@ -547,6 +1090,23 @@ export class LiveTerminal {
 
     ws.onmessage = (event) => {
       if (this.wsRef.current !== ws || this.disposed) return;
+      // Binary = the control plane (acks). NEVER written to the terminal.
+      if (typeof event.data !== "string") {
+        const seq =
+          event.data instanceof ArrayBuffer ? decodeAckFrame(event.data) : null;
+        if (seq !== null) this.onAck(seq);
+        return;
+      }
+      // Any byte back answers every keystroke so far — including a busy
+      // agent's spinner repaint, which is why a long tool run never trips
+      // the watchdog.
+      this.disarm();
+      this.unconfirmedKeys = 0;
+      if (
+        this.connection.kind === "silent" ||
+        this.connection.kind === "waiting"
+      )
+        this.setConnection(PANE_OK);
       try {
         this.terminal.write(event.data, () => {
           // Same superseded-socket rule as every WS handler: a callback
@@ -612,6 +1172,14 @@ export class LiveTerminal {
         store.fetchSessions();
         return;
       }
+      if (event.code === 4011) {
+        // The server fenced THIS (current) socket as superseded — it should
+        // only ever fence an older generation. Reconnect as for any drop,
+        // but leave a breadcrumb: the generation bookkeeping disagreed.
+        console.warn(
+          `[terminal] session ${this.sessionId.slice(0, 8)}: current socket (gen ${this.gen}) was fenced as superseded by the server`,
+        );
+      }
       this.consecutiveDrops++;
       if (this.consecutiveDrops > 0 && this.consecutiveDrops % 10 === 0) {
         // A detached cached terminal retries invisibly — leave a breadcrumb
@@ -622,6 +1190,11 @@ export class LiveTerminal {
         );
       }
       this.setStatusIfActive("reconnecting...");
+      // Unconditional, even if already "lost": a replacement socket that
+      // carried keys and then closed still stranded them.
+      this.strandInFlight();
+      this.disarm();
+      this.setConnection(this.lostState());
       this.reconnectTimer = setTimeout(() => {
         this.retryDelay = Math.min(this.retryDelay * 2, MAX_RETRY_DELAY);
         this.connect();
@@ -971,6 +1544,9 @@ export function handleKeyEvent(
   event: KeyboardEvent,
   terminal: TerminalInstance,
   wsRef: { current: WebSocket | null },
+  /** The owning LiveTerminal's input path, so mod-key sends are counted
+   *  like typed ones. Absent (tests, legacy callers): direct send. */
+  send?: (data: string) => void,
 ): boolean {
   if (event.type !== "keydown") return true;
 
@@ -988,6 +1564,10 @@ export function handleKeyEvent(
     return true;
 
   const sendToWs = (data: string) => {
+    if (send) {
+      send(data);
+      return;
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(data);
     }

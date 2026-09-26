@@ -111,9 +111,13 @@ export function redactArgForLog(a: string): string {
  * `_registerSyntheticAttachment` so both exercise identical replay behavior.
  */
 function appendToOutputBuffer(
-  managed: Pick<ManagedAttachment, "outputBuffer" | "outputSize">,
+  managed: Pick<
+    ManagedAttachment,
+    "outputBuffer" | "outputSize" | "lastOutputAt"
+  >,
   data: string,
 ): void {
+  managed.lastOutputAt = Date.now();
   managed.outputBuffer.push(data);
   managed.outputSize += data.length;
   if (managed.outputSize <= OUTPUT_BUFFER_LIMIT) return;
@@ -176,6 +180,13 @@ export interface ManagedAttachment {
   pty: IPty;
   outputBuffer: string[];
   outputSize: number;
+  /** Epoch ms of the PTY's last output chunk / the last terminal-socket
+   *  keystroke written to it. Read by `GET /api/agents/:id/io`, which the
+   *  dashboard's per-pane input watchdog uses to tell "my socket is dead"
+   *  (the server never saw my keys, or produced output I never got) from
+   *  "the agent is silent" (it got my keys and printed nothing). */
+  lastOutputAt?: number;
+  lastInputAt?: number;
   /**
    * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
    * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is

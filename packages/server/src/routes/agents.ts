@@ -22,6 +22,7 @@ import {
 } from "../agents/analytics.js";
 import { enrichAgent } from "../agents/enrich.js";
 import {
+  getAttachment,
   isAgentLive,
   killAttachment,
   restartAllAttachments,
@@ -78,6 +79,22 @@ export const agentsRouter = new Hono();
 // Delivery is a PTY injection whose item leaves the queue only on a confirming
 // UserPromptSubmit hook (see handoffDelivery.ts) — so "send" returning ok means
 // the injection STARTED, not that it's been confirmed yet.
+
+/** Terminal I/O recency for the dashboard's per-pane input watchdog: how long
+ *  ago the PTY last received a terminal-socket keystroke and last produced
+ *  output. AGES, not timestamps — the dashboard compares them against its own
+ *  "keystroke sent N ms ago", and ages survive browser/server clock skew.
+ *  `null` = never. 404 when the agent has no live PTY. */
+agentsRouter.get("/:id/io", (c) => {
+  const managed = getAttachment(c.req.param("id") as UUID);
+  if (!managed) return c.json({ error: "not live" }, 404);
+  const now = Date.now();
+  const age = (t: number | undefined) => (t === undefined ? null : now - t);
+  return c.json({
+    inputAgeMs: age(managed.lastInputAt),
+    outputAgeMs: age(managed.lastOutputAt),
+  });
+});
 
 /** Per-agent SELF metadata for the statusline (#297 follow-up). The PTY env
  *  deliberately carries NO server token, so this route authenticates with

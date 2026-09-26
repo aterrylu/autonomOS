@@ -10,9 +10,188 @@ interface PtyBinding {
   /** The PTY instance this socket streams from. A restart reuses the session
    *  id with a NEW PTY, so exit bookkeeping must key on the instance. */
   pty: IPty;
+  /** Protocol-level liveness pinger (see startLivenessPing). */
+  stopPing?: () => void;
+  /** This socket negotiated binary acked input frames. */
+  ack?: boolean;
+  /** performance.now() at onOpen — the zero of a frame's `sentAtMs`. */
+  openedAt: number;
+  /** Present when the client identified itself (see {@link parseFence}). */
+  fence?: { key: string; gen: number; dropped: number };
 }
 
 const bindings = new WeakMap<WSContext, PtyBinding>();
+
+// ── Superseded-socket input fence ──────────────────────────────────────
+// A dashboard that loses its link force-reconnects a pane on a NEW socket.
+// Keystrokes it had already sent on the OLD, half-open socket sit in the
+// network (or the client kernel's retransmit queue) and are delivered when the
+// link recovers — measured on a paused-proxy rig: the abandoned socket's
+// "STRANDED" text reached the agent after recovery, a silent late burst that
+// can double-submit a prompt the user already retyped. The browser can't
+// discard them (close() on a half-open socket just sits in CLOSING).
+//
+// So the client tags each terminal socket with a per-page `client` id and a
+// per-pane monotonically increasing `gen` (URL query — deliberately NOT a
+// message on the socket: an unknown JSON message falls through to pty.write,
+// so a new control message would be typed into the agent on an older server).
+// Once a newer generation from the same client has opened, input arriving on
+// an older one is dropped and that socket is closed. Untagged sockets (older
+// dashboards, scripts) are never fenced.
+const latestGen = new Map<string, { gen: number; open: number }>();
+
+function parseFence(
+  sessionId: string,
+  client: string | undefined,
+  gen: string | undefined,
+): { key: string; gen: number } | undefined {
+  if (!client || !gen || !/^[A-Za-z0-9-]{8,64}$/.test(client)) return undefined;
+  const n = Number(gen);
+  if (!Number.isSafeInteger(n) || n < 0) return undefined;
+  return { key: `${sessionId}\u0000${client}`, gen: n };
+}
+
+// ── Server-side liveness: protocol-level ping ──────────────────────────
+// The input fence (above) only catches late keystrokes that arrive AFTER the
+// replacement socket opened. On a recovering half-open link the OLD socket's
+// queued keys can win that race — the replacement waits on the dashboard's
+// own recovery, a handshake and a replay. So the server declares a silent
+// socket dead ITSELF and destroys it: a later retransmit then hits a closed
+// TCP socket and never reaches the PTY.
+//
+// WebSocket ping/pong control frames, not a message: browsers answer them
+// automatically (on the network thread — throttled background tabs still
+// pong) and they are invisible to the page, so an older dashboard is
+// unaffected. The deadline (4s, checked every 1s → dead at 4–5s) sits at or
+// below the dashboard's 5s stale window, so by the time the dashboard gives up
+// on a socket the server has already killed it.
+export const TERMINAL_PING_MS = 1_000;
+export const TERMINAL_DEAD_AFTER_MS = 4_000;
+
+interface RawWs {
+  ping(): void;
+  terminate(): void;
+  on(event: "pong", cb: () => void): void;
+}
+
+function isRawWs(x: unknown): x is RawWs {
+  const r = x as Partial<RawWs> | null;
+  return (
+    !!r &&
+    typeof r.ping === "function" &&
+    typeof r.terminate === "function" &&
+    typeof r.on === "function"
+  );
+}
+
+function startLivenessPing(
+  raw: unknown,
+  sessionId: string,
+  opts = { pingMs: TERMINAL_PING_MS, deadAfterMs: TERMINAL_DEAD_AFTER_MS },
+): (() => void) | undefined {
+  if (!isRawWs(raw)) return undefined;
+  let lastPong = Date.now();
+  let lastTick = Date.now();
+  raw.on("pong", () => {
+    lastPong = Date.now();
+  });
+  const timer = setInterval(() => {
+    const now = Date.now();
+    // Our own event loop stalled (a paused process, a long sync block): we
+    // weren't pinging, so missing pongs are OUR fault — grant a fresh
+    // deadline instead of killing a healthy socket.
+    if (now - lastTick > opts.pingMs * 2) lastPong = now;
+    lastTick = now;
+    if (now - lastPong > opts.deadAfterMs) {
+      clearInterval(timer);
+      console.warn(
+        `[terminal] session ${sessionId.slice(0, 8)}: no pong for ${now - lastPong}ms — terminating the socket (half-open link)`,
+      );
+      raw.terminate();
+      return;
+    }
+    try {
+      raw.ping();
+    } catch {
+      // socket already closing — close handling cleans up
+    }
+  }, opts.pingMs);
+  return () => clearInterval(timer);
+}
+
+/** Test hook: the same pinger with fast timings. */
+export function _startLivenessPingForTesting(
+  raw: unknown,
+  opts: { pingMs: number; deadAfterMs: number },
+): (() => void) | undefined {
+  return startLivenessPing(raw, "test-session", opts);
+}
+
+/** OSC 7777 — private use; the dashboard registers a handler for it. Keep in
+ *  sync with REPLAY_END_OSC in dashboard/src/terminal/connectionWatch.ts. */
+export const REPLAY_END_MARK = "\x1b]7777;autonomos-replay-end\x07";
+/** The same marker, also advertising input acknowledgement to a client that
+ *  asked for it (?inputAck=1). Only after seeing THIS does the client switch
+ *  its keystrokes to binary acked frames — an older server never sends it, so
+ *  it never receives a frame it would mistake for typed text. */
+export const REPLAY_END_MARK_ACK =
+  "\x1b]7777;autonomos-replay-end;input-ack=1\x07";
+
+// ── Input acknowledgement (binary control plane) ───────────────────────
+// Text frames carry terminal bytes, both ways, as they always have. BINARY
+// frames are the control plane, used only on a socket that negotiated it:
+//   client → server  [0x01][u32 seq][u32 sentAtMs][utf-8 keystrokes]
+//   server → client  [0x02][u32 seq]                          "written"
+// The ack is sent after pty.write() succeeded, so it proves the keystroke
+// reached the agent's PTY — the dashboard's "is my typing arriving?" signal,
+// in about a round trip (measured p99 ≤ 31ms at load avg 47) instead of a
+// heartbeat's stale window. A fenced or expired frame is never acked: it did
+// not reach the agent, and the dashboard counts it as not sent.
+//
+// `sentAtMs` is the client's clock RELATIVE TO ITS OWN onopen, and the server
+// compares it with ms since ITS onOpen — both measured from the same event, so
+// no clock sync is needed (the estimate errs late by ~half a round trip).
+// A frame older than INPUT_MAX_AGE_MS is dropped unwritten: the dashboard gives
+// up on an unacked key at 3s and reports it lost, so writing it later (after a
+// server stall, a slow link) would be exactly the late burst we promise never
+// to deliver. The margin to 3s absorbs the ack's trip back.
+export const INPUT_FRAME = 0x01;
+export const ACK_FRAME = 0x02;
+export const INPUT_MAX_AGE_MS = 2_500;
+
+function asBytes(data: unknown): Uint8Array | null {
+  if (data instanceof Uint8Array) return data; // Buffer included
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (Array.isArray(data) && data.every((d) => d instanceof Uint8Array)) {
+    return Buffer.concat(data as Uint8Array[]); // ws fragmented message
+  }
+  return null;
+}
+
+/** Decode an acked input frame; null when it isn't one. */
+export function decodeInputFrame(
+  bytes: Uint8Array,
+): { seq: number; sentAtMs: number; text: string } | null {
+  if (bytes.length < 9 || bytes[0] !== INPUT_FRAME) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, 9);
+  return {
+    seq: view.getUint32(1),
+    sentAtMs: view.getUint32(5),
+    text: new TextDecoder().decode(bytes.subarray(9)),
+  };
+}
+
+export function encodeAckFrame(seq: number): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(5));
+  out[0] = ACK_FRAME;
+  new DataView(out.buffer).setUint32(1, seq);
+  return out;
+}
+
+/** Test hook — the fence map is module state. */
+export function _resetTerminalFenceForTesting(): void {
+  latestGen.clear();
+}
 
 // ── Frame coalescing (improvement #1, flag-gated) ──────────────────────
 // On `main` the live stream does one `ws.send()` per PTY chunk. Claude Code's
@@ -241,6 +420,13 @@ const MAX_ROWS = 200;
 export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
     const sessionId = c.req.param("sessionId")!;
+    const wantsReplayMark = c.req.query("replayMark") === "1";
+    const wantsAck = c.req.query("inputAck") === "1";
+    const fence = parseFence(
+      sessionId,
+      c.req.query("client"),
+      c.req.query("gen"),
+    );
 
     return {
       onOpen(_event, ws) {
@@ -261,6 +447,21 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
             return;
           }
         }
+        // End-of-replay marker, for clients that asked (?replayMark=1).
+        // Parsing the replayed scrollback makes xterm re-answer every
+        // terminal query in it; the client drops those replies until THIS
+        // sequence is parsed — the exact end of the replay, so live query
+        // replies right after it (a fresh agent's startup capability probes)
+        // still get through. An OSC with an unregistered number: any terminal
+        // that doesn't handle it ignores it silently. Opt-in so an older
+        // dashboard never receives it.
+        if (wantsReplayMark || wantsAck) {
+          try {
+            ws.send(wantsAck ? REPLAY_END_MARK_ACK : REPLAY_END_MARK);
+          } catch {
+            return;
+          }
+        }
 
         const forwarder = makeStreamForwarder(ws, () => {
           // Send failed (slow/half-open client) — detach from the PTY stream.
@@ -277,11 +478,22 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         const disposable = managed.pty.onData(forwarder.onData);
 
         const pty = managed.pty;
+        if (fence) {
+          const e = latestGen.get(fence.key);
+          latestGen.set(fence.key, {
+            gen: Math.max(e?.gen ?? -1, fence.gen),
+            open: (e?.open ?? 0) + 1,
+          });
+        }
         bindings.set(ws, {
           sessionId,
           pty,
           disposable,
           closeStream: forwarder.close,
+          stopPing: startLivenessPing(ws.raw, sessionId),
+          ack: wantsAck,
+          openedAt: performance.now(),
+          ...(fence ? { fence: { ...fence, dropped: 0 } } : {}),
         });
 
         // Track this client for exit notification of THIS PTY instance
@@ -320,10 +532,58 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
         const managed = getSession(binding.sessionId);
         if (!managed) return;
 
-        const msg =
-          typeof event.data === "string"
-            ? event.data
-            : new TextDecoder().decode(event.data as ArrayBuffer);
+        let msg: string;
+        let ackSeq: number | undefined;
+        if (typeof event.data === "string") {
+          msg = event.data;
+        } else {
+          const bytes = asBytes(event.data);
+          const frame = binding.ack && bytes ? decodeInputFrame(bytes) : null;
+          if (binding.ack && !frame) {
+            // A negotiated client sends binary ONLY as acked-input frames, so
+            // anything else on this socket is a malformed/foreign frame —
+            // drop it; writing it would type raw bytes into the agent.
+            console.warn(
+              `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped a malformed binary frame on an acked socket`,
+            );
+            return;
+          }
+          if (frame) {
+            const age = performance.now() - binding.openedAt - frame.sentAtMs;
+            if (age > INPUT_MAX_AGE_MS) {
+              // The dashboard has already given up on this key (or will
+              // before an ack could reach it) — never write it late.
+              console.warn(
+                `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped expired input (${Math.round(age)}ms old, seq ${frame.seq})`,
+              );
+              return;
+            }
+            msg = frame.text;
+            ackSeq = frame.seq;
+          } else {
+            msg = bytes ? new TextDecoder().decode(bytes) : "";
+          }
+        }
+
+        // Fenced: a newer socket from the same client has taken over, so this
+        // is input the client already abandoned. Drop it (never a late
+        // burst) and close the socket; the client's handlers for it are
+        // superseded-guarded and ignore the close.
+        const f = binding.fence;
+        if (f && (latestGen.get(f.key)?.gen ?? -1) > f.gen) {
+          f.dropped += msg.length;
+          if (f.dropped === msg.length) {
+            console.warn(
+              `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped late input on a superseded socket (gen ${f.gen})`,
+            );
+          }
+          try {
+            ws.close(4011, "Superseded by a newer connection");
+          } catch {
+            // already closing
+          }
+          return;
+        }
 
         // Handle resize messages (JSON with type: "resize")
         if (msg.startsWith("{")) {
@@ -359,6 +619,16 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
 
         try {
           managed.pty.write(msg);
+          // After the write: a throw (PTY fd just died) must not make /io
+          // report "the agent received your key".
+          managed.lastInputAt = Date.now();
+          if (ackSeq !== undefined) {
+            try {
+              ws.send(encodeAckFrame(ackSeq));
+            } catch {
+              // socket closing — the client will see the close
+            }
+          }
         } catch (err) {
           console.error(
             `PTY write failed for session ${binding.sessionId}:`,
@@ -384,7 +654,18 @@ function cleanupBinding(ws: WSContext): void {
   if (!binding) return;
   binding.disposable.dispose();
   binding.closeStream?.();
+  binding.stopPing?.();
   bindings.delete(ws);
   // Remove from its PTY's client tracking
   ptyClients.get(binding.pty)?.delete(ws);
+  // A client's fence entry retires only when NONE of its sockets remain bound
+  // (a page reload mints a new client id, so entries would otherwise
+  // accumulate). Retiring when just the newest closes would un-fence an
+  // older half-open socket whose late input is still in flight.
+  const f = binding.fence;
+  const e = f ? latestGen.get(f.key) : undefined;
+  if (f && e) {
+    if (e.open <= 1) latestGen.delete(f.key);
+    else latestGen.set(f.key, { gen: e.gen, open: e.open - 1 });
+  }
 }

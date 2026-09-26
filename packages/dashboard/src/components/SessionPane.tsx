@@ -3,6 +3,7 @@ import { focusTerminal, useTerminal } from "../hooks/useTerminal";
 import { useStore } from "../store";
 import { CopyToast } from "./CopyToast";
 import { HandoffOverlay } from "./HandoffOverlay";
+import { PaneConnectionChip } from "./PaneConnectionChip";
 import { UsageQueueButton } from "./UsageQueueButton";
 
 interface SessionPaneProps {
@@ -19,7 +20,7 @@ export const SessionPane = memo(function SessionPane({
   visible,
 }: SessionPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const { copyToast, followOff, jumpToLatest } = useTerminal(
+  const { copyToast, followOff, jumpToLatest, connection } = useTerminal(
     containerRef,
     sessionId,
   );
@@ -40,6 +41,7 @@ export const SessionPane = memo(function SessionPane({
         style={{ touchAction: "none" }}
       />
       <CopyToast toast={copyToast} />
+      <PaneConnectionChip connection={connection} />
       {followOff && (
         // Viewport is parked in the scrollback (accidental trackpad flick /
         // Shift+PageUp) while output may still be arriving. Rendered whenever

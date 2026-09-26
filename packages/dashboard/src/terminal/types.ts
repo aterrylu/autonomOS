@@ -85,6 +85,11 @@ export interface TerminalInstance {
       id: { final: string; prefix?: string; intermediates?: string },
       handler: (params: (number | number[])[]) => boolean,
     ): IDisposable;
+    /** xterm's OSC hook — used for the server's end-of-replay marker. */
+    registerOscHandler(
+      ident: number,
+      callback: (data: string) => boolean | Promise<boolean>,
+    ): IDisposable;
   };
   registerLinkProvider(provider: ILinkProvider): void;
   loadAddon(addon: ITerminalAddon): void;
