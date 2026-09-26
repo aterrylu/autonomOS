@@ -18,7 +18,7 @@
  */
 
 import { execFile } from "node:child_process";
-import type { AgentAnalytics } from "@autonomos/core";
+import type { AgentActivityBatch, AgentAnalytics } from "@autonomos/core";
 import { gitEnv } from "../sourceUpgrade.js";
 
 const SERVER_STARTED_AT = Date.now();
@@ -195,17 +195,17 @@ async function branchFor(
   return branch;
 }
 
-/** One agent's analytics snapshot. */
-export async function getAgentAnalytics(
-  id: string,
-  opts: { provider?: string; workingDirectory?: string; startedAt?: number },
-  now = Date.now(),
-): Promise<AgentAnalytics> {
-  const s = stats.get(id);
+type Segment = AgentAnalytics["activity"][number];
+
+/**
+ * One agent's activity strip: contiguous status segments over the last 24h,
+ * oldest first. The ONE derivation shared by the inspector (single agent) and
+ * the card strip (batched), so the two can never disagree.
+ */
+export function activityStrip(id: string, now = Date.now()): Segment[] {
+  const t = stats.get(id)?.transitions ?? [];
   const cutoff = now - DAY_MS;
-  // Activity strip: contiguous segments over the last 24h.
-  const activity: AgentAnalytics["activity"] = [];
-  const t = s?.transitions ?? [];
+  const activity: Segment[] = [];
   for (let i = 0; i < t.length; i++) {
     const from = Math.max(t[i].at, cutoff);
     const to = i + 1 < t.length ? t[i + 1].at : now;
@@ -217,6 +217,85 @@ export async function getAgentAnalytics(
     if (last && last.status === t[i].status && last.to === from) last.to = to;
     else activity.push({ from, to, status: t[i].status });
   }
+  return activity;
+}
+
+/** Segments per agent in the batched card strip (a ~180px bar: finer detail
+ *  is sub-pixel). Above it the strip is down-sampled, never truncated. */
+export const CARD_STRIP_MAX_SEGMENTS = 48;
+
+/**
+ * Down-sample a strip to at most `max` segments: split its span into `max`
+ * equal time buckets, give each bucket its dominant status, and merge equal
+ * neighbours. One exception keeps it honest for a glance: a bucket that holds
+ * ANY needs-input time shows needs-input — a short wait on you never vanishes.
+ * O(segments + max); a strip already within `max` is returned unchanged.
+ */
+export function capSegments(segs: Segment[], max: number): Segment[] {
+  if (segs.length <= max) return segs;
+  const start = segs[0].from;
+  const end = segs[segs.length - 1].to;
+  const width = (end - start) / max;
+  const out: Segment[] = [];
+  let j = 0;
+  for (let b = 0; b < max; b++) {
+    const from = start + b * width;
+    const to = b === max - 1 ? end : from + width;
+    const time = new Map<string, number>();
+    while (j < segs.length && segs[j].to <= from) j++;
+    for (let k = j; k < segs.length && segs[k].from < to; k++) {
+      const overlap = Math.min(to, segs[k].to) - Math.max(from, segs[k].from);
+      if (overlap > 0)
+        time.set(segs[k].status, (time.get(segs[k].status) ?? 0) + overlap);
+    }
+    let status = "";
+    let best = -1;
+    for (const [st, ms] of time) {
+      if (ms > best) {
+        best = ms;
+        status = st;
+      }
+    }
+    if (time.has("needs_input")) status = "needs_input";
+    if (!status) continue;
+    const last = out.at(-1);
+    if (last && last.status === status && last.to === from) last.to = to;
+    else out.push({ from, to, status });
+  }
+  return out;
+}
+
+/**
+ * The card strip for many agents in ONE response: each agent's current status
+ * and its (capped) 24h strip. In memory only — no git, no disk — so it's cheap
+ * to call for a whole fleet on every refresh.
+ */
+export function getAgentsActivity(
+  ids: string[],
+  now = Date.now(),
+): AgentActivityBatch {
+  const agents: AgentActivityBatch["agents"] = {};
+  for (const id of ids) {
+    agents[id] = {
+      status: stats.get(id)?.status ?? null,
+      activity: capSegments(activityStrip(id, now), CARD_STRIP_MAX_SEGMENTS),
+    };
+  }
+  return {
+    since: SERVER_STARTED_AT,
+    maxSegments: CARD_STRIP_MAX_SEGMENTS,
+    agents,
+  };
+}
+
+/** One agent's analytics snapshot. */
+export async function getAgentAnalytics(
+  id: string,
+  opts: { provider?: string; workingDirectory?: string; startedAt?: number },
+  now = Date.now(),
+): Promise<AgentAnalytics> {
+  const s = stats.get(id);
+  const activity = activityStrip(id, now);
   const waits = s?.waits ?? { count: 0, totalMs: 0, waitingSince: null };
   return {
     since: SERVER_STARTED_AT,
