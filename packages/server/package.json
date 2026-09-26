@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./run.js": "./src/run.ts",
+    "./authCookie.js": "./src/authCookie.ts",
     "./pid-file.js": "./src/pid-file.ts",
     "./configDir.js": "./src/configDir.ts",
     "./installInfo.js": "./src/installInfo.ts",

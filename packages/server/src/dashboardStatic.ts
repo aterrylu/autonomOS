@@ -74,7 +74,14 @@ export function mountDashboard<E extends Env>(
 
   const serveIndex = (c: Context<E>) => {
     const { html, etag } = currentEntry();
-    c.header("Cache-Control", CACHE_REVALIDATE);
+    // The shell may be requested with a token in the URL (a sign-in link, or a
+    // legacy ?token= one): never store it, never send its URL as a Referer,
+    // never render it inside another site's frame. On EVERY index response,
+    // 304s and the SPA fallback included.
+    c.header("Cache-Control", "no-store");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Content-Security-Policy", "frame-ancestors 'none'");
     c.header("ETag", etag);
     // Weak comparison, as If-None-Match requires: a proxy that re-encodes the
     // response (e.g. nginx gzip) turns our tag into W/"…".

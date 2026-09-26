@@ -5,14 +5,13 @@
 // guess), then prints where to reach it — the dashboard URL and the auth token
 // to paste at its login — and optionally opens a browser at the dashboard root.
 //
-// SECURITY: we deliberately do NOT put the token in the opened/printed URL. The
-// dashboard authenticates by POSTing the token in the request body (the login
-// page) — it never reads `?token=` from the URL — so a `…/auth?token=<token>`
-// link was both leaky (URL → shell scrollback, `ps` process args, browser
-// history) AND non-functional (the frontend ignored it; the user pasted anyway).
-// So we open the dashboard ROOT and surface the token only on stdout (the
-// operator's own terminal — the lowest-severity surface, and the value they
-// paste). See ADR-052's security Update note.
+// SECURITY: the sign-in link carries the token in the URL FRAGMENT
+// (`…/#token=<token>`), which browsers never send to a server, proxy or
+// Referer; the dashboard strips it from the address bar before exchanging it
+// for the session cookie (ADR-117, superseding ADR-052's
+// no-link position). It is printed only here, to the operator's own terminal.
+// `--open` still opens the dashboard ROOT — a token-bearing URL passed to the
+// opener would show in `ps` args to every UID on a shared host.
 //
 // Sources of truth, read AFTER the daemon boots (so they're populated):
 //   - port  → the pid file ($configDir/autonomos.pid), since a default install
@@ -22,6 +21,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { signInLink } from "@autonomos/server/authCookie.js";
 import { getConfigDir } from "@autonomos/server/configDir.js";
 import {
   isPidAlive,
@@ -179,7 +179,9 @@ export async function verifyAndReportInstall(
   console.log("  ✓ autonomOS is running.");
   console.log(`    Dashboard:  ${url}`);
   if (token) {
-    console.log(`    Token:      ${token}   ← paste this at the login screen`);
+    console.log(
+      `    Sign in:    ${signInLink(url, token)}   ← open this link to sign in`,
+    );
   } else {
     console.log("    Token:      (configured via AUTONOMOS_TOKEN)");
   }
@@ -188,8 +190,8 @@ export async function verifyAndReportInstall(
   );
   console.log("");
 
-  // Open the dashboard ROOT only — never the token-bearing URL (see SECURITY
-  // note above). The user pastes the token printed above at the login screen.
+  // Open the dashboard ROOT only — never the token-bearing link (see SECURITY
+  // note above). The user opens the sign-in link printed above.
   if (opts.open) openBrowser(url);
   return true;
 }

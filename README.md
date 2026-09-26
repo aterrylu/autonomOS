@@ -144,9 +144,11 @@ first run (`NO_MIGRATE=1` to skip).
 ### Authentication
 
 Auth is always on — there's no way to disable it. On first start the server generates a random
-token, stores it at `~/.autonomos/token`, and prints it at install time; the dashboard shows a
-login page and every API, WebSocket, and MCP route requires it. Set `AUTONOMOS_TOKEN` to pin
-your own instead of the generated one.
+token, stores it at `~/.autonomos/token`, and prints a sign-in link at install time
+(`http://localhost:3000/#token=…` — the token rides in the URL fragment, which the browser never
+sends to the server, and the dashboard strips it from the address bar before exchanging it for an
+httpOnly session cookie). Every API, WebSocket, and MCP route requires the token. Set
+`AUTONOMOS_TOKEN` to pin your own instead of the generated one.
 
 ## Architecture
 

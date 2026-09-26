@@ -1138,7 +1138,7 @@ async function shoot(
   try {
     await context.addCookies([
       {
-        name: "autonomos_token",
+        name: `autonomos_token_${server.port}`, // per-port session cookie (ADR-117)
         value: server.token,
         url: `http://127.0.0.1:${server.port}`,
       },
@@ -1640,7 +1640,7 @@ async function main(): Promise<void> {
     await captureWeb(server, agents, cast);
     if (KEEP_ALIVE) {
       console.log(
-        `\n--keep: http://127.0.0.1:${server.port}/?token=${server.token}\nCtrl-C to stop.`,
+        `\n--keep: http://127.0.0.1:${server.port}/#token=${encodeURIComponent(server.token)}\nCtrl-C to stop.`,
       );
       await new Promise(() => {});
     }

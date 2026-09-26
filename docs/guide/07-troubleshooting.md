@@ -41,6 +41,14 @@ cat ~/.autonomos/token
 
 Paste the whole line into the login page. It is long; make sure you copied all of it.
 
+## "That sign-in link didn't work"
+
+The login page shows this when you opened a sign-in link whose token the server refused. Usually the link came from another autonomOS instance (a different port or machine), or the token has changed since the link was printed. Paste the current token from `~/.autonomos/token` into the field on the login page. If you were already logged in, a stale link does not log you out; the dashboard just opens.
+
+**"Couldn't reach the server to use the sign-in link"** means the link never got an answer: the server is down, restarting, or unreachable from this browser. Check `autonomos status`, then open the link again.
+
+**"The sign-in link was accepted, but this browser didn't keep the session cookie"** means the browser is refusing cookies for the dashboard's address. Allow cookies for it (or leave private-browsing modes that block them) and open the link again.
+
 ## "Invalid token"
 
 The token you pasted does not match the one the server is using. Copy it again from `~/.autonomos/token`, checking for a missing first or last character. If you or someone else started the server with a token set by hand (an `AUTONOMOS_TOKEN` environment variable), the file is not the live token; ask whoever set it.

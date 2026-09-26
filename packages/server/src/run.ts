@@ -30,6 +30,11 @@ import {
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
 import { resolveAuthToken } from "./auth.js";
+import {
+  authCookieName,
+  LEGACY_AUTH_COOKIE,
+  signInLink,
+} from "./authCookie.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -42,7 +47,7 @@ import {
   removeControlSocket,
   restrictControlSocket,
 } from "./internalSocket.js";
-import { initFileLogging } from "./logger.js";
+import { initFileLogging, writeUnlogged } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
@@ -70,6 +75,7 @@ import { usageQueueRouter } from "./routes/usageQueue.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
 import {
+  getServerPort,
   setAuthToken,
   setInternalSocketPath,
   setServerPort,
@@ -302,16 +308,57 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   setAuthToken(AUTH_TOKEN);
 
   function safeEqual(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    // Compare BYTE lengths: a same-length multibyte string (a junk cookie any
+    // other localhost page can plant) makes timingSafeEqual throw → a 500.
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ab.length !== bb.length) return false;
+    return timingSafeEqual(ab, bb);
   }
 
-  function extractToken(c: Context): string | undefined {
-    const cookie = getCookie(c, "autonomos_token");
-    if (cookie) return cookie;
+  /** This listener's session cookie name (per port, see authCookie.ts). */
+  function currentCookieName(): string {
+    try {
+      return authCookieName(getServerPort());
+    } catch {
+      return LEGACY_AUTH_COOKIE; // before listen() — never a live request
+    }
+  }
+
+  /** Every credential the request carries, in precedence order. ALL are
+   *  tried (the first VALID wins, not the first present): the legacy cookie is
+   *  sent to every localhost port, so a stale one must not shadow a good
+   *  per-port cookie or Bearer header. */
+  function tokenCandidates(
+    c: Context,
+  ): Array<{ token: string; source: "cookie" | "legacy-cookie" | "bearer" }> {
+    const out: Array<{
+      token: string;
+      source: "cookie" | "legacy-cookie" | "bearer";
+    }> = [];
+    const perPort = getCookie(c, currentCookieName());
+    if (perPort) out.push({ token: perPort, source: "cookie" });
+    const legacy = getCookie(c, LEGACY_AUTH_COOKIE);
+    if (legacy && currentCookieName() !== LEGACY_AUTH_COOKIE)
+      out.push({ token: legacy, source: "legacy-cookie" });
     const header = c.req.header("Authorization");
-    if (header?.startsWith("Bearer ")) return header.slice(7);
-    return undefined;
+    if (header?.startsWith("Bearer "))
+      out.push({ token: header.slice(7), source: "bearer" });
+    return out;
+  }
+
+  /** Set this listener's session cookie (login, and the legacy migration). */
+  function setSessionCookie(c: Context, token: string): void {
+    const isHttps =
+      c.req.url.startsWith("https://") ||
+      c.req.header("x-forwarded-proto") === "https";
+    setCookie(c, currentCookieName(), token, {
+      httpOnly: true,
+      sameSite: "Lax",
+      secure: isHttps,
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+    });
   }
 
   const authHandler = async (c: Context) => {
@@ -320,16 +367,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
       return c.json({ error: "Invalid token" }, 401);
     }
-    const isHttps =
-      c.req.url.startsWith("https://") ||
-      c.req.header("x-forwarded-proto") === "https";
-    setCookie(c, "autonomos_token", token, {
-      httpOnly: true,
-      sameSite: "Lax",
-      secure: isHttps,
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365,
-    });
+    setSessionCookie(c, token);
     return c.json({ ok: true });
   };
   // PR C: /api/auth is the real path (the ONE endpoint that used to live
@@ -338,36 +376,68 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // was removed after its one-release window (ADR-084).
   app.post("/api/auth", authHandler);
 
-  const requireAuth: MiddlewareHandler = async (c, next) => {
-    // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
-    // moved to the internal socket, so nothing on the public listener needs to
-    // accept an unauthenticated write any more. The exemption was also wider
-    // than its purpose — it covered the dashboard's `POST /api/hooks/:id/read`
-    // too. Removing it means there is no unauthenticated POST anywhere on the
-    // public surface; the browser already sends the token for /read.
-    if (c.req.method === "GET" && c.req.path === "/api/host") return next();
-    // Agent SELF metadata (statusline, #297 follow-up): the PTY env carries
-    // no server token by design, so this one narrow GET is authenticated by
-    // the PER-AGENT token INSIDE the route (verifyAgentToken 401s there —
-    // deny-by-default is preserved, just enforced at the route).
-    if (
-      c.req.method === "GET" &&
-      /^\/api\/agents\/[A-Za-z0-9-]+\/self$/.test(c.req.path)
-    )
-      return next();
-    // The login endpoint itself — a browser cannot present the cookie it is
-    // asking for. Token verification happens inside the handler.
-    if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
-    const token = extractToken(c) ?? c.req.query("token") ?? undefined;
-    if (token && safeEqual(token, AUTH_TOKEN)) return next();
-    return c.json(
-      {
-        error:
-          "Unauthorized — open the dashboard and paste your token at the login screen",
-      },
-      401,
+  // `?token=` on the PUBLIC listener is deprecated (ADR-117): the
+  // dashboard never sends it, and a query string lands in proxy/tunnel logs
+  // and browser history. One release of a once-per-process warning — never the
+  // value — then removal. The internal socket's /ws/gateway keeps accepting it
+  // (the channel server can't set WebSocket upgrade headers).
+  let warnedPublicQueryToken = false;
+  function warnPublicQueryTokenOnce(path: string): void {
+    if (warnedPublicQueryToken) return;
+    warnedPublicQueryToken = true;
+    console.warn(
+      `[auth] a request on ${path.split("/").slice(0, 3).join("/")} authenticated with ?token= on the public listener — deprecated, removed next release. Use the session cookie or "Authorization: Bearer" (the token is not logged).`,
     );
-  };
+  }
+  const makeRequireAuth =
+    (queryToken: "allowed" | "deprecated"): MiddlewareHandler =>
+    async (c, next) => {
+      // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
+      // moved to the internal socket, so nothing on the public listener needs to
+      // accept an unauthenticated write any more. The exemption was also wider
+      // than its purpose — it covered the dashboard's `POST /api/hooks/:id/read`
+      // too. Removing it means there is no unauthenticated POST anywhere on the
+      // public surface; the browser already sends the token for /read.
+      if (c.req.method === "GET" && c.req.path === "/api/host") return next();
+      // Agent SELF metadata (statusline, #297 follow-up): the PTY env carries
+      // no server token by design, so this one narrow GET is authenticated by
+      // the PER-AGENT token INSIDE the route (verifyAgentToken 401s there —
+      // deny-by-default is preserved, just enforced at the route).
+      if (
+        c.req.method === "GET" &&
+        /^\/api\/agents\/[A-Za-z0-9-]+\/self$/.test(c.req.path)
+      )
+        return next();
+      // The login endpoint itself — a browser cannot present the cookie it is
+      // asking for. Token verification happens inside the handler.
+      if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
+      const candidates = tokenCandidates(c);
+      const match = candidates.find((k) => safeEqual(k.token, AUTH_TOKEN));
+      if (match) {
+        // Signed in on the legacy shared cookie: move this browser onto the
+        // per-port one, so an older instance on the same host rewriting the
+        // shared cookie can no longer log it out here.
+        if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
+        return next();
+      }
+      if (candidates.length === 0) {
+        const fromQuery = c.req.query("token");
+        if (fromQuery && queryToken === "deprecated")
+          warnPublicQueryTokenOnce(c.req.path);
+        if (fromQuery && safeEqual(fromQuery, AUTH_TOKEN)) return next();
+      }
+      return c.json(
+        {
+          error:
+            "Unauthorized — open the dashboard and paste your token at the login screen",
+        },
+        401,
+      );
+    };
+  /** Internal socket (/mcp, /ws/gateway): ?token= stays accepted. */
+  const requireAuth = makeRequireAuth("allowed");
+  /** Public listener: ?token= still works this release, with a warning. */
+  const requireAuthPublic = makeRequireAuth("deprecated");
 
   // DEV/PERF ONLY — perf harness mode (set by perf/run-l2.sh). Mounts
   // /api/perf AND drops auth on the PUBLIC listener so Playwright needn't
@@ -391,7 +461,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   }
   const publicAuth: MiddlewareHandler = perfMode
     ? (_c, next) => next()
-    : requireAuth;
+    : requireAuthPublic;
 
   app.use("/api/*", publicAuth);
   app.use("/ws/*", publicAuth);
@@ -703,10 +773,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         );
       }
 
-      // --print-url: emit the full URL + token in one human-readable line
-      // suitable for copy-paste to connect a browser or client.
+      // --print-url: a sign-in link (token in the #fragment) for the
+      // operator to click. Written to the TERMINAL ONLY — the rotating log
+      // tees stdout, and the token must never land in a log file.
       if (cliArgs.printUrl) {
-        console.log(`URL: ${base}  token: ${AUTH_TOKEN}`);
+        writeUnlogged(`Sign in: ${signInLink(base, AUTH_TOKEN)}\n`);
       }
 
       // ADR-029 mutual exclusion: claim the pid file. This is the

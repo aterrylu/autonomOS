@@ -73,16 +73,16 @@ window.__perf = {
 test("burst render cost through real dashboard", async ({ page, request }) => {
   // Remote runs require an auth token (local NOAUTH runs leave it unset).
   const TOKEN = process.env.PERF_TOKEN;
-  const tq = TOKEN ? `?token=${TOKEN}` : "";
+  const headers = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : undefined;
 
   // Fresh, empty session (clears any replay buffer).
-  const reg = await request.post(`/api/perf/session${tq}`, { data: {} });
+  const reg = await request.post("/api/perf/session", { data: {}, headers });
   expect(reg.ok()).toBeTruthy();
 
   await page.addInitScript(INSTRUMENT);
-  // Authenticate the browser (sets the cookie the WS upgrade carries).
-  if (TOKEN) await page.goto(`/auth?token=${TOKEN}`);
-  await page.goto("/");
+  // Authenticate the browser via the sign-in link (sets the cookie the WS
+  // upgrade carries); the fragment never leaves the browser.
+  await page.goto(TOKEN ? `/#token=${encodeURIComponent(TOKEN)}` : "/");
 
   // Open the synthetic session's terminal by clicking it in the sidebar.
   await page.getByText("perf-burst", { exact: false }).first().click();
@@ -101,11 +101,9 @@ test("burst render cost through real dashboard", async ({ page, request }) => {
   });
   const t0 = Date.now();
   const mb = process.env.PERF_MB;
-  const q = [mb ? `mb=${mb}` : "", TOKEN ? `token=${TOKEN}` : ""]
-    .filter(Boolean)
-    .join("&");
   const emit = await request.post(
-    `/api/perf/emit/${SESSION_ID}${q ? `?${q}` : ""}`,
+    `/api/perf/emit/${SESSION_ID}${mb ? `?mb=${mb}` : ""}`,
+    { headers },
   );
   expect(emit.ok()).toBeTruthy();
   const emitInfo = (await emit.json()) as { chunks: number; bytes: number };

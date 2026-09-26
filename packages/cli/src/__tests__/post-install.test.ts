@@ -73,11 +73,13 @@ describe("verifyAndReportInstall", () => {
     const out = logs.join("\n");
     assert.match(out, /autonomOS is running/);
     assert.ok(out.includes(`http://localhost:${port}`), "shows the bound port");
-    assert.ok(out.includes("secret-tok-123"), "shows the token on stdout");
-    // SECURITY: the token must NOT appear in any URL — no `?token=` anywhere
-    // (it would leak to shell scrollback, `ps` args, and browser history, and
-    // the dashboard ignores the query param anyway). See ADR-052 security note.
-    assert.ok(!out.includes("?token="), "must not put the token in a URL");
+    // The sign-in link carries the token in the FRAGMENT only — never a
+    // `?token=` query, which proxies, server logs and Referer headers see.
+    assert.ok(
+      out.includes(`http://localhost:${port}/#token=secret-tok-123`),
+      "prints a fragment sign-in link",
+    );
+    assert.ok(!out.includes("?token="), "must not put the token in a query");
   });
 
   it("notes the token comes from env when no token file exists", async () => {
