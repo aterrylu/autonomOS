@@ -677,6 +677,18 @@ export function applyProjectsSnapshot(projects: ProjectInfo[]): void {
   useStore.setState({ projects });
 }
 
+/** The reason to SHOW a person: the server's own message, or that it couldn't
+ *  be reached. (apiErrorLabel below is the terse form for console lines.) */
+function actionErrorReason(err: unknown): string {
+  if (err instanceof ApiError && err.unreachable)
+    return "couldn't reach the autonomOS server";
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** How long an action toast stays up. */
+export const ACTION_TOAST_MS = 4_000;
+let actionToastTimer: ReturnType<typeof setTimeout> | undefined;
+
 /** "network error" for an unreachable server, else "HTTP <status>" — the shape
  *  the pre-client console lines used, kept so log greps still match. */
 function apiErrorLabel(err: unknown): string {
@@ -802,13 +814,16 @@ interface AppState {
     claudeSessionId: string,
     cwd: string,
     name?: string,
-    opts?: { isAutonomosAgent?: boolean },
+    opts?: { isAutonomosAgent?: boolean; provider?: string },
   ) => Promise<void>;
   killSession: (id: string) => Promise<void>;
-  /** Restart a running agent: kill the PTY, then re-attach from its record.
-   *  Composed from the two existing endpoints (there is no per-agent restart
-   *  route — only fleet-wide restart-all). */
+  /** Restart an agent server-side (POST /:id/restart) and SAY how it went —
+   *  "Restarted X" or "Restart failed: <reason>" in the action toast. */
   restartSession: (id: string) => Promise<void>;
+  /** Brief feedback for a user action (Restarted X / Restart failed: why) —
+   *  the ONLY place such an outcome is shown; never persisted. */
+  actionToast: { id: number; ok: boolean; text: string } | null;
+  showActionToast: (text: string, ok: boolean) => void;
   /** Rename an agent (record name), then restart so the resume argv carries the
    *  new `--name`. Rethrows a rename failure (namesake 409 / stale version)
    *  BEFORE anything is torn down, so the caller can surface it. */
@@ -1106,6 +1121,20 @@ export const useStore = create<AppState>()(
             return;
           }
 
+          // A Codex/Gemini session started OUTSIDE autonomOS: adopting those
+          // isn't supported yet (the server answers 422) — say so plainly.
+          if (
+            !opts?.isAutonomosAgent &&
+            opts?.provider &&
+            opts.provider !== "claude-code"
+          ) {
+            get().showActionToast(
+              "Resume isn't supported yet for Codex or Gemini sessions started outside autonomOS.",
+              false,
+            );
+            return;
+          }
+
           // For exited autonomOS agents, use the dedicated resume endpoint
           // which re-resolves the template and restores full config.
           if (opts?.isAutonomosAgent) {
@@ -1115,9 +1144,11 @@ export const useStore = create<AppState>()(
             } catch (err) {
               // ApiError.message is the server's own `error` envelope field
               // when it sent one, so the surfaced reason is unchanged.
-              const detail = err instanceof Error ? err.message : String(err);
+              const detail = actionErrorReason(err);
               console.error("Failed to resume autonomOS session:", detail);
               set({ status: `resume failed: ${detail}` });
+              // `status` is only read as a busy flag — the toast is what shows.
+              get().showActionToast(`Resume failed: ${detail}`, false);
               return;
             }
             await get().fetchSessions();
@@ -1218,72 +1249,56 @@ export const useStore = create<AppState>()(
           }
           await get().fetchSessions();
         },
+        actionToast: null,
+        showActionToast: (text, ok) => {
+          clearTimeout(actionToastTimer);
+          set({ actionToast: { id: Date.now(), ok, text } });
+          actionToastTimer = setTimeout(
+            () => set({ actionToast: null }),
+            ACTION_TOAST_MS,
+          );
+        },
         restartSession: async (id) => {
-          // No per-agent restart endpoint exists (only restart-all), so compose
-          // kill → attach. killAttachment marks the record exited synchronously
-          // before responding, so attach won't hit the "already running" guard.
-          // Handle the two legs separately: a kill that doesn't land (409 — the
-          // agent was already dead) is fine, so proceed to attach anyway; only a
-          // failed ATTACH is a real problem (it leaves the agent stopped). No
-          // client toast channel exists yet, so a failed attach is logged loudly
-          // and the agent shows as stopped (resumable) — surfacing it in-UI is a
-          // follow-up.
+          // ONE server call (POST /:id/restart), which stops the agent, WAITS for
+          // its process (and Codex daemon) to exit, then respawns it in the same
+          // conversation. The old client-side kill → attach could respawn while
+          // the old process still ran, and every failure of it was console-only:
+          // Restart "literally did nothing". Now the outcome is always shown.
           //
           // Guard the pane against snapshot-driven teardown for the whole flow
-          // (and a beat past it): between the kill and the attach the record is
-          // `exited`, and the WS 4010 handler, applyAgentsSnapshot's fallback, and
-          // DockviewLayout's pruneDead would each tear the pane down on a snapshot
-          // that catches it there — including a poll already in flight that lands
-          // late, after the re-open below. See restartingIds / RESTART_PANE_GUARD_MS.
+          // (and a beat past it): while the old PTY exits its WS closes (4010),
+          // and a snapshot landing then could tear the pane down — including a
+          // poll already in flight that lands late, after the re-open below.
+          // See restartingIds / RESTART_PANE_GUARD_MS.
+          const all = [...get().sessions, ...get().exitedSessions];
+          const name = all.find((s) => s.id === id)?.name ?? "the agent";
           restartingIds.add(id);
           try {
             try {
-              await agentsApi.kill(id);
+              await agentsApi.restart(id);
             } catch (err) {
-              console.warn(
-                `[autonomOS] restartSession: kill of ${id} did not land, continuing to attach:`,
-                apiErrorLabel(err),
-              );
-            }
-            let attached = false;
-            try {
-              await agentsApi.attach(id);
-              attached = true;
-            } catch (err) {
+              const reason = actionErrorReason(err);
               console.error(
-                `[autonomOS] restartSession: attach of ${id} FAILED — agent left stopped:`,
-                apiErrorLabel(err),
+                `[autonomOS] restartSession: restart of ${id} failed:`,
+                reason,
               );
+              get().showActionToast(
+                `Restart of ${name} failed: ${reason}`,
+                false,
+              );
+              restartingIds.delete(id);
+              await get().fetchSessions();
+              return;
             }
             await get().fetchSessions();
-            // Re-open the pane. The kill dropped this id from `sessions` and
-            // retargeted the active pane to a live sibling (pickActiveFallback),
-            // so without this, Restart closes the terminal you were watching and
-            // jumps you to another agent while the restarted one runs with no pane.
-            // Only when the attach actually landed (else there is nothing to show).
-            if (attached) {
-              get().switchPane({ type: "session", id });
-              // Deterministically reconnect the pane's terminal to the NEW PTY.
-              // The kill closed the old socket (4010) → the live terminal is
-              // marked `ended` + uncached but stays glued to the pane showing
-              // final output; switchPane above is a NO-OP when the pane was
-              // already focused (the restart-while-focused case Terry hit), so
-              // nothing would remount and the dead terminal would linger. Bumping
-              // the reload nonce re-runs useTerminal's attach effect, which
-              // disposes the ended terminal and acquires a fresh one bound to the
-              // restarted PTY — regardless of whether activePane changed.
-              get().reloadTerminal(id);
-            } else {
-              // Attach genuinely failed — the agent IS stopped, so let the next
-              // snapshot retarget the pane normally. Drop the guard now rather
-              // than pinning a dead pane for the full drain window.
-              restartingIds.delete(id);
-            }
+            get().showActionToast(`Restarted ${name}`, true);
+            // Re-open the pane and reconnect its terminal to the NEW PTY: the old
+            // socket closed (4010), so the live terminal is `ended`; switchPane is
+            // a no-op when the pane was already focused, so bump the reload nonce
+            // to re-run useTerminal's attach against the restarted process.
+            get().switchPane({ type: "session", id });
+            get().reloadTerminal(id);
           } finally {
-            // Hold the guard a beat past the flow so a poll response that was in
-            // flight during the transient-exited window can't land late and
-            // retarget the pane after the re-open. Cleared early above on attach
-            // failure; a redundant delete here is harmless.
             setTimeout(() => restartingIds.delete(id), RESTART_PANE_GUARD_MS);
           }
         },

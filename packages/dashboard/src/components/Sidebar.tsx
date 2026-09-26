@@ -2458,6 +2458,7 @@ export const ProjectItem = React.memo(function ProjectItem({
               if (isBusy) return;
               resumeSession(s.sessionId, project.path, s.summary, {
                 isAutonomosAgent: s.isAutonomosAgent,
+                provider: s.provider,
               }).catch(() => {});
             };
 
