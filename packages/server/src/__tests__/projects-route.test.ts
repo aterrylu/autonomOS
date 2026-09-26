@@ -391,6 +391,79 @@ describe("GET /api/projects — managed agents of EVERY runtime (Codex/Gemini)",
     );
   });
 
+  it("matching is STABLE across polls even when the scanner hands back the same object (a cache)", async () => {
+    const thread = `thread-${randomUUID()}`;
+    const id = mk("codex", { thread });
+    const cached = {
+      cwd: "/private/tmp/elsewhere",
+      session: {
+        sessionId: thread,
+        provider: "codex",
+        summary: "audit",
+        lastModified: 5,
+      },
+    };
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listGeminiSessions: async () => [],
+      listCodexSessions: async () => [cached],
+    });
+    for (const poll of [1, 2, 3]) {
+      const r = rows(await get(createApp())).find((s) => s.sessionId === id);
+      assert.ok(r, `poll ${poll}: the managed row must still be matched`);
+      assert.equal(
+        r.path,
+        `${HOME}/workspace/agents`,
+        `poll ${poll}: grouped under the agent's directory`,
+      );
+    }
+  });
+
+  it("a scanned realpath cwd joins the project the user knows by its raw path (/tmp vs /private/tmp)", async (t) => {
+    const { mkdtempSync, realpathSync, rmSync, symlinkSync } = await import(
+      "node:fs"
+    );
+    const real = mkdtempSync(join(tmpdir(), "aos-alias-real-"));
+    const link = join(tmpdir(), `aos-alias-link-${randomUUID()}`);
+    try {
+      symlinkSync(real, link);
+    } catch {
+      return t.skip("no symlinks here");
+    }
+    try {
+      _setDepsForTesting({
+        listSessions: async () =>
+          fakeSessions([{ sessionId: "cc-1", cwd: link }]),
+        listGeminiSessions: async () => [],
+        listCodexSessions: async () => [
+          {
+            cwd: realpathSync(real),
+            session: {
+              sessionId: "cx-1",
+              provider: "codex",
+              summary: "c",
+              lastModified: 5,
+            },
+          },
+        ],
+      });
+      const ps = await get(createApp());
+      const p = ps.find((x) => x.path === link);
+      assert.ok(p, "the raw path stays the project's path");
+      assert.deepEqual(p.sessions.map((x) => x.sessionId).sort(), [
+        "cc-1",
+        "cx-1",
+      ]);
+      assert.ok(
+        !ps.some((x) => x.path === realpathSync(real)),
+        "no second group under the realpath",
+      );
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+
   it("an exited Gemini agent with a saved session is matched by providerSessionId", async () => {
     const id = mk("gemini-cli");
     _setDepsForTesting({
