@@ -22,6 +22,7 @@ import {
   type WorkdirTrust,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
+import { withPtyInputSource } from "../ptyInputLog.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
 import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
@@ -668,7 +669,7 @@ export function attachStartupWatcherCore(
   function writeKey(key: string): boolean {
     if (ptyDead) return false;
     try {
-      pty.write(key);
+      withPtyInputSource("auto-trust", () => pty.write(key));
       return true;
     } catch (err) {
       ptyDead = true;

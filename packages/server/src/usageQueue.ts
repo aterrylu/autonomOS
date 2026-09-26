@@ -51,6 +51,7 @@ import type {
   CodexUsageData,
   CodexUsageWindow,
 } from "./plugins/codex-usage/types.js";
+import { withPtyInputSource } from "./ptyInputLog.js";
 import { pushSystemNotification } from "./routes/hooks.js";
 
 /** Utilization% (0–100) at/above which a window counts as blocking. */
@@ -491,7 +492,7 @@ export function usageQueue(): UsageQueue {
       sendSubmit: (sessionId) => {
         const pty = getAttachment(sessionId as UUID)?.pty;
         if (!pty) return false;
-        pty.write(SUBMIT_KEY);
+        withPtyInputSource("usage-queue", () => pty.write(SUBMIT_KEY));
         return true;
       },
       notify: (sessionId, message) =>

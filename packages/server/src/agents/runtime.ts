@@ -32,6 +32,7 @@ import {
   startCodexStatusWatch,
 } from "../gateway/codexControl.js";
 import { getProvider } from "../providers/index.js";
+import { instrumentPtyInput, withPtyInputSource } from "../ptyInputLog.js";
 import {
   clearAgentState,
   clearNotifications,
@@ -1331,6 +1332,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     throw err;
   }
 
+  // Opt-in input forensics (AUTONOMOS_PTY_INPUT_LOG): wrap write() BEFORE any
+  // watcher or route can reach this PTY, so every byte is seen. No-op when off.
+  instrumentPtyInput(pty, {
+    sessionId: resolved.sessionId,
+    label: resolved.name ?? resolved.sessionId.slice(0, 8),
+  });
+
   // Startup screens the provider wants surfaced (e.g. Gemini's folder-trust
   // dialog) — independent of the Auto-Trust setting, because a dialog shows
   // up exactly when it's off. Observability only; nothing is typed.
@@ -1502,7 +1510,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           // (exited or replaced) — never paste into the wrong process.
           if (live.get(persisted.id)?.pty !== pty) return false;
           try {
-            pty.write(data);
+            withPtyInputSource("prompt-delivery", () => pty.write(data));
             return true;
           } catch (err) {
             // A throw on a still-canonical PTY is anomalous (vs the expected
