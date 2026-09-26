@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { agentsApi } from "../../api/agents";
 import { agentsSocket, type RoutedMessage } from "../../api/agentsSocket";
 import { ProviderAgentIcon } from "../ui/provider-icon";
-import { CARD_H, CARD_W, elbowPath, type OrgLayout } from "./layout";
+import { CARD_H, CARD_W, edgePath, type OrgLayout } from "./layout";
 import type { OrgChartTokens } from "./theme";
 
 /**
@@ -318,9 +318,10 @@ export function MessageLayer({
       let d: string;
       let reverse = false;
       let arc = false;
-      if (fromAnchor && mgr(anchor) === fromAnchor) d = elbowPath(a, b);
+      if (fromAnchor && mgr(anchor) === fromAnchor)
+        d = edgePath(live.current.layout, fromAnchor, anchor);
       else if (fromAnchor && mgr(fromAnchor) === anchor) {
-        d = elbowPath(b, a);
+        d = edgePath(live.current.layout, anchor, fromAnchor);
         reverse = true;
       } else {
         const x1 = a.x + CARD_W / 2;
@@ -433,7 +434,7 @@ export function MessageLayer({
           return (
             <path
               key={`${edge}-${at}`}
-              d={elbowPath(a, b)}
+              d={edgePath(layout, from, to)}
               fill="none"
               stroke={tokens.status.active}
               strokeWidth={2}

@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   CARD_H,
   CARD_W,
+  edgePath,
   elbowPath,
   H_GAP,
   type LayoutNode,
   layoutOrg,
   PAD,
+  STACK_GAP,
+  STACK_INDENT,
   V_GAP,
 } from "./layout";
 
@@ -22,23 +25,69 @@ describe("layoutOrg", () => {
     const b = L.pos.get("B");
     expect(a?.y).toBe(PAD);
     expect(b?.y).toBe(PAD); // same row
-    expect((b?.x ?? 0) - (a?.x ?? 0)).toBe(CARD_W + H_GAP * 2);
+    // B starts after all of A's team, with the double team gap.
+    expect(b?.x ?? 0).toBeGreaterThanOrEqual((a?.x ?? 0) + CARD_W + H_GAP * 2);
   });
 
-  it("centers a manager over its reports and puts reports one level down", () => {
-    const L = layoutOrg([n("M", n("r1"), n("r2"))]);
-    const m = L.pos.get("M");
+  it("STACKS a lead's leaf reports in a column under it (Terry's density pick C)", () => {
+    const L = layoutOrg([n("M", n("r1"), n("r2"), n("r3"))]);
     const r1 = L.pos.get("r1");
     const r2 = L.pos.get("r2");
+    const r3 = L.pos.get("r3");
     expect(r1?.y).toBe(PAD + CARD_H + V_GAP);
-    expect(r2?.x).toBe((r1?.x ?? 0) + CARD_W + H_GAP);
-    // Manager's center == midpoint of the two reports' centers.
-    const mid = ((r1?.x ?? 0) + (r2?.x ?? 0)) / 2;
-    expect(m?.x).toBe(mid);
+    expect(r2?.y).toBe((r1?.y ?? 0) + CARD_H + STACK_GAP);
+    expect(r3?.y).toBe((r2?.y ?? 0) + CARD_H + STACK_GAP);
+    expect(new Set([r1?.x, r2?.x, r3?.x]).size).toBe(1); // one column
+    expect(L.stacked.get("r2")?.column).toEqual(["r1", "r2", "r3"]);
+    // The spine sits in the indent, left of the cards.
+    const spine = L.stacked.get("r1")?.spineX ?? 0;
+    expect(spine).toBeLessThan(r1?.x ?? 0);
+    expect(spine).toBeGreaterThan((r1?.x ?? 0) - STACK_INDENT);
     expect(L.edges).toEqual([
       { from: "M", to: "r1" },
       { from: "M", to: "r2" },
+      { from: "M", to: "r3" },
     ]);
+  });
+
+  it("width grows with TEAMS, not agents: 12 reports stack into one column", () => {
+    const wide = layoutOrg([
+      n("M", ...Array.from({ length: 12 }, (_, i) => n(`r${i}`))),
+    ]);
+    expect(wide.width).toBe(PAD * 2 + STACK_INDENT + CARD_W);
+  });
+
+  it("reports that lead teams stay SIDE BY SIDE, right of the stacked column; the manager centers over the row", () => {
+    const L = layoutOrg([
+      n("M", n("leaf1"), n("Sub", n("s1")), n("leaf2"), n("Sub2", n("t1"))),
+    ]);
+    const leaf1 = L.pos.get("leaf1");
+    const sub = L.pos.get("Sub");
+    const sub2 = L.pos.get("Sub2");
+    const row = PAD + CARD_H + V_GAP;
+    expect([leaf1?.y, sub?.y, sub2?.y]).toEqual([row, row, row]);
+    expect(L.stacked.has("Sub")).toBe(false);
+    expect(L.stacked.get("leaf2")?.column).toEqual(["leaf1", "leaf2"]);
+    expect(sub?.x ?? 0).toBeGreaterThan((leaf1?.x ?? 0) + CARD_W);
+    expect(sub2?.x ?? 0).toBeGreaterThan((sub?.x ?? 0) + CARD_W);
+    // M is centered over its whole team (the row's subtree extents), which
+    // here is the whole chart between the paddings.
+    expect((L.pos.get("M")?.x ?? 0) + CARD_W / 2).toBeCloseTo(L.width / 2, 6);
+  });
+
+  it("a FOLDED lead (a team with no drawn children) never stacks — its chips need headroom", () => {
+    const L = layoutOrg([n("M", n("leaf"), n("Folded"))], {
+      isTeam: (x) => x.id === "Folded",
+    });
+    expect(L.stacked.has("leaf")).toBe(true);
+    expect(L.stacked.has("Folded")).toBe(false);
+    expect(L.pos.get("Folded")?.y).toBe(L.pos.get("leaf")?.y);
+  });
+
+  it("the chart is as tall as its tallest team (a stacked column included)", () => {
+    const L = layoutOrg([n("M", n("a"), n("b"), n("c"))]);
+    const cBottom = (L.pos.get("c")?.y ?? 0) + CARD_H;
+    expect(L.height).toBe(cBottom + PAD);
   });
 
   it("puts reportless roots on the Unassigned shelf under the teams", () => {
@@ -103,5 +152,30 @@ describe("elbowPath", () => {
     expect(p.startsWith(`M${CARD_W / 2},${CARD_H}`)).toBe(true);
     expect(p.endsWith(`V200`)).toBe(true);
     expect(p).toContain("Q");
+  });
+});
+
+describe("edgePath", () => {
+  it("a stacked report hangs off the spine and enters its card's LEFT edge at mid-height", () => {
+    const L = layoutOrg([n("M", n("r1"), n("r2"))]);
+    const r2 = L.pos.get("r2");
+    const d = edgePath(L, "M", "r2");
+    // Ends at the card's left edge, vertically centered.
+    expect(d.endsWith(`H${r2?.x}`)).toBe(true);
+    const spine = L.stacked.get("r2")?.spineX;
+    expect(d).toContain(`Q${spine},${(r2?.y ?? 0) + CARD_H / 2}`);
+  });
+
+  it("a side-by-side report keeps the elbow", () => {
+    const L = layoutOrg([n("M", n("Sub", n("s1")))]);
+    const m = L.pos.get("M");
+    const sub = L.pos.get("Sub");
+    expect(m && sub && edgePath(L, "M", "Sub")).toBe(
+      m && sub && elbowPath(m, sub),
+    );
+  });
+
+  it("unknown ids draw nothing", () => {
+    expect(edgePath(layoutOrg([n("A")]), "A", "ghost")).toBe("");
   });
 });
