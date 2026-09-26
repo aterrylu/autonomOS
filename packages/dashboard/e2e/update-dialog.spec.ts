@@ -337,3 +337,22 @@ test("Daylight: note links and not-started stage hints clear 4.5:1 too", async (
   );
   expect(hint, "stage hint").toBeGreaterThanOrEqual(4.5);
 });
+
+test("Midnight: the dialog's muted text clears 4.5:1", async ({ page }) => {
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      "autonomos",
+      JSON.stringify({ state: { theme: "midnight" }, version: 0 }),
+    ),
+  );
+  await mockUpdate(page);
+  await openDialog(page);
+  for (const sel of [
+    '[data-testid="update-subtitle"]',
+    '[data-testid="update-safety"]',
+    '[data-testid="breaking-callout"] .text-xs:last-child',
+  ]) {
+    const ratio = await contrastOf(page, sel);
+    expect(ratio, sel).toBeGreaterThanOrEqual(4.5);
+  }
+});
