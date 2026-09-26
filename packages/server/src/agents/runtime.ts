@@ -550,8 +550,9 @@ export class SpawnError extends Error {
     | "INVALID_WORKING_DIRECTORY"
     | "PROVIDER_MISMATCH"
     | "SERVER_STOPPING"
-    | "RESTART_IN_PROGRESS";
-  readonly status: 400 | 409 | 422 | 503;
+    | "RESTART_IN_PROGRESS"
+    | "AGENT_NOT_FOUND";
+  readonly status: 400 | 404 | 409 | 422 | 503;
   constructor(
     code: SpawnError["code"],
     status: SpawnError["status"],
@@ -1898,6 +1899,96 @@ async function respawnAgent(a: Agent): Promise<void> {
   });
 }
 
+/** Agents with a single-agent restart in flight (see restartAgent). */
+const restartingAgents = new Set<UUID>();
+
+/**
+ * Restart ONE agent: stop its process (and sidecar daemon), WAIT for both to
+ * exit, then respawn it from its own record — the same resume path restart-all
+ * and boot use, so a Codex agent comes back in its thread and a Claude Code
+ * agent in its session.
+ *
+ * Server-side on purpose. The dashboard used to compose kill → attach, but
+ * killAttachment only SIGNALS the old process, so the attach could respawn
+ * while it still ran: two Codex daemons appending to one thread, or a
+ * `--resume` of a JSONL the old CLI was still writing. And every failure of
+ * that two-call dance was console-only in the UI — Restart "did nothing".
+ * Here each failure is a typed status the caller can show, and a respawn that
+ * fails leaves the agent visibly stopped (crashed), never a "running" zombie.
+ */
+export async function restartAgent(agentId: UUID): Promise<Agent> {
+  assertControlPlaneReady();
+  if (serverStopping) throw serverStoppingError();
+  if (restartInFlight) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      "A restart of all agents is in progress — try again when it finishes.",
+    );
+  }
+  const record = getAgent(agentId);
+  if (!record) {
+    throw new SpawnError("AGENT_NOT_FOUND", 404, `Agent ${agentId} not found`);
+  }
+  if (restartingAgents.has(agentId)) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      `${record.name} is already restarting.`,
+    );
+  }
+  restartingAgents.add(agentId);
+  try {
+    const managed = live.get(agentId);
+    if (managed) {
+      cancelPromptTracking(agentId);
+      cancelChannelServerCheck(agentId);
+      disposeCodexControl(agentId);
+      // Out of `live` BEFORE the exit fires, so the old PTY's onExit takes the
+      // stale-attachment return and doesn't mark the record exited mid-restart
+      // (the restart-all pattern).
+      live.delete(agentId);
+      const exits = [stopAgentPty(agentId, managed.pty)];
+      if (managed.sidecar) exits.push(managed.sidecar.dispose());
+      if (!(await awaitSidecarExits(exits))) {
+        console.warn(
+          `[runtime] restart ${record.name} (${agentId.slice(0, 8)}): old process still alive after SIGKILL — respawning anyway`,
+        );
+      }
+    }
+    if (serverStopping) throw serverStoppingError();
+    const current = getAgent(agentId);
+    if (!current) {
+      throw new SpawnError(
+        "AGENT_NOT_FOUND",
+        404,
+        `${record.name} was deleted while restarting`,
+      );
+    }
+    try {
+      await respawnAgent(current);
+    } catch (err) {
+      // Same zombie guard as restart-all: the old onExit didn't mark it exited.
+      const updated = markCrashedUnlessLive(agentId, "restart");
+      if (updated) {
+        emitAgentDelta({
+          type: "agent.exited",
+          id: agentId,
+          exitReason: "crashed",
+          version: updated.version,
+        });
+      }
+      throw err;
+    }
+    console.info(
+      `[runtime] restarted ${record.name} (${agentId.slice(0, 8)}) [${record.provider}]`,
+    );
+    return getAgent(agentId) ?? current;
+  } finally {
+    restartingAgents.delete(agentId);
+  }
+}
+
 /** How long a resumed PTY must stay alive before boot logs it as resumed. */
 const RESUME_SURVIVAL_MS = 5_000;
 
@@ -2042,6 +2133,13 @@ export async function restartAllAttachments(): Promise<{
   // A second restart-all while one is waiting on the first's exits would see
   // an empty `live` and "restart" nothing — or, once the first respawns, kill
   // what it just started. Refuse it.
+  if (restartingAgents.size > 0) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      "An agent restart is in progress — try again in a moment.",
+    );
+  }
   if (restartInFlight) {
     throw new SpawnError(
       "RESTART_IN_PROGRESS",

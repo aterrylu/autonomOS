@@ -25,6 +25,7 @@ import {
   getAttachment,
   isAgentLive,
   killAttachment,
+  restartAgent,
   restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
   SpawnError,
@@ -69,7 +70,11 @@ import {
   restRenameSchema,
   restSetManagerSchema,
 } from "../validation.js";
-import { clearAgentState, clearNotifications } from "./hooks.js";
+import {
+  clearAgentState,
+  clearNotifications,
+  pushSystemNotification,
+} from "./hooks.js";
 
 export const agentsRouter = new Hono();
 
@@ -640,6 +645,36 @@ agentsRouter.post("/:id/attach", async (c) => {
       { error: message },
       err instanceof SpawnError ? err.status : spawnErrorStatus(message),
     );
+  }
+});
+
+/**
+ * Restart ONE agent server-side: stop it, wait for its process (and Codex
+ * daemon) to exit, respawn it from its record in the same conversation. The
+ * dashboard's Restart calls this; every failure is a typed status + message
+ * the UI shows, and a respawn that genuinely failed also leaves a notice on
+ * the agent (it's now stopped), so it can't be missed after the toast fades.
+ */
+agentsRouter.post("/:id/restart", async (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param) ?? getAgentByProviderSessionId(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  try {
+    return c.json(await restartAgent(agent.id));
+  } catch (err) {
+    if (err instanceof ControlPlaneNotReadyError) throw err;
+    const message = err instanceof Error ? err.message : "Unknown error";
+    const status =
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message);
+    // A refusal (409 in progress / 404 / 503 stopping) changed nothing; only a
+    // respawn that failed left the agent stopped — persist that one.
+    if (!(err instanceof SpawnError)) {
+      pushSystemNotification(
+        agent.id,
+        `Restart of ${agent.name} failed — it is stopped: ${message}`,
+      );
+    }
+    return c.json({ error: message }, status);
   }
 });
 
