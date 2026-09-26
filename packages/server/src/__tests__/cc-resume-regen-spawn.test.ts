@@ -42,6 +42,7 @@ const {
   buildAgent,
   insertAgent,
   getAgent,
+  markActivity,
   markExited,
   getAgentByProviderSessionId,
   _resetCacheForTesting,
@@ -73,7 +74,9 @@ const fake: AgentProvider = {
 };
 
 const ids: string[] = [];
-function seed(): UUID {
+/** `conversed` = the agent did real work before (lastActivityAt set), so a
+ *  missing session IS a lost conversation; a never-used agent has none. */
+function seed(conversed = true): UUID {
   const id = randomUUID() as UUID;
   ids.push(id);
   insertAgent(
@@ -87,6 +90,7 @@ function seed(): UUID {
       status: "running",
     }),
   );
+  if (conversed) markActivity(id, Date.now() - 60_000);
   markExited(id, "user_killed");
   return id;
 }
@@ -137,6 +141,24 @@ describe("CC reattach pre-flight (ADR-111)", () => {
         /no saved FakeClaude session to resume/.test(n.message ?? ""),
       ),
       "fresh-start notice pushed",
+    );
+  });
+
+  it("NEVER-USED agent, not resumable → same fresh start, but NO notice / unread (nothing was lost)", async () => {
+    const id = seed(false);
+    const old = getAgent(id)?.providerSessionId;
+    resumable = false;
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    const argv = seen.at(-1);
+    // Behavior is identical to the conversed case: fresh, under a NEW id…
+    assert.equal(argv?.resumeSessionId, undefined, "no --resume");
+    assert.notEqual(argv?.providerSessionId, old, "still never reuses the id");
+    // …but a prompt-less agent has no saved session by construction, so the
+    // restart must not leave an unread badge (ReleaseRollout's forge repro).
+    assert.equal(
+      getNotifications(id).length,
+      0,
+      `no notification for a never-used agent, got: ${JSON.stringify(getNotifications(id))}`,
     );
   });
 
