@@ -70,11 +70,7 @@ import {
   restRenameSchema,
   restSetManagerSchema,
 } from "../validation.js";
-import {
-  clearAgentState,
-  clearNotifications,
-  pushSystemNotification,
-} from "./hooks.js";
+import { clearAgentState, clearNotifications } from "./hooks.js";
 
 export const agentsRouter = new Hono();
 
@@ -666,14 +662,8 @@ agentsRouter.post("/:id/restart", async (c) => {
     const message = err instanceof Error ? err.message : "Unknown error";
     const status =
       err instanceof SpawnError ? err.status : spawnErrorStatus(message);
-    // A refusal (409 in progress / 404 / 503 stopping) changed nothing; only a
-    // respawn that failed left the agent stopped — persist that one.
-    if (!(err instanceof SpawnError)) {
-      pushSystemNotification(
-        agent.id,
-        `Restart of ${agent.name} failed — it is stopped: ${message}`,
-      );
-    }
+    // restartAgent itself leaves the persistent notice when the agent ended up
+    // stopped; a refusal (409 / 404 / 503) changed nothing.
     return c.json({ error: message }, status);
   }
 });

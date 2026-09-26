@@ -120,11 +120,31 @@ function stripInjectedContext(text: string): string {
   return i >= 0 ? text.slice(i + 7) : text;
 }
 
-async function listDir(path: string): Promise<Dirent[]> {
+/** Warned-about paths, so a persistent problem logs once, not every poll. */
+const warned = new Set<string>();
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(`[session-scan] ${message}`);
+}
+
+/**
+ * A directory's entries. ABSENT (ENOENT) is simply nothing to list. Any other
+ * error is not "nothing": at a scan ROOT it throws, so the route logs that the
+ * runtime's rows were omitted; below the root it's logged once and skipped, so
+ * one unreadable day/project doesn't hide the rest.
+ */
+async function listDir(
+  path: string,
+  { root = false }: { root?: boolean } = {},
+): Promise<Dirent[]> {
   try {
     return await readdir(path, { withFileTypes: true });
-  } catch {
-    return []; // absent or unreadable: nothing to list from here
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if (root) throw err;
+    warnOnce(path, `can't list ${path}: ${(err as Error).message}`);
+    return [];
   }
 }
 
@@ -152,12 +172,18 @@ async function cachedRow(
     r && { cwd: r.cwd, session: { ...r.session, lastModified: mtimeMs } };
   const hit = cache.get(path);
   if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return copy(hit.row);
-  let row: ScannedSession | null = null;
+  let head: Head;
   try {
-    row = parse(await readHead(path, MAX_HEAD_BYTES));
-  } catch {
-    row = null;
+    head = await readHead(path, MAX_HEAD_BYTES);
+  } catch (err) {
+    // A READ that failed isn't "nothing here": don't cache it (it would hide
+    // the session until the file next changed) — log once, retry next poll.
+    warnOnce(path, `can't read ${path}: ${(err as Error).message}`);
+    return null;
   }
+  // A file that reads but doesn't parse caches as null (skipped until it
+  // changes) — it's malformed, and re-parsing it every poll changes nothing.
+  const row = parse(head);
   cache.set(path, { mtimeMs, size, row });
   return copy(row);
 }
@@ -262,7 +288,7 @@ export async function listCodexSessions(
   const root = join(codexHome(env), "sessions");
   const candidates: string[] = [];
   const desc = (a: Dirent, b: Dirent) => (a.name < b.name ? 1 : -1);
-  outer: for (const y of (await listDir(root))
+  outer: for (const y of (await listDir(root, { root: true }))
     .filter((d) => d.isDirectory())
     .sort(desc)) {
     for (const m of (await listDir(join(root, y.name)))
@@ -346,7 +372,7 @@ async function geminiProjects(
 ): Promise<Array<{ dir: string; root: string }>> {
   const tmp = geminiTmpDir(env);
   const out: Array<{ dir: string; root: string }> = [];
-  for (const slug of await listDir(tmp)) {
+  for (const slug of await listDir(tmp, { root: true })) {
     if (!slug.isDirectory()) continue;
     const dir = join(tmp, slug.name);
     try {
@@ -466,7 +492,13 @@ export function findGeminiSession(
         const first = jsonLines(
           readHeadSync(join(dir, "chats", f.name), 4096),
         ).next();
-        if (!first.done && first.value.sessionId === sessionId) return true;
+        if (first.done || typeof first.value.sessionId !== "string") {
+          // A candidate whose header we can't read is "can't tell", not
+          // "absent" — absent would start a FRESH chat over a real one.
+          cantTell = new Error(`unreadable Gemini session header: ${f.name}`);
+          continue;
+        }
+        if (first.value.sessionId === sessionId) return true;
       } catch (err) {
         cantTell = err;
       }

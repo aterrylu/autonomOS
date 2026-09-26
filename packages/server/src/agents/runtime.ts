@@ -577,9 +577,11 @@ const SESSION_ID_RE =
  *
  * Two distinct hazards, both caught here rather than downstream:
  *
- *  1. **Provider capability.** Adoption is only meaningful when the provider can
- *     prove a resumable session exists on disk (`hasResumableSession`). Codex and
- *     Gemini declare no such hook AND their `buildArgs` ignore `resumeSessionId`
+ *  1. **Provider capability.** Adoption needs a provider that declares it
+ *     (`adoptsExternalSession`) AND can prove a resumable session exists on disk
+ *     (`hasResumableSession`). Gemini has the pre-flight since ADR-118 but not
+ *     the adopt path yet; Codex has neither and its `buildArgs` ignore
+ *     `resumeSessionId`
  *     (Codex resumes via `providerThreadId`), so adopting there would spawn a
  *     FRESH session, persist a managed record, and report success — precisely the
  *     silent failure the adopt path exists to prevent. ADR-056 scopes adoption to
@@ -591,10 +593,15 @@ const SESSION_ID_RE =
  *     `create_agent`, the same semi-trusted surface ADR-054 hardened.
  */
 export function assertAdoptable(
-  provider: Pick<AgentProvider, "hasResumableSession" | "displayName">,
+  provider: Pick<
+    AgentProvider,
+    "hasResumableSession" | "adoptsExternalSession" | "displayName"
+  >,
   sessionId: string,
 ): void {
-  if (!provider.hasResumableSession) {
+  // Both, explicitly: a resume pre-flight (Gemini has one since ADR-118) is not
+  // by itself a working adopt path — adoption is its own capability.
+  if (!provider.hasResumableSession || !provider.adoptsExternalSession) {
     throw new SpawnError(
       "NOT_ADOPTABLE",
       422,
@@ -612,7 +619,23 @@ export function assertAdoptable(
 
 // ── Spawn ──────────────────────────────────────────────────────────
 
+/** A reattach can't race a single-agent restart: while restartAgent waits for
+ *  the old process to exit, anything else respawning the agent would run over
+ *  it (two processes on one conversation). restartAgent's own respawn passes
+ *  `fromRestart`. */
+function assertNotRestarting(existing: Agent, params: SpawnParams): void {
+  if (restartingAgents.has(existing.id) && !params.fromRestart) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      `${existing.name} is restarting — try again in a moment.`,
+    );
+  }
+}
+
 export interface SpawnParams extends SpawnOptions {
+  /** @internal Set only by restartAgent's own respawn (see assertNotRestarting). */
+  fromRestart?: boolean;
   /** Internal autonomOS agent id to resume an existing record (was:
    *  resumeSessionId at the PTY layer). When provided, the Agent must already
    *  exist in the store — this is the managed-agent restart/attach path. */
@@ -879,6 +902,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         `Agent "${existing.name}" (${existing.id}) is already attached`,
       );
     }
+    assertNotRestarting(existing, params);
     providerSessionId = existing.providerSessionId;
     agent = existing;
     resolution = "reattach";
@@ -900,6 +924,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           `Agent "${existing.name}" (${existing.id}) is already attached`,
         );
       }
+      assertNotRestarting(existing, params);
       providerSessionId = existing.providerSessionId;
       agent = existing;
       resolution = "reattach";
@@ -1781,7 +1806,25 @@ export function killAttachment(
   reason: ExitReason = "user_killed",
 ): boolean {
   const managed = live.get(agentId);
-  if (!managed) return false;
+  if (!managed) {
+    // Mid-restart the agent is out of `live` while its old process exits. A
+    // kill then must WIN, not 409 and be undone by the respawn: record it and
+    // mark the agent stopped now; restartAgent sees it and doesn't respawn.
+    if (restartingAgents.has(agentId)) {
+      killedDuringRestart.add(agentId);
+      const updated = markExited(agentId, reason);
+      if (updated) {
+        emitAgentDelta({
+          type: "agent.exited",
+          id: agentId,
+          exitReason: reason,
+          version: updated.version,
+        });
+      }
+      return true;
+    }
+    return false;
+  }
   void stopAgentPty(agentId, managed.pty);
   // Sidecar daemon is a separate process — kill it alongside the PTY.
   void managed.sidecar?.dispose();
@@ -1881,9 +1924,13 @@ export function shutdownAllAttachments(): void {
 /** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
  *  from the persisted Agent record so the resumed PTY matches the original
  *  configuration. */
-async function respawnAgent(a: Agent): Promise<void> {
+async function respawnAgent(
+  a: Agent,
+  opts: { fromRestart?: boolean } = {},
+): Promise<void> {
   const tmpl = a.template ? getTemplate(a.template) : null;
   await spawnAgent({
+    fromRestart: opts.fromRestart,
     workingDirectory: a.workingDirectory,
     resumeAgentId: a.id,
     name: a.name,
@@ -1901,6 +1948,8 @@ async function respawnAgent(a: Agent): Promise<void> {
 
 /** Agents with a single-agent restart in flight (see restartAgent). */
 const restartingAgents = new Set<UUID>();
+/** Agents killed while their restart waited (see killAttachment). */
+const killedDuringRestart = new Set<UUID>();
 
 /**
  * Restart ONE agent: stop its process (and sidecar daemon), WAIT for both to
@@ -1954,7 +2003,20 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
         console.warn(
           `[runtime] restart ${record.name} (${agentId.slice(0, 8)}): old process still alive after SIGKILL — respawning anyway`,
         );
+        // The case this restart exists to prevent (two processes on one
+        // conversation) — the operator must see it, not just the log.
+        pushSystemNotification(
+          agentId,
+          `${record.name}: its old process was still running after the restart tried to stop it; the new one started anyway. Check for a leftover ${record.provider} process.`,
+        );
       }
+    }
+    if (killedDuringRestart.has(agentId)) {
+      throw new SpawnError(
+        "RESTART_IN_PROGRESS",
+        409,
+        `${record.name} was stopped while it restarted, so it wasn't started again.`,
+      );
     }
     if (serverStopping) throw serverStoppingError();
     const current = getAgent(agentId);
@@ -1966,11 +2028,28 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
       );
     }
     try {
-      await respawnAgent(current);
+      await respawnAgent(current, { fromRestart: true });
     } catch (err) {
+      // The server began stopping mid-respawn: leave the record "running" so
+      // the next boot resumes it (restart-all does the same) — not crashed.
+      if (
+        serverStopping ||
+        (err instanceof SpawnError && err.code === "SERVER_STOPPING")
+      ) {
+        throw err;
+      }
       // Same zombie guard as restart-all: the old onExit didn't mark it exited.
+      // Only when it really ended up stopped do we SAY so, where it persists
+      // (the toast fades) — typed SpawnError or not (a vanished working
+      // directory is a typed 400). If something else attached it meanwhile,
+      // it's running and "it is stopped" would be false.
       const updated = markCrashedUnlessLive(agentId, "restart");
       if (updated) {
+        const reason = err instanceof Error ? err.message : String(err);
+        pushSystemNotification(
+          agentId,
+          `Restart of ${record.name} failed — it is stopped: ${reason}`,
+        );
         emitAgentDelta({
           type: "agent.exited",
           id: agentId,
@@ -1986,6 +2065,7 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
     return getAgent(agentId) ?? current;
   } finally {
     restartingAgents.delete(agentId);
+    killedDuringRestart.delete(agentId);
   }
 }
 

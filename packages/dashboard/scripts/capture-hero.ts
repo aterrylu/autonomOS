@@ -564,7 +564,14 @@ async function bootServer(
   // a key in its (hidden) terminal — its org-chart node + posed status are fine.
   if (caps.gemini && existsSync(REAL_GEMINI_DIR)) {
     try {
-      cpSync(REAL_GEMINI_DIR, join(fakeHome, ".gemini"), { recursive: true });
+      // Config and auth only — NOT tmp/ (the operator's per-project session
+      // history). Since Projects lists Gemini sessions (ADR-118), a copied
+      // tmp/ put the operator's REAL directory names into the public hero.
+      const history = join(REAL_GEMINI_DIR, "tmp");
+      cpSync(REAL_GEMINI_DIR, join(fakeHome, ".gemini"), {
+        recursive: true,
+        filter: (src) => src !== history && !src.startsWith(`${history}/`),
+      });
       console.log("Seeded fake HOME with ~/.gemini");
     } catch (err) {
       console.warn(`Could not copy ~/.gemini (non-fatal): ${err}`);
