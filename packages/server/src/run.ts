@@ -308,8 +308,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   setAuthToken(AUTH_TOKEN);
 
   function safeEqual(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    // Compare BYTE lengths: a same-length multibyte string (a junk cookie any
+    // other localhost page can plant) makes timingSafeEqual throw → a 500.
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ab.length !== bb.length) return false;
+    return timingSafeEqual(ab, bb);
   }
 
   /** This listener's session cookie name (per port, see authCookie.ts). */

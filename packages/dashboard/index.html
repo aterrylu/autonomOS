@@ -9,6 +9,8 @@
       // POST /api/auth for the session cookie. The app only ever sees the
       // result promise, never the token. A legacy ?token= is stripped too and
       // honored for one release (deprecated). See ADR-117.
+      // CSP: this is an INLINE script — a future `script-src` policy must
+      // allow it by hash or nonce, or sign-in links silently stop working.
       (function () {
         var loc = window.location;
         var hp = new URLSearchParams(loc.hash.slice(1));

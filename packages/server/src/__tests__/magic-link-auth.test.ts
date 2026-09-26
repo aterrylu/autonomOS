@@ -112,6 +112,28 @@ describe("sign-in link: server contract", {
     assert.equal((await agents({ Cookie: stale })).status, 401);
   });
 
+  it("a same-LENGTH multibyte cookie is a mismatch, not a 500", async () => {
+    // Planted by any page on another localhost port (cookies ignore port).
+    // Same JS string length as the token, different BYTE length: a naive
+    // timingSafeEqual throws, and it is tried before the Bearer header.
+    const junk = "é".repeat(server.token.length);
+    const res = await agents({
+      Cookie: `${LEGACY}=${encodeURIComponent(junk)}`,
+      Authorization: `Bearer ${server.token}`,
+    });
+    assert.equal(res.status, 200, "the valid Bearer still wins");
+    const login = await fetch(`${base}/api/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: junk }),
+    });
+    assert.equal(
+      login.status,
+      401,
+      "a multibyte login attempt is refused, not a 500",
+    );
+  });
+
   it("another port's cookie does not authenticate this one", async () => {
     const res = await agents({
       Cookie: `${LEGACY}_${server.port + 1}=${server.token}`,

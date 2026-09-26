@@ -1138,7 +1138,7 @@ async function shoot(
   try {
     await context.addCookies([
       {
-        name: "autonomos_token",
+        name: `autonomos_token_${server.port}`, // per-port session cookie (ADR-117)
         value: server.token,
         url: `http://127.0.0.1:${server.port}`,
       },
