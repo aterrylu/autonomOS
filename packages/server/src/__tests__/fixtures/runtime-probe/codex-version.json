@@ -1,0 +1,8 @@
+{
+ "argv": [
+  "codex",
+  "--version"
+ ],
+ "exit": 0,
+ "output": "codex-cli 0.154.0\n"
+}

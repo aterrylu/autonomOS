@@ -1,0 +1,11 @@
+{
+ "argv": [
+  "codex",
+  "features",
+  "list",
+  "-c",
+  "approvals_reviewer=__probe__"
+ ],
+ "exit": 1,
+ "output": "Error: failed to load bootstrap configuration\n\nCaused by:\n    unknown variant `__probe__`, expected one of `user`, `auto_review`, `guardian_subagent`\n    in `approvals_reviewer`\n    \n"
+}

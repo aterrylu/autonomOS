@@ -58,7 +58,7 @@ import {
   notificationsRouter,
 } from "./routes/hooks.js";
 import { projectRouter } from "./routes/projects.js";
-import { providerRouter } from "./routes/providers.js";
+import { providerRouter, warmPermissionChecks } from "./routes/providers.js";
 import { scheduleRouter, schedulerRouter } from "./routes/schedules.js";
 import { settingsRouter } from "./routes/settings.js";
 import { systemRouter } from "./routes/system.js";
@@ -645,7 +645,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       .catch((err) =>
         console.error("[startup] resumeActiveAgents failed:", err),
       )
-      .finally(() => initScheduler());
+      .finally(() => {
+        initScheduler();
+        // Check each installed CLI's permission options against the
+        // runtime table, off the boot path (logs any drift once).
+        warmPermissionChecks();
+      });
   }
 
   // Port precedence: --port CLI flag > PORT env > 3000 default.
