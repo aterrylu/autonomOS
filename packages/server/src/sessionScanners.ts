@@ -41,6 +41,8 @@ export interface ScannedSession {
 export const MAX_FILES = 400;
 /** Bytes read from the head of one session file. */
 export const MAX_HEAD_BYTES = 256 * 1024;
+/** Stats in flight at once per scan. */
+const STAT_CONCURRENCY = 64;
 /** Summary length on the wire. */
 const SUMMARY_CHARS = 120;
 
@@ -165,13 +167,22 @@ async function newestFiles(
   max: number,
 ): Promise<Array<{ path: string; mtimeMs: number; size: number }>> {
   const out: Array<{ path: string; mtimeMs: number; size: number }> = [];
-  for (const path of paths) {
-    try {
-      const s = await stat(path);
-      if (s.isFile()) out.push({ path, mtimeMs: s.mtimeMs, size: s.size });
-    } catch {
-      // vanished between readdir and stat: skip
-    }
+  // Bounded concurrency: one-at-a-time awaited stats were the warm-path cost
+  // (hundreds of sequential round-trips on a loaded box).
+  for (let i = 0; i < paths.length; i += STAT_CONCURRENCY) {
+    const batch = await Promise.all(
+      paths.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
+        try {
+          const st = await stat(path);
+          return st.isFile()
+            ? { path, mtimeMs: st.mtimeMs, size: st.size }
+            : null;
+        } catch {
+          return null; // vanished between readdir and stat: skip
+        }
+      }),
+    );
+    for (const f of batch) if (f) out.push(f);
   }
   out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return out.slice(0, max);
@@ -347,19 +358,24 @@ export async function listGeminiSessions(
   env: Env = process.env,
 ): Promise<ScannedSession[]> {
   const byPath = new Map<string, string>(); // file → its project's cwd
+  const names: Array<{ name: string; path: string }> = [];
   for (const { dir, root } of await geminiProjects(env)) {
     const chats = join(dir, "chats");
     for (const f of await listDir(chats)) {
-      if (
-        f.isFile() &&
-        f.name.startsWith("session-") &&
-        f.name.endsWith(".jsonl")
-      )
-        byPath.set(join(chats, f.name), root);
+      if (!f.isFile() || !f.name.startsWith("session-")) continue;
+      if (!f.name.endsWith(".jsonl")) continue;
+      const path = join(chats, f.name);
+      byPath.set(path, root);
+      names.push({ name: f.name, path });
     }
   }
+  // Filenames carry the session's start time (session-<ts>-<id8>), so pre-cap
+  // by name — newest first, 2× headroom for mtime-vs-start ordering — before
+  // stat'ing anything: the same bound the Codex day-walk gives.
+  names.sort((x, y) => (x.name < y.name ? 1 : -1));
+  const candidates = names.slice(0, MAX_FILES * 2).map((n) => n.path);
   const rows: ScannedSession[] = [];
-  for (const f of await newestFiles([...byPath.keys()], MAX_FILES)) {
+  for (const f of await newestFiles(candidates, MAX_FILES)) {
     const cwd = byPath.get(f.path) as string;
     const row = await cachedRow(geminiCache, f.path, f.mtimeMs, f.size, (h) =>
       parseGeminiHead(h, cwd),
