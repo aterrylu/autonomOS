@@ -13,7 +13,15 @@ import { mkdtempSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, afterEach, before, beforeEach, describe, it } from "node:test";
+import {
+  after,
+  afterEach,
+  before,
+  beforeEach,
+  describe,
+  it,
+  mock,
+} from "node:test";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
@@ -25,6 +33,8 @@ const {
   terminalRouter,
   _resetTerminalFenceForTesting,
   _startLivenessPingForTesting,
+  TERMINAL_PING_MS,
+  TERMINAL_DEAD_AFTER_MS,
   REPLAY_END_MARK,
   REPLAY_END_MARK_ACK,
   INPUT_MAX_AGE_MS,
@@ -299,55 +309,77 @@ describe("server-side liveness ping", () => {
     return r;
   }
 
-  it("terminates a socket that stops answering pings (half-open), within the deadline", async () => {
+  // VIRTUAL TIME. These ran on real 20ms/70ms timers and flaked under the
+  // parallel pre-push gate (load ~30): a slipped timer missed the post-stall
+  // window. The pinger reads only Date.now() and setInterval, so mock.timers
+  // drives it exactly — and at the PRODUCTION timings.
+  //
+  // Measured mock.timers behavior (node 25) the helpers rely on: a single
+  // tick() runs every due interval callback with Date.now() already at the
+  // END of the tick, and setTime() moves Date without running timers. So:
+  // step() advances ONE ping period per tick (each firing sees a realistic
+  // clock), and setTime() followed by one tick is a stalled event loop — the
+  // first late firing sees the whole gap, its catch-up duplicates see none.
+  const P = TERMINAL_PING_MS;
+  const D = TERMINAL_DEAD_AFTER_MS;
+  const OPTS = { pingMs: P, deadAfterMs: D };
+  const step = (ms: number) => {
+    for (let t = 0; t < ms; t += P) mock.timers.tick(P);
+  };
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_000_000 });
+  });
+  afterEach(() => {
+    mock.timers.reset();
+  });
+
+  it("terminates a socket that stops answering pings (half-open) on the first tick past the deadline", () => {
     const raw = fakeRaw();
-    const stop = _startLivenessPingForTesting(raw, {
-      pingMs: 20,
-      deadAfterMs: 70,
-    });
-    await sleep(60);
-    assert.equal(raw.terminated, false, "not yet");
-    assert.ok(raw.pings >= 2, "pinging");
-    await sleep(80);
+    const stop = _startLivenessPingForTesting(raw, OPTS);
+    step(D);
+    assert.equal(
+      raw.terminated,
+      false,
+      "silent for exactly the deadline: kept",
+    );
+    assert.equal(raw.pings, D / P, "pinging every period meanwhile");
+    step(P);
     assert.equal(raw.terminated, true, "no pong past the deadline → dead");
     stop?.();
   });
 
-  it("keeps a socket that answers", async () => {
+  it("keeps a socket that answers", () => {
     const raw = fakeRaw();
-    const pong = setInterval(() => raw.pongCb?.(), 15);
-    const stop = _startLivenessPingForTesting(raw, {
-      pingMs: 20,
-      deadAfterMs: 70,
-    });
-    await sleep(200);
+    const stop = _startLivenessPingForTesting(raw, OPTS);
+    for (let i = 0; i < 30; i++) {
+      step(P);
+      raw.pongCb?.();
+    }
     assert.equal(raw.terminated, false);
-    clearInterval(pong);
+    assert.equal(raw.pings, 30);
     stop?.();
   });
 
-  it("after OUR OWN event loop stalled, grants a fresh deadline instead of killing at once — then still kills a link that stays silent", async () => {
+  it("after OUR OWN event loop stalled, grants a fresh deadline instead of killing at once — then still kills a link that stays silent", () => {
     const raw = fakeRaw();
-    const stop = _startLivenessPingForTesting(raw, {
-      pingMs: 20,
-      deadAfterMs: 70,
-    });
+    const stop = _startLivenessPingForTesting(raw, OPTS);
     raw.pongCb?.();
-    await sleep(30);
-    // The server process stalls (a SIGSTOP / long sync task) well past the
-    // deadline. No pongs arrive afterwards either, so the only thing that can
-    // save the socket on the first tick after the stall is the grace.
-    const until = Date.now() + 150;
-    while (Date.now() < until) {
-      // busy-wait: no timers run
-    }
-    await sleep(25); // ~one ping tick after the stall
+    step(P);
+    // The server process stalls (a SIGSTOP / long sync task) far past the
+    // deadline: the clock moves, no timer runs. No pongs arrive afterwards
+    // either, so only the grace can save the socket on the first tick after.
+    mock.timers.setTime(Date.now() + 10 * D);
+    step(P);
     assert.equal(
       raw.terminated,
       false,
       "missing pongs during OUR stall are our fault — no instant kill",
     );
-    await sleep(120); // a fresh deadline passes with the link still silent
+    // The grace restarted the deadline AT that tick; as in the plain case,
+    // silence of exactly D is kept and the next tick kills.
+    step(D);
+    assert.equal(raw.terminated, false, "still inside the fresh deadline");
+    step(P);
     assert.equal(raw.terminated, true, "a genuinely dead link still dies");
     stop?.();
   });
