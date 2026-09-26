@@ -50,6 +50,8 @@ Words as the app uses them, plus a few that only appear in the code or the devel
 
 **Template.** A saved job description (role, instructions, default permission mode) used when creating an agent. Three come built in; the "Templates" page lets you add more.
 
+**Sign-in link.** The dashboard address with your token after `#token=`, printed by the installer. Opening it logs that browser in and removes the token from the address bar. It holds the token, so treat it like a password.
+
 **Token.** The password for the dashboard, generated at install, stored in `~/.autonomos/token`. Every browser that opens the dashboard needs it once.
 
 **Unread.** The count on an agent's row of things addressed to you while you were looking elsewhere: a message, a permission request, or something autonomOS flagged. A finished turn on its own does not count. The bell shows the same items for every agent. Clears when you open the agent.

@@ -182,6 +182,8 @@ function seedFakeHome(fakeHome: string): string {
 export async function bootServer(opts?: {
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
+  /** Extra server CLI flags (e.g. `--print-url`). */
+  extraArgs?: string[];
 }): Promise<BootedServer> {
   const configDir = mkdtempSync(join(tmpdir(), "autonomos-integ-"));
   const fakeHome = join(configDir, "home");
@@ -213,7 +215,8 @@ export async function bootServer(opts?: {
     new URL("../../../node_modules/.bin/tsx", import.meta.url),
   );
 
-  const child = spawn(tsxBin, [SERVER_ENTRY, "--port=0"], {
+  const args = [SERVER_ENTRY, "--port=0", ...(opts?.extraArgs ?? [])];
+  const child = spawn(tsxBin, args, {
     env: {
       ...process.env,
       AUTONOMOS_CONFIG_DIR: configDir,

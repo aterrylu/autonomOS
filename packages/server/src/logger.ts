@@ -12,7 +12,8 @@
 // write into a rotating `~/.autonomos/logs/autonomos.log` (stdout + stderr
 // merged, like the old pm2 `merge_logs: true`), keeping the newest N segments.
 // It echoes to the original sink ASYMMETRICALLY (see patch()): stdout ALWAYS —
-// it carries `--print-url` + human-readable logs, and its supervisor sink
+// it carries human-readable logs (the `--print-url` link bypasses the tee via
+// writeUnlogged), and its supervisor sink
 // is /dev/null so echoing is free — while stderr echoes only on a TTY. Under
 // the service, stderr's supervisor sink is the boot.error.log FILE, so echoing
 // every runtime console.error there would regrow the unbounded log this design
@@ -196,6 +197,19 @@ export function getLogFilePath(): string | null {
   return logFilePath || null;
 }
 
+/** The real stdout sink, captured before the tee is installed. */
+let rawStdoutWrite: ((chunk: string) => boolean) | null = null;
+
+/**
+ * Write to the operator's terminal WITHOUT going into the rotating log file —
+ * for secrets meant only for the person at the terminal (the --print-url
+ * sign-in link). Before file logging starts it is a plain stdout write.
+ */
+export function writeUnlogged(text: string): void {
+  if (rawStdoutWrite) rawStdoutWrite(text);
+  else process.stdout.write(text);
+}
+
 function patch(
   std: NodeJS.WriteStream,
   writer: RotatingWriter,
@@ -203,7 +217,7 @@ function patch(
 ): void {
   const original = std.write.bind(std);
   // Echo to the original sink so existing behavior is preserved. For stdout we
-  // ALWAYS echo (it carries --print-url + human logs, and under the
+  // ALWAYS echo (it carries human logs, and under the
   // service its sink is /dev/null, so echoing is free). For stderr we echo only
   // on a TTY (dev/foreground): under the service stderr's sink is the
   // boot.error.log file, and echoing every runtime console.error there would
@@ -237,6 +251,8 @@ export function initFileLogging(): void {
     const writer = createTimestampingWriter(
       createRotatingWriter(logFilePath, maxBytes, keep),
     );
+    // The pre-tee sink, for writeUnlogged.
+    rawStdoutWrite = process.stdout.write.bind(process.stdout);
     patch(process.stdout, writer);
     patch(process.stderr, writer, /* echoOnlyOnTty */ true);
   } catch (err) {

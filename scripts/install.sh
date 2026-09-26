@@ -329,7 +329,7 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" == "1" ]]; then
 elif [[ "$RC" == "0" ]]; then
   echo "✓ autonomOS installed and running."
   echo "  Binary:  $WRAPPER"
-  echo "  The dashboard URL + token are shown above."
+  echo "  The dashboard URL + sign-in link are shown above."
   echo "  Manage:  autonomos status · autonomos logs -f · autonomos restart"
 else
   echo "⚠️  autonomOS installed, but the daemon isn't responding yet."

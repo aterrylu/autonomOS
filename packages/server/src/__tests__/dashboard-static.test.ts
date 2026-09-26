@@ -70,6 +70,11 @@ describe("dashboard static serving", () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Encoding"), "br");
     assert.equal(res.headers.get("Cache-Control"), CACHE_IMMUTABLE);
+    assert.equal(
+      res.headers.get("Referrer-Policy"),
+      null,
+      "assets keep their headers",
+    );
     assert.equal(res.headers.get("Vary"), "Accept-Encoding");
     assert.match(res.headers.get("Content-Type") ?? "", /javascript/);
     const body = Buffer.from(await res.arrayBuffer());
@@ -98,10 +103,25 @@ describe("dashboard static serving", () => {
     assert.equal(await res.text(), JS);
   });
 
-  it("index.html: must revalidate, carries an ETag, and answers 304 when unchanged", async () => {
+  /** The shell can be loaded with a token in its URL (a `#token=` sign-in
+   *  link, or a legacy `?token=` one), so every index response — 200, 304 and
+   *  the SPA fallback — is never stored, never leaks its URL as a Referer, and
+   *  never renders inside another site's frame. */
+  function assertShellHeaders(res: Response, label: string): void {
+    assert.equal(res.headers.get("Cache-Control"), "no-store", label);
+    assert.equal(res.headers.get("Referrer-Policy"), "no-referrer", label);
+    assert.equal(res.headers.get("X-Frame-Options"), "DENY", label);
+    assert.equal(
+      res.headers.get("Content-Security-Policy"),
+      "frame-ancestors 'none'",
+      label,
+    );
+  }
+
+  it("index.html: never stored, carries an ETag, and answers 304 when unchanged", async () => {
     const first = await get("/");
     assert.equal(first.status, 200);
-    assert.equal(first.headers.get("Cache-Control"), CACHE_REVALIDATE);
+    assertShellHeaders(first, "200");
     const etag = first.headers.get("ETag");
     assert.ok(etag, "has an ETag");
     assert.match(await first.text(), /index-abc123\.js/);
@@ -110,13 +130,15 @@ describe("dashboard static serving", () => {
     assert.equal(again.status, 304);
     assert.equal(await again.text(), "");
     assert.equal(again.headers.get("ETag"), etag);
+    assertShellHeaders(again, "304");
+    assertShellHeaders(await get("/index.html"), "/index.html");
   });
 
   it("SPA deep links get the same entry document and validator", async () => {
     const root = await get("/");
     const deep = await get("/agents/some-agent/terminal");
     assert.equal(deep.status, 200);
-    assert.equal(deep.headers.get("Cache-Control"), CACHE_REVALIDATE);
+    assertShellHeaders(deep, "SPA fallback");
     assert.equal(deep.headers.get("ETag"), root.headers.get("ETag"));
     assert.match(await deep.text(), /index-abc123\.js/);
   });

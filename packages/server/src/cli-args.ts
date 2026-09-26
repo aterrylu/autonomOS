@@ -5,8 +5,8 @@
 //   --port=N | --port N    Override the listen port (env PORT also works)
 //   --host=H | --host H    Restrict the bind interface (env AUTONOMOS_HOST).
 //                          Default: all interfaces — see run.ts:resolveBindHost.
-//   --print-url            On listen, print "URL: http://host:port  token: …"
-//                          for easy copy-paste into a browser or client
+//   --print-url            On listen, print a sign-in link
+//                          (http://host:port/#token=…) to the terminal only
 //   --help                 Print usage and exit 0
 
 export type CliArgs = {
@@ -31,9 +31,9 @@ Options:
                   another specific IP: the post-install health check and the
                   running-server guard probe localhost, so a loopback-excluding
                   bind reports a false install failure.
-  --print-url     After startup, print a human-readable line:
-                  "URL: http://host:port  token: …" for easy copy-paste
-                  to connect a browser or client.
+  --print-url     After startup, print a sign-in link
+                  (http://host:port/#token=…) — open it to sign in to the
+                  dashboard. Printed to the terminal only, never the log file.
   --help          Print this message and exit
 `;
 
