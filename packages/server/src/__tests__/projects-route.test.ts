@@ -529,6 +529,43 @@ describe("GET /api/projects — managed agents of EVERY runtime (Codex/Gemini)",
     assert.equal(r.originator, "external");
   });
 
+  it("a MANAGED row with no prompt yet reads as its agent's name; an external one keeps the placeholder", async () => {
+    const id = mk("gemini-cli");
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [
+        {
+          cwd: "/w",
+          session: {
+            sessionId: id,
+            provider: "gemini-cli",
+            summary: "(no prompt yet)",
+            lastModified: 5,
+          },
+        },
+        {
+          cwd: "/w",
+          session: {
+            sessionId: "ext-g",
+            provider: "gemini-cli",
+            summary: "(no prompt yet)",
+            lastModified: 5,
+          },
+        },
+      ],
+    });
+    const all = rows(await get(createApp()));
+    assert.match(
+      all.find((s) => s.sessionId === id)?.summary ?? "",
+      /^gemini-cli-/,
+    );
+    assert.equal(
+      all.find((s) => s.sessionId === "ext-g")?.summary,
+      "(no prompt yet)",
+    );
+  });
+
   it("one scanner throwing costs only its own rows", async () => {
     _setDepsForTesting({
       listSessions: async () => [],
