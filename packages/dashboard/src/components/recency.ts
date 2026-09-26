@@ -35,8 +35,8 @@ const WEEK_MS = 7 * DAY_MS;
 export const RECENCY_OPACITY_DARK: Record<RecencyBucket, number> = {
   fresh: 1,
   recent: 1,
-  stale: 0.72,
-  ancient: 0.52,
+  stale: 0.82,
+  ancient: 0.64,
 };
 export const RECENCY_OPACITY_LIGHT: Record<RecencyBucket, number> = {
   fresh: 1,

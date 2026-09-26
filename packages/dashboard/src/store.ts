@@ -143,7 +143,10 @@ export const THEMES: Record<ThemeName, AppTheme> = {
       bg: "#0a0e14",
       fg: "#b3b1ad",
       border: "#1c2433",
-      statusFg: "#626a73",
+      // Muted text. Was #626a73 = 3.53:1 on #0a0e14 (below WCAG AA even
+      // unfaded). #8a939c keeps the hue: 6.20:1 unfaded, and every recency-
+      // faded bucket stays >= 3:1 on the dark ramp (themeContrast.test.ts).
+      statusFg: "#8a939c",
     },
   },
   daylight: {

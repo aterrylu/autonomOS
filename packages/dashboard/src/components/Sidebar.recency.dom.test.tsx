@@ -37,7 +37,7 @@ function sess(id: string, ageMs: number): SessionInfo {
 // or fetchSessions prunes the seeded order; carrying createdAt in the payload
 // keeps the controlled ages whether the row reads the seed or the fetch result.
 const FRESH = sess("fresh-agent", 10 * MIN); // → "10m", fresh, opacity 1 + tint
-const ANCIENT = sess("ancient-agent", 30 * DAY); // → "30d", ancient, opacity 0.52 (dark)
+const ANCIENT = sess("ancient-agent", 30 * DAY); // → "30d", ancient, opacity 0.64 (dark)
 
 function stubFetch() {
   vi.stubGlobal(
@@ -79,7 +79,7 @@ describe("Sidebar recency — timestamp fade wiring", () => {
   it("fades an ancient (>7d) row's timestamp to 52% opacity", async () => {
     render(<Sidebar />);
     const age = await screen.findByText("30d");
-    expect(age).toHaveStyle({ opacity: "0.52" });
+    expect(age).toHaveStyle({ opacity: "0.64" });
   });
 
   it("keeps a fresh (<1h) row's timestamp at full opacity in the theme foreground", async () => {
@@ -99,7 +99,7 @@ describe("Sidebar recency — timestamp fade wiring", () => {
     render(<Sidebar />);
     const age = await screen.findByText("30d");
     // the faded span wraps ONLY the age text (opacity applies to that subtree)…
-    expect(age).toHaveStyle({ opacity: "0.52" });
+    expect(age).toHaveStyle({ opacity: "0.64" });
     expect(age.textContent).toBe("30d");
     // …and the unread prefix is a full-strength SIBLING, not inside the fade.
     const unread = screen.getByText(/3 unread/);
@@ -122,7 +122,7 @@ describe("Sidebar recency — timestamp fade wiring", () => {
   it("uses the shallower LIGHT ramp on the daylight theme (ancient → 0.74)", async () => {
     // Opacity fades toward the bg; on a light theme that washes out fast, so the
     // ramp is theme-aware. daylight's light bg must select 0.74 for ancient, not
-    // void's 0.52 — proving page.bg drives ramp selection through the real row.
+    // void's 0.64 — proving page.bg drives ramp selection through the real row.
     useStore.setState({ theme: "daylight" });
     render(<Sidebar />);
     const age = await screen.findByText("30d");
@@ -134,13 +134,13 @@ describe("Sidebar recency — timestamp fade wiring", () => {
     // The name for the ancient agent must NOT inherit the fade — only the
     // timestamp span carries opacity. The name span sits in the same row.
     const name = await screen.findByText("ancient-agent");
-    expect(name).not.toHaveStyle({ opacity: "0.52" });
+    expect(name).not.toHaveStyle({ opacity: "0.64" });
   });
 
   it("does NOT fade a row with a missing timestamp — 'unknown' stays full opacity", async () => {
     // A createdAt of 0 (pre-schema / missing) renders "unknown" via formatAge.
     // The fade must guard the timestamp, not the derived age: `now - 0` is a
-    // huge positive age that would wrongly bucket ancient (0.52). Regression
+    // huge positive age that would wrongly bucket ancient (0.64). Regression
     // guard for the "unknown faded to near-invisibility" bug.
     const broken: SessionInfo = { ...sess("broken-agent", 0), createdAt: 0 };
     useStore.setState({

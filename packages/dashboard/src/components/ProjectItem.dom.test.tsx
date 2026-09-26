@@ -160,12 +160,37 @@ describe("ProjectItem — redesigned rows", () => {
     const live = screen.getByText("live session").closest("button");
     const ext = screen.getByText("external session").closest("button");
     const stop = screen.getByText("stopped session").closest("button");
+    if (!live || !ext || !stop) throw new Error("rows missing");
     // Live = full-strength (no dim); dead = grayed (dimmed at rest, restored on
-    // hover). Same parity skeleton for all three.
-    expect(live?.className).not.toMatch(/opacity-60/);
-    expect(ext?.className).toMatch(/opacity-60/);
-    expect(ext?.className).toMatch(/hover:opacity-100/);
-    expect(stop?.className).toMatch(/opacity-60/);
+    // hover). The dim is on the TEXT column only — never the row — so the
+    // provider mark always renders unaltered (brand policy; Terry's Codex report).
+    const textCol = (row: HTMLElement) =>
+      within(row)
+        .getByText(/session$/)
+        .closest("div.min-w-0") as HTMLElement;
+    expect(textCol(live).className).not.toMatch(/opacity-60/);
+    expect(textCol(ext).className).toMatch(/opacity-60/);
+    expect(textCol(ext).className).toMatch(/group-hover\/row:opacity-100/);
+    expect(textCol(stop).className).toMatch(/opacity-60/);
+    for (const row of [live, ext, stop]) {
+      expect(row.className).not.toMatch(/opacity-/);
+      // No element between the row and the provider mark carries a dim.
+      // The PROVIDER mark itself (Codex is OpenAI's raster icon), never the
+      // status-corner svg a generic selector would hit first.
+      const mark = row.querySelector(
+        'svg[aria-label="Claude"], img[alt="Codex"], svg[aria-label="Gemini"]',
+      );
+      if (!mark) throw new Error("provider mark missing");
+      for (
+        let el: Element | null = mark;
+        el && el !== row;
+        el = el.parentElement
+      ) {
+        expect((el as HTMLElement).className?.toString() ?? "").not.toMatch(
+          /opacity-/,
+        );
+      }
+    }
   });
 
   it("collapsing routes through the store, not per-mount state (bug #8)", () => {
