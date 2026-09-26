@@ -53,6 +53,11 @@ export const agentsApi = {
     request<Agent>("/api/agents", { method: "POST", body }),
   attach: (id: string) =>
     request<Agent>(`/api/agents/${id}/attach`, { method: "POST", body: {} }),
+  /** Restart one agent server-side: stop it, wait for it to exit, respawn it
+   *  in the same conversation. `POST /api/agents/:id/restart`; failures carry
+   *  the reason (409 already restarting, 404, 503 while the server stops). */
+  restart: (id: string) =>
+    request<Agent>(`/api/agents/${id}/restart`, { method: "POST", body: {} }),
   /** Reparent in the org chart. `manager` (name) or `managerId` (uuid); a null
    *  `managerId` clears. `POST /api/agents/:id/manager`. */
   manager: (
