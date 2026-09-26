@@ -316,7 +316,10 @@ export function parseGeminiHead(
       const text = (line.content as Array<{ text?: unknown }>)
         .map((c) => (typeof c?.text === "string" ? c.text : ""))
         .join(" ");
-      if (text.trim()) prompt = stripInjectedContext(text);
+      // Gemini's own <session_context> block (all a resume stub holds) isn't
+      // a prompt.
+      const task = stripInjectedContext(text).trim();
+      if (task && !task.startsWith("<session_context>")) prompt = task;
     }
     if (header && prompt) break;
   }
@@ -374,15 +377,33 @@ export async function listGeminiSessions(
   // stat'ing anything: the same bound the Codex day-walk gives.
   names.sort((x, y) => (x.name < y.name ? 1 : -1));
   const candidates = names.slice(0, MAX_FILES * 2).map((n) => n.path);
-  const rows: ScannedSession[] = [];
+  // ONE row per session. Measured on 0.46: every `--resume` writes a small new
+  // file reusing the session id (just a <session_context> block) while the
+  // conversation keeps appending to the ORIGINAL file — so a session resumed
+  // N times has N+1 files. Keep the row that has the prompt; its recency is
+  // the newest of any of its files.
+  const bySession = new Map<string, ScannedSession>();
   for (const f of await newestFiles(candidates, MAX_FILES)) {
     const cwd = byPath.get(f.path) as string;
     const row = await cachedRow(geminiCache, f.path, f.mtimeMs, f.size, (h) =>
       parseGeminiHead(h, cwd),
     );
-    if (row) rows.push(row);
+    if (!row) continue;
+    const seen = bySession.get(row.session.sessionId);
+    if (!seen) {
+      bySession.set(row.session.sessionId, row);
+      continue;
+    }
+    const newest = Math.max(
+      seen.session.lastModified,
+      row.session.lastModified,
+    );
+    const keep =
+      !seen.session.firstPrompt && row.session.firstPrompt ? row : seen;
+    keep.session.lastModified = newest;
+    bySession.set(row.session.sessionId, keep);
   }
-  return rows;
+  return [...bySession.values()];
 }
 
 /**

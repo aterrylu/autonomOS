@@ -319,6 +319,48 @@ describe("listGeminiSessions", () => {
   });
 });
 
+describe("listGeminiSessions — a resumed session is ONE row", () => {
+  it("each --resume adds a stub file with the same id; one row, the real prompt, the newest time", async () => {
+    const id = "40ff5b4b-b832-45f8-bf52-360778e5950f";
+    const dir = join(home, ".gemini", "tmp", "proj");
+    mkdirSync(join(dir, "chats"), { recursive: true });
+    writeFileSync(join(dir, ".project_root"), "/w/g");
+    const file = (ts: string, body: string, mtime: number) => {
+      const f = join(
+        dir,
+        "chats",
+        `session-2026-09-26T${ts}-${id.slice(0, 8)}.jsonl`,
+      );
+      writeFileSync(
+        f,
+        `${JSON.stringify({ sessionId: id, kind: "main" })}\n${body}\n`,
+      );
+      utimesSync(f, mtime, mtime);
+    };
+    const stub = JSON.stringify({
+      type: "user",
+      content: [
+        {
+          text: "<session_context>\nThis is the Gemini CLI…</session_context>",
+        },
+      ],
+    });
+    file(
+      "06-19",
+      JSON.stringify({ type: "user", content: [{ text: "remember KUMQUAT" }] }),
+      1_000_000_100,
+    );
+    file("06-20", stub, 1_000_000_200);
+    file("06-22", stub, 1_000_000_300);
+    const rows = (await listGeminiSessions({ GEMINI_CLI_HOME: home })).filter(
+      (r) => r.session.sessionId === id,
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].session.summary, "remember KUMQUAT");
+    assert.equal(rows[0].session.lastModified, 1_000_000_300_000);
+  });
+});
+
 describe("findGeminiSession — three-state, where `gemini --resume` looks", () => {
   const id = "6579618b-70f4-4830-9c63-646b23b7f3d9";
   it("found in THIS cwd's project → true", () => {
