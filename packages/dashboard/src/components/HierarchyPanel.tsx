@@ -545,12 +545,25 @@ function OrgCanvas({
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
+    // A drag-select from a card that ends on empty canvas fires `click` on
+    // the common ancestor: only clear when the press ALSO started on canvas.
+    let pressOnCanvas = false;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      pressOnCanvas = !t.closest("[data-org-card], button");
+    };
     const onClick = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
-      if (!t.closest("[data-org-card], button")) onSelect(null);
+      if (pressOnCanvas && !t.closest("[data-org-card], button"))
+        onSelect(null);
+      pressOnCanvas = false;
     };
+    el.addEventListener("mousedown", onDown);
     el.addEventListener("click", onClick);
-    return () => el.removeEventListener("click", onClick);
+    return () => {
+      el.removeEventListener("mousedown", onDown);
+      el.removeEventListener("click", onClick);
+    };
   }, [onSelect]);
 
   return (

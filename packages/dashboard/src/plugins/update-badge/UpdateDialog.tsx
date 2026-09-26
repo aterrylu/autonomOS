@@ -23,6 +23,7 @@ import {
   type AgentStatus,
   agentStatusLabel,
 } from "../../components/ui/agent-status-icon";
+import { useBackdropDismiss } from "../../hooks/useBackdropDismiss";
 import { pushEscapeCloser } from "../../shortcuts/escapeStack";
 import { THEMES, useStore } from "../../store";
 import { ReleaseMarkdown } from "./releaseMarkdown";
@@ -312,16 +313,15 @@ function DialogShell({
 
   // Escape rides the registry's ui.dismiss entry (ADR-065).
   useEffect(() => pushEscapeCloser(onClose), [onClose]);
+  // Survives a text selection that ends over the backdrop (Terry's bug).
+  const backdrop = useBackdropDismiss(onClose);
 
   return createPortal(
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard close is the registry's ui.dismiss (Escape via the escape stack)
-    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close is the registry's ui.dismiss (Escape via the escape stack)
+    // Backdrop: mouse dismissal via useBackdropDismiss; keyboard dismissal is Escape (the registry's ui.dismiss).
     <div
       className="fixed inset-0 z-[60] flex items-start justify-center pt-[6vh] font-sans"
       style={{ background: "rgba(0,0,0,0.55)" }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...backdrop}
     >
       <div
         ref={dialogRef}

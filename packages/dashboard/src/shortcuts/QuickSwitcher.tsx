@@ -4,6 +4,7 @@ import {
   AgentStatusIcon,
 } from "../components/ui/agent-status-icon";
 import { ProviderAgentIcon } from "../components/ui/provider-icon";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { THEMES, useStore } from "../store";
 import { focusAgentById } from "./actions";
 import { pushEscapeCloser } from "./escapeStack";
@@ -26,7 +27,10 @@ export function QuickSwitcher() {
   return <SwitcherDialog />;
 }
 
+const closeQuickSwitch = () => useStore.getState().closeQuickSwitch();
+
 function SwitcherDialog() {
+  const backdrop = useBackdropDismiss(closeQuickSwitch);
   const theme = useStore((s) => s.theme);
   const sessions = useStore((s) => s.sessions);
   const rowOrder = useStore((s) => s.sidebarRowOrder);
@@ -132,15 +136,11 @@ function SwitcherDialog() {
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard close is the registry's ui.dismiss (Escape)
-    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close is the registry's ui.dismiss (Escape)
+    // Backdrop: mouse dismissal via useBackdropDismiss; keyboard dismissal is Escape (the registry's ui.dismiss).
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[18vh]"
       style={{ background: "rgba(0,0,0,0.5)" }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget)
-          useStore.getState().closeQuickSwitch();
-      }}
+      {...backdrop}
     >
       <div
         role="dialog"

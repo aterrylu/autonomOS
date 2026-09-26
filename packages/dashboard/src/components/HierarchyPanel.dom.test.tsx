@@ -508,8 +508,22 @@ describe("selection + inspector", () => {
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
     fireEvent.click(card("R1") as HTMLElement);
-    fireEvent.click(document.querySelector("[data-org-stage]") as HTMLElement);
+    const stage = document.querySelector("[data-org-stage]") as HTMLElement;
+    fireEvent.mouseDown(stage);
+    fireEvent.click(stage);
     expect(inspector()).toBeNull();
+  });
+
+  it("a drag-select from a card that ends on empty canvas keeps the selection", async () => {
+    fleet();
+    render(<HierarchyPanel />);
+    await waitFor(() => expect(card("O1")).not.toBeNull());
+    fireEvent.click(card("R1") as HTMLElement);
+    // Press on the card, release over the canvas: the browser dispatches that
+    // `click` to the common ancestor — the stage.
+    fireEvent.mouseDown(card("R1") as HTMLElement);
+    fireEvent.click(document.querySelector("[data-org-stage]") as HTMLElement);
+    expect(inspector()?.dataset.orgInspector).toBe("R1");
   });
 
   it("arrow keys walk the chart: ↑ manager, ↓ first report, → sibling", async () => {
