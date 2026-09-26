@@ -23,6 +23,7 @@ import { runLogsCommand } from "./commands/logs.js";
 import { runMigrateFromPm2Command } from "./commands/migrate-from-pm2.js";
 import { runRestartCommand } from "./commands/restart.js";
 import { runRollbackCommand } from "./commands/rollback.js";
+import { runSnapshotsCommand } from "./commands/snapshots.js";
 import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
@@ -49,7 +50,8 @@ Commands:
   upgrade [version]    Fetch a release (default: latest), verify, atomic swap,
     (alias: update)    restart, verify the new version boots — auto-rolls back
                        if it doesn't. Options: --version=X.Y.Z (pin/downgrade)
-  rollback             Swap back to the version the last upgrade replaced
+  rollback             Restore the version the last upgrade replaced, with its agent state
+  snapshots list       List pre-update snapshots of agent state
   migrate-from-pm2     Stop pm2's autonomos process and install the new
                        OS-native supervisor (one-shot migration for old users)
   version, --version   Print the installed version
@@ -107,7 +109,9 @@ async function main(): Promise<number> {
     case "update":
       return await runUpgradeCommand(argv.slice(1));
     case "rollback":
-      return await runRollbackCommand();
+      return await runRollbackCommand(argv.slice(1));
+    case "snapshots":
+      return await runSnapshotsCommand(argv.slice(1));
     case "migrate-from-pm2":
       return await runMigrateFromPm2Command(argv.slice(1));
     default:

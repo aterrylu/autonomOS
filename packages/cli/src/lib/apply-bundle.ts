@@ -135,6 +135,9 @@ export async function restartDaemonAfterSwap(
      * restart the stale loaded definition). No-op difference on Linux.
      */
     reloadUnit?: boolean;
+    /** Called once the supervisor accepted the restart, as the health gate
+     *  starts (the in-app flow reports its "health_check" phase here). */
+    onRestarted?: () => void;
   } = {},
 ): Promise<RestartOutcome> {
   const svc = findInstalledService();
@@ -167,7 +170,10 @@ export async function restartDaemonAfterSwap(
       }
       return { kind: "restart-failed" };
     }
-    const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs);
+    opts.onRestarted?.();
+    const healthy = await verifyDaemonVersion(expectedVersion, timeoutMs, {
+      stableMs: HEALTH_STABLE_MS,
+    });
     return healthy ? { kind: "verified" } : { kind: "not-verified" };
   }
 
@@ -209,26 +215,60 @@ function progress(text: string): void {
  * Poll until the daemon's pid file reports `expectedVersion` and its port
  * answers HTTP. True = the new version is genuinely serving.
  */
+/** How long the SAME daemon pid must stay healthy after the first good probe
+ *  before a swap counts as healthy: a daemon that answers once and then
+ *  crash-loops (e.g. during agent resume) comes back with a new pid, which
+ *  restarts the window — so the health gate's rollback still catches it. */
+export const HEALTH_STABLE_MS = 10_000;
+
+type HealthDeps = {
+  readPidFile: typeof readPidFile;
+  isPidAlive: typeof isPidAlive;
+  isPortResponsive: typeof isPortResponsive;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+};
+
 export async function verifyDaemonVersion(
   expectedVersion: string,
   timeoutMs: number,
+  opts: { stableMs?: number; deps?: Partial<HealthDeps> } = {},
 ): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+  const d: HealthDeps = {
+    readPidFile,
+    isPidAlive,
+    isPortResponsive,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    ...opts.deps,
+  };
+  const stableMs = opts.stableMs ?? 0;
+  const deadline = d.now() + timeoutMs + stableMs;
   progress(`Waiting for version ${expectedVersion} to come up`);
+  let healthyPid: number | null = null;
+  let healthySince = 0;
   try {
-    while (Date.now() < deadline) {
-      const pidInfo = readPidFile();
-      if (
+    while (d.now() < deadline) {
+      const pidInfo = d.readPidFile();
+      const good =
         pidInfo &&
         pidInfo.version === expectedVersion &&
-        isPidAlive(pidInfo.pid) &&
-        (await isPortResponsive(pidInfo.port))
-      ) {
-        progress(" ✓\n");
-        return true;
+        d.isPidAlive(pidInfo.pid) &&
+        (await d.isPortResponsive(pidInfo.port));
+      if (good && pidInfo) {
+        if (healthyPid !== pidInfo.pid) {
+          healthyPid = pidInfo.pid;
+          healthySince = d.now();
+        }
+        if (d.now() - healthySince >= stableMs) {
+          progress(" ✓\n");
+          return true;
+        }
+      } else {
+        healthyPid = null; // down or replaced: the window starts over
       }
       progress(".");
-      await new Promise((r) => setTimeout(r, 1000));
+      await d.sleep(1000);
     }
     progress(" ✗ (timed out)\n");
     return false;

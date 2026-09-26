@@ -45,6 +45,11 @@ import { observeExit } from "./analytics.js";
 
 // ── Paths ──────────────────────────────────────────────────────────
 
+/** Current agent-record format. Bumping it REQUIRES the ADR-105 policy: the
+ *  release notes carry the storage-format marker, and older versions refuse
+ *  these records (the guard below) instead of misreading them. */
+export const AGENT_SCHEMA_VERSION = 1;
+
 export function getAgentsDir(): string {
   return join(getConfigDir(), "agents");
 }
@@ -121,6 +126,23 @@ function loadFromDisk(): Map<UUID, Agent> {
         typeof data?.workingDirectory !== "string"
       ) {
         console.warn(`Skipping malformed agent file: ${entry}`);
+        continue;
+      }
+      // No-irreversible-migrations policy (ADR-105): a record written by a
+      // NEWER autonomOS (higher schemaVersion) is refused LOUDLY and left
+      // untouched on disk — never loaded, so never re-saved in this older
+      // shape. The fix is restoring the snapshot that pairs with this
+      // version (`autonomos rollback` does it), not guessing at a format
+      // this code has never seen.
+      if (
+        typeof (data as { schemaVersion?: unknown }).schemaVersion ===
+          "number" &&
+        (data as { schemaVersion: number }).schemaVersion > AGENT_SCHEMA_VERSION
+      ) {
+        console.error(
+          `[agents] ${entry} was written by a newer autonomOS (schemaVersion ${(data as { schemaVersion: number }).schemaVersion} > ${AGENT_SCHEMA_VERSION}) — NOT loaded. ` +
+            "Restore the pre-update snapshot with `autonomos rollback`, or update autonomOS again.",
+        );
         continue;
       }
       // Backfill `provider` for agent files that predate the field so the
@@ -615,7 +637,7 @@ export function buildAgent(params: {
 }): Agent {
   const now = Date.now();
   return {
-    schemaVersion: 1,
+    schemaVersion: AGENT_SCHEMA_VERSION,
     id: params.id,
     name: params.name,
     managerId: params.managerId ?? null,

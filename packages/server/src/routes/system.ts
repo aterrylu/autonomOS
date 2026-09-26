@@ -1,30 +1,43 @@
-// /api/system/* — version + upgrade endpoints.
+// /api/system/* — version, release notes, and the in-app update (ADR-105).
 //
-// GET  /api/system/version    → { version, platform, arch }
-//      Contract (agreed with the API-conventions pass): path and these three
-//      fields are stable; the pid-file liveness probe hits this route, so it
-//      must stay cheap and never block on anything remote.
-// POST /api/system/upgrade    → trigger an in-process upgrade
+// GET    /api/system/version   → { version, platform, arch, …update fields }
+//        Contract (API-conventions pass): path + {version, platform, arch}
+//        frozen; the pid-file liveness probe hits this route, so it must
+//        stay cheap and never block on anything remote. During the in-app
+//        update's restart gap the dashboard polls THIS route to learn when
+//        the new version answers.
+// GET    /api/system/releases  → cached GitHub release bodies since this version
+// GET    /api/system/upgrade   → progress record + armed state + busy agents
+// POST   /api/system/upgrade   → { when: "idle" | "now" } — operator only
+// DELETE /api/system/upgrade   → cancel an armed (waiting-for-idle) update
 //
-// The in-process path follows the stage-then-exit(0) discipline (ADR-077):
-// the swap is pure filesystem work (safe in-process), the response is sent,
-// and then the process EXITS — it never calls launchctl/systemctl on itself
-// (an in-band supervisor restart kills the process mid-call; see the OpenClaw
-// postmortems cited in the ADR). The supervisor (launchd KeepAlive / systemd
-// Restart=always) revives it on the new bundle. Exit happens ONLY on status
-// "upgraded" — an up-to-date no-op must not bounce the daemon.
-//
-// What this path deliberately lacks (vs the CLI): the post-restart health
-// gate + auto-rollback — the process that would run them is gone. The
-// backstops are StartLimitIntervalSec=0 (supervisor never stops retrying)
-// and `autonomos rollback` from a shell. That asymmetry is why the dashboard
-// gets no Update button in v1.
+// The update NEVER runs in this process (ADR-077's in-band flaw; the old
+// in-process swap-then-exit path is gone). POST launches `autonomos upgrade`
+// as its own supervisor job (upgradeJob.ts) — which keeps the CLI's health
+// gate + auto-rollback — and progress flows through a status file, not
+// through the daemon being restarted (upgradeStatus.ts).
 
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
+import { getCookie } from "hono/cookie";
 import type { InstallMode } from "../installInfo.js";
-import { type ResolvedInstall, resolveInstall } from "../installInfo.js";
-import { getUpdateCheckState } from "../updateCheck.js";
-import { detectPlatform, performUpgrade } from "../upgrade.js";
+import { resolveInstall } from "../installInfo.js";
+import { listSnapshots, snapshotForVersion } from "../snapshots.js";
+import { getUpdateCheckState, runUpdateCheck } from "../updateCheck.js";
+import { readBundleVersion } from "../upgrade.js";
+import {
+  launchRollbackJob,
+  launchUpgradeJob,
+  ownSupervisor,
+} from "../upgradeJob.js";
+import {
+  armUpgrade,
+  disarmUpgrade,
+  getArmedUpgrade,
+  IDLE_WINDOW_MS,
+  listBackgroundWork,
+  listBusyAgents,
+} from "../upgradeScheduler.js";
+import { readUpgradeStatus, upgradeJobRunning } from "../upgradeStatus.js";
 import { getServerVersion } from "../version.js";
 
 export const systemRouter = new Hono();
@@ -63,93 +76,285 @@ systemRouter.get("/version", (c) => {
   });
 });
 
-// At most one in-process upgrade at a time: concurrent runs share a staging
-// dir keyed by pid (the second's cleanup clobbers the first's download) and
-// would race the same renames — a race can strand the install with no live
-// bundle. In-process latch suffices for same-process requests; a CLI upgrade
-// racing the route is out of scope (single-operator boxes).
-let upgradeInFlight = false;
+/**
+ * "Check for updates" — run the release check NOW instead of waiting for the
+ * boot delay (5 min) or the daily cadence. Operator-only like every trigger
+ * (it contacts GitHub and replaces the cached state). An explicit click runs
+ * even with the daily check switched off: the operator asked. Concurrent
+ * clicks share the one in-flight check.
+ */
+let manualCheck: Promise<unknown> | null = null;
+systemRouter.post("/check-updates", async (c) => {
+  const denied = operatorOnly(c);
+  if (denied) return denied;
+  manualCheck ??= runUpdateCheck().finally(() => {
+    manualCheck = null;
+  });
+  await manualCheck;
+  const u = getUpdateCheckState();
+  return c.json({
+    current: getServerVersion(),
+    latest: u.latest,
+    updateAvailable: u.updateAvailable,
+    checkedAt: u.checkedAt,
+  });
+});
+
+systemRouter.get("/releases", (c) => {
+  const u = getUpdateCheckState();
+  return c.json({
+    current: getServerVersion(),
+    latest: u.latest,
+    updateAvailable: u.updateAvailable,
+    releaseUrl: u.releaseUrl,
+    // null = notes unavailable (fetch failed / rate-limited): the dashboard
+    // shows a GitHub link instead. Never blocks the update.
+    releases: u.releases,
+  });
+});
+
+// A run is "in flight" while its record is non-terminal and fresh. The
+// staleness bound keeps a job that died without a final write (machine
+// lost power mid-update) from wedging the button forever.
+function upgradeInFlight(): boolean {
+  // The lock covers a shell `autonomos upgrade`/`rollback` too (no status
+  // file), and tells a killed job's orphaned record from a live one.
+  return upgradeJobRunning();
+}
+
+systemRouter.get("/upgrade", (c) => {
+  return c.json({
+    current: getServerVersion(),
+    supervised: ownSupervisor().kind !== "none",
+    installMode: installMode(),
+    status: readUpgradeStatus(),
+    armed: getArmedUpgrade(),
+    idleWindowMs: IDLE_WINDOW_MS,
+    busy: listBusyAgents(),
+    // Warn-only. "Will be stopped" is measured on BOTH supervisors: the
+    // restart SIGTERMs the daemon, whose shutdown handler stops each agent,
+    // and Claude Code tears down its own tracked background shells (own
+    // process group and all) — forge/systemd and the dev Mac with a real
+    // agent. A `nohup`/detached process (ppid 1) isn't counted: it escapes.
+    background: listBackgroundWork(),
+    // Judged here, on the clock that wrote the record — a browser whose clock
+    // is minutes off would otherwise declare a live job dead (or a dead one
+    // live).
+    inFlight: upgradeInFlight(),
+  });
+});
+
+/**
+ * Operator-only guard for the update trigger. Agents never get an update
+ * surface: it is not an MCP tool, the internal control socket does not mount
+ * /api/system, and requests an agent's tooling makes are identifiable —
+ * the per-agent X-Agent-Token header, or bearer-token API calls. The trigger
+ * therefore requires the dashboard's login COOKIE and refuses both.
+ *
+ * Honest boundary (ADR-105): an agent's MCP config carries the operator
+ * token, so an agent that deliberately forges a browser request with it
+ * could pass this check. That is the same trusted-fleet boundary every
+ * operator route already has (ADR-067's caveat); this guard closes every
+ * agent-FACING path, not a determined forgery.
+ */
+function operatorOnly(c: Context): Response | null {
+  if (c.req.header("X-Agent-Token")) {
+    return c.json(
+      { error: "Agents cannot trigger updates.", code: "OPERATOR_ONLY" },
+      403,
+    );
+  }
+  if (!getCookie(c, "autonomos_token")) {
+    return c.json(
+      {
+        error:
+          "The in-app update is dashboard-only. From a shell, run `autonomos upgrade`.",
+        code: "OPERATOR_ONLY",
+      },
+      403,
+    );
+  }
+  // CSRF: the cookie is SameSite=Lax, which browsers still attach to requests
+  // from OTHER PORTS of the same host (site = scheme + host, port ignored) —
+  // e.g. an agent's dev server on :5173 could POST here with the operator's
+  // cookie. The dashboard itself is always same-origin.
+  const fetchSite = c.req.header("Sec-Fetch-Site");
+  const origin = c.req.header("Origin");
+  let crossOrigin = fetchSite !== undefined && fetchSite !== "same-origin";
+  // Origin vs Host only when the browser sent no Sec-Fetch-Site (older
+  // browsers). When it did, it already vouched for same-origin — and a
+  // reverse proxy that rewrites Host (stock nginx proxy_pass) would make
+  // the comparison 403 every legitimate click.
+  if (fetchSite === undefined && origin) {
+    try {
+      crossOrigin = new URL(origin).host !== c.req.header("Host");
+    } catch {
+      crossOrigin = true;
+    }
+  }
+  // A JSON content type forces a CORS preflight on any cross-origin POST,
+  // which fails (no CORS here) — the belt to the headers' braces for clients
+  // that send neither.
+  const notJson =
+    c.req.method === "POST" &&
+    !(c.req.header("Content-Type") ?? "").includes("application/json");
+  if (crossOrigin || notJson) {
+    return c.json(
+      {
+        error: "Update requests must come from the dashboard itself.",
+        code: "CROSS_ORIGIN",
+      },
+      403,
+    );
+  }
+  return null;
+}
 
 systemRouter.post("/upgrade", async (c) => {
-  if (upgradeInFlight) {
+  const denied = operatorOnly(c);
+  if (denied) return denied;
+  const body = await c.req.json().catch(() => ({}));
+  const when = body?.when === "now" ? "now" : "idle";
+
+  const u = getUpdateCheckState();
+  if (!u.updateAvailable || !u.latest) {
+    return c.json({ error: "No update available.", code: "NO_UPDATE" }, 409);
+  }
+  // The dialog showed notes (and any storage-format callout) for one
+  // version; if the daily check moved `latest` since, don't install a
+  // different one behind that screen.
+  if (
+    typeof body?.expectedVersion === "string" &&
+    body.expectedVersion !== u.latest
+  ) {
     return c.json(
-      { status: "error", message: "An upgrade is already in progress." },
+      {
+        error: `A newer release (v${u.latest}) appeared since you opened this. Review its notes first.`,
+        code: "VERSION_CHANGED",
+        latest: u.latest,
+      },
       409,
     );
   }
-  let install: ResolvedInstall;
+  if (ownSupervisor().kind === "none") {
+    return c.json(
+      {
+        error:
+          "This autonomOS isn't running as a service, so it can't restart itself. Run `autonomos upgrade` in a terminal.",
+        code: "NOT_SUPERVISED",
+      },
+      409,
+    );
+  }
+  if (upgradeInFlight()) {
+    return c.json(
+      { error: "An update is already running.", code: "IN_FLIGHT" },
+      409,
+    );
+  }
+
+  if (when === "idle") {
+    const armed = armUpgrade(u.latest);
+    return c.json({ ok: true, armed });
+  }
+  disarmUpgrade();
+  const r = launchUpgradeJob(u.latest);
+  if (!r.ok) {
+    return c.json({ error: r.message, code: "LAUNCH_FAILED" }, 500);
+  }
+  return c.json({ ok: true, launched: true });
+});
+
+/**
+ * What the in-app Restore would put back: the version the last upgrade
+ * replaced (bundle `.previous`, or the source marker's previousVersion) and
+ * whether a state snapshot pairs with it. null = nothing to restore.
+ */
+function rollbackTarget(): {
+  version: string;
+  snapshotId: string | null;
+} | null {
   try {
-    install = resolveInstall();
+    const install = resolveInstall();
+    const version =
+      install.info.mode === "source"
+        ? (install.info.previousVersion ?? null)
+        : readBundleVersion(`${install.bundleDir}.previous`);
+    if (!version || version === "unknown") return null;
+    return { version, snapshotId: snapshotForVersion(version)?.id ?? null };
   } catch (err) {
+    // Dev checkouts land here by design; a corrupt install.json also does,
+    // and would otherwise read as "nothing to restore" with no trace.
+    if (!warnedRollbackTarget) {
+      warnedRollbackTarget = true;
+      console.warn(
+        `[upgrade] no Restore target: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    return null;
+  }
+}
+let warnedRollbackTarget = false;
+
+systemRouter.get("/snapshots", (c) => {
+  return c.json({
+    // Manifests without the per-agent baseline (ids/threads are internal).
+    snapshots: listSnapshots().map(({ agents, ...m }) => ({
+      ...m,
+      agentCount: agents.length,
+    })),
+    rollback: rollbackTarget(),
+  });
+});
+
+systemRouter.post("/rollback", (c) => {
+  const denied = operatorOnly(c);
+  if (denied) return denied;
+  const target = rollbackTarget();
+  if (!target) {
     return c.json(
-      {
-        status: "error",
-        message: err instanceof Error ? err.message : String(err),
-      },
-      400,
+      { error: "There's no previous version to restore.", code: "NO_ROLLBACK" },
+      409,
     );
   }
-  if (install.info.mode === "source") {
+  if (ownSupervisor().kind === "none") {
     return c.json(
       {
-        status: "error",
-        message:
-          "This is a source (git clone) install — run `autonomos upgrade` " +
-          "from a shell. The in-process REST path is bundle-only: a source " +
-          "upgrade rebuilds for minutes inside the request and gets no " +
-          "health gate (the process that would run it exits).",
+        error:
+          "This autonomOS isn't running as a service, so it can't restart itself. Run `autonomos rollback` in a terminal.",
+        code: "NOT_SUPERVISED",
       },
-      400,
+      409,
     );
   }
+  if (upgradeInFlight()) {
+    return c.json(
+      { error: "An update is already running.", code: "IN_FLIGHT" },
+      409,
+    );
+  }
+  disarmUpgrade();
+  const r = launchRollbackJob(target.version);
+  if (!r.ok) {
+    return c.json({ error: r.message, code: "LAUNCH_FAILED" }, 500);
+  }
+  return c.json({ ok: true, launched: true, target });
+});
 
-  let platform: ReturnType<typeof detectPlatform>;
-  try {
-    platform = detectPlatform();
-  } catch (err) {
+systemRouter.delete("/upgrade", (c) => {
+  const denied = operatorOnly(c);
+  if (denied) return denied;
+  // Lost the race with the idle tick: the job already launched. Saying
+  // "cancelled" here would let the operator walk away from a restart.
+  if (!getArmedUpgrade() && upgradeInFlight()) {
     return c.json(
       {
-        status: "error",
-        message: err instanceof Error ? err.message : String(err),
+        error: "The update already started and can't be cancelled.",
+        code: "LAUNCHED",
       },
-      400,
+      409,
     );
   }
-
-  upgradeInFlight = true;
-  let result: Awaited<ReturnType<typeof performUpgrade>>;
-  try {
-    result = await performUpgrade({
-      bundleDir: install.bundleDir,
-      currentVersion: getServerVersion(),
-      platform,
-      installInfo: install.info,
-    });
-  } finally {
-    // Released even on "upgraded": the exit below is scheduled, not certain
-    // (an unsupervised daemon keeps living until then), and a stuck latch
-    // would block retries forever.
-    upgradeInFlight = false;
-  }
-
-  if (result.status === "upgraded") {
-    // Send response first, then exit. Under launchd KeepAlive / systemd
-    // Restart=always the supervisor revives us on the new bundle. A daemon
-    // started FOREGROUND (no service installed) stays down after this exit —
-    // the server cannot see its own supervisor from in here, so say so in
-    // the response instead of promising a restart.
-    setTimeout(() => {
-      console.log("[upgrade] Restarting to apply new bundle...");
-      process.exit(0);
-    }, 500);
-    return c.json({
-      ...result,
-      note:
-        "Daemon exits in ~500ms. A supervised install (launchd/systemd) " +
-        "restarts automatically; a foreground daemon must be started again " +
-        "with `autonomos start`.",
-    });
-  }
-
-  return c.json(result);
+  disarmUpgrade();
+  return c.json({ ok: true });
 });

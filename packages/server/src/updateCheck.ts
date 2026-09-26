@@ -50,14 +50,44 @@ export type UpdateCheckState = {
    * renders without a link there.
    */
   releaseUrl: string | null;
+  /**
+   * Every published release NEWER than the running version, newest first,
+   * with its GitHub release BODY verbatim (ADR-105 — the in-app "What's new"
+   * renders exactly the notes /release publishes; one source, never a
+   * bundled or hand-maintained copy). null = not fetched / fetch failed:
+   * the dashboard then shows "notes unavailable — view on GitHub" and the
+   * update itself stays available (notes never gate an update).
+   */
+  releases: ReleaseNote[] | null;
 };
 
-let state: UpdateCheckState = {
+export type ReleaseNote = {
+  version: string;
+  name: string;
+  /** Markdown, exactly as published on GitHub. Untrusted: render safely. */
+  body: string;
+  url: string | null;
+  publishedAt: string | null;
+  /**
+   * The release changes the agent-record format (ADR-105 no-irreversible-
+   * migrations policy). Driven by a STRUCTURED marker in the release body —
+   * `<!-- autonomos:storage-format-change -->`, invisible on GitHub — never
+   * by sniffing prose. The dashboard shows a pre-click callout for it.
+   */
+  storageFormatChange: boolean;
+};
+
+export const STORAGE_FORMAT_MARKER = "<!-- autonomos:storage-format-change -->";
+
+const EMPTY_STATE: UpdateCheckState = {
   latest: null,
   updateAvailable: false,
   checkedAt: null,
   releaseUrl: null,
+  releases: null,
 };
+
+let state: UpdateCheckState = { ...EMPTY_STATE };
 let timer: NodeJS.Timeout | undefined;
 
 /** The cached answer — cheap, synchronous, safe to read in any handler. */
@@ -134,17 +164,91 @@ export async function runUpdateCheck(
   if (!/^\d+\.\d+\.\d+/.test(latest)) return state;
 
   const current = getServerVersion();
+  const updateAvailable =
+    current !== "unknown" && compareSemver(current, latest) < 0;
   state = {
     latest,
-    updateAvailable:
-      current !== "unknown" && compareSemver(current, latest) < 0,
+    updateAvailable,
     checkedAt: new Date().toISOString(),
     releaseUrl:
       repo === DEFAULT_RELEASE_REPO
         ? `https://github.com/${repo}/releases/tag/v${latest}`
         : null,
+    // Only worth a second request when there is something to show.
+    releases: updateAvailable
+      ? await fetchReleaseNotes(apiBase, repo, current, latest)
+      : [],
   };
   return state;
+}
+
+type GitHubRelease = {
+  tag_name?: unknown;
+  name?: unknown;
+  body?: unknown;
+  html_url?: unknown;
+  published_at?: unknown;
+  draft?: unknown;
+  prerelease?: unknown;
+};
+
+/**
+ * Release bodies for every version in (current, latest], newest first.
+ * Returns null on any failure — the caller renders the "notes unavailable"
+ * fallback; a notes failure must never hide the update or block it.
+ */
+async function fetchReleaseNotes(
+  apiBase: string,
+  repo: string,
+  current: string,
+  latest: string,
+): Promise<ReleaseNote[] | null> {
+  let list: GitHubRelease[];
+  try {
+    const resp = await fetch(`${apiBase}/repos/${repo}/releases?per_page=50`, {
+      headers: { Accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      console.warn(
+        `[update-check] release notes fetch returned ${resp.status} — the in-app notes will fall back to a GitHub link`,
+      );
+      return null;
+    }
+    const parsed = await resp.json();
+    if (!Array.isArray(parsed)) {
+      console.warn("[update-check] release notes: unexpected response shape");
+      return null;
+    }
+    list = parsed as GitHubRelease[];
+  } catch (err) {
+    // The dialog falls back to "notes unavailable, view on GitHub" — the
+    // update itself is never blocked on notes. Leave a trace for diagnosis.
+    console.warn(
+      `[update-check] release notes unavailable: ${err instanceof Error ? err.message : err}`,
+    );
+    return null;
+  }
+  const notes: ReleaseNote[] = [];
+  for (const r of list) {
+    if (r.draft === true || r.prerelease === true) continue;
+    if (typeof r.tag_name !== "string") continue;
+    const version = r.tag_name.replace(/^v/, "");
+    if (!/^\d+\.\d+\.\d+$/.test(version)) continue;
+    if (compareSemver(version, current) <= 0) continue;
+    if (compareSemver(version, latest) > 0) continue;
+    notes.push({
+      version,
+      name: typeof r.name === "string" && r.name ? r.name : `v${version}`,
+      body: typeof r.body === "string" ? r.body : "",
+      url: typeof r.html_url === "string" ? r.html_url : null,
+      publishedAt: typeof r.published_at === "string" ? r.published_at : null,
+      storageFormatChange:
+        typeof r.body === "string" && r.body.includes(STORAGE_FORMAT_MARKER),
+    });
+  }
+  notes.sort((a, b) => compareSemver(b.version, a.version));
+  return notes;
 }
 
 /**
@@ -196,10 +300,12 @@ export function stopUpdateCheck(): void {
 /** Test hook — reset the module cache between tests. */
 export function _resetUpdateCheckForTesting(): void {
   stopUpdateCheck();
-  state = {
-    latest: null,
-    updateAvailable: false,
-    checkedAt: null,
-    releaseUrl: null,
-  };
+  state = { ...EMPTY_STATE };
+}
+
+/** Test hook — pin the cached check result. */
+export function _setUpdateCheckStateForTesting(
+  patch: Partial<UpdateCheckState>,
+): void {
+  state = { ...state, ...patch };
 }

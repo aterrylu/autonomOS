@@ -12,6 +12,7 @@ import {
   settleLinkLogin,
   takeLinkLogin,
 } from "./LoginPage";
+import { UpdatedBanner } from "./plugins/update-badge/UpdatedBanner";
 import { startPushBridge } from "./pushBridge";
 import { QuickSwitcher } from "./shortcuts/QuickSwitcher";
 import { ShortcutHelpOverlay } from "./shortcuts/ShortcutHelpOverlay";
@@ -170,6 +171,7 @@ export function App() {
         onClick={requestNotificationPermission}
       >
         <Header />
+        <UpdatedBanner />
         <div className="relative flex flex-1 overflow-hidden">
           {sidebarOpen && (
             <>

@@ -36,6 +36,7 @@ setInternalSocketPath(
   join(tmpdir(), `aos-rg-${randomUUID().slice(0, 8)}.sock`),
 );
 const { spawnAgent, killAttachment } = await import("../agents/runtime.js");
+const { wasFreshStart } = await import("../agents/freshStarts.js");
 const { _setProviderForTesting } = await import("../providers/index.js");
 const { claudeCodeProvider } = await import("../providers/claude-code.js");
 const {
@@ -44,6 +45,7 @@ const {
   getAgent,
   markExited,
   getAgentByProviderSessionId,
+  markActivity,
   _resetCacheForTesting,
 } = await import("../agents/store.js");
 const { getNotifications, clearNotifications } = await import(
@@ -138,6 +140,21 @@ describe("CC reattach pre-flight (ADR-111)", () => {
       ),
       "fresh-start notice pushed",
     );
+    // …and the post-update verifier is told this id was never saved, so it
+    // won't report a lost conversation (ADR-105).
+    assert.ok(wasFreshStart(id, "session", old as string));
+  });
+
+  it("an agent that DID converse and lost its session is NOT excused by the post-update check", async () => {
+    const id = seed();
+    markActivity(id, Date.now() - 60_000); // it had real turns
+    const old = getAgent(id)?.providerSessionId;
+    resumable = false;
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    // Same fresh start, but that IS a lost conversation: the verifier must
+    // still report it, so it's not recorded as "nothing lost".
+    assert.notEqual(seen.at(-1)?.providerSessionId, old);
+    assert.equal(wasFreshStart(id, "session", old as string), false);
   });
 
   it("resumable → --resume with the SAME id (unchanged)", async () => {
@@ -149,6 +166,7 @@ describe("CC reattach pre-flight (ADR-111)", () => {
     assert.equal(argv?.resumeSessionId, old);
     assert.equal(argv?.providerSessionId, old);
     assert.equal(getAgent(id)?.providerSessionId, old);
+    assert.equal(wasFreshStart(id, "session", old as string), false);
   });
 
   it("the probe receives the CHILD's final env (so a preset-relocated CLAUDE_CONFIG_DIR is honored)", async () => {

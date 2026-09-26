@@ -485,6 +485,19 @@ export function cancelAllPromptTracking(): void {
   for (const id of Array.from(trackers.keys())) finish(id);
 }
 
+/** Whether an agent's starting prompt is still on its way in (not yet
+ *  confirmed by UserPromptSubmit). A given-up tracker doesn't count: the
+ *  operator was already told, and holding an update for its 10-minute
+ *  retention would stall it for nothing. */
+export function isPromptPending(sessionId: string): boolean {
+  const phase = trackers.get(sessionId)?.phase;
+  return (
+    phase === "awaiting_session_start" ||
+    phase === "awaiting_prompt_submit" ||
+    phase === "awaiting_redelivery_confirm"
+  );
+}
+
 /** For testing — inspect the tracker phase. */
 export function _getPhaseForTesting(sessionId: string): Phase | undefined {
   return trackers.get(sessionId)?.phase;

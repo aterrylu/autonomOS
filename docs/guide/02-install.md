@@ -64,23 +64,39 @@ Stopping the service does not delete anything. autonomOS records which agents we
 
 ## Updating
 
-The dashboard shows a small badge in the bottom bar when a newer release exists: "New release available (v0.6.1 → v0.7.0)". Nothing updates by itself. When you want it:
+When a newer release exists, the status bar shows **Update to v0.8.0**. Nothing updates by itself. Click it to open one screen that shows:
+
+- **Your agents, live.** If they're all idle, they reopen where they left off. If one is mid-task, it's named, with what a restart would cost it.
+- **What's safe.** A snapshot of your agents, schedules, templates, presets and settings is saved first. If the new version doesn't start, autonomOS restores the old one on its own. You stay signed in.
+- **What's new.** The release notes for every version since yours. A breaking change is quoted above them, next to the agent check.
+
+Then pick one:
+
+- **Update and restart** when every agent is idle.
+- **Update when idle** when an agent is busy. autonomOS waits until every agent has been idle for 30 seconds, then updates. The amber pill in the status bar shows who it's waiting for: click it to see the wait or update right away, or click **Cancel**.
+- **Update now** when an agent is busy and you'd rather not wait. The button names who it interrupts.
+
+Progress shows on the same screen: Preparing, Restarting, Reopening agents. The page reloads onto the new version and confirms your agents reopened.
+
+Settings → Updates has **Check for updates** (look for a release right away), **Update…** when one is available, and **Restore v…**, which puts back the previous version together with the snapshot from before the update. If autonomOS is not running as a service, the dialog shows the terminal command instead.
+
+From a terminal, the same update:
 
 ```bash
 autonomos upgrade
 ```
 
-This downloads the new release, verifies it, swaps it in, restarts the service, and checks that the new version starts. If it does not, it puts the old version back on its own. Your agents, token, and settings are untouched, and agents that were running come back.
-
-If an upgrade works but you want the previous version anyway:
+Your token and settings are untouched, and agents that were running reopen. If an update works but you want the previous version anyway:
 
 ```bash
 autonomos rollback
 ```
 
+This restores the previous version and the snapshot from before the update. What you changed since is saved as a snapshot first; undo the restore (Settings → Updates) to get it back.
+
 Re-running the one-line installer is also a supported way to upgrade.
 
-You can turn off the daily check for new releases in Settings ("Update Check"). The dashboard itself never contacts GitHub; the server does, once a day.
+You can turn off the daily check for new releases in Settings → Updates (**Check for updates daily**). The dashboard itself never contacts GitHub; the server does, once a day.
 
 ## Uninstalling
 

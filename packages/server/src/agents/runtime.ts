@@ -55,6 +55,7 @@ import {
   trackChannelServerRegistration,
 } from "./channelServerCheck.js";
 import { enrichAgent } from "./enrich.js";
+import { noteFreshStart } from "./freshStarts.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -201,7 +202,21 @@ export interface ManagedAttachment {
    * member the runtime DOES read, the cast would keep compiling while the fake
    * lacked it. Stating the real coupling lets the compiler enforce it instead.
    */
-  sidecar?: Pick<Sidecar, "endpoint" | "dispose">;
+  sidecar?: Pick<Sidecar, "endpoint" | "dispose"> & {
+    /** The daemon's pid — it, not the TUI, runs Codex's commands. Read only by
+     *  the update pre-flight's background-process check. */
+    pid?: number;
+  };
+}
+
+/** The processes an agent's work runs under: its CLI (the PTY child) and,
+ *  for Codex, the app-server daemon. Empty when the agent isn't live. */
+export function getAgentProcessRoots(agentId: UUID): number[] {
+  const m = live.get(agentId);
+  if (!m) return [];
+  return [m.pty.pid, m.sidecar?.pid].filter(
+    (p): p is number => typeof p === "number" && p > 0,
+  );
 }
 
 /** ws:// endpoint of an agent's provider daemon (Codex), or undefined. */
@@ -1135,6 +1150,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       console.info(
         `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
+      // Only a NEVER-USED agent's fresh start is "nothing lost" (no genuine
+      // activity ever: lastActivityAt is set only by real work). An agent that
+      // conversed and still has no saved session DID lose it — the
+      // post-update check must keep flagging that. Same rule as the notice
+      // gate in #437 (hadActivity); unify once both are on main.
+      if (oldSessionId && agent.lastActivityAt === undefined)
+        noteFreshStart(agent.id, "session", oldSessionId);
       pendingNotices.push(
         `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
       );
@@ -1157,6 +1179,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
     resolved.providerThreadId = undefined;
     startedFreshThread = true;
+    if (agent.lastActivityAt === undefined)
+      noteFreshStart(agent.id, "thread", oldThread);
     pendingNotices.push(
       `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
     );
@@ -1443,7 +1467,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     pty,
     outputBuffer: [],
     outputSize: 0,
-    sidecar,
+    sidecar: sidecar && {
+      endpoint: sidecar.endpoint,
+      dispose: () => sidecar?.dispose(),
+      pid: sidecar.proc.pid,
+    },
   };
   live.set(persisted.id, managed);
 
