@@ -461,6 +461,12 @@ export function MessageLayer({
               left: at.x + 6,
               top: below ? at.y + CARD_H + 10 : at.y - 58,
               zIndex: 4,
+              // Counter-scale against the canvas zoom (Terry's pick 3A: the
+              // text stays readable). The independent `scale` property
+              // composes with the unfurl animation's `transform` instead of
+              // fighting it, and pivots on the tail (the CSS transform-origin),
+              // so the bubble stays pinned to its card.
+              scale: "var(--org-inv-k, 1)",
               background: tokens.bg,
               color: tokens.fg,
               border: `1px solid ${tokens.status.active}`,

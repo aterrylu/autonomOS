@@ -45,8 +45,8 @@
  * CAPTURE-TIME TWEAKS (Playwright only — NOT product-code edits):
  *   - Un-dim: injects `.dv-pane-fill { opacity: 1 !important }` so inactive
  *     dockview groups (normally dimmed to 0.5) render bright.
- *   - Org fit: scales the org-chart stage ([data-org-stage]) down to the left
- *     pane's width so the whole side-by-side hierarchy fits (never upscales).
+ *   - Org fit: presses the org chart's own Fit button so the whole hierarchy
+ *     shows (the canvas can pan/zoom since PR 5; no capture-time transform).
  *   - Host: route-mocks `/api/host` → hostname "dev-server" so the status bar
  *     reads a generic name instead of the operator's machine.
  *   - Gemini MCP is stripped from the generated Gemini settings so it sidesteps
@@ -1103,16 +1103,11 @@ function seedBlob3(
 // opacity 0.5 on .dv-pane-fill) — capture-time visual only.
 const UNDIM_CSS = ".dv-pane-fill { opacity: 1 !important; }";
 
-// The org chart lays teams out side by side on a fixed-size stage; the left
-// pane is narrower than a full fleet, so FIT the stage to the pane width
-// (never upscale). Capture-time visual only — see fitOrgChart().
+// The org chart is a pan/zoom canvas (PR 5). Press its own Fit button so the
+// hero shows the whole hierarchy exactly as the product would — overriding the
+// stage transform here would fight the canvas's own view.
 const fitOrgChart = () => {
-  const vp = document.querySelector<HTMLElement>("[data-org-viewport]");
-  const stage = document.querySelector<HTMLElement>("[data-org-stage]");
-  if (!vp || !stage) return;
-  const scale = Math.min(1, (vp.clientWidth - 8) / stage.offsetWidth);
-  stage.style.transform = `scale(${scale})`;
-  stage.style.transformOrigin = "top left";
+  document.querySelector<HTMLElement>("[data-org-zoom-fit]")?.click();
 };
 
 async function shoot(
