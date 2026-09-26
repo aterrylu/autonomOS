@@ -6,6 +6,7 @@ import {
   breakingSummary,
   compareVersions,
   consequenceFor,
+  inAppNotes,
   joinNames,
   sortNewestFirst,
   stageDetail,
@@ -52,8 +53,10 @@ describe("updateFlow helpers", () => {
     );
     expect(consequenceFor("tool_running")).toMatch(/running command stops/);
     expect(consequenceFor("needs_input")).toMatch(/question to you is cleared/);
-    expect(consequenceFor("idle")).toBe("Reopens where it left off");
-    expect(consequenceFor("ready")).toBe("Reopens where it left off");
+    expect(consequenceFor("idle")).toBe(
+      "Restarts and picks up where it left off.",
+    );
+    expect(consequenceFor("ready")).toBe(consequenceFor("idle"));
   });
 
   it("maps every phase to one of three stages, and says what it's doing", () => {
@@ -104,6 +107,22 @@ describe("updateFlow helpers", () => {
       "Old API routes removed: the deprecated /auth, /api/scheduler/*, and /api/hooks read aliases are gone.",
     );
     expect(breakingSummary("- nothing to see here")).toBeNull();
+  });
+
+  it("drops the GitHub install footer from notes shown inside the dialog", () => {
+    const body = [
+      "- 🚀 new thing",
+      "- 🩹 fix",
+      "",
+      "---",
+      "📦 **Install / upgrade:** `curl -fsSL https://x/install.sh | sh`",
+      "💾 **Manual download:** grab the tarball from the assets below (verify against SHA256SUMS)",
+    ].join("\n");
+    expect(inAppNotes(body)).toBe("- 🚀 new thing\n- 🩹 fix");
+    // A rule followed by real notes stays.
+    expect(inAppNotes("a\n---\nb")).toBe("a\n---\nb");
+    // A stray install line anywhere goes too.
+    expect(inAppNotes("a\nRun install.sh again\nb")).toBe("a\nb");
   });
 
   it("joins names in prose", () => {

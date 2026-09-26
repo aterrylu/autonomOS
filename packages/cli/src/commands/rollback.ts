@@ -83,8 +83,8 @@ async function rollbackCommand(report: Reporter): Promise<number> {
   report("restarting", { from: result.from, to: result.to });
   const outcome = await restartDaemonAfterSwap(result.to);
   const stateNote = state.restored
-    ? "Your agents' setup was restored from the snapshot taken before the update."
-    : `Agent state was not restored: ${state.reason}.`;
+    ? "The snapshot from before the update was restored too."
+    : `The snapshot wasn't restored: ${state.reason}.`;
   if (outcome.kind === "restart-failed") {
     // With a state restore the daemon was STOPPED first, so a failed restart
     // leaves it down — say that, not "still on the previous version".

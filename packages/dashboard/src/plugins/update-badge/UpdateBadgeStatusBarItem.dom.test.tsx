@@ -268,7 +268,9 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
       expect(agents.getAttribute("data-state")).toBe("clear"),
     );
     expect(agents.textContent).toContain("idle-ivy is idle.");
-    expect(agents.textContent).toContain("It reopens where it left off.");
+    expect(agents.textContent).toContain(
+      "It restarts with autonomOS and picks up where it left off.",
+    );
     expect(agents.textContent).not.toContain("All 1");
     expect(agents.querySelector("details")).not.toBeNull();
   });
@@ -290,7 +292,7 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
     expect(safety.textContent).toContain("You stay signed in");
   });
 
-  it("release-note links leave the Tab order; the notes box is one focusable region", async () => {
+  it("release-note links stay keyboard-reachable, in the theme's link color; the box is a focusable region", async () => {
     installServer({
       "GET /api/system/releases": () =>
         json({
@@ -312,13 +314,13 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
     await openDialog();
     const box = await screen.findByTestId("update-notes");
     await waitFor(() => expect(box.querySelectorAll("a").length).toBe(2));
-    await waitFor(() =>
-      expect(
-        [...box.querySelectorAll("a")].every(
-          (a) => a.getAttribute("tabindex") === "-1",
-        ),
-      ).toBe(true),
-    );
+    // Mouse-only links fail WCAG 2.1.1 (the a11y re-review caught it).
+    expect(
+      [...box.querySelectorAll("a")].some(
+        (a) => a.getAttribute("tabindex") === "-1",
+      ),
+    ).toBe(false);
+    expect(box.style.getPropertyValue("--notes-link")).not.toBe("");
     expect(box.getAttribute("tabindex")).toBe("0");
     expect(box.getAttribute("aria-label")).toBe("Release notes");
   });
@@ -372,6 +374,9 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
     // It QUOTES the change instead of pointing into the notes.
     expect(screen.getByTestId("breaking-quote").textContent).toBe(
       "Old routes 404.",
+    );
+    expect(screen.getByTestId("breaking-callout").textContent).toContain(
+      "Check whether your own scripts or integrations rely on it.",
     );
     // The newest release is open; older ones fold.
     const [newest, ...older] = screen.getAllByTestId("release-section");
@@ -456,7 +461,9 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
       "Its running command stops. Prompt it to continue.",
     );
     expect(rows[2].textContent).toContain("Its question to you is cleared.");
-    expect(rows[3].textContent).toContain("Reopens where it left off");
+    expect(rows[3].textContent).toContain(
+      "Restarts and picks up where it left off.",
+    );
 
     // Terry's default is the primary: wait for idle. "Update now" is the
     // secondary and says who it interrupts.
@@ -472,10 +479,18 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
     // The dialog stays, now as the waiting view (it used to just vanish).
     expect(await screen.findByTestId("update-waiting")).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "v0.7.0 is waiting for 3 agents" }),
+      screen.getByRole("heading", {
+        name: "Update to v0.7.0 is waiting for 3 agents",
+      }),
     ).toBeInTheDocument();
     expect(screen.getByText(/idle for 30 seconds/)).toBeInTheDocument();
-    expect(armed.textContent).toContain("v0.7.0 waits for 3 agents");
+    expect(armed.textContent).toContain("Update waits for 3 agents");
+    // No one-click "Update now" on the pill: it would interrupt without
+    // saying who. The waiting view has it, with the name.
+    expect(armed.textContent).not.toContain("Update now");
+    expect(screen.getByTestId("update-armed-cancel").textContent).toBe(
+      "Cancel",
+    );
   });
 
   it("the amber pill reopens the waiting view; Cancel update there disarms and closes", async () => {
@@ -510,7 +525,7 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
     fireEvent.click(await screen.findByTestId("update-armed-open"));
     expect(
       await screen.findByRole("heading", {
-        name: "v0.7.0 is waiting for busy-bee",
+        name: "Update to v0.7.0 is waiting for busy-bee",
       }),
     ).toBeInTheDocument();
     expect(screen.getByTestId("update-waiting-now").textContent).toBe(
@@ -557,13 +572,13 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
     fireEvent.click(await startButton());
     const armed = await screen.findByTestId("update-badge-armed");
     await waitFor(() =>
-      expect(armed.textContent).toContain("waits for api-refactor"),
+      expect(armed.textContent).toContain("Update waits for api-refactor"),
     );
 
     phase = "idle";
     await waitFor(() =>
       expect(screen.getByTestId("update-badge-armed").textContent).toContain(
-        "starts shortly",
+        "Updating in a moment",
       ),
     );
 
@@ -597,7 +612,7 @@ describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => 
     await openDialog();
     fireEvent.click(await startButton());
     expect(
-      await screen.findByText(/stopped responding \(last step: launching\)/),
+      await screen.findByText(/stopped responding \(last step: Starting\)/),
     ).toBeInTheDocument();
   });
 
@@ -751,6 +766,56 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
 
     phase = "done";
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+  });
+
+  it("a failure before anything changed says so — not 'may be on either version'", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        // The job clears snapshotId when it failed before touching anything.
+        status: posted
+          ? record(
+              "failed",
+              "busy-bee stayed busy for 15 minutes, so nothing was changed.",
+            )
+          : null,
+      });
+    await launch();
+    expect(
+      await screen.findByRole("heading", { name: "v0.7.0 wasn't installed" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("update-failed-summary").textContent).toBe(
+      "Nothing changed. You're still on v0.6.1.",
+    );
+  });
+
+  it("a failure after the swap keeps the honest 'either version' warning", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record(
+              "failed",
+              "The update installed but the service restart could not be issued — run `autonomos restart`.",
+              { snapshotId: "0.6.1-x" },
+            )
+          : null,
+      });
+    await launch();
+    expect(
+      await screen.findByRole("heading", {
+        name: "The update to v0.7.0 didn't finish",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("update-failed-summary").textContent).toContain(
+      "may be on either version",
+    );
+    // Backticks are for chat, not for this monospace block.
+    expect(
+      screen.getByTestId("update-failed-message").textContent,
+    ).not.toContain("`");
   });
 
   it("shows the rolled-back modal with the job's message", async () => {
@@ -1092,7 +1157,7 @@ describe("UpdateBadgeStatusBarItem — Restore", () => {
     await requestRestore();
     const note = await screen.findByTestId("restore-no-snapshot");
     expect(note.textContent).toContain(
-      "v0.6.0 predates snapshots, so only the version is restored. Your agents, schedules and settings stay as they are.",
+      "v0.6.0 predates snapshots, so only the version is restored. Your agents, schedules, templates, presets and settings stay as they are.",
     );
     // No snapshot rows claimed.
     expect(screen.queryByTestId("restore-snapshot")).toBeNull();
@@ -1135,7 +1200,7 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
     await openDialog();
     const warn = await screen.findByTestId("update-background-warning");
     expect(warn.textContent).toContain(
-      "api-refactor: Stops 1 background process: npm run dev.",
+      "api-refactor: Stops 1 background process: npm run dev",
     );
     // Warn-only: the update stays one click away.
     expect((await startButton()).textContent).toBe("Update and restart");
@@ -1162,8 +1227,9 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
     });
     await openDialog();
     const agents = await screen.findByTestId("update-agents");
+    // A first task isn't "mid-task": say what it is.
     await waitFor(() =>
-      expect(agents.textContent).toContain("new-worker is mid-task."),
+      expect(agents.textContent).toContain("new-worker is starting."),
     );
     const row = screen.getAllByTestId("update-agent-row")[0];
     expect(row.textContent).toContain("Starting");
@@ -1329,7 +1395,7 @@ describe("UpdateBadgeStatusBarItem — keyboard and screen reader", () => {
     await waitFor(() => expect(document.activeElement).toBe(h1));
     fireEvent.click(await startButton());
     const h2 = await screen.findByRole("heading", {
-      name: "v0.7.0 is waiting for busy-bee",
+      name: "Update to v0.7.0 is waiting for busy-bee",
     });
     await waitFor(() => expect(document.activeElement).toBe(h2));
   });
@@ -1346,6 +1412,59 @@ describe("UpdateBadgeStatusBarItem — keyboard and screen reader", () => {
     expect(dialog.contains(first)).toBe(true);
     fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(last);
+  });
+
+  it("cancelling from the pill lands focus on the new pill (never <body>) and says so", async () => {
+    const armedRec = {
+      target: "0.7.0",
+      armedAt: "2026-09-23T10:00:00Z",
+      idleSince: null,
+    };
+    let armed = true;
+    installServer({
+      "GET /api/system/upgrade": () =>
+        json({
+          ...IDLE_UPGRADE,
+          busy: [{ id: "a", name: "busy-bee", status: "working" }],
+          armed: armed ? armedRec : null,
+        }),
+      "DELETE /api/system/upgrade": () => {
+        armed = false;
+        return json({ ok: true });
+      },
+    });
+    await act(async () => {
+      render(<UpdateBadgeStatusBarItem />, { container: appRoot });
+    });
+    fireEvent.click(await screen.findByTestId("update-armed-open"));
+    await screen.findByTestId("update-waiting");
+    fireEvent.click(screen.getByTestId("update-cancel-armed"));
+    const pill = await screen.findByTestId("update-badge");
+    await waitFor(() => expect(document.activeElement).toBe(pill));
+    expect(document.body.textContent).toContain(
+      "Scheduled update cancelled. Update to v0.7.0 is still available.",
+    );
+  });
+
+  it("while the restart overlay is up, the dialog underneath is gone (one modal at a time)", async () => {
+    installServer();
+    let down = false;
+    routes["POST /api/system/upgrade"] = () =>
+      json({ ok: true, launched: true });
+    routes["GET /api/system/upgrade"] = () => {
+      if (down) throw new TypeError("Failed to fetch");
+      return json({ ...IDLE_UPGRADE, status: null });
+    };
+    await openDialog();
+    fireEvent.click(await startButton());
+    await screen.findByRole("heading", { name: "Updating to v0.7.0" });
+    down = true;
+    routes["GET /api/system/version"] = () => {
+      throw new TypeError("Failed to fetch");
+    };
+    await screen.findByTestId("update-reconnecting");
+    expect(screen.queryByTestId("update-dialog")).toBeNull();
+    expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
   });
 
   it("announces the agent check politely", async () => {

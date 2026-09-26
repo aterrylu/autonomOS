@@ -22,6 +22,7 @@ import {
   joinNames,
   readUpdateAck,
   resurfacedFlag,
+  SNAPSHOT_CONTENTS,
   takeUpdatedFlag,
   type UpdatedFlag,
   writeUpdateAck,
@@ -166,10 +167,11 @@ export function UpdatedBanner() {
   const names = flag.interruptedNames;
   const interruptedClause =
     names.length > 0 &&
-    `${joinNames(names)} ${names.length === 1 ? "was interrupted. Prompt it" : "were interrupted. Prompt them"} to continue`;
+    `${joinNames(names)} ${names.length === 1 ? "was interrupted. Prompt it" : "were interrupted. Prompt them"} to continue.`;
 
   const problems =
     verify.kind === "done" ? (verify.record.verification?.problems ?? []) : [];
+  const snapshotUnreadable = problems.some((p) => p.id === "-");
   // A check that never reported back is not an "all good" either.
   const attention = problems.length > 0 || verify.kind === "timeout";
   const tone = attention ? AMBER : GREEN;
@@ -182,14 +184,20 @@ export function UpdatedBanner() {
         ? `Restored v${flag.updatedTo} and the snapshot from before the update.`
         : flag.withSnapshot === false
           ? `Restored v${flag.updatedTo}.`
-          : (flag.message ?? `Restored v${flag.updatedTo}.`);
+          : `Restored v${flag.updatedTo}.`;
     if (flag.withSnapshot === false) {
-      details = ["Your agents, schedules and settings were left as they are."];
+      details = [
+        `Your ${SNAPSHOT_CONTENTS.toLowerCase()} were left as they are.`,
+      ];
     }
+  } else if (snapshotUnreadable) {
+    // Not an agent: the check itself couldn't run (id "-", upgradeVerify).
+    headline = `Updated to v${flag.updatedTo}, but the agent check couldn't run: the snapshot from before the update couldn't be read.`;
+    details = [interruptedClause];
   } else if (problems.length > 0) {
     const k = problems.length;
     const who = k <= 2 ? joinNames(problems.map((p) => p.name)) : `${k} agents`;
-    headline = `Updated to v${flag.updatedTo}, but ${who} ${k === 1 ? "needs" : "need"} a look.`;
+    headline = `Updated to v${flag.updatedTo}, but ${who} didn't reopen cleanly.`;
     details = [interruptedClause];
   } else {
     headline = `Updated to v${flag.updatedTo}.`;
@@ -201,17 +209,15 @@ export function UpdatedBanner() {
       verify.kind === "done" &&
         checked > 0 &&
         (checked === 1
-          ? "Your agent reopened"
-          : `All ${checked} agents reopened`),
+          ? "Your agent reopened."
+          : `All ${checked} agents reopened.`),
       verify.kind === "timeout" &&
-        "Couldn't confirm your agents reopened. Check the sidebar, or run autonomos status",
-      (verify.kind === "none" || (verify.kind === "done" && checked === 0)) &&
-        agentCount > 0 &&
-        `${agentCount} agent${agentCount === 1 ? "" : "s"} reopened`,
+        "Couldn't confirm your agents reopened. Check the sidebar, or run autonomos status.",
+      // No check ran (no snapshot): say nothing we didn't check.
       interruptedClause,
     ];
   }
-  const detailText = details.filter(Boolean).join(" · ");
+  const detailText = details.filter(Boolean).join(" ");
 
   return (
     <div
@@ -233,7 +239,7 @@ export function UpdatedBanner() {
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-3">
-          {problems.length > 0 && (
+          {problems.length > 0 && verify.kind === "done" && (
             <>
               <button
                 type="button"
@@ -242,7 +248,7 @@ export function UpdatedBanner() {
                 aria-expanded={showDetails}
                 onClick={() => setShowDetails((d) => !d)}
               >
-                Details
+                {showDetails ? "Hide details" : "Show details"}
               </button>
               <button
                 type="button"
@@ -251,8 +257,7 @@ export function UpdatedBanner() {
                 onClick={requestRestore}
                 data-testid="banner-restore"
               >
-                Restore v
-                {verify.kind === "done" ? verify.record.from : "previous"}
+                Restore v{verify.record.from}
               </button>
             </>
           )}
@@ -282,7 +287,7 @@ export function UpdatedBanner() {
           <div style={{ color: page.statusFg }}>
             Checked {verify.record.verification?.checked ?? 0} agent
             {(verify.record.verification?.checked ?? 0) === 1 ? "" : "s"} after
-            updating. {problems.length} came back differently:
+            updating. {problems.length} didn't reopen as expected:
           </div>
           <ul className="flex flex-col gap-1">
             {problems.map((p) => (

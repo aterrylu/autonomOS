@@ -30,7 +30,7 @@ import {
   type UpgradeStatusRecord,
 } from "../../api/system";
 import { useUpdateBus } from "./updateBus";
-import { isLiveRun, writeUpdatedFlag } from "./updateFlow";
+import { isLiveRun, stageDetail, writeUpdatedFlag } from "./updateFlow";
 
 /** Mutable so tests can shrink the waits; production never touches it. */
 export const updateTiming = {
@@ -83,6 +83,9 @@ export function useUpdateFlow(enabled: boolean) {
   const [checkError, setCheckError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  /** A one-line outcome for screen readers when no dialog is left to say it
+   *  (a cancel from the pill closes everything). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [reconnectStart, setReconnectStart] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [restore, setRestore] = useState<RestoreInfo>({ kind: "loading" });
@@ -163,7 +166,7 @@ export function useUpdateFlow(enabled: boolean) {
             setRecord({
               ...rec,
               phase: "failed",
-              message: `The ${rec.kind === "rollback" ? "restore" : "update"} stopped responding (last step: ${rec.phase}). Run autonomos status on the machine running autonomOS.`,
+              message: `The ${rec.kind === "rollback" ? "restore" : "update"} stopped responding (last step: ${stageDetail(rec.phase, rec.to ?? "", { rollback: rec.kind === "rollback" }).replace(/…$/, "")}). Run autonomos status on the machine running autonomOS.`,
             });
             setTracking("none");
             setReconnectStart(null);
@@ -389,11 +392,15 @@ export function useUpdateFlow(enabled: boolean) {
 
   const cancelArmed = useCallback(async () => {
     setActionError(null);
+    const target = upgrade?.armed?.target;
     try {
       await systemApi.cancelUpgrade();
       setUpgrade((u) => (u ? { ...u, armed: null } : u));
       setTracking("none");
       setView("closed");
+      setNotice(
+        `Scheduled update cancelled.${target ? ` Update to v${target} is still available.` : ""}`,
+      );
     } catch (err) {
       if (err instanceof ApiError && err.code === "LAUNCHED") {
         // The idle window closed first: the update is already running —
@@ -406,7 +413,7 @@ export function useUpdateFlow(enabled: boolean) {
       }
       setActionError(`Couldn't cancel the scheduled update: ${errText(err)}`);
     }
-  }, []);
+  }, [upgrade]);
 
   // ── Restore (the in-app `autonomos rollback`) ──
   const openRestore = useCallback(() => {
@@ -458,6 +465,7 @@ export function useUpdateFlow(enabled: boolean) {
   }, [restore]);
 
   const open = useCallback(() => {
+    setNotice(null);
     if (tracking === "running" || tracking === "reconnecting") {
       setActionError(null);
       setView("updating");
@@ -480,6 +488,7 @@ export function useUpdateFlow(enabled: boolean) {
     checkError,
     actionError,
     pending,
+    notice,
     elapsedMs,
     gaveUp: tracking === "reconnecting" && elapsedMs >= updateTiming.giveUpMs,
     open,

@@ -17,6 +17,7 @@ import { THEMES, useStore } from "../../store";
 import { accentsFor } from "./UpdateDialog";
 import { useUpdateBus } from "./updateBus";
 import {
+  compareVersions,
   formatBytes,
   formatReleaseDate,
   formatSnapshotDate,
@@ -94,9 +95,17 @@ export function UpdatesSettingsSection({
   const label = { color: page.statusFg };
   const snapshots = data?.snapshots ?? [];
   const pairing = data?.rollback?.snapshotId ?? null;
-  // "updated <date>": the snapshot taken on the way INTO this version.
-  const updatedAt = snapshots.find((s) => s.toVersion === version)?.createdAt;
-  const updatedDate = updatedAt ? formatReleaseDate(updatedAt) : null;
+  // "updated <date>": the snapshot taken on the way INTO this version — or
+  // "restored <date>" when that move went BACK (a Restore is a downgrade).
+  const into = snapshots.find((s) => s.toVersion === version);
+  const updatedDate = into ? formatReleaseDate(into.createdAt) : null;
+  const cameBack =
+    !!into?.toVersion && compareVersions(into.toVersion, into.fromVersion) < 0;
+  const target = data?.rollback?.version ?? null;
+  // After a Restore the kept "previous" version is the NEWER one: restoring
+  // it undoes the restore (with the snapshot saved when you restored).
+  const undoesRestore =
+    !!target && !!version && compareVersions(target, version) > 0;
 
   return (
     <div className="space-y-2" data-testid="settings-updates">
@@ -110,7 +119,12 @@ export function UpdatesSettingsSection({
         <span style={label}>Version</span>
         <span data-testid="settings-version">
           {version ? `v${version}` : "…"}
-          {updatedDate && <span style={label}> · updated {updatedDate}</span>}
+          {updatedDate && (
+            <span style={label}>
+              {" "}
+              · {cameBack ? "restored" : "updated"} {updatedDate}
+            </span>
+          )}
         </span>
       </div>
       <div className="flex items-center justify-between gap-2">
@@ -119,7 +133,6 @@ export function UpdatesSettingsSection({
           style={label}
           data-testid="settings-check-result"
         >
-          {check.kind === "checking" && "Checking…"}
           {check.kind !== "checking" &&
             check.kind !== "error" &&
             (offer
@@ -194,9 +207,16 @@ export function UpdatesSettingsSection({
                 <span className="flex min-w-0 flex-col">
                   <span className="flex items-center gap-1.5">
                     <span>
-                      Saved on v{s.fromVersion}
+                      From v{s.fromVersion}
                       {s.toVersion && (
-                        <span style={label}> · before v{s.toVersion}</span>
+                        <span style={label}>
+                          {" "}
+                          · before{" "}
+                          {compareVersions(s.toVersion, s.fromVersion) > 0
+                            ? "updating to"
+                            : "restoring"}{" "}
+                          v{s.toVersion}
+                        </span>
                       )}
                     </span>
                     {i === 0 && (
@@ -223,7 +243,9 @@ export function UpdatesSettingsSection({
                     }}
                     data-testid="settings-restore"
                   >
-                    Restore v{data?.rollback?.version}
+                    {undoesRestore
+                      ? `Undo restore (back to v${target})`
+                      : `Restore v${target}`}
                   </button>
                 )}
               </li>
@@ -231,11 +253,14 @@ export function UpdatesSettingsSection({
           })}
         </ul>
       )}
-      <div className="text-[10px]" style={label}>
-        The last {KEPT} are kept. autonomOS keeps one previous version, so only
-        its snapshot can be restored here; older ones can be recovered from a
-        terminal (<span className="font-mono">autonomos snapshots list</span>).
-      </div>
+      {snapshots.length > 0 && (
+        <div className="text-[10px]" style={label}>
+          The last {KEPT} are kept. Only the one paired with the previous
+          version can be restored here;{" "}
+          <span className="font-mono">autonomos snapshots list</span> shows them
+          all.
+        </div>
+      )}
     </div>
   );
 }

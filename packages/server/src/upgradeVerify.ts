@@ -61,7 +61,7 @@ export function verifyAgainstBaseline(
       problems.push({
         id: b.id,
         name: b.name,
-        issue: "It came back on a different conversation",
+        issue: "It reopened on a different conversation",
       });
       continue;
     }
@@ -74,7 +74,7 @@ export function verifyAgainstBaseline(
         id: b.id,
         name: b.name,
         issue: a.providerThreadId
-          ? "It came back on a different Codex conversation"
+          ? "It reopened on a different Codex conversation"
           : "Its Codex conversation is missing from its record",
       });
       continue;
@@ -84,7 +84,7 @@ export function verifyAgainstBaseline(
       problems.push({
         id: b.id,
         name: b.name,
-        issue: `It didn't come back after the restart${why ? ` (${why})` : ""}`,
+        issue: `It didn't reopen after the restart${why ? ` (${why})` : ""}`,
       });
     }
   }

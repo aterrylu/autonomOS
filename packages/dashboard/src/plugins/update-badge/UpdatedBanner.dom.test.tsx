@@ -205,7 +205,7 @@ describe("UpdatedBanner", () => {
       updatedTo: "0.7.0",
       interruptedNames: [],
     });
-    await screen.findByText(/but codex-tests needs a look/);
+    await screen.findByText(/but codex-tests didn't reopen cleanly/);
     expect(banner.getAttribute("data-tone")).toBe("attention");
     // The Restore action names the version it goes back to.
     expect(screen.getByTestId("banner-restore").textContent).toBe(
@@ -214,7 +214,7 @@ describe("UpdatedBanner", () => {
     // Nothing was requested just by showing the problem.
     expect(useUpdateBus.getState().restoreNonce).toBe(nonceBefore);
 
-    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
     const rows = screen.getAllByTestId("updated-banner-problem");
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain(
@@ -228,6 +228,29 @@ describe("UpdatedBanner", () => {
     expect(useUpdateBus.getState().restoreNonce).toBe(nonceBefore + 1);
   });
 
+  it("an unreadable snapshot is reported as the check failing, never as an agent", async () => {
+    status = doneRecord({
+      verification: {
+        checkedAt: "x",
+        checked: 0,
+        problems: [
+          {
+            id: "-",
+            name: "snapshot",
+            issue: "The pre-update snapshot could not be read",
+          },
+        ],
+      },
+    });
+    const banner = await renderWith({
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+    });
+    await screen.findByText(/the agent check couldn't run/);
+    expect(banner.textContent).not.toContain("snapshot didn't reopen");
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+  });
+
   it("doesn't wait for a check that will never run (no snapshot on the record)", async () => {
     useStore.setState({ sessions: [session("a"), session("b")] });
     status = doneRecord({ snapshotId: undefined });
@@ -235,8 +258,13 @@ describe("UpdatedBanner", () => {
       updatedTo: "0.7.0",
       interruptedNames: [],
     });
-    await screen.findByText(/2 agents reopened/);
+    await vi.waitFor(() =>
+      expect(banner.textContent).toContain("Updated to v0.7.0."),
+    );
+    await act(() => new Promise((r) => setTimeout(r, 30)));
     expect(banner.textContent).not.toContain("Checking that");
+    // No check ran: never claim they reopened.
+    expect(banner.textContent).not.toContain("reopened");
   });
 
   it("gives up waiting after the bound and says where to look", async () => {
@@ -278,7 +306,7 @@ describe("UpdatedBanner", () => {
     expect(banner.textContent).toContain("Restored v0.6.1.");
     expect(banner.textContent).not.toContain("snapshot");
     expect(banner.textContent).toContain(
-      "Your agents, schedules and settings were left as they are.",
+      "Your agents, schedules, templates, presets and settings were left as they are.",
     );
   });
 });

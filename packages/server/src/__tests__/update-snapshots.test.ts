@@ -330,7 +330,7 @@ describe("verifyAgainstBaseline", () => {
     assert.equal(p.length, 2);
     assert.match(
       p.find((x) => x.id === "a")?.issue ?? "",
-      /came back on a different conversation/,
+      /reopened on a different conversation/,
     );
     assert.match(
       p.find((x) => x.id === "c")?.issue ?? "",
@@ -340,7 +340,7 @@ describe("verifyAgainstBaseline", () => {
       base,
       live({ a: { status: "exited", exitReason: "resume-failed" } }),
     );
-    assert.match(p2[0].issue, /didn't come back.*resume-failed/);
+    assert.match(p2[0].issue, /didn't reopen after the restart.*resume-failed/);
   });
   it("a never-conversed agent that the runtime started fresh is NOT a problem (session and thread)", () => {
     _resetFreshStartsForTesting();

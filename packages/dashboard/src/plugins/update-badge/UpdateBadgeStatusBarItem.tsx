@@ -162,83 +162,84 @@ export function UpdateBadgeStatusBarItem() {
     />
   );
 
-  if (flow.tracking === "armed" && known) {
-    const busy = flow.upgrade?.busy ?? [];
-    const target = flow.upgrade?.armed?.target ?? known.latest;
-    const who =
-      busy.length === 0
-        ? null
-        : busy.length === 1
-          ? busy[0].name
-          : `${busy.length} agents`;
-    return (
-      <span
-        className="flex items-center gap-1 whitespace-nowrap rounded-full pl-0.5 pr-0.5"
-        style={{
-          color: AMBER,
-          border: `1px solid ${AMBER}66`,
-          background: `${AMBER}14`,
-          height: 18,
-        }}
-        data-testid="update-badge-armed"
-      >
-        {/* The label opens the waiting view: who it's waiting for, and the
-            same Update now / Cancel choices with room to explain them. */}
-        <button
-          type="button"
-          onClick={flow.open}
-          className="flex h-full cursor-pointer items-center gap-1.5 rounded-full px-1.5 hover:brightness-125"
-          style={{ color: AMBER }}
-          data-testid="update-armed-open"
-        >
-          <ClockIcon />
-          <span>
-            {who ? `v${target} waits for ${who}` : `v${target} starts shortly`}
-          </span>
-        </button>
-        <button
-          type="button"
-          className="h-full cursor-pointer rounded-full px-2 font-semibold hover:brightness-125"
-          style={{ color: page.fg, borderLeft: `1px solid ${AMBER}66` }}
-          disabled={flow.pending}
-          onClick={() => void flow.start("now", target)}
-          data-testid="update-armed-now"
-        >
-          Update now
-        </button>
-        <button
-          type="button"
-          aria-label="Cancel scheduled update"
-          title="Cancel scheduled update"
-          className="h-full cursor-pointer rounded-full px-2 hover:brightness-125"
-          style={{ color: page.statusFg }}
-          onClick={() => void flow.cancelArmed()}
-          data-testid="update-armed-cancel"
-        >
-          ×
-        </button>
-        {dialog}
-      </span>
-    );
-  }
-
-  const running =
-    flow.tracking === "running" || flow.tracking === "reconnecting";
-  if (!known && !running) {
-    return (
-      <>
-        {dialog}
-        {overlay}
-      </>
-    );
-  }
-  const runTo = flow.record?.to ?? known?.latest ?? "…";
-  const label = running
-    ? `${flow.record?.kind === "rollback" ? "Restoring" : "Updating to"} v${runTo}…`
-    : `Update to v${info.latest}`;
-
+  // ONE stable tree position for the dialog, overlay and announcer: when
+  // the pill swaps between its blue and amber forms, a dialog rendered
+  // inside either branch would remount and drop focus onto <body>.
+  const pill = renderPill();
   return (
     <>
+      {pill}
+      {/* The restart overlay replaces the dialog: never two modals at once. */}
+      {flow.tracking !== "reconnecting" && dialog}
+      {overlay}
+      <output aria-live="polite" className="sr-only">
+        {flow.notice ?? ""}
+      </output>
+    </>
+  );
+
+  function renderPill() {
+    if (!info) return null;
+    if (flow.tracking === "armed" && known) {
+      const busy = flow.upgrade?.busy ?? [];
+      const target = flow.upgrade?.armed?.target ?? known.latest;
+      const who =
+        busy.length === 0
+          ? null
+          : busy.length === 1
+            ? busy[0].name
+            : `${busy.length} agents`;
+      return (
+        <span
+          className="flex items-center whitespace-nowrap rounded-full"
+          style={{
+            color: AMBER,
+            // Inset outline, so both buttons get the bar's full 24px height
+            // (WCAG 2.5.8 target size).
+            boxShadow: `inset 0 0 0 1px ${AMBER}66`,
+            background: `${AMBER}14`,
+            height: 24,
+          }}
+          data-testid="update-badge-armed"
+        >
+          {/* The label opens the waiting view: who it's waiting for, and
+              Update now / Cancel with room to explain them. */}
+          <button
+            type="button"
+            onClick={flow.open}
+            className="flex h-6 cursor-pointer items-center gap-1.5 rounded-full px-2 hover:brightness-125"
+            style={{ color: AMBER }}
+            title={`Update to v${target} is scheduled. Click to see who it's waiting for, or to update now.`}
+            data-testid="update-armed-open"
+            data-update-focus-home=""
+          >
+            <ClockIcon />
+            <span>
+              {who ? `Update waits for ${who}` : "Updating in a moment"}
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-label="Cancel scheduled update"
+            title={`Cancel the scheduled update to v${target}`}
+            className="h-6 min-w-6 cursor-pointer rounded-full px-2 hover:brightness-125"
+            style={{ color: page.fg, borderLeft: `1px solid ${AMBER}66` }}
+            onClick={() => void flow.cancelArmed()}
+            data-testid="update-armed-cancel"
+          >
+            Cancel
+          </button>
+        </span>
+      );
+    }
+    const running =
+      flow.tracking === "running" || flow.tracking === "reconnecting";
+    if (!known && !running) return null;
+    const runTo = flow.record?.to ?? known?.latest ?? "…";
+    const label = running
+      ? `${flow.record?.kind === "rollback" ? "Restoring" : "Updating to"} v${runTo}…`
+      : `Update to v${info.latest}`;
+    return (
       <button
         type="button"
         onClick={flow.open}
@@ -255,6 +256,7 @@ export function UpdateBadgeStatusBarItem() {
             : `You're on v${info.version}. See what's new and update.`
         }
         data-testid="update-badge"
+        data-update-focus-home=""
       >
         <span
           className="inline-block rounded-full"
@@ -262,8 +264,6 @@ export function UpdateBadgeStatusBarItem() {
         />
         <span>{label}</span>
       </button>
-      {dialog}
-      {overlay}
-    </>
-  );
+    );
+  }
 }

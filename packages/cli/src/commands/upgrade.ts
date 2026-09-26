@@ -91,6 +91,12 @@ function takeSnapshot(
   }
 }
 
+/** "a", "a and b", "a, b and c" — the same list style as the dashboard. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 const IDLE_WINDOW_MS = 30_000;
 /** Before the swap/checkout nothing has changed yet, so giving up is clean. */
 const GATE_CAP_BEFORE_CHANGE_MS = 15 * 60_000;
@@ -108,7 +114,7 @@ async function idleGate(
     windowMs: IDLE_WINDOW_MS,
     capMs,
     onWaiting: (busy) => {
-      const names = busy.map((b) => b.name).join(", ");
+      const names = joinNames(busy.map((b) => b.name));
       report("waiting_idle", {
         message: names
           ? `Waiting for ${names} to finish`
@@ -120,7 +126,7 @@ async function idleGate(
   if (r.ok) return { ok: true };
   return {
     ok: false,
-    names: r.busy.map((b) => b.name).join(", ") || "agents",
+    names: joinNames(r.busy.map((b) => b.name)) || "agents",
     minutes: Math.round(capMs / 60_000),
   };
 }

@@ -85,7 +85,7 @@ export function consequenceFor(status: string, _provider?: string): string {
     case "needs_input":
       return "Its question to you is cleared. Tell it how to go on afterwards.";
     default:
-      return "Reopens where it left off";
+      return "Restarts and picks up where it left off.";
   }
 }
 
@@ -137,14 +137,14 @@ export function stepsFor(
   const reopen: UpdateStep = {
     id: "reopen",
     label: "Reopen agents",
-    detail: "Each one on its conversation",
+    detail: "Each reopens its own conversation",
   };
   if (mode === "rollback") {
     return [
       {
         id: "swap",
         label: `Restore v${to}`,
-        detail: "And the snapshot saved before you updated, when there is one",
+        detail: "Plus the snapshot from before the update, if there is one",
       },
       restart,
       reopen,
@@ -168,7 +168,7 @@ export function stepsFor(
     {
       id: "verify-agents",
       label: "Check agents reopened",
-      detail: "Each one is back on its conversation",
+      detail: "Each one reopened its own conversation",
     },
   ];
   // The job re-checks idle and THEN snapshots, right before the change: the
@@ -249,6 +249,32 @@ export function activeStepIndex(
   return i === -1 ? 0 : i;
 }
 
+// ── release notes as shown IN the dialog ─────────────────────────────────
+
+/** Release bodies end with a how-to-install footer written for GitHub
+ *  ("Install / upgrade: curl … | sh", "grab … from the assets below"). Inside
+ *  the update dialog that tells you to update some other way and points at
+ *  assets that aren't there, so it's cut: from the last horizontal rule when
+ *  what follows is install instructions, plus any stray install line. */
+const INSTALL_LINE =
+  /install\.sh|install \/ upgrade|manual download|assets below|SHA256SUMS/i;
+
+export function inAppNotes(body: string): string {
+  const lines = body.split(/\r?\n/);
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
+      if (lines.slice(i + 1).some((l) => INSTALL_LINE.test(l))) end = i;
+      break;
+    }
+  }
+  return lines
+    .slice(0, end)
+    .filter((l) => !INSTALL_LINE.test(l))
+    .join("\n")
+    .trimEnd();
+}
+
 // ── the three honest stages (what the dialog shows) ──────────────────────
 
 /** 0 Preparing · 1 Restarting · 2 Reopening agents. Everything the job does
@@ -296,7 +322,7 @@ export function stageDetail(
     case "health_check":
       return `Making sure v${to} started`;
     case "done":
-      return "Each agent reopens on its conversation";
+      return "Each agent reopens its own conversation";
     default:
       return "Starting…";
   }

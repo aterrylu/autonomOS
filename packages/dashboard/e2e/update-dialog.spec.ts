@@ -96,9 +96,10 @@ test("Tab and Shift+Tab stay inside the dialog; the app behind is inert", async 
   await expect(
     page.getByRole("heading", { name: "Update autonomOS to v0.7.99" }),
   ).toBeFocused();
-  // 40 presses is more than every stop twice over: focus must never leave.
+  // Enough presses to wrap the whole dialog (note links included) at least
+  // once each way: focus must never leave it.
   const seen = new Set<string>();
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 120; i++) {
     await page.keyboard.press(i % 7 === 6 ? "Shift+Tab" : "Tab");
     const where = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
@@ -111,9 +112,15 @@ test("Tab and Shift+Tab stay inside the dialog; the app behind is inert", async 
     expect(where.inside, `focus escaped to ${where.label}`).toBe(true);
     seen.add(where.label);
   }
-  // The primary action is reachable, and the 26 note links are NOT stops.
   expect([...seen].some((l) => l.includes("Update and restart"))).toBe(true);
-  expect([...seen].filter((l) => l.startsWith("A:#")).length).toBe(0);
+  // Note links stay keyboard-reachable (WCAG 2.1.1)…
+  expect([...seen].some((l) => l.startsWith("A:#"))).toBe(true);
+  // …and the primary is still ONE Shift+Tab from the heading.
+  await page
+    .getByRole("heading", { name: "Update autonomOS to v0.7.99" })
+    .focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByTestId("update-start")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page.locator("#root")).not.toHaveAttribute("inert", "");
@@ -168,7 +175,8 @@ test("Daylight: every accent text in the dialog clears 4.5:1", async ({
 });
 
 /** WCAG contrast of `sel`'s text color against the first opaque background
- *  up its ancestor chain (alpha tints composited over it). */
+ *  up its ancestor chain (alpha tints composited over it), with the text's
+ *  own alpha and every ancestor's opacity applied. */
 async function contrastOf(page: Page, sel: string): Promise<number> {
   return page.evaluate((s) => {
     const el = document.querySelector(s) as HTMLElement | null;
@@ -191,7 +199,19 @@ async function contrastOf(page: Page, sel: string): Promise<number> {
         b: l.b * l.a + base.b * (1 - l.a),
       };
     }
-    const fg = parse(getComputedStyle(el).color);
+    // A computed color ignores ancestor `opacity` (how the stage hints were
+    // washed out): fold the combined opacity into the text color.
+    let op = 1;
+    for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+      op *= Number(getComputedStyle(n).opacity);
+    }
+    const raw = parse(getComputedStyle(el).color);
+    const k = raw.a * op;
+    const fg = {
+      r: raw.r * k + base.r * (1 - k),
+      g: raw.g * k + base.g * (1 - k),
+      b: raw.b * k + base.b * (1 - k),
+    };
     const lum = (c: { r: number; g: number; b: number }) => {
       const f = (v: number) => {
         const x = v / 255;
@@ -234,4 +254,86 @@ test("the waiting view's actions fit on one row at desktop width", async ({
     .getByRole("button", { name: "Close", exact: true })
     .boundingBox();
   expect(new Set([...ys, Math.round(close?.y ?? -2)]).size).toBe(1);
+});
+
+test("at phone width, Tab never parks focus behind the sticky footer", async ({
+  page,
+}) => {
+  await mockUpdate(page, [
+    { id: "a", name: "busy-bee", status: "tool_running" },
+  ]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByTestId("update-badge").click();
+  await expect(page.getByTestId("update-start")).toBeEnabled();
+  for (let i = 0; i < 45; i++) {
+    await page.keyboard.press("Tab");
+    const r = await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement;
+      const footer = document.querySelector("[data-update-footer]");
+      if (!footer || footer.contains(el)) return null;
+      // Inside the notes box, it's the box's own scroll that matters.
+      const box = el.closest('[aria-label="Release notes"]');
+      if (box && box !== el) return null;
+      const a = el.getBoundingClientRect();
+      const f = footer.getBoundingClientRect();
+      return { bottom: a.bottom, footerTop: f.top, label: el.textContent?.slice(0, 30) };
+    });
+    if (r) {
+      expect(r.bottom, `"${r.label}" hidden behind the footer`).toBeLessThanOrEqual(
+        r.footerTop + 1,
+      );
+    }
+  }
+});
+
+test("Daylight: note links and not-started stage hints clear 4.5:1 too", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      "autonomos",
+      JSON.stringify({ state: { theme: "daylight" }, version: 0 }),
+    ),
+  );
+  await mockUpdate(page);
+  let launched = false;
+  await page.route("**/api/system/upgrade", (r) => {
+    if (r.request().method() === "POST") {
+      launched = true;
+      return r.fulfill(json({ ok: true, launched: true }));
+    }
+    return r.fulfill(
+      json({
+        current: "0.7.0",
+        supervised: true,
+        installMode: "bundle",
+        status: launched
+          ? {
+              phase: "downloading",
+              from: "0.7.0",
+              to: "0.7.99",
+              startedAt: "2026-09-26T00:00:00.000Z",
+              updatedAt: new Date().toISOString(),
+            }
+          : null,
+        armed: null,
+        idleWindowMs: 30_000,
+        busy: [],
+        background: [],
+        inFlight: launched,
+      }),
+    );
+  });
+  await openDialog(page);
+  const link = await contrastOf(page, '[aria-label="Release notes"] a');
+  expect(link, "note link").toBeGreaterThanOrEqual(4.5);
+  await page.getByTestId("update-start").click();
+  const todo = page.locator('[data-testid="update-stages"] [data-state="todo"]');
+  await expect(todo.first()).toBeVisible();
+  const hint = await contrastOf(
+    page,
+    '[data-testid="update-stages"] [data-state="todo"] > span:last-child',
+  );
+  expect(hint, "stage hint").toBeGreaterThanOrEqual(4.5);
 });

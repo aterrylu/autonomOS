@@ -71,7 +71,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
             target="_blank"
             rel="noopener noreferrer"
             className="underline"
-            style={{ color: "#58a6ff" }}
+            style={{ color: "var(--notes-link, #58a6ff)" }}
           >
             {inner}
           </a>
@@ -97,7 +97,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
             target="_blank"
             rel="noopener noreferrer"
             className="underline break-all"
-            style={{ color: "#58a6ff" }}
+            style={{ color: "var(--notes-link, #58a6ff)" }}
           >
             {bare}
           </a>

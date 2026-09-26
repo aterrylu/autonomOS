@@ -95,16 +95,16 @@ describe("UpdatesSettingsSection", () => {
   it("lists snapshots newest-first and offers Restore only on the pairing row", async () => {
     const onRestore = await renderSection();
     const rows = screen.getAllByTestId("settings-snapshot");
-    expect(
-      rows.map((r) => r.textContent?.match(/Saved on v[\d.]+/)?.[0]),
-    ).toEqual([
-      "Saved on v0.7.0",
-      "Saved on v0.6.1",
-      "Saved on v0.6.1",
-      "Saved on v0.6.0",
+    expect(rows.map((r) => r.textContent?.match(/From v[\d.]+/)?.[0])).toEqual([
+      "From v0.7.0",
+      "From v0.6.1",
+      "From v0.6.1",
+      "From v0.6.0",
     ]);
     // What each snapshot preceded — the label says which state it holds.
-    expect(rows[0].textContent).toContain("Saved on v0.7.0 · before v0.7.1");
+    expect(rows[0].textContent).toContain(
+      "From v0.7.0 · before updating to v0.7.1",
+    );
     expect(rows.map((r) => r.getAttribute("data-restorable"))).toEqual([
       "false",
       "true",

@@ -24,6 +24,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -57,6 +58,7 @@ import {
   formatBytes,
   formatReleaseDate,
   formatSnapshotDate,
+  inAppNotes,
   joinNames,
   plural,
   SNAPSHOT_CONTENTS,
@@ -351,6 +353,7 @@ function Footer({ left, children }: { left?: ReactNode; children: ReactNode }) {
   const page = usePage();
   return (
     <div
+      data-update-footer=""
       className="sticky bottom-0 flex flex-wrap items-center justify-end gap-2 px-4 py-3 sm:px-5"
       style={{ borderTop: `1px solid ${page.border}`, background: page.bg }}
     >
@@ -400,6 +403,23 @@ function useCopy(): [boolean, (text: string) => void] {
 
 // ── the shell ───────────────────────────────────────────────────────────
 
+/** Back to where focus came from — or, when that element is gone (the pill
+ *  swapped between its blue and amber forms meanwhile) or was <body>, to
+ *  whichever pill is there now. Never strand focus on <body>. */
+function returnFocus(prev: Element | null): void {
+  // <body> counts as "nowhere": a mouse click doesn't focus a button in
+  // Safari, so the dialog can open with focus on <body>.
+  if (
+    prev instanceof HTMLElement &&
+    prev !== document.body &&
+    prev.isConnected
+  ) {
+    prev.focus();
+    return;
+  }
+  document.querySelector<HTMLElement>("[data-update-focus-home]")?.focus();
+}
+
 function DialogShell({
   viewKey,
   status,
@@ -423,9 +443,27 @@ function DialogShell({
     const release = holdAppInert();
     return () => {
       release();
-      if (prev instanceof HTMLElement && prev.isConnected) prev.focus();
+      returnFocus(prev);
     };
   }, []);
+
+  // The footer is sticky: pad the scroll area by its height, so focusing a
+  // control near the bottom scrolls it ABOVE the footer, not behind it
+  // (at 390px the footer is ~130px; WCAG 2.4.11).
+  useLayoutEffect(() => {
+    void viewKey;
+    const dialog = dialogRef.current;
+    const footer = dialog?.querySelector<HTMLElement>("[data-update-footer]");
+    if (!dialog || !footer) return;
+    const pad = () => {
+      dialog.style.scrollPaddingBottom = `${footer.offsetHeight + 8}px`;
+    };
+    pad();
+    if (typeof ResizeObserver === "undefined") return; // jsdom
+    const ro = new ResizeObserver(pad);
+    ro.observe(footer);
+    return () => ro.disconnect();
+  }, [viewKey]);
 
   // Every screen change lands on its heading — never on <body>.
   useEffect(() => {
@@ -541,32 +579,31 @@ function ExternalLink({
 }
 
 /** Capped, so the buttons never sink below the fold. The newest release is
- *  open; older ones fold. Links inside leave the Tab order (27 PR links used
- *  to sit between the heading and the buttons) — the box itself is one
- *  focusable, scrollable region, and "Full release notes" stays a tab stop. */
+ *  open; older ones fold. The box is a focusable, scrollable region; its
+ *  links stay in the Tab order (mouse-only links fail WCAG 2.1.1 — and the
+ *  primary is one Shift+Tab from the heading anyway). */
 function NotesBox({ notes, info }: { notes: NotesState; info: VersionInfo }) {
   const page = usePage();
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    for (const a of ref.current?.querySelectorAll("a") ?? []) {
-      a.setAttribute("tabindex", "-1");
-    }
-  });
+  const a = useAccents();
+
   const releases = notes.kind === "ok" ? notes.releases : [];
   const releaseUrl = releaseUrlOf(notes, info);
   return (
     <div className="flex flex-col gap-1.5">
       <section
-        ref={ref}
         // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-reachable to scroll it (WCAG 2.1.1).
         tabIndex={0}
         aria-label="Release notes"
         data-testid="update-notes"
-        className="flex flex-col gap-3 overflow-y-auto rounded-md px-3 py-2.5"
-        style={{
-          maxHeight: "min(34vh, 300px)",
-          border: `1px solid ${page.border}`,
-        }}
+        className="flex flex-col gap-3 overflow-y-auto rounded-md px-3 py-2.5 [overflow-wrap:anywhere]"
+        style={
+          {
+            maxHeight: "min(34vh, 300px)",
+            border: `1px solid ${page.border}`,
+            // Note links follow the theme (a fixed blue was 2.42:1 on Daylight).
+            "--notes-link": a.blue,
+          } as React.CSSProperties
+        }
       >
         {notes.kind === "loading" && (
           <div
@@ -624,7 +661,7 @@ function NotesBox({ notes, info }: { notes: NotesState; info: VersionInfo }) {
               className="flex flex-col gap-1.5"
             >
               <h3 className="flex items-baseline gap-2">{head}</h3>
-              <ReleaseMarkdown body={r.body ?? ""} />
+              <ReleaseMarkdown body={inAppNotes(r.body ?? "")} />
             </section>
           ) : (
             <Disclosure
@@ -638,7 +675,7 @@ function NotesBox({ notes, info }: { notes: NotesState; info: VersionInfo }) {
                 "data-version": r.version,
               }}
             >
-              <ReleaseMarkdown body={r.body ?? ""} />
+              <ReleaseMarkdown body={inAppNotes(r.body ?? "")} />
             </Disclosure>
           );
         })}
@@ -689,6 +726,9 @@ function Callouts({ notes, info }: { notes: NotesState; info: VersionInfo }) {
               {quotes.length > 0
                 ? quotes.join(" ")
                 : "The release notes describe it; read them before updating."}
+            </div>
+            <div className="text-xs" style={{ color: page.statusFg }}>
+              Check whether your own scripts or integrations rely on it.
             </div>
           </div>
         </div>
@@ -861,12 +901,13 @@ function BackgroundWarning({ rows }: { rows: AgentRow[] }) {
           <span className="font-semibold" style={{ color: a.amber }}>
             {r.name}:
           </span>{" "}
-          {backgroundLine(r.background ?? [])}.
+          {backgroundLine(r.background ?? [])}
         </div>
       ))}
       <div>
-        These don't restart on their own. Start them again afterwards if you
-        need them.
+        {withBg.flatMap((r) => r.background ?? []).length === 1
+          ? "It doesn't restart on its own. Start it again afterwards if you need it."
+          : "These don't restart on their own. Start them again afterwards if you need them."}
       </div>
     </div>
   );
@@ -883,16 +924,27 @@ function agentHeadline(
     if (rows.length === 1)
       return {
         title: `${rows[0].name} is idle.`,
-        detail: "It reopens where it left off.",
+        detail: "It restarts with autonomOS and picks up where it left off.",
       };
     return {
-      title: `All ${rows.length} agents are idle.`,
-      detail: "They reopen where they left off.",
+      title:
+        rows.length === 2
+          ? "Both agents are idle."
+          : `All ${rows.length} agents are idle.`,
+      detail: "They restart with autonomOS and pick up where they left off.",
     };
   }
+  const one = busy.length === 1;
+  // Say what they're actually doing: a question or a first task isn't
+  // "mid-task" (the rows below already say so).
+  const doing = busy.every((b) => b.status === "needs_input")
+    ? "waiting for your answer"
+    : busy.every((b) => b.reason === "first_task")
+      ? "starting"
+      : "mid-task";
   return {
-    title: `${busyWho(busy)} ${busy.length === 1 ? "is" : "are"} mid-task.`,
-    detail: `Updating now stops ${busy.length === 1 ? "its" : "their"} current work.`,
+    title: `${busyWho(busy)} ${one ? "is" : "are"} ${doing}.`,
+    detail: `Updating now interrupts ${one ? "it" : "them"}.`,
   };
 }
 
@@ -962,7 +1014,7 @@ function AgentCheck({
       ) : (
         rows.length > 0 && (
           <Disclosure
-            label="Details"
+            label="Show details"
             openLabel="Hide details"
             summaryStyle={{ color: page.statusFg }}
           >
@@ -1027,7 +1079,7 @@ function ConfirmScreen({
     : null;
   const subtitle = [
     `You're on v${info.version}`,
-    newestDate && `released ${newestDate}`,
+    newestDate && `v${info.latest} came out ${newestDate}`,
     releases.length > 1 && `${releases.length} releases since yours`,
   ]
     .filter(Boolean)
@@ -1050,11 +1102,11 @@ function ConfirmScreen({
         />
         {/* When busy, each idle agent's row already carries its line. */}
         {busy.length === 0 && <BackgroundWarning rows={rows} />}
+        <Callouts notes={notes} info={info} />
         <SafetyLine
           info={info}
           mode={upgrade?.installMode ?? info.installMode}
         />
-        <Callouts notes={notes} info={info} />
         <NotesBox notes={notes} info={info} />
       </div>
       <Footer>
@@ -1113,8 +1165,8 @@ function WaitingScreen({
       <Header
         title={
           busy.length
-            ? `v${target} is waiting for ${busyWho(busy)}`
-            : `v${target} starts in a moment`
+            ? `Update to v${target} is waiting for ${busyWho(busy)}`
+            : `Updating to v${target} in a moment`
         }
         subtitle={`It starts once every agent has been idle for ${idleSecs} seconds. Keep working: new activity resets the wait, and closing this doesn't cancel it.`}
         icon={
@@ -1148,7 +1200,7 @@ function WaitingScreen({
           onClick={() => void flow.cancelArmed()}
           data-testid="update-cancel-armed"
         >
-          Cancel update
+          Cancel scheduled update
         </Button>
         <Button
           kind={busy.length ? "danger" : "secondary"}
@@ -1175,11 +1227,11 @@ const STAGE_NAMES = ["Preparing", "Restarting", "Reopening agents"] as const;
 function stageHints(mode: VersionInfo["installMode"] | "rollback"): string[] {
   const first =
     mode === "rollback"
-      ? "Save today's state, put the old version back"
+      ? "Save a snapshot, put the previous version back"
       : mode === "source"
         ? "Fetch, snapshot, build"
         : "Download, check, snapshot, install";
-  return [first, "About 10 seconds", "Each one on its conversation"];
+  return [first, "About 10 seconds", "Each reopens its own conversation"];
 }
 
 /** The three stages. State is text too (not only color or an icon). */
@@ -1211,7 +1263,6 @@ function Stages({
             className="flex flex-col gap-0.5 rounded-md px-3 py-2 text-xs"
             style={{
               border: `1px solid ${state === "active" ? a.blue : state === "done" ? `${a.green}88` : page.border}`,
-              opacity: state === "todo" ? 0.7 : 1,
             }}
           >
             <span className="flex items-center gap-1.5 font-semibold">
@@ -1369,7 +1420,16 @@ function UpdatingScreen({
             })}
           </ol>
         </Disclosure>
-        {!rollback && <NotesBox notes={notes} info={{ ...info, latest: to }} />}
+        {/* The notes are noise while it runs: folded, still one click away. */}
+        {!rollback && (
+          <Disclosure
+            className="flex flex-col gap-2 text-xs"
+            label={`What's new in v${to}`}
+            summaryStyle={{ color: a.blue }}
+          >
+            <NotesBox notes={notes} info={{ ...info, latest: to }} />
+          </Disclosure>
+        )}
       </div>
       <Footer>
         <Button kind="primary" onClick={flow.close}>
@@ -1459,6 +1519,10 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
   if (!rec) return null;
   const rolledBack = rec.phase === "rolled_back";
   const restore = rec.kind === "rollback";
+  // The job clears snapshotId when it failed before touching anything (and
+  // no snapshot means it never got that far): then nothing changed, and
+  // "may be on either version" would be false and alarming.
+  const nothingChanged = !restore && !rolledBack && !rec.snapshotId;
   return (
     <>
       <Header
@@ -1475,7 +1539,9 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
             ? `Restoring v${rec.to} didn't finish`
             : rolledBack
               ? `v${rec.to} didn't start — you're back on v${rec.from}`
-              : `The update to v${rec.to} didn't finish`
+              : nothingChanged
+                ? `v${rec.to} wasn't installed`
+                : `The update to v${rec.to} didn't finish`
         }
         subtitle={
           <span data-testid="update-failed-summary">
@@ -1483,7 +1549,9 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
               ? rec.snapshotId
                 ? `autonomOS restored v${rec.from} and the snapshot from just before, and your agents reopened. Nothing else changed.`
                 : `autonomOS restored v${rec.from} on its own and your agents reopened. Nothing else changed.`
-              : "autonomOS may be on either version. Run autonomos status on the machine running it."}
+              : nothingChanged
+                ? `Nothing changed. You're still on v${rec.from}.`
+                : "autonomOS may be on either version. Run autonomos status on the machine running it."}
           </span>
         }
       />
@@ -1502,7 +1570,9 @@ function FailedScreen({ flow }: { flow: UpdateFlow }) {
           style={{ border: `1px solid ${page.border}` }}
           data-testid="update-failed-message"
         >
-          {rec.message ?? "No details were recorded."}
+          {/* Job messages quote commands in backticks; this block is
+              already monospace, so the backticks would show literally. */}
+          {rec.message?.replace(/`/g, "") ?? "No details were recorded."}
         </pre>
       </div>
       <Footer
@@ -1629,7 +1699,10 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
             </span>
             <span>
               v{target.version} predates snapshots, so only the version is
-              restored. Your agents, schedules and settings stay as they are.
+              restored. Your{" "}
+              {SNAPSHOT_CONTENTS.charAt(0).toLowerCase() +
+                SNAPSHOT_CONTENTS.slice(1)}{" "}
+              stay as they are.
             </span>
           </div>
         )}
@@ -1644,14 +1717,17 @@ function RestoreConfirmScreen({ flow }: { flow: UpdateFlow }) {
               </dd>
               <dt style={dt}>Changes since the update</dt>
               <dd>
-                {SNAPSHOT_CONTENTS} changed since then aren't carried over.
-                They're saved as a new snapshot first, so updating again brings
-                them back.
+                Anything you changed since then (
+                {SNAPSHOT_CONTENTS.toLowerCase()}) is set aside as a snapshot,
+                not deleted. To get it back, undo the restore from Settings →
+                Updates.
               </dd>
             </>
           )}
           <dt style={dt}>Not affected</dt>
-          <dd>Conversations. Each CLI keeps its own history.</dd>
+          <dd>
+            Conversations. Claude Code, Codex and Gemini keep their own history.
+          </dd>
         </dl>
         <Disclosure
           className="text-xs"
@@ -1716,7 +1792,7 @@ function statusText(
       const n = flow.upgrade?.busy.length ?? 0;
       return n
         ? `Waiting for ${plural(n, "agent")} to finish.`
-        : "Every agent is idle. Starting shortly.";
+        : "Every agent is idle. Updating in a moment.";
     }
     case "updating": {
       const rec = flow.record;
@@ -1797,7 +1873,7 @@ export function ReconnectingOverlay({
     ref.current?.querySelector<HTMLElement>("h2")?.focus();
     return () => {
       release();
-      if (prev instanceof HTMLElement && prev.isConnected) prev.focus();
+      returnFocus(prev);
     };
   }, []);
   const stage: Stage = phase === "done" ? 2 : 1;
@@ -1819,7 +1895,7 @@ export function ReconnectingOverlay({
           tabIndex={-1}
           className="text-base font-semibold outline-none"
         >
-          {rollback ? `Restoring v${to}` : `Restarting autonomOS on v${to}`}
+          {rollback ? `Restoring v${to}` : `Updating to v${to}`}
         </h2>
         <Stages
           stage={stage}
