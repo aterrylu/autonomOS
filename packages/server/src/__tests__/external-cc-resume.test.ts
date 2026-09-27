@@ -184,7 +184,13 @@ describe("external-cc-resume — unified-id lookup contract", () => {
  * so these can be pinned without a PTY spawn.
  */
 describe("external-cc-resume — assertAdoptable guard", () => {
-  const CC = { hasResumableSession: () => true, displayName: "Claude Code" };
+  // Claude-Code-shaped: the resume pre-flight AND the adopt capability, as the
+  // real provider declares both (a pre-flight alone isn't adoptable — ADR-118).
+  const CC = {
+    hasResumableSession: () => true,
+    adoptsExternalSession: true,
+    displayName: "Claude Code",
+  };
   const VALID = "d3efd88f-622c-4f4f-a170-e34b625f6c04";
 
   it("allows a Claude-Code-shaped provider with a UUID session id", () => {
@@ -446,7 +452,13 @@ describe("external-cc-resume — spawnErrorStatus mapping", () => {
     // pre-existing untyped throws, so the two must not disagree — otherwise
     // which one a caller sees would depend on whether the error happened to be
     // typed, which is exactly the kind of drift this PR is fixing elsewhere.
-    const cc = { hasResumableSession: () => true, displayName: "Claude Code" };
+    // Claude-Code-shaped: the resume pre-flight AND the adopt capability, as the
+    // real provider declares both (a pre-flight alone isn't adoptable — ADR-118).
+    const cc = {
+      hasResumableSession: () => true,
+      adoptsExternalSession: true,
+      displayName: "Claude Code",
+    };
     const validId = "d3efd88f-622c-4f4f-a170-e34b625f6c04";
     const typed: Array<[() => void, number]> = [
       [() => assertAdoptable({ displayName: "Codex" }, validId), 422],

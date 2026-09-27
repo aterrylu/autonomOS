@@ -25,6 +25,7 @@ import {
   getAttachment,
   isAgentLive,
   killAttachment,
+  restartAgent,
   restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
   SpawnError,
@@ -640,6 +641,30 @@ agentsRouter.post("/:id/attach", async (c) => {
       { error: message },
       err instanceof SpawnError ? err.status : spawnErrorStatus(message),
     );
+  }
+});
+
+/**
+ * Restart ONE agent server-side: stop it, wait for its process (and Codex
+ * daemon) to exit, respawn it from its record in the same conversation. The
+ * dashboard's Restart calls this; every failure is a typed status + message
+ * the UI shows, and a respawn that genuinely failed also leaves a notice on
+ * the agent (it's now stopped), so it can't be missed after the toast fades.
+ */
+agentsRouter.post("/:id/restart", async (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param) ?? getAgentByProviderSessionId(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  try {
+    return c.json(await restartAgent(agent.id));
+  } catch (err) {
+    if (err instanceof ControlPlaneNotReadyError) throw err;
+    const message = err instanceof Error ? err.message : "Unknown error";
+    const status =
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message);
+    // restartAgent itself leaves the persistent notice when the agent ended up
+    // stopped; a refusal (409 / 404 / 503) changed nothing.
+    return c.json({ error: message }, status);
   }
 });
 

@@ -375,6 +375,8 @@ export const claudeCodeProvider: AgentProvider = {
     });
   },
 
+  adoptsExternalSession: true,
+
   hasResumableSession(
     options: ResolvedSpawnOptions,
     env: Record<string, string | undefined> = process.env,

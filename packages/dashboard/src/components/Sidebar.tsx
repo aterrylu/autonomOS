@@ -2472,6 +2472,7 @@ export const ProjectItem = React.memo(function ProjectItem({
               if (isBusy) return;
               resumeSession(s.sessionId, project.path, s.summary, {
                 isAutonomosAgent: s.isAutonomosAgent,
+                provider: s.provider,
               }).catch(() => {});
             };
 
@@ -2506,6 +2507,7 @@ export const ProjectItem = React.memo(function ProjectItem({
                     status: isLive ? "running" : "exited",
                     manager: rec?.manager,
                     resumeKey: s.sessionId,
+                    provider: s.provider,
                     workingDirectory: project.path,
                     isAutonomosAgent: s.isAutonomosAgent,
                   });

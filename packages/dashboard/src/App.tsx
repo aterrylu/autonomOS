@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { agentsApi } from "./api/agents";
 import { ApiError } from "./api/core";
+import { ActionToast } from "./components/ActionToast";
 import { Header } from "./components/Header";
 import { SessionViewManager } from "./components/SessionViewManager";
 import { Sidebar, SidebarResizeHandle } from "./components/Sidebar";
@@ -186,6 +187,7 @@ export function App() {
           <SessionViewManager />
         </div>
         <StatusBar />
+        <ActionToast />
         <ShortcutHelpOverlay />
         <QuickSwitcher />
       </div>
