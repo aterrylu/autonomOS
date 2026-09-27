@@ -163,6 +163,7 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-102](ADR-102-claude-usage-says-why-it-has-no-numbers-and-reads-the-limits.md) | Claude usage says WHY it has no numbers, and reads the `limits[]` window list | 2026-09-24 | Accepted |  |  |
 | [ADR-103](ADR-103-real-spawn-integration-suites-run-under-a-throwaway-home-and.md) | Real-spawn integration suites run under a throwaway HOME, and are safe to run locally | 2026-09-24 | Accepted |  |  |
 | [ADR-104](ADR-104-codex-agents-survive-a-restart-no-permission-overrides-on.md) | Codex agents survive a restart — no permission overrides on remote resume, a thread pre-flight, and honest mode handling | 2026-09-24 | Accepted |  |  |
+| [ADR-105](ADR-105-in-app-update-release-notes-from-github-agent-aware-pre.md) | In-app update — release notes from GitHub, agent-aware pre-flight, out-of-band upgrader | 2026-09-24 | Accepted |  |  |
 | [ADR-106](ADR-106-claude-spend-display-for-spend-metered-accounts-text-bar.md) | Claude spend display for spend-metered accounts (text \| % \| bar), never a queue input | 2026-09-24 | Accepted |  |  |
 | [ADR-108](ADR-108-agent-to-agent-messages-on-the-org-chart-a-preview-only.md) | Agent-to-agent messages on the Org Chart — a preview-only broadcast, full text on demand | 2026-09-24 | Accepted |  |  |
 | [ADR-110](ADR-110-org-chart-inspector-analytics-counted-at-existing.md) | Org Chart inspector analytics — counted at existing chokepoints, in memory, honest per runtime | 2026-09-24 | Accepted |  |  |
