@@ -19,9 +19,11 @@ import {
 import { systemRouter } from "../routes/system.js";
 import { _resetUpdateCheckForTesting, runUpdateCheck } from "../updateCheck.js";
 import {
+  _resetSupervisorCacheForTesting,
   buildLaunchPlan,
   detectSupervisor,
   launchUpgradeJob,
+  ownSupervisor,
 } from "../upgradeJob.js";
 import {
   _resetSchedulerForTesting,
@@ -64,6 +66,31 @@ const PROC = {
     AUTONOMOS_TOKEN: "must-not-propagate",
   } as NodeJS.ProcessEnv,
 };
+
+describe("ownSupervisor caching", () => {
+  it("a positive answer sticks; a 'none' (maybe a probe that timed out at boot) is re-checked after its TTL", () => {
+    _resetSupervisorCacheForTesting();
+    const answers: Array<
+      { kind: "none" } | { kind: "launchd"; label: string }
+    > = [{ kind: "none" }, { kind: "launchd", label: "L" }];
+    let calls = 0;
+    const detect = () => {
+      calls++;
+      return answers.shift() ?? { kind: "none" as const };
+    };
+    const t0 = 1_000_000;
+    // First probe failed (transient): none.
+    assert.equal(ownSupervisor(t0, detect).kind, "none");
+    // Within the TTL it isn't re-probed…
+    assert.equal(ownSupervisor(t0 + 5_000, detect).kind, "none");
+    assert.equal(calls, 1);
+    // …after it, the real answer arrives and then sticks for good.
+    assert.equal(ownSupervisor(t0 + 31_000, detect).kind, "launchd");
+    assert.equal(ownSupervisor(t0 + 10_000_000, detect).kind, "launchd");
+    assert.equal(calls, 2);
+    _resetSupervisorCacheForTesting();
+  });
+});
 
 describe("detectSupervisor", () => {
   // Real cgroup lines, captured on forge.
@@ -498,6 +525,46 @@ describe("release notes cache (one source: GitHub release bodies)", () => {
       assert.equal(body.updateAvailable, true);
       assert.equal(body.latest, "9.9.9");
       assert.ok(body.checkedAt, "the check actually ran");
+    } finally {
+      for (const [k, v] of [
+        ["AUTONOMOS_RELEASE_API_URL", saved.url],
+        ["AUTONOMOS_RELEASE_REPO", saved.repo],
+      ] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("Check for updates that never reaches GitHub is a 502, not a stale 'you're on the latest'", async () => {
+    server = createServer((_req, res) => {
+      res.statusCode = 403; // rate-limited
+      res.end("{}");
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const a = server.address();
+    if (!a || typeof a !== "object") throw new Error("no port");
+    const saved = {
+      url: process.env.AUTONOMOS_RELEASE_API_URL,
+      repo: process.env.AUTONOMOS_RELEASE_REPO,
+    };
+    process.env.AUTONOMOS_RELEASE_API_URL = `http://127.0.0.1:${a.port}`;
+    process.env.AUTONOMOS_RELEASE_REPO = "o/r";
+    try {
+      const app = new Hono();
+      app.route("/api/system", systemRouter);
+      const res = await app.request("/api/system/check-updates", {
+        method: "POST",
+        headers: {
+          Cookie: "autonomos_token=x",
+          "Content-Type": "application/json",
+          "Sec-Fetch-Site": "same-origin",
+        },
+        body: "{}",
+      });
+      assert.equal(res.status, 502);
+      const body = await res.json();
+      assert.equal(body.code, "CHECK_FAILED");
     } finally {
       for (const [k, v] of [
         ["AUTONOMOS_RELEASE_API_URL", saved.url],

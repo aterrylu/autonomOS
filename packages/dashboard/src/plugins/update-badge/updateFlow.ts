@@ -250,9 +250,13 @@ export function activeStepIndex(
  *  ("Install / upgrade: curl … | sh", "grab … from the assets below"). Inside
  *  the update dialog that tells you to update some other way and points at
  *  assets that aren't there, so it's cut: from the last horizontal rule when
- *  what follows is install instructions, plus any stray install line. */
+ *  what follows is install instructions, plus a stray footer line of exactly
+ *  that SHAPE ("Install / upgrade:" / "Manual download:" as the lead). A
+ *  changelog bullet that merely MENTIONS install.sh or SHA256SUMS stays. */
 const INSTALL_LINE =
   /install\.sh|install \/ upgrade|manual download|assets below|SHA256SUMS/i;
+const FOOTER_LEAD =
+  /^\s*(?:[-*+]\s+)?(?:\p{Extended_Pictographic}\uFE0F?\s*)?\**\s*(?:install \/ upgrade|manual download)\b/iu;
 
 export function inAppNotes(body: string): string {
   const lines = body.split(/\r?\n/);
@@ -265,7 +269,7 @@ export function inAppNotes(body: string): string {
   }
   return lines
     .slice(0, end)
-    .filter((l) => !INSTALL_LINE.test(l))
+    .filter((l) => !FOOTER_LEAD.test(l))
     .join("\n")
     .trimEnd();
 }

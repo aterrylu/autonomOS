@@ -92,8 +92,19 @@ describe("updateFlow helpers", () => {
     expect(inAppNotes(body)).toBe("- 🚀 new thing\n- 🩹 fix");
     // A rule followed by real notes stays.
     expect(inAppNotes("a\n---\nb")).toBe("a\n---\nb");
-    // A stray install line anywhere goes too.
-    expect(inAppNotes("a\nRun install.sh again\nb")).toBe("a\nb");
+    // A changelog bullet that merely MENTIONS the installer stays (nox's
+    // catch: the old filter dropped any line with install.sh / SHA256SUMS)…
+    const real = [
+      "- fix(install): install.sh no longer skips the Claude check",
+      "- verify SHA256SUMS on download",
+    ].join("\n");
+    expect(inAppNotes(real)).toBe(real);
+    // …while a footer-SHAPED stray line (no rule above it) still goes.
+    expect(
+      inAppNotes(
+        "- a fix\n📦 **Install / upgrade:** `curl … install.sh | sh`\n- b",
+      ),
+    ).toBe("- a fix\n- b");
   });
 
   it("joins names in prose", () => {

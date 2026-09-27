@@ -87,11 +87,26 @@ let manualCheck: Promise<unknown> | null = null;
 systemRouter.post("/check-updates", async (c) => {
   const denied = operatorOnly(c);
   if (denied) return denied;
+  const before = getUpdateCheckState().checkedAt;
   manualCheck ??= runUpdateCheck().finally(() => {
     manualCheck = null;
   });
   await manualCheck;
   const u = getUpdateCheckState();
+  // runUpdateCheck never throws: offline, a timeout, a rate-limit or a bad
+  // answer all keep the last-known state — and only a SUCCESS stamps
+  // checkedAt. Returning that stale cache as a 200 made "Check for updates"
+  // say "You're on the latest version" when it never reached GitHub.
+  if (u.checkedAt === before) {
+    return c.json(
+      {
+        error:
+          "Couldn't reach GitHub to check for updates. Try again in a minute.",
+        code: "CHECK_FAILED",
+      },
+      502,
+    );
+  }
   return c.json({
     current: getServerVersion(),
     latest: u.latest,

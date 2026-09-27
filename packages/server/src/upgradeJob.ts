@@ -147,12 +147,28 @@ export function detectSupervisor(
   return { kind: "none" };
 }
 
-/** The real process's supervisor, probed once — it can't change while this
- *  process runs, and routes ask on every poll. */
-let supervisorCache: Supervisor | undefined;
-export function ownSupervisor(): Supervisor {
-  supervisorCache ??= detectSupervisor();
-  return supervisorCache;
+/** The real process's supervisor. A POSITIVE answer is cached for good (it
+ *  can't change while this process runs, and routes ask on every poll). A
+ *  "none" is re-derived after a short TTL: on macOS it can come from a probe
+ *  that timed out under load right after login (launchctl/ps), and caching
+ *  that forever would 409 "not supervised" until a restart (nox's catch). A
+ *  genuine none is cheap — the env check short-circuits before any spawn. */
+const NONE_TTL_MS = 30_000;
+let supervisorCache: { value: Supervisor; at: number } | undefined;
+export function ownSupervisor(
+  now: number = Date.now(),
+  detect: () => Supervisor = detectSupervisor,
+): Supervisor {
+  const c = supervisorCache;
+  if (c && (c.value.kind !== "none" || now - c.at < NONE_TTL_MS)) {
+    return c.value;
+  }
+  const value = detect();
+  supervisorCache = { value, at: now };
+  return value;
+}
+export function _resetSupervisorCacheForTesting(): void {
+  supervisorCache = undefined;
 }
 
 /** Env the job needs to address the SAME install + service as this daemon. */
