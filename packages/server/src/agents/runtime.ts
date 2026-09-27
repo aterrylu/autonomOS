@@ -2086,6 +2086,18 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
       }
       throw err;
     }
+    // A kill can also land DURING the respawn (spawnAgent awaits — e.g. a Codex
+    // daemon booting — before the agent re-enters `live`); the respawn's
+    // markRunning would then undo it. Re-check now that the new process IS in
+    // `live`, and stop it through the normal kill path: the kill always wins.
+    if (killedDuringRestart.has(agentId)) {
+      killAttachment(agentId, "user_killed");
+      throw new SpawnError(
+        "RESTART_IN_PROGRESS",
+        409,
+        `${record.name} was stopped while it restarted, so it wasn't started again.`,
+      );
+    }
     console.info(
       `[runtime] restarted ${record.name} (${agentId.slice(0, 8)}) [${record.provider}]`,
     );

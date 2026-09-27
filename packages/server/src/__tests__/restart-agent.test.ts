@@ -93,11 +93,37 @@ const hung: AgentProvider = {
 };
 _setProviderForTesting("fakerestart", hung);
 
+// A daemon that takes ~800ms to report ready, so a kill can land INSIDE the
+// respawn (while spawnAgent awaits the boot, before the agent is back in
+// `live`). `killDuringBoot` schedules that kill on the respawn only.
+let killDuringBoot: string | undefined;
+const slowBoot: AgentProvider = {
+  ...hung,
+  name: "fakeslowboot" as never,
+  displayName: "FakeSlowBoot",
+  buildSidecar: () => {
+    const target = killDuringBoot;
+    if (target) {
+      killDuringBoot = undefined;
+      setTimeout(() => killAttachment(target as never), 200);
+    }
+    return {
+      args: [
+        "-e",
+        `setTimeout(() => console.log(${JSON.stringify(READY)}), 800); setInterval(() => {}, 1000);`,
+      ],
+      readyNeedle: READY,
+    };
+  },
+};
+_setProviderForTesting("fakeslowboot", slowBoot);
+
 after(async () => {
   _resetCodexControlForTesting();
   shutdownAllAttachments();
   await Promise.all([stopAllSidecars(), awaitPtyExits(5_000)]);
   _setProviderForTesting("fakerestart", null);
+  _setProviderForTesting("fakeslowboot", null);
   _resetCacheForTesting();
 });
 
@@ -234,6 +260,28 @@ describe("restartAgent", { timeout: 30_000 }, () => {
     assert.equal(aliveAtRespawn, undefined, "no new daemon was requested");
     const rec = getAgent(agent.id);
     assert.equal(rec?.status, "exited");
+    assert.equal(rec?.exitReason, "user_killed");
+  });
+
+  it("a KILL that lands DURING the respawn (daemon still booting) also wins — nox's #433 finding", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakeslowboot" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    killDuringBoot = agent.id;
+    await assert.rejects(restartAgent(agent.id), /stopped while it restarted/);
+    assert.equal(
+      killDuringBoot,
+      undefined,
+      "precondition: the kill was scheduled inside the respawn",
+    );
+    const rec = getAgent(agent.id);
+    assert.equal(
+      rec?.status,
+      "exited",
+      "the respawn's markRunning must not undo the kill",
+    );
     assert.equal(rec?.exitReason, "user_killed");
   });
 
