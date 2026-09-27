@@ -1,4 +1,4 @@
-## ADR-117: Org chart canvas: pan, zoom, fit and a map, with the view outside React state
+## ADR-120: Org chart canvas: pan, zoom, fit and a map, with the view outside React state
 
 - **Date:** 2026-09-26
 - **Decided by:** Terry (picked all four recommendations on the interactive mockup, relayed by TeamLead: "go with all your recommendations"), built by OrgChart@autonomOS.
