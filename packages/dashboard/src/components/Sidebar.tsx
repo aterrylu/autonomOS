@@ -29,6 +29,7 @@ import {
   mergeOrgWithSessions,
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
+import { projectLabels } from "./projectLabels";
 import {
   formatAge,
   isLightBg,
@@ -450,6 +451,9 @@ export function Sidebar() {
   // unified-id agents and DIFFER for split-id ones (spawned post-#165, before
   // the id unification) — so an agent-id-only set leaves split-id agents
   // without their live dot in the Projects panel.
+  // Same-named project dirs ("work" under two parents) get distinguishing
+  // labels ("aq/work" / "ax/work") instead of rendering as duplicates.
+  const labels = useMemo(() => projectLabels(projects), [projects]);
   const liveSessionIds = useMemo(() => {
     const set = new Set<string>();
     for (const s of sessions) {
@@ -1076,6 +1080,7 @@ export function Sidebar() {
             <ProjectItem
               key={project.path}
               project={project}
+              label={labels.get(project.path) ?? project.name}
               page={page}
               liveSessionIds={liveSessionIds}
               onAgentContextMenu={openAgentMenu}
@@ -2302,6 +2307,9 @@ function HierarchyNodeRow({
 
 interface ProjectItemProps {
   project: ProjectInfo;
+  /** Display label: the dir name, or a parent-qualified one when another row
+   *  shares it (see projectLabels). Defaults to `project.name`. */
+  label?: string;
   page: PageTheme;
   liveSessionIds: Set<string>;
   onAgentContextMenu: (e: React.MouseEvent, target: AgentMenuTarget) => void;
@@ -2317,6 +2325,7 @@ const NO_STATUSES: ReturnType<typeof useStore.getState>["agentStatuses"] = {};
 
 export const ProjectItem = React.memo(function ProjectItem({
   project,
+  label = project.name,
   page,
   liveSessionIds,
   onAgentContextMenu,
@@ -2367,8 +2376,13 @@ export const ProjectItem = React.memo(function ProjectItem({
           >
             {expanded ? "▼" : "▶"}
           </span>
-          <span className="flex-1 truncate text-xs font-medium">
-            {project.name}
+          <span
+            className="flex-1 truncate text-xs font-medium"
+            title={
+              project.path.startsWith("unknown:") ? undefined : project.path
+            }
+          >
+            {label}
           </span>
         </button>
         {/* Right edge (V1): the count and the quick-spawn "+" share ONE slot
@@ -2388,8 +2402,8 @@ export const ProjectItem = React.memo(function ProjectItem({
             disabled={isBusy || !projectProvider}
             className="absolute inset-0 flex items-center justify-end rounded text-sm leading-none opacity-0 pointer-events-none transition-opacity duration-150 cursor-pointer group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:cursor-default group-hover:disabled:opacity-50"
             style={{ color: page.statusFg }}
-            title={`New session in ${project.name}`}
-            aria-label={`New session in ${project.name}`}
+            title={`New session in ${label}`}
+            aria-label={`New session in ${label}`}
             // Fire-and-forget: spawnSession throws on failure and records it in
             // `status`; this button has no inline error surface, so swallow the
             // rejection only to keep it from becoming unhandled.

@@ -43,9 +43,9 @@ const {
   buildAgent,
   insertAgent,
   getAgent,
+  markActivity,
   markExited,
   getAgentByProviderSessionId,
-  markActivity,
   _resetCacheForTesting,
 } = await import("../agents/store.js");
 const { getNotifications, clearNotifications } = await import(
@@ -75,7 +75,9 @@ const fake: AgentProvider = {
 };
 
 const ids: string[] = [];
-function seed(): UUID {
+/** `conversed` = the agent did real work before (lastActivityAt set), so a
+ *  missing session IS a lost conversation; a never-used agent has none. */
+function seed(conversed = true): UUID {
   const id = randomUUID() as UUID;
   ids.push(id);
   insertAgent(
@@ -89,6 +91,7 @@ function seed(): UUID {
       status: "running",
     }),
   );
+  if (conversed) markActivity(id, Date.now() - 60_000);
   markExited(id, "user_killed");
   return id;
 }
@@ -142,19 +145,29 @@ describe("CC reattach pre-flight (ADR-111)", () => {
     );
     // …and the post-update verifier is told this id was never saved, so it
     // won't report a lost conversation (ADR-105).
-    assert.ok(wasFreshStart(id, "session", old as string));
+    // A CONVERSED agent's lost session is real: the post-update check must
+    // keep flagging it, so it is NOT recorded as "nothing lost".
+    assert.equal(wasFreshStart(id, "session", old as string), false);
   });
 
-  it("an agent that DID converse and lost its session is NOT excused by the post-update check", async () => {
-    const id = seed();
-    markActivity(id, Date.now() - 60_000); // it had real turns
+  it("NEVER-USED agent, not resumable → same fresh start, but NO notice / unread (nothing was lost)", async () => {
+    const id = seed(false);
     const old = getAgent(id)?.providerSessionId;
     resumable = false;
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    // Same fresh start, but that IS a lost conversation: the verifier must
-    // still report it, so it's not recorded as "nothing lost".
-    assert.notEqual(seen.at(-1)?.providerSessionId, old);
-    assert.equal(wasFreshStart(id, "session", old as string), false);
+    const argv = seen.at(-1);
+    // Behavior is identical to the conversed case: fresh, under a NEW id…
+    assert.equal(argv?.resumeSessionId, undefined, "no --resume");
+    assert.notEqual(argv?.providerSessionId, old, "still never reuses the id");
+    // …but a prompt-less agent has no saved session by construction, so the
+    // restart must not leave an unread badge (ReleaseRollout's forge repro).
+    assert.equal(
+      getNotifications(id).length,
+      0,
+      `no notification for a never-used agent, got: ${JSON.stringify(getNotifications(id))}`,
+    );
+    // …and the post-update check is told this id was never saved (ADR-105).
+    assert.ok(wasFreshStart(id, "session", old as string));
   });
 
   it("resumable → --resume with the SAME id (unchanged)", async () => {
