@@ -528,16 +528,69 @@ const claudeMetaCache = new Map<
   { mtimeMs: number; size: number; meta: ClaudeSessionMeta }
 >();
 
-export function parseClaudeHead(head: Head): ClaudeSessionMeta {
+/** How far into a Claude Code JSONL we'll read for its cwd/entrypoint. The
+ *  first lines can be HUGE: a headless review session opens with a
+ *  queue-operation record embedding the whole prompt+diff (239KB measured),
+ *  and the line with the cwd is as big again — a fixed 256KB head tore it. */
+export const MAX_CLAUDE_META_BYTES = 2 * 1024 * 1024;
+const META_CHUNK = 64 * 1024;
+
+/**
+ * Read a Claude Code JSONL line by line, in chunks, only until its first `cwd`
+ * AND `entrypoint` are found (usually within the first few KB) — never past
+ * MAX_CLAUDE_META_BYTES. Only COMPLETE lines are parsed.
+ */
+export async function readClaudeMeta(
+  path: string,
+  maxBytes = MAX_CLAUDE_META_BYTES,
+): Promise<ClaudeSessionMeta> {
   const meta: ClaudeSessionMeta = {};
-  for (const line of jsonLines(head)) {
-    if (meta.cwd === undefined && typeof line.cwd === "string" && line.cwd)
-      meta.cwd = line.cwd;
-    if (meta.entrypoint === undefined && typeof line.entrypoint === "string")
-      meta.entrypoint = line.entrypoint;
-    if (meta.cwd !== undefined && meta.entrypoint !== undefined) break;
+  const fh = await open(path, "r");
+  try {
+    let pos = 0;
+    let pending = Buffer.alloc(0);
+    while (pos < maxBytes) {
+      const chunk = Buffer.alloc(Math.min(META_CHUNK, maxBytes - pos));
+      const { bytesRead } = await fh.read(chunk, 0, chunk.length, pos);
+      if (bytesRead === 0) break;
+      pos += bytesRead;
+      pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+      let nl = pending.indexOf(0x0a);
+      while (nl !== -1) {
+        const line = pending.subarray(0, nl).toString("utf8");
+        pending = pending.subarray(nl + 1);
+        nl = pending.indexOf(0x0a);
+        if (!line.trim()) continue;
+        let o: Record<string, unknown>;
+        try {
+          o = JSON.parse(line);
+        } catch {
+          continue; // malformed line: skip
+        }
+        if (meta.cwd === undefined && typeof o.cwd === "string" && o.cwd)
+          meta.cwd = o.cwd;
+        if (meta.entrypoint === undefined && typeof o.entrypoint === "string")
+          meta.entrypoint = o.entrypoint;
+        if (meta.cwd !== undefined && meta.entrypoint !== undefined)
+          return meta;
+      }
+    }
+    // A last line without a trailing newline (the file ended, not the cap).
+    if (pos < maxBytes && pending.length > 0) {
+      try {
+        const o = JSON.parse(pending.toString("utf8"));
+        if (meta.cwd === undefined && typeof o.cwd === "string" && o.cwd)
+          meta.cwd = o.cwd;
+        if (meta.entrypoint === undefined && typeof o.entrypoint === "string")
+          meta.entrypoint = o.entrypoint;
+      } catch {
+        // torn or malformed: nothing more to learn
+      }
+    }
+    return meta;
+  } finally {
+    await fh.close();
   }
-  return meta;
 }
 
 /**
@@ -574,7 +627,7 @@ export async function readClaudeSessionMeta(
           return;
         }
         try {
-          const meta = parseClaudeHead(await readHead(path, MAX_HEAD_BYTES));
+          const meta = await readClaudeMeta(path);
           claudeMetaCache.set(path, {
             mtimeMs: st.mtimeMs,
             size: st.size,

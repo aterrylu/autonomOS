@@ -200,7 +200,7 @@ function enqueue(dir: string): void {
 
 // ── resolve (cache-only; never blocks) ──────────────────────────
 
-const WORKTREES_ROOT = join(homedir(), ".claude-worktrees");
+let worktreesRoot = join(homedir(), ".claude-worktrees");
 
 /**
  * The project for `dir`, from what's known NOW. Existing dirs not yet resolved
@@ -219,6 +219,16 @@ export function resolveDir(dir: string, exists: boolean): DirResolution {
       resolvedBy: exists ? "git" : "learned",
     };
   if (exists) {
+    const neg = negative.get(dir);
+    if (neg !== undefined && Date.now() - neg < NEGATIVE_TTL_MS) {
+      // Git said "not a repo". Under the worktrees root that's a HUSK — a
+      // removed worktree whose directory survived without its .git — so the
+      // naming convention still knows its repo.
+      const guess = conventionRepo(dir, map);
+      if (guess)
+        return { kind: "repo", repoRoot: guess, resolvedBy: "convention" };
+      return { kind: "dir" };
+    }
     enqueue(dir);
     return { kind: "dir" };
   }
@@ -233,9 +243,9 @@ export function resolveDir(dir: string, exists: boolean): DirResolution {
 export function conventionRepo(
   dir: string,
   map: ReadonlyMap<string, string>,
-  worktreesRoot = WORKTREES_ROOT,
+  root = worktreesRoot,
 ): string | undefined {
-  if (dirname(dir) !== worktreesRoot) return undefined;
+  if (dirname(dir) !== root) return undefined;
   const name = basename(dir);
   let best: string | undefined;
   for (const root of new Set(map.values())) {
@@ -272,6 +282,11 @@ export function _setTempCheckForTesting(
   check: ((dir: string) => boolean) | null,
 ): void {
   tempCheck = check ?? ((dir) => isTempDir(dir));
+}
+
+/** For tests: where worktrees live (never create dirs in the real home). */
+export function _setWorktreesRootForTesting(root: string | null): void {
+  worktreesRoot = root ?? join(homedir(), ".claude-worktrees");
 }
 
 /** For tests: write the learned map now instead of after the debounce. */

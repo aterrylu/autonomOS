@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -28,6 +29,7 @@ const {
   _learnForTesting,
   _resetProjectResolverForTesting,
   _setTempCheckForTesting,
+  _setWorktreesRootForTesting,
   conventionRepo,
   isTempDir,
   repoRootFromCommonDir,
@@ -205,5 +207,32 @@ describe("naming-convention fallback (deleted before it was ever seen)", () => {
       resolveDir("/h/.claude-worktrees/autonomOS-z", false).repoRoot,
       "/h/elsewhere/autonomOS",
     );
+  });
+});
+
+describe("a worktree HUSK (dir survived, .git gone) still folds into its repo", () => {
+  it("git says 'not a repo' under the worktrees root → the naming convention", async () => {
+    _setTempCheckForTesting(() => false);
+    const root = mkdtempSync(join(tmpdir(), "aos-projres-wtroot-"));
+    const husk = join(root, "autonomOS-terry-security-internal-listener");
+    mkdirSync(husk);
+    _setWorktreesRootForTesting(root);
+    try {
+      _learnForTesting("/h/workspace/autonomOS", "/h/workspace/autonomOS");
+      assert.deepEqual(
+        resolveDir(husk, true),
+        { kind: "dir" },
+        "first sight: queued",
+      );
+      await _drainProjectResolverForTesting(); // git: not a repository
+      assert.deepEqual(resolveDir(husk, true), {
+        kind: "repo",
+        repoRoot: "/h/workspace/autonomOS",
+        resolvedBy: "convention",
+      });
+    } finally {
+      _setWorktreesRootForTesting(null);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
