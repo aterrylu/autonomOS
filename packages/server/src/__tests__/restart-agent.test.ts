@@ -100,8 +100,16 @@ _setProviderForTesting("fakerestart", hung);
 // respawn (while spawnAgent awaits the boot, before the agent is back in
 // `live`). `killDuringBoot` schedules that kill on the respawn only.
 let killDuringBoot: string | undefined;
+let failAfterBoot = false;
 const slowBoot: AgentProvider = {
   ...hung,
+  buildArgs: (...a) => {
+    if (failAfterBoot) {
+      failAfterBoot = false;
+      throw new Error("respawn failed after the kill");
+    }
+    return hung.buildArgs(...a);
+  },
   name: "fakeslowboot" as never,
   displayName: "FakeSlowBoot",
   buildSidecar: () => {
@@ -354,6 +362,34 @@ describe("restartAgent", { timeout: 180_000 }, () => {
       "the respawn's markRunning must not undo the kill",
     );
     assert.equal(rec?.exitReason, "user_killed");
+  });
+
+  it("a kill mid-respawn AND a respawn that then fails: the KILL is the recorded outcome, not 'crashed'", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakeslowboot" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    killDuringBoot = agent.id;
+    failAfterBoot = true;
+    await assert.rejects(restartAgent(agent.id), /stopped while it restarted/);
+    assert.equal(
+      failAfterBoot,
+      false,
+      "precondition: the respawn really failed",
+    );
+    const rec = getAgent(agent.id);
+    assert.equal(
+      rec?.exitReason,
+      "user_killed",
+      "not overwritten with crashed",
+    );
+    assert.ok(
+      !getNotifications(agent.id).some((n) =>
+        (n.message ?? "").includes("it is stopped"),
+      ),
+      "no false 'restart failed' notice",
+    );
   });
 
   it("an ATTACH during the restart wait is refused (409), never spawned over the exiting process", async () => {
