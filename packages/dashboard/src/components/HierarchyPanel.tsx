@@ -500,6 +500,7 @@ function OrgCanvas({
   // PR 5 canvas: pan / zoom / fit. The view lives outside React state (see
   // useCanvasView); the stage transform is written straight to the DOM.
   const viewportRef = useRef<HTMLElement>(null);
+  const panRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const content = useMemo(
     () => ({ w: layout.width, h: layout.height }),
@@ -508,6 +509,7 @@ function OrgCanvas({
   const firstRoot = roots[0] ? layout.pos.get(roots[0].id) : undefined;
   const { api: view, store: viewStore } = useCanvasView({
     viewportRef,
+    panRef,
     stageRef,
     content,
     anchorX: firstRoot ? firstRoot.x + CARD_W / 2 : layout.width / 2,
@@ -589,144 +591,142 @@ function OrgCanvas({
         store={viewStore}
         api={view}
       />
-      <div
-        ref={stageRef}
-        data-org-stage
-        className="absolute top-0 left-0"
-        style={{
-          width: layout.width,
-          height: layout.height,
-          transformOrigin: "0 0",
-        }}
-      >
-        <svg
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 overflow-visible"
-          width={layout.width}
-          height={layout.height}
+      <div ref={panRef} data-org-pan className="absolute top-0 left-0">
+        <div
+          ref={stageRef}
+          data-org-stage
+          className="relative"
+          style={{ width: layout.width, height: layout.height }}
         >
-          {layout.edges.map(({ from, to }) => {
-            const a = layout.pos.get(from);
-            const b = layout.pos.get(to);
-            if (!a || !b) return null;
-            const dashed = exitedIds.has(from) || exitedIds.has(to);
-            const lit = chain?.has(from) && chain.has(to);
+          <svg
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 overflow-visible"
+            width={layout.width}
+            height={layout.height}
+          >
+            {layout.edges.map(({ from, to }) => {
+              const a = layout.pos.get(from);
+              const b = layout.pos.get(to);
+              if (!a || !b) return null;
+              const dashed = exitedIds.has(from) || exitedIds.has(to);
+              const lit = chain?.has(from) && chain.has(to);
+              return (
+                <path
+                  key={`${from}>${to}`}
+                  data-org-edge={`${from}>${to}`}
+                  d={elbowPath(a, b)}
+                  fill="none"
+                  className="org-edge"
+                  stroke={lit ? tokens.status.active : tokens.edge}
+                  strokeWidth={lit ? 2 : 1.6}
+                  opacity={chain && !lit ? tokens.dimOpacity : undefined}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={dashed ? "4 4" : undefined}
+                />
+              );
+            })}
+          </svg>
+          {layout.shelf && (
+            <div
+              data-org-shelf
+              className="absolute text-[10.5px] font-semibold uppercase tracking-[0.07em]"
+              style={{ left: PAD, top: layout.shelf.y, color: tokens.muted }}
+            >
+              Unassigned · {layout.shelf.count}
+            </div>
+          )}
+          {/* A folded team reads as a small stack of cards behind its lead. */}
+          {flat.map(({ node }) => {
+            const p = layout.pos.get(node.id);
+            if (!p || !collapsed.has(node.id) || !rollups.has(node.id))
+              return null;
+            return [10, 5].map((d) => (
+              <div
+                key={`${node.id}-stack-${d}`}
+                data-org-stack={node.id}
+                aria-hidden="true"
+                className="org-card absolute rounded-[9px]"
+                style={{
+                  left: p.x + d,
+                  top: p.y + d,
+                  width: CARD_W,
+                  height: CARD_H,
+                  background: tokens.card,
+                  border: `1px solid ${tokens.cardBorder}`,
+                  opacity: d === 10 ? 0.45 : 0.75,
+                }}
+              />
+            ));
+          })}
+          {flat.map(({ node, managerName }) => {
+            const p = layout.pos.get(node.id);
+            if (!p) return null;
+            const info = statusMap[node.claudeSessionId];
             return (
-              <path
-                key={`${from}>${to}`}
-                data-org-edge={`${from}>${to}`}
-                d={elbowPath(a, b)}
-                fill="none"
-                className="org-edge"
-                stroke={lit ? tokens.status.active : tokens.edge}
-                strokeWidth={lit ? 2 : 1.6}
-                opacity={chain && !lit ? tokens.dimOpacity : undefined}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray={dashed ? "4 4" : undefined}
+              <OrgCard
+                key={node.id}
+                node={node}
+                idHint={
+                  sharedNames.has(node.name) ? node.id.slice(0, 4) : undefined
+                }
+                x={p.x}
+                y={p.y}
+                managerName={managerName}
+                info={info}
+                unread={
+                  node.status === "running"
+                    ? (notificationCounts[info?.session.id ?? node.id] ?? 0)
+                    : 0
+                }
+                tokens={tokens}
+                page={page}
+                selection={
+                  !chain
+                    ? null
+                    : node.id === selectedId
+                      ? "self"
+                      : chain.has(node.id)
+                        ? "chain"
+                        : "dim"
+                }
+                onOpen={onOpen}
+                onSelect={onSelect}
+                onNavigate={navigate}
+                onResume={onResume}
+                onMenu={onMenu}
               />
             );
           })}
-        </svg>
-        {layout.shelf && (
-          <div
-            data-org-shelf
-            className="absolute text-[10.5px] font-semibold uppercase tracking-[0.07em]"
-            style={{ left: PAD, top: layout.shelf.y, color: tokens.muted }}
-          >
-            Unassigned · {layout.shelf.count}
-          </div>
-        )}
-        {/* A folded team reads as a small stack of cards behind its lead. */}
-        {flat.map(({ node }) => {
-          const p = layout.pos.get(node.id);
-          if (!p || !collapsed.has(node.id) || !rollups.has(node.id))
-            return null;
-          return [10, 5].map((d) => (
-            <div
-              key={`${node.id}-stack-${d}`}
-              data-org-stack={node.id}
-              aria-hidden="true"
-              className="org-card absolute rounded-[9px]"
-              style={{
-                left: p.x + d,
-                top: p.y + d,
-                width: CARD_W,
-                height: CARD_H,
-                background: tokens.card,
-                border: `1px solid ${tokens.cardBorder}`,
-                opacity: d === 10 ? 0.45 : 0.75,
-              }}
-            />
-          ));
-        })}
-        {flat.map(({ node, managerName }) => {
-          const p = layout.pos.get(node.id);
-          if (!p) return null;
-          const info = statusMap[node.claudeSessionId];
-          return (
-            <OrgCard
-              key={node.id}
-              node={node}
-              idHint={
-                sharedNames.has(node.name) ? node.id.slice(0, 4) : undefined
-              }
-              x={p.x}
-              y={p.y}
-              managerName={managerName}
-              info={info}
-              unread={
-                node.status === "running"
-                  ? (notificationCounts[info?.session.id ?? node.id] ?? 0)
-                  : 0
-              }
-              tokens={tokens}
-              page={page}
-              selection={
-                !chain
-                  ? null
-                  : node.id === selectedId
-                    ? "self"
-                    : chain.has(node.id)
-                      ? "chain"
-                      : "dim"
-              }
-              onOpen={onOpen}
-              onSelect={onSelect}
-              onNavigate={navigate}
-              onResume={onResume}
-              onMenu={onMenu}
-            />
-          );
-        })}
-        {flat.map(({ node }) => {
-          const p = layout.pos.get(node.id);
-          const rollup = rollups.get(node.id);
-          if (!p || !rollup) return null;
-          const folded = collapsed.has(node.id);
-          return (
-            <TeamControls
-              key={`${node.id}-team`}
-              node={node}
-              x={p.x}
-              y={p.y}
-              rollup={rollup}
-              folded={folded}
-              tokens={tokens}
-              onToggle={onToggleCollapse}
-            />
-          );
-        })}
-        <MessageLayer
-          layout={layout}
-          managerOf={(id) => managerById.get(id)}
-          anchorOf={anchorOf}
-          providerOf={(id) => nodeById.get(id)?.provider}
-          nameOf={(id) => nodeById.get(id)?.name}
-          mode={messageMode}
-          tokens={tokens}
-          onSelect={onSelect}
-        />
+          {flat.map(({ node }) => {
+            const p = layout.pos.get(node.id);
+            const rollup = rollups.get(node.id);
+            if (!p || !rollup) return null;
+            const folded = collapsed.has(node.id);
+            return (
+              <TeamControls
+                key={`${node.id}-team`}
+                node={node}
+                x={p.x}
+                y={p.y}
+                rollup={rollup}
+                folded={folded}
+                tokens={tokens}
+                onToggle={onToggleCollapse}
+              />
+            );
+          })}
+          <MessageLayer
+            layout={layout}
+            managerOf={(id) => managerById.get(id)}
+            anchorOf={anchorOf}
+            providerOf={(id) => nodeById.get(id)?.provider}
+            nameOf={(id) => nodeById.get(id)?.name}
+            mode={messageMode}
+            tokens={tokens}
+            onSelect={onSelect}
+          />
+        </div>
       </div>
     </section>
   );

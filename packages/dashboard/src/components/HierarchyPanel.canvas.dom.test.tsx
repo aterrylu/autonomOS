@@ -127,11 +127,10 @@ const stage = () => $("[data-org-stage]") as HTMLElement;
 const card = (id: string) => $(`[data-org-card="${id}"]`);
 const pct = () => $("[data-org-zoom-pct]")?.textContent;
 const view = () => {
-  const m = stage().style.transform.match(
-    /translate\(([-\d.e]+)px, ([-\d.e]+)px\) scale\(([-\d.e]+)\)/,
-  );
-  if (!m) throw new Error(`no view transform: "${stage().style.transform}"`);
-  return { x: +m[1], y: +m[2], k: +m[3] };
+  const v = stage().dataset.orgView;
+  if (!v) throw new Error("no view published on the stage");
+  const [x, y, k] = v.split(",").map(Number);
+  return { x, y, k };
 };
 
 /** jsdom drops pointer coordinates from synthesized events: set them as own props. */
@@ -178,8 +177,35 @@ async function mount(fleet: () => void) {
   });
   render(<HierarchyPanel />);
   await waitFor(() => expect(card("Lead")).not.toBeNull());
-  await waitFor(() => expect(stage().style.transform).toContain("scale"));
+  await waitFor(() => expect(stage().dataset.orgView).toBeTruthy());
 }
+
+describe('crisp at every zoom (Terry: "the cards look very low quality")', () => {
+  it("zoom is CSS `zoom` on the stage — never a scale transform (which blurs a stretched bitmap)", async () => {
+    await mount(() => bigFleet(8));
+    expect(stage().style.transform).toBe("");
+    expect(stage().style.zoom).toBe(String(view().k));
+    // Pan rides a wrapper as a WHOLE-PIXEL translate (subpixel blurs text too).
+    const pan = $("[data-org-pan]") as HTMLElement;
+    act(() => {
+      fireEvent.wheel(viewport(), { deltaY: -37, ctrlKey: true }); // fractional view
+    });
+    const m = pan.style.transform.match(/^translate\((-?\d+)px, (-?\d+)px\)$/);
+    expect(m).not.toBeNull();
+    expect(Number(m?.[1])).toBe(Math.round(view().x));
+    expect(pan.style.transform).not.toContain("scale");
+  });
+
+  it("message bubbles counter-ZOOM (1:1 text), not counter-scale", async () => {
+    // The bubble layer reads --org-inv-k through `zoom`; a `scale` there would
+    // stretch the bubble's bitmap at every zoom but 100%.
+    await mount(() => bigFleet(8));
+    expect(Number(stage().style.getPropertyValue("--org-inv-k"))).toBeCloseTo(
+      1 / view().k,
+      6,
+    );
+  });
+});
 
 describe("opening view (pick 4A: fit, never below 60%)", () => {
   it("a chart that fits opens fitted at 100% and the map stays hidden (2A)", async () => {

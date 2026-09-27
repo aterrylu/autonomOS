@@ -3,8 +3,15 @@
  *
  * The view (`x, y, k`) lives in a tiny store, NOT React state: a pan fires a
  * pointermove per frame, and re-rendering every card for each one is wasted
- * work. The stage transform is written straight to the DOM; only the small
- * subscribers (zoom %, the map) re-render, through `useCanvasViewSnapshot`.
+ * work. The view is written straight to the DOM; only the small subscribers
+ * (zoom %, the map) re-render, through `useCanvasViewSnapshot`.
+ *
+ * CRISPNESS (Terry: "the cards look very low quality"): zoom is CSS `zoom` on
+ * the stage, NOT `transform: scale()`. A scaled layer is rasterized once and
+ * its bitmap stretched — blurry text and icons at any zoom but 100%. `zoom`
+ * re-lays out the cards at the zoomed size, so text, SVG and icons render
+ * natively crisp at every level and on retina. Pan is a whole-pixel
+ * `translate` on a wrapper (subpixel offsets blur text too).
  *
  * Gestures:
  * - drag EMPTY canvas → pan. A press that moves < PAN_THRESHOLD_PX is a click,
@@ -77,12 +84,16 @@ export interface CanvasViewStore {
 
 export function useCanvasView({
   viewportRef,
+  panRef,
   stageRef,
   content,
   anchorX,
   onGestureStart,
 }: {
   viewportRef: RefObject<HTMLElement | null>;
+  /** Wrapper carrying the pan (a whole-pixel translate). */
+  panRef: RefObject<HTMLDivElement | null>;
+  /** The stage carrying the zoom (CSS `zoom`, never a scale transform). */
   stageRef: RefObject<HTMLDivElement | null>;
   /** The laid-out chart size, in px at 100%. */
   content: Size;
@@ -106,15 +117,20 @@ export function useCanvasView({
     (view: View) => {
       state.current = { ...state.current, view };
       snapshot.current = state.current;
+      const pan = panRef.current;
+      if (pan)
+        pan.style.transform = `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px)`;
       const stage = stageRef.current;
       if (stage) {
-        stage.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
-        // Bubbles counter-scale through this (pick 3A: text stays readable).
+        stage.style.zoom = String(view.k);
+        // Bubbles counter-ZOOM through this (pick 3A: text stays readable).
         stage.style.setProperty("--org-inv-k", String(1 / view.k));
+        // The exact view, for debugging and tests (jsdom has no `zoom`).
+        stage.dataset.orgView = `${view.x},${view.y},${view.k}`;
       }
       for (const fn of listeners.current) fn();
     },
-    [stageRef],
+    [panRef, stageRef],
   );
 
   const glide = useCallback(
