@@ -270,6 +270,8 @@ export function seedDefaultTemplates(): void {
   );
   if (existing.length > 0) return;
 
+  // No permission on the seeds: agents from them use the operator's
+  // per-runtime default (ADR-115), like any spawn that names none.
   const defaults: Record<string, AgentTemplate> = {
     dispatcher: {
       role: "Dispatcher",
@@ -282,7 +284,6 @@ export function seedDefaultTemplates(): void {
         "3. Monitor progress and coordinate between agents\n" +
         "4. Report results back to the user\n\n" +
         "Use create_agent() to spawn workers, send() to communicate, and list_agents() to monitor.",
-      permissionMode: DEFAULT_PERMISSION_MODE,
     },
     "team-lead": {
       role: "Team Lead",
@@ -295,7 +296,6 @@ export function seedDefaultTemplates(): void {
         "3. Review completed work and provide feedback\n" +
         "4. Escalate blockers to the human operator\n\n" +
         "Coordinate via send(), monitor with list_agents(), spawn with create_agent().",
-      permissionMode: DEFAULT_PERMISSION_MODE,
     },
     "feature-worker": {
       role: "Feature Worker",
@@ -313,7 +313,6 @@ export function seedDefaultTemplates(): void {
         "the fleet you would create. Do not terminate other agents via kill_agent(). " +
         "Complete your work and exit via self_exit() when done, or wait for " +
         "kill_agent() from your manager.",
-      permissionMode: DEFAULT_PERMISSION_MODE,
     },
   };
 
