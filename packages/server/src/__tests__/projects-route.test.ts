@@ -23,6 +23,11 @@ process.env.GEMINI_CLI_HOME = join(
   tmpdir(),
   `aos-projects-no-gemini-${randomUUID()}`,
 );
+// …and the Claude Code session-meta reader (claudeProjectsDir honors this).
+process.env.CLAUDE_CONFIG_DIR = join(
+  tmpdir(),
+  `aos-projects-no-claude-${randomUUID()}`,
+);
 
 const { projectRouter, _setDepsForTesting, _resetForTesting } = await import(
   "../routes/projects.js"
@@ -30,6 +35,10 @@ const { projectRouter, _setDepsForTesting, _resetForTesting } = await import(
 
 const { buildAgent, insertAgent, markExited, patchAgent } = await import(
   "../agents/store.js"
+);
+
+const { _learnForTesting, _resetProjectResolverForTesting } = await import(
+  "../projectResolver.js"
 );
 
 const HOME = "/Users/testuser";
@@ -64,6 +73,7 @@ function setup(specs: FakeSessionSpec[]) {
     listSessions: async () => fakeSessions(specs),
     listCodexSessions: async () => [],
     listGeminiSessions: async () => [],
+    readClaudeSessionMeta: async () => new Map(),
   });
   return createApp();
 }
@@ -72,7 +82,12 @@ interface ProjectJson {
   path: string;
   name: string;
   lastActive: number;
+  kind?: string;
+  counts?: { visible: number; headless: number; removed: number };
   sessions: {
+    cwd?: string;
+    cwdExists?: boolean;
+    headless?: boolean;
     sessionId: string;
     provider: string;
     summary: string;
@@ -106,14 +121,15 @@ describe("GET /api/projects — grouping & shaping", () => {
     assert.equal(autonomos.sessions.length, 2, "both sessions grouped");
   });
 
-  it("names a cwd-less session's project 'Unknown' (keyed per session, bug #7)", async () => {
+  it("a session with NO directory is a throwaway (kind temp, never an 'Unknown' project), keyed per session (bug #7)", async () => {
     const app = setup([{ sessionId: "a", customTitle: "A" }]);
 
     const res = await app.request("/api/projects");
     const projects = (await res.json()) as ProjectJson[];
 
     assert.equal(projects.length, 1);
-    assert.equal(projects[0].name, "Unknown");
+    assert.equal(projects[0].name, "(no directory)");
+    assert.equal(projects[0].kind, "temp", "the UI folds it into Other");
     // Keyed per-session (unknown:<id>) so unrelated cwd-less sessions don't merge.
     assert.ok(projects[0].path.startsWith("unknown:"));
   });
@@ -314,7 +330,7 @@ describe("GET /api/projects — provider + Codex seam + cwd-less", () => {
     assert.equal(codex?.originator, "external");
   });
 
-  it("does NOT merge cwd-less sessions into one Unknown project (bug #7)", async () => {
+  it("does NOT merge cwd-less sessions into one project (bug #7)", async () => {
     const app = setup([
       { sessionId: "a", summary: "a" }, // no cwd
       { sessionId: "b", summary: "b" }, // no cwd
@@ -322,7 +338,7 @@ describe("GET /api/projects — provider + Codex seam + cwd-less", () => {
     const projects = (await (
       await app.request("/api/projects")
     ).json()) as ProjectJson[];
-    const unknowns = projects.filter((x) => x.name === "Unknown");
+    const unknowns = projects.filter((x) => x.name === "(no directory)");
     assert.equal(unknowns.length, 2); // separate groups, not merged into one
   });
 });
@@ -639,5 +655,127 @@ describe("GET /api/projects — managed agents of EVERY runtime (Codex/Gemini)",
         (s) => s.sessionId === "g-ok",
       ),
     );
+  });
+});
+
+describe("GET /api/projects — projects by git repo (Terry: 'way too many projects', 'Unknown')", () => {
+  const REPO = `${HOME}/workspace/autonomOS`;
+  const WT = `${HOME}/.claude-worktrees/autonomOS-terry-feature`;
+  const get = async (app: ReturnType<typeof createApp>) =>
+    (await (await app.request("/api/projects")).json()) as ProjectJson[];
+
+  it("a session the SDK returns cwd-less gets its cwd from the JSONL head — no 'Unknown' project", async () => {
+    _resetProjectResolverForTesting();
+    _setDepsForTesting({
+      listSessions: async () => fakeSessions([{ sessionId: "q1" }]), // SDK: no cwd
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [],
+      readClaudeSessionMeta: async () =>
+        new Map([["q1", { cwd: `${HOME}/workspace/p`, entrypoint: "sdk-py" }]]),
+    });
+    // (Earlier tests left managed agents in the store — find OUR session.)
+    const ps = await get(createApp());
+    const p = ps.find((x) => x.sessions.some((s) => s.sessionId === "q1"));
+    assert.ok(p);
+    assert.equal(p.path, `${HOME}/workspace/p`);
+    assert.notEqual(p.name, "(no directory)");
+    assert.equal(
+      p.sessions.find((s) => s.sessionId === "q1")?.cwd,
+      `${HOME}/workspace/p`,
+    );
+  });
+
+  it("a worktree's sessions fold into their REPO; each keeps its own cwd; counts split visible / headless / removed", async () => {
+    _resetProjectResolverForTesting();
+    _learnForTesting(REPO, REPO);
+    _learnForTesting(WT, REPO); // learned while the worktree existed
+    _setDepsForTesting({
+      listSessions: async () =>
+        fakeSessions([
+          { sessionId: "main-1", cwd: REPO },
+          { sessionId: "wt-1", cwd: WT },
+          { sessionId: "wt-bot", cwd: WT },
+        ]),
+      listGeminiSessions: async () => [],
+      listCodexSessions: async () => [
+        {
+          cwd: WT,
+          session: {
+            sessionId: "cx-exec",
+            provider: "codex",
+            summary: "e",
+            lastModified: 5,
+            headless: true,
+          },
+        },
+      ],
+      readClaudeSessionMeta: async () =>
+        new Map([
+          ["main-1", { entrypoint: "cli" }],
+          ["wt-1", { entrypoint: "cli" }],
+          ["wt-bot", { entrypoint: "sdk-py" }],
+        ]),
+    });
+    const ps = await get(createApp());
+    const repos = ps.filter((p) => p.path === REPO);
+    assert.equal(repos.length, 1, "one project for the repo and its worktree");
+    const p = repos[0];
+    assert.equal(p.kind, "repo");
+    assert.equal(p.name, "autonomOS");
+    assert.equal(
+      p.sessions.find((s) => s.sessionId === "wt-1")?.cwd,
+      WT,
+      "the session keeps its worktree cwd",
+    );
+    // All paths are fake (don't exist): the two interactive ones are "removed".
+    assert.deepEqual(p.counts, { visible: 0, headless: 2, removed: 2 });
+    assert.equal(
+      p.sessions.find((s) => s.sessionId === "wt-bot")?.headless,
+      true,
+    );
+    assert.equal(
+      p.sessions.find((s) => s.sessionId === "cx-exec")?.headless,
+      true,
+    );
+  });
+
+  it("a DELETED worktree never seen by git folds by the naming convention into a known repo", async () => {
+    _resetProjectResolverForTesting();
+    _learnForTesting(REPO, REPO);
+    const { homedir } = await import("node:os");
+    const gone = join(
+      homedir(),
+      ".claude-worktrees",
+      `autonomOS-terry-gone-${randomUUID().slice(0, 6)}`,
+    );
+    _setDepsForTesting({
+      listSessions: async () => fakeSessions([{ sessionId: "g1", cwd: gone }]),
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [],
+      readClaudeSessionMeta: async () =>
+        new Map([["g1", { entrypoint: "cli" }]]),
+    });
+    const ps = await get(createApp());
+    const p = ps.find((x) => x.sessions.some((s) => s.sessionId === "g1"));
+    assert.ok(p);
+    assert.equal(p.path, REPO);
+    assert.equal(
+      (p as { repoResolvedBy?: string }).repoResolvedBy,
+      "convention",
+    );
+  });
+
+  it("temp dirs are flagged temp (the UI folds them into Other)", async () => {
+    _resetProjectResolverForTesting();
+    _setDepsForTesting({
+      listSessions: async () =>
+        fakeSessions([{ sessionId: "t1", cwd: "/private/tmp/aos-live.Su6K" }]),
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [],
+      readClaudeSessionMeta: async () => new Map(),
+    });
+    const ps = await get(createApp());
+    const p = ps.find((x) => x.sessions.some((s) => s.sessionId === "t1"));
+    assert.equal(p?.kind, "temp");
   });
 });

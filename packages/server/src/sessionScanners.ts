@@ -223,7 +223,9 @@ export function codexHome(env: Env = process.env): string {
 }
 
 export function parseCodexHead(head: Head): ScannedSession | null {
-  let meta: { id?: unknown; cwd?: unknown; originator?: unknown } | undefined;
+  let meta:
+    | { id?: unknown; cwd?: unknown; originator?: unknown; source?: unknown }
+    | undefined;
   let prompt: string | undefined;
   // Two places a prompt can be, both seen on 0.154: an `event_msg`
   // `user_message` (the interactive TUI), or — for a thread driven through the
@@ -273,6 +275,8 @@ export function parseCodexHead(head: Head): ScannedSession | null {
       originator: originator?.startsWith("autonomos")
         ? "autonomos"
         : "external",
+      // `codex exec` — no person at the keyboard (measured: source "exec").
+      headless: meta.source === "exec",
     },
   };
 }
@@ -508,8 +512,87 @@ export function findGeminiSession(
   return false;
 }
 
+// ── Claude Code session metadata (what the SDK listing misses) ──
+
+export interface ClaudeSessionMeta {
+  /** First `cwd` in the file — the SDK only reads the head, and a session
+   *  that opens with `queue-operation` records (no cwd) came back cwd-less:
+   *  every "Unknown" project was one of those. */
+  cwd?: string;
+  /** How it was started: "cli" is interactive; "sdk-py"/"sdk-cli" headless. */
+  entrypoint?: string;
+}
+
+const claudeMetaCache = new Map<
+  string,
+  { mtimeMs: number; size: number; meta: ClaudeSessionMeta }
+>();
+
+export function parseClaudeHead(head: Head): ClaudeSessionMeta {
+  const meta: ClaudeSessionMeta = {};
+  for (const line of jsonLines(head)) {
+    if (meta.cwd === undefined && typeof line.cwd === "string" && line.cwd)
+      meta.cwd = line.cwd;
+    if (meta.entrypoint === undefined && typeof line.entrypoint === "string")
+      meta.entrypoint = line.entrypoint;
+    if (meta.cwd !== undefined && meta.entrypoint !== undefined) break;
+  }
+  return meta;
+}
+
+/**
+ * sessionId → its cwd and entrypoint, for every Claude Code session JSONL
+ * under `projectsDir` (`<projectsDir>/<encoded-cwd>/<sessionId>.jsonl`).
+ * Bounded like the other scanners (MAX_HEAD_BYTES per file), mtime-cached,
+ * and unreadable files are skipped with a one-time warning.
+ */
+export async function readClaudeSessionMeta(
+  projectsDir: string,
+): Promise<Map<string, ClaudeSessionMeta>> {
+  const out = new Map<string, ClaudeSessionMeta>();
+  const files: string[] = [];
+  for (const d of await listDir(projectsDir, { root: true })) {
+    if (!d.isDirectory()) continue;
+    for (const f of await listDir(join(projectsDir, d.name))) {
+      if (f.isFile() && f.name.endsWith(".jsonl"))
+        files.push(join(projectsDir, d.name, f.name));
+    }
+  }
+  for (let i = 0; i < files.length; i += STAT_CONCURRENCY) {
+    await Promise.all(
+      files.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
+        let st: { mtimeMs: number; size: number };
+        try {
+          st = await stat(path);
+        } catch {
+          return;
+        }
+        const id = path.slice(path.lastIndexOf("/") + 1, -".jsonl".length);
+        const hit = claudeMetaCache.get(path);
+        if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+          out.set(id, hit.meta);
+          return;
+        }
+        try {
+          const meta = parseClaudeHead(await readHead(path, MAX_HEAD_BYTES));
+          claudeMetaCache.set(path, {
+            mtimeMs: st.mtimeMs,
+            size: st.size,
+            meta,
+          });
+          out.set(id, meta);
+        } catch (err) {
+          warnOnce(path, `can't read ${path}: ${(err as Error).message}`);
+        }
+      }),
+    );
+  }
+  return out;
+}
+
 /** For tests. */
 export function _resetSessionScannerCachesForTesting(): void {
+  claudeMetaCache.clear();
   codexCache.clear();
   geminiCache.clear();
 }

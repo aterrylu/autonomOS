@@ -1,16 +1,20 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
 import {
   listSessions,
   type SDKSessionInfo,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { ProjectInfo, ProjectSession } from "@autonomos/core";
+import type { ProjectInfo, ProjectKind, ProjectSession } from "@autonomos/core";
 import { Hono } from "hono";
 import { getAgent, listAgents } from "../agents/store.js";
+import { resolveDir } from "../projectResolver.js";
+import { claudeProjectsDir } from "../providers/claude-code.js";
 import {
+  type ClaudeSessionMeta,
   listCodexSessions,
   listGeminiSessions,
   NO_PROMPT_YET,
+  readClaudeSessionMeta,
 } from "../sessionScanners.js";
 import { batchGetTitles } from "../titleCache";
 
@@ -35,6 +39,16 @@ projectRouter.get("/", async (c) => {
     ["Codex", settle(listCodexSessionsFn)],
     ["Gemini", settle(listGeminiSessionsFn)],
   ] as const;
+  // Claude Code sessions' own cwd + entrypoint, from each JSONL's head: the
+  // SDK listing misses the cwd of a session that opens with queue-operation
+  // records (every "Unknown" project was one), and never reports headless.
+  const claudeMetaP = readClaudeSessionMetaFn().catch((err: unknown) => {
+    console.error(
+      "readClaudeSessionMeta failed; Claude Code rows lack cwd/headless this tick:",
+      err instanceof Error ? err.message : err,
+    );
+    return new Map<string, ClaudeSessionMeta>();
+  });
   let sessions: SDKSessionInfo[];
   try {
     sessions = await listSessionsFn();
@@ -66,20 +80,20 @@ projectRouter.get("/", async (c) => {
     }
   }
 
-  // Group sessions by project directory. A session with NO cwd gets its own
-  // group keyed by sessionId (all displayed as "Unknown") so unrelated cwd-less
-  // sessions don't merge into one pseudo-project.
+  // Group sessions by PROJECT: a git repo (worktrees fold into their main
+  // repo), else the directory, with throwaway temp dirs flagged (the UI folds
+  // them into "Other"). projectResolver never blocks — git runs off the
+  // request path and fills in on a later poll.
   const projectMap = new Map<string, ProjectSession[]>();
-  // ONE project per real directory. The runtimes disagree on spelling: Codex,
-  // Gemini — and Claude Code for some paths — record the REALPATH
-  // (/private/tmp/x on macOS), while agent records keep the path as typed
-  // (/tmp/x). The first spelling seen for a directory becomes its key and
-  // every later one joins it; Claude Code rows are pushed first, so their own
-  // paths are never rewritten. (An unresolvable path — deleted — keys as is.)
+  const kindOf = new Map<string, ProjectKind>();
+  const resolvedByOf = new Map<string, ProjectInfo["repoResolvedBy"]>();
+  // Non-repo dirs: ONE project per real directory. The runtimes disagree on
+  // spelling — Codex, Gemini and sometimes Claude Code record the REALPATH
+  // (/private/tmp/x on macOS), agent records the path as typed (/tmp/x). The
+  // first spelling seen becomes the key; Claude Code rows are pushed first.
   const keyByReal = new Map<string, string>();
   const realOf = new Map<string, string>();
   const keyFor = (cwd: string): string => {
-    if (cwd.startsWith("unknown:")) return cwd;
     let real = realOf.get(cwd);
     if (real === undefined) {
       try {
@@ -94,13 +108,46 @@ projectRouter.get("/", async (c) => {
     keyByReal.set(real, cwd);
     return cwd;
   };
-  const push = (cwd: string, s: ProjectSession) => {
-    const key = keyFor(cwd);
+  const existsMemo = new Map<string, boolean>();
+  const exists = (dir: string): boolean => {
+    let e = existsMemo.get(dir);
+    if (e === undefined) {
+      e = existsSync(dir);
+      existsMemo.set(dir, e);
+    }
+    return e;
+  };
+  const push = (cwd: string | undefined, s: ProjectSession) => {
+    let key: string;
+    let kind: ProjectKind;
+    if (!cwd) {
+      // No runtime recorded a directory: throwaway, never an "Unknown" group.
+      key = `unknown:${s.sessionId}`;
+      kind = "temp";
+    } else {
+      s.cwd = cwd;
+      s.cwdExists = exists(cwd);
+      const res = resolveDir(cwd, s.cwdExists);
+      kind = res.kind;
+      key = res.repoRoot ?? keyFor(cwd);
+      if (res.resolvedBy) {
+        // The strongest evidence any session gave wins for the group.
+        const rank = { git: 3, learned: 2, convention: 1 } as const;
+        const prev = resolvedByOf.get(key);
+        if (!prev || rank[res.resolvedBy] > rank[prev])
+          resolvedByOf.set(key, res.resolvedBy);
+      }
+    }
+    // A group is a repo if any of its sessions resolved to one.
+    const prevKind = kindOf.get(key);
+    if (!prevKind || kind === "repo") kindOf.set(key, kind);
     if (!projectMap.has(key)) projectMap.set(key, []);
     projectMap.get(key)!.push(s);
   };
+  const claudeMeta = await claudeMetaP;
   for (const s of sessions) {
-    const cwd = s.cwd || `unknown:${s.sessionId}`;
+    const meta = claudeMeta.get(s.sessionId);
+    const cwd = s.cwd || meta?.cwd;
     // `summary` carries the resolved display title (SDK customTitle → JSONL
     // title cache → SDK summary). The old redundant `customTitle` wire field is
     // gone — it duplicated this and was misnamed for a resolved value.
@@ -112,6 +159,7 @@ projectRouter.get("/", async (c) => {
       lastModified: s.lastModified,
       gitBranch: s.gitBranch,
       firstPrompt: s.firstPrompt,
+      headless: meta?.entrypoint !== undefined && meta.entrypoint !== "cli",
     });
   }
 
@@ -153,8 +201,7 @@ projectRouter.get("/", async (c) => {
       const row = managed
         ? { ...session, sessionId: managed.providerSessionId }
         : { ...session };
-      const dir = managed?.workingDirectory || cwd;
-      push(dir || `unknown:${row.sessionId}`, row);
+      push(managed?.workingDirectory || cwd || undefined, row);
     }
   }
 
@@ -169,11 +216,12 @@ projectRouter.get("/", async (c) => {
   for (const a of agents) {
     if (!a.providerSessionId || listed.has(a.providerSessionId)) continue;
     if (a.id !== a.providerSessionId && listed.has(a.id)) continue;
-    push(a.workingDirectory || `unknown:${a.id}`, {
+    push(a.workingDirectory || undefined, {
       sessionId: a.providerSessionId,
       provider: a.provider,
       summary: a.name,
       lastModified: a.exitedAt ?? a.updatedAt ?? a.createdAt ?? 0,
+      headless: false,
     });
   }
 
@@ -181,11 +229,22 @@ projectRouter.get("/", async (c) => {
     projectMap,
     ([path, projectSessions]) => {
       projectSessions.sort((a, b) => b.lastModified - a.lastModified);
+      const counts = { visible: 0, headless: 0, removed: 0 };
+      for (const s of projectSessions) {
+        if (s.headless) counts.headless++;
+        else if (s.cwdExists === false) counts.removed++;
+        else counts.visible++;
+      }
       return {
         path,
-        name: path.startsWith("unknown:") ? "Unknown" : basename(path) || path,
+        name: path.startsWith("unknown:")
+          ? "(no directory)"
+          : basename(path) || path,
+        kind: kindOf.get(path) ?? "dir",
+        repoResolvedBy: resolvedByOf.get(path),
         sessions: projectSessions,
         lastActive: projectSessions[0].lastModified,
+        counts,
       };
     },
   );
@@ -231,6 +290,8 @@ let listSessionsFn: typeof listSessions = listSessions;
 let batchGetTitlesFn: typeof batchGetTitles = batchGetTitles;
 let listCodexSessionsFn: () => Promise<CodexSessionRow[]> = () =>
   listCodexSessions();
+let readClaudeSessionMetaFn: () => Promise<Map<string, ClaudeSessionMeta>> =
+  () => readClaudeSessionMeta(claudeProjectsDir(process.cwd()));
 let listGeminiSessionsFn: () => Promise<CodexSessionRow[]> = () =>
   listGeminiSessions();
 
@@ -239,6 +300,7 @@ export function _setDepsForTesting(overrides: {
   batchGetTitles?: typeof batchGetTitles;
   listCodexSessions?: () => Promise<CodexSessionRow[]>;
   listGeminiSessions?: () => Promise<CodexSessionRow[]>;
+  readClaudeSessionMeta?: () => Promise<Map<string, ClaudeSessionMeta>>;
 }): void {
   if (overrides.listSessions) listSessionsFn = overrides.listSessions;
   if (overrides.batchGetTitles) batchGetTitlesFn = overrides.batchGetTitles;
@@ -246,6 +308,8 @@ export function _setDepsForTesting(overrides: {
     listCodexSessionsFn = overrides.listCodexSessions;
   if (overrides.listGeminiSessions)
     listGeminiSessionsFn = overrides.listGeminiSessions;
+  if (overrides.readClaudeSessionMeta)
+    readClaudeSessionMetaFn = overrides.readClaudeSessionMeta;
 }
 
 export function _resetForTesting(): void {
@@ -253,4 +317,6 @@ export function _resetForTesting(): void {
   batchGetTitlesFn = batchGetTitles;
   listCodexSessionsFn = () => listCodexSessions();
   listGeminiSessionsFn = () => listGeminiSessions();
+  readClaudeSessionMetaFn = () =>
+    readClaudeSessionMeta(claudeProjectsDir(process.cwd()));
 }
