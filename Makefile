@@ -87,7 +87,12 @@ build:
 	@echo "Removing any stale embedded dashboard (hosted server serves packages/dashboard/dist; _embedded_dashboard is a binary-build artifact only)..."
 	@rm -rf packages/server/src/_embedded_dashboard
 	@echo "Building dashboard..."
-	@cd packages/dashboard && $(BUN) vite build
+	@# Build into dist.next and swap (ADR-105): on a source install the OLD
+	@# daemon keeps serving packages/dashboard/dist throughout `autonomos
+	@# upgrade`'s minutes-long rebuild, and vite empties its outDir first — a
+	@# browser refresh mid-build would 404 every asset. The swap window is two
+	@# renames.
+	@cd packages/dashboard && rm -rf dist.next dist.prev && $(BUN) vite build --outDir dist.next --emptyOutDir && { [ ! -d dist ] || mv dist dist.prev; } && mv dist.next dist && rm -rf dist.prev
 
 # ── doctor: preflight checks (node-pty ABI vs runtime node) ──
 #   Run standalone to diagnose/repair a crash-loop after a node upgrade.

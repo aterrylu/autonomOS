@@ -42,3 +42,5 @@ website/install.sh
 # root by scripts/install-source.sh and rewritten by `autonomos upgrade`.
 # Never tracked: the updater's dirty-tree refusal must not trip over it.
 /install.json
+dist.next/
+dist.prev/

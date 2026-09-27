@@ -1,9 +1,8 @@
-// Shared upgrade logic (ADR-077). Used by both:
-//   - The CLI `autonomos upgrade` command (runs out-of-process, can upgrade
-//     even when the daemon is stopped, owns the post-restart health gate)
-//   - The server POST /api/system/upgrade endpoint (runs in-process; performs
-//     the swap then stage-then-exit(0)s so the supervisor revives it — the
-//     process is never the agent of its own restart)
+// Shared upgrade logic (ADR-077). Used by the CLI `autonomos upgrade`
+// command (runs out-of-process, can upgrade even when the daemon is stopped,
+// owns the post-restart health gate) — both from a shell and as the in-app
+// update's out-of-band job (ADR-105: POST /api/system/upgrade launches that
+// command in its own supervisor scope; nothing here runs inside the daemon).
 //
 // The flow:
 //   1. Caller resolves the install via installInfo.resolveInstall() — the
@@ -126,7 +125,31 @@ export type UpgradeOptions = {
    * point at a local fixture server). Default "https://api.github.com".
    */
   releaseApiBase?: string;
+  /**
+   * Progress callback for the out-of-band in-app upgrade (ADR-105): the
+   * job reports phases to a status file the dashboard reads. Cosmetic by
+   * contract — a throwing callback must never fail the upgrade.
+   */
+  onPhase?: (phase: "downloading" | "verifying" | "installing") => void;
+  /**
+   * Last check before the irreversible swap — the new bundle is downloaded,
+   * verified and extracted, the live one untouched. The in-app job waits for
+   * idle and takes its state snapshot here (ADR-105). Returning
+   * `{ proceed: false }` removes the extracted bundle and reports an error;
+   * nothing on disk has changed.
+   */
+  beforeSwap?: () => Promise<
+    { proceed: true } | { proceed: false; message: string }
+  >;
 };
+
+function reportPhase<P>(cb: ((p: P) => void) | undefined, phase: P): void {
+  try {
+    cb?.(phase);
+  } catch {
+    // progress is cosmetic; never let it change the upgrade's outcome
+  }
+}
 
 export type UpgradeResult =
   | { status: "up-to-date"; version: string }
@@ -235,10 +258,12 @@ export async function performUpgrade(
     const tarballPath = join(staging, tarballName);
     const sha256sumsPath = join(staging, "SHA256SUMS");
 
+    reportPhase(opts.onPhase, "downloading");
     await downloadTo(tarball.browser_download_url, tarballPath);
     await downloadTo(sha256sums.browser_download_url, sha256sumsPath);
 
     // ── verify checksum
+    reportPhase(opts.onPhase, "verifying");
     const sums = readFileSync(sha256sumsPath, "utf-8");
     const expected = sums
       .split("\n")
@@ -286,7 +311,16 @@ export async function performUpgrade(
       installedAt: new Date().toISOString(),
     });
 
+    if (opts.beforeSwap) {
+      const go = await opts.beforeSwap();
+      if (!go.proceed) {
+        rmSync(newDir, { recursive: true, force: true });
+        return { status: "error", message: go.message };
+      }
+    }
+
     // ── atomic swap (current → previous, new → current)
+    reportPhase(opts.onPhase, "installing");
     rmSync(previousDir, { recursive: true, force: true });
     const liveDisplaced = existsSync(opts.bundleDir);
     if (liveDisplaced) {
@@ -440,11 +474,24 @@ export function compareSemver(a: string, b: string): -1 | 0 | 1 {
 }
 
 async function downloadTo(url: string, dest: string): Promise<void> {
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`Download failed (${resp.status}) for ${url}`);
+  const name = url.split("/").pop() ?? url;
+  let buf: Buffer;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`Download failed (${resp.status}) for ${url}`);
+    }
+    buf = Buffer.from(await resp.arrayBuffer());
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Download failed")) {
+      throw err;
+    }
+    // undici reports a cut connection as a bare "terminated" / "fetch
+    // failed" — say what actually happened. Nothing has changed yet.
+    throw new Error(
+      `the download of ${name} was interrupted (${err instanceof Error ? err.message : err}) — check the connection and try again`,
+    );
   }
-  const buf = Buffer.from(await resp.arrayBuffer());
   writeFileSync(dest, buf);
 }
 

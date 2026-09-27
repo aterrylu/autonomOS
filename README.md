@@ -55,7 +55,7 @@ autonomos stop               # stop it (stays down until `autonomos restart`)
 autonomos uninstall-service  # remove the service; your data in ~/.autonomos stays
 ```
 
-**Upgrading.** The dashboard shows a passive "New release available (vX → vY)" badge when one exists (the server checks GitHub about daily; turn it off in Settings → "Update Check"). Nothing updates by itself. `autonomos upgrade` downloads the release, verifies it, swaps it in atomically, restarts, and checks that the new version boots — rolling back on its own if it does not. Re-running the install one-liner is the same upgrade by another route. Agents, token, and settings survive both.
+**Upgrading.** When a newer release exists, the status bar shows "Update to vY" — the server checks GitHub about daily (Settings → Updates to turn it off, or **Check for updates**). Nothing updates by itself. Click it for one screen with what's new and which agents are mid-task (if any are, the default waits until they've all been idle for 30 seconds), then update in place: autonomOS takes a snapshot, installs the release, restarts, checks the new version starts — restoring the old one on its own if it does not — and confirms every agent reopened. **Restore** in Settings → Updates puts back the previous version together with that snapshot. From a terminal, `autonomos upgrade` and `autonomos rollback` do the same; re-running the install one-liner is the same upgrade by another route. Agents cannot trigger an update, and your token and settings survive it.
 
 > **Deploy to a remote box** you own (a homelab server, a VPS) as a **managed clone** —
 > a git checkout pinned to a release tag that the same `autonomos upgrade`/`rollback`

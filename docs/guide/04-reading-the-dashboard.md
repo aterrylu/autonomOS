@@ -92,7 +92,7 @@ Left to right:
 
 - **Green badge with a computer name.** This is the Settings button; the name is the machine running autonomOS. Click it to open [Settings](06-permissions-and-settings.md#the-settings-panel).
 - **"● Connected".** The browser can reach the server. "Checking..." while it verifies; "Disconnected" if the server went away, in which case it reconnects on its own.
-- **"New release available (v0.6.1 → v0.7.0)".** Appears only when a newer version exists. Hover for the command; see [Updating](02-install.md#updating).
+- **"Update to v0.8.0".** Appears only when a newer version exists. Click it to see what's new, check your agents, and update in place; see [Updating](02-install.md#updating). While it waits for busy agents it turns amber and names who it's waiting for.
 - **"5h 26%" and "7d 5%".** How much of your Claude subscription's five-hour and seven-day limits you have used, which autonomOS reads from your Claude Code login. Click for details and reset times. Amber "setup needed" means it could not find the login; see [Troubleshooting](07-troubleshooting.md#the-status-bar-says-setup-needed).
 - **"30d 10%" with the Codex logo.** The same for Codex, shown only if Codex is logged in.
 - **🔔.** Notifications: messages agents sent to you (not to each other), permission requests, and anything autonomOS itself needs to flag about a run, for every agent. An agent row's unread count is the same list narrowed to that agent. "Mark all read" clears the panel; opening an agent clears its row.

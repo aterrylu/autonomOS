@@ -37,6 +37,13 @@ export type SourceUpgradeOptions = {
    * for tests — a real checkout rebuild takes minutes.
    */
   buildCommand?: readonly string[];
+  /** Progress callback (ADR-105) — cosmetic; a throw never fails the upgrade. */
+  onPhase?: (phase: "building") => void;
+  /** Last check before the working tree changes (the in-app job's idle
+   *  gate, ADR-105). `{ proceed: false }` → error, nothing changed. */
+  beforeCheckout?: () => Promise<
+    { proceed: true } | { proceed: false; message: string }
+  >;
 };
 
 export type SourceUpgradeResult =
@@ -270,6 +277,11 @@ export async function performSourceUpgrade(
     return { status: "up-to-date", version: targetVersion };
   }
 
+  if (opts.beforeCheckout) {
+    const go = await opts.beforeCheckout();
+    if (!go.proceed) return { status: "error", message: go.message };
+  }
+
   const previousRef = git(repoRoot, ["rev-parse", "HEAD"]);
   if (!previousRef) {
     return { status: "error", message: "git rev-parse HEAD failed." };
@@ -287,6 +299,11 @@ export async function performSourceUpgrade(
     };
   }
 
+  try {
+    opts.onPhase?.("building");
+  } catch {
+    // progress is cosmetic
+  }
   const build = runBuild(repoRoot, opts.buildCommand);
   if (!build.ok) {
     // A failed build must not leave the clone on a tag it can't serve — go

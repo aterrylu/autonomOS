@@ -99,6 +99,7 @@ describe("runUpdateCheck", () => {
       updateAvailable: false,
       checkedAt: null,
       releaseUrl: null,
+      releases: null,
     });
     assert.deepEqual(getUpdateCheckState(), state);
   });
@@ -194,6 +195,7 @@ describe("startUpdateCheck gate", () => {
         updateAvailable: false,
         checkedAt: null,
         releaseUrl: null,
+        releases: null,
       });
     } finally {
       delete process.env.AUTONOMOS_RELEASE_API_URL;

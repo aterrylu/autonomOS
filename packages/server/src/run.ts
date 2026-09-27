@@ -692,6 +692,16 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const { startUpdateCheck } = await import("./updateCheck.js");
     startUpdateCheck();
 
+    // After an in-app/CLI update: compare agents against the pre-update
+    // snapshot and record the verdict for the success banner (ADR-105).
+    // No-op on an ordinary boot.
+    const { startPostUpgradeVerification } = await import("./upgradeVerify.js");
+    startPostUpgradeVerification();
+    // While an update job is in flight, publish the fleet's busy state for
+    // its last-moment "wait for idle" re-check (ADR-105).
+    const { startFleetReporter } = await import("./upgradeScheduler.js");
+    startFleetReporter();
+
     // Write the shared Gemini settings file HERE, not at top-of-boot: its MCP
     // config bakes in the control-socket path AND the public REST base, so it
     // can only be correct once both are published (setServerPort in the listen
@@ -721,11 +731,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       .catch((err) =>
         console.error("[startup] resumeActiveAgents failed:", err),
       )
-      .finally(() => {
+      .finally(async () => {
         initScheduler();
         // Check each installed CLI's permission options against the
         // runtime table, off the boot path (logs any drift once).
         warmPermissionChecks();
+        // The post-update check judges agents only once they've been
+        // resumed, not on a fixed timer (ADR-105).
+        const { noteAgentsResumed } = await import("./upgradeVerify.js");
+        noteAgentsResumed();
       });
   }
 

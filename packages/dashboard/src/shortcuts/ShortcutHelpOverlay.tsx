@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { THEMES, useStore } from "../store";
 import { displayChord } from "./chord";
 import { pushEscapeCloser } from "./escapeStack";
@@ -21,6 +22,7 @@ export function ShortcutHelpOverlay() {
 /** Mounted only while open, so focus capture/restore ride mount/unmount. */
 function HelpDialog() {
   const close = useStore((s) => s.closeShortcutHelp);
+  const backdrop = useBackdropDismiss(close);
   const theme = useStore((s) => s.theme);
   const page = THEMES[theme].page;
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -44,16 +46,13 @@ function HelpDialog() {
   const categories = [...new Set(SHORTCUTS.map((s) => s.category))];
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard close is the registry's ui.dismiss (Escape via the escape stack)
-    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close is the registry's ui.dismiss (Escape via the escape stack)
+    // Backdrop: mouse dismissal via useBackdropDismiss; keyboard dismissal is Escape (the registry's ui.dismiss).
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.5)" }}
-      // Close only for a click that landed on the backdrop ITSELF — clicks
-      // inside the dialog bubble up to here with a different target.
-      onClick={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
+      // Close only for a press AND release on the backdrop itself — a text
+      // selection dragged out of the dialog must not dismiss it.
+      {...backdrop}
     >
       <div
         ref={dialogRef}

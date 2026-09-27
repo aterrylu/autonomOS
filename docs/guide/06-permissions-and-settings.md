@@ -47,7 +47,7 @@ These are saved in this browser only.
 These are saved on the server and apply to every browser.
 
 - **Auto-Trust.** "Auto-dismiss workspace trust and dev channel prompts on session start." On by default. When Claude Code starts in a folder for the first time it asks "Yes, I trust this folder"; it also warns when autonomOS loads the channel it uses to deliver messages. Auto-Trust answers both. Turn it off only if you want to see and answer those prompts yourself.
-- **Update Check.** "Check GitHub daily for a newer release and show a passive badge in the status bar. The dashboard itself never contacts GitHub." On by default. Off means no badge; `autonomos upgrade` still works.
+- **Check for updates daily** (under Updates). "The server checks GitHub daily and shows new releases in the status bar. The dashboard itself never contacts GitHub." On by default. Off means no pill; **Check for updates** still checks on demand, and `autonomos upgrade` still works.
 - **autonomOS Statusline.** "Show an autonomOS-aware statusline in spawned agents (replaces personal ~/.claude/settings.json statusLine for spawned sessions only). Applies to newly spawned agents." On by default. If you have your own Claude Code status line and prefer it, turn this off.
 - **Channels.** The list of Claude Code channels autonomOS injects into every agent. "autonomOS Gateway" is the one that carries messages between agents and must stay on. The note "Requires Claude Code v2.1.80+" is a minimum version for message delivery.
 - **Custom Environment Variables.** Key-value pairs handed to every new agent. Most people never need this. "Applied to all newly spawned sessions. Restart existing sessions to apply."

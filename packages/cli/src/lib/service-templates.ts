@@ -96,7 +96,17 @@ export type LaunchAgentOptions = {
   label?: string;
 };
 
+/** A non-default label rides into the daemon's env so it can recognize its
+ *  OWN service (the in-app update's supervisor check compares its cgroup /
+ *  XPC_SERVICE_NAME against it). Default-label units render unchanged —
+ *  no drift for existing installs. */
+function labelEnv(label: string): string | null {
+  return label === DEFAULT_LAUNCHAGENT_LABEL ? null : label;
+}
+
 export function renderLaunchAgentPlist(opts: LaunchAgentOptions): string {
+  const label = opts.label ?? serviceLabel();
+  const extraEnv = labelEnv(label);
   const argsXml = opts.programArgs
     .map((a) => `        <string>${escapeXml(a)}</string>`)
     .join("\n");
@@ -105,7 +115,7 @@ export function renderLaunchAgentPlist(opts: LaunchAgentOptions): string {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${escapeXml(opts.label ?? serviceLabel())}</string>
+    <string>${escapeXml(label)}</string>
     <key>ProgramArguments</key>
     <array>
 ${argsXml}
@@ -123,7 +133,13 @@ ${argsXml}
         <key>HOME</key>
         <string>${escapeXml(opts.home)}</string>
         <key>PATH</key>
-        <string>${escapeXml(opts.path)}</string>
+        <string>${escapeXml(opts.path)}</string>${
+          extraEnv
+            ? `
+        <key>AUTONOMOS_SERVICE_LABEL</key>
+        <string>${escapeXml(extraEnv)}</string>`
+            : ""
+        }
     </dict>
 </dict>
 </plist>
@@ -162,7 +178,7 @@ StandardOutput=null
 StandardError=append:${opts.logDir}/${BOOT_ERROR_LOG}
 Environment=HOME=${opts.home}
 Environment=PATH=${opts.path}
-
+${labelEnv(serviceLabel()) ? `Environment=AUTONOMOS_SERVICE_LABEL=${serviceLabel()}\n` : ""}
 [Install]
 WantedBy=default.target
 `;

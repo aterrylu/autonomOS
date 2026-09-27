@@ -61,6 +61,7 @@ import {
   trackChannelServerRegistration,
 } from "./channelServerCheck.js";
 import { enrichAgent } from "./enrich.js";
+import { noteFreshStart } from "./freshStarts.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
@@ -207,7 +208,21 @@ export interface ManagedAttachment {
    * member the runtime DOES read, the cast would keep compiling while the fake
    * lacked it. Stating the real coupling lets the compiler enforce it instead.
    */
-  sidecar?: Pick<Sidecar, "endpoint" | "dispose">;
+  sidecar?: Pick<Sidecar, "endpoint" | "dispose"> & {
+    /** The daemon's pid — it, not the TUI, runs Codex's commands. Read only by
+     *  the update pre-flight's background-process check. */
+    pid?: number;
+  };
+}
+
+/** The processes an agent's work runs under: its CLI (the PTY child) and,
+ *  for Codex, the app-server daemon. Empty when the agent isn't live. */
+export function getAgentProcessRoots(agentId: UUID): number[] {
+  const m = live.get(agentId);
+  if (!m) return [];
+  return [m.pty.pid, m.sidecar?.pid].filter(
+    (p): p is number => typeof p === "number" && p > 0,
+  );
 }
 
 /** ws:// endpoint of an agent's provider daemon (Codex), or undefined. */
@@ -225,7 +240,9 @@ let serverStopping = false;
 /** Did this agent ever do genuine work? `lastActivityAt` is set only by real
  *  activity (a prompt, a tool call, a turn end; for Codex, the daemon's
  *  "working"), never by lifecycle events, and a turn end flushes it to disk. So
- *  absent means the agent never had a conversation that a resume could lose. */
+ *  absent means the agent never had a conversation that a resume could lose.
+ *  (A first turn killed before the debounced write can leave it unset, but that turn's transcript exists — CC/Codex write it on the first turn — so the resume succeeds and this branch is never reached.)
+ *  Also the post-update check's rule (agents/freshStarts.ts, ADR-105). */
 export function hadActivity(agent: { lastActivityAt?: number }): boolean {
   return agent.lastActivityAt !== undefined;
 }
@@ -1271,14 +1288,16 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       console.info(
         `[runtime] ${agent.id.slice(0, 8)} no saved ${provider.displayName} session for ${oldSessionId}; starting fresh as ${providerSessionId}`,
       );
-      // Tell the operator only when a conversation was actually lost. A
-      // never-used agent (no genuine activity ever) has no saved session BY
-      // CONSTRUCTION, so the notice carried no news, yet it landed as an unread
-      // badge on every restart (ReleaseRollout's forge repro).
+      // One rule, hadActivity: a conversed agent with no saved session LOST
+      // it — tell the operator (and the post-update check keeps flagging it).
+      // A never-used agent has none by construction: no notice, no unread
+      // badge, and the post-update check is told it lost nothing.
       if (hadActivity(agent)) {
         pendingNotices.push(
           `${agent.name} had no saved ${provider.displayName} session to resume — started a fresh session.`,
         );
+      } else if (oldSessionId) {
+        noteFreshStart(agent.id, "session", oldSessionId);
       }
     }
   }
@@ -1298,12 +1317,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     );
     resolved.providerThreadId = undefined;
     // Same rule as the session pre-flight: a thread that never had a turn was
-    // never saved (codex writes the rollout lazily), so there is nothing lost
-    // to report. The fresh start is still logged above.
+    // never saved (codex writes the rollout lazily), so nothing was lost.
     if (hadActivity(agent)) {
       pendingNotices.push(
         `${agent.name}: no saved ${provider.displayName} conversation was found for its thread (${oldThread}), so it started a fresh one.`,
       );
+    } else {
+      noteFreshStart(agent.id, "thread", oldThread);
     }
   }
 
@@ -1606,7 +1626,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     pty,
     outputBuffer: [],
     outputSize: 0,
-    sidecar,
+    sidecar: sidecar && {
+      endpoint: sidecar.endpoint,
+      dispose: () => sidecar?.dispose(),
+      pid: sidecar.proc.pid,
+    },
   };
   live.set(persisted.id, managed);
 
