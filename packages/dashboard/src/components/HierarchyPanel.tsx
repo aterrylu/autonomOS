@@ -10,7 +10,6 @@ import type { SessionInfo } from "../store";
 import { THEMES, useStore } from "../store";
 import { AgentContextMenu, type AgentMenuTarget } from "./AgentContextMenu";
 import { segmentColor, stripLayout } from "./orgchart/activityStrip";
-import { Identicon } from "./orgchart/Identicon";
 import { OrgInspector } from "./orgchart/Inspector";
 import { CARD_H, CARD_W, edgePath, layoutOrg, PAD } from "./orgchart/layout";
 import { MessageLayer, type MessageMode } from "./orgchart/MessageLayer";
@@ -271,9 +270,9 @@ function OrgCard({
     },
   };
 
-  // Balanced card (Terry's pick): an identicon with the provider/status icon
-  // as its badge; name + unread; a pulsing dot, the live action and the time
-  // in state; the 24h strip along the bottom edge. Every field is a real
+  // Balanced card (Terry's pick): the CLI's own icon as the avatar; name +
+  // unread; a pulsing dot, the live action and the time in state; the 24h
+  // strip along the bottom edge. Every field is a real
   // reading or absent — never a placeholder number.
   const since = activity?.status?.since ?? null;
   const shownAge = !exited && since !== null ? since : lastActive;
@@ -284,31 +283,24 @@ function OrgCard({
       : null;
   const content = (
     <>
+      {/* The avatar IS the CLI's own icon (Terry), official and unaltered,
+          at avatar size with its status corner. Claude and Gemini are vector;
+          Codex's official mark is a 385px raster, only ever DOWN-scaled here
+          (28px × 200% zoom × DPR 2 = 112px). */}
       <span
-        className="relative flex-none"
+        data-org-avatar
+        className="flex-none"
         style={{ opacity: exited ? tokens.ghostTextOpacity : 1 }}
       >
-        <Identicon id={node.id} size={30} isLight={tokens.isLight} />
-        <span
-          data-org-badge
-          className="absolute -right-1 -bottom-1 flex items-center justify-center rounded-full"
-          style={{
-            width: 16,
-            height: 16,
-            background: exited ? tokens.bg : tokens.card,
-            boxShadow: `0 0 0 1.5px ${exited ? tokens.bg : tokens.card}`,
-          }}
-        >
-          {agentIconStyle === "provider" ? (
-            <ProviderAgentIcon
-              provider={node.provider}
-              status={status}
-              size={13}
-            />
-          ) : (
-            <AgentStatusIcon status={status} size={12} />
-          )}
-        </span>
+        {agentIconStyle === "provider" ? (
+          <ProviderAgentIcon
+            provider={node.provider}
+            status={status}
+            size={28}
+          />
+        ) : (
+          <AgentStatusIcon status={status} size={24} />
+        )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="flex min-w-0 items-center gap-1.5">

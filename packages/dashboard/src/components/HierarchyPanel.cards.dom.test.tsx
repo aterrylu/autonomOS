@@ -6,10 +6,9 @@ import "../test/setup-dom";
 import { orgTreePoll } from "../api/polls";
 import { useStore } from "../store";
 import { HierarchyPanel } from "./HierarchyPanel";
-import { identiconCells } from "./orgchart/Identicon";
 
 /**
- * The Balanced card (Terry's pick): identicon + provider badge, name + unread
+ * The Balanced card (Terry's pick): the CLI's own icon as the avatar, name + unread
  * pill, a pulsing dot + the live action + time in state, and a thin 24h strip.
  * Every field is a real reading or absent; the strip comes from ONE batched
  * request for the whole fleet.
@@ -191,26 +190,27 @@ describe("Balanced card", () => {
     expect($in("I", "[data-org-pulse]")).toBeNull();
   });
 
-  it("identicons are seeded by ID, so two agents with the same NAME still look different", async () => {
+  it("the avatar IS the CLI's own icon — official and unaltered, at avatar size (no generated identicon)", async () => {
     batch = fleetBatch({});
     await mount(
-      [
-        node("id-aaa", { name: "Twin" }),
-        node("id-zzz-other", { name: "Twin" }),
-      ],
+      [node("Lead", {}, [node("Cc"), node("Cx", { provider: "codex" })])],
       {
         sessions: [
-          session("id-aaa", { name: "Twin" }),
-          session("id-zzz-other", { name: "Twin" }),
+          session("Lead"),
+          session("Cc"),
+          session("Cx", { provider: "codex" }),
         ],
       },
     );
-    expect($in("id-aaa", "[data-org-identicon]")?.dataset.orgIdenticon).toBe(
-      "id-aaa",
-    );
-    expect(JSON.stringify(identiconCells("id-aaa"))).not.toBe(
-      JSON.stringify(identiconCells("id-zzz-other")),
-    );
+    const cc = $in("Cc", "[data-org-avatar]") as HTMLElement;
+    const claude = cc.querySelector('[role="img"][aria-label="Claude"]');
+    expect(claude).not.toBeNull();
+    expect(claude?.getAttribute("width")).toBe("28");
+    // Codex: OpenAI's official raster, drawn at 28px (only ever down-scaled).
+    const codex = $in("Cx", "[data-org-avatar] img") as HTMLImageElement;
+    expect(codex.alt).toBe("Codex");
+    expect(codex.getAttribute("width")).toBe("28");
+    expect(document.querySelector("[data-org-identicon]")).toBeNull();
   });
 
   it("an exited ghost keeps Resume and draws no strip", async () => {
