@@ -325,7 +325,7 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
     expect(box.getAttribute("aria-label")).toBe("Release notes");
   });
 
-  it("stacks every release since the user's version newest-first, with a breaking-change callout", async () => {
+  it("stacks every release since the user's version newest-first; a changelog 'Breaking change' shows NO callout", async () => {
     installServer({
       "GET /api/system/releases": () =>
         json({
@@ -368,20 +368,48 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
         .getAllByTestId("release-section")
         .map((s) => s.getAttribute("data-version")),
     ).toEqual(["0.7.0", "0.6.10", "0.6.2"]);
-    expect(screen.getByTestId("breaking-callout").textContent).toContain(
-      "Breaking change in v0.7.0",
-    );
-    // It QUOTES the change instead of pointing into the notes.
-    expect(screen.getByTestId("breaking-quote").textContent).toBe(
-      "Old routes 404.",
-    );
-    expect(screen.getByTestId("breaking-callout").textContent).toContain(
-      "Check whether your own scripts or integrations rely on it.",
-    );
+    // Terry: an API/behaviour "breaking change" isn't breaking for the user.
+    // Only a declared agent risk gets a callout (next test).
+    expect(screen.queryByTestId("risk-callout")).toBeNull();
+    expect(screen.queryByTestId("breaking-callout")).toBeNull();
     // The newest release is open; older ones fold.
     const [newest, ...older] = screen.getAllByTestId("release-section");
     expect(newest.tagName).toBe("SECTION");
     for (const o of older) expect(o.tagName).toBe("DETAILS");
+  });
+
+  it("a release that declares agents-may-not-resume gets the user-facing risk callout", async () => {
+    installServer({
+      "GET /api/system/releases": () =>
+        json({
+          current: "0.6.1",
+          latest: "0.7.0",
+          updateAvailable: true,
+          releaseUrl: VERSION.releaseUrl,
+          releases: [
+            {
+              version: "0.7.0",
+              name: "v0.7.0",
+              body: "<!-- autonomos:agents-may-not-resume -->\n- resume flags changed",
+              url: null,
+              publishedAt: null,
+              agentsMayNotResume: true,
+            },
+          ],
+        }),
+    });
+    fireEvent.click(await renderPill());
+    const callout = await screen.findByTestId("risk-callout");
+    expect(callout.textContent).toContain(
+      "Some agents may not reopen after this update",
+    );
+    expect(callout.textContent).toContain(
+      "If one doesn't, Restore v0.6.1 brings it back",
+    );
+    // The marker is metadata, never shown.
+    expect(screen.getByRole("dialog").textContent).not.toContain(
+      "agents-may-not-resume",
+    );
   });
 
   it("falls back to a GitHub link when notes are unavailable, and never blocks the update", async () => {

@@ -53,6 +53,7 @@ async function mockUpdate(page: Page, busy: unknown[] = []) {
             url: null,
             publishedAt: "2026-09-25T00:00:00Z",
             storageFormatChange: false,
+            agentsMayNotResume: true,
           },
         ],
       }),
@@ -162,9 +163,9 @@ test("Daylight: every accent text in the dialog clears 4.5:1", async ({
   const pill = await contrastOf(page, '[data-testid="update-badge"]');
   expect(pill, "pill").toBeGreaterThanOrEqual(4.5);
   await page.getByTestId("update-badge").click();
-  await expect(page.getByTestId("breaking-callout")).toBeVisible();
+  await expect(page.getByTestId("risk-callout")).toBeVisible();
   for (const sel of [
-    '[data-testid="breaking-callout"] .font-semibold',
+    '[data-testid="risk-callout"] .font-semibold',
     '[data-testid="update-agents"] .font-semibold',
     '[data-testid="update-now-interrupt"]',
     '[data-testid="update-github-link"]',
@@ -350,7 +351,7 @@ test("Midnight: the dialog's muted text clears 4.5:1", async ({ page }) => {
   for (const sel of [
     '[data-testid="update-subtitle"]',
     '[data-testid="update-safety"]',
-    '[data-testid="breaking-callout"] .text-xs:last-child',
+    '[data-testid="risk-callout"] .text-xs:last-child',
   ]) {
     const ratio = await contrastOf(page, sel);
     expect(ratio, sel).toBeGreaterThanOrEqual(4.5);

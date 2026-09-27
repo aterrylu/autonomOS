@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { ReleaseNote } from "../../api/system";
 import {
   activeStepIndex,
-  breakingReleases,
-  breakingSummary,
   compareVersions,
   consequenceFor,
   inAppNotes,
@@ -32,15 +30,6 @@ describe("updateFlow helpers", () => {
   it("sorts releases newest-first", () => {
     const out = sortNewestFirst([rel("0.6.2"), rel("0.7.0"), rel("0.6.10")]);
     expect(out.map((r) => r.version)).toEqual(["0.7.0", "0.6.10", "0.6.2"]);
-  });
-
-  it("flags breaking changes case-insensitively", () => {
-    const out = breakingReleases([
-      rel("0.7.0", "### BREAKING CHANGE\n- old routes 404"),
-      rel("0.6.9", "fixes"),
-      rel("0.6.8", "a breaking change here"),
-    ]);
-    expect(out.map((r) => r.version)).toEqual(["0.7.0", "0.6.8"]);
   });
 
   it("maps statuses to their restart consequence", () => {
@@ -89,24 +78,6 @@ describe("updateFlow helpers", () => {
     expect(stageDetail("installing", "0.6.1", { rollback: true })).toBe(
       "Putting v0.6.1 back in place",
     );
-  });
-
-  it("quotes the breaking change itself — heading form, inline form, real notes", () => {
-    expect(
-      breakingSummary("## Breaking change\n- old routes 404\n- next"),
-    ).toBe("Old routes 404. Next.");
-    expect(
-      breakingSummary("- Breaking change: the `foo` flag was removed. More."),
-    ).toBe("The foo flag was removed.");
-    // The shape real release notes use (v0.7.0's #360 bullet).
-    expect(
-      breakingSummary(
-        "- 🧹 **[#360](https://x/360) — Old API routes removed.** Breaking change, announced in v0.6.0: the deprecated `/auth`, `/api/scheduler/*`, and `/api/hooks` read aliases are gone (they logged deprecation pointers for one release). Old paths now return clean 404s.",
-      ),
-    ).toBe(
-      "Old API routes removed: the deprecated /auth, /api/scheduler/*, and /api/hooks read aliases are gone.",
-    );
-    expect(breakingSummary("- nothing to see here")).toBeNull();
   });
 
   it("drops the GitHub install footer from notes shown inside the dialog", () => {

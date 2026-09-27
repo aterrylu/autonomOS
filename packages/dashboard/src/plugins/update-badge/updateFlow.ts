@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the in-app update flow (ADR-105): release ordering,
- * breaking-change detection, per-status consequence copy, the phase → step
+ * the in-app notes trim, per-status consequence copy, the phase → stage/step
  * mapping, and the post-reload "Updated" flag. No React, no fetching — the
  * status-bar item owns the state machine; this file owns the rules.
  */
@@ -56,11 +56,6 @@ export function compareVersions(a: string, b: string): number {
 
 export function sortNewestFirst(releases: ReleaseNote[]): ReleaseNote[] {
   return [...releases].sort((a, b) => compareVersions(b.version, a.version));
-}
-
-/** Releases whose notes flag a breaking change (case-insensitive). */
-export function breakingReleases(releases: ReleaseNote[]): ReleaseNote[] {
-  return releases.filter((r) => /breaking change/i.test(r.body ?? ""));
 }
 
 export function formatReleaseDate(iso: string | null): string | null {
@@ -326,70 +321,6 @@ export function stageDetail(
     default:
       return "Starting…";
   }
-}
-
-// ── the breaking-change sentence, quoted instead of pointed at ───────────
-
-const EMOJI = /\p{Extended_Pictographic}\uFE0F?/gu;
-
-/** Markdown line → plain text: links keep their text, markers go. */
-function plainText(line: string): string {
-  return line
-    .replace(/^\s*(?:[-*+]|\d+\.|>)\s+/, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/(\*\*|__|`)/g, "")
-    .replace(EMOJI, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function firstSentence(text: string): string {
-  const t = text.replace(/\s*\([^)]*\)/g, "").trim();
-  const m = /^(.+?[.!?])(\s|$)/.exec(t);
-  const out = (m ? m[1] : t).trim();
-  return out.length > 220 ? `${out.slice(0, 217).trimEnd()}…` : out;
-}
-
-const endWithPeriod = (t: string) => (/[.!?…]$/.test(t) ? t : `${t}.`);
-const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
-
-/** The breaking change itself, as one or two plain sentences — so the
- *  callout can say WHAT changed instead of "look for it below". Handles a
- *  `## Breaking change` heading (the bullets under it) and an inline
- *  "… Breaking change, <context>: <what> …" bullet. Null when none. */
-export function breakingSummary(body: string): string | null {
-  const lines = body.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!/breaking change/i.test(line)) continue;
-    if (/^\s*#{1,6}\s/.test(line)) {
-      const items: string[] = [];
-      for (let j = i + 1; j < lines.length && items.length < 2; j++) {
-        if (/^\s*#{1,6}\s/.test(lines[j])) break;
-        const t = plainText(lines[j]);
-        if (t) items.push(endWithPeriod(cap(firstSentence(t))));
-      }
-      if (items.length) return items.join(" ");
-      continue;
-    }
-    // A bold lead-in names the change ("**#360 — Old API routes removed.**").
-    const bold = /\*\*(.+?)\*\*/.exec(line)?.[1];
-    const title = bold
-      ? plainText(bold)
-          .replace(/^#?\d+\s*[—–-]\s*/, "")
-          .replace(/[.:]$/, "")
-      : null;
-    const flat = plainText(line);
-    const after = /breaking change[^:]*:\s*(.+)/i.exec(flat)?.[1];
-    const what = after
-      ? cap(firstSentence(after))
-      : firstSentence(flat.replace(/^.*?breaking change[.:,]?\s*/i, "")) ||
-        null;
-    if (title && what && !/breaking change/i.test(title))
-      return `${title}: ${what.charAt(0).toLowerCase()}${what.slice(1)}`;
-    if (what) return cap(what);
-  }
-  return null;
 }
 
 // ── post-reload "Updated" flag ────────────────────────────────────────────

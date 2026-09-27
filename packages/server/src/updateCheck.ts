@@ -75,9 +75,19 @@ export type ReleaseNote = {
    * by sniffing prose. The dashboard shows a pre-click callout for it.
    */
   storageFormatChange: boolean;
+  /**
+   * The release may leave some agents unable to reopen after the restart —
+   * the one thing an update can break for the USER (Terry, 2026-09-27: a
+   * changelog "breaking change" to an API isn't one). Driven only by the
+   * structured marker `<!-- autonomos:agents-may-not-resume -->`; the
+   * dashboard then warns before the click. See docs/RELEASE.md.
+   */
+  agentsMayNotResume: boolean;
 };
 
 export const STORAGE_FORMAT_MARKER = "<!-- autonomos:storage-format-change -->";
+export const AGENTS_MAY_NOT_RESUME_MARKER =
+  "<!-- autonomos:agents-may-not-resume -->";
 
 const EMPTY_STATE: UpdateCheckState = {
   latest: null,
@@ -245,6 +255,9 @@ async function fetchReleaseNotes(
       publishedAt: typeof r.published_at === "string" ? r.published_at : null,
       storageFormatChange:
         typeof r.body === "string" && r.body.includes(STORAGE_FORMAT_MARKER),
+      agentsMayNotResume:
+        typeof r.body === "string" &&
+        r.body.includes(AGENTS_MAY_NOT_RESUME_MARKER),
     });
   }
   notes.sort((a, b) => compareSemver(b.version, a.version));

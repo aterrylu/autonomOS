@@ -541,6 +541,39 @@ describe("release notes cache (one source: GitHub release bodies)", () => {
     );
   });
 
+  it("user-facing risk comes only from structured markers — a prose 'Breaking change' sets nothing", async () => {
+    const base = await serve({
+      "/repos/o/r/releases/latest": { tag_name: "v9.9.9" },
+      "/repos/o/r/releases?": [
+        {
+          tag_name: "v9.9.9",
+          body: "<!-- autonomos:agents-may-not-resume -->\n- resume flags changed",
+        },
+        {
+          tag_name: "v9.9.8",
+          body: "<!-- autonomos:storage-format-change -->\n- new record format",
+        },
+        {
+          tag_name: "v9.9.7",
+          body: "- **Breaking change:** old API routes removed",
+        },
+      ],
+    });
+    const s = await runUpdateCheck(base, "o/r");
+    assert.deepEqual(
+      s.releases?.map((r) => [
+        r.version,
+        r.agentsMayNotResume,
+        r.storageFormatChange,
+      ]),
+      [
+        ["9.9.9", true, false],
+        ["9.9.8", false, true],
+        ["9.9.7", false, false],
+      ],
+    );
+  });
+
   it("a notes fetch failure yields null (fallback), never hides the update", async () => {
     server = createServer((req, res) => {
       res.setHeader("content-type", "application/json");

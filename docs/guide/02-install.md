@@ -68,7 +68,7 @@ When a newer release exists, the status bar shows **Update to v0.8.0**. Nothing 
 
 - **Your agents, live.** If they're all idle, they reopen where they left off. If one is mid-task, it's named, with what a restart would cost it.
 - **What's safe.** A snapshot of your agents, schedules, templates, presets and settings is saved first. If the new version doesn't start, autonomOS restores the old one on its own. You stay signed in.
-- **What's new.** The release notes for every version since yours. A breaking change is quoted above them, next to the agent check.
+- **What's new.** The release notes for every version since yours. If a release says some agents might not reopen after it, a warning above the notes says so, and that Restore brings them back.
 
 Then pick one:
 

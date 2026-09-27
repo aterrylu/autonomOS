@@ -33,6 +33,10 @@ export interface ReleaseNote {
    *  release changes the on-disk agent format, so going back needs the
    *  pre-update snapshot. */
   storageFormatChange?: boolean;
+  /** The release says some agents may not reopen after it (a structured
+   *  marker in the body — never inferred from prose). Absent on older
+   *  servers. */
+  agentsMayNotResume?: boolean;
 }
 
 export interface SystemReleases {

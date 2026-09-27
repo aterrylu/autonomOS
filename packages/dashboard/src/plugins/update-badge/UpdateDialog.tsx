@@ -5,8 +5,9 @@
  *
  * Shape (Terry picked "Option A" from the 2026-09-26 redesign):
  *  - confirm   "Update autonomOS to vX": a live agent line (+ the per-agent
- *              table when something is busy), one safety line, a callout that
- *              QUOTES any breaking change, capped notes, and the buttons.
+ *              table when something is busy), one safety line, a risk
+ *              callout only when a release declares one (a marker, never
+ *              changelog prose), capped notes, and the buttons.
  *              Idle: [Not now][Update and restart]. Busy: [Not now]
  *              [Update now · interrupts X][Update when idle].
  *  - waiting   an armed wait-for-idle (the amber pill reopens it)
@@ -51,8 +52,6 @@ import { THEMES, useStore } from "../../store";
 import { ReleaseMarkdown } from "./releaseMarkdown";
 import {
   activeStepIndex,
-  breakingReleases,
-  breakingSummary,
   consequenceFor,
   FIRST_TASK_CONSEQUENCE,
   formatBytes,
@@ -691,44 +690,34 @@ function NotesBox({ notes, info }: { notes: NotesState; info: VersionInfo }) {
   );
 }
 
-/** Storage-format and breaking-change callouts. The breaking one QUOTES the
- *  change; it used to say "look for it in the notes below" (nobody could). */
+/** Risk callouts — ONLY what the user would feel, and only when a release
+ *  declares it with a structured marker (never read from prose): "some
+ *  agents may not reopen" (agents-may-not-resume), and "going back later
+ *  won't carry changes over" (storage-format-change). A changelog "breaking
+ *  change" (an API, a flag) is not one — Terry, 2026-09-27; the safety line
+ *  covers the rest. docs/RELEASE.md says when to set each marker. */
 function Callouts({ notes, info }: { notes: NotesState; info: VersionInfo }) {
   const page = usePage();
   const a = useAccents();
   const releases = notes.kind === "ok" ? notes.releases : [];
-  const breaking = breakingReleases(releases);
-  // Structured server flag (a body marker) — never prose-sniffed here.
+  const mayNotResume = releases.some((r) => r.agentsMayNotResume === true);
   const storageChange = releases.some((r) => r.storageFormatChange === true);
-  const quotes = breaking
-    .map((r) => breakingSummary(r.body ?? ""))
-    .filter((q): q is string => !!q);
   return (
     <>
-      {breaking.length > 0 && (
+      {mayNotResume && (
         <div
-          data-testid="breaking-callout"
+          data-testid="risk-callout"
           className="flex gap-3 rounded-md px-3 py-2.5"
           style={{ border: `1px solid ${a.amber}88`, color: a.amber }}
         >
           <WarnIcon />
           <div className="flex flex-col gap-0.5">
             <div className="text-xs font-semibold">
-              {breaking.length === 1
-                ? `Breaking change in v${breaking[0].version}`
-                : `Breaking changes in ${joinNames(breaking.map((r) => `v${r.version}`))}`}
+              Some agents may not reopen after this update
             </div>
-            <div
-              className="text-xs"
-              style={{ color: page.fg }}
-              data-testid="breaking-quote"
-            >
-              {quotes.length > 0
-                ? quotes.join(" ")
-                : "The release notes describe it; read them before updating."}
-            </div>
-            <div className="text-xs" style={{ color: page.statusFg }}>
-              Check whether your own scripts or integrations rely on it.
+            <div className="text-xs" style={{ color: page.fg }}>
+              If one doesn't, Restore v{info.version} brings it back, together
+              with the snapshot from before the update.
             </div>
           </div>
         </div>
