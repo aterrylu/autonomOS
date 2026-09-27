@@ -179,6 +179,52 @@ export function readThreadApprovalPolicy(rolloutPath: string): string | null {
   return null;
 }
 
+/**
+ * The permission a thread actually ran on its LAST turn, in Codex's own
+ * canonical values (ADR-115), from the rollout's `turn_context`:
+ * `approval_policy`, `sandbox_policy.type` (→ sandbox_mode),
+ * `approvals_reviewer`, `collaboration_mode.mode`. Only the fields present are
+ * returned; null when there's no readable turn_context (e.g. a never-prompted
+ * thread).
+ */
+export function readThreadPermissionValues(
+  rolloutPath: string,
+): Record<string, string> | null {
+  const tail = readTail(rolloutPath);
+  if (!tail) return null;
+  const lines = tail.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line || !line.includes("turn_context")) continue;
+    try {
+      const o = JSON.parse(line) as {
+        type?: string;
+        payload?: {
+          approval_policy?: unknown;
+          sandbox_policy?: { type?: unknown };
+          approvals_reviewer?: unknown;
+          collaboration_mode?: { mode?: unknown };
+        };
+      };
+      if (o.type !== "turn_context" || !o.payload) continue;
+      const p = o.payload;
+      const out: Record<string, string> = {};
+      if (typeof p.approval_policy === "string")
+        out.approval_policy = p.approval_policy;
+      if (typeof p.sandbox_policy?.type === "string")
+        out.sandbox_mode = p.sandbox_policy.type;
+      if (typeof p.approvals_reviewer === "string")
+        out.approvals_reviewer = p.approvals_reviewer;
+      if (typeof p.collaboration_mode?.mode === "string")
+        out.collaboration_mode = p.collaboration_mode.mode;
+      return Object.keys(out).length ? out : null;
+    } catch {
+      /* partial line — keep scanning */
+    }
+  }
+  return null;
+}
+
 /** Read the last `TAIL_BYTES` of a file as UTF-8, or null on any error. The
  *  leading (possibly mid-line) fragment is fine — the line scan tolerates it. */
 function readTail(path: string): string | null {

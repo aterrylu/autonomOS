@@ -334,8 +334,7 @@ describe("restartSession re-opens the pane", () => {
         const u = typeof url === "string" ? url : "";
         const body =
           u.includes("/api/agents") &&
-          !u.includes("/kill") &&
-          !u.includes("/attach") &&
+          !u.includes("/restart") &&
           !u.includes("/tree")
             ? [
                 {
@@ -358,9 +357,11 @@ describe("restartSession re-opens the pane", () => {
     await get().restartSession("a1");
 
     expect(switchSpy).toHaveBeenCalledWith({ type: "session", id: "a1" });
+    // Success is SAID, not just implied by a reconnecting pane.
+    expect(get().actionToast).toMatchObject({ ok: true, text: "Restarted a1" });
   });
 
-  it("does NOT re-open the pane when the attach fails", async () => {
+  it("does NOT re-open the pane when the restart fails — and SAYS why (never a silent no-op)", async () => {
     const switchSpy = vi.fn();
     useStore.setState({
       activePane: { type: "session", id: "a1" },
@@ -374,17 +375,18 @@ describe("restartSession re-opens the pane", () => {
       "fetch",
       vi.fn((url: string) => {
         const u = typeof url === "string" ? url : "";
-        if (u.includes("/attach")) {
+        if (u.includes("/restart")) {
           return Promise.resolve(
-            new Response(JSON.stringify({ error: "boom" }), { status: 500 }),
+            new Response(
+              JSON.stringify({ error: "a1 is already restarting." }),
+              {
+                status: 409,
+              },
+            ),
           );
         }
         const body =
-          u.includes("/api/agents") &&
-          !u.includes("/kill") &&
-          !u.includes("/tree")
-            ? []
-            : {};
+          u.includes("/api/agents") && !u.includes("/tree") ? [] : {};
         return Promise.resolve(
           new Response(JSON.stringify(body), { status: 200 }),
         );
@@ -394,5 +396,9 @@ describe("restartSession re-opens the pane", () => {
     await get().restartSession("a1");
 
     expect(switchSpy).not.toHaveBeenCalled();
+    expect(get().actionToast).toMatchObject({
+      ok: false,
+      text: "Restart of a1 failed: a1 is already restarting.",
+    });
   });
 });

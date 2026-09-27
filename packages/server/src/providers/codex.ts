@@ -24,21 +24,22 @@
 
 import {
   type AgentProvider,
-  DEFAULT_PERMISSION_MODE,
-  type PermissionMode,
+  parseRuntimePermission,
   type ResolvedSpawnOptions,
+  type RuntimePermission,
   type SidecarSpec,
 } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
 import {
   probeThreadRollout,
-  readThreadApprovalPolicy,
+  readThreadPermissionValues,
 } from "../gateway/codexRollout.js";
 import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
   commonBinaryCandidates,
+  effectivePermission,
   resolveBinaryFromCandidates,
 } from "./shared.js";
 
@@ -73,68 +74,57 @@ const binaryCache = { path: null as string | null };
  */
 const SUPPRESS_UPDATE_PROMPT_ARGS = ["-c", "check_for_update_on_startup=false"];
 
-/**
- * Map the common permission mode → Codex `approval_policy` value.
- *
- * Codex's two-axis model (approval + sandbox) is effectively one axis here:
- * the sandbox is always `danger-full-access` (autonomOS is the trust boundary).
- * autonomOS doesn't wire up Codex's plan mode or its auto review yet — both clamp
- * to on-request (Ask). The clamp
- * warning lives in daemonConfigArgs (called once per spawn) so it doesn't
- * double-log across the daemon + TUI layers.
- */
-function codexApprovalPolicy(
-  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
-): string {
-  switch (mode) {
-    case "bypass":
-      return "never";
-    default:
-      // "ask" plus the clamped "plan" AND "auto": codex 0.15x has only
-      // on-request | never. `auto` used to map to "on-failure", which codex
-      // removed and silently coerced to on-request — so auto already behaved
-      // exactly like ask; this states it instead of relying on the coercion.
-      return "on-request";
-  }
+/** Axes a resumed thread keeps from its creation (Codex rejects permission
+ *  overrides on a remote resume). The collaboration mode is per-turn, not locked. */
+const RESUME_LOCKED_AXES = [
+  "approval_policy",
+  "sandbox_mode",
+  "approvals_reviewer",
+] as const;
+
+/** Codex's canonical permission values for this spawn (ADR-115). */
+function codexValues(
+  options: ResolvedSpawnOptions,
+): Readonly<Record<string, string>> {
+  return effectivePermission("codex", options).values;
 }
 
 /**
- * Map the common permission mode → Codex `mcp_servers.<name>.default_tools_approval_mode`.
- *
- * SEPARATE axis from `approval_policy` (which gates shell/exec): this governs
- * whether the model must get user approval before calling an MCP *tool*. Codex's
- * default when the key is ABSENT is `auto`, whose heuristic prompts for any tool
- * that doesn't declare `readOnlyHint`/non-destructive annotations — so our 19
- * un-annotated channel-server tools ALL prompt, once per session. That is the
- * recurring "approve the autonomOS MCP server" gate.
- *
- * The mapping is deliberately mode-aware, mirroring the trust the permission mode
- * already grants for shell:
- *   - bypass        → "approve": never prompt (the agent is already autonomous).
- *   - ask / plan / auto → "writes": prompt only for MUTATING tools; a tool that
- *     declares `readOnlyHint: true` (see the annotated read-only tools in
- *     mcp/tools.ts) is auto-approved even under `writes`. So a supervised agent
- *     still gets asked before kill_agent / delete_* but not before list_agents.
- * `plan` and `auto` aren't wired up for Codex yet and are clamped to ask-equivalent behavior here,
- * consistent with codexApprovalPolicy.
+ * The MCP-tool approval axis (`mcp_servers.<name>.default_tools_approval_mode`),
+ * SEPARATE from approval_policy (which gates shell/exec). Codex's default when
+ * the key is absent is `auto`, which prompts for every un-annotated tool —
+ * the recurring "approve the autonomOS MCP server" gate. Mirrors the trust the
+ * approval policy already grants for shell:
+ *   - approval_policy=never → "approve": never prompt (the agent never asks).
+ *   - otherwise → "writes": prompt only for MUTATING tools; a tool declaring
+ *     `readOnlyHint: true` (mcp/tools.ts) is auto-approved even under writes.
  */
 function codexMcpApprovalMode(
-  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
+  values: Readonly<Record<string, string>>,
 ): string {
-  switch (mode) {
-    case "bypass":
-      return "approve";
-    default:
-      // "ask" plus the clamped "plan" AND "auto" (not wired up yet — ADR-104:
-      // auto is clamped to Ask on BOTH axes, so "behaves like Ask" is true for
-      // MCP tools too): prompt for mutations, auto-approve read-only tools.
-      return "writes";
-  }
+  return values.approval_policy === "never" ? "approve" : "writes";
 }
 
-/** Bypass is the all-in-one skip flag (and the resolved default when unset). */
-function isBypassMode(mode: PermissionMode | undefined): boolean {
-  return (mode ?? DEFAULT_PERMISSION_MODE) === "bypass";
+/** Codex's all-in-one skip flag = exactly approval never + no sandbox. */
+function isFullBypass(values: Readonly<Record<string, string>>): boolean {
+  return (
+    values.approval_policy === "never" &&
+    values.sandbox_mode === "danger-full-access"
+  );
+}
+
+/** The permission `-c` flags, in Codex's own keys. */
+function permissionConfigArgs(
+  values: Readonly<Record<string, string>>,
+): string[] {
+  return [
+    "-c",
+    `sandbox_mode=${JSON.stringify(values.sandbox_mode)}`,
+    "-c",
+    `approval_policy=${JSON.stringify(values.approval_policy)}`,
+    "-c",
+    `approvals_reviewer=${JSON.stringify(values.approvals_reviewer)}`,
+  ];
 }
 
 /** Daemon `-c` config flags shared by the app-server: system prompt + MCP. */
@@ -148,33 +138,15 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
   );
   args.push("-c", `instructions=${JSON.stringify(systemPrompt)}`);
 
-  // Sandbox: autonomOS is the trust boundary — we never want Codex's OS sandbox
-  // (bubblewrap on Linux, Seatbelt on macOS). Disable it ALWAYS, both autonomous
-  // and supervised. This MUST be set on BOTH the daemon (which executes tools,
-  // here) AND the --remote TUI (which creates the thread — see buildArgs);
-  // setting it on only one layer loses to the other's default (workspace-write
-  // → "could not find bubblewrap on PATH"). Verified on Linux.
-  args.push("-c", `sandbox_mode="danger-full-access"`);
-
-  // Approval gating is separate from sandboxing: the permission mode maps to a
-  // Codex approval_policy (bypass→never, ask/plan/auto→
-  // on-request). The TUI flag in buildArgs is the primary control; this
-  // daemon-side policy backs it for gateway-injected turns that share the
-  // same thread. Codex's plan mode and auto review aren't wired up yet — warn
-  // once here when we clamp to on-request.
-  if (options.permissionMode === "plan" || options.permissionMode === "auto") {
-    console.warn(
-      `[codex] permission mode '${options.permissionMode}' isn't wired up for Codex yet — clamping to ` +
-        "'ask' (approval_policy=on-request). Sandbox stays " +
-        "danger-full-access (autonomOS is the trust boundary). NOTE: the " +
-        `agent's record still says '${options.permissionMode}' — it reflects what was requested, ` +
-        "not this clamp.",
-    );
-  }
-  args.push(
-    "-c",
-    `approval_policy=${JSON.stringify(codexApprovalPolicy(options.permissionMode))}`,
-  );
+  // Permission, in Codex's own keys (ADR-115): sandbox_mode, approval_policy,
+  // approvals_reviewer. This MUST be set on BOTH the daemon (which executes
+  // tools, here) AND the --remote TUI (which creates the thread — see
+  // buildArgs); setting it on only one layer loses to the other's default.
+  // The default sandbox is danger-full-access (autonomOS is the trust
+  // boundary); workspace-write / read-only are the user's explicit choice and
+  // need Codex's OS sandbox (bubblewrap on Linux, Seatbelt on macOS).
+  const values = codexValues(options);
+  args.push(...permissionConfigArgs(values));
 
   // MCP channel server — attached to the DAEMON (it hosts the thread + MCP),
   // giving the Codex model outbound send() + org tools, same as Claude Code.
@@ -190,7 +162,7 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       // DAEMON because the daemon hosts the MCP client and makes the approval
       // decision; the --remote TUI never injects mcp_servers.
       "-c",
-      `mcp_servers.autonomos.default_tools_approval_mode=${JSON.stringify(codexMcpApprovalMode(options.permissionMode))}`,
+      `mcp_servers.autonomos.default_tools_approval_mode=${JSON.stringify(codexMcpApprovalMode(values))}`,
       "-c",
       // Gateway on the internal socket (ADR-055 PR B); REST base stays public.
       `mcp_servers.autonomos.env.AUTONOMOS_SERVER_URL=${JSON.stringify(`ws+unix://${options.socketPath}:/ws/gateway`)}`,
@@ -259,19 +231,6 @@ export const codexProvider: AgentProvider = {
     };
   },
 
-  // Codex HAS both (codex 0.154: a Plan collaboration mode, and automatic
-  // approval review via approvals_reviewer=auto_review), but autonomOS doesn't
-  // wire either up yet, so both behave like Ask (on-request). Surfaced to the
-  // user at spawn so the clamp is never silent — and never claims Codex lacks
-  // the feature.
-  clampedModeNotice(mode: PermissionMode): string | undefined {
-    if (mode === "auto")
-      return "Codex's auto review isn't wired up in autonomOS yet, so this agent behaves like Ask. Pick Bypass for no approvals.";
-    if (mode === "plan")
-      return "Codex's plan mode isn't wired up in autonomOS yet, so this agent behaves like Ask.";
-    return undefined;
-  },
-
   // Thread-resume pre-flight: resume only if codex actually SAVED this thread.
   // A never-prompted agent's thread has no rollout (written lazily on the first
   // turn) → start fresh instead of a doomed "No saved session found" resume.
@@ -284,15 +243,15 @@ export const codexProvider: AgentProvider = {
     return probeThreadRollout(options.providerThreadId, env).state === "found";
   },
 
-  // The mode a resumed thread ACTUALLY runs (from its last turn_context), when
-  // the record disagrees — e.g. a pre-ADR-104 mode-change resume wrote the new
-  // mode to the record and then crashed on the override, so the thread still
-  // runs the old policy. Undefined when consistent or unreadable.
-  resumedThreadMode(
+  // The permission a resumed thread ACTUALLY runs (its last turn_context, in
+  // Codex's own values), when the record disagrees — e.g. a pre-ADR-104
+  // mode-change resume wrote the new mode and then crashed on the override, so
+  // the thread still runs the old policy. Undefined when consistent/unreadable.
+  resumedThreadPermission(
     options: ResolvedSpawnOptions,
     env: Record<string, string | undefined>,
-    recordMode: PermissionMode,
-  ): PermissionMode | undefined {
+    record: RuntimePermission,
+  ): RuntimePermission | undefined {
     if (!options.providerThreadId) return undefined;
     let path: string | undefined;
     try {
@@ -300,21 +259,30 @@ export const codexProvider: AgentProvider = {
     } catch {
       return undefined;
     }
-    const actual = path ? readThreadApprovalPolicy(path) : null;
-    if (!actual || actual === codexApprovalPolicy(recordMode)) return undefined;
-    if (actual === "never") return "bypass";
-    if (actual === "on-request") return "ask";
-    return undefined; // a policy we don't map — don't guess
+    const ran = path ? readThreadPermissionValues(path) : null;
+    if (!ran) return undefined;
+    // Only the axes a resume can't change (and that the rollout recorded).
+    const actual = { ...record.values };
+    let differs = false;
+    for (const key of RESUME_LOCKED_AXES) {
+      if (ran[key] !== undefined && ran[key] !== record.values[key]) {
+        actual[key] = ran[key];
+        differs = true;
+      }
+    }
+    if (!differs) return undefined;
+    const parsed = parseRuntimePermission("codex", actual);
+    return parsed.ok ? parsed.permission : undefined; // a value we don't know — don't guess
   },
 
-  // A resumed thread keeps the policy it was created with (codex rejects
-  // overrides on a remote resume), so a mode change whose Codex policy differs
-  // cannot take effect on resume.
-  resumeCannotApplyModeChange(
-    from: PermissionMode,
-    to: PermissionMode,
+  // A resumed thread keeps the approval/sandbox/reviewer policy it was created
+  // with (codex rejects permission overrides on a remote resume), so a change
+  // on any of those axes can't take effect on resume.
+  resumeCannotApplyChange(
+    from: RuntimePermission,
+    to: RuntimePermission,
   ): boolean {
-    return codexApprovalPolicy(from) !== codexApprovalPolicy(to);
+    return RESUME_LOCKED_AXES.some((k) => from.values[k] !== to.values[k]);
   },
 
   buildArgs(options: ResolvedSpawnOptions): string[] {
@@ -352,13 +320,16 @@ export const codexProvider: AgentProvider = {
       // wants bubblewrap). bypass: skip approvals + sandbox in one flag (the CC
       // --dangerously-skip-permissions equivalent). Otherwise: drop the sandbox
       // only and set the approval_policy granularity (matches the daemon).
-      if (isBypassMode(options.permissionMode)) {
+      const values = codexValues(options);
+      if (isFullBypass(values)) {
         args.push("--dangerously-bypass-approvals-and-sandbox");
       } else {
-        args.push("-s", "danger-full-access");
+        args.push("-s", values.sandbox_mode);
         args.push(
           "-c",
-          `approval_policy=${JSON.stringify(codexApprovalPolicy(options.permissionMode))}`,
+          `approval_policy=${JSON.stringify(values.approval_policy)}`,
+          "-c",
+          `approvals_reviewer=${JSON.stringify(values.approvals_reviewer)}`,
         );
       }
       if (options.prompt) args.push(options.prompt);
@@ -369,7 +340,7 @@ export const codexProvider: AgentProvider = {
     // daemonConfigArgs already sets sandbox + approval_policy for every mode;
     // bypass additionally gets the all-in-one skip flag.
     const args: string[] = [];
-    if (isBypassMode(options.permissionMode)) {
+    if (isFullBypass(codexValues(options))) {
       args.push("--dangerously-bypass-approvals-and-sandbox");
     }
     args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);

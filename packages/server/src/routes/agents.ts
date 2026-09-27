@@ -21,10 +21,12 @@ import {
   getAgentAnalytics,
 } from "../agents/analytics.js";
 import { enrichAgent } from "../agents/enrich.js";
+import { parsePermissionInput } from "../agents/permissionInput.js";
 import {
   getAttachment,
   isAgentLive,
   killAttachment,
+  restartAgent,
   restartAllAttachments,
   deleteAgent as runtimeDeleteAgent,
   SpawnError,
@@ -434,6 +436,12 @@ agentsRouter.post("/", async (c) => {
       `[api/agents] ignoring invalid permissionMode ${JSON.stringify(body.permissionMode)}; falling back to template/record/default`,
     );
 
+  // The canonical permission (ADR-115) — in the runtime's own values, so it
+  // needs `provider`. Unlike the legacy field above, a bad value 400s with the
+  // runtime's valid values: nobody holds an old spelling of this one.
+  const permissionInput = parsePermissionInput(body.provider, body.permission);
+  if (!permissionInput.ok) return c.json({ error: permissionInput.error }, 400);
+
   // NOTE: the present-but-empty resume/fork id check lives in `spawnAgent`, not
   // here. It has to be at the shared boundary — the HTTP MCP handler calls
   // spawnAgent directly and would bypass a route-level guard. It surfaces below
@@ -452,9 +460,11 @@ agentsRouter.post("/", async (c) => {
       // external terminal-started session. Distinct id-space from resumeAgentId.
       resumeSessionId: body.resumeSessionId as string | undefined,
       forkFromAgentId: body.forkFromAgentId as UUID | undefined,
+      permission: permissionInput.permission,
       permissionMode,
       // Ranked BELOW the record on a resume — see SpawnParams. Naming a
       // template while resuming must not re-level an existing agent.
+      templatePermissions: tmpl?.permissions,
       templatePermissionMode: tmpl?.permissionMode,
       appendSystemPrompt: systemPrompt,
       template: templateName,
@@ -640,6 +650,30 @@ agentsRouter.post("/:id/attach", async (c) => {
       { error: message },
       err instanceof SpawnError ? err.status : spawnErrorStatus(message),
     );
+  }
+});
+
+/**
+ * Restart ONE agent server-side: stop it, wait for its process (and Codex
+ * daemon) to exit, respawn it from its record in the same conversation. The
+ * dashboard's Restart calls this; every failure is a typed status + message
+ * the UI shows, and a respawn that genuinely failed also leaves a notice on
+ * the agent (it's now stopped), so it can't be missed after the toast fades.
+ */
+agentsRouter.post("/:id/restart", async (c) => {
+  const param = c.req.param("id");
+  const agent = resolveAgent(param) ?? getAgentByProviderSessionId(param);
+  if (!agent) return c.json({ error: `Agent "${param}" not found` }, 404);
+  try {
+    return c.json(await restartAgent(agent.id));
+  } catch (err) {
+    if (err instanceof ControlPlaneNotReadyError) throw err;
+    const message = err instanceof Error ? err.message : "Unknown error";
+    const status =
+      err instanceof SpawnError ? err.status : spawnErrorStatus(message);
+    // restartAgent itself leaves the persistent notice when the agent ended up
+    // stopped; a refusal (409 / 404 / 503) changed nothing.
+    return c.json({ error: message }, status);
   }
 });
 

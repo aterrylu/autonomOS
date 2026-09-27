@@ -5,27 +5,24 @@
  * Key differences from Claude Code:
  * - Hooks + MCP via GEMINI_CLI_SYSTEM_SETTINGS_PATH env var → ~/.autonomos/gemini-settings.json
  * - System prompt prepended to user prompt (no --append-system-prompt equivalent)
- * - Auto mode via --approval-mode yolo
+ * - Permission via --approval-mode <Gemini's own value> (ADR-115)
  * - No --session-id, --name, or --brief flags
  * - MCP servers filtered at spawn via --allowed-mcp-server-names
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  type AgentProvider,
-  DEFAULT_PERMISSION_MODE,
-  type PermissionMode,
-  type ResolvedSpawnOptions,
-} from "@autonomos/core";
+import type { AgentProvider, ResolvedSpawnOptions } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
 import { getControlSocketPath } from "../internalSocket.js";
 import { getAuthToken, getServerPort } from "../serverState.js";
+import { findGeminiSession } from "../sessionScanners.js";
 import { getSettings } from "../settings.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
   commonBinaryCandidates,
+  effectivePermission,
   HOOK_CMD,
   resolveBinaryFromCandidates,
 } from "./shared.js";
@@ -66,24 +63,6 @@ const INTENTIONAL_DROPS = new Set([
 ]);
 
 const binaryCache = { path: null as string | null };
-
-// ── Permission mode → Gemini --approval-mode ──────────────────
-// Gemini 0.46's --approval-mode enum maps 1:1 with the common modes:
-// default | auto_edit (≈auto) | plan | yolo (≈bypass).
-function geminiApprovalMode(
-  mode: PermissionMode = DEFAULT_PERMISSION_MODE,
-): string {
-  switch (mode) {
-    case "bypass":
-      return "yolo";
-    case "auto":
-      return "auto_edit";
-    case "plan":
-      return "plan";
-    default:
-      return "default";
-  }
-}
 
 // Per-call via the guarded accessor (#350): the old module-load freeze here
 // bypassed the config-dir escape guard AND handed a stale value to the MCP
@@ -134,12 +113,40 @@ export const geminiCliProvider: AgentProvider = {
     );
   },
 
+  // Is this agent's Gemini session saved where `gemini --resume` will look
+  // (its cwd's project, under the CHILD's GEMINI_CLI_HOME)? Three-state via
+  // findGeminiSession: false only when POSITIVELY absent (→ the runtime starts
+  // fresh with a notice); it throws when it can't tell (→ fail open, resume).
+  // Declaring this also arms the onExit force-fresh net, which ADR-100 allows
+  // only behind a pre-flight that proved the session exists — this one does.
+  hasResumableSession(
+    options: ResolvedSpawnOptions,
+    env: Record<string, string | undefined> = process.env,
+  ): boolean {
+    if (!options.resumeSessionId) return false;
+    return findGeminiSession(options.cwd, options.resumeSessionId, env);
+  },
+
   buildArgs(options: ResolvedSpawnOptions): string[] {
     const args: string[] = [];
 
+    // Conversation identity (measured on 0.46): a fresh spawn names its session
+    // with OUR id (`--session-id`), so a later restart can `--resume` exactly
+    // that chat — before this, every restart silently started a new one.
+    // resumeSessionId is set on every respawn and cleared by the pre-flight
+    // above when nothing is saved.
+    if (options.resumeSessionId) {
+      args.push("--resume", options.resumeSessionId);
+    } else if (options.providerSessionId) {
+      args.push("--session-id", options.providerSessionId);
+    }
+
     // Permission mode → --approval-mode (always set; "default" is Gemini's
     // own default, so this is behavior-preserving for supervised spawns).
-    args.push("--approval-mode", geminiApprovalMode(options.permissionMode));
+    args.push(
+      "--approval-mode",
+      effectivePermission("gemini-cli", options).values["approval-mode"],
+    );
 
     // Filter MCP servers to only autonomOS (if injected)
     if (options.injectChannelServer) {

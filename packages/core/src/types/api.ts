@@ -15,7 +15,10 @@
 import type { AgentStatus, Provider } from "./agent";
 import type { PermissionMode } from "./permissions";
 import type { ProviderCapabilities } from "./provider";
-import type { RuntimePermissionCheck } from "./runtimePermissions";
+import type {
+  RuntimePermission,
+  RuntimePermissionCheck,
+} from "./runtimePermissions";
 
 // ── Agent activity status (the hooks read surface) ────────────────
 
@@ -113,6 +116,13 @@ export interface MaskedSettings {
   updateCheck: boolean;
   customEnvVars: Record<string, string>;
   statusLine: { enabled: boolean };
+  /**
+   * Each runtime's default permission, in its own canonical values (ADR-115) —
+   * EFFECTIVE (the operator's saved choice, else the built-in default), always
+   * one entry per runtime. Applies to every spawn that names no permission,
+   * including agent-initiated ones.
+   */
+  runtimeDefaults: Record<Provider, RuntimePermission>;
 }
 
 export type ChannelStatus = "ok" | "disabled" | "not-installed" | "unknown";

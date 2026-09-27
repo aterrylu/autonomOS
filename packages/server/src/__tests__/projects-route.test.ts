@@ -12,9 +12,24 @@ process.env.AUTONOMOS_CONFIG_DIR = join(
   tmpdir(),
   `autonomos-projects-test-${randomUUID()}`,
 );
+// The route's DEFAULT Codex/Gemini scanners read these; point them at paths
+// that don't exist so no test can ever scan the operator's real history
+// (setup() also stubs both scanners — this is the backstop).
+process.env.CODEX_HOME = join(
+  tmpdir(),
+  `aos-projects-no-codex-${randomUUID()}`,
+);
+process.env.GEMINI_CLI_HOME = join(
+  tmpdir(),
+  `aos-projects-no-gemini-${randomUUID()}`,
+);
 
 const { projectRouter, _setDepsForTesting, _resetForTesting } = await import(
   "../routes/projects.js"
+);
+
+const { buildAgent, insertAgent, markExited, patchAgent } = await import(
+  "../agents/store.js"
 );
 
 const HOME = "/Users/testuser";
@@ -45,7 +60,11 @@ function createApp() {
 }
 
 function setup(specs: FakeSessionSpec[]) {
-  _setDepsForTesting({ listSessions: async () => fakeSessions(specs) });
+  _setDepsForTesting({
+    listSessions: async () => fakeSessions(specs),
+    listCodexSessions: async () => [],
+    listGeminiSessions: async () => [],
+  });
   return createApp();
 }
 
@@ -305,5 +324,320 @@ describe("GET /api/projects — provider + Codex seam + cwd-less", () => {
     ).json()) as ProjectJson[];
     const unknowns = projects.filter((x) => x.name === "Unknown");
     assert.equal(unknowns.length, 2); // separate groups, not merged into one
+  });
+});
+
+describe("GET /api/projects — managed agents of EVERY runtime (Codex/Gemini)", () => {
+  // Real agent records in the test's temp store.
+  const mk = (
+    provider: "codex" | "gemini-cli" | "claude-code",
+    extra: { thread?: string } = {},
+  ) => {
+    const id = randomUUID();
+    insertAgent(
+      buildAgent({
+        id: id as never,
+        name: `${provider}-${id.slice(0, 4)}`,
+        workingDirectory: `${HOME}/workspace/agents`,
+        provider,
+        providerSessionId: id,
+        permissionMode: "ask",
+        status: "running",
+      }),
+    );
+    if (extra.thread)
+      patchAgent(id as never, { providerThreadId: extra.thread });
+    markExited(id as never, "user_killed");
+    return id;
+  };
+  const get = async (app: ReturnType<typeof createApp>) =>
+    (await (await app.request("/api/projects")).json()) as ProjectJson[];
+  const rows = (ps: ProjectJson[]) =>
+    ps.flatMap((p) => p.sessions.map((s) => ({ ...s, path: p.path })));
+
+  it("an exited Codex agent's discovered thread becomes ITS row: agent id (resumable), runtime, its directory", async () => {
+    const thread = `thread-${randomUUID()}`;
+    const id = mk("codex", { thread });
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listGeminiSessions: async () => [],
+      listCodexSessions: async () => [
+        {
+          cwd: "/private/tmp/elsewhere",
+          session: {
+            sessionId: thread,
+            provider: "codex",
+            summary: "audit",
+            lastModified: 5,
+          },
+        },
+      ],
+    });
+    const r = rows(await get(createApp())).find((s) => s.sessionId === id);
+    assert.ok(
+      r,
+      "the managed Codex agent must have a row keyed by its resumable id",
+    );
+    assert.equal(r.provider, "codex");
+    assert.equal(r.isAutonomosAgent, true);
+    assert.equal(
+      r.path,
+      `${HOME}/workspace/agents`,
+      "grouped under the agent's own directory",
+    );
+    assert.ok(
+      !rows(await get(createApp())).some((s) => s.sessionId === thread),
+      "no duplicate row under the thread id",
+    );
+  });
+
+  it("matching is STABLE across polls even when the scanner hands back the same object (a cache)", async () => {
+    const thread = `thread-${randomUUID()}`;
+    const id = mk("codex", { thread });
+    const cached = {
+      cwd: "/private/tmp/elsewhere",
+      session: {
+        sessionId: thread,
+        provider: "codex",
+        summary: "audit",
+        lastModified: 5,
+      },
+    };
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listGeminiSessions: async () => [],
+      listCodexSessions: async () => [cached],
+    });
+    for (const poll of [1, 2, 3]) {
+      const r = rows(await get(createApp())).find((s) => s.sessionId === id);
+      assert.ok(r, `poll ${poll}: the managed row must still be matched`);
+      assert.equal(
+        r.path,
+        `${HOME}/workspace/agents`,
+        `poll ${poll}: grouped under the agent's directory`,
+      );
+    }
+  });
+
+  it("the INVERSE split: Claude Code's realpath group + a managed agent's raw path are ONE project", async (t) => {
+    const { mkdtempSync, realpathSync, rmSync, symlinkSync } = await import(
+      "node:fs"
+    );
+    const real = mkdtempSync(join(tmpdir(), "aos-inv-real-"));
+    const link = join(tmpdir(), `aos-inv-link-${randomUUID()}`);
+    try {
+      symlinkSync(real, link);
+    } catch {
+      return t.skip("no symlinks here");
+    }
+    try {
+      const id = randomUUID();
+      insertAgent(
+        buildAgent({
+          id: id as never,
+          name: "inv",
+          workingDirectory: link, // the raw spelling
+          provider: "codex",
+          providerSessionId: id,
+          permissionMode: "ask",
+          status: "running",
+        }),
+      );
+      markExited(id as never, "user_killed");
+      _setDepsForTesting({
+        // Claude Code recorded the REALPATH for this directory.
+        listSessions: async () =>
+          fakeSessions([{ sessionId: "cc-inv", cwd: realpathSync(real) }]),
+        listGeminiSessions: async () => [],
+        listCodexSessions: async () => [],
+      });
+      const ps = await get(createApp());
+      const groups = ps.filter((x) =>
+        x.sessions.some((s) => s.sessionId === "cc-inv" || s.sessionId === id),
+      );
+      assert.equal(groups.length, 1, "one directory, one project");
+      assert.equal(
+        groups[0].path,
+        realpathSync(real),
+        "Claude Code's own spelling is kept",
+      );
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it("a scanned realpath cwd joins the project the user knows by its raw path (/tmp vs /private/tmp)", async (t) => {
+    const { mkdtempSync, realpathSync, rmSync, symlinkSync } = await import(
+      "node:fs"
+    );
+    const real = mkdtempSync(join(tmpdir(), "aos-alias-real-"));
+    const link = join(tmpdir(), `aos-alias-link-${randomUUID()}`);
+    try {
+      symlinkSync(real, link);
+    } catch {
+      return t.skip("no symlinks here");
+    }
+    try {
+      _setDepsForTesting({
+        listSessions: async () =>
+          fakeSessions([{ sessionId: "cc-1", cwd: link }]),
+        listGeminiSessions: async () => [],
+        listCodexSessions: async () => [
+          {
+            cwd: realpathSync(real),
+            session: {
+              sessionId: "cx-1",
+              provider: "codex",
+              summary: "c",
+              lastModified: 5,
+            },
+          },
+        ],
+      });
+      const ps = await get(createApp());
+      const p = ps.find((x) => x.path === link);
+      assert.ok(p, "the raw path stays the project's path");
+      assert.deepEqual(p.sessions.map((x) => x.sessionId).sort(), [
+        "cc-1",
+        "cx-1",
+      ]);
+      assert.ok(
+        !ps.some((x) => x.path === realpathSync(real)),
+        "no second group under the realpath",
+      );
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it("an exited Gemini agent with a saved session is matched by providerSessionId", async () => {
+    const id = mk("gemini-cli");
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [
+        {
+          cwd: `${HOME}/workspace/agents`,
+          session: {
+            sessionId: id,
+            provider: "gemini-cli",
+            summary: "x",
+            lastModified: 5,
+          },
+        },
+      ],
+    });
+    const matches = rows(await get(createApp())).filter(
+      (s) => s.sessionId === id,
+    );
+    assert.equal(
+      matches.length,
+      1,
+      "exactly one row — the discovered one, not also a filler",
+    );
+    assert.equal(matches[0].isAutonomosAgent, true);
+    assert.equal(matches[0].provider, "gemini-cli");
+  });
+
+  it("an exited agent with NO discoverable session still gets a row (e.g. Codex killed before its first turn)", async () => {
+    const id = mk("codex"); // no thread: codex never saved one
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [],
+    });
+    const r = rows(await get(createApp())).find((s) => s.sessionId === id);
+    assert.ok(r, "a managed agent of any runtime must show in Projects");
+    assert.equal(r.provider, "codex");
+    assert.equal(r.isAutonomosAgent, true);
+  });
+
+  it("an EXTERNAL Codex session (no agent record) stays unmanaged, with its originator", async () => {
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listGeminiSessions: async () => [],
+      listCodexSessions: async () => [
+        {
+          cwd: "/w/ext",
+          session: {
+            sessionId: "ext-1",
+            provider: "codex",
+            summary: "mine",
+            lastModified: 5,
+            originator: "external",
+          },
+        },
+      ],
+    });
+    const r = rows(await get(createApp())).find((s) => s.sessionId === "ext-1");
+    assert.ok(r);
+    assert.equal(r.isAutonomosAgent, undefined);
+    assert.equal(r.originator, "external");
+  });
+
+  it("a MANAGED row with no prompt yet reads as its agent's name; an external one keeps the placeholder", async () => {
+    const id = mk("gemini-cli");
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [
+        {
+          cwd: "/w",
+          session: {
+            sessionId: id,
+            provider: "gemini-cli",
+            summary: "(no prompt yet)",
+            lastModified: 5,
+          },
+        },
+        {
+          cwd: "/w",
+          session: {
+            sessionId: "ext-g",
+            provider: "gemini-cli",
+            summary: "(no prompt yet)",
+            lastModified: 5,
+          },
+        },
+      ],
+    });
+    const all = rows(await get(createApp()));
+    assert.match(
+      all.find((s) => s.sessionId === id)?.summary ?? "",
+      /^gemini-cli-/,
+    );
+    assert.equal(
+      all.find((s) => s.sessionId === "ext-g")?.summary,
+      "(no prompt yet)",
+    );
+  });
+
+  it("one scanner throwing costs only its own rows", async () => {
+    _setDepsForTesting({
+      listSessions: async () => [],
+      listCodexSessions: async () => {
+        throw new Error("EACCES");
+      },
+      listGeminiSessions: async () => [
+        {
+          cwd: "/w/g",
+          session: {
+            sessionId: "g-ok",
+            provider: "gemini-cli",
+            summary: "ok",
+            lastModified: 5,
+          },
+        },
+      ],
+    });
+    const res = await createApp().request("/api/projects");
+    assert.equal(res.status, 200);
+    assert.ok(
+      rows((await res.json()) as ProjectJson[]).some(
+        (s) => s.sessionId === "g-ok",
+      ),
+    );
   });
 });

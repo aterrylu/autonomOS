@@ -12,6 +12,7 @@
 
 import type { AgentActivityState } from "./api";
 import type { PermissionMode } from "./permissions";
+import type { RuntimePermission } from "./runtimePermissions";
 
 export type UUID = string;
 
@@ -58,9 +59,19 @@ export interface Agent {
   /** Working directory the PTY runs in. */
   workingDirectory: string;
 
-  /** How much autonomy the agent has over tool use. Maps to provider-native
-   *  permission flags at spawn. Replaces the old `autonomousMode: boolean`. */
+  /** The agent's permission setting in its runtime's OWN canonical values
+   *  (ADR-115) — what spawns use. Filled on load for records that predate it. */
+  permission?: RuntimePermission;
+
+  /** LEGACY projection of `permission` into the shared ask|auto|plan|bypass
+   *  vocabulary, kept only for readers that haven't moved to `permission`
+   *  (the dashboard until the redesign's UI PR). Never drives a spawn. */
   permissionMode: PermissionMode;
+
+  /** Set when the load-time migration found a shared-vocabulary mode this
+   *  runtime never supported (Codex auto/plan). The next spawn tells the user
+   *  once what the agent actually runs, then clears it. */
+  permissionMigratedFrom?: PermissionMode;
 
   /** Lifecycle status. */
   status: AgentStatus;

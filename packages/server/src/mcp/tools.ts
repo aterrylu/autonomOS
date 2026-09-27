@@ -95,14 +95,18 @@ export const TOOL_CREATE_AGENT: ToolDef = {
       permissionMode: {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
-        // NO `default` key. It would say "omitting this yields ask", which is
-        // false on every resume — omission PRESERVES the agent's current mode.
-        // A client that materializes an advertised default would then send
-        // `permissionMode: "ask"` explicitly on a resume and re-level a
-        // deliberately autonomous agent: the exact demotion this schema's own
-        // description tells it to avoid.
+        // NO `default` key: omission PRESERVES a resumed agent's setting, so an
+        // advertised default would teach clients to re-level it on resume.
         description:
-          "How much autonomy the agent has over tool use: 'ask' (prompt before each privileged action), 'auto' (auto-approve edits), 'plan' (read-only investigation — not supported by Codex, falls back to 'ask'), 'bypass' (skip all prompts). Omit to keep a resumed agent's existing mode, or to take the template's / 'ask' on a fresh spawn — pass 'bypass' explicitly for full autonomy.",
+          "DEPRECATED — pass `permission` instead. The old shared ask/auto/plan/bypass vocabulary, still accepted and mapped to exactly what it always ran on each runtime.",
+      },
+      permission: {
+        type: "string",
+        // Deliberately free text, not an enum: the valid values depend on
+        // `provider` (JSON Schema can't key one on the other). The server
+        // rejects a bad value with that runtime's valid values.
+        description:
+          "The agent's permission in its runtime's OWN values (ADR-115) — requires `provider`. Omit to use the operator's default for that runtime (on a resume: keep the agent's current setting). Examples — claude-code: `acceptEdits`; codex: `approval_policy=never sandbox_mode=danger-full-access`; gemini-cli: `auto_edit`. An invalid value is rejected with the runtime's valid values.",
       },
       template: {
         type: "string",
@@ -271,7 +275,12 @@ export const TOOL_CREATE_TEMPLATE: ToolDef = {
         type: "string",
         enum: ["ask", "auto", "plan", "bypass"],
         description:
-          "Tool-use autonomy for agents spawned from this template: 'ask' | 'auto' | 'plan' | 'bypass'. Omit to fall back to 'ask'.",
+          "DEPRECATED — pass `permissions` instead. The old shared ask/auto/plan/bypass vocabulary, still accepted and mapped to exactly what it always ran on each runtime.",
+      },
+      permissions: {
+        type: "object",
+        description:
+          'Per-runtime permission for agents spawned from this template, each in that runtime\'s OWN values (ADR-115), e.g. {"claude-code": "acceptEdits", "codex": "approval_policy=never"}. A runtime not named here uses the operator\'s default for it.',
       },
       model: {
         type: "string",

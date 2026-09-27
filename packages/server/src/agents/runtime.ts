@@ -14,12 +14,18 @@ import { basename } from "node:path";
 import {
   type Agent,
   type AgentProvider,
-  DEFAULT_PERMISSION_MODE,
   type ExitReason,
+  formatPermission,
+  legacyModeFor,
+  legacyModeWasClamped,
   type PermissionMode,
   type Provider,
+  parseRuntimePermission,
+  permissionFromLegacyMode,
   type ResolvedSpawnOptions,
+  type RuntimePermission,
   type SpawnOptions,
+  samePermission,
   type UUID,
 } from "@autonomos/core";
 import type { IPty } from "node-pty";
@@ -45,7 +51,7 @@ import {
   getInternalSocketPath,
   getServerPort,
 } from "../serverState.js";
-import { getSettings } from "../settings.js";
+import { getSettings, runtimeDefaultPermission } from "../settings.js";
 import { getTemplate } from "../templates.js";
 import { batchGetTitles } from "../titleCache.js";
 import { observeExitCode, observeStart } from "./analytics.js";
@@ -534,25 +540,77 @@ export function threadIsResumable(
 }
 
 /**
- * Whether a requested permission-mode change must be REFUSED on this resume
- * because the provider can't apply it to a resumed conversation (Codex keeps a
- * thread's creation-time policy and rejects overrides on remote resume). When
- * locked, the effective mode stays the current one — the record must never
- * claim a mode the process isn't running. Pure + exported for tests.
+ * Whether a requested permission change must be REFUSED on this resume because
+ * the provider can't apply it to a resumed conversation (Codex keeps a
+ * thread's creation-time approval/sandbox/reviewer and rejects overrides on
+ * remote resume). When locked, the effective permission stays the current one
+ * — the record must never claim a setting the process isn't running. Pure +
+ * exported for tests.
  */
-export function resumePermissionModeLock(opts: {
+export function resumePermissionLock(opts: {
   isReattach: boolean;
   resumingThread: boolean;
-  current: PermissionMode;
-  requested: PermissionMode;
-  cannotApply?: (from: PermissionMode, to: PermissionMode) => boolean;
-}): { locked: boolean; effective: PermissionMode } {
+  current: RuntimePermission;
+  requested: RuntimePermission;
+  cannotApply?: (from: RuntimePermission, to: RuntimePermission) => boolean;
+}): { locked: boolean; effective: RuntimePermission } {
   const locked =
     opts.isReattach &&
     opts.resumingThread &&
-    opts.requested !== opts.current &&
+    !samePermission(opts.requested, opts.current) &&
     !!opts.cannotApply?.(opts.current, opts.requested);
   return { locked, effective: locked ? opts.current : opts.requested };
+}
+
+/**
+ * The permission a caller asked for, in `runtime`'s canonical values: an
+ * explicit canonical `permission` (must be for this runtime), else a legacy
+ * shared-vocabulary mode mapped to exactly what it always ran, else undefined
+ * ("the caller said nothing" — ADR-061; never collapse it to a default here).
+ */
+export function requestedPermission(
+  runtime: Provider,
+  permission: RuntimePermission | undefined,
+  legacyMode: PermissionMode | undefined,
+): RuntimePermission | undefined {
+  if (permission) {
+    if (permission.runtime !== runtime) {
+      throw new SpawnError(
+        "INVALID_PERMISSION",
+        400,
+        `permission is in ${permission.runtime}'s values, but this agent runs ${runtime}`,
+      );
+    }
+    return permission;
+  }
+  return legacyMode === undefined
+    ? undefined
+    : permissionFromLegacyMode(runtime, legacyMode);
+}
+
+/**
+ * A template's permission for `runtime` (ADR-115: templates store a per-runtime
+ * map of canonical values), else its legacy shared-vocabulary mode. A stored
+ * value that no longer parses is ignored LOUDLY — the spawn then uses the
+ * operator's default, never a guess.
+ */
+export function templatePermissionFor(
+  runtime: Provider,
+  permissions: Partial<Record<Provider, Record<string, string>>> | undefined,
+  legacyMode: PermissionMode | undefined,
+): RuntimePermission | undefined {
+  const values = permissions?.[runtime];
+  if (values) {
+    const parsed = parseRuntimePermission(runtime, values);
+    if (parsed.ok) return parsed.permission;
+    console.warn(
+      `[runtime] ignoring the template's ${runtime} permission ${JSON.stringify(values)}: ${parsed.error}`,
+    );
+    return undefined;
+  }
+  return legacyMode === undefined
+    ? undefined
+    : permissionFromLegacyMode(runtime, legacyMode);
 }
 
 /**
@@ -574,10 +632,12 @@ export class SpawnError extends Error {
     | "NOT_ADOPTABLE"
     | "NOTHING_TO_RESUME"
     | "INVALID_WORKING_DIRECTORY"
+    | "INVALID_PERMISSION"
     | "PROVIDER_MISMATCH"
     | "SERVER_STOPPING"
-    | "RESTART_IN_PROGRESS";
-  readonly status: 400 | 409 | 422 | 503;
+    | "RESTART_IN_PROGRESS"
+    | "AGENT_NOT_FOUND";
+  readonly status: 400 | 404 | 409 | 422 | 503;
   constructor(
     code: SpawnError["code"],
     status: SpawnError["status"],
@@ -602,9 +662,11 @@ const SESSION_ID_RE =
  *
  * Two distinct hazards, both caught here rather than downstream:
  *
- *  1. **Provider capability.** Adoption is only meaningful when the provider can
- *     prove a resumable session exists on disk (`hasResumableSession`). Codex and
- *     Gemini declare no such hook AND their `buildArgs` ignore `resumeSessionId`
+ *  1. **Provider capability.** Adoption needs a provider that declares it
+ *     (`adoptsExternalSession`) AND can prove a resumable session exists on disk
+ *     (`hasResumableSession`). Gemini has the pre-flight since ADR-118 but not
+ *     the adopt path yet; Codex has neither and its `buildArgs` ignore
+ *     `resumeSessionId`
  *     (Codex resumes via `providerThreadId`), so adopting there would spawn a
  *     FRESH session, persist a managed record, and report success — precisely the
  *     silent failure the adopt path exists to prevent. ADR-056 scopes adoption to
@@ -616,10 +678,15 @@ const SESSION_ID_RE =
  *     `create_agent`, the same semi-trusted surface ADR-054 hardened.
  */
 export function assertAdoptable(
-  provider: Pick<AgentProvider, "hasResumableSession" | "displayName">,
+  provider: Pick<
+    AgentProvider,
+    "hasResumableSession" | "adoptsExternalSession" | "displayName"
+  >,
   sessionId: string,
 ): void {
-  if (!provider.hasResumableSession) {
+  // Both, explicitly: a resume pre-flight (Gemini has one since ADR-118) is not
+  // by itself a working adopt path — adoption is its own capability.
+  if (!provider.hasResumableSession || !provider.adoptsExternalSession) {
     throw new SpawnError(
       "NOT_ADOPTABLE",
       422,
@@ -637,7 +704,23 @@ export function assertAdoptable(
 
 // ── Spawn ──────────────────────────────────────────────────────────
 
+/** A reattach can't race a single-agent restart: while restartAgent waits for
+ *  the old process to exit, anything else respawning the agent would run over
+ *  it (two processes on one conversation). restartAgent's own respawn passes
+ *  `fromRestart`. */
+function assertNotRestarting(existing: Agent, params: SpawnParams): void {
+  if (restartingAgents.has(existing.id) && !params.fromRestart) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      `${existing.name} is restarting — try again in a moment.`,
+    );
+  }
+}
+
 export interface SpawnParams extends SpawnOptions {
+  /** @internal Set only by restartAgent's own respawn (see assertNotRestarting). */
+  fromRestart?: boolean;
   /** Internal autonomOS agent id to resume an existing record (was:
    *  resumeSessionId at the PTY layer). When provided, the Agent must already
    *  exist in the store — this is the managed-agent restart/attach path. */
@@ -682,6 +765,18 @@ export interface SpawnParams extends SpawnOptions {
    * leave a resumed agent's mode alone.
    */
   templatePermissionMode?: PermissionMode;
+  /**
+   * The template's per-runtime permission map (ADR-115) — ranks exactly like
+   * `templatePermissionMode` (below an explicit request; never re-levels a
+   * resumed agent) and wins over it when it has an entry for the runtime.
+   */
+  templatePermissions?: Partial<Record<Provider, Record<string, string>>>;
+  /**
+   * The caller's EXPLICIT permission in the runtime's own canonical values
+   * (ADR-115). Wins over the legacy `permissionMode`; same "undefined = the
+   * caller said nothing" rule. Must be for the agent's runtime (400 otherwise).
+   */
+  permission?: RuntimePermission;
   /**
    * Name of an env preset to apply (model override, ADR-067). Resolved once
    * after the agent record is known, with the same "explicit param wins, else
@@ -813,10 +908,27 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // to the record. Deliberately not merged into one expression up here: doing
   // that is what made a body-less resume overwrite a `bypass` record with the
   // fallback. See the effective-mode comment for the full story.
-  const newRecordPermissionMode =
-    params.permissionMode ??
-    params.templatePermissionMode ??
-    DEFAULT_PERMISSION_MODE;
+  //
+  // ADR-115: the permission is the runtime's own canonical values. A legacy
+  // shared-vocabulary mode (from an older caller or template) maps to exactly
+  // what it always ran. The fallback is the OPERATOR's per-runtime default
+  // (server-side setting), so agent-initiated spawns honor it too.
+  const explicitPermission = requestedPermission(
+    providerName,
+    params.permission,
+    params.permissionMode,
+  );
+  const explicitFromLegacy =
+    params.permission === undefined && params.permissionMode !== undefined;
+  const templatePermission = templatePermissionFor(
+    providerName,
+    params.templatePermissions,
+    params.templatePermissionMode,
+  );
+  const newRecordPermission =
+    explicitPermission ??
+    templatePermission ??
+    runtimeDefaultPermission(providerName);
 
   /**
    * Build a NEW managed record for `id`. Shared by the adopt and fresh/fork
@@ -835,7 +947,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       workingDirectory: cwd,
       provider: providerName,
       providerSessionId: id,
-      permissionMode: newRecordPermissionMode,
+      permission: newRecordPermission,
+      permissionMode: legacyModeFor(newRecordPermission),
       template: params.template,
       managerId: params.managerId ?? null,
       project: params.project,
@@ -904,6 +1017,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         `Agent "${existing.name}" (${existing.id}) is already attached`,
       );
     }
+    assertNotRestarting(existing, params);
     providerSessionId = existing.providerSessionId;
     agent = existing;
     resolution = "reattach";
@@ -925,6 +1039,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           `Agent "${existing.name}" (${existing.id}) is already attached`,
         );
       }
+      assertNotRestarting(existing, params);
       providerSessionId = existing.providerSessionId;
       agent = existing;
       resolution = "reattach";
@@ -1005,16 +1120,27 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // with no mode wrote the fallback over a `bypass` record, permanently, with
   // nothing logged. Callers therefore forward `undefined`; do not "tidy" that
   // back into a `??` at the call site.
-  let permissionMode = params.permissionMode ?? agent.permissionMode;
+  //
+  // ADR-115: the same rule over the canonical permission. A record migrated
+  // at load always has `permission`; the legacy mapping is a belt-and-braces
+  // fallback for a record from another runtime's vocabulary.
+  const recordPermission =
+    agent.permission?.runtime === providerName
+      ? agent.permission
+      : permissionFromLegacyMode(providerName, agent.permissionMode);
+  let permission = explicitPermission ?? recordPermission;
 
   // A resume that CHANGES autonomy is worth a line in the log either way. The
   // change is legitimate (the caller asked for it), but "this agent's autonomy
   // changed and nothing said so" is precisely the class of silence that made
   // the original bug take days to see.
-  if (resolution === "reattach" && permissionMode !== agent.permissionMode) {
+  if (
+    resolution === "reattach" &&
+    !samePermission(permission, recordPermission)
+  ) {
     console.warn(
-      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): permission mode ` +
-        `${agent.permissionMode} → ${permissionMode} on resume (caller-specified)`,
+      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): permission ` +
+        `${formatPermission(recordPermission)} → ${formatPermission(permission)} on resume (caller-specified)`,
     );
   }
 
@@ -1036,9 +1162,11 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
 
   const resolved: ResolvedSpawnOptions = {
     ...params,
-    // Must come AFTER the spread: params.permissionMode may be undefined, and
-    // the provider argv has to reflect the same resolved mode the record holds.
-    permissionMode,
+    // Must come AFTER the spread: params.permission(Mode) may be undefined, and
+    // the provider argv has to reflect the same resolved setting the record
+    // holds. `permissionMode` is only the legacy projection of `permission`.
+    permission,
+    permissionMode: legacyModeFor(permission),
     sessionId: agent.id,
     agentName: agent.name,
     cwd,
@@ -1179,7 +1307,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // never saved and `codex resume <id>` exits 1 ("No saved session found"). Only
   // a POSITIVE "absent" starts fresh; can't-tell resumes (fail open). Separate
   // from hasResumableSession so it never arms the onExit force-fresh net.
-  let startedFreshThread = false;
   if (
     resolved.providerThreadId &&
     !threadIsResumable(provider, resolved, env)
@@ -1189,7 +1316,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       `[runtime] ${agent.id.slice(0, 8)} ${provider.displayName}: no saved conversation found for thread ${oldThread} — starting a fresh thread`,
     );
     resolved.providerThreadId = undefined;
-    startedFreshThread = true;
     // Same rule as the session pre-flight: a thread that never had a turn was
     // never saved (codex writes the rollout lazily), so nothing was lost.
     if (hadActivity(agent)) {
@@ -1201,69 +1327,85 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
   }
 
-  // The mode a resumed thread ACTUALLY runs. A resumed Codex thread keeps its
-  // creation-time policy, and a pre-ADR-104 mode-change resume could have left
-  // the record naming a mode the thread never ran. Make the record follow the
-  // process, and say so — a silently wider/narrower agent is worse than a crash.
-  let currentMode = agent.permissionMode;
+  // The permission a resumed thread ACTUALLY runs. A resumed Codex thread keeps
+  // its creation-time policy, and a pre-ADR-104 mode-change resume could have
+  // left the record naming a setting the thread never ran. Make the record
+  // follow the process, and say so — a silently wider/narrower agent is worse
+  // than a crash.
+  let currentPermission = recordPermission;
   if (resolution === "reattach" && resolved.providerThreadId) {
-    let actual: PermissionMode | undefined;
+    let actual: RuntimePermission | undefined;
     try {
-      actual = provider.resumedThreadMode?.(
+      actual = provider.resumedThreadPermission?.(
         resolved,
         env,
-        agent.permissionMode,
+        recordPermission,
       );
     } catch {
       actual = undefined;
     }
-    if (actual && actual !== agent.permissionMode) {
+    if (actual && !samePermission(actual, recordPermission)) {
+      const said = formatPermission(recordPermission);
+      const runs = formatPermission(actual);
       console.warn(
-        `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): record said ${agent.permissionMode} but its resumed ${provider.displayName} conversation runs ${actual} — correcting the record`,
+        `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): record said ${said} but its resumed ${provider.displayName} conversation runs ${runs} — correcting the record`,
       );
       pendingNotices.push(
-        `${agent.name}'s record said ${agent.permissionMode}, but its resumed ${provider.displayName} conversation actually runs as ${actual}. The record now says ${actual}; spawn a fresh agent to use ${agent.permissionMode}.`,
+        `${agent.name}'s record said ${said}, but its resumed ${provider.displayName} conversation actually runs ${runs}. The record now says ${runs}; spawn a fresh agent to use ${said}.`,
       );
-      currentMode = actual;
-      if (params.permissionMode === undefined) {
-        permissionMode = actual;
-        resolved.permissionMode = actual;
+      currentPermission = actual;
+      if (explicitPermission === undefined) {
+        permission = actual;
+        resolved.permission = actual;
+        resolved.permissionMode = legacyModeFor(actual);
       }
     }
   }
 
-  // A resumed conversation that cannot take a permission-mode change (Codex:
+  // A resumed conversation that cannot take a permission change (Codex:
   // overrides are rejected on a remote resume). Never record a change that
-  // didn't apply: keep the mode the process actually runs, and say so.
-  const modeLock = resumePermissionModeLock({
+  // didn't apply: keep the setting the process actually runs, and say so.
+  const lock = resumePermissionLock({
     isReattach: resolution === "reattach",
     resumingThread: !!resolved.providerThreadId,
-    current: currentMode,
-    requested: permissionMode,
-    cannotApply: provider.resumeCannotApplyModeChange,
+    current: currentPermission,
+    requested: permission,
+    cannotApply: provider.resumeCannotApplyChange,
   });
-  if (modeLock.locked) {
+  if (lock.locked) {
+    const keeps = formatPermission(currentPermission);
+    const wanted = formatPermission(permission);
     console.warn(
-      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): requested mode ${permissionMode} can't apply to a resumed ${provider.displayName} conversation — it keeps ${currentMode}`,
+      `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): requested ${wanted} can't apply to a resumed ${provider.displayName} conversation — it keeps ${keeps}`,
     );
     pendingNotices.push(
-      `${agent.name} resumed in ${currentMode}: a resumed ${provider.displayName} conversation keeps the permissions it started with, so the switch to ${permissionMode} was not applied. Spawn a fresh agent to use ${permissionMode}.`,
+      `${agent.name} resumed with ${keeps}: a resumed ${provider.displayName} conversation keeps the permissions it started with, so ${wanted} was not applied. Spawn a fresh agent to use it.`,
     );
-    permissionMode = modeLock.effective;
-    resolved.permissionMode = modeLock.effective;
+    permission = lock.effective;
+    resolved.permission = lock.effective;
+    resolved.permissionMode = legacyModeFor(lock.effective);
   }
 
-  // A mode the provider can't represent is clamped (Codex: plan/auto → Ask).
-  // Say so whenever it newly takes effect: a fresh spawn, a mode change on
-  // resume, or a fresh thread started by the pre-flight.
-  const clampNotice = provider.clampedModeNotice?.(permissionMode);
+  // A legacy shared-vocabulary mode this runtime never had (Codex auto/plan):
+  // it runs what it always ran — say so in the runtime's own values, so the
+  // caller learns the canonical spelling.
   if (
-    clampNotice &&
-    (resolution !== "reattach" ||
-      permissionMode !== agent.permissionMode ||
-      startedFreshThread)
+    explicitFromLegacy &&
+    params.permissionMode !== undefined &&
+    legacyModeWasClamped(providerName, params.permissionMode) &&
+    !lock.locked
   ) {
-    pendingNotices.push(`${agent.name}: ${clampNotice}`);
+    pendingNotices.push(
+      `${agent.name}: "${params.permissionMode}" isn't a ${provider.displayName} setting, so it runs ${formatPermission(permission)} — what "${params.permissionMode}" always ran there. Pass ${provider.displayName}'s own values to choose another.`,
+    );
+  }
+
+  // One-time notice for a record migrated at load from a legacy mode this
+  // runtime never had — the record now names what it actually ran.
+  if (agent.permissionMigratedFrom !== undefined) {
+    pendingNotices.push(
+      `${agent.name}'s permission "${agent.permissionMigratedFrom}" was never a ${provider.displayName} setting: it always ran ${formatPermission(recordPermission)}, and its record now says so.`,
+    );
   }
 
   // Write the per-agent token to its 0600 file BEFORE anything that could launch
@@ -1444,7 +1586,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           provider: providerName,
           providerSessionId,
           startedAt: Date.now(),
-          permissionMode,
+          permission,
+          // The migration notice is queued above; it's said once.
+          permissionMigratedFrom: undefined,
           // The thread the PTY actually runs: unchanged on a normal resume,
           // CLEARED when the thread pre-flight found nothing saved — so the next
           // restart doesn't retry a thread that can never resume.
@@ -1831,7 +1975,25 @@ export function killAttachment(
   reason: ExitReason = "user_killed",
 ): boolean {
   const managed = live.get(agentId);
-  if (!managed) return false;
+  if (!managed) {
+    // Mid-restart the agent is out of `live` while its old process exits. A
+    // kill then must WIN, not 409 and be undone by the respawn: record it and
+    // mark the agent stopped now; restartAgent sees it and doesn't respawn.
+    if (restartingAgents.has(agentId)) {
+      killedDuringRestart.add(agentId);
+      const updated = markExited(agentId, reason);
+      if (updated) {
+        emitAgentDelta({
+          type: "agent.exited",
+          id: agentId,
+          exitReason: reason,
+          version: updated.version,
+        });
+      }
+      return true;
+    }
+    return false;
+  }
   void stopAgentPty(agentId, managed.pty);
   // Sidecar daemon is a separate process — kill it alongside the PTY.
   void managed.sidecar?.dispose();
@@ -1931,12 +2093,17 @@ export function shutdownAllAttachments(): void {
 /** Re-spawn an existing agent's PTY (resume). Pulls template/system prompt
  *  from the persisted Agent record so the resumed PTY matches the original
  *  configuration. */
-async function respawnAgent(a: Agent): Promise<void> {
+async function respawnAgent(
+  a: Agent,
+  opts: { fromRestart?: boolean } = {},
+): Promise<void> {
   const tmpl = a.template ? getTemplate(a.template) : null;
   await spawnAgent({
+    fromRestart: opts.fromRestart,
     workingDirectory: a.workingDirectory,
     resumeAgentId: a.id,
     name: a.name,
+    permission: a.permission,
     permissionMode: a.permissionMode,
     appendSystemPrompt: tmpl?.systemPrompt,
     template: a.template,
@@ -1947,6 +2114,141 @@ async function respawnAgent(a: Agent): Promise<void> {
     // crash-net respawn (ADR-067), same as permissionMode above.
     envPreset: a.envPreset,
   });
+}
+
+/** Agents with a single-agent restart in flight (see restartAgent). */
+const restartingAgents = new Set<UUID>();
+/** Agents killed while their restart waited (see killAttachment). */
+const killedDuringRestart = new Set<UUID>();
+
+/**
+ * Restart ONE agent: stop its process (and sidecar daemon), WAIT for both to
+ * exit, then respawn it from its own record — the same resume path restart-all
+ * and boot use, so a Codex agent comes back in its thread and a Claude Code
+ * agent in its session.
+ *
+ * Server-side on purpose. The dashboard used to compose kill → attach, but
+ * killAttachment only SIGNALS the old process, so the attach could respawn
+ * while it still ran: two Codex daemons appending to one thread, or a
+ * `--resume` of a JSONL the old CLI was still writing. And every failure of
+ * that two-call dance was console-only in the UI — Restart "did nothing".
+ * Here each failure is a typed status the caller can show, and a respawn that
+ * fails leaves the agent visibly stopped (crashed), never a "running" zombie.
+ */
+export async function restartAgent(agentId: UUID): Promise<Agent> {
+  assertControlPlaneReady();
+  if (serverStopping) throw serverStoppingError();
+  if (restartInFlight) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      "A restart of all agents is in progress — try again when it finishes.",
+    );
+  }
+  const record = getAgent(agentId);
+  if (!record) {
+    throw new SpawnError("AGENT_NOT_FOUND", 404, `Agent ${agentId} not found`);
+  }
+  if (restartingAgents.has(agentId)) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      `${record.name} is already restarting.`,
+    );
+  }
+  restartingAgents.add(agentId);
+  try {
+    const managed = live.get(agentId);
+    if (managed) {
+      cancelPromptTracking(agentId);
+      cancelChannelServerCheck(agentId);
+      disposeCodexControl(agentId);
+      // Out of `live` BEFORE the exit fires, so the old PTY's onExit takes the
+      // stale-attachment return and doesn't mark the record exited mid-restart
+      // (the restart-all pattern).
+      live.delete(agentId);
+      const exits = [stopAgentPty(agentId, managed.pty)];
+      if (managed.sidecar) exits.push(managed.sidecar.dispose());
+      if (!(await awaitSidecarExits(exits))) {
+        console.warn(
+          `[runtime] restart ${record.name} (${agentId.slice(0, 8)}): old process still alive after SIGKILL — respawning anyway`,
+        );
+        // The case this restart exists to prevent (two processes on one
+        // conversation) — the operator must see it, not just the log.
+        pushSystemNotification(
+          agentId,
+          `${record.name}: its old process was still running after the restart tried to stop it; the new one started anyway. Check for a leftover ${record.provider} process.`,
+        );
+      }
+    }
+    if (killedDuringRestart.has(agentId)) {
+      throw new SpawnError(
+        "RESTART_IN_PROGRESS",
+        409,
+        `${record.name} was stopped while it restarted, so it wasn't started again.`,
+      );
+    }
+    if (serverStopping) throw serverStoppingError();
+    const current = getAgent(agentId);
+    if (!current) {
+      throw new SpawnError(
+        "AGENT_NOT_FOUND",
+        404,
+        `${record.name} was deleted while restarting`,
+      );
+    }
+    try {
+      await respawnAgent(current, { fromRestart: true });
+    } catch (err) {
+      // The server began stopping mid-respawn: leave the record "running" so
+      // the next boot resumes it (restart-all does the same) — not crashed.
+      if (
+        serverStopping ||
+        (err instanceof SpawnError && err.code === "SERVER_STOPPING")
+      ) {
+        throw err;
+      }
+      // Same zombie guard as restart-all: the old onExit didn't mark it exited.
+      // Only when it really ended up stopped do we SAY so, where it persists
+      // (the toast fades) — typed SpawnError or not (a vanished working
+      // directory is a typed 400). If something else attached it meanwhile,
+      // it's running and "it is stopped" would be false.
+      const updated = markCrashedUnlessLive(agentId, "restart");
+      if (updated) {
+        const reason = err instanceof Error ? err.message : String(err);
+        pushSystemNotification(
+          agentId,
+          `Restart of ${record.name} failed — it is stopped: ${reason}`,
+        );
+        emitAgentDelta({
+          type: "agent.exited",
+          id: agentId,
+          exitReason: "crashed",
+          version: updated.version,
+        });
+      }
+      throw err;
+    }
+    // A kill can also land DURING the respawn (spawnAgent awaits — e.g. a Codex
+    // daemon booting — before the agent re-enters `live`); the respawn's
+    // markRunning would then undo it. Re-check now that the new process IS in
+    // `live`, and stop it through the normal kill path: the kill always wins.
+    if (killedDuringRestart.has(agentId)) {
+      killAttachment(agentId, "user_killed");
+      throw new SpawnError(
+        "RESTART_IN_PROGRESS",
+        409,
+        `${record.name} was stopped while it restarted, so it wasn't started again.`,
+      );
+    }
+    console.info(
+      `[runtime] restarted ${record.name} (${agentId.slice(0, 8)}) [${record.provider}]`,
+    );
+    return getAgent(agentId) ?? current;
+  } finally {
+    restartingAgents.delete(agentId);
+    killedDuringRestart.delete(agentId);
+  }
 }
 
 /** How long a resumed PTY must stay alive before boot logs it as resumed. */
@@ -2093,6 +2395,13 @@ export async function restartAllAttachments(): Promise<{
   // A second restart-all while one is waiting on the first's exits would see
   // an empty `live` and "restart" nothing — or, once the first respawns, kill
   // what it just started. Refuse it.
+  if (restartingAgents.size > 0) {
+    throw new SpawnError(
+      "RESTART_IN_PROGRESS",
+      409,
+      "An agent restart is in progress — try again in a moment.",
+    );
+  }
   if (restartInFlight) {
     throw new SpawnError(
       "RESTART_IN_PROGRESS",

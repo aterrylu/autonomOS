@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { DEFAULT_PERMISSION_MODE } from "@autonomos/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import {
+  parsePermissionInput,
+  parseTemplatePermissions,
+} from "./agents/permissionInput.js";
 import {
   killAttachment,
   resolveAgentId,
@@ -161,6 +164,16 @@ function createMcpServer(): McpServer {
         // DEFAULT_PERMISSION_MODE here made a body-less resume overwrite a
         // `bypass` record with the fallback. See SpawnParams.
         const permissionMode = args.permissionMode;
+        const permissionInput = parsePermissionInput(
+          args.provider,
+          args.permission,
+        );
+        if (!permissionInput.ok) {
+          return {
+            content: [{ type: "text", text: permissionInput.error }],
+            isError: true,
+          };
+        }
 
         const result = await spawnAgent({
           workingDirectory: args.workingDirectory,
@@ -170,8 +183,10 @@ function createMcpServer(): McpServer {
           // (by agent id or providerSessionId) or adopts an external CC session.
           resumeSessionId: args.resumeSessionId,
           forkFromAgentId: args.forkFrom,
+          permission: permissionInput.permission,
           permissionMode,
           // Ranked BELOW the record on a resume — see SpawnParams.
+          templatePermissions: tmpl?.permissions,
           templatePermissionMode: tmpl?.permissionMode,
           appendSystemPrompt: systemPrompt,
           template: args.template,
@@ -413,12 +428,22 @@ function createMcpServer(): McpServer {
     TOOL_CREATE_TEMPLATE.description,
     createTemplateShape,
     async (args) => {
+      const permissions = parseTemplatePermissions(args.permissions);
+      if (!permissions.ok) {
+        return {
+          content: [{ type: "text", text: permissions.error }],
+          isError: true,
+        };
+      }
       try {
         saveTemplate(args.name, {
           role: args.role,
           description: args.description,
           systemPrompt: args.systemPrompt,
-          permissionMode: args.permissionMode ?? DEFAULT_PERMISSION_MODE,
+          // Undefined stays undefined: a template that names no permission
+          // uses the operator's per-runtime default (ADR-115), not `ask`.
+          permissionMode: args.permissionMode,
+          permissions: permissions.permissions,
           model: args.model,
         });
         if (args.capabilities) {
