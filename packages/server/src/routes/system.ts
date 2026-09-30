@@ -19,8 +19,10 @@
 
 import { type Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";
+import { authCookieName, LEGACY_AUTH_COOKIE } from "../authCookie.js";
 import type { InstallMode } from "../installInfo.js";
 import { resolveInstall } from "../installInfo.js";
+import { getServerPort } from "../serverState.js";
 import { listSnapshots, snapshotForVersion } from "../snapshots.js";
 import { getUpdateCheckState, runUpdateCheck } from "../updateCheck.js";
 import { readBundleVersion } from "../upgrade.js";
@@ -172,6 +174,21 @@ systemRouter.get("/upgrade", (c) => {
  * operator route already has (ADR-067's caveat); this guard closes every
  * agent-FACING path, not a determined forgery.
  */
+/** The dashboard's session cookie, looked up by the SAME name login sets
+ *  (per port — authCookie.ts), then the legacy shared name a browser signed
+ *  in before the rename still carries (the auth middleware reads both the
+ *  same way). A hard-coded "autonomos_token" here 403'd every in-app update
+ *  once #428 made the cookie per-port. */
+function dashboardCookie(c: Context): string | undefined {
+  let name = LEGACY_AUTH_COOKIE;
+  try {
+    name = authCookieName(getServerPort());
+  } catch {
+    // Not listening yet — no live request can arrive; keep the legacy name.
+  }
+  return getCookie(c, name) ?? getCookie(c, LEGACY_AUTH_COOKIE);
+}
+
 function operatorOnly(c: Context): Response | null {
   if (c.req.header("X-Agent-Token")) {
     return c.json(
@@ -179,7 +196,7 @@ function operatorOnly(c: Context): Response | null {
       403,
     );
   }
-  if (!getCookie(c, "autonomos_token")) {
+  if (!dashboardCookie(c)) {
     return c.json(
       {
         error:
