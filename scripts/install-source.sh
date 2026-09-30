@@ -128,17 +128,32 @@ EOF
 # (security audit V5): a tag is only a name, anyone with push access can put
 # one on an unreviewed commit, and this script checks it out and builds it.
 # Errors go to stderr; returns 64 for a malformed --ref, 1 otherwise.
+# The version a tag's own commit declares in packages/server/package.json
+# (empty if unreadable). A tag on an OLD main commit named v9.9.9 would
+# otherwise sort as the newest release forever (review of V5).
+tag_declared_version() {
+  git -C "$1" show "refs/tags/$2:packages/server/package.json" 2>/dev/null \
+    | sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
 pick_release_tag() {
   local clone_dir="$1" ref="$2" main="refs/remotes/origin/main"
   if ! git -C "$clone_dir" rev-parse --verify --quiet "$main" >/dev/null; then
     echo "Error: $clone_dir has no origin/main, so the release tag can't be" >&2
-    echo "  checked against it. Run: git -C \"$clone_dir\" fetch origin main" >&2
+    echo "  checked against it. Run: git -C \"$clone_dir\" fetch origin +refs/heads/main:refs/remotes/origin/main" >&2
     return 1
   fi
   if [[ -z "$ref" ]]; then
     # `|| true`: zero matches exits grep 1 → pipefail would kill the script
     # here, making the explanatory error below unreachable.
-    ref=$(git -C "$clone_dir" tag --list --merged "$main" 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+    # Newest first; the first tag whose commit agrees with its name wins.
+    local candidate
+    for candidate in $(git -C "$clone_dir" tag --list --merged "$main" 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV || true); do
+      if [[ "$(tag_declared_version "$clone_dir" "$candidate")" == "${candidate#v}" ]]; then
+        ref="$candidate"
+        break
+      fi
+    done
     [[ -n "$ref" ]] || { echo "Error: no vX.Y.Z release tags on origin/main." >&2; return 1; }
   else
     # A managed clone is pinned to release TAGS — that's the provenance story
@@ -158,6 +173,12 @@ pick_release_tag() {
     if ! git -C "$clone_dir" merge-base --is-ancestor "refs/tags/$ref" "$main"; then
       echo "Error: release tag $ref is not on origin/main, so it never went" >&2
       echo "  through review. Refusing to install it." >&2
+      return 1
+    fi
+    local declared
+    declared=$(tag_declared_version "$clone_dir" "$ref")
+    if [[ "$declared" != "${ref#v}" ]]; then
+      echo "Error: tag $ref is not a real release: its packages/server/package.json says ${declared:-nothing readable}." >&2
       return 1
     fi
   fi
@@ -215,7 +236,9 @@ if [[ -d "$CLONE_DIR/.git" ]]; then
     echo "Commit, stash, or discard them, then re-run." >&2
     exit 1
   fi
-  git -C "$CLONE_DIR" fetch --tags origin
+  # Explicit refspec: keeps origin/main current even on a --single-branch
+  # clone, where a plain fetch only writes FETCH_HEAD.
+  git -C "$CLONE_DIR" fetch --tags origin +refs/heads/main:refs/remotes/origin/main
 elif [[ -e "$CLONE_DIR" ]]; then
   echo "Error: $CLONE_DIR exists but is not a git clone." >&2
   exit 1

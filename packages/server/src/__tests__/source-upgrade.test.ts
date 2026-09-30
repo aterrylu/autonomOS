@@ -439,6 +439,71 @@ describe("release tags must be on main (audit V5)", () => {
     assert.ok(!existsSync(join(cloneDir, "OFFMAIN_CODE_RAN")));
   });
 
+  it("ignores a tag on an OLD main commit whose package.json doesn't match it (downgrade + freeze)", async () => {
+    // A collaborator tags the v0.1.0 commit (on main, so --merged accepts it)
+    // as v9.9.9. Sorted by name it would be "latest" forever, pinning every
+    // install to old code and blocking real upgrades.
+    const oldMain = git(originDir, "rev-parse", "v0.1.0");
+    tagRelease("0.2.0");
+    git(originDir, "tag", "v9.9.9", oldMain);
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      buildCommand: STUB_BUILD,
+    });
+    assert.deepEqual(result, {
+      status: "upgraded",
+      from: "0.1.0",
+      to: "0.2.0",
+      direction: "upgrade",
+    });
+  });
+
+  it("refuses a pin to a tag whose package.json version doesn't match it", async () => {
+    git(originDir, "tag", "v9.9.9", git(originDir, "rev-parse", "v0.1.0"));
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      targetVersion: "9.9.9",
+      buildCommand: STUB_BUILD,
+    });
+    assert.equal(result.status, "error");
+    assert.match(
+      result.status === "error" ? result.message : "",
+      /v9\.9\.9 .*package\.json says 0\.1\.0/,
+    );
+  });
+
+  it("works on a --single-branch clone (fetches origin/main itself)", async () => {
+    const single = join(root, "single");
+    git(
+      root,
+      "clone",
+      "--single-branch",
+      "--branch",
+      "v0.1.0",
+      originDir,
+      single,
+    );
+    git(single, "config", "user.email", "test@test");
+    git(single, "config", "user.name", "test");
+    tagRelease("0.2.0");
+    const result = await performSourceUpgrade({
+      repoRoot: single,
+      installInfo: { mode: "source", prefix: single },
+      currentVersion: "0.1.0",
+      buildCommand: STUB_BUILD,
+    });
+    assert.equal(
+      result.status,
+      "upgraded",
+      result.status === "error" ? result.message : "",
+    );
+    assert.equal(getVersionAt(single), "0.2.0");
+  });
+
   it("still accepts a tag on main after main moved on (the normal case)", async () => {
     tagRelease("0.2.0");
     // main advances past the tag; v0.2.0 is still an ancestor.

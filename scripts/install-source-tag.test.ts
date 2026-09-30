@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -35,7 +35,12 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function commitAndTag(tag: string): void {
-  writeFileSync(join(origin, "v.txt"), tag);
+  mkdirSync(join(origin, "packages/server"), { recursive: true });
+  writeFileSync(
+    join(origin, "packages/server/package.json"),
+    // Pretty-printed like the real file, which the script parses line-wise.
+    JSON.stringify({ name: "@autonomos/server", version: tag.slice(1) }, null, 2),
+  );
   git(origin, "add", "-A");
   git(origin, "commit", "-q", "-m", tag);
   git(origin, "tag", tag);
@@ -100,6 +105,19 @@ describe("install-source.sh pick_release_tag (audit V5)", () => {
     const r = pick("v0.2.0");
     assert.equal(r.status, 0, r.err);
     assert.equal(r.out, "v0.2.0");
+  });
+
+  it("ignores a tag on an old main commit whose version doesn't match it", () => {
+    const old = git(origin, "rev-parse", "v0.1.0");
+    commitAndTag("v0.2.0");
+    git(origin, "tag", "v9.9.9", old);
+    git(root, "clone", "-q", origin, clone);
+    const r = pick();
+    assert.equal(r.status, 0, r.err);
+    assert.equal(r.out, "v0.2.0");
+    const pinned = pick("9.9.9");
+    assert.notEqual(pinned.status, 0);
+    assert.match(pinned.err, /package\.json says 0\.1\.0/);
   });
 
   it("still rejects a non-tag --ref and a missing tag", () => {
