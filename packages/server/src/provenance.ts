@@ -279,6 +279,7 @@ function attestedSubjects(
  *  override (a mirror, a test fixture), and nothing else in the update sends
  *  a credential there. */
 const GITHUB_API = "https://api.github.com";
+const MAX_OUT_OF_LINE_BUNDLES = 10;
 
 async function fetchFromGitHub(
   apiBase: string,
@@ -314,24 +315,29 @@ async function fetchFromGitHub(
     const body = (await resp.json()) as {
       attestations?: { bundle?: unknown; bundle_url?: unknown }[];
     };
-    const bundles: unknown[] = [];
-    for (const a of body.attestations ?? []) {
-      if (a.bundle != null) {
-        bundles.push(a.bundle);
-      } else if (typeof a.bundle_url === "string") {
-        // Large bundles are stored out of line; fetch them (no token: the
-        // URL is pre-signed blob storage, not GitHub's API).
-        try {
-          const b = await fetch(a.bundle_url, {
-            signal: AbortSignal.timeout(15_000),
-          });
-          if (b.ok) bundles.push(await b.json());
-        } catch {
-          // One unreachable bundle is not tamper evidence; others may verify.
-        }
-      }
-    }
-    return { bundles };
+    const list = body.attestations ?? [];
+    const inline = list.flatMap((a) => (a.bundle != null ? [a.bundle] : []));
+    // Large bundles are stored out of line. Fetch them in parallel under ONE
+    // deadline, and only the first few: fetched one after another, a page of
+    // 100 could stall the update for 25 minutes. (No token: the URL is
+    // pre-signed blob storage, not GitHub's API. Only a writer to OUR repo
+    // can create attestations for it, and ours are stored inline.)
+    const deadline = AbortSignal.timeout(15_000);
+    const outOfLine = await Promise.all(
+      list
+        .filter((a) => a.bundle == null && typeof a.bundle_url === "string")
+        .slice(0, MAX_OUT_OF_LINE_BUNDLES)
+        .map(async (a) => {
+          try {
+            const b = await fetch(a.bundle_url as string, { signal: deadline });
+            return b.ok ? [(await b.json()) as unknown] : [];
+          } catch {
+            // One unreachable bundle is not tamper evidence; others may verify.
+            return [];
+          }
+        }),
+    );
+    return { bundles: [...inline, ...outOfLine.flat()] };
   } catch (err) {
     return {
       error: `couldn't reach GitHub's attestation service (${errText(err)})`,

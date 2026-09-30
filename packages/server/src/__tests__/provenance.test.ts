@@ -276,6 +276,41 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
     assert.deepEqual(r, { status: "verified" });
   });
 
+  it("out-of-line bundles are fetched in parallel and capped — a flood can't stall the update", async () => {
+    let blobs = 0;
+    server = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url?.startsWith("/blob")) {
+        blobs++;
+        // Each takes 400ms: one after another, 25 would take 10s.
+        setTimeout(() => res.end(JSON.stringify({ nonsense: true })), 400);
+        return;
+      }
+      const a = server?.address() as { port: number };
+      res.end(
+        JSON.stringify({
+          attestations: [
+            ...Array.from({ length: 25 }, (_, i) => ({
+              bundle: null,
+              bundle_url: `http://127.0.0.1:${a.port}/blob${i}`,
+            })),
+            ...ATT.attestations,
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((ok) => server?.listen(0, "127.0.0.1", ok));
+    const a = server.address() as { port: number };
+    const t0 = Date.now();
+    const r = await check({
+      apiBase: `http://127.0.0.1:${a.port}`,
+      deps: { trustedRoot: async () => ROOT },
+    });
+    assert.deepEqual(r, { status: "verified" });
+    assert.equal(blobs, 10);
+    assert.ok(Date.now() - t0 < 3_000, `took ${Date.now() - t0}ms`);
+  });
+
   it("never sends GITHUB_TOKEN to a non-GitHub API base (a mirror, a fixture)", async () => {
     let auth: string | undefined = "unset";
     server = createServer((req, res) => {

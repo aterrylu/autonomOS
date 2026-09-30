@@ -32,6 +32,8 @@
 - **Scope and limits:**
   - Source installs (`make prod`, a managed git clone) update from a git tag, not a release tarball, so this doesn't cover them; they rely on git.
   - Restore/rollback downloads nothing, so it needs no check.
+  - **A replaced tarball with no record at all warns on existing installs; it doesn't refuse.** A tarball swapped in by someone who can edit a release, with no attestation published for it, gets a 404 from GitHub for its digest. That counts as **missing**: an existing install warns loudly and proceeds, while a new install (`install.sh`) refuses. The record is keyed by digest, so this is the common shape of a replaced asset, not an edge case. **Open:** whether an authoritative 404 from GitHub for the real repo should refuse on existing installs too, keeping "missing" for network errors, 5xx, rate limits, mirrors and unsupported formats. Raised in PR #445 for Terry.
+  - Out-of-line bundles (`bundle_url`): at most 10 are fetched, in parallel, under one 15-second deadline, so a flood of attestations can't stall an update.
   - Bundle cost: +366 KB of JS (+71 KB gzipped), measured against main bb3a5576.
 - **Supersedes:** none. Extends ADR-105.
 - **Source:** Terry's integrity ask on 2026-09-25; decisions Q1–Q3 on 2026-09-30, relayed by TeamLead; the plan at `~/.claude/plans/update-provenance-verify.md`; the provenance PRs (1: verifier and upgrader, 2: `install.sh`).
