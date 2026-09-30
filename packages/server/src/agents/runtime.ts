@@ -66,6 +66,7 @@ import {
   chooseCodexEndpoint,
   codexReadyProbe,
   refusedSpawnNotice,
+  tcpAfterFailedUnixStart,
   tcpFallbackNotice,
   UnsafeCodexSocketError,
 } from "./codexSocket.js";
@@ -1513,7 +1514,18 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           // and the daemon is already disposed. That's a hostile state, so
           // refuse rather than hand the agent a TCP endpoint.
           if (err instanceof UnsafeCodexSocketError) refuse(err.message);
-          throw err;
+          // Unix was tried optimistically because the capability probe failed.
+          // Only a DEFINITE "unsupported" now allows TCP (a compat reason);
+          // anything else is a plain failed start, never a downgrade.
+          const tcpReason = await tcpAfterFailedUnixStart(choice, binary);
+          if (tcpReason) {
+            await useTcp(tcpReason);
+            const tcpSpec = buildSidecar(resolved);
+            if (!tcpSpec) throw err;
+            sidecar = await start(tcpSpec);
+          } else {
+            throw err;
+          }
         }
         // Recorded on disk so a server that dies without disposing it can
         // reap it on the next start; forgotten once it has really exited.

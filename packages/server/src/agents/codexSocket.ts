@@ -49,7 +49,15 @@ import { getConfigDir } from "../configDir.js";
 export const MAX_SOCKET_PATH_BYTES = 103;
 
 export type SidecarEndpointChoice =
-  | { kind: "unix"; endpoint: string; socketPath: string }
+  | {
+      kind: "unix";
+      endpoint: string;
+      socketPath: string;
+      /** "unknown" = the capability probe failed, and unix is being tried
+       *  optimistically: if the start fails, the caller re-probes and only a
+       *  definite "no" allows TCP (review of V4). */
+      support: UnixSupport;
+    }
   /** Compatibility fallback: loopback TCP, with a notice. */
   | { kind: "tcp"; reason: string }
   /** Hostile state: don't spawn this agent at all. */
@@ -335,14 +343,11 @@ export async function chooseCodexEndpoint(
         "the installed Codex doesn't support `app-server --listen unix://`; upgrade Codex",
     };
   }
-  if (support === "unknown") {
-    // Not cached: the next spawn asks again.
-    return {
-      kind: "tcp",
-      reason:
-        "couldn't check whether the installed Codex supports unix sockets (`codex app-server --help` failed or timed out); the next spawn will check again",
-    };
-  }
+  // "unknown" (the probe errored or timed out) is NOT a reason for TCP: another
+  // local user can make the probe slow by loading the machine, and TCP is the
+  // CX-01 endpoint. Try unix optimistically; the caller falls back only if the
+  // unix start fails AND a definite re-probe says unsupported. Slower under
+  // load, never weaker (review of V4).
   const socketPath = codexSocketPath(agentId, configDir);
   if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
     return {
@@ -376,7 +381,29 @@ export async function chooseCodexEndpoint(
     };
   }
   sweepStaleSockets(agentId, cxDir);
-  return { kind: "unix", endpoint: `unix://${socketPath}`, socketPath };
+  return {
+    kind: "unix",
+    endpoint: `unix://${socketPath}`,
+    socketPath,
+    support,
+  };
+}
+
+/**
+ * After a unix daemon failed to start: the TCP reason to fall back with, or
+ * null to fail the start as it is. Only a unix attempt made OPTIMISTICALLY
+ * (the probe had failed) can fall back, and only on a DEFINITE "unsupported"
+ * from a fresh probe: a failure that another user could provoke (a slow
+ * probe, a crashed start) must never become the TCP endpoint (review of V4).
+ */
+export async function tcpAfterFailedUnixStart(
+  choice: SidecarEndpointChoice,
+  binary: string,
+): Promise<string | null> {
+  if (choice.kind !== "unix" || choice.support !== "unknown") return null;
+  return (await codexSupportsUnixListen(binary)) === "no"
+    ? "the installed Codex doesn't support `app-server --listen unix://`; upgrade Codex"
+    : null;
 }
 
 /** The notice an operator sees when a Codex agent falls back to TCP. */

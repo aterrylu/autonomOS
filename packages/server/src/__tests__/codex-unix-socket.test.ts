@@ -22,6 +22,7 @@ import {
   codexReadyProbe,
   judgeDir,
   MAX_SOCKET_PATH_BYTES,
+  tcpAfterFailedUnixStart,
   verifyDaemonSocket,
 } from "../agents/codexSocket.js";
 import { startSidecarDaemon } from "../agents/sidecar.js";
@@ -244,20 +245,19 @@ describe("chooseCodexEndpoint: unix, compat TCP, or refuse", () => {
     assert.equal(isLink(theirs.socketPath), true, "B's entry untouched");
   });
 
-  it("a probe that FAILS isn't cached and says so, rather than claiming no support", async () => {
+  it("a probe that FAILS still gets unix (optimistic), never TCP, and isn't cached", async () => {
+    // Another local user can make the probe slow by loading the machine, so
+    // "couldn't check" must not mean TCP (the CX-01 endpoint).
     const bin = join(ROOT, `codex${n++}.sh`);
     writeFileSync(bin, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     // A whole-second mtime, set identically both times: the cache key is
-    // path@mtime, and a sub-ms mismatch would re-probe regardless of caching
-    // (which made an earlier version of this test pass vacuously).
+    // path@mtime, and a sub-ms mismatch would re-probe regardless of caching.
     const pinned = new Date(1_700_000_000_000);
     utimesSync(bin, pinned, pinned);
     const c = await chooseCodexEndpoint("a", bin, dir(), dir());
-    assert.equal(c.kind, "tcp");
-    assert.match(c.kind === "tcp" ? c.reason : "", /couldn't check/);
-    assert.doesNotMatch(c.kind === "tcp" ? c.reason : "", /doesn't support/);
-    // The binary recovers with the SAME mtime: only a probe that wasn't
-    // cached can notice.
+    assert.equal(c.kind, "unix");
+    assert.equal(c.kind === "unix" && c.support, "unknown");
+    // The binary recovers with the SAME mtime: only an uncached probe notices.
     writeFileSync(bin, `#!/bin/sh\necho "Supported values: unix://PATH"\n`, {
       mode: 0o755,
     });
@@ -267,9 +267,38 @@ describe("chooseCodexEndpoint: unix, compat TCP, or refuse", () => {
       pinned.getTime(),
       "precondition: same cache key",
     );
+    const again = await chooseCodexEndpoint("a", bin, dir(), dir());
+    assert.equal(again.kind === "unix" && again.support, "yes");
+  });
+
+  it("after a failed optimistic unix start: TCP only on a DEFINITE no", async () => {
+    const unknownChoice = {
+      kind: "unix" as const,
+      endpoint: "unix:///x",
+      socketPath: "/x",
+      support: "unknown" as const,
+    };
+    // Re-probe says definitely unsupported → the compat reason.
+    assert.match(
+      (await tcpAfterFailedUnixStart(unknownChoice, fakeCodex(false))) ?? "",
+      /doesn't support/,
+    );
+    // Re-probe fails again (e.g. still overloaded) → no downgrade.
+    const failing = join(ROOT, `codex${n++}.sh`);
+    writeFileSync(failing, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    assert.equal(await tcpAfterFailedUnixStart(unknownChoice, failing), null);
+    // Re-probe says supported → the failure wasn't about support: no downgrade.
     assert.equal(
-      (await chooseCodexEndpoint("a", bin, dir(), dir())).kind,
-      "unix",
+      await tcpAfterFailedUnixStart(unknownChoice, fakeCodex(true)),
+      null,
+    );
+    // A start that failed after a DEFINITE yes never falls back.
+    assert.equal(
+      await tcpAfterFailedUnixStart(
+        { ...unknownChoice, support: "yes" },
+        fakeCodex(false),
+      ),
+      null,
     );
   });
 
