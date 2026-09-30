@@ -52,8 +52,11 @@ let dir: string;
 /** The internal app as run.ts builds it, plus stand-ins for its neighbours. */
 function internalApp(): Hono {
   const app = new Hono();
-  app.post("/api/hooks/:id", (c) => c.json({ hook: c.req.param("id") }));
+  // The agent API is mounted FIRST here, the order where a wildcard middleware
+  // on it would intercept its neighbours. run.ts mounts /api/hooks first, which
+  // would hide that bug; the property must not depend on mount order.
   app.route("/api", createAgentApi());
+  app.post("/api/hooks/:id", (c) => c.json({ hook: c.req.param("id") }));
   app.get("/mcp", (c) => c.text("mcp"));
   return app;
 }
