@@ -631,8 +631,8 @@ class CodexController {
   /** Discover the agent's thread. It does not exist until the TUI has created
    *  it — observed on codex 0.144.6 to require a first turn, so an agent spawned
    *  without a starting prompt can sit here indefinitely even though its TUI
-   *  attached. The "(TUI not attached?)" hint in the drain log below is
-   *  therefore a guess, not a diagnosis. Poll — but never DROP the queue on timeout; the
+   *  attached. The drain log's hint below (TUI not attached, or the thread held
+   *  by another daemon) is therefore a guess, not a diagnosis. Poll — but never DROP the queue on timeout; the
    *  caller backs off and retries so messages aren't silently lost. */
   private async ensureThread(): Promise<string | null> {
     if (this.threadId) return this.threadId;
@@ -705,7 +705,11 @@ class CodexController {
         // here forever, and this log is the only thing that distinguishes that
         // from a healthy agent.
         log(
-          `${this.agentId.slice(0, 8)} no Codex thread yet (TUI not attached?) — ` +
+          // An EMPTY loaded list has two known causes: the --remote TUI hasn't
+          // attached, or the thread is held by another daemon (an orphan from
+          // a previous server — see sidecarRecords.ts).
+          `${this.agentId.slice(0, 8)} no Codex thread loaded on this daemon yet ` +
+            "(TUI not attached, or the thread is held by another Codex daemon?) — " +
             `${this.queue.length} queued, retrying`,
         );
         this.noteFailure("waiting for the Codex session to be ready");

@@ -29,6 +29,7 @@ import {
   snapshotResumableAgents,
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
+import { reapAllOrphanSidecars } from "./agents/sidecarRecords.js";
 import {
   describeTokenForLog,
   isPriorInstall,
@@ -868,7 +869,23 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // Now async (provider sidecar daemons start before each PTY). Start
     // the scheduler AFTER agents are up so agent:<name> targets resolve —
     // chain it off the resume promise rather than racing it.
-    void resumeActiveAgents(toResume)
+    //
+    // First, stop any sidecar daemon a previous server left running (it would
+    // keep its agent's thread loaded, so a resumed agent could never receive
+    // inbound). Awaited: no daemon may start beside an orphan. It covers agents
+    // that won't be resumed too. A failure is logged and never blocks resume.
+    void reapAllOrphanSidecars()
+      .then((reaped) => {
+        const stopped = reaped.filter((r) => r.outcome === "reaped");
+        if (stopped.length > 0)
+          console.warn(
+            `[startup] stopped ${stopped.length} orphaned sidecar daemon(s) from a previous server`,
+          );
+      })
+      .catch((err) =>
+        console.error("[startup] orphaned-daemon sweep failed:", err),
+      )
+      .then(() => resumeActiveAgents(toResume))
       .catch((err) =>
         console.error("[startup] resumeActiveAgents failed:", err),
       )
