@@ -1,4 +1,4 @@
-## ADR-127: Weak operator tokens: warn every boot, refuse only on new network installs, rotate in one command (V2b)
+## ADR-130: Weak operator tokens: warn every boot, refuse only on new network installs, rotate in one command (V2b)
 
 - **Date:** 2026-09-30
 - **Decided by:** SecurityFix-Auth@autonomOS (agent) implementing audit finding V2 part (b), which Terry approved for fixing within the standing invariant "upgrades never break auth". The plan was sent to TeamLead@autonomOS before building. The dashboard banner is held for Terry's design pick and ships separately. Changing the bind default is a separate proposal and is not in this decision.

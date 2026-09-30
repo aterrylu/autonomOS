@@ -178,7 +178,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Is this install new? Read BEFORE this boot writes anything. The markers
   // (agents/, templates/, settings.json) are written only past the token
   // check below, so a boot refused for a weak token leaves none behind and
-  // an identical re-run is refused again (V2b, ADR-127).
+  // an identical re-run is refused again (V2b, ADR-130).
   const priorInstall = isPriorInstall(getConfigDir());
 
   // Owner-only modes on what older builds created loose (V8), BEFORE the log
@@ -950,7 +950,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
 /**
  * Refuse a weak token on a NEW network-bound install; warn loudly on every
- * boot otherwise (V2b, ADR-127). Never prints the token.
+ * boot otherwise (V2b, ADR-130). Never prints the token.
  */
 function enforceTokenStrength(o: {
   token: string;
