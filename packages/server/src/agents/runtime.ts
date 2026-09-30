@@ -78,6 +78,12 @@ import {
   startSidecarDaemon,
 } from "./sidecar.js";
 import {
+  forgetSidecar,
+  readSidecarRecord,
+  reapOrphanSidecar,
+  recordSidecar,
+} from "./sidecarRecords.js";
+import {
   createStartupNoticeScanner,
   STARTUP_NOTICE_WINDOW_MS,
 } from "./startupNotices.js";
@@ -1422,6 +1428,17 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // retry). The daemon is bound to this PTY's lifecycle and disposed on exit.
   let sidecar: Sidecar | undefined;
   if (provider.buildSidecar) {
+    // A daemon a previous server left running still holds this agent's thread,
+    // and a new daemon can't load a held thread: stop it first (recorded pid,
+    // guarded by its command line). No-op when there's no record.
+    const reaped = await reapOrphanSidecar(agent.id);
+    if (reaped === "survived" || reaped === "unverified") {
+      const rec = readSidecarRecord(agent.id);
+      pushSystemNotification(
+        agent.id,
+        `An old Codex daemon for ${agent.name} from a previous server ${reaped === "survived" ? "couldn't be stopped" : "couldn't be checked, so it wasn't stopped"}${rec ? ` (pid ${rec.pid})` : ""}. While it runs, the agent may not receive messages: stop it, then restart the agent.`,
+      );
+    }
     const port = await pickFreePort();
     resolved.sidecarEndpoint = `ws://127.0.0.1:${port}`;
     const spec = provider.buildSidecar(resolved);
@@ -1438,6 +1455,18 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             readyTimeoutMs: spec.readyTimeoutMs,
           },
         );
+        // Recorded on disk so a server that dies without disposing it can
+        // reap it on the next start; forgotten once it has really exited.
+        const daemon = sidecar;
+        const pid = daemon.proc.pid;
+        if (pid !== undefined) {
+          recordSidecar(agent.id, {
+            pid,
+            endpoint: daemon.endpoint,
+            startedAt: Date.now(),
+          });
+          daemon.proc.once("exit", () => forgetSidecar(agent.id, pid));
+        }
       } catch (err) {
         // The daemon never came up — abort the spawn rather than launch a TUI
         // that will fail to connect. The agent record hasn't been inserted yet
