@@ -35,6 +35,11 @@ import {
   LEGACY_AUTH_COOKIE,
   signInLink,
 } from "./authCookie.js";
+import {
+  AuthFailureLimiter,
+  cappedLockoutWarn,
+  peerAddress,
+} from "./authRateLimit.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -383,12 +388,45 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     });
   }
 
+  // Failed-auth throttle for the public listener (V2, authRateLimit.ts). The
+  // internal socket is same-user only and is never throttled.
+  const authLimiter = new AuthFailureLimiter();
+  const warnLockout = cappedLockoutWarn();
+
+  /** 429 before any credential is evaluated, or null to go on. */
+  function throttled(c: Context, address: string): Response | null {
+    const v = authLimiter.check(address);
+    if (v.ok) return null;
+    const secs = Math.ceil(v.retryAfterMs / 1000);
+    c.header("Retry-After", String(secs));
+    return c.json(
+      {
+        error: `Too many failed sign-in attempts. Try again in ${secs}s.`,
+        code: "RATE_LIMITED",
+        retryAfterSec: secs,
+      },
+      429,
+    );
+  }
+
+  function recordFailures(address: string, presented: readonly string[]): void {
+    for (const value of presented) {
+      const lockMs = authLimiter.recordFailure(address, value);
+      if (lockMs > 0) warnLockout(address, lockMs);
+    }
+  }
+
   const authHandler = async (c: Context) => {
+    const address = peerAddress(c);
+    const refused = throttled(c, address);
+    if (refused) return refused;
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
+      if (token) recordFailures(address, [token]);
       return c.json({ error: "Invalid token" }, 401);
     }
+    authLimiter.recordSuccess(address);
     setSessionCookie(c, token);
     return c.json({ ok: true });
   };
@@ -411,8 +449,48 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       `[auth] a request on ${path.split("/").slice(0, 3).join("/")} authenticated with ?token= on the public listener — deprecated, removed next release. Use the session cookie or "Authorization: Bearer" (the token is not logged).`,
     );
   }
+  /**
+   * THE credential check: which credential (if any) authenticates this
+   * request, and every value it presented (for the failure throttle). A
+   * second credential kind (e.g. the per-agent token, V3) is added HERE, so
+   * the throttle covers it without further wiring.
+   */
+  function verifyCredential(
+    c: Context,
+    queryToken: "allowed" | "deprecated",
+  ): {
+    match: {
+      kind: "operator";
+      source: "cookie" | "legacy-cookie" | "bearer" | "query";
+      token: string;
+    } | null;
+    presented: string[];
+  } {
+    const candidates = tokenCandidates(c);
+    const presented = candidates.map((k) => k.token);
+    const hit = candidates.find((k) => safeEqual(k.token, AUTH_TOKEN));
+    if (hit) return { match: { kind: "operator", ...hit }, presented };
+    if (candidates.length === 0) {
+      const fromQuery = c.req.query("token");
+      if (fromQuery && queryToken === "deprecated")
+        warnPublicQueryTokenOnce(c.req.path);
+      if (fromQuery) {
+        presented.push(fromQuery);
+        if (safeEqual(fromQuery, AUTH_TOKEN))
+          return {
+            match: { kind: "operator", source: "query", token: fromQuery },
+            presented,
+          };
+      }
+    }
+    return { match: null, presented };
+  }
+
   const makeRequireAuth =
-    (queryToken: "allowed" | "deprecated"): MiddlewareHandler =>
+    (
+      queryToken: "allowed" | "deprecated",
+      throttle: boolean,
+    ): MiddlewareHandler =>
     async (c, next) => {
       // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
       // moved to the internal socket, so nothing on the public listener needs to
@@ -433,21 +511,27 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // The login endpoint itself — a browser cannot present the cookie it is
       // asking for. Token verification happens inside the handler.
       if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
-      const candidates = tokenCandidates(c);
-      const match = candidates.find((k) => safeEqual(k.token, AUTH_TOKEN));
+      const address = throttle ? peerAddress(c) : "";
+      if (throttle) {
+        const refused = throttled(c, address);
+        if (refused) return refused;
+      }
+      const { match, presented } = verifyCredential(c, queryToken);
       if (match) {
+        // No recordSuccess here: on a shared address (reverse proxy, NAT) the
+        // operator's ordinary traffic would reset an attacker's backoff on
+        // every request (SecurityAudit, #452). Only an explicit sign-in
+        // (POST /api/auth) clears the record; otherwise it decays IDLE_MS after
+        // its last failure.
         // Signed in on the legacy shared cookie: move this browser onto the
         // per-port one, so an older instance on the same host rewriting the
         // shared cookie can no longer log it out here.
         if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
         return next();
       }
-      if (candidates.length === 0) {
-        const fromQuery = c.req.query("token");
-        if (fromQuery && queryToken === "deprecated")
-          warnPublicQueryTokenOnce(c.req.path);
-        if (fromQuery && safeEqual(fromQuery, AUTH_TOKEN)) return next();
-      }
+      // A request that presented nothing (the dashboard probing before sign-in)
+      // made no guess and isn't counted.
+      if (throttle) recordFailures(address, presented);
       return c.json(
         {
           error:
@@ -457,9 +541,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       );
     };
   /** Internal socket (/mcp, /ws/gateway): ?token= stays accepted. */
-  const requireAuth = makeRequireAuth("allowed");
+  const requireAuth = makeRequireAuth("allowed", false);
   /** Public listener: ?token= still works this release, with a warning. */
-  const requireAuthPublic = makeRequireAuth("deprecated");
+  const requireAuthPublic = makeRequireAuth("deprecated", true);
 
   // DEV/PERF ONLY — perf harness mode (set by perf/run-l2.sh). Mounts
   // /api/perf AND drops auth on the PUBLIC listener so Playwright needn't

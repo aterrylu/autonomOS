@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AuthState,
   LINK_LOGIN_ERROR,
   LINK_LOGIN_NO_COOKIE,
+  LINK_LOGIN_RATE_LIMITED,
   LINK_LOGIN_UNREACHABLE,
   type LinkLoginResult,
   LoginPage,
@@ -205,6 +212,18 @@ describe("settleLinkLogin", () => {
     }
   });
 
+  it("a throttled exchange (429) says so, not 'bad link' or 'unreachable'", async () => {
+    await expect(
+      settleLinkLogin(
+        link({ ok: false, status: 429 }),
+        probe("unauthenticated"),
+      ),
+    ).resolves.toEqual({
+      state: "unauthenticated",
+      error: LINK_LOGIN_RATE_LIMITED,
+    });
+  });
+
   it("an empty #token= (local 400) reads as a refused link", async () => {
     await expect(
       settleLinkLogin(
@@ -258,5 +277,36 @@ describe("LoginPage", () => {
   it("shows no alert by default", () => {
     render(<LoginPage />);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a throttled paste (429) shows the server's wait, not 'Server error'", async () => {
+    const msg = "Too many failed sign-in attempts. Try again in 12s.";
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: msg,
+            code: "RATE_LIMITED",
+            retryAfterSec: 12,
+          }),
+          { status: 429, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      render(<LoginPage />);
+      fireEvent.change(screen.getByPlaceholderText("Paste token here..."), {
+        target: { value: "wrong" },
+      });
+      fireEvent.submit(
+        screen.getByPlaceholderText("Paste token here...").closest("form")!,
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("alert").textContent).toBe(msg),
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
