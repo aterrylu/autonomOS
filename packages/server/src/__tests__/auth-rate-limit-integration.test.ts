@@ -99,8 +99,13 @@ describe("failed-auth throttle on the real server", {
     // …and the lock is short at this point (1s, doubling from there).
     await sleep(1100);
     assert.equal((await bearer(a.base, a.s.token)).status, 200, "then gets in");
-    // A success clears the address: a fresh allowance.
-    assert.equal((await bearer(a.base, "after-success")).status, 401);
+    // A success clears the address: a whole fresh allowance, none refused.
+    for (let i = 0; i < FREE_FAILURES; i++)
+      assert.equal(
+        (await bearer(a.base, `after-success-${i}`)).status,
+        401,
+        `fresh guess ${i}`,
+      );
   });
 
   it("POST /api/auth and WebSocket upgrades are throttled too", async () => {
