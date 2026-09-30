@@ -127,6 +127,20 @@ describe("AuthFailureLimiter: bounded memory", () => {
     assert.equal(l.size(), MAX_ADDRESSES);
   });
 
+  it("decays from the last FAILURE, even while the address keeps making requests (#452)", () => {
+    const c = clock();
+    const l = new AuthFailureLimiter(c.now);
+    guess(l, "a", FREE_FAILURES);
+    // The operator's dashboard keeps polling from the same address: each
+    // request is checked, and none may keep the failure record alive.
+    for (let i = 0; i < 20; i++) {
+      c.advance(60_000);
+      assert.deepEqual(l.check("a"), { ok: true });
+    }
+    // 20 minutes after the last failure: forgotten, a fresh allowance.
+    assert.equal(guess(l, "a", FREE_FAILURES, 500), 0);
+  });
+
   it("forgets an idle, unlocked address", () => {
     const c = clock();
     const l = new AuthFailureLimiter(c.now);

@@ -46,7 +46,10 @@ export const MAX_SEEN = 32;
 interface AddressRecord {
   failures: number;
   lockedUntil: number;
-  lastSeen: number;
+  /** When this address last sent a NEW wrong value. Decay (IDLE_MS) and LRU
+   *  order are measured from here, not from any request: an address's own
+   *  successful traffic must not keep its failure record alive (nox, #452). */
+  lastFailure: number;
   /** Hashes of the wrong credentials this address already sent. */
   seen: string[];
 }
@@ -93,6 +96,10 @@ export class AuthFailureLimiter {
     rec.seen.push(h);
     if (rec.seen.length > MAX_SEEN) rec.seen.shift();
     rec.failures += 1;
+    rec.lastFailure = t;
+    // Re-insert: Map iteration order is the LRU order (by last failure).
+    this.records.delete(address);
+    this.records.set(address, rec);
     this.globalFailures.push(t);
     if (rec.failures <= FREE_FAILURES) return 0;
     const lock = Math.min(
@@ -116,14 +123,10 @@ export class AuthFailureLimiter {
   private get(address: string, t: number): AddressRecord | undefined {
     const rec = this.records.get(address);
     if (!rec) return undefined;
-    if (t - rec.lastSeen > IDLE_MS && rec.lockedUntil <= t) {
+    if (t - rec.lastFailure > IDLE_MS && rec.lockedUntil <= t) {
       this.records.delete(address);
       return undefined;
     }
-    // Re-insert: Map iteration order is the LRU order.
-    rec.lastSeen = t;
-    this.records.delete(address);
-    this.records.set(address, rec);
     return rec;
   }
 
@@ -136,7 +139,7 @@ export class AuthFailureLimiter {
     const rec: AddressRecord = {
       failures: 0,
       lockedUntil: 0,
-      lastSeen: t,
+      lastFailure: t,
       seen: [],
     };
     this.records.set(address, rec);

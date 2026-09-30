@@ -519,7 +519,8 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // No recordSuccess here: on a shared address (reverse proxy, NAT) the
         // operator's ordinary traffic would reset an attacker's backoff on
         // every request (SecurityAudit, #452). Only an explicit sign-in
-        // (POST /api/auth) clears the record; otherwise it decays (IDLE_MS).
+        // (POST /api/auth) clears the record; otherwise it decays IDLE_MS after
+        // its last failure.
         // Signed in on the legacy shared cookie: move this browser onto the
         // per-port one, so an older instance on the same host rewriting the
         // shared cookie can no longer log it out here.
