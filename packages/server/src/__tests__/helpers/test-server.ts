@@ -193,10 +193,14 @@ export async function bootServer(opts?: {
   /** Runs on the config dir before the server starts, e.g. to plant files an
    *  older build left behind. */
   prepareConfigDir?: (configDir: string) => void;
+  /** Put the throwaway HOME here instead of `<configDir>/home` (the caller
+   *  deletes it). Needed when the config dir must NOT be an ancestor of HOME,
+   *  as on a real install. */
+  homeDir?: string;
 }): Promise<BootedServer> {
   const configDir =
     opts?.reuseConfigDir ?? mkdtempSync(join(tmpdir(), "autonomos-integ-"));
-  const fakeHome = join(configDir, "home");
+  const fakeHome = opts?.homeDir ?? join(configDir, "home");
   const fakeClaudeDir = opts?.reuseConfigDir
     ? join(fakeHome, ".claude")
     : seedFakeHome(fakeHome);

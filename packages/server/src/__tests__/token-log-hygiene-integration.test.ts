@@ -3,11 +3,13 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -39,6 +41,10 @@ describe("V8: an old install's token stays out of its logs", {
 }, () => {
   let server: BootedServer;
   let logPath: string;
+  // HOME outside the config dir, like a real install: a config dir that is an
+  // ANCESTOR of HOME is protected from chmod (by design) and would never be
+  // tightened.
+  const home = mkdtempSync(join(tmpdir(), "v8-integ-home-"));
 
   const savedMax = process.env.AUTONOMOS_LOG_MAX_BYTES;
   before(async () => {
@@ -48,6 +54,7 @@ describe("V8: an old install's token stays out of its logs", {
     process.env.AUTONOMOS_LOG_MAX_BYTES = "512";
     server = await bootServer({
       token: SHORT,
+      homeDir: home,
       extraArgs: ["--print-url"],
       prepareConfigDir: (dir) => {
         mkdirSync(join(dir, "logs"), { recursive: true });
@@ -69,6 +76,7 @@ describe("V8: an old install's token stays out of its logs", {
     boundedTeardown("token-log-hygiene", async () => {
       await server?.kill();
       if (server) rmSync(server.configDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }),
   );
 
