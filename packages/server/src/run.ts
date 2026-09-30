@@ -29,7 +29,14 @@ import {
   snapshotResumableAgents,
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
-import { describeTokenForLog, resolveAuthToken } from "./auth.js";
+import {
+  describeTokenForLog,
+  isPriorInstall,
+  isWeakToken,
+  resolveAuthTokenWithSource,
+  type TokenSource,
+  weakTokenPolicy,
+} from "./auth.js";
 import {
   authCookieName,
   LEGACY_AUTH_COOKIE,
@@ -82,6 +89,7 @@ import {
   setAuthToken,
   setInternalSocketPath,
   setServerPort,
+  setTokenWarning,
 } from "./serverState.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
@@ -166,6 +174,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     printUsage();
     process.exit(0);
   }
+
+  // Decided BEFORE this boot creates anything in the config dir (logs/,
+  // templates/, agents/): is this install new? A new install may be refused a
+  // weak token; an existing one never is (V2b, ADR-126).
+  const priorInstall = isPriorInstall(getConfigDir());
 
   // Tee stdout/stderr into a rotating $configDir/logs/autonomos.log as early as
   // possible, so everything below is captured under OS-native supervision (the
@@ -324,7 +337,18 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
 
-  const AUTH_TOKEN = resolveAuthToken();
+  const { token: AUTH_TOKEN, source: tokenSource } =
+    resolveAuthTokenWithSource();
+  enforceTokenStrength({
+    token: AUTH_TOKEN,
+    source: tokenSource,
+    priorInstall,
+    networkBind: !isLoopbackBind(
+      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+    ),
+    allowWeak:
+      cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
+  });
   // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
   // the in-process token without round-tripping through env or disk.
   setAuthToken(AUTH_TOKEN);
@@ -917,4 +941,54 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // The server is now running. Return a promise that never resolves —
   // shutdown happens via signal → process.exit() above.
   return new Promise<void>(() => {});
+}
+
+/**
+ * Refuse a weak token on a NEW network-bound install; warn loudly on every
+ * boot otherwise (V2b, ADR-126). Never prints the token.
+ */
+function enforceTokenStrength(o: {
+  token: string;
+  source: TokenSource;
+  priorInstall: boolean;
+  networkBind: boolean;
+  allowWeak: boolean;
+}): void {
+  const weak = isWeakToken(o.token);
+  const policy = weakTokenPolicy({ weak, ...o });
+  const fromEnv = o.source === "env";
+  const where = fromEnv
+    ? "the AUTONOMOS_TOKEN environment variable (e.g. a .env file)"
+    : "the token file";
+  if (policy === "refuse") {
+    console.error(
+      [
+        `✖ Refusing to start: the operator token from ${where} is only ${o.token.length} characters (or too repetitive), and this new install listens on the network.`,
+        "  Anyone who can reach the port could guess it.",
+        fromEnv
+          ? "  Remove AUTONOMOS_TOKEN to let autonomOS generate a strong token, or set a 32+ character random one."
+          : "  Delete the token file to let autonomOS generate a strong one, or write a 32+ character random token.",
+        "  To listen on this machine only, pass --host=127.0.0.1. To start anyway, pass --allow-weak-token.",
+      ].join("\n"),
+    );
+    process.exit(2);
+  }
+  if (policy === "warn") {
+    console.warn(
+      [
+        `⚠ SECURITY: the operator token from ${where} is weak (${o.token.length} characters).${o.networkBind ? " This server is reachable on the network." : ""}`,
+        "  Run `autonomos token rotate` on this machine to replace it with a strong one.",
+        ...(fromEnv
+          ? [
+              "  The environment variable wins over the token file, so rotate also takes AUTONOMOS_TOKEN out of the .env it finds. Remove it anywhere else it is set.",
+            ]
+          : []),
+      ].join("\n"),
+    );
+    setTokenWarning({
+      length: o.token.length,
+      source: fromEnv ? "env" : "file",
+      networkBind: o.networkBind,
+    });
+  }
 }

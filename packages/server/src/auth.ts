@@ -39,17 +39,60 @@ export function describeTokenForLog(token: string): string {
   return `(hidden, ${token.length} chars)`;
 }
 
+/** Where the operator token came from. */
+export type TokenSource = "env" | "file" | "legacy-file" | "generated";
+
+/**
+ * A token this short (or this repetitive) can be guessed online, even through
+ * the V2 throttle: 300 guesses/min globally takes a 4-char hex token in hours.
+ * Every token autonomOS generates is 64 hex chars; weak ones come only from an
+ * operator-set AUTONOMOS_TOKEN or a hand-written token file.
+ */
+export const MIN_TOKEN_LENGTH = 32;
+export function isWeakToken(token: string): boolean {
+  return token.length < MIN_TOKEN_LENGTH || new Set(token).size < 8;
+}
+
+/**
+ * Had this config dir been used by a server before THIS boot? Call before the
+ * boot creates anything in it (logs/, templates/, agents/). The token file is
+ * deliberately not a marker: an operator can hand-write one before the first
+ * boot, and that is still a new install.
+ */
+export function isPriorInstall(configDir: string): boolean {
+  return ["agents", "templates", "logs", "settings.json"].some((m) =>
+    existsSync(join(configDir, m)),
+  );
+}
+
+/**
+ * What to do about the token at boot (V2b, ADR-126). Existing installs are
+ * never refused: upgrades never break auth. They get a warning on every boot
+ * and a dashboard banner. A NEW install that would put a weak token on a
+ * network bind refuses to start, unless the operator explicitly opts in.
+ */
+export function weakTokenPolicy(o: {
+  weak: boolean;
+  priorInstall: boolean;
+  networkBind: boolean;
+  allowWeak: boolean;
+}): "ok" | "warn" | "refuse" {
+  if (!o.weak) return "ok";
+  if (!o.priorInstall && o.networkBind && !o.allowWeak) return "refuse";
+  return "warn";
+}
+
 export function resolveAuthToken(): string {
+  return resolveAuthTokenWithSource().token;
+}
+
+export function resolveAuthTokenWithSource(): {
+  token: string;
+  source: TokenSource;
+} {
   // 1. Env var takes precedence
   const envToken = process.env.AUTONOMOS_TOKEN?.trim();
-  if (envToken) {
-    if (envToken.length < 8) {
-      console.warn(
-        `AUTONOMOS_TOKEN is only ${envToken.length} chars — consider using a longer token.`,
-      );
-    }
-    return envToken;
-  }
+  if (envToken) return { token: envToken, source: "env" };
 
   // 2. Per-config-dir token (when CONFIG_DIR != default). Isolated
   //    profiles get isolated tokens. When CONFIG_DIR IS the default, this
@@ -60,7 +103,7 @@ export function resolveAuthToken(): string {
   try {
     if (existsSync(configToken)) {
       const fileToken = readFileSync(configToken, "utf-8").trim();
-      if (fileToken) return fileToken;
+      if (fileToken) return { token: fileToken, source: "file" };
     }
   } catch (err) {
     console.warn(
@@ -76,7 +119,7 @@ export function resolveAuthToken(): string {
   if (configDir !== DEFAULT_TOKEN_DIR && existsSync(DEFAULT_TOKEN_FILE)) {
     try {
       const fileToken = readFileSync(DEFAULT_TOKEN_FILE, "utf-8").trim();
-      if (fileToken) return fileToken;
+      if (fileToken) return { token: fileToken, source: "legacy-file" };
     } catch {
       // Ignore — fall through to generate.
     }
@@ -95,5 +138,5 @@ export function resolveAuthToken(): string {
       `Failed to write auth token to ${configToken}: ${err instanceof Error ? err.message : err}. Using ephemeral token for this session.`,
     );
   }
-  return token;
+  return { token, source: "generated" };
 }

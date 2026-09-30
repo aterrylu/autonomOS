@@ -7,12 +7,15 @@
 //                          Default: all interfaces — see run.ts:resolveBindHost.
 //   --print-url            On listen, print a sign-in link
 //                          (http://host:port/#token=…) to the terminal only
+//   --allow-weak-token     Let a NEW install start with a weak token on a
+//                          network bind (env AUTONOMOS_ALLOW_WEAK_TOKEN=1)
 //   --help                 Print usage and exit 0
 
 export type CliArgs = {
   port: number | undefined;
   host: string | undefined;
   printUrl: boolean;
+  allowWeakToken: boolean;
   help: boolean;
 };
 
@@ -34,6 +37,12 @@ Options:
   --print-url     After startup, print a sign-in link
                   (http://host:port/#token=…) — open it to sign in to the
                   dashboard. Printed to the terminal only, never the log file.
+  --allow-weak-token
+                  Let a NEW install start with an operator token under 32
+                  characters on a network bind (env AUTONOMOS_ALLOW_WEAK_TOKEN=1).
+                  Without it, such a first start is refused. Existing installs
+                  are never refused, only warned. \`autonomos token rotate\`
+                  replaces a weak token.
   --help          Print this message and exit
 `;
 
@@ -42,6 +51,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     port: undefined,
     host: undefined,
     printUrl: false,
+    allowWeakToken: false,
     help: false,
   };
 
@@ -53,6 +63,10 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     }
     if (arg === "--print-url") {
       args.printUrl = true;
+      continue;
+    }
+    if (arg === "--allow-weak-token") {
+      args.allowWeakToken = true;
       continue;
     }
     if (arg.startsWith("--port=")) {
