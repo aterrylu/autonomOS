@@ -12,6 +12,7 @@
 import type { GatewayWsMessage } from "@autonomos/core";
 import type { UpgradeWebSocket, WSContext } from "hono/ws";
 import { verifyAgentToken } from "../agentCredentials.js";
+import { MAX_GATEWAY_FRAME_BYTES } from "../gateway/deliveryTimings.js";
 import { parseGatewayFrame } from "../gateway/frames.js";
 import {
   getAgentList,
@@ -21,11 +22,66 @@ import {
   unregisterSessionClient,
 } from "../gateway/router.js";
 
+/** A client-supplied value for a log line: quoted (so a newline can't forge a
+ *  line) and capped (so it can't flood one). */
+function logField(value: string, max = 64): string {
+  return value.length <= max
+    ? JSON.stringify(value)
+    : `${JSON.stringify(value.slice(0, max))}…(+${value.length - max} chars)`;
+}
+
+/**
+ * Cap the size of frames /ws/gateway accepts. @hono/node-ws builds its
+ * WebSocketServer with ws's 100 MiB default and no way to pass options, but it
+ * returns the server, and ws reads `options.maxPayload` when each upgrade
+ * completes, so setting it here applies to every connection after. An
+ * over-limit frame closes that socket with 1009; the channel server checks the
+ * same limit before sending, so a normal agent gets a clear error instead.
+ */
+export function limitGatewayFrames(wss: {
+  options: { maxPayload?: number };
+}): void {
+  wss.options.maxPayload = MAX_GATEWAY_FRAME_BYTES;
+}
+
+/** Malformed-frame warnings a socket may log: a small burst, then one per
+ *  refill interval, with the rest counted and reported. Every line is already
+ *  bounded; this bounds how many a single client can produce. */
+const WARN_BURST = 5;
+const WARN_REFILL_MS = 12_000;
+
 export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((_c) => {
     // Non-null only after a token-verified register — which is also exactly
     // the condition for unregistering on the way out.
     let sessionId: string | null = null;
+
+    // Per-socket warning budget (token bucket) and the count it withheld.
+    let warnTokens = WARN_BURST;
+    let lastRefill = Date.now();
+    let suppressed = 0;
+    const who = () =>
+      `session=${sessionId ? logField(sessionId.slice(0, 8)) : "unregistered"}`;
+    /** Warn within budget; otherwise count it. A later allowed line (or the
+     *  close) reports how many were withheld. */
+    const warnLimited = (line: string): void => {
+      const now = Date.now();
+      const refill = Math.floor((now - lastRefill) / WARN_REFILL_MS);
+      if (refill > 0) {
+        warnTokens = Math.min(WARN_BURST, warnTokens + refill);
+        lastRefill = now;
+      }
+      if (warnTokens === 0) {
+        suppressed++;
+        return;
+      }
+      warnTokens--;
+      const tail = suppressed
+        ? ` (suppressed ${suppressed} more malformed frame(s) since the last warning)`
+        : "";
+      suppressed = 0;
+      console.warn(`${line}${tail}`);
+    };
 
     /** Drop a frame that failed validation. Logs the reason only, never the
      *  raw frame: a register frame carries the agent's credential. */
@@ -33,18 +89,17 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
       bad: Extract<ReturnType<typeof parseGatewayFrame>, { ok: false }>,
       ws: WSContext,
     ): void => {
-      const who = `session=${sessionId ? JSON.stringify(sessionId.slice(0, 8)) : "unregistered"}`;
       if (bad.reason === "unknown message type") {
         // A version-skewed client (e.g. a channel server from a build whose
         // protocol has since changed). Drop, but say so, or the drift is
         // invisible until someone wonders why nothing happens.
-        console.warn(
-          `[gateway-ws] ignoring unknown message type ${JSON.stringify(bad.type)} (${who})`,
+        warnLimited(
+          `[gateway-ws] ignoring unknown message type ${JSON.stringify(bad.type)} (${who()})`,
         );
         return;
       }
-      console.warn(
-        `[gateway-ws] dropped a malformed frame: ${bad.reason} (${who})`,
+      warnLimited(
+        `[gateway-ws] dropped a malformed frame: ${bad.reason} (${who()})`,
       );
       if (bad.type === "register") {
         // Nothing a malformed register says can be trusted, and resending the
@@ -92,7 +147,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           // token, so verifyAgentToken returns false.
           if (!verifyAgentToken(msg.sessionId, msg.agentToken)) {
             console.warn(
-              `[gateway] rejected register for ${msg.sessionId.slice(0, 8)} — ` +
+              `[gateway] rejected register for ${logField(msg.sessionId)} — ` +
                 "missing or invalid per-agent token",
             );
             try {
@@ -160,10 +215,10 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             console.error(
-              `[gateway] routing from ${sessionId.slice(0, 8)} to "${msg.to}" threw:`,
+              `[gateway] routing from ${logField(sessionId.slice(0, 8))} to ${logField(msg.to)} threw:`,
               err,
             );
-            error = `Message to "${msg.to}" was NOT delivered — the gateway failed while routing it (${detail}).`;
+            error = `Message to ${logField(msg.to, 200)} was NOT delivered — the gateway failed while routing it (${detail}).`;
           }
           const result: GatewayWsMessage = {
             type: "send_result",
@@ -207,14 +262,16 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
               : new TextDecoder().decode(event.data as ArrayBuffer);
           await handleFrame(raw, ws);
         } catch (err) {
-          console.error(
-            `[gateway-ws] frame handler failed (session=${sessionId?.slice(0, 8) ?? "unregistered"}):`,
-            err,
-          );
+          console.error(`[gateway-ws] frame handler failed (${who()}):`, err);
         }
       },
 
       onClose(_event, ws) {
+        if (suppressed) {
+          console.warn(
+            `[gateway-ws] suppressed ${suppressed} more malformed frame(s) from ${who()} before it closed`,
+          );
+        }
         if (sessionId) unregisterSessionClient(ws);
       },
 
