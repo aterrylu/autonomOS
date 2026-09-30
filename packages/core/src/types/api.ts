@@ -134,7 +134,7 @@ export interface MaskedSettings {
     from: string;
     to: string;
     neverAsks: boolean;
-    source: "dashboard" | "out-of-band";
+    source: "api" | "out-of-band";
   }>;
 }
 

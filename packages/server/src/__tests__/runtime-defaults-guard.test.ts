@@ -8,7 +8,14 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
@@ -92,11 +99,11 @@ describe("a never-asks default needs an explicit confirm", () => {
     assert.equal(n.length, 1);
     assert.match(
       n[0],
-      /Gemini CLI's default permission changed: default → yolo\. New agents on it never ask/,
+      /Gemini CLI's default permission changed through the settings API: default → yolo\. New agents on it never ask/,
     );
     const log = (await get()).runtimeDefaultsLog ?? [];
     assert.equal(log.at(-1)?.to, "yolo");
-    assert.equal(log.at(-1)?.source, "dashboard");
+    assert.equal(log.at(-1)?.source, "api");
     assert.equal(log.at(-1)?.neverAsks, true);
   });
 
@@ -122,8 +129,95 @@ describe("a never-asks default needs an explicit confirm", () => {
     await put({ runtimeDefaults: { "claude-code": "acceptEdits" } });
     assert.match(
       notices()[0] ?? "",
-      /Claude Code's default permission changed: manual → acceptEdits\.$/,
+      /Claude Code's default permission changed through the settings API: manual → acceptEdits\.$/,
     );
+  });
+});
+
+describe("widening a default that already never asks still needs the confirm", () => {
+  it("never · read-only → never · danger-full-access is refused without it", async () => {
+    await get();
+    assert.equal(
+      (
+        await put({
+          runtimeDefaults: {
+            codex: "approval_policy=never sandbox_mode=read-only",
+          },
+          confirmNeverAsks: true,
+        })
+      ).status,
+      200,
+    );
+    const r = await put({
+      runtimeDefaults: {
+        codex: "approval_policy=never sandbox_mode=danger-full-access",
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.code, "CONFIRM_NEVER_ASKS");
+    // …while narrowing it back doesn't.
+    assert.equal(
+      (
+        await put({
+          runtimeDefaults: {
+            codex: "approval_policy=never sandbox_mode=read-only",
+          },
+        })
+      ).status,
+      200,
+    );
+  });
+});
+
+describe("the watcher never fails its callers, and never baselines silently", () => {
+  const seenFile = () => join(CFG, "runtime-defaults-seen.json");
+
+  it("a malformed seen-file (defaults: null) is reported, set aside, and settings still load", async () => {
+    writeFileSync(seenFile(), JSON.stringify({ defaults: null, log: [] }));
+    const res = await app.request("/api/settings");
+    assert.equal(res.status, 200);
+    assert.match(
+      notices()[0] ?? "",
+      /Couldn't read the last-seen default permissions \(it isn't in the expected shape\)/,
+    );
+    assert.ok(
+      readdirSync(CFG).some((f) =>
+        f.startsWith("runtime-defaults-seen.json.corrupt-"),
+      ),
+      "the bad file is kept aside, not overwritten",
+    );
+    // …and a PUT still saves and reports.
+    const r = await put({ runtimeDefaults: { "claude-code": "plan" } });
+    assert.equal(r.status, 200);
+  });
+
+  it("corrupt JSON is reported, not treated as a first run", async () => {
+    writeFileSync(seenFile(), "{not json");
+    await get();
+    assert.match(
+      notices()[0] ?? "",
+      /Couldn't read the last-seen default permissions/,
+    );
+  });
+
+  it("a first run on a default that ALREADY never asks says so", async () => {
+    writeFileSync(
+      join(CFG, "settings.json"),
+      JSON.stringify({
+        runtimeDefaults: { "gemini-cli": { "approval-mode": "yolo" } },
+      }),
+    );
+    await get();
+    assert.match(
+      notices()[0] ?? "",
+      /Default permissions that never ask before acting: Gemini CLI \(yolo\)/,
+    );
+    assert.ok(existsSync(seenFile()));
+  });
+
+  it("a quiet first run (nothing never-asks) stays quiet", async () => {
+    await get();
+    assert.deepEqual(notices(), []);
   });
 });
 

@@ -33,6 +33,7 @@ const workerTemplate: AgentTemplate = {
 let createSession: ReturnType<typeof vi.fn>;
 /** What GET /api/settings serves — the operator's per-runtime defaults. */
 let runtimeDefaults: Record<string, unknown>;
+let settingsDown = false;
 
 const caps = {
   messaging: { inbound: true, outbound: true },
@@ -44,6 +45,7 @@ const caps = {
 beforeEach(() => {
   createSession = vi.fn(() => Promise.resolve());
   runtimeDefaults = {};
+  settingsDown = false;
 
   useStore.setState({
     projects: [],
@@ -85,6 +87,10 @@ beforeEach(() => {
         return body({ dispatcher: dispatcherTemplate, worker: workerTemplate });
       }
       if (typeof url === "string" && url.includes("/api/settings")) {
+        if (settingsDown)
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "down" }), { status: 500 }),
+          );
         return body({ runtimeDefaults });
       }
       if (typeof url === "string" && url.includes("/api/env-presets")) {
@@ -205,6 +211,25 @@ describe("CreateAgentPanel", () => {
     expect(
       within(picker).queryByText("Never asks before acting."),
     ).not.toBeInTheDocument();
+  });
+
+  it("claims nothing when your default can't be loaded (the server may spawn something that never asks)", async () => {
+    settingsDown = true;
+    const user = userEvent.setup();
+    render(<CreateAgentPanel />);
+    await user.click(await screen.findByText("None"));
+    const picker = screen.getByTestId("permission-picker");
+    await waitFor(() =>
+      expect(within(picker).getByTestId("default-unknown").textContent).toMatch(
+        /your Claude Code default \(couldn't load it/,
+      ),
+    );
+    expect(picker.querySelector("[data-permission-chip]")).toBeNull();
+    expect(
+      within(picker)
+        .getAllByRole("button")
+        .filter((b) => b.getAttribute("aria-pressed") === "true"),
+    ).toHaveLength(0);
   });
 
   it("a value picked here is sent in the runtime's own values", async () => {

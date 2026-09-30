@@ -9,6 +9,7 @@
 import {
   type AgentTemplate,
   completePermission,
+  DEFAULT_RUNTIME_VALUES,
   formatPermission,
   type MaskedSettings,
   neverAsks,
@@ -98,6 +99,7 @@ export function RuntimeAxisFields({
   variant = "select",
   defaults,
   idPrefix,
+  noSelection,
 }: {
   permission: RuntimePermission;
   onChange: (next: RuntimePermission) => void;
@@ -105,6 +107,8 @@ export function RuntimeAxisFields({
   variant?: "select" | "cards";
   defaults?: RuntimePermission;
   idPrefix?: string;
+  /** Cards only: mark nothing as chosen (the value isn't known yet). */
+  noSelection?: boolean;
 }) {
   const { runtime, values } = permission;
   const tone = neverAsksTone(page);
@@ -156,12 +160,14 @@ export function RuntimeAxisFields({
             </legend>
             <div className="flex flex-wrap gap-2">
               {axis.values.map((v) => {
-                const on = values[axis.key] === v.value;
-                const never = neverAsks(
-                  completePermission(runtime, {
-                    ...values,
-                    [axis.key]: v.value,
-                  }),
+                const on = !noSelection && values[axis.key] === v.value;
+                // Amber marks the value that CAUSES "never asks": picking it
+                // never asks, while this axis's built-in default wouldn't.
+                const never = causesNeverAsks(
+                  runtime,
+                  values,
+                  axis.key,
+                  v.value,
                 );
                 return (
                   <button
@@ -195,7 +201,7 @@ export function RuntimeAxisFields({
                     </span>
                     <span
                       className="text-[10px] leading-snug"
-                      style={{ color: never && on ? tone.fg : page.statusFg }}
+                      style={{ color: never ? tone.fg : page.statusFg }}
                     >
                       {v.description}
                     </span>
@@ -208,6 +214,21 @@ export function RuntimeAxisFields({
       })}
     </div>
   );
+}
+
+/** Whether `value` on `axis` is what makes `values` never ask. */
+export function causesNeverAsks(
+  runtime: Provider,
+  values: RuntimePermission["values"],
+  axis: string,
+  value: string,
+): boolean {
+  const withValue = completePermission(runtime, { ...values, [axis]: value });
+  const withDefault = completePermission(runtime, {
+    ...values,
+    [axis]: DEFAULT_RUNTIME_VALUES[runtime][axis],
+  });
+  return neverAsks(withValue) && !neverAsks(withDefault);
 }
 
 /**
@@ -343,21 +364,66 @@ export function operatorDefault(
   return defaults?.[runtime] ?? completePermission(runtime);
 }
 
-/** The operator's per-runtime defaults, read once from the server. Undefined
- *  until loaded (or if the read fails) — callers then show the built-in. */
-export function useRuntimeDefaults():
-  | MaskedSettings["runtimeDefaults"]
-  | undefined {
-  const [defaults, setDefaults] = useState<MaskedSettings["runtimeDefaults"]>();
+/**
+ * The operator's per-runtime defaults as this page knows them. Callers must
+ * never present the built-in as "your default" while the real one is unknown:
+ * the server spawns with the REAL one, which may never ask.
+ */
+export type RuntimeDefaultsState =
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | { state: "ok"; defaults: MaskedSettings["runtimeDefaults"] };
+
+/** The operator's default for `runtime`, or undefined while it's unknown. */
+export function knownDefault(
+  d: RuntimeDefaultsState,
+  runtime: Provider,
+): RuntimePermission | undefined {
+  return d.state === "ok" ? operatorDefault(d.defaults, runtime) : undefined;
+}
+
+/** Why the default is unknown, for display ("loading…" / the error). */
+export function unknownDefaultText(d: RuntimeDefaultsState): string {
+  return d.state === "error"
+    ? `couldn't load it: ${d.message}`
+    : d.state === "loading"
+      ? "loading…"
+      : "";
+}
+
+/** Read from the server, and re-read whenever the page regains focus — a
+ *  default changed in Settings (or elsewhere) reaches an open panel. */
+export function useRuntimeDefaults(): RuntimeDefaultsState {
+  const [state, setState] = useState<RuntimeDefaultsState>({
+    state: "loading",
+  });
   useEffect(() => {
     let live = true;
-    settingsApi
-      .get()
-      .then((s) => live && setDefaults(s.runtimeDefaults))
-      .catch(() => {});
+    const load = () =>
+      settingsApi
+        .get({ fresh: true })
+        .then(
+          (s) => live && setState({ state: "ok", defaults: s.runtimeDefaults }),
+        )
+        .catch(
+          (err) =>
+            live &&
+            setState({
+              state: "error",
+              message: err instanceof Error ? err.message : "unknown error",
+            }),
+        );
+    void load();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    window.addEventListener("focus", load);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       live = false;
+      window.removeEventListener("focus", load);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
-  return defaults;
+  return state;
 }

@@ -12,12 +12,19 @@ import { TemplatesPanel } from "./TemplatesPanel";
 // mock both at the module seam (the store slices it used to read are gone).
 // The operator's per-runtime defaults (GET /api/settings), per test.
 let runtimeDefaults: Record<string, unknown> = {};
+/** Set to make GET /api/settings fail. */
+let settingsError: Error | null = null;
 vi.mock("../api/config", () => ({
   templatesApi: {
     save: vi.fn(async () => ({ ok: true, message: "" })),
     remove: vi.fn(async () => ({ ok: true })),
   },
-  settingsApi: { get: vi.fn(async () => ({ runtimeDefaults })) },
+  settingsApi: {
+    get: vi.fn(async () => {
+      if (settingsError) throw settingsError;
+      return { runtimeDefaults };
+    }),
+  },
 }));
 // getSnapshot must return a REFERENCE-STABLE object or useSyncExternalStore
 // re-renders forever ("maximum update depth exceeded").
@@ -82,6 +89,7 @@ const pinRow = (scope: HTMLElement, runtime: string) =>
 beforeEach(() => {
   saveTemplate.mockClear();
   runtimeDefaults = {};
+  settingsError = null;
   seedPoll({ "feature-worker": bypassTemplate, reviewer: planTemplate });
   useStore.setState({ theme: "midnight", sessions: [] });
 });
@@ -118,7 +126,7 @@ describe("TemplatesPanel", () => {
     render(<TemplatesPanel />);
     const gemini = pinRow(card("Scout"), "gemini-cli");
     expect(
-      within(gemini).getByText("follows your default"),
+      await within(gemini).findByText("follows your default"),
     ).toBeInTheDocument();
     expect(
       within(gemini).queryByRole("button", { name: "Use default" }),
@@ -252,5 +260,53 @@ describe("TemplatesPanel", () => {
     );
     await waitFor(() => expect(saveTemplate).toHaveBeenCalledTimes(1));
     expect(within(worker).queryByTestId("confirm-use-default")).toBeNull();
+  });
+
+  it("when your default can't be loaded, 'Use default' still asks", async () => {
+    // With no known default, the built-in must not stand in for it: the real
+    // one could be bypassPermissions.
+    settingsError = new Error("HTTP 500");
+    seedPoll({ scout: pinnedTemplate });
+    const user = userEvent.setup();
+    render(<TemplatesPanel />);
+    await waitFor(() =>
+      expect(
+        within(pinRow(card("Scout"), "gemini-cli")).getByText(
+          /follows your default \(couldn't load it: HTTP 500\)/,
+        ),
+      ).toBeInTheDocument(),
+    );
+    const claude = pinRow(card("Scout"), "claude-code");
+    await user.click(
+      within(claude).getByRole("button", { name: "Use default" }),
+    );
+    const confirm = within(claude).getByTestId("confirm-use-default");
+    expect(confirm.textContent).toMatch(/isn't known here/);
+    expect(saveTemplate).not.toHaveBeenCalled();
+  });
+
+  it("a pin that no longer parses is shown as ignored and survives an unrelated save", async () => {
+    seedPoll({
+      scout: {
+        ...pinnedTemplate,
+        permissions: {
+          ...pinnedTemplate.permissions,
+          "gemini-cli": { "approval-mode": "turbo" },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<TemplatesPanel />);
+    expect(
+      within(pinRow(card("Scout"), "gemini-cli")).getByTestId("invalid-pin")
+        .textContent,
+    ).toContain("approval-mode=turbo");
+
+    await user.click(screen.getByText("Scout"));
+    await user.click(await screen.findByRole("button", { name: /save/i }));
+    await waitFor(() => expect(saveTemplate).toHaveBeenCalled());
+    expect(saveTemplate.mock.calls[0][1].permissions?.["gemini-cli"]).toEqual({
+      "approval-mode": "turbo",
+    });
   });
 });

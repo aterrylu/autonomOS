@@ -1,15 +1,16 @@
 import {
   type MaskedSettings,
+  neverAsks,
   PERMISSION_RUNTIMES,
   type Provider,
   parseRuntimePermission,
   type RuntimePermission,
+  widerAxes,
 } from "@autonomos/core";
 import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
 import {
-  neverAsks,
   noteRuntimeDefaults,
   runtimeDefaultsLog,
 } from "../runtimeDefaultsWatch.js";
@@ -143,9 +144,8 @@ settingsRouter.put("/", async (c) => {
       next[runtime] = { ...parsed.permission.values };
     }
     // A default under which new agents NEVER ask before acting must be
-    // confirmed explicitly (the dashboard's confirm dialog sends it). Only a
-    // WIDENING needs it: a runtime already on a never-asks default can be
-    // re-saved without re-confirming.
+    // confirmed explicitly (the dashboard's confirm dialog sends it) whenever
+    // the change widens anything. Re-saving it, or narrowing it, doesn't.
     const widened = (Object.keys(body.runtimeDefaults) as Provider[]).filter(
       (r) => {
         const after = runtimeDefaultPermission(r, {
@@ -153,7 +153,10 @@ settingsRouter.put("/", async (c) => {
           runtimeDefaults: next,
         });
         const before = runtimeDefaultPermission(r, current);
-        return neverAsks(after) && !neverAsks(before);
+        // Anything that ends in "never asks" and lets agents do MORE than
+        // before — the crossing itself, or widening an already never-asks
+        // default (e.g. never · read-only → never · danger-full-access).
+        return neverAsks(after) && widerAxes(before, after).length > 0;
       },
     );
     if (widened.length > 0 && body.confirmNeverAsks !== true) {
@@ -172,13 +175,16 @@ settingsRouter.put("/", async (c) => {
   let updated: AppSettings;
   try {
     updated = updateSettings(partial);
-    if (partial.runtimeDefaults !== undefined)
-      noteRuntimeDefaults(updated, "dashboard");
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Failed to save settings:", message);
     return c.json({ error: "Failed to save settings" }, 500);
   }
+
+  // After the save, outside its try: the file is written either way, and the
+  // watcher never throws (it reports its own failures).
+  if (partial.runtimeDefaults !== undefined)
+    noteRuntimeDefaults(updated, "api");
 
   // Invalidate usage cache so a credential change takes effect immediately.
   if (

@@ -1,7 +1,8 @@
-import type {
-  Provider,
-  ProviderInfo,
-  RuntimePermission,
+import {
+  completePermission,
+  type Provider,
+  type ProviderInfo,
+  type RuntimePermission,
 } from "@autonomos/core";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -10,13 +11,14 @@ import { presetsPoll, templatesPoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { THEMES, useStore } from "../store";
 import {
-  operatorDefault,
+  knownDefault,
   PERMISSION_RUNTIMES,
   PermissionChip,
   PermissionNotes,
   RUNTIME_NAMES,
   RuntimeAxisFields,
   templatePin,
+  unknownDefaultText,
   useRuntimeDefaults,
 } from "./RuntimePermission";
 
@@ -290,10 +292,11 @@ export function CreateAgentPanel() {
                 selectedProvider as Provider,
               )}
               templateName={selectedTemplate}
-              defaultPermission={operatorDefault(
+              defaultPermission={knownDefault(
                 runtimeDefaults,
                 selectedProvider as Provider,
               )}
+              defaultUnknown={unknownDefaultText(runtimeDefaults)}
               onPick={(p) => setPicked((cur) => ({ ...cur, [p.runtime]: p }))}
               page={page}
             />
@@ -428,6 +431,7 @@ function PermissionPicker({
   pin,
   templateName,
   defaultPermission,
+  defaultUnknown,
   onPick,
   page,
 }: {
@@ -435,7 +439,10 @@ function PermissionPicker({
   picked: RuntimePermission | undefined;
   pin: RuntimePermission | undefined;
   templateName: string | null;
-  defaultPermission: RuntimePermission;
+  /** Undefined while the operator's default is unknown (loading / failed):
+   *  then nothing is claimed — the server spawns with the REAL default. */
+  defaultPermission: RuntimePermission | undefined;
+  defaultUnknown: string;
   onPick: (p: RuntimePermission) => void;
   page: { bg: string; fg: string; border: string; statusFg: string };
 }) {
@@ -448,7 +455,8 @@ function PermissionPicker({
   return (
     <div className="space-y-3" data-testid="permission-picker">
       <RuntimeAxisFields
-        permission={shown}
+        permission={shown ?? completePermission(runtime)}
+        noSelection={!shown}
         onChange={onPick}
         page={page}
         variant="cards"
@@ -457,14 +465,24 @@ function PermissionPicker({
       />
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span style={{ color: page.statusFg }}>Will run as</span>
-        <PermissionChip permission={shown} page={page} />
-        <span className="text-[10px]" style={{ color: page.statusFg }}>
-          {from}
-        </span>
+        {shown ? (
+          <>
+            <PermissionChip permission={shown} page={page} />
+            <span className="text-[10px]" style={{ color: page.statusFg }}>
+              {from}
+            </span>
+          </>
+        ) : (
+          <span data-testid="default-unknown" style={{ color: page.fg }}>
+            your {RUNTIME_NAMES[runtime]} default ({defaultUnknown})
+          </span>
+        )}
       </div>
-      <div className="max-w-xl">
-        <PermissionNotes permission={shown} page={page} />
-      </div>
+      {shown && (
+        <div className="max-w-xl">
+          <PermissionNotes permission={shown} page={page} />
+        </div>
+      )}
     </div>
   );
 }

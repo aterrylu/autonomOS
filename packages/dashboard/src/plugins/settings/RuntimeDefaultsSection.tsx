@@ -14,6 +14,7 @@ import {
   type Provider,
   type ProviderInfo,
   type RuntimePermission,
+  widerAxes,
 } from "@autonomos/core";
 import { useEffect, useState } from "react";
 import { settingsApi } from "../../api/config";
@@ -44,6 +45,7 @@ export function RuntimeDefaultsSection({
   page: PageTheme;
 }) {
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
+  const [providersError, setProvidersError] = useState("");
   const [confirm, setConfirm] = useState<RuntimePermission | null>(null);
   const [error, setError] = useState("");
   const tone = neverAsksTone(page);
@@ -53,7 +55,12 @@ export function RuntimeDefaultsSection({
     providersApi
       .list()
       .then(setProviders)
-      .catch(() => setProviders([]));
+      .catch((err) => {
+        // Still show (and allow editing) every runtime's default — just
+        // without knowing which CLIs are installed.
+        setProvidersError(err instanceof Error ? err.message : "unknown error");
+        setProviders([]);
+      });
   }, []);
 
   const current = (r: Provider) =>
@@ -85,16 +92,35 @@ export function RuntimeDefaultsSection({
   }
 
   function change(next: RuntimePermission) {
-    if (neverAsks(next) && !neverAsks(current(next.runtime))) {
+    // The server's rule: ends in "never asks" AND widens something.
+    if (neverAsks(next) && widerAxes(current(next.runtime), next).length > 0) {
       setConfirm(next);
       return;
     }
     void save(next, false);
   }
 
-  const installed = (providers ?? []).filter(
-    (p) => p.installed && PERMISSION_RUNTIMES.includes(p.name as Provider),
-  );
+  const installed: Array<ProviderInfo | { name: Provider }> = providersError
+    ? PERMISSION_RUNTIMES.map((name) => ({ name }))
+    : (providers ?? []).filter(
+        (p) => p.installed && PERMISSION_RUNTIMES.includes(p.name as Provider),
+      );
+
+  if (settings === null)
+    return (
+      <div className="space-y-1" data-testid="runtime-defaults">
+        <div
+          className="text-[10px] font-medium uppercase tracking-wide"
+          style={labelStyle}
+        >
+          Runtimes
+        </div>
+        <div className="text-[10px]" style={{ color: tone.fg }}>
+          Couldn't load your runtime defaults, so they aren't shown. Reopen
+          Settings to retry.
+        </div>
+      </div>
+    );
   const log = [...(settings?.runtimeDefaultsLog ?? [])]
     .reverse()
     .slice(0, LOG_SHOWN);
@@ -116,6 +142,12 @@ export function RuntimeDefaultsSection({
       </div>
 
       {providers === null && <div style={labelStyle}>Loading…</div>}
+      {providersError && (
+        <div className="text-[10px]" style={{ color: tone.fg }}>
+          Couldn't list the installed CLIs ({providersError}), so every runtime
+          is shown.
+        </div>
+      )}
 
       {installed.map((p) => {
         const r = p.name as Provider;
@@ -130,7 +162,10 @@ export function RuntimeDefaultsSection({
           >
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-xs font-medium">{RUNTIME_NAMES[r]}</span>
-              <RuntimeCheckLine info={p} page={page} />
+              <RuntimeCheckLine
+                info={"installed" in p ? p : undefined}
+                page={page}
+              />
             </div>
             <RuntimeAxisFields
               permission={pending ?? value}
