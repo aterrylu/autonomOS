@@ -21,7 +21,15 @@ export interface ShutdownSteps {
    * of the one the server already got. Only a repeat after it means "now".
    */
   repeatGraceMs?: number;
+  /**
+   * Where uncaught errors are reported (default: `process`). Injected by tests
+   * so they never install handlers on the real process.
+   */
+  processEvents?: Pick<NodeJS.EventEmitter, "on">;
 }
+
+/** Errors logged in full during shutdown; later ones are only counted. */
+const MAX_LOGGED_SHUTDOWN_ERRORS = 5;
 
 export function createShutdownHandler(steps: ShutdownSteps): () => void {
   const repeatGraceMs = steps.repeatGraceMs ?? 1_000;
@@ -31,6 +39,31 @@ export function createShutdownHandler(steps: ShutdownSteps): () => void {
     if (exited) return;
     exited = true;
     steps.exitProcess();
+  };
+  // Once shutdown has started, an uncaught error must not end the process
+  // early: the teardown's SIGTERM/SIGKILL stages and the sidecar daemons'
+  // second SIGTERM are timers in THIS process, and the exit is already coming
+  // (bounded) from awaitDaemons. Measured: a log write to a closed pipe
+  // (`server | tee`, tee killed by the same Ctrl-C) raised an uncaught EPIPE
+  // right after the first shutdown log line and killed the server before any
+  // of them fired. Armed first, before anything in the handler can throw.
+  let swallowed = 0;
+  const survive = (err: unknown): void => {
+    swallowed += 1;
+    if (swallowed > MAX_LOGGED_SHUTDOWN_ERRORS) return; // may be the log itself failing
+    try {
+      console.error(
+        `[shutdown] uncaught error during shutdown — continuing so agents are still stopped:`,
+        err,
+      );
+    } catch {
+      // Logging is best effort here; the stages must still run.
+    }
+  };
+  const armGuard = (): void => {
+    const events = steps.processEvents ?? process;
+    events.on("uncaughtException", survive);
+    events.on("unhandledRejection", survive);
   };
   const attempt = (label: string, step: () => void): void => {
     try {
@@ -49,8 +82,11 @@ export function createShutdownHandler(steps: ShutdownSteps): () => void {
       return;
     }
     startedAt = Date.now();
-    console.log(
-      "Shutting down — killing PTYs (agents will resume on next start)...",
+    armGuard();
+    attempt("logging", () =>
+      console.log(
+        "Shutting down — killing PTYs (agents will resume on next start)...",
+      ),
     );
     // A throw in either step must not strand the process: log it and still
     // wait for whatever daemons were signalled, then exit.
