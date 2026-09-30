@@ -356,7 +356,19 @@ export function useCanvasView({
     el.addEventListener("gesturestart", gStart);
     el.addEventListener("gesturechange", gChange);
     el.addEventListener("keydown", key);
+    // The viewport is overflow-hidden, but focus() and scrollIntoView still
+    // scroll it natively — which would shift the chart out from under the
+    // view (nox, #430). The view is the only way this canvas moves: undo any
+    // native scroll at once.
+    const unscroll = () => {
+      if (el.scrollLeft || el.scrollTop) {
+        el.scrollLeft = 0;
+        el.scrollTop = 0;
+      }
+    };
+    el.addEventListener("scroll", unscroll);
     return () => {
+      el.removeEventListener("scroll", unscroll);
       cancelFrame(anim.current);
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);

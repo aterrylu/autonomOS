@@ -342,6 +342,37 @@ describe("zoom (pick 1A: scroll pans, pinch / ⌘ zooms)", () => {
   });
 });
 
+describe("the viewport never moves on its own (nox, #430)", () => {
+  it("a native scroll (focus() / scrollIntoView on an overflow-hidden box) is undone at once", async () => {
+    await mount(() => bigFleet());
+    const before = view();
+    const vp = viewport();
+    vp.scrollLeft = 240;
+    vp.scrollTop = 60;
+    act(() => {
+      vp.dispatchEvent(new Event("scroll"));
+    });
+    expect(vp.scrollLeft).toBe(0);
+    expect(vp.scrollTop).toBe(0);
+    expect(view()).toEqual(before);
+  });
+
+  it("keyboard focus reaching an off-screen card pans the canvas to it", async () => {
+    await mount(() => bigFleet());
+    const before = view();
+    act(() => {
+      (card("W15") as HTMLElement).focus();
+    });
+    expect(view().x).toBeLessThan(before.x);
+    expect(view().k).toBe(before.k);
+  });
+
+  it("touch gestures belong to the canvas (touch-action: none), not the browser", async () => {
+    await mount(() => bigFleet());
+    expect(viewport().className).toContain("touch-none");
+  });
+});
+
 describe("the map and following the selection", () => {
   it("clicking the map moves the view there", async () => {
     await mount(bigFleet);

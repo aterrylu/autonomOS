@@ -560,7 +560,7 @@ function OrgCanvas({
       requestAnimationFrame(() =>
         document
           .querySelector<HTMLElement>(`[data-org-card="${CSS.escape(to)}"]`)
-          ?.focus(),
+          ?.focus({ preventScroll: true }),
       );
     },
     [flat, layout, onSelect, view],
@@ -575,7 +575,16 @@ function OrgCanvas({
       // work; the cards stay the tab stops.
       tabIndex={-1}
       aria-label="Org chart canvas. Drag empty space to pan; F fits, 0 is 100%, plus and minus zoom."
-      className="org-viewport relative min-h-0 flex-1 overflow-hidden outline-none"
+      className="org-viewport relative min-h-0 flex-1 touch-none overflow-hidden outline-none"
+      // Keyboard focus reaching an off-screen card (Tab, arrows) pans the
+      // canvas to it — the viewport never scrolls natively.
+      onFocusCapture={(e) => {
+        const id = (e.target as HTMLElement).closest<HTMLElement>(
+          "[data-org-card]",
+        )?.dataset.orgCard;
+        const p = id ? layout.pos.get(id) : undefined;
+        if (p) view.reveal({ x: p.x, y: p.y, w: CARD_W, h: CARD_H });
+      }}
       data-org-viewport
     >
       {zoomSlot &&
