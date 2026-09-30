@@ -54,13 +54,16 @@ export function isWeakToken(token: string): boolean {
 }
 
 /**
- * Had this config dir been used by a server before THIS boot? Call before the
- * boot creates anything in it (logs/, templates/, agents/). The token file is
- * deliberately not a marker: an operator can hand-write one before the first
+ * Had a server fully started from this config dir before? Only markers a boot
+ * writes AFTER the token check count: `templates/` (seeded every boot),
+ * `agents/` and `settings.json`. NOT `logs/`: logging starts before the check,
+ * so a boot refused for a weak token creates it, and counting it would make
+ * the second identical attempt "existing" (SecurityAudit, V2b pre-review).
+ * Not the token file either: an operator can hand-write one before the first
  * boot, and that is still a new install.
  */
 export function isPriorInstall(configDir: string): boolean {
-  return ["agents", "templates", "logs", "settings.json"].some((m) =>
+  return ["agents", "templates", "settings.json"].some((m) =>
     existsSync(join(configDir, m)),
   );
 }

@@ -175,18 +175,19 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     process.exit(0);
   }
 
-  // Decided BEFORE this boot creates anything in the config dir (logs/,
-  // templates/, agents/): is this install new? A new install may be refused a
-  // weak token; an existing one never is (V2b, ADR-127).
+  // Is this install new? Read BEFORE this boot writes anything. The markers
+  // (agents/, templates/, settings.json) are written only past the token
+  // check below, so a boot refused for a weak token leaves none behind and
+  // an identical re-run is refused again (V2b, ADR-127).
   const priorInstall = isPriorInstall(getConfigDir());
 
+  // Owner-only modes on what older builds created loose (V8), BEFORE the log
+  // file is opened. Only removes group/other bits: never breaks auth.
+  const tightened = tightenConfigDirModes();
   // Tee stdout/stderr into a rotating $configDir/logs/autonomos.log as early as
   // possible, so everything below is captured under OS-native supervision (the
   // supervisor's own stdout goes to /dev/null — see service-templates.ts). Best
   // effort: a logging failure never blocks startup.
-  // Owner-only modes on what older builds created loose (V8), BEFORE the log
-  // file is opened. Only removes group/other bits: never breaks auth.
-  const tightened = tightenConfigDirModes();
   initFileLogging();
   if (tightened.length > 0) {
     console.warn(
@@ -197,6 +198,22 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // one-shot $configDir/pty-input-log.on exists. After file logging so its
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
+
+  // The operator token, and whether it's strong enough to start with. Decided
+  // here: after logging (so a refusal lands in the log a supervised install
+  // has) and before anything writes an install marker (templates just below).
+  const { token: AUTH_TOKEN, source: tokenSource } =
+    resolveAuthTokenWithSource();
+  enforceTokenStrength({
+    token: AUTH_TOKEN,
+    source: tokenSource,
+    priorInstall,
+    networkBind: !isLoopbackBind(
+      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+    ),
+    allowWeak:
+      cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
+  });
 
   // Seed default templates on fresh install
   seedDefaultTemplates();
@@ -337,18 +354,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
 
-  const { token: AUTH_TOKEN, source: tokenSource } =
-    resolveAuthTokenWithSource();
-  enforceTokenStrength({
-    token: AUTH_TOKEN,
-    source: tokenSource,
-    priorInstall,
-    networkBind: !isLoopbackBind(
-      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
-    ),
-    allowWeak:
-      cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
-  });
   // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
   // the in-process token without round-tripping through env or disk.
   setAuthToken(AUTH_TOKEN);

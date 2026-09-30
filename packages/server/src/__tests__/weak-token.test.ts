@@ -51,7 +51,13 @@ describe("isPriorInstall", () => {
     assert.equal(isPriorInstall(d), false);
   });
 
-  for (const marker of ["agents", "templates", "logs"]) {
+  it("logs/ alone is NOT an existing install (a refused boot writes it)", () => {
+    const d = fresh();
+    mkdirSync(join(d, "logs"));
+    assert.equal(isPriorInstall(d), false);
+  });
+
+  for (const marker of ["agents", "templates"]) {
     it(`${marker}/ from an earlier boot marks an existing install`, () => {
       const d = fresh();
       mkdirSync(join(d, marker));

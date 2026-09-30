@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
@@ -21,6 +21,12 @@ import {
  */
 
 const WEAK = "QZXJ";
+
+/** Warnings and errors go to the log file (stderr is echoed only on a TTY). */
+function logFile(configDir: string): string {
+  const p = join(configDir, "logs", "autonomos.log");
+  return existsSync(p) ? readFileSync(p, "utf8") : "";
+}
 
 describe("weak operator token at boot", {
   skip: !RUN_INTEGRATION,
@@ -56,25 +62,63 @@ describe("weak operator token at boot", {
       source: "env",
       networkBind: true,
     });
+    const log = logFile(s.configDir);
     assert.match(
-      s.logs(),
+      log,
       /SECURITY: the operator token .* is weak \(4 characters\)/,
     );
-    assert.match(s.logs(), /autonomos token rotate/);
-    assert.ok(!s.logs().includes(WEAK), "never the token");
+    assert.match(log, /autonomos token rotate/);
+    assert.ok(!log.includes(WEAK), "never the token in the log");
+    assert.ok(!s.logs().includes(WEAK), "never the token on stdout");
   });
 
   it("a NEW install on a network bind refuses to start, without printing the token", async () => {
+    let dir = "";
     await assert.rejects(
-      () => bootServer({ token: WEAK }),
+      () => bootServer({ token: WEAK, prepareConfigDir: (d) => (dir = d) }),
       (err: Error) => {
         assert.match(err.message, /exited \(code=2\)/);
-        assert.match(err.message, /Refusing to start/);
-        assert.match(err.message, /--allow-weak-token/);
         assert.ok(!err.message.includes(WEAK), "never the token");
         return true;
       },
     );
+    // The reason is in the log a supervised install keeps.
+    const log = logFile(dir);
+    assert.match(log, /Refusing to start/);
+    assert.match(log, /--allow-weak-token/);
+    assert.ok(!log.includes(WEAK), "never the token");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("an IDENTICAL second attempt is refused again (a refused boot leaves no install marker)", async () => {
+    let dir = "";
+    const attempt = (reuse?: string) =>
+      bootServer({
+        token: WEAK,
+        ...(reuse
+          ? { reuseConfigDir: reuse }
+          : { prepareConfigDir: (d: string) => (dir = d) }),
+      });
+    await assert.rejects(attempt(), /exited \(code=2\)/);
+    assert.ok(dir, "captured the config dir");
+    await assert.rejects(attempt(dir), /exited \(code=2\)/, "still refused");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("the warning never reaches an unauthenticated response", async () => {
+    const s = await bootServer({
+      token: WEAK,
+      prepareConfigDir: (dir) => mkdirSync(join(dir, "templates")),
+    });
+    booted.push(s);
+    const base = `http://127.0.0.1:${s.port}`;
+    const v = await fetch(`${base}/api/system/version`);
+    assert.equal(v.status, 401);
+    assert.ok(!(await v.text()).includes("tokenWarning"));
+    const h = await fetch(`${base}/api/host`);
+    assert.equal(h.status, 200, "the one public route");
+    const host = await h.text();
+    assert.ok(!/tokenWarning|weak/i.test(host), host);
   });
 
   it("…starts with --allow-weak-token, warning", async () => {
