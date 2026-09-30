@@ -3,7 +3,7 @@
  * the CLI's own values (ADR-115). These defaults are SERVER-side and apply to
  * every new agent that names none — including agents started by other agents —
  * so a default that never asks is flagged amber and needs an explicit confirm
- * (the server refuses it without `confirmNeverAsks`, ADR-122), and every change
+ * (the server refuses it without `confirmNeverAsks`, ADR-123), and every change
  * is listed below, including edits made to settings.json directly.
  */
 

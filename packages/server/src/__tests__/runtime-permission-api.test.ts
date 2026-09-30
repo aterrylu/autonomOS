@@ -122,7 +122,7 @@ describe("the operator's per-runtime default (server-side setting)", () => {
     assert.equal(r.status, 200);
     r = await call("PUT", "/api/settings", {
       runtimeDefaults: { codex: "approval_policy=never" },
-      // A never-asks default must be confirmed (ADR-122); this test is
+      // A never-asks default must be confirmed (ADR-123); this test is
       // about per-runtime merging, not the confirm.
       confirmNeverAsks: true,
     });

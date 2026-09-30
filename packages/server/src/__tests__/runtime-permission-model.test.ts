@@ -180,7 +180,7 @@ describe("formatPermission — the canonical display string", () => {
   });
 });
 
-describe("permissiveness: neverAsks and widerAxes (ADR-122)", () => {
+describe("permissiveness: neverAsks and widerAxes (ADR-123)", () => {
   it("neverAsks is exactly the old 'bypass' tier on every runtime", () => {
     assert.equal(
       neverAsks(

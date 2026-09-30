@@ -1,6 +1,6 @@
 /**
  * Every change to an operator's per-runtime default permission is SAID
- * (ADR-122). These defaults decide what every agent-spawned child runs, so a
+ * (ADR-123). These defaults decide what every agent-spawned child runs, so a
  * silent widening — to a mode that never asks — is the failure to prevent.
  *
  * Honest scope: agents run as the same OS user as the server and today can
@@ -40,7 +40,7 @@ export interface DefaultsChange {
   to: string;
   neverAsks: boolean;
   /** `api`: a PUT /api/settings — any token holder, not necessarily the
-   *  dashboard (ADR-122); `out-of-band`: settings.json edited directly. */
+   *  dashboard (ADR-123); `out-of-band`: settings.json edited directly. */
   source: "api" | "out-of-band";
 }
 
@@ -172,7 +172,7 @@ export function noteRuntimeDefaults(
 ): DefaultsChange[] {
   // Called from boot, every spawn that falls back to a default, and every
   // settings read/write: a failure here must never fail any of those — it's
-  // logged and reported instead (ADR-122: detection must not become an outage).
+  // logged and reported instead (ADR-123: detection must not become an outage).
   try {
     return check(settings, source);
   } catch (err) {

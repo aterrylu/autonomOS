@@ -54,7 +54,7 @@ function maskSettings(settings: AppSettings): MaskedSettings {
 settingsRouter.get("/", (c) => {
   const settings = getSettings();
   // Reading the defaults is where an out-of-band edit (settings.json changed
-  // directly) gets noticed and reported (ADR-122).
+  // directly) gets noticed and reported (ADR-123).
   noteRuntimeDefaults(settings);
   return c.json(maskSettings(settings));
 });
