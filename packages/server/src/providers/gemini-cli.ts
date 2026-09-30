@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { AgentProvider, ResolvedSpawnOptions } from "@autonomos/core";
 import { getConfigDir } from "../configDir.js";
 import { getControlSocketPath } from "../internalSocket.js";
-import { getAuthToken, getServerPort } from "../serverState.js";
+import { getServerPort } from "../serverState.js";
 import { findGeminiSession } from "../sessionScanners.js";
 import { getSettings } from "../settings.js";
 import {
@@ -295,15 +295,10 @@ export function writeGeminiSettings(channelServerScript: string): void {
         // via Gemini's env passthrough from the agent process (buildBaseEnv sets
         // it; non-`*TOKEN*`, so the allowlist passes it).
         //
-        // AUTONOMOS_TOKEN (GLOBAL) authenticates the /ws/gateway UPGRADE itself:
-        // `requireAuth` gates the socket before the gateway ever sees a `register`,
-        // and the channel server presents it as the `?token=` query. Claude and
-        // Codex both inject it into their channel-server env; Gemini must too, or
-        // even a launched channel server would 401 before reaching register. It is
-        // agent-invariant, so unlike SESSION_ID it can live in this shared file;
-        // it is 0600, and getAuthToken() is populated (setAuthToken runs before
-        // writeGeminiSettings at boot). The per-AGENT token is the separate 0600
-        // FILE (read via CONFIG_DIR + SESSION_ID below), not this value.
+        // No operator token (security audit V3). The channel server
+        // authenticates the /ws/gateway upgrade and its REST calls with the
+        // per-AGENT token (the 0600 file read via CONFIG_DIR + SESSION_ID), so
+        // nothing agent-invariant and secret needs to live in this file.
         //
         // KNOWN OPEN GAP (verified by real-spawn QA, 2026-07-28): Gemini in this
         // `-i` PTY mode does NOT launch the autonomos MCP channel-server subprocess
@@ -320,7 +315,6 @@ export function writeGeminiSettings(channelServerScript: string): void {
           AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
           AUTONOMOS_API_URL: apiUrl,
           AUTONOMOS_CONFIG_DIR: autonomosConfigDir(),
-          AUTONOMOS_TOKEN: getAuthToken(),
         },
       },
     },

@@ -63,40 +63,8 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf-8");
 }
 
-// ── Network helpers ───────────────────────────────────────────
-
-async function fetchJson(url, token) {
-  try {
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const res = await fetch(url, {
-      headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
 // ── autonomOS context resolution ──────────────────────────────
 
-/**
- * Resolve the autonomOS metadata for this session. Returns null if the
- * server is unreachable or the session isn't tracked.
- *
- * Uses the LIST endpoint /api/sessions because it enriches each record
- * with manager/template/project from persisted state. The single-session
- * endpoint /api/sessions/:id returns a bare Session without those fields,
- * so it can't answer "who is my manager" for the renderer.
- *
- * One fetch covers both queries: find self by `id` (the autonomOS session
- * id, NOT claudeSessionId — those are different fields), then filter the
- * same array for `manager === self.name` to count direct reports.
- *
- * Auth: AUTONOMOS_TOKEN is inherited from the autonomos process env when
- * CC spawns this script. Without it, /api/sessions returns 401.
- */
 /**
  * Strip control characters (ANSI escape, CR/LF/BS/etc.) from agent-supplied
  * strings before they get rendered. A malicious peer agent or buggy spawn
@@ -136,9 +104,9 @@ function readAgentToken(sessionId) {
 }
 
 /**
- * Self-metadata via the agent-token-scoped endpoint — the spawned-agent
- * path (#297: no server token in the PTY env). Returns the same meta shape
- * as getAutonomosMeta.
+ * Self-metadata via the agent-token-scoped endpoint. The only path: agents
+ * never hold the operator token (#297 took it off the PTY, audit V3 off argv
+ * and the inherited env), so this is the credential they have.
  */
 async function getSelfMeta(sessionId, serverUrl, agentToken) {
   if (!agentToken) return null;
@@ -159,34 +127,6 @@ async function getSelfMeta(sessionId, serverUrl, agentToken) {
   } catch {
     return null;
   }
-}
-
-async function getAutonomosMeta(sessionId, serverUrl, token) {
-  // The API replaced /api/sessions with /api/agents (PR #165 unified the
-  // Agent + Session models). Manager refs are now by UUID (managerId), not
-  // by name — we resolve the manager's display name by looking up the
-  // referenced agent in the same response.
-  const agents = await fetchJson(`${serverUrl}/api/agents`, token);
-  if (!Array.isArray(agents)) return null;
-
-  const me = agents.find((a) => a?.id === sessionId);
-  if (!me) return null;
-
-  const managerName = me.managerId
-    ? (agents.find((a) => a?.id === me.managerId)?.name ?? null)
-    : null;
-
-  const directReports = agents.filter(
-    // Same "live" rule as core hierarchyOf()/isLiveAgent() (this file can't import core).
-    (a) => a?.managerId === me.id && a?.status === "running",
-  ).length;
-
-  return {
-    name: sanitize(me.name) ?? "Agent",
-    manager: sanitize(managerName),
-    project: sanitize(me.project) ?? null,
-    directReports,
-  };
 }
 
 // ── Identity line ─────────────────────────────────────────────
@@ -349,11 +289,8 @@ async function main() {
 
   const sessionId = process.env.AUTONOMOS_SESSION_ID;
   const serverUrl = process.env.AUTONOMOS_SERVER;
-  // Legacy/standalone: a server token in the env still works (externally
-  // configured setups). Spawned agents have NONE since #297 — they carry
-  // the PER-AGENT credential instead (token file, env fallback), consumed
-  // by the /api/agents/:id/self endpoint.
-  const token = process.env.AUTONOMOS_TOKEN;
+  // The PER-AGENT credential (token file, env fallback), consumed by the
+  // /api/agents/:id/self endpoint. Agents are never given the operator token.
   const agentToken = readAgentToken(sessionId);
 
   // Invoked outside autonomOS (env not injected) → no hierarchy to render
@@ -363,9 +300,7 @@ async function main() {
     return;
   }
 
-  const meta = token
-    ? await getAutonomosMeta(sessionId, serverUrl, token)
-    : await getSelfMeta(sessionId, serverUrl, agentToken);
+  const meta = await getSelfMeta(sessionId, serverUrl, agentToken);
 
   if (!meta) {
     // Env vars present but server unreachable / session not yet persisted —
@@ -398,6 +333,5 @@ export {
   formatActivity,
   formatDuration,
   formatHierarchy,
-  getAutonomosMeta,
   getSelfMeta,
 };
