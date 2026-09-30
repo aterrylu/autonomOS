@@ -122,6 +122,24 @@ fleet-dead MCP for every bundle user. The unit + install-CI tests guard the
 artifact; Phase 0 verifies the end shape when a bundle-shape instance is in
 the validation mix.
 
+**Version-gated removals: check before every cut.** Some compatibility
+shims exist only to carry running agents across ONE upgrade. Each has a
+release it becomes removable in. Before cutting, go through this list. For any
+item that is due, open its removal PR (it merges before the cut); then tick
+it or delete it here. Leave an item that isn't due yet alone: removing it
+early strands agents mid-upgrade.
+
+- [ ] **`/ws/gateway` operator `?token=` fallback** (ADR-129, security audit
+  V3). Due in **the release AFTER the first release that contains #457
+  (070a2c4b8f)**. If this cut is the first to contain #457, it is NOT due yet.
+  Channel servers started before V3 still authenticate the gateway upgrade
+  with the operator token until their agent respawns. Removal: in
+  `packages/server/src/routes/agentApi.ts`, `gatewayUpgradeAuth` becomes
+  "agent credential or 401" (drop the `operatorAuth` branch and its caller's
+  `requireAuth` argument in `run.ts`), and the "old channel server: operator
+  `?token=` still works" case in `agent-api.test.ts` flips to expect a refusal.
+  Plan: `~/.claude/plans/gateway-ws-hardening-followups.md`.
+
 Browser pass on `http://forge:3100` (Playwright or by hand): login, sidebar
 statuses, terminal render + switch + switch-back (keep-alive), mod+K switcher
 over a focused terminal, notifications panel, Presets tab, settings popover.

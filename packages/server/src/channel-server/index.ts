@@ -48,7 +48,10 @@ import WebSocket from "ws";
 // Tool definitions are shared with the HTTP MCP server.
 // Import paths use relative since this runs as a standalone subprocess.
 // At build time, esbuild resolves these from the same package.
-import { GATEWAY_REQUEST_TIMEOUT_MS } from "../gateway/deliveryTimings.js";
+import {
+  GATEWAY_REQUEST_TIMEOUT_MS,
+  MAX_GATEWAY_FRAME_BYTES,
+} from "../gateway/deliveryTimings.js";
 import { ALL_TOOLS, MCP_INSTRUCTIONS, MCP_SERVER_INFO } from "../mcp/tools.js";
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
@@ -385,12 +388,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   switch (name) {
     case "send": {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return {
-          content: [{ type: "text", text: "Not connected to gateway" }],
-          isError: true,
-        };
-      }
       const { to, message } = args as { to?: string; message?: string };
       if (!to || !message) {
         return {
@@ -410,6 +407,28 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         message,
         requestId,
       };
+      // The gateway closes a socket that sends a frame over its limit (1009),
+      // with no reply, so an oversized send would wait out the whole request
+      // deadline and then look like a lost message. Refuse it here, clearly,
+      // before touching the socket.
+      const frameBytes = Buffer.byteLength(JSON.stringify(wsMsg));
+      if (frameBytes > MAX_GATEWAY_FRAME_BYTES) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Message NOT sent: it is too large (${frameBytes} bytes; the limit is ${MAX_GATEWAY_FRAME_BYTES}). Send a shorter message, or put the content in a file and send its path.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return {
+          content: [{ type: "text", text: "Not connected to gateway" }],
+          isError: true,
+        };
+      }
 
       // The gateway now confirms DELIVERY rather than routing, so this wait has
       // to outlast the gateway's own ack window plus its name-resolution work.

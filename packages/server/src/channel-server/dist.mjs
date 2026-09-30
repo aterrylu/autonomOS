@@ -24449,6 +24449,7 @@ var wrapper_default = import_websocket.default;
 
 // packages/server/src/gateway/deliveryTimings.ts
 var GATEWAY_REQUEST_TIMEOUT_MS = 5e3;
+var MAX_GATEWAY_FRAME_BYTES = 1024 * 1024;
 
 // packages/server/src/version.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -25214,12 +25215,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
   switch (name) {
     case "send": {
-      if (!ws || ws.readyState !== wrapper_default.OPEN) {
-        return {
-          content: [{ type: "text", text: "Not connected to gateway" }],
-          isError: true
-        };
-      }
       const { to, message } = args;
       if (!to || !message) {
         return {
@@ -25239,6 +25234,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         message,
         requestId
       };
+      const frameBytes = Buffer.byteLength(JSON.stringify(wsMsg));
+      if (frameBytes > MAX_GATEWAY_FRAME_BYTES) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Message NOT sent: it is too large (${frameBytes} bytes; the limit is ${MAX_GATEWAY_FRAME_BYTES}). Send a shorter message, or put the content in a file and send its path.`
+            }
+          ],
+          isError: true
+        };
+      }
+      if (!ws || ws.readyState !== wrapper_default.OPEN) {
+        return {
+          content: [{ type: "text", text: "Not connected to gateway" }],
+          isError: true
+        };
+      }
       const result = await requestGateway(
         wsMsg,
         requestId,

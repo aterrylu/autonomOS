@@ -73,7 +73,7 @@ import { createAgentApi, gatewayUpgradeAuth } from "./routes/agentApi.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
-import { gatewayRouter } from "./routes/gateway.js";
+import { gatewayRouter, limitGatewayFrames } from "./routes/gateway.js";
 import {
   agentStatusRouter,
   hooksIngestRouter,
@@ -308,8 +308,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // returns per-app upgrade/inject functions — calling it a second time for
   // internalApp does NOT conflict with the public app's pair above (no shared
   // singleton). iInject is wired to internalServer once it exists (below).
-  const { upgradeWebSocket: iUpgrade, injectWebSocket: iInject } =
-    createNodeWebSocket({ app: internalApp });
+  const {
+    upgradeWebSocket: iUpgrade,
+    injectWebSocket: iInject,
+    wss: internalWss,
+  } = createNodeWebSocket({ app: internalApp });
+  // The internal app's only WebSocket is /ws/gateway: cap its frame size.
+  limitGatewayFrames(internalWss);
 
   // Serve dashboard static files in production.
   //
