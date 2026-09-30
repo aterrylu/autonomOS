@@ -12,12 +12,13 @@ import type { Context, MiddlewareHandler } from "hono";
  * #392's per-route copy on the update routes.
  *
  * Three rules:
- *  1. **Where the request came from.** A browser labels every request. If
- *     `Sec-Fetch-Site` is present it must be `same-origin` or `none` (a typed
- *     URL / bookmark). `same-site` is exactly the attack, so it's refused. An
- *     older browser without Fetch Metadata still sends `Origin` on POSTs and
- *     WS handshakes, and that must name this server (the `Host` it was
- *     reached on) or an explicitly configured origin (`CORS_ORIGIN`).
+ *  1. **Where the request came from.** An `Origin` that exactly matches an
+ *     origin the operator set EXPLICITLY in `CORS_ORIGIN` passes (ADR-125).
+ *     Otherwise, a browser labels every request: if `Sec-Fetch-Site` is
+ *     present it must be `same-origin` or `none` (a typed URL / bookmark).
+ *     `same-site` is exactly the attack, so it's refused. An older browser
+ *     without Fetch Metadata still sends `Origin` on POSTs and WS handshakes,
+ *     and that must name this server (the `Host` it was reached on).
  *  2. **No labels → not a browser.** The CLI, agents' channel server, curl,
  *     Node/Bun fetch and `ws` send neither header (measured), and a browser
  *     can't omit both on a cross-origin request. So they pass rule 1
