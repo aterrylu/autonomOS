@@ -170,7 +170,7 @@ async function main(): Promise<void> {
     const names = await listTemplates(port);
     const expectBlocked = (name: string, blocked: boolean, detail: string) =>
       check(
-        EXPECT_VULNERABLE ? `${name} SUCCEEDS (vulnerable build)` : name,
+        EXPECT_VULNERABLE ? `attack LANDS on the unguarded build: ${name}` : name,
         EXPECT_VULNERABLE ? !blocked : blocked,
         detail,
       );
