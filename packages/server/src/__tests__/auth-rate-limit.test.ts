@@ -11,6 +11,7 @@ import {
   MAX_ADDRESSES,
   MAX_LOCK_MS,
   normalizeAddress,
+  peerAddress,
 } from "../authRateLimit.js";
 
 /** L1: the failed-auth throttle's policy (V2), on a fake clock. */
@@ -160,5 +161,15 @@ describe("helpers", () => {
     assert.equal(lines.length, 3);
     assert.match(lines[0], /10\.0\.0\.1 .* for 4s/);
     assert.match(lines[2], /not logged until restart/);
+  });
+});
+
+describe("peerAddress", () => {
+  it("is the TCP peer, never a forwarding header an attacker controls", () => {
+    const c = {
+      env: { incoming: { socket: { remoteAddress: "::ffff:10.9.8.7" } } },
+      req: { header: () => "1.2.3.4" },
+    } as unknown as Parameters<typeof peerAddress>[0];
+    assert.equal(peerAddress(c), "10.9.8.7");
   });
 });
