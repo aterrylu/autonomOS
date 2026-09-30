@@ -123,6 +123,47 @@ EOF
   fi
 }
 
+# Print the release tag to install: $2 (a --ref, "vX.Y.Z" or "X.Y.Z") when
+# given, else the newest vX.Y.Z tag. Either way the tag must be ON origin/main
+# (security audit V5): a tag is only a name, anyone with push access can put
+# one on an unreviewed commit, and this script checks it out and builds it.
+# Errors go to stderr; returns 64 for a malformed --ref, 1 otherwise.
+pick_release_tag() {
+  local clone_dir="$1" ref="$2" main="refs/remotes/origin/main"
+  if ! git -C "$clone_dir" rev-parse --verify --quiet "$main" >/dev/null; then
+    echo "Error: $clone_dir has no origin/main, so the release tag can't be" >&2
+    echo "  checked against it. Run: git -C \"$clone_dir\" fetch origin main" >&2
+    return 1
+  fi
+  if [[ -z "$ref" ]]; then
+    # `|| true`: zero matches exits grep 1 → pipefail would kill the script
+    # here, making the explanatory error below unreachable.
+    ref=$(git -C "$clone_dir" tag --list --merged "$main" 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+    [[ -n "$ref" ]] || { echo "Error: no vX.Y.Z release tags on origin/main." >&2; return 1; }
+  else
+    # A managed clone is pinned to release TAGS — that's the provenance story
+    # (a tag is a version with a name). Accepting `--ref main` here would
+    # silently create the branch-tip deployment this mode exists to reject.
+    ref="v${ref#v}"
+    if ! [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "Error: --ref must be a release tag (vX.Y.Z), got: $ref" >&2
+      echo "  Branch-tip deployments are what this mode replaces. For a dev" >&2
+      echo "  checkout, clone normally and use git pull + make prod." >&2
+      return 64
+    fi
+    if ! git -C "$clone_dir" rev-parse --verify --quiet "refs/tags/$ref" >/dev/null; then
+      echo "Error: no tag $ref exists in the repository." >&2
+      return 1
+    fi
+    if ! git -C "$clone_dir" merge-base --is-ancestor "refs/tags/$ref" "$main"; then
+      echo "Error: release tag $ref is not on origin/main, so it never went" >&2
+      echo "  through review. Refusing to install it." >&2
+      return 1
+    fi
+  fi
+  printf '%s\n' "$ref"
+}
+
 # When sourced (tests), expose the functions and stop — no side effects.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
@@ -184,27 +225,7 @@ else
 fi
 
 # ── pick + checkout the release tag ───────────────────────────────────────
-if [[ -z "$REF" ]]; then
-  # `|| true`: zero matches exits grep 1 → pipefail would kill the script
-  # here, making the explanatory error below unreachable.
-  REF=$(git -C "$CLONE_DIR" tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-  [[ -n "$REF" ]] || { echo "Error: no vX.Y.Z release tags found." >&2; exit 1; }
-else
-  # A managed clone is pinned to release TAGS — that's the provenance story
-  # (a tag is a version with a name). Accepting `--ref main` here would
-  # silently create the branch-tip deployment this mode exists to reject.
-  REF="v${REF#v}"
-  if ! [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Error: --ref must be a release tag (vX.Y.Z), got: $REF" >&2
-    echo "  Branch-tip deployments are what this mode replaces. For a dev" >&2
-    echo "  checkout, clone normally and use git pull + make prod." >&2
-    exit 64
-  fi
-  if ! git -C "$CLONE_DIR" rev-parse --verify --quiet "refs/tags/$REF" >/dev/null; then
-    echo "Error: no tag $REF exists in the repository." >&2
-    exit 1
-  fi
-fi
+REF=$(pick_release_tag "$CLONE_DIR" "$REF") || exit $?
 echo "[install-source] Checking out $REF"
 git -C "$CLONE_DIR" checkout "$REF"
 
