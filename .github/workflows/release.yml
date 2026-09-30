@@ -27,6 +27,42 @@ jobs:
   build:
     uses: ./.github/workflows/reusable-server-build.yml
 
+  # ── Only a commit on main is ever published (security audit V5) ──────────
+  # A `v*` tag is just a name: anyone with push access can put one on an
+  # unreviewed commit, and main is where review is enforced. So the release
+  # job below needs this check to pass.
+  #
+  # What this does NOT stop, stated so nobody leans on it: for a tag push,
+  # GitHub runs THIS FILE AS IT EXISTS IN THE TAGGED COMMIT, so a deliberate
+  # off-main tag can simply delete this job from its own copy. It catches the
+  # accidental case (a tag cut from the wrong ref, a dispatch with
+  # dry_run=false from a feature branch). The deliberate case is stopped by
+  # the tag ruleset on refs/tags/v* (tag creation restricted) and by the
+  # installers, which check the tag against origin/main on the user's machine
+  # (sourceUpgrade.ts, install-source.sh).
+  #
+  # Read-only, and it never installs or runs the tagged commit's code.
+  on-main:
+    name: Tag is on main
+    if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse a commit that main does not contain
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "$GITHUB_SHA is on main."
+          else
+            echo "::error::$GITHUB_REF ($GITHUB_SHA) is not on main. Releases are cut only from reviewed commits on main; refusing to publish."
+            exit 1
+          fi
+
   # ── Publish ──────────────────────────────────────────────────────────────
   # Skipped entirely on a dry-run dispatch — the server-tarball build above
   # still runs, so a dry-run proves the build pipeline without creating a
@@ -34,7 +70,7 @@ jobs:
   # dispatch).
   release:
     name: Publish release
-    needs: build
+    needs: [build, on-main]
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
