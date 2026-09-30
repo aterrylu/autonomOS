@@ -7,10 +7,33 @@ import { Sidebar } from "./Sidebar";
 
 // The forge report: two DIFFERENT dirs, both named "work", listed as two
 // identical "work" rows. The list must label them apart.
+// Every project carries a session: the server never returns an empty one, and
+// the panel drops a project with nothing to show.
+const one = (id: string) => [
+  { sessionId: id, summary: id, lastModified: 0, provider: "claude-code" },
+];
 const PROJECTS = [
-  { path: "/tmp/aq/work", name: "work", sessions: [], lastActive: 2 },
-  { path: "/tmp/ax/work", name: "work", sessions: [], lastActive: 1 },
-  { path: "/Users/t/app", name: "app", sessions: [], lastActive: 0 },
+  {
+    path: "/Users/t/aq/work",
+    name: "work",
+    kind: "dir",
+    sessions: one("a"),
+    lastActive: 2,
+  },
+  {
+    path: "/Users/t/ax/work",
+    name: "work",
+    kind: "dir",
+    sessions: one("b"),
+    lastActive: 1,
+  },
+  {
+    path: "/Users/t/app",
+    name: "app",
+    kind: "dir",
+    sessions: one("c"),
+    lastActive: 0,
+  },
 ];
 
 beforeEach(() => {
@@ -49,7 +72,7 @@ describe("Sidebar Projects — same-named dirs are labelled apart", () => {
   it("the full path is the row's tooltip, and the quick-spawn names the right one", () => {
     render(<Sidebar />);
     expect(screen.getByText("aq/work").getAttribute("title")).toBe(
-      "/tmp/aq/work",
+      "/Users/t/aq/work",
     );
     expect(screen.getByLabelText("New session in ax/work")).toBeTruthy();
   });
