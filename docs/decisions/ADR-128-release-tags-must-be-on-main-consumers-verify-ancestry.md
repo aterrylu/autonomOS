@@ -1,4 +1,4 @@
-## ADR-123: Release tags must be on main: consumers verify ancestry, release.yml gate, tag ruleset
+## ADR-128: Release tags must be on main: consumers verify ancestry, release.yml gate, tag ruleset
 
 - **Date:** 2026-09-30
 - **Decided by:** Terry approved fixing the security audit findings ("yes for all the security items"); SecurityFix-Hardening (agent) chose the shape, TeamLead approved the repository ruleset before it was applied, and SecurityAudit-Claude reviewed.
