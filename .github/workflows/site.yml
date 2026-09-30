@@ -74,7 +74,7 @@ jobs:
         # the paths trigger above includes scripts/install.sh for the same
         # reason it includes the hero.
         #
-        # The provenance verifier it pins by sha256 (ADR-122) ships in the SAME
+        # The provenance verifier it pins by sha256 (ADR-126) ships in the SAME
         # deploy, so the two can't go live apart. (CI's `make check` already
         # proved the pin matches this file.)
         run: |
@@ -132,10 +132,10 @@ jobs:
         # not in a newcomer's terminal. Retries ride out the Pages CDN cache
         # (max-age 600) serving the previous deploy's files for a while.
         run: |
+          want=$(shasum -a 256 scripts/verify-provenance.mjs | awk '{print $1}')
           for i in $(seq 1 30); do
-            pin=$(curl -fsSL "https://autonomos.terrylu.cloud/install.sh?smoke=$i" | sed -n 's/^VERIFIER_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' || true)
+            pin=$(curl -fsSL "https://autonomos.terrylu.cloud/install.sh?smoke=$i" | sed -n 's/^readonly VERIFIER_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' || true)
             got=$(curl -fsSL "https://autonomos.terrylu.cloud/verify-provenance.mjs?smoke=$i" | shasum -a 256 | awk '{print $1}' || true)
-            want=$(sha256sum scripts/verify-provenance.mjs | awk '{print $1}')
             if [[ -n "$pin" && "$pin" == "$got" && "$got" == "$want" ]]; then
               echo "✓ served install.sh pins the served verifier ($got)"; exit 0
             fi

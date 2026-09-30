@@ -276,7 +276,7 @@ echo "==> ✓ claude pre-flight refuses clearly; skip hatch works"
 
 # ── install ──────────────────────────────────────────────────────────────
 
-# ── provenance: a new install fails closed (ADR-122) ──────────────────────
+# ── provenance: a new install fails closed (ADR-126) ──────────────────────
 # This harness installs a LOCAL build, which no release workflow ever signed —
 # so without the skip hatch install.sh must refuse, name the hatch, and leave
 # nothing behind. (It asks GitHub about the local digest: a 404, or a rate

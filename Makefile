@@ -217,7 +217,7 @@ _check:
 load-test:
 	scripts/ci-gate-lock.sh env AUTONOMOS_LOAD_TEST=1 $(GIT_CLEAN_ENV) $(TSX) --test --test-timeout=600000 packages/server/src/__tests__/statusline-load.test.ts
 
-# ── verifier: the single-file provenance verifier install.sh runs (ADR-122) ──
+# ── verifier: the single-file provenance verifier install.sh runs (ADR-126) ──
 # Rebuilds scripts/verify-provenance.mjs and re-pins its sha256 in install.sh.
 # `make check` fails when either is stale — commit both files together.
 verifier:

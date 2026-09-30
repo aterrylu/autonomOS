@@ -1,6 +1,6 @@
 /**
  * Builds `scripts/verify-provenance.mjs` — the single-file provenance
- * verifier install.sh runs on a fresh machine (ADR-122) — and keeps the
+ * verifier install.sh runs on a fresh machine (ADR-126) — and keeps the
  * sha256 pinned in install.sh in step with it.
  *
  *   tsx scripts/build-verifier.ts           # rebuild + re-pin (make verifier)
@@ -10,12 +10,13 @@
  * the exact bytes it runs, and the site deploy copies both files together
  * (site.yml), so the pin and the file can never ship apart.
  *
- * Staleness is judged by what went IN, not by rebuilding byte-for-byte: the
- * bundle carries a stamp — sha256 over every source file esbuild read (the
- * metafile's inputs, sigstore's dependencies included) plus the build
- * options. So a changed verifier source or a bumped sigstore dependency
- * fails --check, while an esbuild upgrade that merely re-orders the output
- * doesn't.
+ * --check rebuilds and requires the committed file to match BYTE FOR BYTE:
+ * nobody reads a minified body in review, so the only proof it came from the
+ * reviewed source is that the source rebuilds into exactly it. esbuild is
+ * pinned exactly (root package.json) so that holds; bumping it means
+ * `make verifier` and committing the result. The header also carries a stamp
+ * — sha256 over every file esbuild read, sigstore's dependencies included —
+ * so a failure can say WHY: sources changed, or the bytes did.
  */
 
 import { createHash } from "node:crypto";
@@ -30,7 +31,10 @@ export const INSTALL_SH = join(repo, "scripts/install.sh");
 const ENTRY = "packages/server/src/provenance-cli.ts";
 
 const STAMP_RE = /^\/\/ inputs-sha256: ([0-9a-f]{64})$/m;
-const PIN_RE = /^VERIFIER_SHA256="([0-9a-f]{64})"$/m;
+/** install.sh's pin line. bash honors the LAST assignment, so --check
+ *  insists on exactly one. */
+const PIN_LINE_RE = /^(?:readonly )?VERIFIER_SHA256=.*$/gm;
+const PIN_RE = /^readonly VERIFIER_SHA256="([0-9a-f]{64})"$/m;
 
 const OPTIONS: BuildOptions = {
   absWorkingDir: repo,
@@ -68,7 +72,7 @@ export async function bundleVerifier(): Promise<{ code: string; stamp: string }>
 
 export function withHeader(code: string, stamp: string): string {
   return [
-    "// autonomOS release-provenance verifier (ADR-122). GENERATED from",
+    "// autonomOS release-provenance verifier (ADR-126). GENERATED from",
     `// ${ENTRY} by scripts/build-verifier.ts — do not edit; run \`make verifier\`.`,
     "// install.sh pins this file's sha256.",
     `// inputs-sha256: ${stamp}`,
@@ -76,49 +80,71 @@ export function withHeader(code: string, stamp: string): string {
   ].join("\n");
 }
 
-export const sha256 = (b: string | Buffer) =>
-  createHash("sha256").update(b).digest("hex");
-export const readStamp = (verifierText: string) =>
-  STAMP_RE.exec(verifierText)?.[1] ?? null;
-export const readPin = (installSh: string) => PIN_RE.exec(installSh)?.[1] ?? null;
+export function sha256(b: string | Buffer): string {
+  return createHash("sha256").update(b).digest("hex");
+}
+
+export function readStamp(verifierText: string): string | null {
+  return STAMP_RE.exec(verifierText)?.[1] ?? null;
+}
+
+/** The pin, or null unless install.sh has exactly one well-formed pin line. */
+export function readPin(installSh: string): string | null {
+  if ((installSh.match(PIN_LINE_RE) ?? []).length !== 1) return null;
+  return PIN_RE.exec(installSh)?.[1] ?? null;
+}
 
 /** Problems with the committed pair, empty when consistent. */
 export async function checkVerifier(): Promise<string[]> {
   const problems: string[] = [];
-  const committed = readFileSync(VERIFIER);
+  const committed = readFileSync(VERIFIER, "utf-8");
   const pin = readPin(readFileSync(INSTALL_SH, "utf-8"));
-  if (!pin) problems.push('install.sh has no VERIFIER_SHA256="<sha256>" line');
+  if (!pin)
+    problems.push(
+      'install.sh needs exactly one `readonly VERIFIER_SHA256="<sha256>"` line',
+    );
   else if (pin !== sha256(committed))
     problems.push(
       "install.sh's VERIFIER_SHA256 doesn't match scripts/verify-provenance.mjs — every fresh install would refuse",
     );
-  const { stamp } = await bundleVerifier();
-  if (readStamp(committed.toString("utf-8")) !== stamp)
+  const { code, stamp } = await bundleVerifier();
+  if (readStamp(committed) !== stamp)
     problems.push(
       "scripts/verify-provenance.mjs is stale: its sources or sigstore dependencies changed since it was built",
+    );
+  else if (withHeader(code, stamp) !== committed)
+    problems.push(
+      "scripts/verify-provenance.mjs differs from a rebuild of its sources (edited by hand, or built with another esbuild)",
     );
   return problems;
 }
 
-async function main() {
+async function main(): Promise<void> {
   if (process.argv.includes("--check")) {
     const problems = await checkVerifier();
     for (const p of problems) console.error(`✗ ${p}`);
     if (problems.length) {
-      console.error("  Fix: make verifier (rebuilds and re-pins), then commit both files.");
+      console.error(
+        "  Fix: make verifier (rebuilds and re-pins), then commit both files.",
+      );
       process.exit(1);
     }
     console.log("✓ verify-provenance.mjs is current and pinned");
     return;
   }
+  const sh = readFileSync(INSTALL_SH, "utf-8");
+  // Check before writing anything, so a failure can't leave the pair split.
+  if (readPin(sh) === null)
+    throw new Error(
+      'install.sh needs exactly one `readonly VERIFIER_SHA256="<sha256>"` line to update',
+    );
   const { code, stamp } = await bundleVerifier();
   const text = withHeader(code, stamp);
+  const pin = sha256(text);
   writeFileSync(VERIFIER, text);
-  const sh = readFileSync(INSTALL_SH, "utf-8");
-  if (!PIN_RE.test(sh)) throw new Error('install.sh has no VERIFIER_SHA256="…" line to update');
-  writeFileSync(INSTALL_SH, sh.replace(PIN_RE, `VERIFIER_SHA256="${sha256(text)}"`));
+  writeFileSync(INSTALL_SH, sh.replace(PIN_RE, `readonly VERIFIER_SHA256="${pin}"`));
   console.log(
-    `✓ wrote scripts/verify-provenance.mjs (${Math.round(text.length / 1024)} KB), pinned ${sha256(text).slice(0, 12)}…`,
+    `✓ wrote scripts/verify-provenance.mjs (${Math.round(text.length / 1024)} KB), pinned ${pin.slice(0, 12)}…`,
   );
 }
 

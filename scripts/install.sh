@@ -8,8 +8,12 @@
 #   VERSION               Install a specific release (e.g. VERSION=0.5.0) instead
 #                         of the latest. Also the manual-downgrade path.
 #   INSTALL_PREFIX        Install root (default: $HOME/.local)
-#   BUNDLE_URL            Where to fetch release artifacts from (overrides VERSION;
-#                         default: https://github.com/aterrylu/autonomOS/releases/latest/download)
+#   BUNDLE_URL            Where to fetch the tarball + SHA256SUMS from (a mirror).
+#                         Default: the GitHub release for VERSION, or for the latest
+#                         tag (resolved once, before downloading). With VERSION set,
+#                         the signed build record must be for that version; without
+#                         it, the version the bundle names is checked — which can't
+#                         rule out a mirror serving an older genuine release.
 #   SKIP_INSTALL_SERVICE  Skip running `autonomos install-service` post-install (test/CI)
 #   SKIP_NODE_CHECK       Skip the node-version check (test/CI; the bundle still needs node)
 #   AUTONOMOS_SKIP_PROVENANCE=1
@@ -24,7 +28,7 @@
 #   2. Require node >= 20 (the bundle is a Node-runtime JS bundle, not a static binary)
 #   3. Download autonomos-<platform>.tar.gz from the release
 #   4. Verify SHA256 against SHA256SUMS in the same release, then the release's
-#      signed build record (Sigstore provenance, ADR-122): the tarball must have
+#      signed build record (Sigstore provenance, ADR-126): the tarball must have
 #      been built by aterrylu/autonomOS's release.yml at that version's tag.
 #      A new install FAILS CLOSED — if it can't be checked, nothing installs.
 #   5. Extract to a staging dir, write install.json (the install-shape marker,
@@ -43,30 +47,8 @@ RELEASE_REPO="aterrylu/autonomOS"
 
 # sha256 of scripts/verify-provenance.mjs — maintained by `make verifier`, and
 # CI fails if it drifts from the file. The site serves both from one deploy.
-VERIFIER_SHA256="aeb0593bae6eba3a1d47ba520bde702898d71f06229d82d8dfaf0f7ab281204e"
+readonly VERIFIER_SHA256="6f0a90f494fedfc44b63ae1f266c5c3142aa59b852e1c42bf87812d515843d1c"
 
-# The version being installed, which the signed build record must name.
-# Resolved BEFORE anything downloads, so the tarball and SHA256SUMS come from
-# one release even if a new one is published mid-install.
-RELEASE_VERSION="${VERSION:-}"
-RELEASE_VERSION="${RELEASE_VERSION#v}"
-if [[ -z "$RELEASE_VERSION" && -z "${BUNDLE_URL:-}" ]]; then
-  # GitHub's redirect names the latest tag: no API call, no rate limit.
-  # (`|| true`: pipefail would otherwise exit before the error below.)
-  LATEST_LOC=$(curl -fsSI "https://github.com/$RELEASE_REPO/releases/latest/download/SHA256SUMS" 2>/dev/null \
-    | tr -d '\r' | awk 'tolower($1) == "location:" { print $2; exit }' || true)
-  if [[ "$LATEST_LOC" =~ /releases/download/v([^/]+)/ ]]; then
-    RELEASE_VERSION="${BASH_REMATCH[1]}"
-  else
-    echo "Error: couldn't determine the latest autonomOS release from GitHub." >&2
-    echo "  Check your connection, or install a specific one: VERSION=x.y.z" >&2
-    exit 1
-  fi
-fi
-if [[ -n "$RELEASE_VERSION" ]]; then
-  DEFAULT_BUNDLE_URL="https://github.com/$RELEASE_REPO/releases/download/v${RELEASE_VERSION}"
-fi
-BUNDLE_URL="${BUNDLE_URL:-$DEFAULT_BUNDLE_URL}"
 
 # ── platform detection ────────────────────────────────────────────────────
 case "$(uname -s)/$(uname -m)" in
@@ -148,6 +130,29 @@ EOF
   fi
 fi
 
+# ── which release ──────────────────────────────────────────────────────────
+# The version being installed, which the signed build record must name.
+# Resolved BEFORE anything downloads, so the tarball and SHA256SUMS come from
+# one release even if a new one is published mid-install.
+RELEASE_VERSION="${VERSION:-}"
+RELEASE_VERSION="${RELEASE_VERSION#v}"
+if [[ -z "$RELEASE_VERSION" && -z "${BUNDLE_URL:-}" ]]; then
+  # GitHub's redirect names the latest tag: no API call, no rate limit.
+  # (`|| true`: pipefail would otherwise exit before the error below.)
+  LATEST_LOC=$(curl -fsSI "https://github.com/$RELEASE_REPO/releases/latest/download/SHA256SUMS" 2>/dev/null \
+    | tr -d '\r' | awk 'tolower($1) == "location:" { print $2; exit }' || true)
+  if [[ "$LATEST_LOC" =~ /releases/download/v([^/]+)/ ]]; then
+    RELEASE_VERSION="${BASH_REMATCH[1]}"
+  else
+    echo "Error: couldn't determine the latest autonomOS release from GitHub." >&2
+    echo "  Check your connection, or install a specific one: VERSION=x.y.z" >&2
+    exit 1
+  fi
+fi
+if [[ -z "${BUNDLE_URL:-}" ]]; then
+  BUNDLE_URL="https://github.com/$RELEASE_REPO/releases/download/v${RELEASE_VERSION}"
+fi
+
 # ── download ──────────────────────────────────────────────────────────────
 TARBALL="autonomos-${PLATFORM}.tar.gz"
 TMP=$(mktemp -d)
@@ -177,7 +182,7 @@ if [[ "$EXPECTED" != "$ACTUAL" ]]; then
 fi
 echo "[install] ✓ Checksum OK"
 
-# ── provenance (ADR-122) ──────────────────────────────────────────────────
+# ── provenance (ADR-126) ──────────────────────────────────────────────────
 # The checksum only proves the download matches SHA256SUMS — and both come
 # from the same release, so whoever can replace one can replace both. The
 # signed build record proves WHO built it: only aterrylu/autonomOS's
@@ -236,20 +241,34 @@ else
       "If the installer was just updated, the site may still be serving the old verifier: wait a few minutes and re-run."
   fi
 
+  if [[ ${#VERIFIER_SHA256} -ne 64 ]]; then
+    provenance_refuse "this installer has no valid verifier checksum." "Please report it."
+  fi
+
   echo "[install] Checking the signed build record (v$RELEASE_VERSION)..."
   set +e
-  PROV_OUT=$(node "$VERIFIER" --file "$TMP/$TARBALL" --version "$RELEASE_VERSION" \
-    --repo "$RELEASE_REPO" --tuf-cache "$TMP/sigstore-tuf" 2>&1)
+  PROV_OUT=$(node "$VERIFIER" --file "$TMP/$TARBALL" --name "$TARBALL" \
+    --version "$RELEASE_VERSION" --repo "$RELEASE_REPO" \
+    --tuf-cache "$TMP/sigstore-tuf" 2>"$TMP/verifier.err")
   PROV_RC=$?
   set -e
-  PROV_WHY="${PROV_OUT#*: }"
-  case "$PROV_RC" in
-    0)  echo "[install] ✓ Signed build record verified (built by $RELEASE_REPO release.yml at v$RELEASE_VERSION)" ;;
-    10) provenance_refuse "this download doesn't match its signed build record ($PROV_WHY)." \
-          "It may have been tampered with — please report it: https://github.com/$RELEASE_REPO/issues" ;;
-    *)  provenance_refuse "couldn't check this download's signed build record ($PROV_WHY)." \
-          "If GitHub or Sigstore was unreachable, re-run in a minute. If no record was found, this file isn't an official release build: don't install it, and please report where it came from." ;;
-  esac
+  # The verdict is the LAST stdout line; stderr (warnings, a crash's stack)
+  # stays out of it. Accept only exit 0 AND the literal word.
+  PROV_LINE=$(printf '%s\n' "$PROV_OUT" | tail -n 1)
+  PROV_WHY=$(printf '%s' "${PROV_LINE#*: }" | cut -c1-300)
+  if [[ "$PROV_RC" -eq 0 && "$PROV_LINE" == "verified" ]]; then
+    echo "[install] ✓ Signed build record verified (built by $RELEASE_REPO release.yml at v$RELEASE_VERSION)"
+  else
+    case "$PROV_RC" in
+      10) provenance_refuse "this download doesn't match its signed build record ($PROV_WHY)." \
+            "It may have been tampered with — please report it: https://github.com/$RELEASE_REPO/issues" ;;
+      11) provenance_refuse "couldn't check this download's signed build record ($PROV_WHY)." \
+            "If GitHub or Sigstore was unreachable, re-run in a minute. If no record was found, this file isn't an official release build: don't install it, and please report where it came from." ;;
+      *)  echo "$(tail -n 3 "$TMP/verifier.err" 2>/dev/null | cut -c1-300)" >&2
+          provenance_refuse "the build-record verifier failed unexpectedly (exit $PROV_RC)." \
+            "This is a bug in the installer, not your download: please report it at https://github.com/$RELEASE_REPO/issues" ;;
+    esac
+  fi
 fi
 
 # ── extract (stage-and-swap, ADR-077) ─────────────────────────────────────
