@@ -1,4 +1,4 @@
-## ADR-128: Agents never hold the operator token: channel server uses a per-agent credential on the internal socket
+## ADR-129: Agents never hold the operator token: channel server uses a per-agent credential on the internal socket
 
 - **Date:** 2026-09-30
 - **Decided by:** Terry approved fixing the security audit findings; TeamLead approved the M variant over the S variant; SecurityFix-Hardening (agent) designed it, with the design challenged and approved by SecurityAudit-Claude before implementation and coordinated with SecurityFix-Auth (who owns the public listener's auth).
