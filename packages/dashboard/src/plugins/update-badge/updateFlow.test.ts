@@ -6,10 +6,12 @@ import {
   consequenceFor,
   inAppNotes,
   joinNames,
+  resurfacedFlag,
   sortNewestFirst,
   stageDetail,
   stageFor,
   stepsFor,
+  takeUpdatedFlag,
 } from "./updateFlow";
 
 const rel = (version: string, body = ""): ReleaseNote => ({
@@ -171,5 +173,62 @@ describe("updateFlow helpers", () => {
     expect(steps[2].detail).toBe("Waiting for api to finish");
     expect(activeStepIndex(steps, "waiting_idle")).toBe(2);
     expect(stepsFor("source", "0.7.0", { waitIdle: true })[1].id).toBe("wait");
+  });
+});
+
+describe("the post-update flag and its resurfacing (ADR-122)", () => {
+  const done = (extra: Record<string, unknown>) =>
+    ({
+      current: "0.7.0",
+      status: {
+        phase: "done",
+        from: "0.6.1",
+        to: "0.7.0",
+        startedAt: "s1",
+        updatedAt: "u",
+        ...extra,
+      },
+    }) as never;
+
+  it("resurfaces for an unchecked build record even with no agent problems", () => {
+    const f = resurfacedFlag(
+      done({
+        verification: { checkedAt: "x", checked: 1, problems: [] },
+        provenance: {
+          status: "skipped",
+          reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+        },
+      }),
+      null,
+    );
+    expect(f?.provenance).toEqual({
+      status: "skipped",
+      reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+    });
+    // A verified update with no problems has nothing to say.
+    expect(
+      resurfacedFlag(
+        done({
+          verification: { checkedAt: "x", checked: 1, problems: [] },
+          provenance: { status: "verified" },
+        }),
+        null,
+      ),
+    ).toBeNull();
+  });
+
+  it("an unrecognized provenance status in the flag fails CLOSED (a warning, never green)", () => {
+    sessionStorage.setItem(
+      "autonomos:updated",
+      JSON.stringify({
+        updatedTo: "0.7.0",
+        interruptedNames: [],
+        provenance: { status: "some-future-status" },
+      }),
+    );
+    expect(takeUpdatedFlag()?.provenance).toEqual({
+      status: "missing",
+      reason: "an unrecognized check result",
+    });
   });
 });

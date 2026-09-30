@@ -750,7 +750,13 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
     expect(
       JSON.parse(sessionStorage.getItem("autonomos:updated") ?? ""),
-    ).toEqual({ kind: "upgrade", updatedTo: "0.7.0", interruptedNames: [] });
+    ).toEqual({
+      kind: "upgrade",
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+      // The run id, so a quick dismiss can still be acknowledged.
+      startedAt: "2026-09-23T10:00:00.000Z",
+    });
   });
 
   it("during the update, a signed build record that couldn't be checked shows an amber note", async () => {

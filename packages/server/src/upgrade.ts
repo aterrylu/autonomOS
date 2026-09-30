@@ -150,7 +150,10 @@ export type UpgradeOptions = {
   /**
    * The provenance outcome, once known (after the checksum, before anything
    * changes). "invalid" is also returned as an error; the others proceed —
-   * the caller surfaces "missing"/"skipped" loudly. Cosmetic like onPhase.
+   * the caller surfaces "missing"/"skipped" loudly. NOT cosmetic: for those
+   * two it's the only channel to the dashboard's warning. A throwing callback
+   * still can't change the upgrade's outcome, but it is logged. The same
+   * result also rides on the "upgraded" return value.
    */
   onProvenance?: (result: ProvenanceResult) => void;
 };
@@ -158,8 +161,12 @@ export type UpgradeOptions = {
 function reportPhase<P>(cb: ((p: P) => void) | undefined, phase: P): void {
   try {
     cb?.(phase);
-  } catch {
-    // progress is cosmetic; never let it change the upgrade's outcome
+  } catch (err) {
+    // Never let reporting change the upgrade's outcome — but a lost
+    // provenance warning must leave a trace.
+    console.warn(
+      `[upgrade] progress callback failed: ${err instanceof Error ? err.message : err}`,
+    );
   }
 }
 
@@ -305,7 +312,7 @@ export async function performUpgrade(
     if (provenance.status === "invalid") {
       return {
         status: "error",
-        message: `The v${releaseVersion} download doesn't match its signed build record, so it wasn't installed: ${provenance.reason}.`,
+        message: `The v${releaseVersion} download doesn't match its signed build record, so it wasn't installed: ${provenance.reason}. If you believe this is wrong, please report it. To install anyway, run \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS.`,
       };
     }
 

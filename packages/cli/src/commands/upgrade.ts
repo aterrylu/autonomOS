@@ -60,6 +60,7 @@ import { restoreStateFor } from "../lib/state-pair.js";
 import {
   makeReporter,
   type Reporter,
+  reportProvenance,
   statusFileArg,
   withTerminalStatus,
   withUpgradeLock,
@@ -445,21 +446,7 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       if (p === "installing") touched = true;
       report(p);
     },
-    onProvenance: (r) => {
-      if (r.status === "verified") {
-        console.log("✓ Signed build record verified.");
-        report("verifying", { provenance: { status: "verified" } });
-      } else if (r.status !== "invalid") {
-        // Loud, never blocking (upgrade-continuity): the checksum matched,
-        // but nothing proves who built this tarball.
-        console.warn(
-          `⚠️  ${r.status === "skipped" ? "Signed build record not checked" : "Couldn't check the signed build record"}: ${r.reason}. Installing anyway: the checksum matched.`,
-        );
-        report("verifying", {
-          provenance: { status: r.status, reason: r.reason },
-        });
-      }
-    },
+    onProvenance: (r) => reportProvenance(r, report),
     beforeSwap: async () => {
       const gate = await idleGate(flags, report, GATE_CAP_BEFORE_CHANGE_MS);
       if (!gate.ok) {
@@ -512,6 +499,13 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
     console.log(`⚠️  DOWNGRADED ${result.from} → ${result.to} (as requested).`);
   } else {
     console.log(`✓ Upgraded ${result.from} → ${result.to}.`);
+    if (result.provenance.status !== "verified") {
+      // Repeat it here: the first warning scrolled away behind the idle
+      // gate, snapshot and restart output.
+      console.warn(
+        `⚠️  v${result.to}'s signed build record ${result.provenance.status === "skipped" ? "wasn't checked" : "couldn't be checked"}: ${result.provenance.reason}.`,
+      );
+    }
   }
   report("restarting", { to: result.to });
   console.log(`  Previous version kept at: ${install.bundleDir}.previous`);

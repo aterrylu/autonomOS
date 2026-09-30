@@ -282,8 +282,14 @@ export function UpdatedBanner() {
             onClick={() => {
               // Dismissing a problem report acknowledges it for this browser;
               // otherwise it resurfaces on every load while that update runs.
-              if (verify.kind === "done" && problems.length > 0) {
-                writeUpdateAck(verify.record.startedAt);
+              // Acknowledge by run id — from the record once the agent check
+              // is in, else from a resurfaced flag (a quick dismiss).
+              const runId =
+                verify.kind === "done"
+                  ? verify.record.startedAt
+                  : flag?.startedAt;
+              if (runId && (problems.length > 0 || !!provenanceWarning)) {
+                writeUpdateAck(runId);
               }
               setFlag(null);
             }}

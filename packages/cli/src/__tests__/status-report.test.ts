@@ -9,9 +9,8 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 const TEST_DIR = join(tmpdir(), `autonomos-status-report-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 
-const { makeReporter, statusFileArg, withTerminalStatus } = await import(
-  "../lib/status-report.js"
-);
+const { makeReporter, reportProvenance, statusFileArg, withTerminalStatus } =
+  await import("../lib/status-report.js");
 
 /**
  * The out-of-band job's only channel to the dashboard is the status file. A
@@ -87,5 +86,49 @@ describe("status-report", () => {
     makeReporter(undefined)("failed", { message: "x" });
     assert.equal(await withTerminalStatus(undefined, {}, async () => 0), 0);
     assert.equal(read().phase, "downloading");
+  });
+});
+
+describe("reportProvenance → the status record the dashboard reads (ADR-122)", () => {
+  const quiet = { info: () => {}, warn: () => {} };
+  const read = () => JSON.parse(readFileSync(file, "utf-8"));
+
+  it("a MISSING check lands in the record and rides through installing → done", () => {
+    const report = makeReporter(file);
+    const warned: string[] = [];
+    reportProvenance(
+      {
+        status: "missing",
+        reason: "couldn't reach GitHub's attestation service",
+      },
+      report,
+      { info: () => {}, warn: (m) => warned.push(m) },
+    );
+    report("installing");
+    report("done");
+    assert.equal(read().phase, "done");
+    assert.deepEqual(read().provenance, {
+      status: "missing",
+      reason: "couldn't reach GitHub's attestation service",
+    });
+    assert.match(warned[0], /Couldn't check the signed build record/);
+  });
+
+  it("VERIFIED is recorded too; INVALID writes nothing (the run fails with its own message)", () => {
+    const report = makeReporter(file);
+    reportProvenance({ status: "verified" }, report, quiet);
+    assert.deepEqual(read().provenance, { status: "verified" });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        phase: "downloading",
+        from: "0.7.0",
+        to: "0.7.99",
+        startedAt: "2026-09-30T00:00:00Z",
+        updatedAt: "2026-09-30T00:00:00Z",
+      }),
+    );
+    reportProvenance({ status: "invalid", reason: "x" }, report, quiet);
+    assert.equal(read().provenance, undefined);
   });
 });

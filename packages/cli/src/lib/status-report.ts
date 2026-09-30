@@ -11,6 +11,7 @@
 // failure is logged loudly. And a job that throws still ends with a terminal
 // record (withTerminalStatus), or the dashboard would follow it forever.
 
+import type { ProvenanceResult } from "@autonomos/server/provenance.js";
 import {
   acquireUpgradeLock,
   advanceUpgradeStatus,
@@ -104,5 +105,27 @@ export async function withTerminalStatus(
       }
     }
     throw err;
+  }
+}
+
+/** The provenance outcome → the console and the status record (ADR-122).
+ *  "invalid" writes nothing here: the run fails with its own message. The
+ *  record's `provenance` is what the dashboard's amber note and post-update
+ *  banner read, so it must land and ride through the later phases. */
+export function reportProvenance(
+  r: ProvenanceResult,
+  report: Reporter,
+  log: { info: (m: string) => void; warn: (m: string) => void } = console,
+): void {
+  if (r.status === "verified") {
+    log.info("✓ Signed build record verified.");
+    report("verifying", { provenance: { status: "verified" } });
+  } else if (r.status !== "invalid") {
+    // Loud, never blocking (upgrade continuity): the checksum matched, but
+    // nothing proves who built this tarball.
+    log.warn(
+      `⚠️  ${r.status === "skipped" ? "Signed build record not checked" : "Couldn't check the signed build record"}: ${r.reason}. Installing anyway: the checksum matched.`,
+    );
+    report("verifying", { provenance: { status: r.status, reason: r.reason } });
   }
 }

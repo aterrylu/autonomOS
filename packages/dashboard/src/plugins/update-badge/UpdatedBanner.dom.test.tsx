@@ -195,6 +195,32 @@ describe("UpdatedBanner", () => {
       expect(screen.getByTestId("banner-restore")).toBeTruthy();
     });
 
+    it("an update whose build record couldn't be checked resurfaces in ANY tab — and stays dismissed once dismissed", async () => {
+      // A wait-for-idle job that fired later, or another tab / device: no
+      // sessionStorage flag here, only the server's record.
+      status = doneRecord({
+        verification: { checkedAt: "x", checked: 1, problems: [] },
+        provenance: {
+          status: "missing",
+          reason: "couldn't reach GitHub's attestation service",
+        },
+      });
+      const first = render(<UpdatedBanner />);
+      const banner = await screen.findByTestId("updated-banner");
+      await vi.waitFor(() =>
+        expect(banner.getAttribute("data-tone")).toBe("attention"),
+      );
+      expect(banner.textContent).toContain(
+        "Its signed build record couldn't be checked (couldn't reach GitHub's attestation service)",
+      );
+      fireEvent.click(screen.getByLabelText("Dismiss"));
+      first.unmount();
+      await act(async () => {
+        render(<UpdatedBanner />);
+      });
+      expect(screen.queryByTestId("updated-banner")).toBeNull();
+    });
+
     it("stays dismissed in this browser once dismissed", async () => {
       status = withProblem();
       const first = render(<UpdatedBanner />);

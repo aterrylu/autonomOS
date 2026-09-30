@@ -10,6 +10,7 @@
     "./run.js": "./src/run.ts",
     "./authCookie.js": "./src/authCookie.ts",
     "./pid-file.js": "./src/pid-file.ts",
+    "./provenance.js": "./src/provenance.ts",
     "./configDir.js": "./src/configDir.ts",
     "./installInfo.js": "./src/installInfo.ts",
     "./sourceUpgrade.js": "./src/sourceUpgrade.ts",

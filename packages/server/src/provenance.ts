@@ -54,6 +54,37 @@ export function expectedSigner(repo: string, version: string): string {
   return `https://github.com/${repo}/.github/workflows/release.yml@refs/tags/v${version}`;
 }
 
+/** The signer as an EXACT-match policy. @sigstore/verify matches a string
+ *  policy as an UNANCHORED regular expression, so the bare string let
+ *  `v0.7.0` match `v0.7.0-rc.1`, and `.` in the repo or version match any
+ *  character (review catch on #445: version "0.7" verified v0.7.0's build). */
+export function signerPolicy(repo: string, version: string): RegExp {
+  const esc = expectedSigner(repo, version).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  // Case-insensitive because GitHub owner/repo names are (the API matches
+  // `aterrylu/autonomos` too); the version is then re-checked EXACTLY below.
+  return new RegExp(`^${esc}$`, "i");
+}
+
+/** Belt and braces over the library's match: the signer it returned must be
+ *  our release workflow for THIS repo (case-insensitive, as GitHub is) at
+ *  THIS exact tag — whatever the library's match semantics become. */
+export function signerIsExactly(
+  san: string | undefined,
+  repo: string,
+  version: string,
+): boolean {
+  const m =
+    /^https:\/\/github\.com\/([^/]+\/[^/]+)\/\.github\/workflows\/release\.yml@refs\/tags\/v(.+)$/.exec(
+      san ?? "",
+    );
+  return (
+    m !== null && m[1].toLowerCase() === repo.toLowerCase() && m[2] === version
+  );
+}
+
 export type ProvenanceDeps = {
   /** The attestation bundles for a digest; null = couldn't ask (with why). */
   fetchAttestations: (
@@ -71,12 +102,23 @@ export async function verifyReleaseProvenance(opts: {
   apiBase: string;
   env?: Record<string, string | undefined>;
   deps?: Partial<ProvenanceDeps>;
+  /** Test seam: pretend to run under Bun. */
+  underBun?: boolean;
 }): Promise<ProvenanceResult> {
   const env = opts.env ?? process.env;
   if (env[SKIP_PROVENANCE_ENV] === "1") {
     return {
       status: "skipped",
       reason: `${SKIP_PROVENANCE_ENV}=1 is set`,
+    };
+  }
+  // Measured: the real, valid v0.7.0 attestation fails TLOG_INCLUSION_PROMISE
+  // under Bun 1.3 (verified under Node). Everything that runs this ships on
+  // Node today — but if that ever changes, say "can't check", never "forged".
+  if (opts.underBun ?? !!process.versions.bun) {
+    return {
+      status: "missing",
+      reason: "the signed build record can only be checked under Node",
     };
   }
   const fetchAttestations =
@@ -89,7 +131,7 @@ export async function verifyReleaseProvenance(opts: {
   if (got.bundles.length === 0) {
     return {
       status: "missing",
-      reason: "no signed build record was published for this download",
+      reason: "no signed build record was found for this download",
     };
   }
 
@@ -103,7 +145,6 @@ export async function verifyReleaseProvenance(opts: {
     };
   }
 
-  const signer = expectedSigner(opts.repo, opts.version);
   let invalid: string | null = null;
   let unsupported: string | null = null;
   for (const raw of got.bundles) {
@@ -114,22 +155,26 @@ export async function verifyReleaseProvenance(opts: {
       unsupported ??= `unreadable attestation (${errText(err)})`;
       continue;
     }
+    let signer: ReturnType<Verifier["verify"]>;
     try {
-      verifier.verify(toSignedEntity(bundle), {
-        subjectAlternativeName: signer,
+      signer = verifier.verify(toSignedEntity(bundle), {
+        subjectAlternativeName: signerPolicy(opts.repo, opts.version),
         extensions: { issuer: OIDC_ISSUER },
       });
     } catch (err) {
-      if (err instanceof PolicyError) {
-        invalid ??= "it was signed by a different workflow or repository";
-      } else if (
-        err instanceof VerificationError &&
-        err.code !== "NOT_IMPLEMENTED_ERROR"
-      ) {
-        invalid ??= `its signature doesn't verify (${err.code})`;
-      } else {
-        unsupported ??= `an attestation this version can't evaluate (${errText(err)})`;
-      }
+      const c = classifyVerifyError(err);
+      if (c.kind === "invalid") invalid ??= c.reason;
+      else unsupported ??= c.reason;
+      continue;
+    }
+    if (
+      !signerIsExactly(
+        signer.identity?.subjectAlternativeName,
+        opts.repo,
+        opts.version,
+      )
+    ) {
+      invalid ??= "it was signed by a different workflow or repository";
       continue;
     }
     // Signed by us, at this tag. Now: does it vouch for THIS file?
@@ -149,30 +194,83 @@ export async function verifyReleaseProvenance(opts: {
   };
 }
 
+/** What a verifier error means. Only evidence of tampering is "invalid" —
+ *  a wrong signer, or a signature / certificate / log proof that doesn't
+ *  hold. Anything that says "I can't evaluate this" (a feature not
+ *  implemented, a DSSE/entry/Rekor format this library version doesn't
+ *  know — thrown as TLOG_BODY_ERROR "unsupported …") is "unsupported" and
+ *  lands as missing: a future format must never refuse updates.
+ *  Node only: the verifier is tested under Node, and the release bundle,
+ *  install.sh and the in-app job all run under Node. */
+export function classifyVerifyError(err: unknown): {
+  kind: "invalid" | "unsupported";
+  reason: string;
+} {
+  if (err instanceof PolicyError) {
+    return {
+      kind: "invalid",
+      reason: "it was signed by a different workflow or repository",
+    };
+  }
+  if (err instanceof VerificationError) {
+    const cantEvaluate =
+      // Not thrown by @sigstore/verify 4.x; kept for other versions.
+      err.code === "NOT_IMPLEMENTED_ERROR" ||
+      // A DSSE / entry kind / Rekor format this version doesn't know.
+      (err.code === "TLOG_BODY_ERROR" && /^unsupported /i.test(err.message)) ||
+      // A timestamp or log entry shape it silently skips, then misses its
+      // threshold: "expected 1 timestamps, got 0".
+      (err.code === "TIMESTAMP_ERROR" &&
+        /^expected \d+ timestamps/i.test(err.message)) ||
+      // A log key the trust root doesn't carry (a stale or partial cache).
+      ((err.code === "TLOG_ERROR" || err.code === "PUBLIC_KEY_ERROR") &&
+        /key not found/i.test(err.message));
+    if (!cantEvaluate) {
+      return {
+        kind: "invalid",
+        reason: `its signature doesn't verify (${err.code})`,
+      };
+    }
+  }
+  return {
+    kind: "unsupported",
+    reason: `an attestation this version can't evaluate (${errText(err)})`,
+  };
+}
+
 /** The sha256 digests an in-toto SLSA provenance statement vouches for, or
  *  null when the bundle isn't one. */
 function subjectDigests(
   bundle: ReturnType<typeof bundleFromJSON>,
 ): string[] | null {
-  const content = bundle.content;
-  if (content.$case !== "dsseEnvelope") return null;
-  const env = content.dsseEnvelope;
-  if (env.payloadType !== IN_TOTO_PAYLOAD) return null;
-  let stmt: {
-    predicateType?: unknown;
-    subject?: { digest?: { sha256?: unknown } }[];
-  };
+  // Never throws: a signed-but-odd payload is "can't evaluate", not a crash
+  // that would fail the update for an unrelated reason.
   try {
-    stmt = JSON.parse(Buffer.from(env.payload).toString("utf-8"));
+    const content = bundle.content;
+    if (content.$case !== "dsseEnvelope") return null;
+    const env = content.dsseEnvelope;
+    if (env.payloadType !== IN_TOTO_PAYLOAD) return null;
+    const stmt = JSON.parse(Buffer.from(env.payload).toString("utf-8")) as {
+      predicateType?: unknown;
+      subject?: unknown;
+    } | null;
+    if (!stmt || stmt.predicateType !== SLSA_PROVENANCE_V1) return null;
+    if (!Array.isArray(stmt.subject)) return null;
+    return stmt.subject
+      .map(
+        (x) => (x as { digest?: { sha256?: unknown } } | null)?.digest?.sha256,
+      )
+      .filter((d): d is string => typeof d === "string")
+      .map((d) => d.toLowerCase());
   } catch {
     return null;
   }
-  if (stmt.predicateType !== SLSA_PROVENANCE_V1) return null;
-  return (stmt.subject ?? [])
-    .map((s) => s.digest?.sha256)
-    .filter((d): d is string => typeof d === "string")
-    .map((d) => d.toLowerCase());
 }
+
+/** Only GitHub itself ever gets the token. `apiBase` follows the release
+ *  override (a mirror, a test fixture), and nothing else in the update sends
+ *  a credential there. */
+const GITHUB_API = "https://api.github.com";
 
 async function fetchFromGitHub(
   apiBase: string,
@@ -180,16 +278,24 @@ async function fetchFromGitHub(
   digest: string,
   env: Record<string, string | undefined>,
 ): Promise<{ bundles: unknown[] } | { error: string }> {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-  };
-  // Optional: only raises the rate limit. The endpoint is public.
-  if (env.GITHUB_TOKEN) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
+  // per_page=100: the default 30 would let a flood of junk attestations
+  // push the real one off page 1.
+  const url = `${apiBase}/repos/${repo}/attestations/sha256:${digest}?per_page=100`;
+  const ask = (withToken: boolean) =>
+    fetch(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        // Optional: only raises the rate limit (the endpoint is public).
+        ...(withToken && { Authorization: `Bearer ${env.GITHUB_TOKEN}` }),
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+  const token = !!env.GITHUB_TOKEN && apiBase === GITHUB_API;
   try {
-    const resp = await fetch(
-      `${apiBase}/repos/${repo}/attestations/sha256:${digest}`,
-      { headers, signal: AbortSignal.timeout(15_000) },
-    );
+    let resp = await ask(token);
+    // A stale or wrong token makes GitHub answer 401 for a PUBLIC endpoint —
+    // which would quietly turn every check into "missing". Ask again bare.
+    if (resp.status === 401 && token) resp = await ask(false);
     // 404 = no attestation for this digest (GitHub's answer for "none").
     if (resp.status === 404) return { bundles: [] };
     if (!resp.ok) {
@@ -198,13 +304,26 @@ async function fetchFromGitHub(
       };
     }
     const body = (await resp.json()) as {
-      attestations?: { bundle?: unknown }[];
+      attestations?: { bundle?: unknown; bundle_url?: unknown }[];
     };
-    return {
-      bundles: (body.attestations ?? [])
-        .map((a) => a.bundle)
-        .filter((b) => b !== undefined),
-    };
+    const bundles: unknown[] = [];
+    for (const a of body.attestations ?? []) {
+      if (a.bundle != null) {
+        bundles.push(a.bundle);
+      } else if (typeof a.bundle_url === "string") {
+        // Large bundles are stored out of line; fetch them (no token: the
+        // URL is pre-signed blob storage, not GitHub's API).
+        try {
+          const b = await fetch(a.bundle_url, {
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (b.ok) bundles.push(await b.json());
+        } catch {
+          // One unreachable bundle is not tamper evidence; others may verify.
+        }
+      }
+    }
+    return { bundles };
   } catch (err) {
     return {
       error: `couldn't reach GitHub's attestation service (${errText(err)})`,

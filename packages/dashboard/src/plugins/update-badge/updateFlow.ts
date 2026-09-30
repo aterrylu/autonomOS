@@ -344,6 +344,9 @@ export interface UpdatedFlag {
   /** Upgrade only: the release's signed build record, as the job reported it
    *  (carried across the reload so the banner can say so straight away). */
   provenance?: UpgradeStatusRecord["provenance"];
+  /** The run it describes, so a dismiss can be acknowledged even before
+   *  the agent check has reported. */
+  startedAt?: string;
 }
 
 export function writeUpdatedFlag(flag: UpdatedFlag): void {
@@ -355,16 +358,21 @@ export function writeUpdatedFlag(flag: UpdatedFlag): void {
   }
 }
 
-/** Read AND clear the flag — the banner shows once per update. */
 function parseProvenance(p: unknown): UpdatedFlag["provenance"] {
   if (!p || typeof p !== "object") return undefined;
   const { status, reason } = p as { status?: unknown; reason?: unknown };
-  if (status !== "verified" && status !== "missing" && status !== "skipped") {
-    return undefined;
+  if (status === "verified") return { status };
+  if (status === "missing" || status === "skipped") {
+    return { status, ...(typeof reason === "string" && { reason }) };
   }
-  return { status, ...(typeof reason === "string" && { reason }) };
+  // Fail CLOSED: a status this version doesn't know is a warning, never a
+  // silent green banner.
+  return status === undefined
+    ? undefined
+    : { status: "missing", reason: "an unrecognized check result" };
 }
 
+/** Read AND clear the flag — the banner shows once per update. */
 export function takeUpdatedFlag(): UpdatedFlag | null {
   try {
     const raw = sessionStorage.getItem(FLAG_KEY);
@@ -382,6 +390,7 @@ export function takeUpdatedFlag(): UpdatedFlag | null {
         ? v.interruptedNames.filter((n): n is string => typeof n === "string")
         : [],
       provenance: parseProvenance(v.provenance),
+      startedAt: typeof v.startedAt === "string" ? v.startedAt : undefined,
     };
   } catch {
     return null;
@@ -432,7 +441,9 @@ export function writeUpdateAck(startedAt: string): void {
   }
 }
 
-/** A banner flag for an update with unacknowledged verification problems. */
+/** A banner flag for an update with unacknowledged verification problems,
+ *  or whose signed build record couldn't be checked — so the warning reaches
+ *  every tab and device, not just the one that launched the update. */
 export function resurfacedFlag(
   state: Pick<UpgradeState, "current" | "status">,
   ackedStartedAt: string | null,
@@ -442,7 +453,16 @@ export function resurfacedFlag(
   // Only while that update is what's running — after a Restore or a newer
   // update the problems no longer describe this install.
   if (r.to !== state.current) return null;
-  if (!r.verification || r.verification.problems.length === 0) return null;
+  const problems = !!r.verification && r.verification.problems.length > 0;
+  const provenanceWarning =
+    !!r.provenance && r.provenance.status !== "verified";
+  if (!problems && !provenanceWarning) return null;
   if (ackedStartedAt === r.startedAt) return null;
-  return { kind: "upgrade", updatedTo: r.to, interruptedNames: [] };
+  return {
+    kind: "upgrade",
+    updatedTo: r.to,
+    interruptedNames: [],
+    startedAt: r.startedAt,
+    ...(provenanceWarning && { provenance: r.provenance }),
+  };
 }

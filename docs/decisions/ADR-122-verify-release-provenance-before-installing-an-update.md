@@ -18,7 +18,8 @@
   - **New installs** (`install.sh`, a separate PR) fail closed, through a vendored single-file verifier that `install.sh` pins by sha256.
   - **Trust root:** always fetched live from Sigstore's TUF repository and cached under `$configDir/sigstore-tuf`, never pinned in the binary.
 - **Rationale:** the checksum proves the download wasn't corrupted. Provenance proves *who built it*: only GitHub Actions running our `release.yml` on the tag can obtain the signing certificate, and editing a release can't forge it.
-  - **Why "invalid" refuses:** refusing can't brick anything. The running version stays, and the dialog already says nothing changed.
+  - **Why "invalid" refuses:** a refusal leaves the running version in place, and the dialog already says nothing changed. The one case where a refusal *persists* is signer drift: the check runs in the installed version, so renaming `release.yml` or the repo in a single release would make every existing install refuse from then on. RELEASE.md therefore requires the verifier to accept a new signer one release before it's used.
+  - **Why the signer match is exact:** `@sigstore/verify` treats a string policy as an unanchored regular expression, so the policy is an anchored, escaped pattern. Otherwise `v0.7.0` would also accept `v0.7.0-rc.1`, and `.` would match any character.
   - **Why "missing" warns:** blocking on it would let a GitHub or Sigstore outage stop every update. Terry's rule is that an update path must never be bricked by our own machinery.
   - **Why the root isn't pinned:** that would turn a routine Sigstore key rotation into "invalid", and every later update would be refused.
   - **Classification is deliberately strict:** only a cryptographic, signer or digest failure is "invalid". A parse error or an unsupported feature (`NOT_IMPLEMENTED_ERROR`) is "missing", so a future bundle format can't block updates.
