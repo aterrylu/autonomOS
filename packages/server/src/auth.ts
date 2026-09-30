@@ -26,6 +26,19 @@ if (!HOME) throw new Error("HOME environment variable is not set");
 const DEFAULT_TOKEN_DIR = join(HOME, ".autonomos");
 const DEFAULT_TOKEN_FILE = join(DEFAULT_TOKEN_DIR, "token");
 
+/**
+ * How the operator token may appear in the boot banner, which is teed into the
+ * log file (V8). Never enough to reconstruct it: the old `first4...last4` WAS
+ * the whole token when it had 8 chars or fewer. A long token shows its last 4
+ * (enough to tell two tokens apart). A short one shows only its length: 4
+ * chars of a 12-char token is a third of it.
+ */
+export function describeTokenForLog(token: string): string {
+  if (token.length >= 16)
+    return `…${token.slice(-4)} (${token.length} chars; the full value is never logged)`;
+  return `(hidden, ${token.length} chars)`;
+}
+
 export function resolveAuthToken(): string {
   // 1. Env var takes precedence
   const envToken = process.env.AUTONOMOS_TOKEN?.trim();

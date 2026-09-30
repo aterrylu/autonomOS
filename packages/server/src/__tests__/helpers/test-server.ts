@@ -188,10 +188,19 @@ export async function bootServer(opts?: {
    *  a real server restart, which resumes that boot's persisted agents. The
    *  previous server must have EXITED (await its kill()) first. */
   reuseConfigDir?: string;
+  /** Operator token to boot with (default: a unique throwaway one). */
+  token?: string;
+  /** Runs on the config dir before the server starts, e.g. to plant files an
+   *  older build left behind. */
+  prepareConfigDir?: (configDir: string) => void;
+  /** Put the throwaway HOME here instead of `<configDir>/home` (the caller
+   *  deletes it). Needed when the config dir must NOT be an ancestor of HOME,
+   *  as on a real install. */
+  homeDir?: string;
 }): Promise<BootedServer> {
   const configDir =
     opts?.reuseConfigDir ?? mkdtempSync(join(tmpdir(), "autonomos-integ-"));
-  const fakeHome = join(configDir, "home");
+  const fakeHome = opts?.homeDir ?? join(configDir, "home");
   const fakeClaudeDir = opts?.reuseConfigDir
     ? join(fakeHome, ".claude")
     : seedFakeHome(fakeHome);
@@ -199,7 +208,10 @@ export async function bootServer(opts?: {
   // operator's live fleet writing its own sessions can't trip the assertion.
   const realDirsBefore = listRealProjectDirs();
   const realTrustBefore = listRealTrustKeys();
-  const token = `integ-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const token =
+    opts?.token ??
+    `integ-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  opts?.prepareConfigDir?.(configDir);
 
   if (opts?.anthropicBaseUrl) {
     writeFileSync(

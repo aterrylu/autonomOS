@@ -77,7 +77,8 @@ function validateName(name: string): void {
 }
 
 function ensureDir(dir: string): void {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  // 0700: preset files hold API keys (each file is 0600 too).
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 /** Validate an env-var key: syntactically valid AND not a reserved control key. */
