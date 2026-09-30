@@ -177,3 +177,4 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-118](ADR-118-projects-lists-every-runtime-single-agent-restart-is-server.md) | Projects lists every runtime; single-agent restart is server-side; Gemini keeps its session | 2026-09-26 | Accepted |  |  |
 | [ADR-119](ADR-119-per-runtime-permissions-as-built-manual-stays-flagless-codex.md) | Per-runtime permissions as built: manual stays flagless, Codex Plan is per-turn, spawn order | 2026-09-26 | Accepted | ADR-115 |  |
 | [ADR-120](ADR-120-org-chart-canvas-pan-zoom-fit-and-a-map-with-the-view.md) | Org chart canvas: pan, zoom, fit and a map, with the view outside React state | 2026-09-26 | Accepted |  |  |
+| [ADR-122](ADR-122-same-origin-guard-on-every-mutating-route-and-websocket.md) | Same-origin guard on every mutating route and WebSocket upgrade (CSRF V1) | 2026-09-30 | Accepted |  |  |
