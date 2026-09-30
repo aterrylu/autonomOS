@@ -1126,17 +1126,22 @@ export function Sidebar() {
                   {view.other.reduce((n, p) => n + p.sessions.length, 0)}
                 </span>
               </button>
-              {otherProjectsOpen &&
-                view.other.map((project) => (
-                  <ProjectItem
-                    key={project.path}
-                    project={project}
-                    label={labels.get(project.path) ?? project.name}
-                    page={page}
-                    liveSessionIds={liveSessionIds}
-                    onAgentContextMenu={openAgentMenu}
-                  />
-                ))}
+              {otherProjectsOpen && (
+                // Indented under the group header so its projects read as its
+                // contents, not as more top-level projects.
+                <div className="pl-3">
+                  {view.other.map((project) => (
+                    <ProjectItem
+                      key={project.path}
+                      project={project}
+                      label={labels.get(project.path) ?? project.name}
+                      page={page}
+                      liveSessionIds={liveSessionIds}
+                      onAgentContextMenu={openAgentMenu}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
