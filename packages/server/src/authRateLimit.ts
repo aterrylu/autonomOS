@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { isIPv6 } from "node:net";
 import type { Context } from "hono";
 
 /**
@@ -56,6 +57,9 @@ export class AuthFailureLimiter {
   private readonly records = new Map<string, AddressRecord>();
   /** Timestamps of recent distinct failures, all addresses (ring, pruned). */
   private globalFailures: number[] = [];
+  /** Per-process key for the failed-value hashes: a near-miss can be a typo
+   *  of the real token, so even its digest must not be guessable offline. */
+  private readonly hashKey = randomBytes(32);
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -81,7 +85,7 @@ export class AuthFailureLimiter {
   recordFailure(address: string, credential: string): number {
     const t = this.now();
     const rec = this.get(address, t) ?? this.create(address, t);
-    const h = createHash("sha256")
+    const h = createHmac("sha256", this.hashKey)
       .update(credential)
       .digest("base64url")
       .slice(0, 16);
@@ -153,10 +157,37 @@ export class AuthFailureLimiter {
   }
 }
 
-/** `::ffff:1.2.3.4` and `1.2.3.4` are one client. */
+/**
+ * The key a client is throttled under. `::ffff:1.2.3.4` and `1.2.3.4` are one
+ * client. An IPv6 address is keyed by its /64: one host routinely controls a
+ * whole /64 (2^64 addresses), and per-address keys would give it 10 free
+ * guesses per address while churning the LRU (SecurityAudit, V2a review).
+ * Loopback `::1` stays itself.
+ */
 export function normalizeAddress(addr: string | undefined): string {
   if (!addr) return "unknown";
-  return addr.startsWith("::ffff:") ? addr.slice(7) : addr;
+  if (addr.toLowerCase().startsWith("::ffff:") && !isIPv6(addr.slice(7)))
+    return addr.slice(7);
+  const bare = addr.split("%")[0];
+  if (!isIPv6(bare) || bare === "::1") return addr;
+  const groups = expandIPv6(bare);
+  return groups ? `${groups.slice(0, 4).join(":")}::/64` : addr;
+}
+
+/** Eight 4-digit lowercase groups, or null if it isn't plain IPv6. */
+function expandIPv6(addr: string): string[] | null {
+  const lower = addr.toLowerCase();
+  const [head, tail] = lower.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  if (lower.includes("::")) {
+    const fill = 8 - left.length - right.length;
+    if (fill < 0) return null;
+    return [...left, ...Array<string>(fill).fill("0"), ...right].map((g) =>
+      g.padStart(4, "0"),
+    );
+  }
+  return left.length === 8 ? left.map((g) => g.padStart(4, "0")) : null;
 }
 
 /** The TCP peer of this request (never a forwarding header). */

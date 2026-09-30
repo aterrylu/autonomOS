@@ -154,6 +154,34 @@ describe("helpers", () => {
     assert.equal(normalizeAddress(undefined), "unknown");
   });
 
+  it("keys IPv6 by /64", () => {
+    assert.equal(
+      normalizeAddress("2001:db8:1:2:aaaa:bbbb:cccc:dddd"),
+      "2001:0db8:0001:0002::/64",
+    );
+    assert.equal(
+      normalizeAddress("2001:db8:1:2::9"),
+      normalizeAddress("2001:db8:1:2:ffff::1"),
+    );
+    assert.notEqual(
+      normalizeAddress("2001:db8:1:2::9"),
+      normalizeAddress("2001:db8:1:3::9"),
+    );
+    assert.equal(normalizeAddress("fe80::1%en0"), "fe80:0000:0000:0000::/64");
+  });
+
+  it("rotating addresses inside one /64 shares one allowance (#V2a review)", () => {
+    const l = new AuthFailureLimiter(clock().now);
+    let lock = 0;
+    for (let i = 0; i <= FREE_FAILURES; i++)
+      lock = l.recordFailure(
+        normalizeAddress(`2001:db8:1:2::${(i + 1).toString(16)}`),
+        `g-${i}`,
+      );
+    assert.ok(lock > 0, "the 11th wrong value from the same /64 is limited");
+    assert.equal(l.check(normalizeAddress("2001:db8:1:2::abcd")).ok, false);
+  });
+
   it("lockout warnings are capped and carry no credential", () => {
     const lines: string[] = [];
     const warn = cappedLockoutWarn(3, (l) => lines.push(l));
