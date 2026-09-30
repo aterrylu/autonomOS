@@ -141,7 +141,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           // argument for not leaving one standing.
           //
           // The guard stays anyway because it is what ANSWERS the sender. The
-          // process no longer dies on a throw here (ADR-122: onMessage's own
+          // process no longer dies on a throw here (ADR-127: onMessage's own
           // catch-all, then the process-level unhandledRejection logger), but
           // those only log: without this catch the sender gets no
           // `send_result` and waits out the full channel-server deadline for a

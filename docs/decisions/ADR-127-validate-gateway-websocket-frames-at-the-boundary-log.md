@@ -1,4 +1,4 @@
-## ADR-122: Validate gateway WebSocket frames at the boundary; log unhandled rejections instead of exiting
+## ADR-127: Validate gateway WebSocket frames at the boundary; log unhandled rejections instead of exiting
 
 - **Date:** 2026-09-30
 - **Decided by:** Terry approved fixing the security audit findings; SecurityFix-Hardening (agent) chose the shape, reviewed by SecurityAudit-Claude.
