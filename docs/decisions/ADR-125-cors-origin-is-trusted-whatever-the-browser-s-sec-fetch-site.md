@@ -1,0 +1,10 @@
+## ADR-125: CORS_ORIGIN is trusted whatever the browser's Sec-Fetch-Site label
+
+- **Date:** 2026-09-30
+- **Decided by:** SecurityFix-Auth@autonomOS (agent), acting on nox's non-blocking review note on #447 (ADR-122).
+- **Supersedes:** ADR-122 (part: decision 2, the order in which the configured origin is consulted)
+- **Context:** In ADR-122's guard, a configured `CORS_ORIGIN` was consulted only when the browser sent no `Sec-Fetch-Site`. Every current browser sends it, and a dashboard served from a genuinely separate origin is labelled `same-site` or `cross-site`, so it was refused before its Origin was ever checked. The setting was dead on modern browsers, and the refusal log's advice ("set CORS_ORIGIN") couldn't help. The existing test passed only because it stripped `Sec-Fetch-Site`.
+- **Decision:** When the request's `Origin` exactly matches a configured origin, provenance passes whatever `Sec-Fetch-Site` says. Every other origin is judged exactly as before (`same-site` and `cross-site` refused), and the JSON-only body rule still applies to the configured origin.
+- **Rationale:** `Origin` can't be forged by a page, so an exact match admits only the origin the operator named. That is the same trust ADR-122 already gave it for older browsers, now applied consistently. Dev mode is unaffected, because vite proxies `/api` and `/ws`, so those requests stay same-origin.
+- **Alternatives considered:** Reword the log and ADR to say cross-origin dashboards are unsupported. That was rejected because it would leave a documented setting silently broken. Honoring it costs one exact string comparison.
+- **Source:** nox review of #447 at 6bd1a9ed; PR `terry/csrf-cors-origin-fetch-metadata`.
