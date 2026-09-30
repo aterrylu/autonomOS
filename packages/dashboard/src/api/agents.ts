@@ -17,6 +17,9 @@ export interface SpawnAgentBody {
   resumeSessionId?: string;
   forkFromAgentId?: string;
   permissionMode?: string;
+  /** The runtime's OWN permission value (ADR-115), e.g. "acceptEdits" or
+   *  "approval_policy=never · sandbox_mode=danger-full-access"; with provider. */
+  permission?: string | Readonly<Record<string, string>>;
   appendSystemPrompt?: string;
   template?: string;
   manager?: string;

@@ -1,7 +1,11 @@
 import {
   type AgentTemplate,
-  DEFAULT_PERMISSION_MODE,
-  type PermissionMode,
+  formatPermission,
+  type MaskedSettings,
+  type Provider,
+  type RuntimePermission,
+  samePermission,
+  widerAxes,
 } from "@autonomos/core";
 import { useMemo, useState } from "react";
 import { templatesApi } from "../api/config";
@@ -9,7 +13,17 @@ import { templatesPoll } from "../api/polls";
 import { usePoll } from "../api/usePoll";
 import { useUndoableTextValue } from "../hooks/useUndoableTextValue";
 import { THEMES, useStore } from "../store";
-import { PermissionModeSelect } from "./PermissionModeSelect";
+import {
+  neverAsksTone,
+  operatorDefault,
+  PERMISSION_RUNTIMES,
+  PermissionChip,
+  pinsToTemplatePermissions,
+  RUNTIME_NAMES,
+  RuntimeAxisFields,
+  templatePins,
+  useRuntimeDefaults,
+} from "./RuntimePermission";
 
 /**
  * TemplatesPanel — manage agent templates (~/.autonomos/templates/*.json).
@@ -58,6 +72,188 @@ function useRunningAgentsByTemplate(): Record<string, number> {
   }, [sessions]);
 }
 
+// ── Per-runtime permission pins (ADR-115) ────────────────────────
+
+type Pins = Partial<Record<Provider, RuntimePermission>>;
+type Defaults = MaskedSettings["runtimeDefaults"] | undefined;
+
+/** A template saved with `pins` — every other field kept, and the legacy
+ *  shared-vocabulary mode dropped: `templatePins` already made it explicit. */
+function withPins(template: AgentTemplate, pins: Pins): AgentTemplate {
+  const { permissionMode: _legacy, permissions: _old, ...rest } = template;
+  const permissions = pinsToTemplatePermissions(pins);
+  return permissions ? { ...rest, permissions } : rest;
+}
+
+/**
+ * One row per runtime: the template's pin, or "follows your default". "Use
+ * default" drops the pin — and when your default lets agents do MORE than the
+ * pin did, it says exactly what widens and asks first (never silently).
+ * `onChange` (editor only) makes each pin editable and unpinned rows pinnable.
+ */
+function TemplatePins({
+  pins,
+  defaults,
+  page,
+  onUseDefault,
+  onChange,
+}: {
+  pins: Pins;
+  defaults: Defaults;
+  page: PageTheme;
+  onUseDefault: (runtime: Provider) => void;
+  onChange?: (pin: RuntimePermission) => void;
+}) {
+  const [confirming, setConfirming] = useState<Provider | null>(null);
+  const tone = neverAsksTone(page);
+  return (
+    <div className="flex flex-col gap-2" data-testid="template-pins">
+      {PERMISSION_RUNTIMES.map((r) => {
+        const pin = pins[r];
+        const def = operatorDefault(defaults, r);
+        const widens = pin ? widerAxes(pin, def) : [];
+        const askClearPin = () =>
+          widens.length > 0 ? setConfirming(r) : onUseDefault(r);
+        return (
+          <div
+            key={r}
+            data-runtime={r}
+            className="flex flex-col gap-1.5 text-[11px]"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className="w-[74px] shrink-0"
+                style={{ color: page.statusFg }}
+              >
+                {RUNTIME_NAMES[r]}
+              </span>
+              {pin && !onChange && (
+                <PermissionChip permission={pin} page={page} />
+              )}
+              {pin && !samePermission(pin, def) && (
+                <span
+                  className="text-[10px] px-1.5 py-px rounded"
+                  style={{
+                    color: page.fg,
+                    background: "rgba(83,189,250,0.10)",
+                  }}
+                >
+                  overrides your default{" "}
+                  <span className="font-mono">{formatPermission(def)}</span>
+                </span>
+              )}
+              {pin && samePermission(pin, def) && (
+                <span className="text-[10px]" style={{ color: page.statusFg }}>
+                  pinned · same as your default
+                </span>
+              )}
+              {!pin && (
+                <>
+                  <PermissionChip permission={def} page={page} />
+                  <span
+                    className="text-[10px]"
+                    style={{ color: page.statusFg }}
+                  >
+                    follows your default
+                  </span>
+                </>
+              )}
+              <span className="ml-auto flex gap-1.5">
+                {pin && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      askClearPin();
+                    }}
+                    className="rounded px-2 py-0.5 text-[10px] cursor-pointer"
+                    style={{
+                      border: `1px solid ${page.border}`,
+                      color: page.fg,
+                    }}
+                  >
+                    Use default
+                  </button>
+                )}
+                {!pin && onChange && (
+                  <button
+                    type="button"
+                    onClick={() => onChange(def)}
+                    className="rounded px-2 py-0.5 text-[10px] cursor-pointer"
+                    style={{
+                      border: `1px solid ${page.border}`,
+                      color: page.fg,
+                    }}
+                  >
+                    Pin
+                  </button>
+                )}
+              </span>
+            </div>
+            {pin && onChange && (
+              <div className="pl-[82px]">
+                <RuntimeAxisFields
+                  permission={pin}
+                  onChange={onChange}
+                  page={page}
+                  defaults={def}
+                  idPrefix={`tmpl-${r}`}
+                />
+              </div>
+            )}
+            {confirming === r && pin && (
+              // biome-ignore lint/a11y/noStaticElementInteractions: stops the card's click-to-edit
+              <div
+                data-testid="confirm-use-default"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                className="rounded px-2 py-1.5 flex flex-col gap-1.5 text-[10px] leading-relaxed"
+                style={{ color: tone.fg, background: tone.bg }}
+              >
+                <div>
+                  Your {RUNTIME_NAMES[r]} default lets agents do more than this
+                  pin:{" "}
+                  {widens.map((w, i) => (
+                    <span key={w.axis}>
+                      {i > 0 && "; "}
+                      <span className="font-mono">
+                        {w.axis} {w.from} → {w.to}
+                      </span>
+                    </span>
+                  ))}
+                  . Agents from this template would run as{" "}
+                  <span className="font-mono">{formatPermission(def)}</span>.
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirming(null);
+                      onUseDefault(r);
+                    }}
+                    className="rounded px-2 py-0.5 cursor-pointer font-medium"
+                    style={{ background: tone.fg, color: page.bg }}
+                  >
+                    Use default anyway
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirming(null)}
+                    className="rounded px-2 py-0.5 cursor-pointer"
+                    style={{ background: page.border, color: page.fg }}
+                  >
+                    Keep pin
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Card ─────────────────────────────────────────────────────────
 
 interface TemplateCardProps {
@@ -65,6 +261,7 @@ interface TemplateCardProps {
   template: AgentTemplate;
   runningCount: number;
   page: PageTheme;
+  defaults: Defaults;
   onEdit: () => void;
 }
 
@@ -73,8 +270,22 @@ function TemplateCard({
   template,
   runningCount,
   page,
+  defaults,
   onEdit,
 }: TemplateCardProps) {
+  const [error, setError] = useState<string | null>(null);
+  const pins = templatePins(template);
+  const clearPin = async (r: Provider) => {
+    setError(null);
+    const next = { ...pins };
+    delete next[r];
+    try {
+      await templatesApi.save(name, withPins(template, next));
+      await templatesPoll.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    }
+  };
   return (
     // biome-ignore lint/a11y/useSemanticElements: card with nested buttons
     <div
@@ -89,7 +300,6 @@ function TemplateCard({
         borderRadius: 12,
         padding: "16px 18px",
         minWidth: 240,
-        maxWidth: 320,
       }}
     >
       {/* Accent line */}
@@ -141,14 +351,22 @@ function TemplateCard({
         {template.description || "No description"}
       </div>
 
+      <div className="mb-3">
+        <TemplatePins
+          pins={pins}
+          defaults={defaults}
+          page={page}
+          onUseDefault={(r) => void clearPin(r)}
+        />
+        {error && (
+          <div className="text-[10px] mt-1" style={{ color: "#ea6c73" }}>
+            {error}
+          </div>
+        )}
+      </div>
+
       {/* Footer */}
-      <div className="flex items-center justify-between">
-        <span
-          className="text-[10px] font-mono"
-          style={{ color: page.statusFg }}
-        >
-          {template.permissionMode ?? DEFAULT_PERMISSION_MODE}
-        </span>
+      <div className="flex items-center justify-end">
         <span
           className="text-[10px] font-medium"
           style={{ color: runningCount > 0 ? "#91b362" : page.statusFg }}
@@ -167,6 +385,7 @@ interface ListViewProps {
   loading: boolean;
   error: string | null;
   page: PageTheme;
+  defaults: Defaults;
   onEdit: (name: string) => void;
   onNew: () => void;
 }
@@ -176,6 +395,7 @@ function ListView({
   loading,
   error,
   page,
+  defaults,
   onEdit,
   onNew,
 }: ListViewProps) {
@@ -244,7 +464,7 @@ function ListView({
           <div
             className="grid gap-4"
             style={{
-              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
             }}
           >
             {names.map((name) => (
@@ -254,6 +474,7 @@ function ListView({
                 template={templates[name]}
                 runningCount={runningCounts[name] ?? 0}
                 page={page}
+                defaults={defaults}
                 onEdit={() => onEdit(name)}
               />
             ))}
@@ -302,6 +523,7 @@ interface EditorViewProps {
   existing: boolean;
   template: AgentTemplate | undefined;
   page: PageTheme;
+  defaults: Defaults;
   onCancel: () => void;
   onSaved: () => void;
 }
@@ -311,6 +533,7 @@ function EditorView({
   existing,
   template,
   page,
+  defaults,
   onCancel,
   onSaved,
 }: EditorViewProps) {
@@ -326,9 +549,9 @@ function EditorView({
   // Restore Cmd/Ctrl+Z undo for the controlled System Prompt textarea —
   // React's value replacement wipes the browser's native undo stack.
   const systemPromptUndo = useUndoableTextValue(systemPrompt, setSystemPrompt);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    template?.permissionMode ?? DEFAULT_PERMISSION_MODE,
-  );
+  // Per-runtime pins; a legacy shared-vocabulary mode loads as the explicit
+  // pins it always ran, so saving never changes what the template runs.
+  const [pins, setPins] = useState<Pins>(() => templatePins(template));
   const [model, setModel] = useState(template?.model ?? "");
 
   const [submitting, setSubmitting] = useState(false);
@@ -354,13 +577,19 @@ function EditorView({
 
     setSubmitting(true);
     try {
-      const payload: AgentTemplate = {
-        role: role.trim(),
-        description: description.trim(),
-        systemPrompt,
-        permissionMode,
-        ...(model.trim() ? { model: model.trim() } : {}),
-      };
+      // Every field this editor doesn't show (e.g. a future one) is kept:
+      // the server overwrites the whole file.
+      const { model: _model, ...kept } = template ?? ({} as AgentTemplate);
+      const payload = withPins(
+        {
+          ...kept,
+          role: role.trim(),
+          description: description.trim(),
+          systemPrompt,
+          ...(model.trim() ? { model: model.trim() } : {}),
+        },
+        pins,
+      );
       await templatesApi.save(name.trim(), payload);
       // Reconcile while the button still reads "Saving…", so the list behind
       // the editor is already truthful when we navigate back to it.
@@ -496,15 +725,23 @@ function EditorView({
             />
           </Field>
 
-          {/* Permission mode */}
+          {/* Per-runtime permission pins */}
           <Field
             label="Permissions"
-            hint="Default tool-use autonomy for agents spawned from this template"
+            hint="Pin a runtime's own value, or follow your default in Settings → Runtimes"
           >
-            <PermissionModeSelect
-              value={permissionMode}
-              onChange={setPermissionMode}
+            <TemplatePins
+              pins={pins}
+              defaults={defaults}
               page={page}
+              onUseDefault={(r) =>
+                setPins((cur) => {
+                  const next = { ...cur };
+                  delete next[r];
+                  return next;
+                })
+              }
+              onChange={(p) => setPins((cur) => ({ ...cur, [p.runtime]: p }))}
             />
           </Field>
 
@@ -634,6 +871,7 @@ export function TemplatesPanel() {
   const templatesError = error?.message ?? null;
 
   const [mode, setMode] = useState<PanelMode>({ kind: "list" });
+  const defaults = useRuntimeDefaults();
 
   // The editor already refreshed the poll before calling back, so this only
   // has to switch views.
@@ -652,6 +890,7 @@ export function TemplatesPanel() {
           loading={templatesLoading}
           error={templatesError}
           page={page}
+          defaults={defaults}
           onEdit={(name) => setMode({ kind: "edit", name, existing: true })}
           onNew={() => setMode({ kind: "edit", name: "", existing: false })}
         />
@@ -661,6 +900,7 @@ export function TemplatesPanel() {
           existing={mode.existing}
           template={mode.existing ? templates[mode.name] : undefined}
           page={page}
+          defaults={defaults}
           onCancel={() => setMode({ kind: "list" })}
           onSaved={handleSaved}
         />

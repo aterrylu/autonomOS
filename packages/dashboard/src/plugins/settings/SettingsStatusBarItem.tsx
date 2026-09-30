@@ -8,12 +8,12 @@ import { agentsApi } from "../../api/agents";
 import { channelsApi, settingsApi } from "../../api/config";
 import { ApiError } from "../../api/core";
 import { Codicon, type CodiconName } from "../../components/Codicon";
-import { PermissionModeSelect } from "../../components/PermissionModeSelect";
 import { AgentStatusIcon } from "../../components/ui/agent-status-icon";
 import { ProviderAgentIcon } from "../../components/ui/provider-icon";
 import { type AgentIconStyle, THEMES, useStore } from "../../store";
 import { useClickOutside } from "../claude-usage/useClickOutside";
 import { UpdatesSettingsSection } from "../update-badge/UpdatesSettingsSection";
+import { RuntimeDefaultsSection } from "./RuntimeDefaultsSection";
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
 
@@ -422,9 +422,7 @@ function AgentIconStylePicker({ page }: { page: PageTheme }) {
 
 function DashboardPreferences({ page }: { page: PageTheme }) {
   const theme = useStore((s) => s.theme);
-  const permissionMode = useStore((s) => s.permissionMode);
   const cycleTheme = useStore((s) => s.cycleTheme);
-  const setPermissionMode = useStore((s) => s.setPermissionMode);
 
   const labelStyle: React.CSSProperties = { color: page.statusFg };
 
@@ -450,29 +448,6 @@ function DashboardPreferences({ page }: { page: PageTheme }) {
         >
           {THEME_LABELS[theme] ?? theme}
         </button>
-      </div>
-
-      {/* Permission mode — seeds the Create Agent form in THIS browser only.
-          It is stored in localStorage, not on the server, so it does not apply
-          to agents spawned by other agents (MCP create_agent) or by any other
-          client. Saying so matters: read as a server-wide setting, it explains
-          neither why an agent-spawned agent came up in a different mode nor why
-          another browser disagrees. */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs" style={labelStyle}>
-          Permission Mode
-        </span>
-        <PermissionModeSelect
-          value={permissionMode}
-          onChange={setPermissionMode}
-          page={page}
-        />
-      </div>
-      <div className="text-[10px]" style={labelStyle}>
-        Preselects tool-use autonomy in Create Agent, overridable per spawn.
-        Saved in this browser only — it does not change how agents spawned by
-        other agents start, which is <code>ask</code> unless their template or
-        the spawn request says otherwise.
       </div>
 
       {/* Agent icon style */}
@@ -622,7 +597,7 @@ export function SettingsPanel({
       // viewport, leaving lower controls unreachable — clicks timed out
       // "outside of the viewport"). Cap to the space above the status bar
       // and scroll the overflow instead.
-      className="absolute bottom-full left-0 mb-1 w-[340px] rounded-md p-3 text-xs shadow-lg max-h-[calc(100vh-4rem)] overflow-y-auto"
+      className="absolute bottom-full left-0 mb-1 w-[380px] rounded-md p-3 text-xs shadow-lg max-h-[calc(100vh-4rem)] overflow-y-auto"
       style={{
         background: page.bg,
         border: `1px solid ${page.border}`,
@@ -641,6 +616,19 @@ export function SettingsPanel({
         <div style={labelStyle}>Loading...</div>
       ) : (
         <div className="space-y-2.5">
+          {/* Server-side per-runtime defaults (ADR-115) — they replace the
+              old browser-only Permission Mode preference. */}
+          <RuntimeDefaultsSection
+            settings={settings}
+            onSaved={setSettings}
+            page={page}
+          />
+
+          <div
+            className="my-3"
+            style={{ borderTop: `1px solid ${page.border}` }}
+          />
+
           <div className="flex items-center justify-between">
             <div
               className="text-[10px] font-medium uppercase tracking-wide"
@@ -657,10 +645,10 @@ export function SettingsPanel({
           </div>
           <div className="text-[10px]" style={labelStyle}>
             Trust each agent's folder so Claude Code and Gemini start without
-            asking, and Gemini keeps the permission mode you picked (untrusted,
-            it runs as Ask). Trusting lets each CLI load that folder's own
-            config: hooks, MCP servers, commands. Also skips Claude Code's dev
-            channel prompt.
+            asking, and Gemini keeps the permission you picked (untrusted, it
+            runs as <code>default</code>). Trusting lets each CLI load that
+            folder's own config: hooks, MCP servers, commands. Also skips Claude
+            Code's dev channel prompt.
           </div>
 
           <div className="mt-3">

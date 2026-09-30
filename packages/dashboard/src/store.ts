@@ -1,11 +1,9 @@
-import {
-  type Agent,
-  type AgentStatusMap,
-  DEFAULT_PERMISSION_MODE,
-  type PermissionMode,
-  type ProjectInfo,
-  permissionModeFromLegacy,
-  permissionModeFromStored,
+import type {
+  Agent,
+  AgentStatusMap,
+  PermissionMode,
+  ProjectInfo,
+  RuntimePermission,
 } from "@autonomos/core";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -75,13 +73,15 @@ export interface SessionInfo {
   providerSessionId?: string;
   template?: string;
   manager?: string;
-  /** How much autonomy THIS agent actually has — its own record's value, not
-   *  the store's `permissionMode`, which is only a browser-local default for
-   *  spawns started from this dashboard. The API has always returned this
+  /** How much autonomy THIS agent actually has — its own record's value (the
+   *  legacy shared-vocabulary projection; `permission` below is the canonical
+   *  one). The API has always returned this
    *  field; it used to be dropped in the Agent → SessionInfo map, which is why
    *  nothing could show an agent's real mode. Optional because a pre-schema
    *  record (or a stubbed fixture) may not carry one. */
   permissionMode?: PermissionMode;
+  /** The same, in its runtime's own values (ADR-115) — what's shown. */
+  permission?: RuntimePermission;
   createdAt: number;
   /** Last genuine activity (hook/turn-driven, survives restarts) — absent on
    *  records that predate the field. Preferred recency source. */
@@ -473,6 +473,7 @@ function agentToSession(agent: Agent, managerName?: string): SessionInfo {
     // requested (a template can supply it, and an invalid request value falls
     // back). Carry the server's answer, never the local default that was sent.
     permissionMode: agent.permissionMode,
+    permission: agent.permission,
     createdAt: agent.createdAt,
     lastActivityAt: agent.lastActivityAt,
     updatedAt: agent.updatedAt,
@@ -717,8 +718,6 @@ interface AppState {
   activePane: ActivePane | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
-  /** Default tool-use autonomy applied to new spawns (per-spawn overridable). */
-  permissionMode: PermissionMode;
   /** Display order of PINNED agents (top flat-view section). An agent is
    *  pinned iff its key is in this array. New pins append (bottom of pinned). */
   pinnedOrder: string[];
@@ -794,7 +793,6 @@ interface AppState {
   closeQuickSwitch: () => void;
   setSidebarWidth: (width: number) => void;
   resetSidebarWidth: () => void;
-  setPermissionMode: (mode: PermissionMode) => void;
   setStatus: (status: string) => void;
   switchPane: (pane: ActivePane | null) => void;
   fetchSessions: () => Promise<void>;
@@ -808,7 +806,9 @@ interface AppState {
       provider?: string;
       template?: string;
       appendSystemPrompt?: string;
-      permissionMode?: PermissionMode;
+      /** The runtime's own values (ADR-115). Omitted = the caller said
+       *  nothing: the server resolves template pin → operator default. */
+      permission?: Readonly<Record<string, string>>;
       envPreset?: string;
     },
   ) => Promise<void>;
@@ -964,7 +964,6 @@ export const useStore = create<AppState>()(
         quickSwitchOpen: false,
         sidebarRowOrder: [],
         sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
-        permissionMode: DEFAULT_PERMISSION_MODE,
         pinnedOrder: [],
         unpinnedOrder: [],
         hierarchyOrder: {},
@@ -1021,7 +1020,6 @@ export const useStore = create<AppState>()(
           });
         },
         resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH }),
-        setPermissionMode: (mode) => set({ permissionMode: mode }),
         setStatus: (status) => set({ status }),
         switchPane: (pane) => {
           // Clicking a sidebar item is NAVIGATION (ADR-047). DockviewLayout owns
@@ -1084,7 +1082,7 @@ export const useStore = create<AppState>()(
             "failed to create session",
             {
               workingDirectory,
-              permissionMode: opts?.permissionMode ?? get().permissionMode,
+              permission: opts?.permission,
               name: opts?.name,
               provider: opts?.provider,
               template: opts?.template,
@@ -1495,7 +1493,6 @@ export const useStore = create<AppState>()(
         activePane: state.activePane,
         sidebarOpen: state.sidebarOpen,
         sidebarWidth: state.sidebarWidth,
-        permissionMode: state.permissionMode,
         pinnedOrder: state.pinnedOrder,
         unpinnedOrder: state.unpinnedOrder,
         hierarchyOrder: state.hierarchyOrder,
@@ -1587,22 +1584,8 @@ export const useStore = create<AppState>()(
             saved.sidebarWidth,
             window.innerWidth * 0.5,
           );
-        // Accept a current permissionMode, or this enum's pre-rename spelling
-        // ("default" → "ask"); otherwise migrate legacy autonomousMode
-        // (true→bypass, false→ask). Browsers hold whichever spelling was
-        // current when the user last picked one, so both must load.
-        // See ADR-045 + the permission-mode refactor.
-        const storedMode = permissionModeFromStored(saved?.permissionMode);
-        if (storedMode !== undefined) {
-          merged.permissionMode = storedMode;
-        } else {
-          const migrated = permissionModeFromLegacy(
-            typeof saved?.autonomousMode === "boolean"
-              ? saved.autonomousMode
-              : undefined,
-          );
-          if (migrated) merged.permissionMode = migrated;
-        }
+        // A saved `permissionMode` (the old browser-only spawn default) is
+        // ignored: the server's per-runtime defaults replaced it (ADR-115).
         // Restore the saved view only if explicitly chosen; otherwise keep the
         // new default (current.sidebarViewMode). See resolveSidebarViewMode.
         const view = resolveSidebarViewMode(saved, current.sidebarViewMode);

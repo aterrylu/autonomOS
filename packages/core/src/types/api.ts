@@ -83,6 +83,9 @@ export interface AgentTreeNode {
   status: AgentStatus;
   provider: Provider;
   permissionMode: PermissionMode;
+  /** The agent's permission in its runtime's own values (ADR-115) — what the
+   *  Org Chart inspector shows. Absent from an older server. */
+  permission?: RuntimePermission;
   children: AgentTreeNode[];
 }
 
