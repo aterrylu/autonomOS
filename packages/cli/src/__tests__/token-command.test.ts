@@ -184,6 +184,13 @@ describe("the installed service definition", () => {
     assert.ok(!text.includes("abcd"));
   });
 
+  it("the sign-in link uses the PORT the service's .env sets", async () => {
+    const { env } = fakeService();
+    writeFileSync(env, "PORT=3199\nAUTONOMOS_TOKEN=abcd\n");
+    assert.equal(await runTokenCommand(["rotate"]), 0);
+    assert.match(out.join("\n"), /http:\/\/localhost:3199\/#token=/);
+  });
+
   it("rotate says loudly when the service definition itself sets the token", async () => {
     const { serviceFile } = fakeService(
       "<key>EnvironmentVariables</key><dict><key>AUTONOMOS_TOKEN</key><string>abcd</string></dict>",

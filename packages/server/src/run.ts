@@ -8,7 +8,7 @@
 // stop/status/upgrade commands to consume.
 
 import { timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
@@ -966,16 +966,18 @@ function enforceTokenStrength(o: {
     ? "the AUTONOMOS_TOKEN environment variable (e.g. a .env file)"
     : "the token file";
   if (policy === "refuse") {
-    console.error(
-      [
-        `✖ Refusing to start: the operator token from ${where} is only ${o.token.length} characters (or too repetitive), and this new install listens on the network.`,
-        "  Anyone who can reach the port could guess it.",
-        fromEnv
-          ? "  Remove AUTONOMOS_TOKEN to let autonomOS generate a strong token, or set a 32+ character random one."
-          : "  Delete the token file to let autonomOS generate a strong one, or write a 32+ character random token.",
-        "  To listen on this machine only, pass --host=127.0.0.1. To start anyway, pass --allow-weak-token.",
-      ].join("\n"),
-    );
+    const message = [
+      `✖ Refusing to start: the operator token from ${where} is only ${o.token.length} characters (or too repetitive), and this new install listens on the network.`,
+      "  Anyone who can reach the port could guess it.",
+      fromEnv
+        ? "  Remove AUTONOMOS_TOKEN to let autonomOS generate a strong token, or set a 32+ character random one."
+        : "  Delete the token file to let autonomOS generate a strong one, or write a 32+ character random token.",
+      "  To listen on this machine only, pass --host=127.0.0.1. To start anyway, pass --allow-weak-token.",
+    ].join("\n");
+    console.error(message); // → the log file (and the terminal, on a TTY)
+    // Off a TTY the logger doesn't echo stderr, so a refused start under a
+    // supervisor or a script would exit 2 in silence. Say it on the real fd 2.
+    if (!process.stderr.isTTY) writeSync(2, `${message}\n`);
     process.exit(2);
   }
   if (policy === "warn") {

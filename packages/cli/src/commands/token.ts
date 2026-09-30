@@ -173,6 +173,7 @@ function rotate(args: readonly string[]): number {
     ? inspectServiceDefinition(svc.serviceFile)
     : { setsToken: false, envFiles: [] };
   const removedValues: string[] = [];
+  let envPort: number | undefined; // PORT from a .env the server loads
   const when = new Date().toISOString().slice(0, 10);
   for (const file of envFileCandidates(envFile, service.envFiles)) {
     if (!existsSync(file)) {
@@ -180,8 +181,11 @@ function rotate(args: readonly string[]): number {
       continue;
     }
     try {
+      const before = readFileSync(file, "utf8");
+      const port = /^\s*(?:export\s+)?PORT\s*=\s*["']?(\d+)/m.exec(before);
+      if (port && envPort === undefined) envPort = Number(port[1]);
       const { content, changed, removed } = removeEnvToken(
-        readFileSync(file, "utf8"),
+        before,
         `on ${when}; the token now lives in ${tokenPath}`,
       );
       if (changed) {
@@ -220,7 +224,11 @@ function rotate(args: readonly string[]): number {
 
   const pid = readPidFile();
   const running = pid !== null && isPidAlive(pid.pid);
-  const base = `http://localhost:${pid?.port ?? 3100}`;
+  // The port the server really uses: running → its pid file; else the PORT
+  // its .env or this shell sets; else the default (SecurityAudit, #459).
+  const port =
+    pid?.port ?? envPort ?? (Number(process.env.PORT) || undefined) ?? 3100;
+  const base = `http://localhost:${port}`;
   console.log("");
   console.log(
     running

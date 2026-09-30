@@ -101,6 +101,8 @@ describe("weak operator token at boot", {
       prepareConfigDir: (d) => (dir = d),
     });
     assert.match(err.message, /exited \(code=2\)/);
+    // Off a TTY too: the reason reaches the real stderr, not only the log.
+    assert.match(err.message, /Refusing to start/);
     assert.ok(!err.message.includes(WEAK), "never the token");
     // The reason is in the log a supervised install keeps.
     const log = logFile(dir);
