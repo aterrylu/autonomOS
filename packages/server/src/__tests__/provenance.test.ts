@@ -20,6 +20,7 @@ import { PolicyError, VerificationError } from "@sigstore/verify";
 import {
   classifyVerifyError,
   expectedSigner,
+  githubGet,
   type ProvenanceDeps,
   verifyReleaseProvenance,
 } from "../provenance.js";
@@ -479,6 +480,59 @@ describe("verifyReleaseProvenance — is the build's commit on main? (GitHub com
       );
       server?.close();
     }
+  });
+});
+
+describe("githubGet — the token never follows a redirect", () => {
+  const servers: Server[] = [];
+  afterEach(() => {
+    for (const s of servers.splice(0)) s.close();
+  });
+  async function listen(
+    handler: (
+      req: import("node:http").IncomingMessage,
+      res: import("node:http").ServerResponse,
+    ) => void,
+  ): Promise<string> {
+    const s = createServer(handler);
+    servers.push(s);
+    await new Promise<void>((ok) => s.listen(0, "127.0.0.1", ok));
+    return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
+  }
+
+  it("a redirect on a token-bearing request is re-asked bare — the other origin never sees the token", async () => {
+    const seenElsewhere: (string | undefined)[] = [];
+    const elsewhere = await listen((req, res) => {
+      seenElsewhere.push(req.headers.authorization);
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const firstAuth: (string | undefined)[] = [];
+    const api = await listen((req, res) => {
+      firstAuth.push(req.headers.authorization);
+      res.statusCode = 302;
+      res.setHeader("location", `${elsewhere}/moved`);
+      res.end();
+    });
+    const resp = await githubGet(
+      api,
+      "/x",
+      { GITHUB_TOKEN: "ghp_secret" },
+      api,
+    );
+    assert.equal(resp.status, 200);
+    // The trusted API got the token once, then the bare retry.
+    assert.deepEqual(firstAuth, ["Bearer ghp_secret", undefined]);
+    assert.deepEqual(seenElsewhere, [undefined]);
+  });
+
+  it("without a token, redirects are followed as usual (GitHub's repo-rename redirects)", async () => {
+    const target = await listen((_req, res) => res.end("{}"));
+    const api = await listen((_req, res) => {
+      res.statusCode = 301;
+      res.setHeader("location", `${target}/renamed`);
+      res.end();
+    });
+    assert.equal((await githubGet(api, "/x", {}, api)).status, 200);
   });
 });
 

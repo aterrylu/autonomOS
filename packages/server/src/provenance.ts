@@ -367,11 +367,15 @@ const MAX_OUT_OF_LINE_BUNDLES = 10;
 
 /** GET a GitHub API path. The token only ever goes to GitHub itself, and a
  *  stale one (401 on a PUBLIC endpoint — which would quietly turn every check
- *  into "couldn't check") is retried bare. */
-async function githubGet(
+ *  into "couldn't check") is retried bare. A token-bearing request never
+ *  FOLLOWS a redirect: it's retried bare instead, so the token's safety never
+ *  rests on the HTTP client stripping it from a cross-origin hop.
+ *  `trustedApi` is a test seam; callers leave it as api.github.com. */
+export async function githubGet(
   apiBase: string,
   path: string,
   env: Record<string, string | undefined>,
+  trustedApi: string = GITHUB_API,
 ): Promise<Response> {
   const ask = (withToken: boolean) =>
     fetch(`${apiBase}${path}`, {
@@ -380,11 +384,14 @@ async function githubGet(
         // Optional: only raises the rate limit (the endpoints are public).
         ...(withToken && { Authorization: `Bearer ${env.GITHUB_TOKEN}` }),
       },
+      redirect: withToken ? "manual" : "follow",
       signal: AbortSignal.timeout(15_000),
     });
-  const token = !!env.GITHUB_TOKEN && apiBase === GITHUB_API;
-  const resp = await ask(token);
-  return resp.status === 401 && token ? ask(false) : resp;
+  const token = !!env.GITHUB_TOKEN && apiBase === trustedApi;
+  if (!token) return ask(false);
+  const resp = await ask(true);
+  const redirected = resp.status >= 300 && resp.status < 400;
+  return resp.status === 401 || redirected ? ask(false) : resp;
 }
 
 /** Is `commit` an ancestor of main? true / false, or why it couldn't tell.
