@@ -779,6 +779,36 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     );
   });
 
+  it("the note stays visible on the restart overlay (the progress view is gone by then)", async () => {
+    installServer();
+    let down = false;
+    routes["GET /api/system/upgrade"] = () => {
+      if (down) throw new TypeError("Failed to fetch");
+      return json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record("restarting", undefined, {
+              snapshotId: "0.6.1-x",
+              provenance: {
+                status: "missing",
+                reason:
+                  "no signed build record was published for this download",
+              },
+            })
+          : null,
+        inFlight: !!posted,
+      });
+    };
+    await launch();
+    const overlay = await screen.findByTestId("update-reconnecting");
+    await waitFor(() =>
+      expect(overlay.textContent).toContain(
+        "Couldn't check v0.7.0's signed build record: no signed build record was published for this download. Installed anyway: the checksum matched.",
+      ),
+    );
+    down = true;
+  });
+
   it("a verified signed build record shows no note", async () => {
     installServer();
     routes["GET /api/system/upgrade"] = () =>

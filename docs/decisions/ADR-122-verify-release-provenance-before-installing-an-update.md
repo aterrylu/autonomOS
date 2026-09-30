@@ -13,6 +13,8 @@
   - **Existing installs** (in-app update and `autonomos upgrade`, bundle installs): the check runs after the checksum and before extraction or the snapshot.
     - **invalid** refuses. Nothing on disk changes. The dialog shows #392's "v<new> wasn't installed · Nothing changed" with the reason.
     - **missing** or **skipped** proceeds, loudly: a console warning, an amber note during the update, and an amber post-update banner ("Its signed build record couldn't be checked (<why>); the checksum matched."). This is Terry's upgrade-continuity rule.
+    - The note is shown on the restart overlay as well as the progress view. On a bundle install the progress view lasts only a second or two after the check (found live).
+    - `AUTONOMOS_SKIP_PROVENANCE` is on the in-app job's env allowlist, so an operator's explicit choice reaches it.
   - **New installs** (`install.sh`, a separate PR) fail closed, through a vendored single-file verifier that `install.sh` pins by sha256.
   - **Trust root:** always fetched live from Sigstore's TUF repository and cached under `$configDir/sigstore-tuf`, never pinned in the binary.
 - **Rationale:** the checksum proves the download wasn't corrupted. Provenance proves *who built it*: only GitHub Actions running our `release.yml` on the tag can obtain the signing certificate, and editing a release can't forge it.

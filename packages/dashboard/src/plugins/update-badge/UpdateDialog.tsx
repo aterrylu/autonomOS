@@ -1348,23 +1348,7 @@ function UpdatingScreen({
             {rec.message}
           </div>
         )}
-        {rec?.provenance && rec.provenance.status !== "verified" && (
-          <output
-            className="flex gap-2 rounded-md px-3 py-2 text-xs"
-            style={{ border: `1px solid ${a.amber}88` }}
-            data-testid="update-provenance-warning"
-          >
-            <span style={{ color: a.amber }}>
-              <WarnIcon />
-            </span>
-            <span>
-              {rec.provenance.status === "skipped"
-                ? `Not checking v${to}'s signed build record (${rec.provenance.reason ?? "skipped"}).`
-                : `Couldn't check v${to}'s signed build record: ${rec.provenance.reason ?? "unknown reason"}.`}{" "}
-              Installing anyway: the checksum matched.
-            </span>
-          </output>
-        )}
+        <ProvenanceNote provenance={rec?.provenance} to={to} />
         <Disclosure
           className="text-xs"
           label="Show details"
@@ -1852,6 +1836,40 @@ export function UpdateDialog({
   );
 }
 
+/** The signed build record couldn't be checked (or was skipped): say so,
+ *  loudly but without blocking (ADR-122). Shown in the progress view AND the
+ *  restart overlay — on a bundle install the progress view is on screen for
+ *  only a second or two after the check (found live). */
+function ProvenanceNote({
+  provenance,
+  to,
+  installed = false,
+}: {
+  provenance?: UpgradeStatusRecord["provenance"];
+  to: string;
+  installed?: boolean;
+}) {
+  const a = useAccents();
+  if (!provenance || provenance.status === "verified") return null;
+  return (
+    <output
+      className="flex gap-2 rounded-md px-3 py-2 text-left text-xs"
+      style={{ border: `1px solid ${a.amber}88` }}
+      data-testid="update-provenance-warning"
+    >
+      <span style={{ color: a.amber }}>
+        <WarnIcon />
+      </span>
+      <span>
+        {provenance.status === "skipped"
+          ? `Not checking v${to}'s signed build record (${provenance.reason ?? "skipped"}).`
+          : `Couldn't check v${to}'s signed build record: ${provenance.reason ?? "unknown reason"}.`}{" "}
+        {installed ? "Installed" : "Installing"} anyway: the checksum matched.
+      </span>
+    </output>
+  );
+}
+
 // ── full-screen reconnecting overlay ────────────────────────────────────
 
 /** Up from the moment the daemon goes down until the page reloads — through
@@ -1861,12 +1879,14 @@ export function ReconnectingOverlay({
   to,
   phase,
   rollback,
+  provenance,
   elapsedMs,
   gaveUp,
 }: {
   to: string;
   phase?: UpgradePhase;
   rollback?: boolean;
+  provenance?: UpgradeStatusRecord["provenance"];
   elapsedMs: number;
   gaveUp: boolean;
 }) {
@@ -1908,6 +1928,9 @@ export function ReconnectingOverlay({
           detail={detail}
           hints={stageHints(rollback ? "rollback" : null)}
         />
+        {!rollback && (
+          <ProvenanceNote provenance={provenance} to={to} installed />
+        )}
         <output aria-live="polite" className="sr-only">
           {`${STAGE_NAMES[stage]}: ${detail}`}
         </output>

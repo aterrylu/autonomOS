@@ -232,6 +232,14 @@ describe("buildLaunchPlan", () => {
     assert.equal(plan.env.AUTONOMOS_CONFIG_DIR, "/home/u/.autonomos");
     assert.equal(plan.env.AUTONOMOS_TOKEN, undefined);
   });
+
+  it("carries the operator's AUTONOMOS_SKIP_PROVENANCE into the job (else in-app updates ignore it)", () => {
+    const plan = buildLaunchPlan(["upgrade"], "/s.json", {
+      ...PROC,
+      env: { ...PROC.env, AUTONOMOS_SKIP_PROVENANCE: "1" },
+    });
+    assert.equal(plan.env.AUTONOMOS_SKIP_PROVENANCE, "1");
+  });
 });
 
 describe("launchUpgradeJob", () => {
