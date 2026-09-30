@@ -296,7 +296,7 @@ export function socketAccepts(
 }
 
 /**
- * The readiness probe for a unix daemon: not created yet → false; created but
+ * The readiness probe for a unix daemon: link or target not created yet → false; created but
  * failing verifyDaemonSocket → throws UnsafeCodexSocketError (the caller
  * refuses the spawn, and nothing ever connected); verified → does it accept?
  * `spawnStartedAt` rejects an older daemon's socket.
@@ -307,9 +307,12 @@ export function codexReadyProbe(
 ): () => Promise<boolean> {
   return async () => {
     try {
-      lstatSync(socketPath);
+      // Follows the link: codex creates cx/<name>.sock BEFORE binding its
+      // target, so a dangling link is "not ready yet", never "unsafe" (a poll
+      // in that window used to refuse a healthy spawn; nox review of V4).
+      statSync(socketPath);
     } catch {
-      return false; // not created yet
+      return false; // link or its target not created yet
     }
     const problem = verifyDaemonSocket(socketPath, spawnStartedAt);
     if (problem) throw new UnsafeCodexSocketError(problem);

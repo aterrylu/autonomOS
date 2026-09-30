@@ -460,6 +460,24 @@ describe("sidecar readiness never adopts another daemon (review: orphans)", () =
     }
   });
 
+  it("a dangling link (codex made the symlink, not yet the socket) is NOT READY, not unsafe", async () => {
+    // Codex creates cx/<name>.sock -> /tmp/codex-daemon-<uid>/<hash> and then
+    // binds the target. A poll in between sees a dangling link: that must
+    // mean "keep polling", never an UnsafeCodexSocketError that refuses a
+    // healthy spawn (nox review of V4).
+    const link = join(dir(), "pending.sock");
+    const target = join(dir(), "later");
+    symlinkSync(target, link);
+    const probe = codexReadyProbe(link, Date.now() - 5_000);
+    assert.equal(await probe(), false);
+    const srv = await listenUnix(target);
+    try {
+      assert.equal(await probe(), true);
+    } finally {
+      srv.close();
+    }
+  });
+
   it("puts what the daemon said in a probe-mode failure", async () => {
     await assert.rejects(
       startSidecarDaemon(
