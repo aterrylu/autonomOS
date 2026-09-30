@@ -125,6 +125,16 @@ describe("message flow on the chart", () => {
     expect(b).toHaveTextContent("PR #412 is ready for review");
   });
 
+  it("a bubble counter-ZOOMS inside a corner anchor (crisp 1:1 text at any canvas zoom), never a scale", async () => {
+    await mount("quiet");
+    send(routed("Worker", "Lead", "hello"));
+    const b = bubble("Lead") as HTMLElement;
+    expect(b.style.zoom).toBe("var(--org-inv-k, 1)");
+    expect(b.style.scale).toBe("");
+    expect(b.style.transform).toBe("");
+    expect(b.parentElement?.dataset.orgBubbleAnchor).toBe("Lead");
+  });
+
   it("a preview is TEXT, never markup", async () => {
     await mount("quiet");
     send(routed("Worker", "Lead", '<img src=x onerror="alert(1)">'));

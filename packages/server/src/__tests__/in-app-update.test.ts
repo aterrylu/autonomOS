@@ -18,6 +18,7 @@ import {
   _setConfigDirForTesting,
 } from "../configDir.js";
 import { systemRouter } from "../routes/system.js";
+import { sameOriginGuard } from "../sameOriginGuard.js";
 import { setServerPort } from "../serverState.js";
 import { _resetUpdateCheckForTesting, runUpdateCheck } from "../updateCheck.js";
 import {
@@ -372,7 +373,10 @@ describe("armed update waits for a continuous idle window", () => {
 });
 
 describe("POST /api/system/upgrade is operator-only", () => {
+  // Mounted the way run.ts mounts it: the shared CSRF guard in front (V1).
+  // The router's own guard answers WHO; the shared one answers FROM WHERE.
   const app = new Hono();
+  app.use("/api/*", sameOriginGuard({ warn: () => {} }));
   app.route("/api/system", systemRouter);
 
   it("refuses a request carrying an agent token", async () => {

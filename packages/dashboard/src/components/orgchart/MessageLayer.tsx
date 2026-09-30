@@ -451,62 +451,78 @@ export function MessageLayer({
         const below = at.y < 72;
         const expanded = open?.anchor === b.anchor && open.id === b.lastId;
         return (
-          <button
+          // A zero-size anchor at the card's corner rides the stage's zoom;
+          // the bubble inside counter-ZOOMS (zoom × 1/zoom = 1:1), so its text
+          // is laid out at true size and stays crisp at every canvas zoom
+          // (Terry's pick 3A). A `scale()` here would stretch a bitmap instead.
+          <span
             key={b.anchor}
-            type="button"
-            data-org-bubble={b.anchor}
-            aria-label={`Message to ${nameOf(b.anchor) ?? "agent"} from ${b.fromName}${b.count > 1 ? ` and ${b.count - 1} more` : ""}: ${b.preview}. Opens details.`}
-            className={`org-bubble absolute flex max-w-[240px] cursor-pointer flex-col gap-0.5 rounded-[10px] px-2.5 py-1.5 text-left text-[11.5px] focus-visible:outline-2 ${below ? "org-bubble-below" : ""}${b.fading ? " org-bubble-fade" : ""}`}
+            data-org-bubble-anchor={b.anchor}
+            className="pointer-events-none absolute"
             style={{
               left: at.x + 6,
-              top: below ? at.y + CARD_H + 10 : at.y - 58,
+              top: below ? at.y + CARD_H : at.y,
+              width: 0,
+              height: 0,
               zIndex: 4,
-              background: tokens.bg,
-              color: tokens.fg,
-              border: `1px solid ${tokens.status.active}`,
-              outlineColor: tokens.status.active,
-              ["--org-bubble-bg" as string]: tokens.bg,
-              ["--org-bubble-border" as string]: tokens.status.active,
             }}
-            onMouseEnter={() => void showFull(b)}
-            onFocus={() => void showFull(b)}
-            onMouseLeave={() => hideFull(b)}
-            onBlur={() => hideFull(b)}
-            onClick={() => onSelect(b.anchor)}
           >
-            <span
-              className="flex items-center gap-1.5 text-[10.5px]"
-              style={{ color: tokens.muted }}
+            <button
+              type="button"
+              data-org-bubble={b.anchor}
+              aria-label={`Message to ${nameOf(b.anchor) ?? "agent"} from ${b.fromName}${b.count > 1 ? ` and ${b.count - 1} more` : ""}: ${b.preview}. Opens details.`}
+              className={`org-bubble pointer-events-auto absolute flex w-max max-w-[240px] cursor-pointer flex-col gap-0.5 rounded-[10px] px-2.5 py-1.5 text-left text-[11.5px] focus-visible:outline-2 ${below ? "org-bubble-below" : ""}${b.fading ? " org-bubble-fade" : ""}`}
+              style={{
+                left: 0,
+                ...(below ? { top: 10 } : { bottom: 10 }),
+                zoom: "var(--org-inv-k, 1)",
+                background: tokens.bg,
+                color: tokens.fg,
+                border: `1px solid ${tokens.status.active}`,
+                outlineColor: tokens.status.active,
+                ["--org-bubble-bg" as string]: tokens.bg,
+                ["--org-bubble-border" as string]: tokens.status.active,
+              }}
+              onMouseEnter={() => void showFull(b)}
+              onFocus={() => void showFull(b)}
+              onMouseLeave={() => hideFull(b)}
+              onBlur={() => hideFull(b)}
+              onClick={() => onSelect(b.anchor)}
             >
-              {b.fromProvider && (
-                <ProviderAgentIcon
-                  provider={b.fromProvider}
-                  status="idle"
-                  size={12}
-                />
-              )}
-              <span>{b.fromName}</span>
-              {b.count > 1 && (
-                <span
-                  data-org-bubble-count
-                  className="ml-auto font-bold tabular-nums"
-                  style={{ color: tokens.status.active }}
-                >
-                  +{b.count - 1}
-                </span>
-              )}
-            </span>
-            <span
-              data-org-bubble-text
-              className={
-                expanded
-                  ? "max-h-[9em] overflow-auto whitespace-normal"
-                  : "truncate"
-              }
-            >
-              {expanded ? open.text : b.preview}
-            </span>
-          </button>
+              <span
+                className="flex items-center gap-1.5 text-[10.5px]"
+                style={{ color: tokens.muted }}
+              >
+                {b.fromProvider && (
+                  <ProviderAgentIcon
+                    provider={b.fromProvider}
+                    status="idle"
+                    size={12}
+                  />
+                )}
+                <span>{b.fromName}</span>
+                {b.count > 1 && (
+                  <span
+                    data-org-bubble-count
+                    className="ml-auto font-bold tabular-nums"
+                    style={{ color: tokens.status.active }}
+                  >
+                    +{b.count - 1}
+                  </span>
+                )}
+              </span>
+              <span
+                data-org-bubble-text
+                className={
+                  expanded
+                    ? "max-h-[9em] overflow-auto whitespace-normal"
+                    : "truncate"
+                }
+              >
+                {expanded ? open.text : b.preview}
+              </span>
+            </button>
+          </span>
         );
       })}
     </>
