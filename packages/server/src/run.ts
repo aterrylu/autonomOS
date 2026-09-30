@@ -78,7 +78,7 @@ import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { usageQueueRouter } from "./routes/usageQueue.js";
-import { sameOriginGuard } from "./sameOriginGuard.js";
+import { resolveCorsOrigins, sameOriginGuard } from "./sameOriginGuard.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
 import {
@@ -310,9 +310,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // it has already loaded.
   let currentDashboardBuild = () => dashboardBuild;
 
-  const corsOrigin =
-    process.env.CORS_ORIGIN ||
-    (isProduction ? undefined : "http://localhost:5173");
+  const { cors: corsOrigin, trusted: csrfTrustedOrigins } = resolveCorsOrigins({
+    env: process.env,
+    isProduction,
+  });
   if (corsOrigin) {
     app.use("*", cors({ origin: corsOrigin }));
   }
@@ -322,7 +323,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // runs handlers in registration order, so a route added above this line
   // would skip it.
   const csrf = sameOriginGuard({
-    allowedOrigins: corsOrigin ? [corsOrigin] : [],
+    allowedOrigins: csrfTrustedOrigins,
   });
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
