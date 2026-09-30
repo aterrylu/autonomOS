@@ -36,6 +36,7 @@ import { emitAgentDelta } from "../events/agents.js";
 import {
   disposeCodexControl,
   startCodexStatusWatch,
+  suspendCodexControl,
 } from "../gateway/codexControl.js";
 import { getProvider } from "../providers/index.js";
 import { instrumentPtyInput, withPtyInputSource } from "../ptyInputLog.js";
@@ -2186,12 +2187,16 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
     );
   }
   restartingAgents.add(agentId);
+  let restarted = false;
   try {
     const managed = live.get(agentId);
     if (managed) {
       cancelPromptTracking(agentId);
       cancelChannelServerCheck(agentId);
-      disposeCodexControl(agentId);
+      // Keep queued Codex inbound for the respawned agent instead of dropping
+      // it (ADR-064: never drop); the respawn re-points the controller. Every
+      // exit below that doesn't end with the agent running disposes it.
+      suspendCodexControl(agentId);
       // Out of `live` BEFORE the exit fires, so the old PTY's onExit takes the
       // stale-attachment return and doesn't mark the record exited mid-restart
       // (the restart-all pattern).
@@ -2273,8 +2278,12 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
     console.info(
       `[runtime] restarted ${record.name} (${agentId.slice(0, 8)}) [${record.provider}]`,
     );
+    restarted = true;
     return getAgent(agentId) ?? current;
   } finally {
+    // Not running after all (killed, deleted, respawn failed, server
+    // stopping): the kept queue has nowhere to go — drop it WITH the notice.
+    if (!restarted) disposeCodexControl(agentId);
     restartingAgents.delete(agentId);
     killedDuringRestart.delete(agentId);
   }
