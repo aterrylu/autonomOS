@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Hono } from "hono";
-import { cappedWarn, sameOriginGuard } from "../sameOriginGuard.js";
+import {
+  cappedWarn,
+  resolveCorsOrigins,
+  sameOriginGuard,
+} from "../sameOriginGuard.js";
 
 /**
  * L1: the CSRF / cross-site WebSocket guard's decision table (V1). The
@@ -408,5 +412,46 @@ describe("sameOriginGuard: refusal logging stays bounded", () => {
       /^\[auth\] 100 cross-origin requests refused .*80 not logged/,
     );
     assert.match(tallies[1], /latest: refusal 1000$/);
+  });
+});
+
+describe("resolveCorsOrigins: only an EXPLICIT CORS_ORIGIN is trusted (#453)", () => {
+  it("dev mode (no build) defaults CORS to vite's port but trusts nothing", () => {
+    assert.deepEqual(resolveCorsOrigins({ env: {}, isProduction: false }), {
+      cors: "http://localhost:5173",
+      trusted: [],
+    });
+  });
+  it("production with no CORS_ORIGIN: no CORS, nothing trusted", () => {
+    assert.deepEqual(resolveCorsOrigins({ env: {}, isProduction: true }), {
+      cors: undefined,
+      trusted: [],
+    });
+  });
+  it("an explicit CORS_ORIGIN is both the CORS origin and trusted", () => {
+    for (const isProduction of [true, false])
+      assert.deepEqual(
+        resolveCorsOrigins({
+          env: { CORS_ORIGIN: "https://dash.example" },
+          isProduction,
+        }),
+        { cors: "https://dash.example", trusted: ["https://dash.example"] },
+      );
+  });
+  it("the implicit dev origin marked same-site is refused by the guard", async () => {
+    const { trusted } = resolveCorsOrigins({ env: {}, isProduction: false });
+    const { app } = makeApp(trusted);
+    assert.equal(
+      await status(app, "/api/x", {
+        method: "POST",
+        headers: {
+          ...DASHBOARD,
+          Origin: "http://localhost:5173",
+          "Sec-Fetch-Site": "same-site",
+        },
+        body: "{}",
+      }),
+      403,
+    );
   });
 });

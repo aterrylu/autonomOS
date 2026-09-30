@@ -292,3 +292,61 @@ describe("sameOriginGuard is mounted on the real server", {
     );
   });
 });
+
+describe("an explicit CORS_ORIGIN is honored under Fetch Metadata (ADR-125)", {
+  skip: !RUN_INTEGRATION,
+  timeout: 60_000,
+}, () => {
+  const ORIGIN = "http://localhost:5199";
+  let server: BootedServer;
+  let self: string;
+  const saved = process.env.CORS_ORIGIN;
+
+  before(async () => {
+    process.env.CORS_ORIGIN = ORIGIN; // inherited by the booted server
+    try {
+      server = await bootServer();
+    } finally {
+      if (saved === undefined) delete process.env.CORS_ORIGIN;
+      else process.env.CORS_ORIGIN = saved;
+    }
+    self = `127.0.0.1:${server.port}`;
+  }, HOOK_TIMEOUT);
+
+  after(() =>
+    boundedTeardown("same-origin-guard-cors", async () => {
+      await server?.kill();
+      if (server) rmSync(server.configDir, { recursive: true, force: true });
+    }),
+  );
+
+  const post = (origin: string, site: string) =>
+    raw(
+      server.port,
+      "POST",
+      "/api/templates",
+      {
+        Host: self,
+        Authorization: `Bearer ${server.token}`,
+        Origin: origin,
+        "Sec-Fetch-Site": site,
+        "Content-Type": "application/json",
+      },
+      JSON.stringify({
+        name: `cors-${Math.random().toString(36).slice(2, 8)}`,
+        role: "r",
+        description: "d",
+        systemPrompt: "s",
+      }),
+    );
+
+  it("the configured origin passes even when labelled cross-site", async () => {
+    const res = await post(ORIGIN, "cross-site");
+    assert.ok(res.status < 300, `${res.status} ${res.body}`);
+  });
+
+  it("any other origin labelled same-site is still refused", async () => {
+    const res = await post("http://localhost:5173", "same-site");
+    assert.equal(res.status, 403, res.body);
+  });
+});

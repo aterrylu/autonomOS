@@ -85,6 +85,26 @@ export function sameOriginVerdict(
   return null;
 }
 
+/**
+ * The CORS origin and the origins the guard TRUSTS, from one place so they
+ * can't drift. Dev mode (no dashboard build) defaults CORS to the vite port,
+ * but that implicit origin is NOT trusted to skip Fetch Metadata: any other
+ * vite dev server on :5173 (an agent's repo) could otherwise make
+ * cookie-authenticated writes (SecurityAudit, #453). Only an origin the
+ * operator set explicitly in CORS_ORIGIN is trusted. The dev dashboard doesn't
+ * need it: vite proxies /api and /ws, so its requests are same-origin.
+ */
+export function resolveCorsOrigins(o: {
+  env: NodeJS.ProcessEnv;
+  isProduction: boolean;
+}): { cors: string | undefined; trusted: string[] } {
+  const explicit = o.env.CORS_ORIGIN || undefined;
+  return {
+    cors: explicit ?? (o.isProduction ? undefined : "http://localhost:5173"),
+    trusted: explicit ? [explicit] : [],
+  };
+}
+
 /** Hono middleware. Refuses with 403 `CROSS_ORIGIN`. */
 export function sameOriginGuard(
   opts: SameOriginGuardOptions = {},
