@@ -225,9 +225,27 @@ async function main(): Promise<void> {
         ws.onclose = () => done(null);
         setTimeout(() => done(null), 4000);
       });
-      return { post: post.status, frame };
-    })) as { post: number; frame: string | null };
+      // The in-app Update's own call: cookie-only, operator-only (#392/#442).
+      const update = await fetch("/api/system/check-updates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const updateBody = (await update.json().catch(() => ({}))) as {
+        code?: string;
+      };
+      return {
+        post: post.status,
+        frame,
+        update: `${update.status} ${updateBody.code ?? ""}`.trim(),
+      };
+    })) as { post: number; frame: string | null; update: string };
     check("dashboard: same-origin JSON POST succeeds", own.post < 300, `${own.post}`);
+    check(
+      "dashboard: the in-app Update call is not refused (CROSS_ORIGIN / OPERATOR_ONLY)",
+      !/403/.test(own.update),
+      own.update,
+    );
     check(
       "dashboard: /ws/agents delivers the fleet frame",
       own.frame !== null,
