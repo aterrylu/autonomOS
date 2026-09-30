@@ -47,7 +47,7 @@ RELEASE_REPO="aterrylu/autonomOS"
 
 # sha256 of scripts/verify-provenance.mjs — maintained by `make verifier`, and
 # CI fails if it drifts from the file. The site serves both from one deploy.
-readonly VERIFIER_SHA256="6f0a90f494fedfc44b63ae1f266c5c3142aa59b852e1c42bf87812d515843d1c"
+readonly VERIFIER_SHA256="751423e8edcdebb4b25d18a75e905e6f0ce84aacd775b0c09c2a289cab493b00"
 
 
 # ── platform detection ────────────────────────────────────────────────────
