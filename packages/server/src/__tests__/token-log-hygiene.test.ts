@@ -135,6 +135,7 @@ describe("tightenConfigDirModes: owner-only on what older builds left loose", ()
   });
 
   it("refuses a home, an ancestor of a home, and / (and only those)", () => {
+    assert.equal(isProtectedDir("/", []), true, "/ even with no home known");
     const homes = ["/Users/alice", "/home/bob/"];
     for (const d of [
       "/",
