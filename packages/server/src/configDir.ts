@@ -11,6 +11,7 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   type Stats,
   statSync,
 } from "node:fs";
@@ -174,6 +175,7 @@ export function isProtectedDir(
   dir: string,
   homes: readonly string[],
   stat: (p: string) => Pick<Stats, "dev" | "ino"> = statSync,
+  real: (p: string) => string = realpathSync.native,
 ): boolean {
   const root = resolve(dir);
   if (root === resolve("/")) return true;
@@ -185,8 +187,20 @@ export function isProtectedDir(
   } catch {
     return false; // nothing there: nothing to chmod
   }
+  // Walk each home's ancestors twice: as spelled, and as RESOLVED. With a
+  // symlinked parent (`/home -> /data/home`), the home's real ancestors
+  // (`/data`) appear only in the resolved chain (nox, #449).
+  const starts = new Set<string>();
   for (const h of homes) {
-    let p = resolve(h);
+    starts.add(resolve(h));
+    try {
+      starts.add(real(h));
+    } catch {
+      // a home that doesn't exist has no real path
+    }
+  }
+  for (const start of starts) {
+    let p = start;
     for (;;) {
       try {
         const st = stat(p);

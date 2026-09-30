@@ -222,6 +222,40 @@ describe("tightenConfigDirModes: owner-only on what older builds left loose", ()
     );
   });
 
+  it("protects a home's REAL ancestors when a parent is a symlink (/home -> /data/home)", () => {
+    const inodes: Record<string, number> = {
+      "/home/alice": 7, // lexical spelling of the home
+      "/home": 5, // the symlink itself resolves to /data/home's inode
+      "/data/home/alice": 7,
+      "/data/home": 5,
+      "/data": 4, // only reachable through the RESOLVED chain
+      "/": 1,
+    };
+    const stat = (p: string) => {
+      if (!(p in inodes)) throw new Error("ENOENT");
+      return { dev: 1, ino: inodes[p] };
+    };
+    const real = (p: string) => (p === "/home/alice" ? "/data/home/alice" : p);
+    assert.equal(isProtectedDir("/data", ["/home/alice"], stat, real), true);
+    assert.equal(
+      isProtectedDir("/data/other", ["/home/alice"], stat, real),
+      false,
+    );
+  });
+
+  it("…and on disk: a throwaway /data behind a symlinked parent stays untouched", () => {
+    const base = mkdtempSync(join(tmpdir(), "v8-real-"));
+    dirs.push(base);
+    const data = join(base, "data");
+    mkdirSync(join(data, "home", "alice"), { recursive: true });
+    symlinkSync(join(data, "home"), join(base, "home"));
+    writeFileSync(join(data, "token"), "t"); // a marker: only protection saves it
+    chmodSync(data, 0o755);
+    const home = join(base, "home", "alice"); // spelled through the symlink
+    assert.deepEqual(tightenConfigDirModes(data, [home]), []);
+    assert.equal(mode(data), 0o755);
+  });
+
   it("leaves alone a directory that isn't (yet) an autonomOS config dir", () => {
     const d = mkdtempSync(join(tmpdir(), "v8-unmarked-"));
     dirs.push(d);
