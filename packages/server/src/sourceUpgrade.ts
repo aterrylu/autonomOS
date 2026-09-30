@@ -178,14 +178,43 @@ export function dirtyTrackedFiles(repoRoot: string): string[] | null {
 }
 
 /**
- * Highest semver v* tag known locally (call after a fetch). A git execution
- * failure is distinguished from "no tags" — conflating them made the caller
- * report "No release tags found" for what could be a broken git.
+ * The branch every release must be on (security audit V5). A `v*` tag is only
+ * a name, and anyone with push access can put one on an unreviewed commit;
+ * main is where review is enforced (the merge ruleset). Upgrading to a tag
+ * runs that commit's `make build`, so a tag that main does not contain is
+ * never a candidate, however high its version.
+ */
+export const RELEASE_BRANCH_REF = "refs/remotes/origin/main";
+
+function releaseBranchMissing(repoRoot: string): string | null {
+  if (git(repoRoot, ["rev-parse", "--verify", "--quiet", RELEASE_BRANCH_REF])) {
+    return null;
+  }
+  return (
+    `The clone has no ${RELEASE_BRANCH_REF.replace("refs/remotes/", "")} after the fetch, ` +
+    "so it can't check that a release tag is on main. Refusing to upgrade. " +
+    "Run `git -C <clone> fetch origin main` and retry."
+  );
+}
+
+/**
+ * Highest semver v* tag known locally that is ON origin/main (call after a
+ * fetch). A git execution failure is distinguished from "no tags" —
+ * conflating them made the caller report "No release tags found" for what
+ * could be a broken git.
  */
 export function latestVersionTag(
   repoRoot: string,
 ): { ok: true; version: string | null } | { ok: false; message: string } {
-  const result = gitOrError(repoRoot, ["tag", "--list", "v*"]);
+  const missing = releaseBranchMissing(repoRoot);
+  if (missing) return { ok: false, message: missing };
+  const result = gitOrError(repoRoot, [
+    "tag",
+    "--list",
+    "--merged",
+    RELEASE_BRANCH_REF,
+    "v*",
+  ]);
   if (!result.ok) return result;
   const versions = result.stdout
     .split("\n")
@@ -256,7 +285,8 @@ export async function performSourceUpgrade(
     if (!latest.version) {
       return {
         status: "error",
-        message: "No release tags (vX.Y.Z) found in the clone after fetch.",
+        message:
+          "No release tags (vX.Y.Z) on origin/main found in the clone after fetch.",
       };
     }
     targetVersion = latest.version;
@@ -267,6 +297,30 @@ export async function performSourceUpgrade(
       status: "error",
       message: `No release tag v${targetVersion} exists in the repository.`,
     };
+  } else {
+    // An explicit pin skips the tag listing above, so it needs the same
+    // on-main check on its own.
+    const missing = releaseBranchMissing(repoRoot);
+    if (missing) return { status: "error", message: missing };
+    const onMain = spawnSync(
+      "git",
+      [
+        "merge-base",
+        "--is-ancestor",
+        `refs/tags/v${targetVersion}`,
+        RELEASE_BRANCH_REF,
+      ],
+      { cwd: repoRoot, encoding: "utf-8", env: gitEnv() },
+    );
+    if (onMain.status !== 0) {
+      return {
+        status: "error",
+        message:
+          onMain.status === 1
+            ? `Release tag v${targetVersion} is not on origin/main, so it never went through review. Refusing to install it.`
+            : `Could not check that v${targetVersion} is on origin/main: ${onMain.stderr?.trim() || `git merge-base exited ${onMain.status}`}`,
+      };
+    }
   }
 
   // Same guard semantics as bundle mode: equal is a no-op; ahead without an

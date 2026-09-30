@@ -385,6 +385,8 @@ describe("performSourceUpgrade", () => {
 
 describe("release tags must be on main (audit V5)", () => {
   it("never upgrades to a newer tag that is not an ancestor of origin/main", async () => {
+    // main's release builds too (a real `make build`), just harmlessly.
+    writeFileSync(join(originDir, "Makefile"), "build:\n\ttrue\n");
     tagRelease("0.2.0");
     tagOffMainRelease("9.9.9");
     const result = await performSourceUpgrade({
