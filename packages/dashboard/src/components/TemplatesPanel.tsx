@@ -27,6 +27,7 @@ import {
   unknownDefaultText,
   useRuntimeDefaults,
 } from "./RuntimePermission";
+import { isLightBg } from "./recency";
 
 /**
  * TemplatesPanel — manage agent templates (~/.autonomos/templates/*.json).
@@ -48,6 +49,27 @@ import {
 // ── Types ────────────────────────────────────────────────────────
 
 type PageTheme = (typeof THEMES)[keyof typeof THEMES]["page"];
+
+/** The panel's surfaces from the theme — it used to hardcode dark-only
+ *  literals, which painted dark cards with pale text on Daylight. */
+function tpl(page: PageTheme) {
+  const light = isLightBg(page.bg);
+  return light
+    ? {
+        title: page.fg,
+        card: "#ffffff",
+        cardBorder: page.border,
+        input: "rgba(0,0,0,0.03)",
+        subtle: "rgba(0,0,0,0.05)",
+      }
+    : {
+        title: "#e6e1cf",
+        card: "rgba(28, 36, 51, 0.6)",
+        cardBorder: "rgba(255,255,255,0.06)",
+        input: "rgba(0,0,0,0.3)",
+        subtle: "rgba(255,255,255,0.06)",
+      };
+}
 
 type PanelMode =
   | { kind: "list" }
@@ -370,8 +392,8 @@ function TemplateCard({
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onEdit()}
       className="text-left cursor-pointer transition-all duration-200 relative group"
       style={{
-        background: "rgba(28, 36, 51, 0.6)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background: tpl(page).card,
+        border: `1px solid ${tpl(page).cardBorder}`,
         borderRadius: 12,
         padding: "16px 18px",
         minWidth: 240,
@@ -384,7 +406,7 @@ function TemplateCard({
           background:
             runningCount > 0
               ? "linear-gradient(90deg, #22c55e, #10b981)"
-              : "rgba(255,255,255,0.08)",
+              : tpl(page).cardBorder,
         }}
       />
 
@@ -393,7 +415,7 @@ function TemplateCard({
         <div className="flex-1 min-w-0">
           <div
             className="text-[14px] font-semibold tracking-tight truncate"
-            style={{ color: "#e6e1cf" }}
+            style={{ color: tpl(page).title }}
           >
             {template.role}
           </div>
@@ -489,7 +511,7 @@ function ListView({
         <div>
           <h2
             className="text-[15px] font-semibold tracking-tight"
-            style={{ color: "#e6e1cf" }}
+            style={{ color: tpl(page).title }}
           >
             Templates
           </h2>
@@ -709,7 +731,7 @@ function EditorView({
           className="cursor-pointer rounded px-2 py-1 text-[13px]"
           style={{
             color: page.statusFg,
-            background: "rgba(255,255,255,0.06)",
+            background: tpl(page).subtle,
           }}
           title="Back to templates"
         >
@@ -718,7 +740,7 @@ function EditorView({
         <div className="flex-1 min-w-0">
           <h2
             className="text-[15px] font-semibold tracking-tight truncate"
-            style={{ color: "#e6e1cf" }}
+            style={{ color: tpl(page).title }}
           >
             {existing ? `Edit: ${initialName}` : "New Template"}
           </h2>
@@ -748,9 +770,9 @@ function EditorView({
               placeholder="lowercase-with-dashes"
               className="w-full rounded px-3 py-2 text-[13px] font-mono disabled:opacity-50"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: tpl(page).input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: tpl(page).title,
               }}
             />
           </Field>
@@ -764,9 +786,9 @@ function EditorView({
               placeholder="Feature Worker"
               className="w-full rounded px-3 py-2 text-[13px]"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: tpl(page).input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: tpl(page).title,
               }}
             />
           </Field>
@@ -780,9 +802,9 @@ function EditorView({
               placeholder="Short summary of what this template is for"
               className="w-full rounded px-3 py-2 text-[13px]"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: tpl(page).input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: tpl(page).title,
               }}
             />
           </Field>
@@ -797,9 +819,9 @@ function EditorView({
               rows={12}
               className="w-full rounded px-3 py-2 text-[12px] font-mono resize-y"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: tpl(page).input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: tpl(page).title,
                 minHeight: 180,
               }}
             />
@@ -843,9 +865,9 @@ function EditorView({
               placeholder="opus"
               className="w-full rounded px-3 py-2 text-[13px] font-mono"
               style={{
-                background: "rgba(0,0,0,0.3)",
+                background: tpl(page).input,
                 border: `1px solid ${page.border}`,
-                color: "#e6e1cf",
+                color: tpl(page).title,
               }}
             />
           </Field>
@@ -884,8 +906,8 @@ function EditorView({
               disabled={submitting}
               className="rounded px-4 py-2 text-[12px] cursor-pointer disabled:opacity-50"
               style={{
-                background: "rgba(255,255,255,0.06)",
-                color: "#e6e1cf",
+                background: tpl(page).subtle,
+                color: tpl(page).title,
               }}
             >
               Cancel
@@ -912,8 +934,8 @@ function EditorView({
                       onClick={() => setConfirmDelete(false)}
                       className="rounded px-3 py-1.5 text-[11px] cursor-pointer"
                       style={{
-                        background: "rgba(255,255,255,0.06)",
-                        color: "#e6e1cf",
+                        background: tpl(page).subtle,
+                        color: tpl(page).title,
                       }}
                     >
                       Cancel
