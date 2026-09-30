@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseGatewayFrame } from "../gateway/frames.js";
+import { MAX_LOGGED_TYPE_CHARS, parseGatewayFrame } from "../gateway/frames.js";
 
 /**
  * The schema half of the V6 fix, on its own. gateway-malformed-frames.test.ts
@@ -61,6 +61,21 @@ describe("parseGatewayFrame", () => {
     const r = parseGatewayFrame('{"type":"send","to":5,"requestId":"req-9"}');
     assert.equal(r.ok, false);
     assert.equal(!r.ok && r.requestId, "req-9");
+  });
+
+  it("caps an unknown type, which the route logs (review: 2MB type = 2MB log line)", () => {
+    const huge = "x".repeat(2_000_000);
+    const r = parseGatewayFrame(JSON.stringify({ type: huge }));
+    assert.equal(r.ok, false);
+    const type = !r.ok ? (r.type ?? "") : "";
+    assert.ok(
+      type.length <= MAX_LOGGED_TYPE_CHARS + 32,
+      `type carried ${type.length} chars`,
+    );
+    assert.ok(type.endsWith(`(+${2_000_000 - MAX_LOGGED_TYPE_CHARS} chars)`));
+    // A short unknown type is carried as-is (the version-skew warning names it).
+    const short = parseGatewayFrame('{"type":"dashboard_connect"}');
+    assert.equal(!short.ok && short.type, "dashboard_connect");
   });
 
   it("never echoes field values in the reason (a register carries a token)", () => {

@@ -147,6 +147,23 @@ describe("gateway survives malformed frames (V6)", () => {
     assert.ok(!stderr.includes(SECRET), "a rejected frame leaked its token");
   });
 
+  it("keeps the log line bounded for a huge unknown type", async () => {
+    const before = stderr.length;
+    await exchange([JSON.stringify({ type: "y".repeat(2_000_000) })]);
+    await waitUntil(
+      () => stderr.slice(before).includes("ignoring unknown message type"),
+      () =>
+        `no unknown-type warning logged. stderr tail:\n${stderr.slice(-500)}`,
+    );
+    const longest = Math.max(
+      ...stderr
+        .slice(before)
+        .split("\n")
+        .map((l) => l.length),
+    );
+    assert.ok(longest < 300, `a log line was ${longest} chars`);
+  });
+
   it("answers a malformed send that carries a requestId, so the sender isn't left waiting", async () => {
     const { received } = await exchange([
       '{"type":"send","to":5,"message":"m","requestId":"req-bad"}',

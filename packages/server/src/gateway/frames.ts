@@ -61,13 +61,24 @@ export type ParsedFrame =
       /** Safe to log: names the problem, never echoes field values (a
        *  register frame carries a credential). */
       reason: string;
-      /** The frame's `type`, when it was a string. */
+      /** The frame's `type`, when it was a string, capped at
+       *  MAX_LOGGED_TYPE_CHARS for an unknown one. */
       type?: string;
       /** The frame's `requestId`, when it was a string, so the route can
        *  still answer a malformed request instead of leaving the sender to
        *  wait out its deadline. */
       requestId?: string;
     };
+
+/** Longest `type` a rejection carries. The route logs it, and an agent
+ *  controls it: uncapped, one 2MB `type` became a 2MB log line, and a stream
+ *  of them would evict older rotating-log segments (review of V6). */
+export const MAX_LOGGED_TYPE_CHARS = 64;
+
+function capForLog(value: string): string {
+  if (value.length <= MAX_LOGGED_TYPE_CHARS) return value;
+  return `${value.slice(0, MAX_LOGGED_TYPE_CHARS)}…(+${value.length - MAX_LOGGED_TYPE_CHARS} chars)`;
+}
 
 /** Parse and validate one raw frame. Never throws. */
 export function parseGatewayFrame(raw: string): ParsedFrame {
@@ -90,7 +101,12 @@ export function parseGatewayFrame(raw: string): ParsedFrame {
     return { ok: false, reason: "frame has no string `type`", requestId };
   }
   if (!KNOWN_TYPES.has(type)) {
-    return { ok: false, reason: "unknown message type", type, requestId };
+    return {
+      ok: false,
+      reason: "unknown message type",
+      type: capForLog(type),
+      requestId,
+    };
   }
   const result = clientFrame.safeParse(value);
   if (!result.success) {

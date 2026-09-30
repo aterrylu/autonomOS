@@ -33,7 +33,7 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
       bad: Extract<ReturnType<typeof parseGatewayFrame>, { ok: false }>,
       ws: WSContext,
     ): void => {
-      const who = `session=${sessionId?.slice(0, 8) ?? "unregistered"}`;
+      const who = `session=${sessionId ? JSON.stringify(sessionId.slice(0, 8)) : "unregistered"}`;
       if (bad.reason === "unknown message type") {
         // A version-skewed client (e.g. a channel server from a build whose
         // protocol has since changed). Drop, but say so, or the drift is
