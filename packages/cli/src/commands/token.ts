@@ -31,11 +31,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import {
-  isWeakToken,
-  resolveAuthTokenWithSource,
-} from "@autonomos/server/auth.js";
+import { join } from "node:path";
+import { isWeakToken, peekAuthToken } from "@autonomos/server/auth.js";
 import { signInLink } from "@autonomos/server/authCookie.js";
 import { getConfigDir } from "@autonomos/server/configDir.js";
 import { resolveInstall } from "@autonomos/server/installInfo.js";
@@ -226,8 +223,12 @@ function rotate(args: readonly string[]): number {
   const running = pid !== null && isPidAlive(pid.pid);
   // The port the server really uses: running → its pid file; else the PORT
   // its .env or this shell sets; else the default (SecurityAudit, #459).
+  // A stale pid file (after a crash) must not win (nox, #459).
   const port =
-    pid?.port ?? envPort ?? (Number(process.env.PORT) || undefined) ?? 3100;
+    (running ? pid?.port : undefined) ??
+    envPort ??
+    (Number(process.env.PORT) || undefined) ??
+    3100;
   const base = `http://localhost:${port}`;
   console.log("");
   console.log(
@@ -244,13 +245,19 @@ function rotate(args: readonly string[]): number {
 }
 
 function status(): number {
-  const { token, source } = resolveAuthTokenWithSource();
+  // Read-only: never generates a token file (nox, #459).
+  const found = peekAuthToken();
+  if (!found) {
+    console.log(
+      `No operator token yet: the server generates a strong one in ${join(getConfigDir(), "token")} on its first start.`,
+    );
+    return 0;
+  }
+  const { token, source } = found;
   const where =
     source === "env"
       ? "the AUTONOMOS_TOKEN environment variable (as seen from this shell)"
-      : source === "generated"
-        ? "a newly generated token file"
-        : `the token file in ${dirname(join(getConfigDir(), "token"))}`;
+      : `${found.path}${source === "legacy-file" ? " (the default config dir's token, used because this config dir has none)" : ""}`;
   const weak = isWeakToken(token);
   // Length and source only, never any characters of the token (V8).
   console.log(

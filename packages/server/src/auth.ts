@@ -89,6 +89,36 @@ export function resolveAuthToken(): string {
   return resolveAuthTokenWithSource().token;
 }
 
+/**
+ * The token the server would use and where from, WITHOUT generating one:
+ * null when none exists yet. For read-only callers (`autonomos token status`),
+ * which must not create a token file as a side effect.
+ */
+export function peekAuthToken(): {
+  token: string;
+  source: Exclude<TokenSource, "generated">;
+  path?: string;
+} | null {
+  const envToken = process.env.AUTONOMOS_TOKEN?.trim();
+  if (envToken) return { token: envToken, source: "env" };
+  const configToken = join(getConfigDir(), "token");
+  const candidates: Array<[string, "file" | "legacy-file"]> = [
+    [configToken, "file"],
+  ];
+  if (getConfigDir() !== DEFAULT_TOKEN_DIR)
+    candidates.push([DEFAULT_TOKEN_FILE, "legacy-file"]);
+  for (const [path, source] of candidates) {
+    try {
+      if (!existsSync(path)) continue;
+      const token = readFileSync(path, "utf-8").trim();
+      if (token) return { token, source, path };
+    } catch {
+      // unreadable: try the next
+    }
+  }
+  return null;
+}
+
 export function resolveAuthTokenWithSource(): {
   token: string;
   source: TokenSource;

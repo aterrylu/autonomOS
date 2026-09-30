@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -212,6 +213,12 @@ describe("the installed service definition", () => {
 });
 
 describe("autonomos token status", () => {
+  it("is read-only: with no token anywhere it creates none", async () => {
+    assert.equal(await runTokenCommand(["status"]), 0);
+    assert.match(out.join("\n"), /No operator token yet/);
+    assert.ok(!existsSync(join(TEST_DIR, "token")), "no token file written");
+  });
+
   it("reports weak or strong and the length, never the value", async () => {
     writeFileSync(join(TEST_DIR, "token"), "abcd");
     assert.equal(await runTokenCommand(["status"]), 0);
