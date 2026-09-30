@@ -12,11 +12,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Hono } from "hono";
+import { authCookieName, LEGACY_AUTH_COOKIE } from "../authCookie.js";
 import {
   _resetConfigDirForTesting,
   _setConfigDirForTesting,
 } from "../configDir.js";
 import { systemRouter } from "../routes/system.js";
+import { setServerPort } from "../serverState.js";
 import { _resetUpdateCheckForTesting, runUpdateCheck } from "../updateCheck.js";
 import {
   _resetSupervisorCacheForTesting,
@@ -372,6 +374,32 @@ describe("POST /api/system/upgrade is operator-only", () => {
     });
     assert.equal(res.status, 403);
     assert.equal((await res.json()).code, "OPERATOR_ONLY");
+  });
+
+  it("accepts the per-port cookie login ACTUALLY sets (#428) — and not another instance's", async () => {
+    // Regression: the guard hard-coded the legacy name, so once login set
+    // `autonomos_token_<port>` every in-app update was a 403. Build the
+    // name through the SAME helper login uses, so the two can't drift again.
+    setServerPort(4242);
+    const post = (cookie: string) =>
+      app.request("/api/system/upgrade", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/json",
+          "Sec-Fetch-Site": "same-origin",
+        },
+        body: JSON.stringify({ when: "now" }),
+      });
+    // This listener's cookie: past the guard (409 = not supervised, the next check).
+    const mine = await post(`${authCookieName(4242)}=x`);
+    assert.equal(mine.status, 409);
+    // Another instance's per-port cookie is not a sign-in HERE.
+    const other = await post(`${authCookieName(9999)}=x`);
+    assert.equal(other.status, 403);
+    assert.equal((await other.json()).code, "OPERATOR_ONLY");
+    // A browser still on the legacy shared cookie keeps working.
+    assert.equal((await post(`${LEGACY_AUTH_COOKIE}=x`)).status, 409);
   });
 
   it("refuses bearer-only API calls (the shape agent tooling uses)", async () => {
