@@ -9,9 +9,10 @@
 //   --bin=PATH       Override the auto-detected program path
 //   --force          Re-install even if file already exists
 //   --port=N         Supervise on port N (default: the server's own default)
-//   --host=H         Bake `--host=H` into the service file. Omit for the
-//                    server's loopback default; pass 0.0.0.0 for a remote box
-//                    you browse to over a trusted network.
+//   --host=H         Bake `--host=H` into the service file. Omitted, the
+//                    server's own default applies: ALL interfaces (reachable
+//                    over the network). Pass 127.0.0.1 to keep it on this
+//                    machine only.
 //   --open           After the daemon comes up, open the dashboard in a browser
 //
 // After activation it polls until the daemon is responsive (a real smoke test,
@@ -165,9 +166,9 @@ export async function runInstallServiceCommand(
 
   // Program-args either auto-detected or overridden via --bin. Append --port
   // when explicitly requested (preserves the port on pm2 migrations), and
-  // --host when the operator opted into a non-default bind. Omitting --host
-  // leaves the server's own loopback default in charge — the service file
-  // never silently widens the bind.
+  // --host when the operator chose a bind. Omitting --host leaves the server's
+  // own default in charge, which is ALL interfaces (run.ts resolveBindHost) —
+  // the service file never silently changes the bind either way.
   const baseArgs = flags.bin ? [flags.bin, "start"] : detectProgramArgs();
   const withPort =
     flags.port !== undefined ? [...baseArgs, `--port=${flags.port}`] : baseArgs;
