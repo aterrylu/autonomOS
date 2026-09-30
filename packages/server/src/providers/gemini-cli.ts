@@ -300,17 +300,11 @@ export function writeGeminiSettings(channelServerScript: string): void {
         // per-AGENT token (the 0600 file read via CONFIG_DIR + SESSION_ID), so
         // nothing agent-invariant and secret needs to live in this file.
         //
-        // KNOWN OPEN GAP (verified by real-spawn QA, 2026-07-28): Gemini in this
-        // `-i` PTY mode does NOT launch the autonomos MCP channel-server subprocess
-        // AT ALL (ps shows the gemini process has no `dist.mjs` child), so it never
-        // dials the gateway and outbound `send()`/org tools remain unavailable —
-        // the SAME pre-existing gap as before this change, for a DEEPER reason than
-        // credential delivery. This wiring makes BOTH tokens available once that
-        // launch gap is fixed; it does not itself make Gemini outbound work. (Also
-        // still unverified, part of the same follow-up: whether Gemini's `*TOKEN*`
-        // env filter strips these EXPLICIT mcpServers.env values too, not just
-        // inherited env — the ADR-055 finding was about inherited env.) Gemini HOOK
-        // identity is unaffected and works (inbound/status). See agentCredentials.ts.
+        // The 2026-07-28 QA note that Gemini's `-i` PTY mode never launched
+        // this channel server no longer holds: on gemini-cli 0.46.0 (live QA
+        // for audit V3, 2026-09-30) it launched it, the gateway registered
+        // the agent, and its create_template + send tool calls succeeded on
+        // the per-agent credential.
         env: {
           AUTONOMOS_SERVER_URL: `ws+unix://${socketPath}:/ws/gateway`,
           AUTONOMOS_API_URL: apiUrl,
