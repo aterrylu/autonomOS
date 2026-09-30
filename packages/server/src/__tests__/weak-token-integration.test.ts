@@ -48,6 +48,21 @@ describe("weak operator token at boot", {
         });
     }),
   );
+  /** Boot and expect a refusal (exit 2). A boot that unexpectedly SUCCEEDS is
+   *  registered for teardown before failing, so a regression fails the test
+   *  instead of leaving a live server that holds the runner open. */
+  const expectRefused = async (
+    opts: Parameters<typeof bootServer>[0],
+  ): Promise<Error> => {
+    let started: BootedServer | undefined;
+    try {
+      started = await bootServer(opts);
+    } catch (err) {
+      return err as Error;
+    }
+    booted.push(started);
+    assert.fail("the server started; it should have refused");
+  };
   const version = async (s: BootedServer, token: string) => {
     const res = await fetch(`http://127.0.0.1:${s.port}/api/system/version`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -81,14 +96,12 @@ describe("weak operator token at boot", {
 
   it("a NEW install on a network bind refuses to start, without printing the token", async () => {
     let dir = "";
-    await assert.rejects(
-      () => bootServer({ token: WEAK, prepareConfigDir: (d) => (dir = d) }),
-      (err: Error) => {
-        assert.match(err.message, /exited \(code=2\)/);
-        assert.ok(!err.message.includes(WEAK), "never the token");
-        return true;
-      },
-    );
+    const err = await expectRefused({
+      token: WEAK,
+      prepareConfigDir: (d) => (dir = d),
+    });
+    assert.match(err.message, /exited \(code=2\)/);
+    assert.ok(!err.message.includes(WEAK), "never the token");
     // The reason is in the log a supervised install keeps.
     const log = logFile(dir);
     assert.match(log, /Refusing to start/);
@@ -99,16 +112,14 @@ describe("weak operator token at boot", {
 
   it("an IDENTICAL second attempt is refused again (a refused boot leaves no install marker)", async () => {
     let dir = "";
-    const attempt = (reuse?: string) =>
-      bootServer({
-        token: WEAK,
-        ...(reuse
-          ? { reuseConfigDir: reuse }
-          : { prepareConfigDir: (d: string) => (dir = d) }),
-      });
-    await assert.rejects(attempt(), /exited \(code=2\)/);
+    const first = await expectRefused({
+      token: WEAK,
+      prepareConfigDir: (d) => (dir = d),
+    });
+    assert.match(first.message, /exited \(code=2\)/);
     assert.ok(dir, "captured the config dir");
-    await assert.rejects(attempt(dir), /exited \(code=2\)/, "still refused");
+    const second = await expectRefused({ token: WEAK, reuseConfigDir: dir });
+    assert.match(second.message, /exited \(code=2\)/, "still refused");
     rmSync(dir, { recursive: true, force: true });
   });
 
