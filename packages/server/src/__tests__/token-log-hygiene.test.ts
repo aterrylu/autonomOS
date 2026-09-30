@@ -123,9 +123,21 @@ describe("tightenConfigDirModes: owner-only on what older builds left loose", ()
   });
 
   it("refuses to touch the home directory itself", () => {
-    const before = mode(homedir());
-    assert.deepEqual(tightenConfigDirModes(homedir()), []);
-    assert.equal(mode(homedir()), before);
+    // NEVER the real home: with the guard mutated away, this would chmod the
+    // operator's ~ (it happened once, during this PR's own mutation run).
+    // os.homedir() reads $HOME, so point it at a throwaway dir for the call.
+    const fakeHome = mkdtempSync(join(tmpdir(), "v8-home-"));
+    dirs.push(fakeHome);
+    chmodSync(fakeHome, 0o755);
+    const saved = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      assert.equal(homedir(), fakeHome, "precondition: homedir() is the fake");
+      assert.deepEqual(tightenConfigDirModes(fakeHome), []);
+    } finally {
+      process.env.HOME = saved;
+    }
+    assert.equal(mode(fakeHome), 0o755);
   });
 
   it("is a no-op for a missing dir", () => {

@@ -40,7 +40,12 @@ describe("V8: an old install's token stays out of its logs", {
   let server: BootedServer;
   let logPath: string;
 
+  const savedMax = process.env.AUTONOMOS_LOG_MAX_BYTES;
   before(async () => {
+    // Rotate during boot, so the active log is a segment the WRITER created
+    // (not the planted one the boot-time tightening fixed): its mode proves
+    // the logger itself opens logs 0600.
+    process.env.AUTONOMOS_LOG_MAX_BYTES = "512";
     server = await bootServer({
       token: SHORT,
       extraArgs: ["--print-url"],
@@ -56,6 +61,8 @@ describe("V8: an old install's token stays out of its logs", {
       },
     });
     logPath = join(server.configDir, "logs", "autonomos.log");
+    if (savedMax === undefined) delete process.env.AUTONOMOS_LOG_MAX_BYTES;
+    else process.env.AUTONOMOS_LOG_MAX_BYTES = savedMax;
   }, HOOK_TIMEOUT);
 
   after(() =>
@@ -68,9 +75,11 @@ describe("V8: an old install's token stays out of its logs", {
   it("re-tightens the config root and the existing log", () => {
     assert.equal(mode(server.configDir), 0o700, "root");
     assert.equal(mode(join(server.configDir, "logs")), 0o700, "logs dir");
-    assert.equal(mode(logPath), 0o600, "log file");
+    assert.equal(mode(logPath), 0o600, "active segment, created by the writer");
+    assert.ok(existsSync(`${logPath}.1`), "precondition: the log rotated");
+    assert.equal(mode(`${logPath}.1`), 0o600, "rotated segment");
     assert.match(
-      readFileSync(logPath, "utf8"),
+      allLogs(),
       /\[security\] removed group\/other access/,
       "says what it tightened",
     );
@@ -80,6 +89,13 @@ describe("V8: an old install's token stays out of its logs", {
     assert.match(server.logs(), /Auth token: \(hidden, 4 chars\)/);
   });
 
+  const allLogs = () =>
+    ["", ".1", ".2", ".3", ".4", ".5"]
+      .map((sfx) => `${logPath}${sfx}`)
+      .filter((p) => existsSync(p))
+      .map((p) => readFileSync(p, "utf8"))
+      .join("");
+
   it("the sign-in link reaches the terminal but never the log file", async () => {
     assert.ok(
       await waitFor(async () => server.logs().includes(`#token=${SHORT}`), {
@@ -88,10 +104,7 @@ describe("V8: an old install's token stays out of its logs", {
       "link on stdout",
     );
     assert.ok(existsSync(logPath));
-    assert.ok(
-      !readFileSync(logPath, "utf8").includes(SHORT),
-      "the log never holds the token",
-    );
+    assert.ok(!allLogs().includes(SHORT), "the log never holds the token");
   });
 
   it("the short token still authenticates after the upgrade", async () => {
