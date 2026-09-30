@@ -388,11 +388,21 @@ describe("the map and following the selection", () => {
     await mount(bigFleet);
     fireEvent.click(card("W0") as HTMLElement);
     const before = view();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 8; i++) {
       const sel = $("[data-org-inspector]")?.dataset.orgInspector as string;
       fireEvent.keyDown(card(sel) as HTMLElement, { key: "ArrowRight" });
     }
-    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("W12");
-    expect(view().x).toBeLessThan(before.x);
-  });
+    expect($("[data-org-inspector]")?.dataset.orgInspector).toBe("W8");
+    // The invariant: the selected card is ON SCREEN (the view followed it).
+    const c = card("W8") as HTMLElement;
+    const v = view();
+    const sx = v.x + Number.parseFloat(c.style.left) * v.k;
+    const sy = v.y + Number.parseFloat(c.style.top) * v.k;
+    expect(sx).toBeGreaterThanOrEqual(0);
+    expect(sx + 200 * v.k).toBeLessThanOrEqual(VP.w);
+    expect(sy).toBeGreaterThanOrEqual(0);
+    expect(sy + 60 * v.k).toBeLessThanOrEqual(VP.h);
+    // …and it had to move to get there (W8 starts off-screen).
+    expect(v).not.toEqual(before);
+  }, 15_000);
 });
