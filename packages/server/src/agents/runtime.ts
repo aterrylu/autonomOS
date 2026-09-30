@@ -24,6 +24,7 @@ import {
   permissionFromLegacyMode,
   type ResolvedSpawnOptions,
   type RuntimePermission,
+  type SidecarSpec,
   type SpawnOptions,
   samePermission,
   type UUID,
@@ -61,6 +62,13 @@ import {
   cancelChannelServerCheck,
   trackChannelServerRegistration,
 } from "./channelServerCheck.js";
+import {
+  chooseCodexEndpoint,
+  codexReadyProbe,
+  refusedSpawnNotice,
+  tcpFallbackNotice,
+  UnsafeCodexSocketError,
+} from "./codexSocket.js";
 import { enrichAgent } from "./enrich.js";
 import { noteFreshStart } from "./freshStarts.js";
 import {
@@ -1429,6 +1437,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // retry). The daemon is bound to this PTY's lifecycle and disposed on exit.
   let sidecar: Sidecar | undefined;
   if (provider.buildSidecar) {
+    // Runs BEFORE chooseCodexEndpoint: its cx/ sweep only unlinks stale links,
+    // it doesn't stop a daemon (ADR-131/132).
     // A daemon a previous server left running still holds this agent's thread,
     // and a new daemon can't load a held thread: stop it first (recorded pid,
     // guarded by its command line). No-op when there's no record.
@@ -1440,22 +1450,71 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
         `An old Codex daemon for ${agent.name} from a previous server ${reaped === "survived" ? "couldn't be stopped" : "couldn't be checked, so it wasn't stopped"}${rec ? ` (pid ${rec.pid})` : ""}. While it runs, the agent may not receive messages: stop it, then restart the agent.`,
       );
     }
-    const port = await pickFreePort();
-    resolved.sidecarEndpoint = `ws://127.0.0.1:${port}`;
-    const spec = provider.buildSidecar(resolved);
+    const buildSidecar = provider.buildSidecar.bind(provider);
+    const isCodex = provider.name === "codex";
+    // Loopback TCP: reachable by any local user, so for Codex it's only the
+    // fallback, and the operator is told why.
+    const useTcp = async (reason: string) => {
+      resolved.sidecarEndpoint = `ws://127.0.0.1:${await pickFreePort()}`;
+      if (isCodex) {
+        console.warn(
+          `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): Codex daemon on loopback TCP: ${reason}`,
+        );
+        pushSystemNotification(agent.id, tcpFallbackNotice(agent.name, reason));
+      }
+    };
+    const start = (spec: SidecarSpec, unixSocket?: string) =>
+      startSidecarDaemon(
+        binary,
+        spec.args,
+        resolved.sidecarEndpoint as string,
+        {
+          cwd,
+          env,
+          readyNeedle: spec.readyNeedle,
+          readyTimeoutMs: spec.readyTimeoutMs,
+          // A unix listener prints no banner. Ready = the socket codex made
+          // is ours, private, and newer than this spawn, AND accepts. An
+          // unsafe socket throws before anything connects to it.
+          ...(unixSocket && {
+            readyProbe: codexReadyProbe(unixSocket, spawnStartedAt),
+          }),
+        },
+      );
+
+    // Codex's daemon listens on an owner-only unix socket (audit V4), with a
+    // fresh path per spawn so it can never meet an orphaned daemon. TCP only
+    // for compatibility; a hostile state (squatted /tmp dir) refuses the spawn.
+    const refuse = (reason: string): never => {
+      console.error(
+        `[runtime] ${agent.name} (${agent.id.slice(0, 8)}): Codex spawn REFUSED: ${reason}`,
+      );
+      pushSystemNotification(agent.id, refusedSpawnNotice(agent.name, reason));
+      throw new Error(`Refusing to start ${agent.name}: ${reason}`);
+    };
+    const spawnStartedAt = Date.now();
+    const choice = isCodex
+      ? await chooseCodexEndpoint(agent.id, binary)
+      : ({ kind: "tcp", reason: "" } as const);
+    if (choice.kind === "refuse") refuse(choice.reason);
+    if (choice.kind === "unix") resolved.sidecarEndpoint = choice.endpoint;
+    else await useTcp(choice.reason);
+
+    const spec = buildSidecar(resolved);
     if (spec) {
       try {
-        sidecar = await startSidecarDaemon(
-          binary,
-          spec.args,
-          resolved.sidecarEndpoint,
-          {
-            cwd,
-            env,
-            readyNeedle: spec.readyNeedle,
-            readyTimeoutMs: spec.readyTimeoutMs,
-          },
-        );
+        try {
+          sidecar = await start(
+            spec,
+            choice.kind === "unix" ? choice.socketPath : undefined,
+          );
+        } catch (err) {
+          // The socket codex made didn't check out. Nothing connected to it
+          // and the daemon is already disposed. That's a hostile state, so
+          // refuse rather than hand the agent a TCP endpoint.
+          if (err instanceof UnsafeCodexSocketError) refuse(err.message);
+          throw err;
+        }
         // Recorded on disk so a server that dies without disposing it can
         // reap it on the next start; forgotten once it has really exited.
         const daemon = sidecar;

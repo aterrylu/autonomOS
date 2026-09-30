@@ -167,7 +167,15 @@ describe("permission mode — process and record agree across a resume", {
     boundedTeardown("permission-mode-resume", async () => {
       if (server) {
         await server.kill();
-        rmSync(server.configDir, { recursive: true, force: true });
+        // The killed server can still be writing into its config dir while
+        // this runs; rmSync then fails ENOTEMPTY (~1 in 5 runs, on main too).
+        // Its own retry covers that race.
+        rmSync(server.configDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100,
+        });
       }
       rmSync(workdir, { recursive: true, force: true });
     }),
