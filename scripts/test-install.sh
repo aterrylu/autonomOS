@@ -297,7 +297,9 @@ echo "==> ✓ --help OK"
 # AUTONOMOS_TOKEN overrides ~/.autonomos/token resolution, keeping the test
 # hermetic from the user's real auth token (token file lives outside
 # AUTONOMOS_CONFIG_DIR by design — it's per-machine, not per-worktree).
-TEST_TOKEN="test-token-1c-hermetic-$$"
+# 32+ random chars: a fresh config dir on a network bind refuses a weak token
+# (V2b, ADR-126), and `autonomos start` binds all interfaces.
+TEST_TOKEN="test-token-1c-hermetic-$$-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 echo "==> Starting daemon on port $TEST_PORT"
 AUTONOMOS_CONFIG_DIR="$TEST_CFG" AUTONOMOS_TOKEN="$TEST_TOKEN" \
   "$WRAPPER" start --port="$TEST_PORT" >"$SERVER_LOG" 2>&1 &
