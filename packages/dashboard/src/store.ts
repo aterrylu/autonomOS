@@ -745,6 +745,11 @@ interface AppState {
    *  per-mount) + persisted, so the Sidebar's unmount-on-collapse and a reload
    *  don't reset it — the old per-mount reset was bug #8. */
   expandedProjects: Record<string, boolean>;
+  /** Projects panel: show automated (headless SDK / `codex exec`) runs inside
+   *  their repos. Off by default: on a busy box they are most of the sessions. */
+  showAutomatedRuns: boolean;
+  /** Projects panel: the collapsed "Other" group (temp dirs, deleted dirs) is open. */
+  otherProjectsOpen: boolean;
   /** Unread notification count per session ID */
   notificationCounts: Record<string, number>;
   /** Bumped per session id when its PTY is replaced under a STABLE id (restart /
@@ -847,6 +852,8 @@ interface AppState {
   toggleProjectExpanded: (path: string) => void;
   /** Collapse every project in the Projects panel (the header's collapse-all). */
   collapseAllProjects: () => void;
+  setShowAutomatedRuns: (show: boolean) => void;
+  toggleOtherProjects: () => void;
   removeSession: (id: string) => Promise<void>;
   /** Reorder within one flat-view section (drag-and-drop). Other section
    *  unchanged. Persists the frozen snapshot (prunes dead, freezes arrivals). */
@@ -955,6 +962,8 @@ export const useStore = create<AppState>()(
         sessionsInitialFetchDone: false,
         projects: [],
         expandedProjects: {},
+        showAutomatedRuns: false,
+        otherProjectsOpen: false,
         notificationCounts: {},
         terminalReloadNonce: {},
         agentStatuses: {},
@@ -1380,7 +1389,12 @@ export const useStore = create<AppState>()(
             expandedProjects: s.expandedProjects[path] ? {} : { [path]: true },
           })),
 
-        collapseAllProjects: () => set({ expandedProjects: {} }),
+        collapseAllProjects: () =>
+          set({ expandedProjects: {}, otherProjectsOpen: false }),
+
+        setShowAutomatedRuns: (show) => set({ showAutomatedRuns: show }),
+        toggleOtherProjects: () =>
+          set((s) => ({ otherProjectsOpen: !s.otherProjectsOpen })),
 
         toggleSidebarViewMode: () => {
           set({
@@ -1498,6 +1512,8 @@ export const useStore = create<AppState>()(
         hierarchyOrder: state.hierarchyOrder,
         projects: state.projects,
         expandedProjects: state.expandedProjects,
+        showAutomatedRuns: state.showAutomatedRuns,
+        otherProjectsOpen: state.otherProjectsOpen,
       }),
       merge: (persisted, current) => {
         const saved = persisted as Record<string, unknown>;
@@ -1575,6 +1591,10 @@ export const useStore = create<AppState>()(
         }
         if (typeof saved?.sidebarOpen === "boolean")
           merged.sidebarOpen = saved.sidebarOpen;
+        for (const k of ["showAutomatedRuns", "otherProjectsOpen"] as const) {
+          const v = saved?.[k];
+          if (typeof v === "boolean") merged[k] = v;
+        }
         if (
           typeof saved?.sidebarWidth === "number" &&
           Number.isFinite(saved.sidebarWidth) &&
