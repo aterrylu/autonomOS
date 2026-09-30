@@ -100,11 +100,9 @@ describe("codex daemon topology", () => {
       const joined = spec.args.join(" ");
       assert.match(joined, /mcp_servers\.autonomos\.command="node"/);
       assert.match(joined, /mcp_servers\.autonomos\.env\.AUTONOMOS_SESSION_ID/);
-      // Auth token is always forwarded (no process.env fallthrough).
-      assert.match(
-        joined,
-        /mcp_servers\.autonomos\.env\.AUTONOMOS_TOKEN="test-token-1234567890abcdef"/,
-      );
+      // The operator token is never on the daemon's argv (audit V3).
+      assert.doesNotMatch(joined, /AUTONOMOS_TOKEN/);
+      assert.ok(!joined.includes("test-token-1234567890abcdef"));
     });
 
     it("omits MCP config when injectChannelServer is false", () => {

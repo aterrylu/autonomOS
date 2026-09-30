@@ -25,10 +25,9 @@ import {
  * spawn code read `process.env.PORT || "3000"`. The fix routes the actual
  * bound port through serverState. These tests guard the fix.
  *
- * The same family of tests covers the auth-token forwarding fix: providers
- * USED to read `process.env.AUTONOMOS_TOKEN`, which is undefined when
- * resolveAuthToken() falls back to reading ~/.autonomos/token off disk —
- * leaving the channel server tokenless and rejected by /ws/* auth.
+ * The operator token is deliberately NOT forwarded any more (security audit
+ * V3): the channel server authenticates with its per-agent token instead, and
+ * agents-no-operator-token.test.ts pins its absence from every delivery path.
  */
 
 let tmpDir: string;
@@ -113,16 +112,9 @@ describe("Built-in mode URL + token forwarding", () => {
       assert.equal(env.AUTONOMOS_API_URL, "http://localhost:53917");
     });
 
-    it("always forwards the in-process auth token — even when process.env.AUTONOMOS_TOKEN is unset", () => {
-      const prev = process.env.AUTONOMOS_TOKEN;
-      delete process.env.AUTONOMOS_TOKEN;
-      try {
-        const args = claudeCodeProvider.buildArgs(baseOptions());
-        const env = readMcpEnv(args);
-        assert.equal(env.AUTONOMOS_TOKEN, "test-token-1234567890abcdef");
-      } finally {
-        if (prev !== undefined) process.env.AUTONOMOS_TOKEN = prev;
-      }
+    it("never forwards the operator token (audit V3; the channel server uses its per-agent token)", () => {
+      const env = readMcpEnv(claudeCodeProvider.buildArgs(baseOptions()));
+      assert.equal(env.AUTONOMOS_TOKEN, undefined);
     });
 
     it("propagates session id + agent name into MCP env", () => {
@@ -172,19 +164,12 @@ describe("Built-in mode URL + token forwarding", () => {
       assert.equal(apiUrl, "http://localhost:53917");
     });
 
-    it("always forwards the in-process auth token (no env fallthrough)", () => {
-      const prev = process.env.AUTONOMOS_TOKEN;
-      delete process.env.AUTONOMOS_TOKEN;
-      try {
-        const args = codexProvider.buildArgs(baseOptions());
-        const token = readCfgValue(
-          args,
-          "mcp_servers.autonomos.env.AUTONOMOS_TOKEN",
-        );
-        assert.equal(token, "test-token-1234567890abcdef");
-      } finally {
-        if (prev !== undefined) process.env.AUTONOMOS_TOKEN = prev;
-      }
+    it("never forwards the operator token as a `-c` flag (audit V3)", () => {
+      const args = codexProvider.buildArgs(baseOptions());
+      assert.equal(
+        readCfgValue(args, "mcp_servers.autonomos.env.AUTONOMOS_TOKEN"),
+        null,
+      );
     });
 
     it("injects CONFIG_DIR but NOT the per-agent token as a `-c` flag", () => {

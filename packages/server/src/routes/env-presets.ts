@@ -10,6 +10,7 @@
  */
 
 import { Hono } from "hono";
+import { getAgentCaller } from "../callerContext.js";
 import {
   createEnvPreset,
   deleteEnvPreset,
@@ -25,8 +26,14 @@ import {
 
 export const envPresetRouter = new Hono();
 
-/** The human write path — see the module note. */
-const HUMAN_WRITE = { writeSecrets: true } as const;
+/** The human write path — see the module note. An agent reaching these
+ *  handlers through routes/agentApi.ts (audit V3) gets the agent policy
+ *  instead: secret VALUES are stripped server-side, the same rule the MCP
+ *  tools apply, now enforced where an agent can't skip it. */
+const writePolicy = () =>
+  getAgentCaller()
+    ? ({ writeSecrets: false } as const)
+    : ({ writeSecrets: true } as const);
 
 envPresetRouter.get("/", (c) => {
   try {
@@ -40,7 +47,7 @@ envPresetRouter.get("/", (c) => {
 envPresetRouter.post("/", async (c) => {
   const body = await parseBody(c, restCreateEnvPresetSchema);
   try {
-    const preset = createEnvPreset(body, Date.now(), HUMAN_WRITE);
+    const preset = createEnvPreset(body, Date.now(), writePolicy());
     return c.json(preset, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -70,7 +77,7 @@ envPresetRouter.put("/:name", async (c) => {
   const name = c.req.param("name");
   const body = await parseBody(c, restUpdateEnvPresetSchema);
   try {
-    const preset = updateEnvPreset(name, body, Date.now(), HUMAN_WRITE);
+    const preset = updateEnvPreset(name, body, Date.now(), writePolicy());
     return c.json(preset);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

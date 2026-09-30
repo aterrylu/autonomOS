@@ -14,12 +14,16 @@
  *
  * Environment variables (set by autonomOS at spawn time):
  *   AUTONOMOS_SERVER_URL  — gateway WebSocket URL (ws+unix://<sock>:/ws/gateway, ADR-055 PR B)
- *   AUTONOMOS_API_URL     — public REST base (http://localhost:<port>) for create_agent/schedules
  *   AUTONOMOS_SESSION_ID  — this agent's autonomOS session ID
- *   AUTONOMOS_TOKEN       — auth token (optional)
+ *   AUTONOMOS_CONFIG_DIR  — locates this agent's 0600 per-agent token file
+ *
+ * Credentials: ONLY the per-agent token (security audit V3). REST calls and the
+ * gateway upgrade both go over the internal Unix socket with X-Agent-Session +
+ * X-Agent-Token. The operator token is never given to an agent.
  */
 
 import { readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import type {
   AgentInfo,
@@ -49,7 +53,6 @@ import { ALL_TOOLS, MCP_INSTRUCTIONS, MCP_SERVER_INFO } from "../mcp/tools.js";
 
 const SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 const SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
-const AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
 
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
@@ -110,10 +113,9 @@ const pendingRequests = new Map<
 
 function connectToServer(): void {
   try {
-    const url = AUTH_TOKEN
-      ? `${SERVER_URL}?token=${encodeURIComponent(AUTH_TOKEN)}`
-      : SERVER_URL!;
-    ws = new WebSocket(url);
+    // The upgrade authenticates with the per-agent credential (audit V3);
+    // the register frame below still proves the session identity.
+    ws = new WebSocket(SERVER_URL!, { headers: agentHeaders() });
   } catch (err) {
     process.stderr.write(
       `autonomos-channel: WebSocket connect failed: ${err}\n`,
@@ -268,32 +270,25 @@ const mcp = new Server(
 // Handlers route through the gateway WebSocket for send/list_agents,
 // and through the server's HTTP API for create_agent/kill_agent.
 
-// Public REST base for create_agent / kill_agent / schedules — the routes that
-// stay on the PUBLIC listener. It used to be string-derived from SERVER_URL, but
-// that only worked while the gateway WS was an http(s) URL on the same port. Now
-// the gateway is `ws+unix://<sock>:/ws/gateway` (ADR-055 PR B), which has no
-// http host to munge — the two planes are genuinely separate, so the REST base
-// is its own injected env var. Falls back to the old derivation for a mixed-
-// version window (an agent spawned by a pre-PR-B server that lacks the new var).
-const SERVER_BASE = (() => {
-  const explicit = process.env.AUTONOMOS_API_URL;
-  if (explicit) return explicit.replace(/\/$/, "");
-  // Legacy fallback: derive from an http(s) gateway URL. Cannot work for
-  // ws+unix; if we're on ws+unix without AUTONOMOS_API_URL, REST tools are
-  // unavailable and we say so rather than dialing a nonsense host.
-  const wsUrl = SERVER_URL ?? "";
-  if (wsUrl.startsWith("ws+unix:")) {
-    process.stderr.write(
-      "autonomos-channel: AUTONOMOS_API_URL not set with a ws+unix gateway — " +
-        "create_agent/kill_agent/schedules will be unavailable\n",
-    );
-    return "";
-  }
-  return wsUrl
-    .replace("ws://", "http://")
-    .replace("wss://", "https://")
-    .replace(/\/ws\/gateway$/, "");
+// REST goes to the internal Unix socket, the same one the gateway uses:
+// `ws+unix://<socketPath>:/ws/gateway` (the `ws` package splits on the FIRST
+// ':' after the scheme, and so do we). That socket is 0600 and same-user, and
+// it is where the server accepts the per-agent credential for exactly the
+// routes these tools call (routes/agentApi.ts, audit V3). The public port
+// never accepts an agent credential.
+const SOCKET_PATH = (() => {
+  const url = SERVER_URL ?? "";
+  if (!url.startsWith("ws+unix://")) return "";
+  const rest = url.slice("ws+unix://".length);
+  const colon = rest.indexOf(":");
+  return colon > 0 ? rest.slice(0, colon) : "";
 })();
+if (!SOCKET_PATH) {
+  process.stderr.write(
+    "autonomos-channel: AUTONOMOS_SERVER_URL is not a ws+unix:// gateway URL — " +
+      "create_agent/kill_agent/schedules will be unavailable\n",
+  );
+}
 
 /** MCP tool result shape (index signature required by MCP SDK) */
 interface ToolResult {
@@ -302,34 +297,80 @@ interface ToolResult {
   isError?: boolean;
 }
 
-/** Build auth headers for server API calls */
-function authHeaders(contentType?: string): Record<string, string> {
+/** This agent's credential, for REST calls and the gateway upgrade. */
+function agentHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
-  if (contentType) headers["Content-Type"] = contentType;
-  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+  if (SESSION_ID) headers["X-Agent-Session"] = SESSION_ID;
+  if (AGENT_TOKEN) headers["X-Agent-Token"] = AGENT_TOKEN;
   return headers;
 }
 
-/** Fetch from the autonomOS server API and return an MCP tool result */
+/** One HTTP request over the internal socket. */
+function socketRequest(
+  path: string,
+  init?: RequestInit,
+): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const body = typeof init?.body === "string" ? init.body : undefined;
+    const req = httpRequest(
+      {
+        socketPath: SOCKET_PATH,
+        path,
+        method: init?.method ?? "GET",
+        headers: {
+          ...agentHeaders(),
+          ...(body !== undefined && {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          }),
+          ...(init?.headers as Record<string, string>),
+        },
+      },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          text += chunk;
+        });
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+/** Call the autonomOS server API and return an MCP tool result */
 async function serverFetch(
   path: string,
   init?: RequestInit,
 ): Promise<ToolResult> {
-  const res = await fetch(`${SERVER_BASE}${path}`, {
-    ...init,
-    headers: {
-      ...authHeaders(init?.body ? "application/json" : undefined),
-      ...(init?.headers as Record<string, string>),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
+  if (!SOCKET_PATH) {
     return {
-      content: [{ type: "text", text: `Failed: ${text}` }],
+      content: [
+        {
+          type: "text",
+          text: "Failed: no internal socket to reach the server on",
+        },
+      ],
       isError: true,
     };
   }
-  const data = await res.json();
+  const res = await socketRequest(path, init);
+  if (res.status < 200 || res.status >= 300) {
+    return {
+      content: [{ type: "text", text: `Failed: ${res.text}` }],
+      isError: true,
+    };
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(res.text);
+  } catch {
+    data = res.text;
+  }
   const pretty =
     typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
   return { content: [{ type: "text", text: pretty }] };
