@@ -12,14 +12,22 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { describeTokenForLog } from "../auth.js";
-import { tightenConfigDirModes } from "../configDir.js";
-import { createRotatingWriter } from "../logger.js";
+import { isolateHome } from "./helpers/isolate-home.js";
 
-/**
- * V8: the operator token never reaches a log, and what older builds created
- * loose is made owner-only on boot, without ever breaking auth.
- */
+// tightenConfigDirModes CHMODS. A mutation that removes one of its guards must
+// only ever reach throwaway dirs, so everything here runs under a fake HOME,
+// set BEFORE the server modules load (configDir.ts reads HOME at import).
+const isolated = isolateHome("aos-v8");
+// Asserted before anything runs: abort the whole file rather than chmod under
+// the operator's real HOME.
+if (homedir() !== isolated.home)
+  throw new Error(`HOME isolation failed: homedir() is ${homedir()}`);
+after(() => isolated.restore());
+const { describeTokenForLog } = await import("../auth.js");
+const { isProtectedDir, tightenConfigDirModes } = await import(
+  "../configDir.js"
+);
+const { createRotatingWriter } = await import("../logger.js");
 
 const mode = (p: string) => statSync(p).mode & 0o777;
 
@@ -122,22 +130,43 @@ describe("tightenConfigDirModes: owner-only on what older builds left loose", ()
     assert.equal(mode(outside), 0o755);
   });
 
-  it("refuses to touch the home directory itself", () => {
-    // NEVER the real home: with the guard mutated away, this would chmod the
-    // operator's ~ (it happened once, during this PR's own mutation run).
-    // os.homedir() reads $HOME, so point it at a throwaway dir for the call.
-    const fakeHome = mkdtempSync(join(tmpdir(), "v8-home-"));
-    dirs.push(fakeHome);
-    chmodSync(fakeHome, 0o755);
-    const saved = process.env.HOME;
-    process.env.HOME = fakeHome;
-    try {
-      assert.equal(homedir(), fakeHome, "precondition: homedir() is the fake");
-      assert.deepEqual(tightenConfigDirModes(fakeHome), []);
-    } finally {
-      process.env.HOME = saved;
-    }
-    assert.equal(mode(fakeHome), 0o755);
+  it("precondition: HOME is the throwaway one", () => {
+    assert.equal(homedir(), isolated.home);
+  });
+
+  it("refuses a home, an ancestor of a home, and / (and only those)", () => {
+    const homes = ["/Users/alice", "/home/bob/"];
+    for (const d of [
+      "/",
+      "/Users",
+      "/Users/",
+      "/Users/alice",
+      "/home",
+      "/home/bob",
+    ])
+      assert.equal(isProtectedDir(d, homes), true, d);
+    for (const d of [
+      "/Users/alice/.autonomos",
+      "/Users/alicex",
+      "/tmp/x",
+      "/home/bobby",
+    ])
+      assert.equal(isProtectedDir(d, homes), false, d);
+  });
+
+  it("leaves a home and its ancestors alone on disk", () => {
+    // base/ (0755) → base/home/ (0755), both throwaway. Pass base/home as the
+    // "home": neither it nor its parent may change.
+    const base = mkdtempSync(join(tmpdir(), "v8-anc-"));
+    dirs.push(base);
+    const home = join(base, "home");
+    mkdirSync(home);
+    chmodSync(base, 0o755);
+    chmodSync(home, 0o755);
+    assert.deepEqual(tightenConfigDirModes(home, [home]), []);
+    assert.deepEqual(tightenConfigDirModes(base, [home]), []);
+    assert.equal(mode(home), 0o755);
+    assert.equal(mode(base), 0o755);
   });
 
   it("is a no-op for a missing dir", () => {

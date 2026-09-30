@@ -12,8 +12,8 @@ import {
   mkdirSync,
   readdirSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { join, resolve, sep } from "node:path";
 
 const HOME = process.env.HOME;
 if (!HOME) throw new Error("HOME environment variable is not set");
@@ -91,12 +91,16 @@ export function ensureConfigDir(): void {
  *
  * Only ever REMOVES group/other bits (`mode & ~0o077`). The owner's access is
  * unchanged, so nothing that authenticates today can stop working: tightening
- * never breaks auth. Skips anything not owned by this uid, symlinks, the home
- * directory itself and `/` (an operator who points AUTONOMOS_CONFIG_DIR at a
- * shared directory keeps that directory's mode). Never throws. Returns the
- * paths it changed, for one boot log line.
+ * never breaks auth. Skips anything not owned by this uid and symlinks, and
+ * refuses outright to touch `/`, a home directory or any ANCESTOR of one (see
+ * isProtectedDir): an operator who points AUTONOMOS_CONFIG_DIR at a shared
+ * directory keeps that directory's mode. Never throws. Returns the paths it
+ * changed, for one boot log line.
  */
-export function tightenConfigDirModes(dir: string = getConfigDir()): string[] {
+export function tightenConfigDirModes(
+  dir: string = getConfigDir(),
+  homes: readonly string[] = currentHomes(),
+): string[] {
   const changed: string[] = [];
   const uid = process.getuid?.();
   const tighten = (p: string): boolean => {
@@ -114,7 +118,7 @@ export function tightenConfigDirModes(dir: string = getConfigDir()): string[] {
     }
   };
   const root = resolve(dir);
-  if (root === "/" || root === resolve(homedir())) return changed;
+  if (isProtectedDir(root, homes)) return changed;
   if (!existsSync(root) || !tighten(root)) return changed;
   // The files that can carry a secret or prompt text, one level deep each.
   for (const sub of ["logs", "schedule-runs", "env-presets", "agent-tokens"]) {
@@ -131,6 +135,34 @@ export function tightenConfigDirModes(dir: string = getConfigDir()): string[] {
     if (existsSync(f)) tighten(f);
   }
   return changed;
+}
+
+/**
+ * Directories tightenConfigDirModes must never chmod: `/`, each home, and
+ * every ancestor of a home (chmod-ing `/Users` would lock everyone out of
+ * theirs). Pure, so it's tested with made-up paths and never touches a real one.
+ */
+export function isProtectedDir(dir: string, homes: readonly string[]): boolean {
+  const root = resolve(dir);
+  if (root === resolve("/")) return true;
+  return homes.some((h) => {
+    const home = resolve(h);
+    return (
+      home === root || home.startsWith(root.endsWith(sep) ? root : root + sep)
+    );
+  });
+}
+
+/** $HOME AND the account's real home (os.userInfo reads the password
+ *  database, so a spoofed $HOME can't hide it). */
+function currentHomes(): string[] {
+  const homes = [homedir()];
+  try {
+    homes.push(userInfo().homedir);
+  } catch {
+    // no passwd entry (some containers): $HOME alone
+  }
+  return homes;
 }
 
 /** For testing — redirect all config reads to an isolated temp directory. */
