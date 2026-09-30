@@ -52,6 +52,7 @@ import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { codexUsageRouter } from "./plugins/codex-usage/route.js";
+import { installUnhandledRejectionLogger } from "./processSafetyNet.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { initPtyInputLog } from "./ptyInputLog.js";
@@ -903,6 +904,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  installUnhandledRejectionLogger();
 
   // The server is now running. Return a promise that never resolves —
   // shutdown happens via signal → process.exit() above.

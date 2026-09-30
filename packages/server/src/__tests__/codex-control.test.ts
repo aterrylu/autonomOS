@@ -67,6 +67,21 @@ describe("codex inbound delivery observability", () => {
     return installed;
   }
 
+  it("drops a non-object JSON frame from the daemon instead of throwing (audit V6 class)", async () => {
+    const daemon = startDaemon();
+    _setCodexTimingsForTesting({ threadPollMs: 5, statusPollMs: 50 });
+    await deliverToCodex(AGENT, ENDPOINT, "first");
+    assert.equal(daemon.injected.length, 1);
+    // Each of these used to throw on `msg.id` inside the socket listener,
+    // an uncaught exception in the server process.
+    for (const raw of ["null", "42", '"s"', "true"]) daemon.pushRaw(raw);
+    await deliverToCodex(AGENT, ENDPOINT, "second");
+    assert.deepEqual(
+      daemon.injected.map((t) => t.split("\n").pop()),
+      ["first", "second"],
+    );
+  });
+
   afterEach(() => {
     // Tests that deliberately leave a message queued print a real
     // "DROPPING N undelivered inbound message(s)" line here, after captureLogs

@@ -522,6 +522,10 @@ class CodexController {
       }
       return;
     }
+    // Valid JSON is not necessarily an object: `null` would throw on `msg.id`
+    // below, inside a WebSocket listener, where an exception is uncaught and
+    // takes down the server (the audit-V6 class). Drop anything else.
+    if (typeof msg !== "object" || msg === null) return;
     if (msg.id !== undefined && (msg.result !== undefined || msg.error)) {
       const p = this.takePending(msg.id);
       if (p) {
