@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -162,12 +163,72 @@ describe("tightenConfigDirModes: owner-only on what older builds left loose", ()
     dirs.push(base);
     const home = join(base, "home");
     mkdirSync(home);
+    // Markers, so only the protected-dir check can be what leaves them alone.
+    writeFileSync(join(base, "token"), "t");
+    writeFileSync(join(home, "token"), "t");
     chmodSync(base, 0o755);
     chmodSync(home, 0o755);
     assert.deepEqual(tightenConfigDirModes(home, [home]), []);
     assert.deepEqual(tightenConfigDirModes(base, [home]), []);
     assert.equal(mode(home), 0o755);
     assert.equal(mode(base), 0o755);
+  });
+
+  it("identity, not spelling: a case variant or a symlinked parent of a home is still protected (#449)", () => {
+    // base/Users/alice is the "home", with markers so only protection can save it.
+    const base = mkdtempSync(join(tmpdir(), "v8-id-"));
+    dirs.push(base);
+    const home = join(base, "Users", "alice");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "token"), "t");
+    writeFileSync(join(base, "Users", "token"), "t");
+    chmodSync(home, 0o755);
+    chmodSync(join(base, "Users"), 0o755);
+    symlinkSync(join(base, "Users"), join(base, "link"));
+
+    const variants = [
+      join(base, "link", "alice"), // a symlinked parent
+      join(base, "USERS", "ALICE"), // a case variant (case-insensitive volume)
+      join(base, "USERS"), // an ancestor's case variant
+    ];
+    for (const v of variants) {
+      if (!existsSync(v)) continue; // case-sensitive volume: not the same dir
+      assert.equal(isProtectedDir(v, [home]), true, v);
+      assert.deepEqual(tightenConfigDirModes(v, [home]), [], v);
+    }
+    assert.equal(mode(home), 0o755);
+    assert.equal(mode(join(base, "Users")), 0o755);
+  });
+
+  it("identity check with an injected stat: same inode under another name is protected", () => {
+    const inodes: Record<string, number> = {
+      "/Users/alice": 7,
+      "/Users": 3,
+      "/": 1,
+      "/Volumes/x/alias": 7, // same inode as the home
+      "/Volumes/x/other": 9,
+    };
+    const stat = (p: string) => {
+      if (!(p in inodes)) throw new Error("ENOENT");
+      return { dev: 1, ino: inodes[p] };
+    };
+    assert.equal(
+      isProtectedDir("/Volumes/x/alias", ["/Users/alice"], stat),
+      true,
+    );
+    assert.equal(
+      isProtectedDir("/Volumes/x/other", ["/Users/alice"], stat),
+      false,
+    );
+  });
+
+  it("leaves alone a directory that isn't (yet) an autonomOS config dir", () => {
+    const d = mkdtempSync(join(tmpdir(), "v8-unmarked-"));
+    dirs.push(d);
+    writeFileSync(join(d, "notes.txt"), "x");
+    chmodSync(d, 0o755);
+    assert.deepEqual(tightenConfigDirModes(d, []), []);
+    assert.equal(mode(d), 0o755);
   });
 
   it("is a no-op for a missing dir", () => {

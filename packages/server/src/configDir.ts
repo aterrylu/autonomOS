@@ -11,9 +11,11 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
+  type Stats,
+  statSync,
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 const HOME = process.env.HOME;
 if (!HOME) throw new Error("HOME environment variable is not set");
@@ -91,11 +93,14 @@ export function ensureConfigDir(): void {
  *
  * Only ever REMOVES group/other bits (`mode & ~0o077`). The owner's access is
  * unchanged, so nothing that authenticates today can stop working: tightening
- * never breaks auth. Skips anything not owned by this uid and symlinks, and
- * refuses outright to touch `/`, a home directory or any ANCESTOR of one (see
- * isProtectedDir): an operator who points AUTONOMOS_CONFIG_DIR at a shared
- * directory keeps that directory's mode. Never throws. Returns the paths it
- * changed, for one boot log line.
+ * never breaks auth. Skips anything not owned by this uid and symlinks. Refuses
+ * outright to touch `/`, a home directory or any ANCESTOR of one, compared by
+ * filesystem identity so a case variant or a symlinked parent can't sneak past
+ * (see isProtectedDir). Touches the root only when it is recognisably an
+ * autonomOS config dir (the default path, or one already holding its files),
+ * so a directory named by mistake before the server ever wrote to it is left
+ * alone. Once it holds the token it IS the config dir, and it is tightened.
+ * Never throws. Returns the paths it changed, for one boot log line.
  */
 export function tightenConfigDirModes(
   dir: string = getConfigDir(),
@@ -119,7 +124,8 @@ export function tightenConfigDirModes(
   };
   const root = resolve(dir);
   if (isProtectedDir(root, homes)) return changed;
-  if (!existsSync(root) || !tighten(root)) return changed;
+  if (!isAutonomosConfigDir(root)) return changed;
+  if (!tighten(root)) return changed;
   // The files that can carry a secret or prompt text, one level deep each.
   for (const sub of ["logs", "schedule-runs", "env-presets", "agent-tokens"]) {
     const d = join(root, sub);
@@ -137,14 +143,66 @@ export function tightenConfigDirModes(
   return changed;
 }
 
+/** Files only an autonomOS config dir holds. */
+const CONFIG_DIR_MARKERS = [
+  "token",
+  "autonomos.pid",
+  "settings.json",
+  "agents",
+  "logs",
+];
+
+function isAutonomosConfigDir(root: string): boolean {
+  if (!existsSync(root)) return false;
+  if (root === resolve(DEFAULT_CONFIG_DIR)) return true;
+  return CONFIG_DIR_MARKERS.some((m) => existsSync(join(root, m)));
+}
+
 /**
  * Directories tightenConfigDirModes must never chmod: `/`, each home, and
  * every ancestor of a home (chmod-ing `/Users` would lock everyone out of
- * theirs). Pure, so it's tested with made-up paths and never touches a real one.
+ * theirs).
+ *
+ * Two checks. The path check is pure (made-up paths in tests). The IDENTITY
+ * check compares the target's (dev, ino) with each home's and each of its
+ * ancestors', following symlinks. String comparison alone missed a case
+ * variant on a case-insensitive volume (`/users/ALICE`) and a home reached
+ * through a symlinked parent (SecurityAudit, #449). `stat` is injectable for
+ * the tests.
  */
-export function isProtectedDir(dir: string, homes: readonly string[]): boolean {
+export function isProtectedDir(
+  dir: string,
+  homes: readonly string[],
+  stat: (p: string) => Pick<Stats, "dev" | "ino"> = statSync,
+): boolean {
   const root = resolve(dir);
   if (root === resolve("/")) return true;
+  if (pathIsHomeOrAncestor(root, homes)) return true;
+  let target: string;
+  try {
+    const st = stat(root);
+    target = `${st.dev}:${st.ino}`;
+  } catch {
+    return false; // nothing there: nothing to chmod
+  }
+  for (const h of homes) {
+    let p = resolve(h);
+    for (;;) {
+      try {
+        const st = stat(p);
+        if (`${st.dev}:${st.ino}` === target) return true;
+      } catch {
+        // a missing ancestor can't be the target
+      }
+      const up = dirname(p);
+      if (up === p) break;
+      p = up;
+    }
+  }
+  return false;
+}
+
+function pathIsHomeOrAncestor(root: string, homes: readonly string[]): boolean {
   return homes.some((h) => {
     const home = resolve(h);
     return (
