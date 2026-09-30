@@ -176,7 +176,7 @@ describe("updateFlow helpers", () => {
   });
 });
 
-describe("the post-update flag and its resurfacing (ADR-122)", () => {
+describe("the post-update flag and its resurfacing (ADR-126)", () => {
   const done = (extra: Record<string, unknown>) =>
     ({
       current: "0.7.0",

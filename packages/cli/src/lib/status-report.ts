@@ -108,7 +108,7 @@ export async function withTerminalStatus(
   }
 }
 
-/** The provenance outcome → the console and the status record (ADR-122).
+/** The provenance outcome → the console and the status record (ADR-126).
  *  "invalid" writes nothing here: the run fails with its own message. The
  *  record's `provenance` is what the dashboard's amber note and post-update
  *  banner read, so it must land and ride through the later phases. */

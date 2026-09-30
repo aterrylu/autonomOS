@@ -89,7 +89,7 @@ describe("status-report", () => {
   });
 });
 
-describe("reportProvenance → the status record the dashboard reads (ADR-122)", () => {
+describe("reportProvenance → the status record the dashboard reads (ADR-126)", () => {
   const quiet = { info: () => {}, warn: () => {} };
   const read = () => JSON.parse(readFileSync(file, "utf-8"));
 

@@ -306,7 +306,13 @@ export async function performUpgrade(
     // ── verify provenance: the checksum came from the same release, so it
     // can't catch a replaced release. The signed build record can.
     const provenance = await (opts.verifyProvenance ?? verifyReleaseProvenance)(
-      { digest: actual, version: releaseVersion, repo, apiBase },
+      {
+        digest: actual,
+        version: releaseVersion,
+        repo,
+        apiBase,
+        name: tarballName,
+      },
     );
     reportPhase(opts.onProvenance, provenance);
     if (provenance.status === "invalid") {

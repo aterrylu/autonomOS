@@ -36,7 +36,6 @@ import {
   VerificationError,
   Verifier,
 } from "@sigstore/verify";
-import { getConfigDir } from "./configDir.js";
 
 export type ProvenanceResult =
   | { status: "verified" }
@@ -100,6 +99,10 @@ export async function verifyReleaseProvenance(opts: {
   version: string;
   repo: string;
   apiBase: string;
+  /** The release asset's file name. When given, the record must vouch for
+   *  this digest UNDER THIS NAME — so a genuine tarball for another platform,
+   *  swapped in with a fixed-up SHA256SUMS, isn't "verified". */
+  name?: string;
   env?: Record<string, string | undefined>;
   deps?: Partial<ProvenanceDeps>;
   /** Test seam: pretend to run under Bun. */
@@ -178,14 +181,18 @@ export async function verifyReleaseProvenance(opts: {
       continue;
     }
     // Signed by us, at this tag. Now: does it vouch for THIS file?
-    const names = subjectDigests(bundle);
-    if (names === null) {
+    const subjects = attestedSubjects(bundle);
+    if (subjects === null) {
       unsupported ??= "an attestation that isn't SLSA build provenance";
       continue;
     }
-    if (names.includes(opts.digest.toLowerCase()))
+    const digest = opts.digest.toLowerCase();
+    const same = subjects.filter((x) => x.sha256 === digest);
+    if (same.some((x) => opts.name === undefined || x.name === opts.name))
       return { status: "verified" };
-    invalid ??= "the signed build record is for different files";
+    invalid ??= same.length
+      ? `the signed build record lists this file as ${same[0].name}, not ${opts.name}`
+      : "the signed build record is for different files";
   }
   if (invalid) return { status: "invalid", reason: invalid };
   return {
@@ -240,9 +247,9 @@ export function classifyVerifyError(err: unknown): {
 
 /** The sha256 digests an in-toto SLSA provenance statement vouches for, or
  *  null when the bundle isn't one. */
-function subjectDigests(
+function attestedSubjects(
   bundle: ReturnType<typeof bundleFromJSON>,
-): string[] | null {
+): { name: string; sha256: string }[] | null {
   // Never throws: a signed-but-odd payload is "can't evaluate", not a crash
   // that would fail the update for an unrelated reason.
   try {
@@ -256,12 +263,13 @@ function subjectDigests(
     } | null;
     if (!stmt || stmt.predicateType !== SLSA_PROVENANCE_V1) return null;
     if (!Array.isArray(stmt.subject)) return null;
-    return stmt.subject
-      .map(
-        (x) => (x as { digest?: { sha256?: unknown } } | null)?.digest?.sha256,
-      )
-      .filter((d): d is string => typeof d === "string")
-      .map((d) => d.toLowerCase());
+    return stmt.subject.flatMap((x) => {
+      const sub = x as { name?: unknown; digest?: { sha256?: unknown } } | null;
+      const sha256 = sub?.digest?.sha256;
+      return typeof sha256 === "string"
+        ? [{ name: String(sub?.name ?? ""), sha256: sha256.toLowerCase() }]
+        : [];
+    });
   } catch {
     return null;
   }
@@ -332,8 +340,11 @@ async function fetchFromGitHub(
 }
 
 /** Sigstore's trust root, from its TUF repository (cached under the config
- *  dir; the first fetch is ~300ms). */
+ *  dir; the first fetch is ~300ms). configDir is imported lazily: it throws
+ *  AT IMPORT when HOME is unset, and install.sh's standalone verifier (which
+ *  brings its own trust root) must not crash on a sudo-stripped env. */
 async function liveTrustedRoot(): Promise<TrustedRoot> {
+  const { getConfigDir } = await import("./configDir.js");
   return getTrustedRoot({
     cachePath: join(getConfigDir(), "sigstore-tuf"),
     timeout: 15_000,

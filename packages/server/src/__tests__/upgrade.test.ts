@@ -289,12 +289,22 @@ describe("performUpgrade", () => {
   it("provenance INVALID: refused after the checksum, the live bundle untouched, nothing extracted", async () => {
     const apiBase = await startFixtureServer(["0.6.0"]);
     const bundleDir = installLiveBundle("0.5.0");
-    let asked: { digest: string; version: string; repo: string } | null = null;
+    let asked: {
+      digest: string;
+      version: string;
+      repo: string;
+      name?: string;
+    } | null = null;
     const result = await performUpgrade({
       ...baseOpts(bundleDir, apiBase),
       currentVersion: "0.5.0",
       verifyProvenance: async (o) => {
-        asked = { digest: o.digest, version: o.version, repo: o.repo };
+        asked = {
+          digest: o.digest,
+          version: o.version,
+          repo: o.repo,
+          name: o.name,
+        };
         return {
           status: "invalid",
           reason: "it was signed by a different workflow or repository",
@@ -311,8 +321,11 @@ describe("performUpgrade", () => {
       digest: string;
       version: string;
       repo: string;
+      name?: string;
     };
     assert.match(q.digest, /^[0-9a-f]{64}$/);
+    // …under THIS asset name, so another platform's genuine build can't pass.
+    assert.match(q.name ?? "", /^autonomos-[a-z0-9]+-[a-z0-9]+\.tar\.gz$/);
     assert.equal(q.version, "0.6.0");
     assert.equal(q.repo, REPO);
     assert.equal(readBundleVersion(bundleDir), "0.5.0");

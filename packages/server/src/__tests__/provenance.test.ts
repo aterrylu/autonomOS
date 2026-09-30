@@ -108,6 +108,20 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
     assert.equal((await check({ version: "V0.7.0" })).status, "invalid");
   });
 
+  it("binds the record to the asset NAME: another platform's genuine build is INVALID", async () => {
+    assert.deepEqual(await check({ name: "autonomos-linux-x64.tar.gz" }), {
+      status: "verified",
+    });
+    // The real linux-x64 bytes served as the darwin-arm64 asset (a swapped
+    // asset with a fixed-up SHA256SUMS).
+    const r = await check({ name: "autonomos-darwin-arm64.tar.gz" });
+    assert.equal(r.status, "invalid");
+    assert.match(
+      (r as { reason: string }).reason,
+      /lists this file as autonomos-linux-x64\.tar\.gz, not autonomos-darwin-arm64/,
+    );
+  });
+
   it("under Bun it says it can't check — never 'invalid' (Bun fails the real attestation)", async () => {
     const r = await check({ underBun: true });
     assert.equal(r.status, "missing");

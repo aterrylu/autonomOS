@@ -1,7 +1,7 @@
 /**
  * Every installed autonomOS verifies an update's build-provenance
  * attestation against ONE signer: `.github/workflows/release.yml` at the
- * release tag (ADR-122). Moving the attest step (say, into a reusable
+ * release tag (ADR-126). Moving the attest step (say, into a reusable
  * workflow) or renaming release.yml changes the signer, and every existing
  * install would then REFUSE every later update as "signed by a different
  * workflow". That change needs two releases (docs/RELEASE.md) — this test
@@ -17,7 +17,7 @@ import { expectedSigner } from "../provenance.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
-describe("release.yml stays the provenance signer (ADR-122)", () => {
+describe("release.yml stays the provenance signer (ADR-126)", () => {
   it("release.yml attests every release tarball", () => {
     const wf = readFileSync(
       join(repoRoot, ".github/workflows/release.yml"),

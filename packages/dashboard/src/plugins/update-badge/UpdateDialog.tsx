@@ -1837,7 +1837,7 @@ export function UpdateDialog({
 }
 
 /** The signed build record couldn't be checked (or was skipped): say so,
- *  loudly but without blocking (ADR-122). Shown in the progress view AND the
+ *  loudly but without blocking (ADR-126). Shown in the progress view AND the
  *  restart overlay — on a bundle install the progress view is on screen for
  *  only a second or two after the check (found live). */
 function ProvenanceNote({

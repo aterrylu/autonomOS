@@ -1,10 +1,10 @@
-## ADR-122: Verify release provenance before installing an update
+## ADR-126: Verify release provenance before installing an update
 
 - **Date:** 2026-09-30
 - **Decided by:** Terry (the policy: refuse on invalid; warn loudly and proceed on missing for existing installs; fail closed for new installs; a loud `AUTONOMOS_SKIP_PROVENANCE=1`; don't require `gh` or `cosign`). The release engineer agent (ReleaseRollout) designed and measured the mechanics.
 - **Context:** `release.yml` has signed a Sigstore build-provenance attestation for every release tarball since v0.5.0 (`actions/attest-build-provenance`). Nothing verified it, though. The in-app update (ADR-105), `autonomos upgrade` and `install.sh` checked only SHA256SUMS, and that file comes from the same GitHub release as the tarball. Anyone who can replace a release asset, through a leaked token, a compromised account or a re-upload, can replace both and pass the checksum. Measured on 2026-09-27: every release's attestation is served by GitHub's public attestations API without authentication. The signer identity is `https://github.com/<repo>/.github/workflows/release.yml@refs/tags/v<version>`, issued by GitHub Actions OIDC.
 - **Decision:** `server/src/provenance.ts` verifies the downloaded tarball in-process with sigstore-js (`@sigstore/verify` + `@sigstore/tuf`).
-  - **What it checks:** the attestation bundles for sha256(tarball), fetched from `/repos/<repo>/attestations/sha256:<digest>`. Each is checked against Sigstore's trust root: Fulcio certificate chain, signature, and Rekor inclusion. The policy requires issuer = GitHub Actions and SAN = our `release.yml` at *that* tag. The SLSA provenance statement must name this tarball's digest. The repo follows the existing `AUTONOMOS_RELEASE_REPO` override.
+  - **What it checks:** the attestation bundles for sha256(tarball), fetched from `/repos/<repo>/attestations/sha256:<digest>`. Each is checked against Sigstore's trust root: Fulcio certificate chain, signature, and Rekor inclusion. The policy requires issuer = GitHub Actions and SAN = our `release.yml` at *that* tag. The SLSA provenance statement must name this tarball's digest *under its asset name*, so a genuine build for another platform, swapped in with a fixed-up SHA256SUMS, isn't accepted. The repo follows the existing `AUTONOMOS_RELEASE_REPO` override.
   - **Outcomes:**
     - **verified**
     - **invalid**: an attestation is present but fails signature, certificate, log proof, signer or digest. This is evidence of tampering.
