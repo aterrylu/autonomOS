@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReleaseNote } from "../../api/system";
 import {
   activeStepIndex,
@@ -217,7 +217,20 @@ describe("the post-update flag and its resurfacing (ADR-122)", () => {
     ).toBeNull();
   });
 
+  // This suite runs in vitest's node environment. Node 25 has a global
+  // sessionStorage and CI's node 22 doesn't — stub one so both agree.
+  afterEach(() => vi.unstubAllGlobals());
+  const stubSessionStorage = () => {
+    const m = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, String(v)),
+      removeItem: (k: string) => void m.delete(k),
+    });
+  };
+
   it("an unrecognized provenance status in the flag fails CLOSED (a warning, never green)", () => {
+    stubSessionStorage();
     sessionStorage.setItem(
       "autonomos:updated",
       JSON.stringify({
