@@ -166,6 +166,41 @@ describe("Balanced card", () => {
     expect(b.title).toMatch(/^Last active /);
   });
 
+  it("the live action names the file or program the server extracted ('Edit store.ts', 'Running npm')", async () => {
+    batch = fleetBatch({});
+    await mount(
+      [node("Lead", {}, [node("E"), node("B"), node("G"), node("N")])],
+      {
+        sessions: ["Lead", "E", "B", "G", "N"].map((i) => session(i)),
+        agentStatuses: {
+          E: {
+            status: "tool_running",
+            currentTool: "Edit",
+            toolDetail: "store.ts",
+          } as never,
+          B: {
+            status: "tool_running",
+            currentTool: "Bash",
+            toolDetail: "npm",
+          } as never,
+          // Gemini's shell tool reads the same way.
+          G: {
+            status: "tool_running",
+            currentTool: "run_shell_command",
+            toolDetail: "pytest",
+          } as never,
+          // No detail (e.g. Grep): the sidebar's label, never a guess.
+          N: { status: "tool_running", currentTool: "Grep" } as never,
+        },
+      },
+    );
+    const label = (id: string) => $in(id, "[data-org-label]")?.textContent;
+    expect(label("E")).toBe("Edit store.ts");
+    expect(label("B")).toBe("Running npm");
+    expect(label("G")).toBe("Running pytest");
+    expect(label("N")).toBe("Running Grep");
+  });
+
   it("a working Codex agent reads 'Working' — never a guessed tool", async () => {
     batch = fleetBatch({});
     await mount([node("Cx", { provider: "codex" })], {

@@ -10,11 +10,11 @@ import { agentsSocket } from "../../api/agentsSocket";
 import type { AgentMenuTarget } from "../AgentContextMenu";
 import { formatAge, recencyTimestampStyle } from "../recency";
 import { statusLabelStyle } from "../statusLabelStyle";
-import { agentStatusLabel } from "../ui/agent-status-icon";
 import { ProviderAgentIcon } from "../ui/provider-icon";
 import { segmentColor, stripLayout } from "./activityStrip";
 import {
   type AgentInfo,
+  actionLabel,
   menuTarget,
   nodeStatus,
   type PageTheme,
@@ -375,7 +375,7 @@ export function OrgInspector({
 }) {
   const exited = node.status !== "running";
   const status = nodeStatus(node, info);
-  const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
+  const label = exited ? "Exited" : actionLabel(status, info);
   const labelStyle = statusLabelStyle(status, tokens.isLight);
   const s = info?.session;
   const lastActive =

@@ -17,6 +17,7 @@ import { type MapCard, Minimap, ZoomControls } from "./orgchart/Minimap";
 import { pruneExited } from "./orgchart/pruneExited";
 import {
   type AgentInfo,
+  actionLabel,
   menuTarget,
   nodeStatus,
   type PageTheme,
@@ -36,11 +37,7 @@ import {
   recencyTimestampStyle,
 } from "./recency";
 import { statusLabelStyle } from "./statusLabelStyle";
-import {
-  type AgentStatus,
-  AgentStatusIcon,
-  agentStatusLabel,
-} from "./ui/agent-status-icon";
+import { type AgentStatus, AgentStatusIcon } from "./ui/agent-status-icon";
 import { ProviderAgentIcon } from "./ui/provider-icon";
 
 /**
@@ -95,9 +92,15 @@ export function useAgentStatusById() {
       session: SessionInfo,
       agentStatus: AgentStatus,
       currentTool?: string,
+      toolDetail?: string,
     ) => {
       if (!session.claudeSessionId) return;
-      map[session.claudeSessionId] = { session, agentStatus, currentTool };
+      map[session.claudeSessionId] = {
+        session,
+        agentStatus,
+        currentTool,
+        toolDetail,
+      };
     };
     for (const session of exitedSessions) put(session, "stopped");
     for (const session of sessions) {
@@ -105,7 +108,12 @@ export function useAgentStatusById() {
       const agentStatus: AgentStatus =
         (statusInfo?.status as AgentStatus) ??
         (session.status === "stopped" ? "stopped" : "unknown");
-      put(session, agentStatus, statusInfo?.currentTool);
+      put(
+        session,
+        agentStatus,
+        statusInfo?.currentTool,
+        statusInfo?.toolDetail,
+      );
     }
     return map;
   }, [sessions, exitedSessions, agentStatuses]);
@@ -169,7 +177,7 @@ function OrgCard({
   const now = useNow();
   const exited = node.status !== "running";
   const status = nodeStatus(node, info);
-  const label = exited ? "Exited" : agentStatusLabel(status, info?.currentTool);
+  const label = exited ? "Exited" : actionLabel(status, info);
   const labelStyle = statusLabelStyle(status, tokens.isLight);
   // "Working" is exactly the sidebar's shimmer set — one definition (ADR-090).
   const working = !exited && labelStyle.shimmer;
