@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -55,6 +56,29 @@ function tagRelease(version: string): void {
   git(originDir, "add", "-A");
   git(originDir, "commit", "-m", `release ${version}`);
   git(originDir, "tag", `v${version}`);
+}
+
+/**
+ * Tag a release on a side branch that never reaches main: the audit-V5 attack
+ * (anyone with push access pushes `v9.9.9` on an unreviewed commit). The
+ * commit also carries a Makefile whose build drops a marker, mirroring the
+ * audit PoC where the off-main commit's code EXECUTED during `make build`.
+ */
+function tagOffMainRelease(version: string): void {
+  git(originDir, "checkout", "-q", "-b", `offmain-${version}`);
+  mkdirSync(join(originDir, "packages/server"), { recursive: true });
+  writeFileSync(
+    join(originDir, "packages/server/package.json"),
+    JSON.stringify({ name: "@autonomos/server", version }, null, 2),
+  );
+  writeFileSync(
+    join(originDir, "Makefile"),
+    "build:\n\ttouch OFFMAIN_CODE_RAN\n",
+  );
+  git(originDir, "add", "-A");
+  git(originDir, "commit", "-m", `unreviewed ${version}`);
+  git(originDir, "tag", `v${version}`);
+  git(originDir, "checkout", "-q", "main");
 }
 
 function makeInstallInfo(): InstallInfo {
@@ -359,6 +383,77 @@ describe("performSourceUpgrade", () => {
   });
 });
 
+describe("release tags must be on main (audit V5)", () => {
+  it("never upgrades to a newer tag that is not an ancestor of origin/main", async () => {
+    tagRelease("0.2.0");
+    tagOffMainRelease("9.9.9");
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      buildCommand: ["make", "build"],
+    });
+    assert.deepEqual(result, {
+      status: "upgraded",
+      from: "0.1.0",
+      to: "0.2.0",
+      direction: "upgrade",
+    });
+    assert.equal(getVersionAt(cloneDir), "0.2.0");
+    assert.ok(
+      !existsSync(join(cloneDir, "OFFMAIN_CODE_RAN")),
+      "the off-main commit's build must never run",
+    );
+  });
+
+  it("is up to date when the only newer tag is off main", async () => {
+    tagOffMainRelease("9.9.9");
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      buildCommand: ["make", "build"],
+    });
+    assert.deepEqual(result, { status: "up-to-date", version: "0.1.0" });
+    assert.equal(git(cloneDir, "describe", "--tags"), "v0.1.0");
+    assert.ok(!existsSync(join(cloneDir, "OFFMAIN_CODE_RAN")));
+  });
+
+  it("refuses an explicit pin to an off-main tag, before checking it out", async () => {
+    tagOffMainRelease("9.9.9");
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      targetVersion: "9.9.9",
+      buildCommand: ["make", "build"],
+    });
+    assert.equal(result.status, "error");
+    assert.match(
+      result.status === "error" ? result.message : "",
+      /v9\.9\.9 is not on origin\/main/,
+    );
+    assert.equal(git(cloneDir, "describe", "--tags"), "v0.1.0");
+    assert.ok(!existsSync(join(cloneDir, "OFFMAIN_CODE_RAN")));
+  });
+
+  it("still accepts a tag on main after main moved on (the normal case)", async () => {
+    tagRelease("0.2.0");
+    // main advances past the tag; v0.2.0 is still an ancestor.
+    writeFileSync(join(originDir, "later.txt"), "x");
+    git(originDir, "add", "-A");
+    git(originDir, "commit", "-m", "later work");
+    const result = await performSourceUpgrade({
+      repoRoot: cloneDir,
+      installInfo: makeInstallInfo(),
+      currentVersion: "0.1.0",
+      buildCommand: STUB_BUILD,
+    });
+    assert.equal(result.status, "upgraded");
+    assert.equal(getVersionAt(cloneDir), "0.2.0");
+  });
+});
+
 describe("performSourceRollback", () => {
   it("returns to previousRef and swaps the marker fields (symmetric)", async () => {
     tagRelease("0.2.0");
@@ -478,6 +573,16 @@ describe("helpers", () => {
     assert.deepEqual(latestVersionTag(cloneDir), {
       ok: true,
       version: "0.10.0",
+    });
+  });
+
+  it("latestVersionTag ignores tags that are not on origin/main", () => {
+    tagRelease("0.2.0");
+    tagOffMainRelease("9.9.9");
+    git(cloneDir, "fetch", "--tags", "origin");
+    assert.deepEqual(latestVersionTag(cloneDir), {
+      ok: true,
+      version: "0.2.0",
     });
   });
 
