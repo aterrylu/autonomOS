@@ -148,6 +148,11 @@ export interface StartSidecarOptions {
   env: Record<string, string>;
   /** Substring on stdout/stderr that signals the daemon is listening. */
   readyNeedle: string;
+  /** When set, readiness is this resolving true (polled), NOT the needle.
+   *  A Codex unix-socket listener prints no banner at all (audit V4), so its
+   *  readiness is "the socket checks out and accepts a connection". A probe
+   *  that rejects fails the start with its message. */
+  readyProbe?: () => Promise<boolean>;
   /** Max ms to wait for readiness before failing. Default 12000. */
   readyTimeoutMs?: number;
 }
@@ -265,6 +270,12 @@ export function startSidecarDaemon(
     // would miss the needle → a false readiness timeout that kills a healthy
     // daemon. Cap the buffer so a chatty daemon can't grow it unbounded.
     let scanBuf = "";
+    // Probe mode's record of the daemon's last output, for failure messages.
+    let probeTail = "";
+    const tailNote = () => {
+      const t = probeTail.trim();
+      return t ? `; daemon said: ${t}` : "";
+    };
     const scan = (chunk: Buffer) => {
       scanBuf += chunk.toString();
       if (scanBuf.includes(opts.readyNeedle)) {
@@ -286,7 +297,7 @@ export function startSidecarDaemon(
     const onExit = (code: number | null, signal: string | null) =>
       fail(
         new Error(
-          `sidecar daemon exited before readiness (code=${code} signal=${signal ?? "none"})`,
+          `sidecar daemon exited before readiness (code=${code} signal=${signal ?? "none"})${tailNote()}`,
         ),
       );
     const onError = (err: Error) =>
@@ -296,15 +307,52 @@ export function startSidecarDaemon(
       () =>
         fail(
           new Error(
-            `sidecar daemon did not signal readiness ("${opts.readyNeedle}") within ${timeoutMs}ms`,
+            `sidecar daemon did not signal readiness (${opts.readyProbe ? "readiness probe" : `"${opts.readyNeedle}"`}) within ${timeoutMs}ms${tailNote()}`,
           ),
         ),
       timeoutMs,
     );
 
-    proc.stdout?.on("data", scan);
-    proc.stderr?.on("data", scan);
+    if (opts.readyProbe) {
+      // Nothing scans for a needle in probe mode, but an unread pipe fills and
+      // then blocks the daemon's writes, so keep both flowing, and keep the
+      // tail so a failed start can say what the daemon said.
+      const keepTail = (chunk: Buffer) => {
+        probeTail = (probeTail + chunk.toString()).slice(-PROBE_TAIL_CHARS);
+      };
+      proc.stdout?.on("data", keepTail);
+      proc.stderr?.on("data", keepTail);
+      const probe = opts.readyProbe;
+      const alive = () => proc.exitCode === null && proc.signalCode === null;
+      const poll = async () => {
+        while (!settled) {
+          try {
+            // Ready only while the daemon WE started is alive: a socket that
+            // accepts could belong to another daemon (an orphan on a reused
+            // path) while ours has already exited.
+            if ((await probe()) && alive()) {
+              onReady();
+              return;
+            }
+          } catch (err) {
+            fail(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
+          await new Promise((r) => setTimeout(r, SIDECAR_PROBE_INTERVAL_MS));
+        }
+      };
+      void poll();
+    } else {
+      proc.stdout?.on("data", scan);
+      proc.stderr?.on("data", scan);
+    }
     proc.once("exit", onExit);
     proc.once("error", onError);
   });
 }
+
+/** How much of a probe-mode daemon's output a failure message quotes. */
+const PROBE_TAIL_CHARS = 400;
+
+/** How often a readyProbe is retried until it passes or the start times out. */
+export const SIDECAR_PROBE_INTERVAL_MS = 100;

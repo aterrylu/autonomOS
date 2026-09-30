@@ -50,6 +50,23 @@
  * free of an import cycle with the runtime, which calls dispose() on teardown.
  */
 
+import WsWebSocket from "ws";
+
+/**
+ * Dial the daemon. `unix://PATH` is the owner-only socket (audit V4), and the
+ * protocol on it is still WebSocket, which Node's global WebSocket (undici)
+ * can't dial over a unix socket, so that case uses the `ws` package the channel
+ * server already uses for the gateway. `ws://` keeps the global (and so the
+ * test fake that swaps it). Both expose onopen/onmessage/onclose/onerror.
+ */
+function openControlSocket(endpoint: string): WebSocket {
+  if (endpoint.startsWith("unix://")) {
+    const path = endpoint.slice("unix://".length);
+    return new WsWebSocket(`ws+unix://${path}:/`) as unknown as WebSocket;
+  }
+  return new WebSocket(endpoint);
+}
+
 const log = (...a: unknown[]) => console.log("[codex-inbound]", ...a);
 
 /** Consecutive drain failures before we surface a SystemWarning. */
@@ -472,7 +489,7 @@ class CodexController {
   private connect(): Promise<void> {
     if (this.connectPromise) return this.connectPromise;
     this.connectPromise = new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(this.endpoint);
+      const ws = openControlSocket(this.endpoint);
       this.ws = ws;
       // Settle EXACTLY once. Critically, the promise must settle on close/error
       // too — not only in onopen — or a socket that never opens (daemon died

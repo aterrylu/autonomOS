@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn as cpSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
@@ -251,11 +251,23 @@ describe("spawnAgent stops the orphan BEFORE starting the new daemon", () => {
   const started: number[] = [];
   let orphanAliveAtNewStart: boolean | undefined;
   let orphanPid = 0;
+  // A stand-in codex binary: answers `app-server --help` like a Codex that
+  // predates unix listeners (so this TCP-only fake daemon takes V4's honest
+  // compat path to loopback TCP, as a real old Codex would), else runs node.
+  // It must `exec` node, not run it as a child: the daemon's own command line
+  // then stays `node … app-server --listen <endpoint>`, which is what the
+  // reaper's isDaemonFor guard (and the orphan assertion below) match on.
+  const fakeBin = join(cwd, "codex-fake.sh");
+  writeFileSync(
+    fakeBin,
+    `#!/bin/sh\nif [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then echo "--listen <URL>  Supported values: stdio://, ws://IP:PORT"; exit 0; fi\nexec "${process.execPath}" "$@"\n`,
+    { mode: 0o755 },
+  );
   const fake: AgentProvider = {
     ...codexProvider,
     name: NAME as never,
     displayName: "FakeCodex",
-    resolveBinary: () => process.execPath,
+    resolveBinary: () => fakeBin,
     buildSidecar: (r) => {
       // Called right before the new daemon starts: the orphan must be gone.
       orphanAliveAtNewStart = orphanPid ? alive(orphanPid) : undefined;
