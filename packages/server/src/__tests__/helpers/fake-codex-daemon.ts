@@ -22,6 +22,9 @@ export interface FakeCodexDaemon {
   failThreadRead: boolean;
   /** Text of every turn injected via `turn/start`, in order. */
   readonly injected: string[];
+  /** Deliver a raw frame to the client as if the daemon sent it (for
+   *  malformed-frame tests). A no-op until a socket has opened. */
+  pushRaw(raw: string): void;
   /** Restore the real global WebSocket. */
   restore(): void;
 }
@@ -30,6 +33,7 @@ type Handler = ((ev: { data: string }) => void) | null;
 
 export function installFakeCodexDaemon(): FakeCodexDaemon {
   const real = globalThis.WebSocket;
+  let current: { readyState: number; onmessage: Handler } | null = null;
   // The returned handle IS the mutable state the fake peer reads, so a test
   // that flips `daemon.status` mid-flight is seen on the very next poll.
   const state: FakeCodexDaemon = {
@@ -37,6 +41,9 @@ export function installFakeCodexDaemon(): FakeCodexDaemon {
     threadIds: ["thread-fake-1"],
     failThreadRead: false,
     injected: [],
+    pushRaw(raw) {
+      if (current?.readyState === 1) current.onmessage?.({ data: raw });
+    },
     restore() {
       globalThis.WebSocket = real;
     },
@@ -59,6 +66,7 @@ export function installFakeCodexDaemon(): FakeCodexDaemon {
       // codexControl assigns them synchronously right after construction.
       setTimeout(() => {
         this.readyState = FakeWebSocket.OPEN;
+        current = this;
         this.onopen?.();
       }, 0);
     }
