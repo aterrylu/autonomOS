@@ -43,9 +43,12 @@ const { stopAllSidecars, runningSidecarPids } = await import(
   "../agents/sidecar.js"
 );
 const { _setProviderForTesting } = await import("../providers/index.js");
-const { _resetCodexControlForTesting } = await import(
-  "../gateway/codexControl.js"
-);
+const {
+  _resetCodexControlForTesting,
+  _setCodexTimingsForTesting,
+  deliverToCodex,
+  setCodexInboundNotifier,
+} = await import("../gateway/codexControl.js");
 const { codexProvider } = await import("../providers/codex.js");
 const { getAgent, _resetCacheForTesting } = await import("../agents/store.js");
 const { getNotifications } = await import("../routes/hooks.js");
@@ -128,6 +131,70 @@ after(async () => {
 });
 
 describe("restartAgent", { timeout: 30_000 }, () => {
+  // ADR-064: never drop. A message queued for a transport retry must survive a
+  // restart that ends with the agent running, and be dropped WITH the notice
+  // by one that doesn't. (The stand-in daemons speak no protocol, so a queued
+  // message just stays queued: exactly the state under test.)
+  const dropNotices: string[] = [];
+  setCodexInboundNotifier((_id, message) => {
+    if (/never delivered/.test(message)) dropNotices.push(message);
+  });
+  _setCodexTimingsForTesting({
+    threadPollMs: 20,
+    threadWaitMs: 100,
+    retryBackoffMs: 50,
+    statusPollMs: 50,
+  });
+  const pending = Symbol("pending");
+  const settledWithin = <T>(p: Promise<T>, ms: number) =>
+    Promise.race([p, new Promise((r) => setTimeout(() => r(pending), ms))]);
+
+  it("a message queued before a restart is KEPT for the respawned agent (not dropped)", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakerestart" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    dropNotices.length = 0;
+    const result = deliverToCodex(agent.id, "ws://127.0.0.1:1", "keep me");
+    daemonsBefore = runningSidecarPids();
+    await restartAgent(agent.id);
+    assert.equal(getAgent(agent.id)?.status, "running");
+    assert.equal(
+      await settledWithin(result, 400),
+      pending,
+      "still queued for the respawned agent, not settled as dropped",
+    );
+    assert.deepEqual(dropNotices, [], "no drop notice");
+    killAttachment(agent.id); // now it IS terminated…
+    assert.deepEqual(await result, {
+      delivered: false,
+      reason: "the agent was terminated",
+    }); // …and only then does it settle
+  });
+
+  it("a restart that fails drops the queued message WITH the notice (never kept silently)", async () => {
+    const { agent } = await spawnAgent({
+      workingDirectory: cwd,
+      provider: "fakerestart" as never,
+      name: `ra-${randomUUID().slice(0, 4)}`,
+    });
+    dropNotices.length = 0;
+    const result = deliverToCodex(agent.id, "ws://127.0.0.1:1", "nowhere");
+    daemonsBefore = runningSidecarPids();
+    failRespawn = new Error("binary vanished");
+    try {
+      await assert.rejects(restartAgent(agent.id), /binary vanished/);
+    } finally {
+      failRespawn = false;
+    }
+    assert.deepEqual(await settledWithin(result, 400), {
+      delivered: false,
+      reason: "the agent was terminated",
+    });
+    assert.equal(dropNotices.length, 1, "the operator is told");
+  });
+
   it("waits for the OLD daemon to exit before starting the new one, and refuses overlap", async () => {
     const { agent } = await spawnAgent({
       workingDirectory: cwd,

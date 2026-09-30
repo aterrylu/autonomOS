@@ -69,7 +69,11 @@ import {
 import {
   _resetCodexControlForTesting,
   _setCodexTimingsForTesting,
+  deliverToCodex,
+  disposeCodexControl,
   setCodexInboundNotifier,
+  startCodexStatusWatch,
+  suspendCodexControl,
 } from "../gateway/codexControl.js";
 import {
   _setDeliveryAckWindowForTesting,
@@ -504,5 +508,67 @@ describe("Codex inbound — transport failures stay visible", () => {
       8_000,
     );
     assert.equal(daemon.turns.length, 0, "there is no thread to inject into");
+  });
+});
+
+describe("Codex inbound — a restart keeps what's queued (ADR-064: never drop)", () => {
+  it("a message queued before a restart is delivered to the RESPAWNED daemon", async () => {
+    const id = randomUUID();
+    daemon.reportNoThreads = true; // the old daemon can't take it: it queues
+    const result = deliverToCodex(id, daemon.endpoint, "carry me over");
+    await delay(100);
+    assert.equal(
+      daemon.turns.length,
+      0,
+      "precondition: it is queued, not delivered",
+    );
+
+    suspendCodexControl(id); // restartAgent stops the agent
+    const respawned = await startDaemon();
+    startCodexStatusWatch(id, respawned.endpoint); // the respawn re-points it
+
+    await waitUntil(
+      () => respawned.turns.length === 1,
+      "the respawned daemon received the kept message",
+      3_000,
+    );
+    assert.match(respawned.turns[0].text, /carry me over/);
+    assert.deepEqual(await result, { delivered: true });
+    assert.equal(daemon.turns.length, 0, "never injected into the old daemon");
+    assert.ok(
+      !notifications.some((n) => /never delivered/.test(n.message)),
+      "no drop notice",
+    );
+  });
+
+  it("while suspended, nothing dials the old daemon", async () => {
+    const id = randomUUID();
+    daemon.reportNoThreads = true;
+    void deliverToCodex(id, daemon.endpoint, "wait for me");
+    await delay(100);
+    suspendCodexControl(id);
+    const before = daemon.connections;
+    await delay(300); // many retry/status cycles at the test cadence
+    assert.equal(daemon.connections, before, "no reconnects while suspended");
+    disposeCodexControl(id);
+  });
+
+  it("a restart that doesn't end running still drops it — WITH the notice", async () => {
+    const id = randomUUID();
+    daemon.reportNoThreads = true;
+    const result = deliverToCodex(id, daemon.endpoint, "nowhere to go");
+    await delay(100);
+    suspendCodexControl(id);
+    disposeCodexControl(id); // restartAgent's finally, on a failed respawn
+    assert.deepEqual(await result, {
+      delivered: false,
+      reason: "the agent was terminated",
+    });
+    assert.ok(
+      notifications.some(
+        (n) => n.agentId === id && /never delivered/.test(n.message),
+      ),
+      "the operator is told",
+    );
   });
 });

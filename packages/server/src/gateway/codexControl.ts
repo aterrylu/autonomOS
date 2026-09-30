@@ -228,6 +228,13 @@ class CodexController {
   private draining = false;
   private connectPromise: Promise<void> | null = null;
   private disposed = false;
+  /** Between a restart's stop and its respawn (ADR-064 "never drop"): the
+   *  queue is KEPT, but nothing dials the old daemon, which is going away.
+   *  The respawn's startCodexStatusWatch re-points and resumes it. */
+  private suspended = false;
+  /** Bumped by each watch(): a status loop from before a suspend exits
+   *  instead of running beside the resumed one. */
+  private loopGen = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
   /** Next failure count that warrants an operator notification (doubles). */
@@ -270,18 +277,45 @@ class CodexController {
     return this.disposed;
   }
 
+  /** Disposed, or suspended mid-restart: either way, don't dial. */
+  private get parked(): boolean {
+    return this.disposed || this.suspended;
+  }
+
+  /** A restart is stopping the agent: keep the queue, stop dialing. */
+  suspend(): void {
+    if (this.disposed) return;
+    this.suspended = true;
+    this.watching = false;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.teardownSocket();
+    if (this.queue.length > 0)
+      log(
+        `${this.agentId.slice(0, 8)} restarting — keeping ${this.queue.length} queued inbound message(s) for the respawned agent`,
+      );
+  }
+
   /** Start the eager status watcher: keep a connection open and reconcile the
    *  agent's working-status from the daemon (thread/status/changed pushes +
    *  a periodic thread/read safety net) so the dashboard shows live busy/idle
    *  from spawn, independent of any inbound traffic. Idempotent. */
   watch(): void {
+    if (this.suspended) {
+      // The respawn re-pointed us (getOrCreate → updateEndpoint): resume, and
+      // deliver what was kept.
+      this.suspended = false;
+      void this.drain();
+    }
     if (this.watching || this.disposed) return;
     this.watching = true;
-    void this.statusLoop();
+    void this.statusLoop(++this.loopGen);
   }
 
-  private async statusLoop(): Promise<void> {
-    while (this.watching && !this.disposed) {
+  private async statusLoop(gen: number): Promise<void> {
+    while (this.watching && !this.parked && gen === this.loopGen) {
       try {
         await this.connect();
         const threadId = await this.ensureThread();
@@ -305,7 +339,7 @@ class CodexController {
         // on a doubling backoff (mirrors the delivery-path warning). A strict
         // equality would fire exactly once per controller lifetime, so a daemon
         // still unreachable an hour later would have gone quiet after the first.
-        if (this.disposed) return; // torn down mid-cycle — expected, not a fault
+        if (this.parked) return; // torn down mid-cycle — expected, not a fault
         if (++this.statusFailures >= this.nextStatusWarnAt) {
           this.nextStatusWarnAt *= 2;
           log(
@@ -427,7 +461,7 @@ class CodexController {
    *  no other self-driven retry, so without this a re-queued item could sit
    *  until the next unrelated enqueue (which may never come). */
   private scheduleRetry(): void {
-    if (this.disposed || this.retryTimer || this.queue.length === 0) return;
+    if (this.parked || this.retryTimer || this.queue.length === 0) return;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       void this.drain();
@@ -469,7 +503,7 @@ class CodexController {
         fail(new Error("codex control socket closed before ready"));
       };
       ws.onerror = (e: unknown) => {
-        if (!this.disposed) {
+        if (!this.parked) {
           // `??` does not rescue an EMPTY string, and an undici ErrorEvent's
           // `message` is exactly that — its cause hangs off `.error`. So the
           // one line that names a dead daemon used to name nothing at all.
@@ -637,7 +671,7 @@ class CodexController {
   private async ensureThread(): Promise<string | null> {
     if (this.threadId) return this.threadId;
     const deadline = Date.now() + timings.threadWaitMs;
-    while (Date.now() < deadline && !this.disposed) {
+    while (Date.now() < deadline && !this.parked) {
       try {
         const res = (await this.rpc("thread/loaded/list", {})) as {
           data?: string[];
@@ -693,7 +727,7 @@ class CodexController {
   }
 
   private async drain(): Promise<void> {
-    if (this.draining || this.disposed || this.queue.length === 0) return;
+    if (this.draining || this.parked || this.queue.length === 0) return;
     this.draining = true;
     try {
       await this.connect();
@@ -716,7 +750,7 @@ class CodexController {
         this.scheduleRetry();
         return;
       }
-      while (this.queue.length > 0 && !this.disposed) {
+      while (this.queue.length > 0 && !this.parked) {
         // The ONE remaining reason to hold a message back. Compaction is the
         // single thread state we did not test, so this is untested
         // conservatism, NOT a measured requirement — we determined nothing
@@ -730,7 +764,7 @@ class CodexController {
         // the delivery path, and only when the guard would otherwise be blind
         // (first delivery on a new connection).
         if (this.lastStatus === null) await this.queryIdle(threadId);
-        if (this.disposed) return;
+        if (this.parked) return;
         if (this.lastStatus === "compacting" && !this.compactingDisbelieved) {
           this.compactingSince ??= Date.now();
           const heldMs = Date.now() - this.compactingSince;
@@ -805,7 +839,7 @@ class CodexController {
             `${this.agentId.slice(0, 8)} injected (${next.text.length} chars)`,
           );
         } catch (err) {
-          if (this.disposed) return; // teardown, not a delivery failure
+          if (this.parked) return; // teardown, not a delivery failure
           // Leave the message at the queue head and retry (e.g. socket dropped).
           //
           // KNOWN, UNFIXED: this retry can DUPLICATE. Two of the failures that
@@ -835,7 +869,7 @@ class CodexController {
         }
       }
     } catch (err) {
-      if (this.disposed) return; // the socket was closed BY us — expected
+      if (this.parked) return; // the socket was closed BY us — expected
       log(
         `${this.agentId.slice(0, 8)} drain error:`,
         err instanceof Error ? err.message : err,
@@ -916,6 +950,16 @@ export function deliverToCodex(
   const ctrl = getOrCreate(agentId, endpoint);
   ctrl.watch(); // ensure status is tracked even if spawn didn't start it
   return ctrl.enqueue(attributedText);
+}
+
+/**
+ * A restart is stopping this agent to respawn it: keep its queued inbound for
+ * the respawned agent (ADR-064: never drop) and stop dialing the old daemon.
+ * The respawn's startCodexStatusWatch resumes it against the new endpoint. A
+ * restart that does NOT end with the agent running must dispose it instead.
+ */
+export function suspendCodexControl(agentId: string): void {
+  controllers.get(agentId)?.suspend();
 }
 
 /** Tear down a Codex agent's control client (called when the agent is killed). */
