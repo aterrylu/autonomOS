@@ -140,14 +140,13 @@ export function gatewayRouter(upgradeWebSocket: UpgradeWebSocket) {
           // defect, and it propagated into a review finding — which is the
           // argument for not leaving one standing.
           //
-          // The guard stays anyway because its failure mode is asymmetric.
-          // Hono's node-ws wraps this handler in a SYNCHRONOUS try/catch, so a
-          // rejection out of an `async onMessage` escapes it, and the server
-          // registers no `unhandledRejection` handler — Node terminates the
-          // PROCESS. The sender gets no `send_result` and waits out the full
-          // channel-server deadline against a server that is already gone, and
-          // every other agent dies with it. Cheap when wrong (a sender-facing
-          // error string instead of a crash), catastrophic when absent.
+          // The guard stays anyway because it is what ANSWERS the sender. The
+          // process no longer dies on a throw here (ADR-122: onMessage's own
+          // catch-all, then the process-level unhandledRejection logger), but
+          // those only log: without this catch the sender gets no
+          // `send_result` and waits out the full channel-server deadline for a
+          // reply that will never come. Cheap when wrong (a sender-facing
+          // error string), a silent hang when absent.
           // `routeMessage`'s contract — report trouble by RETURNING a string —
           // is also exactly what makes a future throw easy to introduce here
           // without anyone noticing this call is the last boundary.
