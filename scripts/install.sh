@@ -47,7 +47,7 @@ RELEASE_REPO="aterrylu/autonomOS"
 
 # sha256 of scripts/verify-provenance.mjs — maintained by `make verifier`, and
 # CI fails if it drifts from the file. The site serves both from one deploy.
-readonly VERIFIER_SHA256="751423e8edcdebb4b25d18a75e905e6f0ce84aacd775b0c09c2a289cab493b00"
+readonly VERIFIER_SHA256="af213d9969252b0a4c109bb0acded6ee809ede5b1591c8d4298337f5265400c1"
 
 
 # ── platform detection ────────────────────────────────────────────────────
@@ -182,6 +182,29 @@ if [[ "$EXPECTED" != "$ACTUAL" ]]; then
 fi
 echo "[install] ✓ Checksum OK"
 
+# ── the bundle must be the version it's installed as ────────────────────────
+# A writer can put tag vN on an OLD commit on main: it builds and signs
+# genuinely, as old code. Installed as vN, that's a downgrade that then never
+# updates. Not a provenance check, so AUTONOMOS_SKIP_PROVENANCE doesn't skip it.
+BUNDLE_VERSION=$( { tar -xzOf "$TMP/$TARBALL" ./package.json 2>/dev/null \
+    || tar -xzOf "$TMP/$TARBALL" package.json 2>/dev/null; } \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).version||""))}catch{}})' 2>/dev/null || true)
+if [[ ! "$BUNDLE_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+  echo "Error: couldn't read the version inside the downloaded bundle (node is needed to read it). Nothing was installed." >&2
+  exit 1
+fi
+if [[ -z "$RELEASE_VERSION" ]]; then
+  # A custom BUNDLE_URL with no VERSION: take the version the bundle names.
+  # The signed build record still has to be for THAT tag; what this can't
+  # rule out is a mirror serving an older genuine release. Set VERSION to pin.
+  RELEASE_VERSION="$BUNDLE_VERSION"
+  echo "[install] (no VERSION given — installing it as v$RELEASE_VERSION, the version the bundle names)"
+elif [[ "$BUNDLE_VERSION" != "$RELEASE_VERSION" ]]; then
+  echo "Error: the v$RELEASE_VERSION download contains v$BUNDLE_VERSION. Nothing was installed." >&2
+  echo "  A release's bundle always matches its tag; please report it: https://github.com/$RELEASE_REPO/issues" >&2
+  exit 1
+fi
+
 # ── provenance (ADR-126) ──────────────────────────────────────────────────
 # The checksum only proves the download matches SHA256SUMS — and both come
 # from the same release, so whoever can replace one can replace both. The
@@ -212,19 +235,6 @@ else
     provenance_refuse "node is needed to check the signed build record." \
       "Install Node 20+ (the server needs it too), then re-run."
   fi
-  if [[ -z "$RELEASE_VERSION" ]]; then
-    # A custom BUNDLE_URL with no VERSION: take the version the bundle claims.
-    # The signature still has to be ours AT THAT TAG; what this can't rule out
-    # is a mirror serving an older genuine release. Set VERSION to pin it.
-    RELEASE_VERSION=$( { tar -xzOf "$TMP/$TARBALL" ./package.json 2>/dev/null \
-        || tar -xzOf "$TMP/$TARBALL" package.json 2>/dev/null; } \
-      | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).version||""))}catch{}})' || true)
-    [[ "$RELEASE_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || provenance_refuse \
-      "couldn't read the version from the downloaded bundle." \
-      "Set VERSION=x.y.z to say which release this is."
-    echo "[install] (no VERSION given — checking it as v$RELEASE_VERSION, the version the bundle names)"
-  fi
-
   VERIFIER="$TMP/verify-provenance.mjs"
   SELF="${BASH_SOURCE[0]:-}"
   if [[ -z "${VERIFIER_URL:-}" && -n "$SELF" && -f "$(dirname "$SELF")/verify-provenance.mjs" ]]; then
@@ -257,7 +267,7 @@ else
   PROV_LINE=$(printf '%s\n' "$PROV_OUT" | tail -n 1)
   PROV_WHY=$(printf '%s' "${PROV_LINE#*: }" | cut -c1-300)
   if [[ "$PROV_RC" -eq 0 && "$PROV_LINE" == "verified" ]]; then
-    echo "[install] ✓ Signed build record verified (built by $RELEASE_REPO release.yml at v$RELEASE_VERSION)"
+    echo "[install] ✓ Signed build record verified (built by $RELEASE_REPO release.yml at v$RELEASE_VERSION, from a commit on main)"
   else
     case "$PROV_RC" in
       10) provenance_refuse "this download doesn't match its signed build record ($PROV_WHY)." \

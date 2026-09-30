@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkVerifier, INSTALL_SH, readPin, sha256, VERIFIER } from "./build-verifier.ts";
 
@@ -20,12 +20,23 @@ const FIX = join(repo, "packages/server/src/__tests__/fixtures/provenance");
 /** sha256 of the real autonomos-linux-x64.tar.gz in the v0.7.0 release. */
 const LINUX_X64 = "ce4245b1a48b818f89ca3ac9e682a14b649b21fec76abfea029c0bc46c50e8a1";
 
-const tmp = mkdtempSync(join(tmpdir(), "verify-provenance-test-"));
+// No fs writes at import time: set up in before().
+let tmp = "";
+let onMain = "";
+before(() => {
+  tmp = mkdtempSync(join(tmpdir(), "verify-provenance-test-"));
+  onMain = join(tmp, "compare-ahead.json");
+  writeFileSync(onMain, JSON.stringify({ status: "ahead" }));
+});
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 function run(
   args: string[],
-  opts: { attestations?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: {
+    attestations?: string;
+    compare?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ) {
   const r = spawnSync(
     process.execPath,
@@ -35,6 +46,8 @@ function run(
       opts.attestations ?? join(FIX, "v0.7.0-attestations.json"),
       "--trusted-root",
       join(FIX, "trusted-root.json"),
+      "--compare",
+      opts.compare ?? onMain,
       ...args,
     ],
     { encoding: "utf-8", timeout: 60_000, env: opts.env ?? process.env },
@@ -87,6 +100,14 @@ describe("scripts/verify-provenance.mjs (the file install.sh pins)", () => {
     const r = run(["--digest", LINUX_X64, "--version", "0.7.0", "--name", "autonomos-darwin-arm64.tar.gz"]);
     assert.equal(r.code, 10);
     assert.match(r.out, /lists this file as autonomos-linux-x64\.tar\.gz/);
+  });
+
+  it("a genuine build from a commit that isn't on main → exit 10, invalid", () => {
+    const off = join(tmp, "compare-diverged.json");
+    writeFileSync(off, JSON.stringify({ status: "diverged" }));
+    const r = run(["--digest", LINUX_X64, "--version", "0.7.0"], { compare: off });
+    assert.equal(r.code, 10);
+    assert.match(r.out, /^invalid: .*isn't on main/);
   });
 
   it("an unreadable file or bad arguments are a usage error, never 'verified'", () => {

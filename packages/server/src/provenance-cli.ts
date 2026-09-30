@@ -25,7 +25,8 @@
  * running this — so the skip variable is deliberately NOT read here.
  *
  * Test seams (offline, used by the repo's own tests): --attestations <json>
- * (a GitHub attestations API response), --trusted-root <json>, and
+ * (a GitHub attestations API response), --trusted-root <json>, --compare
+ * <json> (a GitHub compare response: is the build's commit on main?), and
  * --digest <sha256> in place of --file (the fixture's real tarballs aren't
  * in the repo). None crosses a trust boundary: the caller is install.sh.
  */
@@ -80,6 +81,7 @@ async function main(): Promise<{ line: string; code: number }> {
         "tuf-cache": { type: "string" },
         attestations: { type: "string" },
         "trusted-root": { type: "string" },
+        compare: { type: "string" },
       },
       strict: true,
     }));
@@ -131,6 +133,18 @@ async function main(): Promise<{ line: string; code: number }> {
           .map((a) => a.bundle)
           .filter((b) => b != null),
       };
+    };
+  }
+
+  const comparePath = values.compare;
+  if (comparePath) {
+    deps.commitOnMain = async () => {
+      const { status } = JSON.parse(readFileSync(comparePath, "utf-8")) as {
+        status?: unknown;
+      };
+      if (status === "ahead" || status === "identical") return true;
+      if (status === "behind" || status === "diverged") return false;
+      return { error: "couldn't confirm the build came from main" };
     };
   }
 
