@@ -99,10 +99,25 @@ describe("failed-auth throttle on the real server", {
     // …and the lock is short at this point (1s, doubling from there).
     await sleep(1100);
     assert.equal((await bearer(a.base, a.s.token)).status, 200, "then gets in");
-    // A success clears the address: a whole fresh allowance, none refused.
+    // Ordinary authenticated traffic does NOT reset the attacker's backoff
+    // (a shared address: proxy, NAT): the very next wrong value locks again.
+    assert.equal((await bearer(a.base, "after-traffic-1")).status, 401);
+    assert.equal(
+      (await bearer(a.base, "after-traffic-2")).status,
+      429,
+      "backoff survived the operator's request",
+    );
+    // An explicit sign-in does clear it: a whole fresh allowance.
+    await sleep(2100);
+    const login = await fetch(`${a.base}/api/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: a.s.token }),
+    });
+    assert.equal(login.status, 200);
     for (let i = 0; i < FREE_FAILURES; i++)
       assert.equal(
-        (await bearer(a.base, `after-success-${i}`)).status,
+        (await bearer(a.base, `after-login-${i}`)).status,
         401,
         `fresh guess ${i}`,
       );
