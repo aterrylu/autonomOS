@@ -178,6 +178,9 @@ export const RESERVED_ENV_KEYS = new Set([
   "AUTONOMOS_AGENT_NAME",
   "AUTONOMOS_AGENT_TOKEN",
   "AUTONOMOS_CONFIG_DIR",
+  // The OPERATOR token (security audit V3): a preset or customEnvVars must not
+  // be able to hand it back to an agent after buildBaseEnv strips it.
+  "AUTONOMOS_TOKEN",
 ]);
 
 /**
@@ -204,11 +207,16 @@ export function buildBaseEnv(
   delete env.CLAUDECODE;
   // Perf-harness mode must not propagate: an agent that later launches its own
   // autonomOS server (make dev/prod) would silently inherit the auth bypass.
-  delete env.AUTONOMOS_PERF;
-  // Same for the keystroke recorder (ptyInputLog.ts): a nested autonomOS an
-  // agent starts must not come up recording because the outer one was.
+  // Every inherited AUTONOMOS_* key goes, then the ones an agent needs are set
+  // below. This covers the OPERATOR token (security audit V3: when the server
+  // was started with AUTONOMOS_TOKEN in its env, e.g. from .env, every agent
+  // inherited it), the perf-harness auth bypass (AUTONOMOS_PERF), the keystroke
+  // recorder (AUTONOMOS_PTY_INPUT_LOG*), and the server's own tuning knobs, none
+  // of which a nested autonomOS an agent starts should come up with. This is a
+  // namespace strip, not a general env allowlist: the agent still inherits the
+  // rest of the operator's environment.
   for (const key of Object.keys(env)) {
-    if (key.startsWith("AUTONOMOS_PTY_INPUT_LOG")) delete env[key];
+    if (key.startsWith("AUTONOMOS_")) delete env[key];
   }
 
   env.PATH = [...BINARY_DIRS, env.PATH].join(":");

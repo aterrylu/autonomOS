@@ -61,6 +61,7 @@ import { installUnhandledRejectionLogger } from "./processSafetyNet.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { initPtyInputLog } from "./ptyInputLog.js";
+import { createAgentApi, gatewayUpgradeAuth } from "./routes/agentApi.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
@@ -592,6 +593,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // at /api/agent-status, the feed + read-marking at /api/notifications.
 
   internalApp.route("/api/hooks", hooksIngestRouter);
+  // The channel server's MCP tools, on the per-AGENT credential (audit V3).
+  // Internal socket only: the public listener's auth stays operator-only.
+  internalApp.route("/api", createAgentApi());
   app.route("/api/agent-status", agentStatusRouter);
   app.route("/api/notifications", notificationsRouter);
 
@@ -654,7 +658,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // defense in depth — same posture as /mcp: the socket answers "who may
   // connect" (same-user on-box), the token still answers "prove it". Per-agent
   // identity (a later layer) will replace the client-asserted register name.
-  internalApp.use("/ws/gateway", requireAuth);
+  // Upgrade auth: the channel server presents its per-AGENT credential (audit
+  // V3); the operator token stays accepted for a channel server from before
+  // that change (upgrade window). The register frame still verifies identity.
+  internalApp.use("/ws/gateway", gatewayUpgradeAuth(requireAuth));
   internalApp.get("/ws/gateway", gatewayRouter(iUpgrade));
 
   if (isProduction && dashboardDist !== null) {

@@ -34,7 +34,6 @@ import {
   probeThreadRollout,
   readThreadPermissionValues,
 } from "../gateway/codexRollout.js";
-import { getAuthToken } from "../serverState.js";
 import {
   buildBaseEnv,
   buildSystemPrompt,
@@ -179,11 +178,9 @@ function daemonConfigArgs(options: ResolvedSpawnOptions): string[] {
       // 0600 file instead (ADR-055 follow-up).
       "-c",
       `mcp_servers.autonomos.env.AUTONOMOS_CONFIG_DIR=${JSON.stringify(getConfigDir())}`,
-      // Forward the in-process auth token (server may have booted without
-      // AUTONOMOS_TOKEN in env; reading process.env would leave it tokenless
-      // and rejected by /ws/* auth).
-      "-c",
-      `mcp_servers.autonomos.env.AUTONOMOS_TOKEN=${JSON.stringify(getAuthToken())}`,
+      // No operator token (security audit V3): as a `-c` flag it was in argv,
+      // readable by other local users and logged by codex. The channel server
+      // authenticates with its per-agent token file instead.
     );
   }
 

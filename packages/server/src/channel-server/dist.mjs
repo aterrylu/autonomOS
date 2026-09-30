@@ -10427,6 +10427,7 @@ var require_websocket_server = __commonJS({
 
 // packages/server/src/channel-server/index.ts
 import { readFileSync as readFileSync2 } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 
 // node_modules/.bun/zod@4.3.6/node_modules/zod/v3/helpers/util.js
@@ -24988,7 +24989,6 @@ var MCP_INSTRUCTIONS = [
 // packages/server/src/channel-server/index.ts
 var SESSION_ID = process.env.AUTONOMOS_SESSION_ID;
 var SERVER_URL = process.env.AUTONOMOS_SERVER_URL;
-var AUTH_TOKEN = process.env.AUTONOMOS_TOKEN;
 if (!SESSION_ID || !SERVER_URL) {
   process.stderr.write(
     "autonomos-channel: AUTONOMOS_SESSION_ID and AUTONOMOS_SERVER_URL required\n"
@@ -25015,8 +25015,7 @@ var MAX_RECONNECT_DELAY = 3e4;
 var pendingRequests = /* @__PURE__ */ new Map();
 function connectToServer() {
   try {
-    const url2 = AUTH_TOKEN ? `${SERVER_URL}?token=${encodeURIComponent(AUTH_TOKEN)}` : SERVER_URL;
-    ws = new wrapper_default(url2);
+    ws = new wrapper_default(SERVER_URL, { headers: agentHeaders() });
   } catch (err) {
     process.stderr.write(
       `autonomos-channel: WebSocket connect failed: ${err}
@@ -25130,40 +25129,81 @@ var mcp = new Server(
     instructions: MCP_INSTRUCTIONS
   }
 );
-var SERVER_BASE = (() => {
-  const explicit = process.env.AUTONOMOS_API_URL;
-  if (explicit) return explicit.replace(/\/$/, "");
-  const wsUrl = SERVER_URL ?? "";
-  if (wsUrl.startsWith("ws+unix:")) {
-    process.stderr.write(
-      "autonomos-channel: AUTONOMOS_API_URL not set with a ws+unix gateway \u2014 create_agent/kill_agent/schedules will be unavailable\n"
-    );
-    return "";
-  }
-  return wsUrl.replace("ws://", "http://").replace("wss://", "https://").replace(/\/ws\/gateway$/, "");
+var SOCKET_PATH = (() => {
+  const url2 = SERVER_URL ?? "";
+  if (!url2.startsWith("ws+unix://")) return "";
+  const rest = url2.slice("ws+unix://".length);
+  const colon = rest.indexOf(":");
+  return colon > 0 ? rest.slice(0, colon) : "";
 })();
-function authHeaders(contentType) {
+if (!SOCKET_PATH) {
+  process.stderr.write(
+    "autonomos-channel: AUTONOMOS_SERVER_URL is not a ws+unix:// gateway URL \u2014 create_agent/kill_agent/schedules will be unavailable\n"
+  );
+}
+function agentHeaders() {
   const headers = {};
-  if (contentType) headers["Content-Type"] = contentType;
-  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+  if (SESSION_ID) headers["X-Agent-Session"] = SESSION_ID;
+  if (AGENT_TOKEN) headers["X-Agent-Token"] = AGENT_TOKEN;
   return headers;
 }
-async function serverFetch(path, init) {
-  const res = await fetch(`${SERVER_BASE}${path}`, {
-    ...init,
-    headers: {
-      ...authHeaders(init?.body ? "application/json" : void 0),
-      ...init?.headers
-    }
+function socketRequest(path, init) {
+  return new Promise((resolve2, reject) => {
+    const body = typeof init?.body === "string" ? init.body : void 0;
+    const req = httpRequest(
+      {
+        socketPath: SOCKET_PATH,
+        path,
+        method: init?.method ?? "GET",
+        headers: {
+          ...agentHeaders(),
+          ...body !== void 0 && {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body)
+          },
+          ...init?.headers
+        }
+      },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          text += chunk;
+        });
+        res.on("end", () => resolve2({ status: res.statusCode ?? 0, text }));
+        res.on("error", reject);
+      }
+    );
+    req.on("error", reject);
+    if (body !== void 0) req.write(body);
+    req.end();
   });
-  if (!res.ok) {
-    const text = await res.text();
+}
+async function serverFetch(path, init) {
+  if (!SOCKET_PATH) {
     return {
-      content: [{ type: "text", text: `Failed: ${text}` }],
+      content: [
+        {
+          type: "text",
+          text: "Failed: no internal socket to reach the server on"
+        }
+      ],
       isError: true
     };
   }
-  const data = await res.json();
+  const res = await socketRequest(path, init);
+  if (res.status < 200 || res.status >= 300) {
+    return {
+      content: [{ type: "text", text: `Failed: ${res.text}` }],
+      isError: true
+    };
+  }
+  let data;
+  try {
+    data = JSON.parse(res.text);
+  } catch {
+    data = res.text;
+  }
   const pretty = typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
   return { content: [{ type: "text", text: pretty }] };
 }
