@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  * test runner would otherwise intercept itself.
  */
 
+const SERVER_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MODULE = pathToFileURL(
   join(dirname(fileURLToPath(import.meta.url)), "..", "processSafetyNet.ts"),
 ).href;
@@ -24,7 +25,8 @@ function runChild(install: boolean) {
   return spawnSync(
     process.execPath,
     ["--import", "tsx", "--input-type=module", "--eval", script],
-    { encoding: "utf8", timeout: 30_000 },
+    // `--import tsx` resolves from the cwd; CI runs from the repo root.
+    { encoding: "utf8", timeout: 30_000, cwd: SERVER_DIR },
   );
 }
 
@@ -33,6 +35,12 @@ describe("installUnhandledRejectionLogger", () => {
     const r = runChild(false);
     assert.notEqual(r.status, 0);
     assert.ok(!r.stdout.includes("STILL_ALIVE"));
+    // It must have died OF the rejection. A child that failed to start at all
+    // (e.g. tsx unresolvable) also exits non-zero, and would pass vacuously.
+    assert.ok(
+      r.stderr.includes("REJECTION_MARKER"),
+      `child did not reach the rejection. stderr:\n${r.stderr}`,
+    );
   });
 
   it("with it, the process logs the rejection and keeps running", () => {

@@ -23,6 +23,7 @@ import { waitUntil } from "./helpers/wait.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, "helpers", "gateway-fixture-server.ts");
+const SERVER_DIR = join(HERE, "..", "..");
 
 const DIR = mkdtempSync(join(tmpdir(), "aos-gwbad-"));
 const SOCKET = join(DIR, "c.sock");
@@ -95,6 +96,8 @@ describe("gateway survives malformed frames (V6)", () => {
         AUTONOMOS_CONFIG_DIR: mkdtempSync(join(tmpdir(), "aos-gwbad-cfg-")),
       },
       stdio: ["ignore", "pipe", "pipe"],
+      // `--import tsx` resolves from the cwd; CI runs from the repo root.
+      cwd: SERVER_DIR,
     });
     child.on("exit", (code, signal) => {
       exited = { code, signal };
