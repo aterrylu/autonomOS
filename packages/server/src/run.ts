@@ -8,7 +8,7 @@
 // stop/status/upgrade commands to consume.
 
 import { timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
@@ -29,7 +29,14 @@ import {
   snapshotResumableAgents,
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
-import { describeTokenForLog, resolveAuthToken } from "./auth.js";
+import {
+  describeTokenForLog,
+  isPriorInstall,
+  isWeakToken,
+  resolveAuthTokenWithSource,
+  type TokenSource,
+  weakTokenPolicy,
+} from "./auth.js";
 import {
   authCookieName,
   LEGACY_AUTH_COOKIE,
@@ -87,6 +94,7 @@ import {
   setAuthToken,
   setInternalSocketPath,
   setServerPort,
+  setTokenWarning,
 } from "./serverState.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
@@ -172,13 +180,19 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     process.exit(0);
   }
 
+  // Is this install new? Read BEFORE this boot writes anything. The markers
+  // (agents/, templates/, settings.json) are written only past the token
+  // check below, so a boot refused for a weak token leaves none behind and
+  // an identical re-run is refused again (V2b, ADR-130).
+  const priorInstall = isPriorInstall(getConfigDir());
+
+  // Owner-only modes on what older builds created loose (V8), BEFORE the log
+  // file is opened. Only removes group/other bits: never breaks auth.
+  const tightened = tightenConfigDirModes();
   // Tee stdout/stderr into a rotating $configDir/logs/autonomos.log as early as
   // possible, so everything below is captured under OS-native supervision (the
   // supervisor's own stdout goes to /dev/null — see service-templates.ts). Best
   // effort: a logging failure never blocks startup.
-  // Owner-only modes on what older builds created loose (V8), BEFORE the log
-  // file is opened. Only removes group/other bits: never breaks auth.
-  const tightened = tightenConfigDirModes();
   initFileLogging();
   if (tightened.length > 0) {
     console.warn(
@@ -189,6 +203,22 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // one-shot $configDir/pty-input-log.on exists. After file logging so its
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
+
+  // The operator token, and whether it's strong enough to start with. Decided
+  // here: after logging (so a refusal lands in the log a supervised install
+  // has) and before anything writes an install marker (templates just below).
+  const { token: AUTH_TOKEN, source: tokenSource } =
+    resolveAuthTokenWithSource();
+  enforceTokenStrength({
+    token: AUTH_TOKEN,
+    source: tokenSource,
+    priorInstall,
+    networkBind: !isLoopbackBind(
+      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+    ),
+    allowWeak:
+      cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
+  });
 
   // Seed default templates on fresh install
   seedDefaultTemplates();
@@ -329,7 +359,6 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
 
-  const AUTH_TOKEN = resolveAuthToken();
   // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
   // the in-process token without round-tripping through env or disk.
   setAuthToken(AUTH_TOKEN);
@@ -1001,4 +1030,56 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // The server is now running. Return a promise that never resolves —
   // shutdown happens via signal → process.exit() above.
   return new Promise<void>(() => {});
+}
+
+/**
+ * Refuse a weak token on a NEW network-bound install; warn loudly on every
+ * boot otherwise (V2b, ADR-130). Never prints the token.
+ */
+function enforceTokenStrength(o: {
+  token: string;
+  source: TokenSource;
+  priorInstall: boolean;
+  networkBind: boolean;
+  allowWeak: boolean;
+}): void {
+  const weak = isWeakToken(o.token);
+  const policy = weakTokenPolicy({ weak, ...o });
+  const fromEnv = o.source === "env";
+  const where = fromEnv
+    ? "the AUTONOMOS_TOKEN environment variable (e.g. a .env file)"
+    : "the token file";
+  if (policy === "refuse") {
+    const message = [
+      `✖ Refusing to start: the operator token from ${where} is only ${o.token.length} characters (or too repetitive), and this new install listens on the network.`,
+      "  Anyone who can reach the port could guess it.",
+      fromEnv
+        ? "  Remove AUTONOMOS_TOKEN to let autonomOS generate a strong token, or set a 32+ character random one."
+        : "  Delete the token file to let autonomOS generate a strong one, or write a 32+ character random token.",
+      "  To listen on this machine only, pass --host=127.0.0.1. To start anyway, pass --allow-weak-token.",
+    ].join("\n");
+    console.error(message); // → the log file (and the terminal, on a TTY)
+    // Off a TTY the logger doesn't echo stderr, so a refused start under a
+    // supervisor or a script would exit 2 in silence. Say it on the real fd 2.
+    if (!process.stderr.isTTY) writeSync(2, `${message}\n`);
+    process.exit(2);
+  }
+  if (policy === "warn") {
+    console.warn(
+      [
+        `⚠ SECURITY: the operator token from ${where} is weak (${o.token.length} characters).${o.networkBind ? " This server is reachable on the network." : ""}`,
+        "  Run `autonomos token rotate` on this machine to replace it with a strong one.",
+        ...(fromEnv
+          ? [
+              "  The environment variable wins over the token file, so rotate also takes AUTONOMOS_TOKEN out of the .env it finds. Remove it anywhere else it is set.",
+            ]
+          : []),
+      ].join("\n"),
+    );
+    setTokenWarning({
+      length: o.token.length,
+      source: fromEnv ? "env" : "file",
+      networkBind: o.networkBind,
+    });
+  }
 }
