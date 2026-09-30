@@ -123,6 +123,16 @@ export interface MaskedSettings {
    * including agent-initiated ones.
    */
   runtimeDefaults: Record<Provider, RuntimePermission>;
+  /** Recent changes to those defaults, newest last — through the dashboard or
+   *  out-of-band (settings.json edited directly). ADR-122. */
+  runtimeDefaultsLog?: Array<{
+    at: number;
+    runtime: Provider;
+    from: string;
+    to: string;
+    neverAsks: boolean;
+    source: "dashboard" | "out-of-band";
+  }>;
 }
 
 export type ChannelStatus = "ok" | "disabled" | "not-installed" | "unknown";

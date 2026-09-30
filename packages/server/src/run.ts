@@ -899,6 +899,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // Check each installed CLI's permission options against the
         // runtime table, off the boot path (logs any drift once).
         warmPermissionChecks();
+        // Baseline (or report an out-of-band change to) the per-runtime
+        // default permissions (ADR-122).
+        const { noteRuntimeDefaults } = await import(
+          "./runtimeDefaultsWatch.js"
+        );
+        noteRuntimeDefaults();
         // The post-update check judges agents only once they've been
         // resumed, not on a fixed timer (ADR-105).
         const { noteAgentsResumed } = await import("./upgradeVerify.js");

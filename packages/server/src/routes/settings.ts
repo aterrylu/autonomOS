@@ -9,6 +9,11 @@ import { Hono } from "hono";
 import { isValidChannelId } from "../channels.js";
 import { invalidateCache } from "../plugins/claude-usage/scanner.js";
 import {
+  neverAsks,
+  noteRuntimeDefaults,
+  runtimeDefaultsLog,
+} from "../runtimeDefaultsWatch.js";
+import {
   type AppSettings,
   getSettings,
   isAutoDetectAccountEnabled,
@@ -41,11 +46,16 @@ function maskSettings(settings: AppSettings): MaskedSettings {
         runtimeDefaultPermission(r, settings),
       ]),
     ) as Record<Provider, RuntimePermission>,
+    runtimeDefaultsLog: runtimeDefaultsLog(settings),
   };
 }
 
 settingsRouter.get("/", (c) => {
-  return c.json(maskSettings(getSettings()));
+  const settings = getSettings();
+  // Reading the defaults is where an out-of-band edit (settings.json changed
+  // directly) gets noticed and reported (ADR-122).
+  noteRuntimeDefaults(settings);
+  return c.json(maskSettings(settings));
 });
 
 settingsRouter.put("/", async (c) => {
@@ -112,6 +122,10 @@ settingsRouter.put("/", async (c) => {
   }
 
   if (body.runtimeDefaults !== undefined) {
+    // Report anything changed out-of-band BEFORE applying this write, so the
+    // write's own report says only what the dashboard changed.
+    const current = getSettings();
+    noteRuntimeDefaults(current);
     // Merge per runtime: naming one runtime leaves the others' defaults alone;
     // `null` resets a runtime to the built-in default. Stored as the COMPLETE
     // canonical values, so a later table default change can't shift it.
@@ -128,12 +142,38 @@ settingsRouter.put("/", async (c) => {
       if (!parsed.ok) return c.json({ error: parsed.error }, 400);
       next[runtime] = { ...parsed.permission.values };
     }
+    // A default under which new agents NEVER ask before acting must be
+    // confirmed explicitly (the dashboard's confirm dialog sends it). Only a
+    // WIDENING needs it: a runtime already on a never-asks default can be
+    // re-saved without re-confirming.
+    const widened = (Object.keys(body.runtimeDefaults) as Provider[]).filter(
+      (r) => {
+        const after = runtimeDefaultPermission(r, {
+          ...current,
+          runtimeDefaults: next,
+        });
+        const before = runtimeDefaultPermission(r, current);
+        return neverAsks(after) && !neverAsks(before);
+      },
+    );
+    if (widened.length > 0 && body.confirmNeverAsks !== true) {
+      return c.json(
+        {
+          error: `The new default for ${widened.join(", ")} never asks before acting. Confirm it (confirmNeverAsks: true) to save.`,
+          code: "CONFIRM_NEVER_ASKS",
+          runtimes: widened,
+        },
+        400,
+      );
+    }
     partial.runtimeDefaults = next;
   }
 
   let updated: AppSettings;
   try {
     updated = updateSettings(partial);
+    if (partial.runtimeDefaults !== undefined)
+      noteRuntimeDefaults(updated, "dashboard");
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Failed to save settings:", message);
