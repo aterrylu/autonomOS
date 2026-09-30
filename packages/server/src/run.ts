@@ -29,14 +29,14 @@ import {
   snapshotResumableAgents,
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
-import { resolveAuthToken } from "./auth.js";
+import { describeTokenForLog, resolveAuthToken } from "./auth.js";
 import {
   authCookieName,
   LEGACY_AUTH_COOKIE,
   signInLink,
 } from "./authCookie.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
-import { getConfigDir } from "./configDir.js";
+import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
 import { mountDashboard } from "./dashboardStatic.js";
 import { installErrorHandling } from "./httpError.js";
@@ -169,7 +169,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // possible, so everything below is captured under OS-native supervision (the
   // supervisor's own stdout goes to /dev/null — see service-templates.ts). Best
   // effort: a logging failure never blocks startup.
+  // Owner-only modes on what older builds created loose (V8), BEFORE the log
+  // file is opened. Only removes group/other bits: never breaks auth.
+  const tightened = tightenConfigDirModes();
   initFileLogging();
+  if (tightened.length > 0) {
+    console.warn(
+      `[security] removed group/other access from ${tightened.length} path(s) under the config dir that an older version created readable by other users: ${tightened.join(", ")}`,
+    );
+  }
   // Opt-in keystroke forensics: off unless AUTONOMOS_PTY_INPUT_LOG=1 or the
   // one-shot $configDir/pty-input-log.on exists. After file logging so its
   // loud ON line lands in autonomos.log too.
@@ -778,9 +786,8 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // NOTE: keep this line's shape — helpers/test-server.ts parses
       // "listening on <url>" to discover the ephemeral port.
       console.log(`autonomOS server listening on ${base}`);
-      console.log(
-        `Auth token: ${AUTH_TOKEN.slice(0, 4)}...${AUTH_TOKEN.slice(-4)}`,
-      );
+      // Never the value: stdout is teed into the log file (V8).
+      console.log(`Auth token: ${describeTokenForLog(AUTH_TOKEN)}`);
 
       // The default bind is all-interfaces (unchanged, long-standing): this
       // server is commonly reached over Tailscale / IAP / SSH. Surface that

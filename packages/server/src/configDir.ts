@@ -5,8 +5,15 @@
  * helpers instead of duplicating the HOME / mkdir logic.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 const HOME = process.env.HOME;
 if (!HOME) throw new Error("HOME environment variable is not set");
@@ -71,6 +78,59 @@ export function ensureConfigDir(): void {
     // mode — the token file inside is 0600 regardless).
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+}
+
+/**
+ * Re-apply owner-only modes to what an OLDER build created loose (V8).
+ *
+ * Before #301 the config root was created 0755, and the log file, schedule-run
+ * history and env-presets dir used the process umask (typically 0644/0755). The
+ * log can carry the operator token (the old banner showed short tokens whole),
+ * so on a multi-user host another account could read it. Creation-time modes
+ * never reached those installs, so this runs on every boot.
+ *
+ * Only ever REMOVES group/other bits (`mode & ~0o077`). The owner's access is
+ * unchanged, so nothing that authenticates today can stop working: tightening
+ * never breaks auth. Skips anything not owned by this uid, symlinks, the home
+ * directory itself and `/` (an operator who points AUTONOMOS_CONFIG_DIR at a
+ * shared directory keeps that directory's mode). Never throws. Returns the
+ * paths it changed, for one boot log line.
+ */
+export function tightenConfigDirModes(dir: string = getConfigDir()): string[] {
+  const changed: string[] = [];
+  const uid = process.getuid?.();
+  const tighten = (p: string): boolean => {
+    try {
+      const st = lstatSync(p);
+      if (st.isSymbolicLink()) return false;
+      if (uid !== undefined && st.uid !== uid) return false;
+      const perm = st.mode & 0o777;
+      if ((perm & 0o077) === 0) return st.isDirectory();
+      chmodSync(p, perm & ~0o077);
+      changed.push(p);
+      return st.isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  const root = resolve(dir);
+  if (root === "/" || root === resolve(homedir())) return changed;
+  if (!existsSync(root) || !tighten(root)) return changed;
+  // The files that can carry a secret or prompt text, one level deep each.
+  for (const sub of ["logs", "schedule-runs", "env-presets", "agent-tokens"]) {
+    const d = join(root, sub);
+    if (!existsSync(d) || !tighten(d)) continue;
+    try {
+      for (const name of readdirSync(d)) tighten(join(d, name));
+    } catch {
+      // unreadable: leave it
+    }
+  }
+  for (const name of ["token", "autonomos.pid"]) {
+    const f = join(root, name);
+    if (existsSync(f)) tighten(f);
+  }
+  return changed;
 }
 
 /** For testing — redirect all config reads to an isolated temp directory. */

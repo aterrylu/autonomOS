@@ -227,7 +227,9 @@ export function appendRun(name: string, record: RunRecord): void {
   validateName(name);
   ensureDir(RUNS_DIR());
   const filePath = join(RUNS_DIR(), `${name}.jsonl`);
-  appendFileSync(filePath, `${JSON.stringify(record)}\n`);
+  // 0600 on creation, like the schedule files (V8). An existing loose file is
+  // re-tightened at boot by tightenConfigDirModes.
+  appendFileSync(filePath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
 }
 
 export function getRecentRuns(name: string, limit = 10): RunRecord[] {
