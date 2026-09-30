@@ -15,10 +15,9 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   formatPermission,
-  legacyModeFor,
+  neverAsks,
   PERMISSION_RUNTIMES,
   type Provider,
-  type RuntimePermission,
 } from "@autonomos/core";
 import { getConfigDir } from "./configDir.js";
 import { pushServerNotification } from "./routes/hooks.js";
@@ -34,10 +33,8 @@ const NAMES: Record<Provider, string> = {
   "gemini-cli": "Gemini CLI",
 };
 
-/** A value under which the agent never asks before acting. */
-export function neverAsks(p: RuntimePermission): boolean {
-  return legacyModeFor(p) === "bypass";
-}
+/** Re-exported: the one definition lives in core. */
+export { neverAsks };
 
 export interface DefaultsChange {
   at: number;

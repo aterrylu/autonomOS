@@ -499,3 +499,61 @@ export function normalizeStoredPermission(
   );
   return parsed.ok ? parsed.permission : undefined;
 }
+
+// ── How permissive a value is ───────────────────────────────────────────────
+
+/** A value under which the agent never asks before acting (the old "bypass"). */
+export function neverAsks(p: RuntimePermission): boolean {
+  return legacyModeFor(p) === "bypass";
+}
+
+/**
+ * Each axis's values from LEAST to MOST permissive — how much an agent may do
+ * without a person saying yes. Claude's `dontAsk` sits below `manual`: it never
+ * prompts, but it DENIES anything not already allowed. A reviewer agent that
+ * answers approvals is more permissive than you answering them.
+ */
+export const PERMISSIVENESS: Readonly<
+  Record<Provider, Readonly<Record<string, readonly string[]>>>
+> = {
+  "claude-code": {
+    "permission-mode": [
+      "plan",
+      "dontAsk",
+      "manual",
+      "acceptEdits",
+      "auto",
+      "bypassPermissions",
+    ],
+  },
+  codex: {
+    approval_policy: ["on-request", "never"],
+    sandbox_mode: ["read-only", "workspace-write", "danger-full-access"],
+    approvals_reviewer: ["user", "auto_review", "guardian_subagent"],
+  },
+  "gemini-cli": {
+    "approval-mode": ["plan", "default", "auto_edit", "yolo"],
+  },
+};
+
+/**
+ * The axes on which `to` lets an agent do MORE than `from` (same runtime) —
+ * what a switch from `from` to `to` would silently widen. Empty when `to` is
+ * the same or narrower everywhere. Axes with no order (Codex's per-turn
+ * collaboration mode) never count.
+ */
+export function widerAxes(
+  from: RuntimePermission,
+  to: RuntimePermission,
+): Array<{ axis: string; from: string; to: string }> {
+  if (from.runtime !== to.runtime) return [];
+  const order = PERMISSIVENESS[to.runtime] ?? {};
+  const out: Array<{ axis: string; from: string; to: string }> = [];
+  for (const [axis, ranks] of Object.entries(order)) {
+    const a = from.values[axis];
+    const b = to.values[axis];
+    if (a === undefined || b === undefined || a === b) continue;
+    if (ranks.indexOf(b) > ranks.indexOf(a)) out.push({ axis, from: a, to: b });
+  }
+  return out;
+}
