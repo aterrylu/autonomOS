@@ -90,6 +90,8 @@ type FixtureOptions = {
   missingTarball?: boolean;
   /** Point asset URLs at a connection-refused port (mid-download failure). */
   brokenDownloads?: boolean;
+  /** The version INSIDE every bundle, whatever its tag says (a relabel). */
+  bundleVersion?: string;
 };
 
 /**
@@ -101,7 +103,9 @@ async function startFixtureServer(
   versions: string[],
   opts: FixtureOptions = {},
 ): Promise<string> {
-  const tarballs = new Map(versions.map((v) => [v, makeTarball(v)]));
+  const tarballs = new Map(
+    versions.map((v) => [v, makeTarball(opts.bundleVersion ?? v)]),
+  );
   const latest = versions[versions.length - 1];
 
   /** The SHA256SUMS body for a version — a wrong digest when badChecksum. */
@@ -328,6 +332,31 @@ describe("performUpgrade", () => {
     assert.match(q.name ?? "", /^autonomos-[a-z0-9]+-[a-z0-9]+\.tar\.gz$/);
     assert.equal(q.version, "0.6.0");
     assert.equal(q.repo, REPO);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+    assert.equal(existsSync(`${bundleDir}.new`), false);
+    assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("a bundle that isn't the version its tag names is refused — even with provenance skipped", async () => {
+    // Tag v0.6.0 put on an OLD commit on main: genuinely built, genuinely on
+    // main, but it's v0.4.0 code. Installed as "v0.6.0" it would be a
+    // downgrade that never updates again.
+    const apiBase = await startFixtureServer(["0.6.0"], {
+      bundleVersion: "0.4.0",
+    });
+    const bundleDir = installLiveBundle("0.5.0");
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async () => ({
+        status: "skipped",
+        reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+      }),
+    });
+    assertError(
+      result,
+      /The v0\.6\.0 download contains v0\.4\.0, so it wasn't installed/,
+    );
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
     assert.equal(existsSync(`${bundleDir}.new`), false);
     assert.equal(existsSync(`${bundleDir}.previous`), false);

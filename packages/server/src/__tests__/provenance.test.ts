@@ -50,6 +50,7 @@ const offline = (
 ): Partial<ProvenanceDeps> => ({
   fetchAttestations: async () => ({ bundles: bundles() }),
   trustedRoot: async () => ROOT,
+  commitOnMain: async () => true,
   ...over,
 });
 const check = (
@@ -120,6 +121,63 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
       (r as { reason: string }).reason,
       /lists this file as autonomos-linux-x64\.tar\.gz, not autonomos-darwin-arm64/,
     );
+  });
+
+  /** The commit the v0.7.0 build ran from, per its Fulcio certificate. */
+  const V070_COMMIT = "a1351c300f8f61271ebf07259c92c3efe69caf4e";
+
+  it("asks whether the CERTIFICATE's source commit is on main — the sha, never the tag name", async () => {
+    const asked: string[] = [];
+    const r = await check({
+      deps: offline({
+        commitOnMain: async (c) => {
+          asked.push(c);
+          return true;
+        },
+      }),
+    });
+    assert.deepEqual(r, { status: "verified" });
+    // A tag moved after signing can't change what's compared: this is the
+    // commit Fulcio stamped from GitHub's OIDC token.
+    assert.deepEqual(asked, [V070_COMMIT]);
+  });
+
+  it("a genuine build from a commit that isn't on main is INVALID (a writer's tag off an old or foreign commit)", async () => {
+    const r = await check({
+      deps: offline({ commitOnMain: async () => false }),
+    });
+    assert.equal(r.status, "invalid");
+    assert.match(
+      (r as { reason: string }).reason,
+      /commit a1351c300f8f, which isn't on main/,
+    );
+  });
+
+  it("couldn't confirm main (GitHub unreachable, rate-limited) is MISSING, not invalid", async () => {
+    const r = await check({
+      deps: offline({
+        commitOnMain: async () => ({ error: "couldn't reach GitHub" }),
+      }),
+    });
+    assert.deepEqual(r, { status: "missing", reason: "couldn't reach GitHub" });
+  });
+
+  it("main is asked about only AFTER the record fully verifies — not for a wrong tag, file or name", async () => {
+    let asked = 0;
+    const deps = offline({
+      commitOnMain: async () => {
+        asked++;
+        return true;
+      },
+    });
+    for (const over of [
+      { version: "0.7.1" },
+      { digest: "0".repeat(64) },
+      { name: "autonomos-darwin-arm64.tar.gz" },
+    ]) {
+      assert.equal((await check({ ...over, deps })).status, "invalid");
+    }
+    assert.equal(asked, 0);
   });
 
   it("under Bun it says it can't check — never 'invalid' (Bun fails the real attestation)", async () => {
@@ -245,7 +303,7 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
     });
     const r = await check({
       apiBase: base,
-      deps: { trustedRoot: async () => ROOT },
+      deps: { trustedRoot: async () => ROOT, commitOnMain: async () => true },
     });
     assert.equal(
       asked,
@@ -271,7 +329,7 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
     });
     const r = await check({
       apiBase: base,
-      deps: { trustedRoot: async () => ROOT },
+      deps: { trustedRoot: async () => ROOT, commitOnMain: async () => true },
     });
     assert.deepEqual(r, { status: "verified" });
   });
@@ -304,7 +362,7 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
     const t0 = Date.now();
     const r = await check({
       apiBase: `http://127.0.0.1:${a.port}`,
-      deps: { trustedRoot: async () => ROOT },
+      deps: { trustedRoot: async () => ROOT, commitOnMain: async () => true },
     });
     assert.deepEqual(r, { status: "verified" });
     assert.equal(blobs, 10);
@@ -324,7 +382,7 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
     const r = await check({
       apiBase: `http://127.0.0.1:${a.port}`,
       env: { GITHUB_TOKEN: "ghp_secret" },
-      deps: { trustedRoot: async () => ROOT },
+      deps: { trustedRoot: async () => ROOT, commitOnMain: async () => true },
     });
     assert.equal(r.status, "verified");
     assert.equal(auth, undefined);
@@ -333,12 +391,94 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
   it("404 (none published) → missing; 5xx → missing with the status", async () => {
     let code = 404;
     const base = await serve(() => ({ status: code, body: {} }));
-    const deps = { trustedRoot: async () => ROOT };
+    const deps = {
+      trustedRoot: async () => ROOT,
+      commitOnMain: async () => true,
+    };
     assert.equal((await check({ apiBase: base, deps })).status, "missing");
     code = 502;
     const r = await check({ apiBase: base, deps });
     assert.equal(r.status, "missing");
     assert.match((r as { reason: string }).reason, /HTTP 502/);
+  });
+});
+
+describe("verifyReleaseProvenance — is the build's commit on main? (GitHub compare)", () => {
+  let server: Server | undefined;
+  afterEach(() => server?.close());
+  const COMMIT = "a1351c300f8f61271ebf07259c92c3efe69caf4e";
+
+  async function github(compare: { status: number; body?: unknown }) {
+    const seen: string[] = [];
+    server = createServer((req, res) => {
+      const url = req.url ?? "";
+      seen.push(url);
+      res.setHeader("content-type", "application/json");
+      if (url.includes("/compare/")) {
+        res.statusCode = compare.status;
+        res.end(compare.body === undefined ? "" : JSON.stringify(compare.body));
+        return;
+      }
+      res.end(JSON.stringify(ATT));
+    });
+    await new Promise<void>((ok) => server?.listen(0, "127.0.0.1", ok));
+    const a = server.address() as { port: number };
+    const r = await check({
+      apiBase: `http://127.0.0.1:${a.port}`,
+      deps: { trustedRoot: async () => ROOT },
+    });
+    return { r, seen };
+  }
+
+  it("compares the certificate's commit against main in the configured repo", async () => {
+    const { r, seen } = await github({
+      status: 200,
+      body: { status: "ahead" },
+    });
+    assert.deepEqual(r, { status: "verified" });
+    assert.ok(
+      seen.includes(`/repos/${REPO}/compare/${COMMIT}...main`),
+      seen.join(" "),
+    );
+  });
+
+  it("main contains it (ahead / identical) → verified; it isn't on main (behind / diverged / unknown commit) → INVALID", async () => {
+    for (const status of ["ahead", "identical"]) {
+      assert.equal(
+        (await github({ status: 200, body: { status } })).r.status,
+        "verified",
+        status,
+      );
+      server?.close();
+    }
+    for (const compare of [
+      { status: 200, body: { status: "behind" } },
+      { status: 200, body: { status: "diverged" } },
+      // Not in the repository at all, so it can't be on main.
+      { status: 404, body: { message: "Not Found" } },
+    ]) {
+      const { r } = await github(compare);
+      assert.equal(r.status, "invalid", JSON.stringify(compare));
+      assert.match((r as { reason: string }).reason, /isn't on main/);
+      server?.close();
+    }
+  });
+
+  it("GitHub not answering the question → MISSING, never invalid", async () => {
+    for (const compare of [
+      { status: 502 },
+      { status: 403, body: { message: "rate limit" } },
+      { status: 200, body: { status: "something-new" } },
+      { status: 200, body: "not json" },
+    ]) {
+      const { r } = await github(compare);
+      assert.equal(r.status, "missing", JSON.stringify(compare));
+      assert.match(
+        (r as { reason: string }).reason,
+        /confirm the build came from main/,
+      );
+      server?.close();
+    }
   });
 });
 

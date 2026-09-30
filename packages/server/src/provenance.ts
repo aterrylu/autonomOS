@@ -27,6 +27,7 @@
 
 import { join } from "node:path";
 import { bundleFromJSON } from "@sigstore/bundle";
+import { X509Certificate } from "@sigstore/core";
 import type { TrustedRoot } from "@sigstore/protobuf-specs";
 import { getTrustedRoot } from "@sigstore/tuf";
 import {
@@ -90,7 +91,18 @@ export type ProvenanceDeps = {
     digest: string,
   ) => Promise<{ bundles: unknown[] } | { error: string }>;
   trustedRoot: () => Promise<TrustedRoot>;
+  /** Is `commit` an ancestor of the repo's main branch? */
+  commitOnMain: (commit: string) => Promise<boolean | { error: string }>;
 };
+
+/** Fulcio certificate extensions for GitHub Actions. Fulcio copies them from
+ *  GitHub's OIDC token, so the workflow that ran CAN'T choose them — unlike
+ *  the SLSA predicate, which that workflow writes. A tag on a foreign commit
+ *  carries its own release.yml, and that release.yml could claim any commit
+ *  in the predicate; the certificate says which commit actually ran. */
+const OID_SOURCE_REPOSITORY_URI = "1.3.6.1.4.1.57264.1.12";
+const OID_SOURCE_REPOSITORY_DIGEST = "1.3.6.1.4.1.57264.1.13";
+const OID_SOURCE_REPOSITORY_REF = "1.3.6.1.4.1.57264.1.14";
 
 export async function verifyReleaseProvenance(opts: {
   /** sha256 hex of the downloaded tarball. */
@@ -128,6 +140,9 @@ export async function verifyReleaseProvenance(opts: {
     opts.deps?.fetchAttestations ??
     ((d: string) => fetchFromGitHub(opts.apiBase, opts.repo, d, env));
   const trustedRoot = opts.deps?.trustedRoot ?? liveTrustedRoot;
+  const commitOnMain =
+    opts.deps?.commitOnMain ??
+    ((c: string) => compareWithMain(opts.apiBase, opts.repo, c, env));
 
   const got = await fetchAttestations(opts.digest);
   if ("error" in got) return { status: "missing", reason: got.error };
@@ -150,6 +165,7 @@ export async function verifyReleaseProvenance(opts: {
 
   let invalid: string | null = null;
   let unsupported: string | null = null;
+  let cantCheckMain: string | null = null;
   for (const raw of got.bundles) {
     let bundle: ReturnType<typeof bundleFromJSON>;
     try {
@@ -188,13 +204,38 @@ export async function verifyReleaseProvenance(opts: {
     }
     const digest = opts.digest.toLowerCase();
     const same = subjects.filter((x) => x.sha256 === digest);
-    if (same.some((x) => opts.name === undefined || x.name === opts.name))
-      return { status: "verified" };
-    invalid ??= same.length
-      ? `the signed build record lists this file as ${same[0].name}, not ${opts.name}`
-      : "the signed build record is for different files";
+    if (!same.some((x) => opts.name === undefined || x.name === opts.name)) {
+      invalid ??= same.length
+        ? `the signed build record lists this file as ${same[0].name}, not ${opts.name}`
+        : "the signed build record is for different files";
+      continue;
+    }
+    // Built by our release.yml at this tag — but a tag is just a name: a
+    // writer can put one on ANY commit (an old one, a foreign one) and the
+    // workflow it carries runs. Only a commit on main went through review.
+    const source = certificateSource(bundle);
+    if (source === null) {
+      unsupported ??= "a signing certificate without its source commit";
+      continue;
+    }
+    if (
+      source.uri.toLowerCase() !==
+        `https://github.com/${opts.repo}`.toLowerCase() ||
+      source.ref !== `refs/tags/v${opts.version}`
+    ) {
+      invalid ??= "it was built from a different repository or tag";
+      continue;
+    }
+    const onMain = await commitOnMain(source.commit);
+    if (onMain === true) return { status: "verified" };
+    if (onMain === false) {
+      invalid ??= `it was built from commit ${source.commit.slice(0, 12)}, which isn't on main`;
+      continue;
+    }
+    cantCheckMain ??= onMain.error;
   }
   if (invalid) return { status: "invalid", reason: invalid };
+  if (cantCheckMain) return { status: "missing", reason: cantCheckMain };
   return {
     status: "missing",
     reason: unsupported ?? "no usable signed build record",
@@ -275,11 +316,113 @@ function attestedSubjects(
   }
 }
 
+/** The source repository, commit and ref from the (already verified) leaf
+ *  certificate, or null when it doesn't carry them. Never throws. */
+function certificateSource(
+  bundle: ReturnType<typeof bundleFromJSON>,
+): { uri: string; commit: string; ref: string } | null {
+  try {
+    const vm = bundle.verificationMaterial.content;
+    const raw =
+      vm.$case === "certificate"
+        ? vm.certificate.rawBytes
+        : vm.$case === "x509CertificateChain"
+          ? vm.x509CertificateChain.certificates[0]?.rawBytes
+          : undefined;
+    if (!raw) return null;
+    const cert = X509Certificate.parse(Buffer.from(raw));
+    const text = (oid: string) => {
+      const v = cert.extension(oid)?.value;
+      return v ? derUtf8String(Buffer.from(v)) : null;
+    };
+    const uri = text(OID_SOURCE_REPOSITORY_URI);
+    const commit = text(OID_SOURCE_REPOSITORY_DIGEST);
+    const ref = text(OID_SOURCE_REPOSITORY_REF);
+    if (!uri || !ref || !commit || !/^[0-9a-f]{40}$/.test(commit)) return null;
+    return { uri, commit, ref };
+  } catch {
+    return null;
+  }
+}
+
+/** A DER UTF8String (tag 0x0c, short or long-form length) → its text. */
+function derUtf8String(der: Buffer): string | null {
+  if (der[0] !== 0x0c || der.length < 2) return null;
+  let len = der[1];
+  let off = 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n < 1 || n > 2 || der.length < 2 + n) return null;
+    len = n === 1 ? der[2] : (der[2] << 8) | der[3];
+    off = 2 + n;
+  }
+  return off + len === der.length ? der.subarray(off).toString("utf-8") : null;
+}
+
 /** Only GitHub itself ever gets the token. `apiBase` follows the release
  *  override (a mirror, a test fixture), and nothing else in the update sends
  *  a credential there. */
 const GITHUB_API = "https://api.github.com";
 const MAX_OUT_OF_LINE_BUNDLES = 10;
+
+/** GET a GitHub API path. The token only ever goes to GitHub itself, and a
+ *  stale one (401 on a PUBLIC endpoint — which would quietly turn every check
+ *  into "couldn't check") is retried bare. */
+async function githubGet(
+  apiBase: string,
+  path: string,
+  env: Record<string, string | undefined>,
+): Promise<Response> {
+  const ask = (withToken: boolean) =>
+    fetch(`${apiBase}${path}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        // Optional: only raises the rate limit (the endpoints are public).
+        ...(withToken && { Authorization: `Bearer ${env.GITHUB_TOKEN}` }),
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+  const token = !!env.GITHUB_TOKEN && apiBase === GITHUB_API;
+  const resp = await ask(token);
+  return resp.status === 401 && token ? ask(false) : resp;
+}
+
+/** Is `commit` an ancestor of main? true / false, or why it couldn't tell.
+ *  Only an answer from GitHub is a "false": a network error, a rate limit or
+ *  an odd reply is "couldn't check" — never tamper evidence. */
+async function compareWithMain(
+  apiBase: string,
+  repo: string,
+  commit: string,
+  env: Record<string, string | undefined>,
+): Promise<boolean | { error: string }> {
+  try {
+    // base...head = commit...main: "ahead"/"identical" means main contains it.
+    const resp = await githubGet(
+      apiBase,
+      `/repos/${repo}/compare/${commit}...main`,
+      env,
+    );
+    // 404: the commit isn't in the repository, so it can't be on main.
+    if (resp.status === 404) return false;
+    if (!resp.ok) {
+      return {
+        error: `couldn't confirm the build came from main (GitHub answered HTTP ${resp.status})`,
+      };
+    }
+    const status = ((await resp.json()) as { status?: unknown } | null)?.status;
+    if (status === "ahead" || status === "identical") return true;
+    if (status === "behind" || status === "diverged") return false;
+    return {
+      error:
+        "couldn't confirm the build came from main (an unexpected answer from GitHub)",
+    };
+  } catch (err) {
+    return {
+      error: `couldn't reach GitHub to confirm the build came from main (${errText(err)})`,
+    };
+  }
+}
 
 async function fetchFromGitHub(
   apiBase: string,
@@ -287,24 +430,14 @@ async function fetchFromGitHub(
   digest: string,
   env: Record<string, string | undefined>,
 ): Promise<{ bundles: unknown[] } | { error: string }> {
-  // per_page=100: the default 30 would let a flood of junk attestations
-  // push the real one off page 1.
-  const url = `${apiBase}/repos/${repo}/attestations/sha256:${digest}?per_page=100`;
-  const ask = (withToken: boolean) =>
-    fetch(url, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        // Optional: only raises the rate limit (the endpoint is public).
-        ...(withToken && { Authorization: `Bearer ${env.GITHUB_TOKEN}` }),
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-  const token = !!env.GITHUB_TOKEN && apiBase === GITHUB_API;
   try {
-    let resp = await ask(token);
-    // A stale or wrong token makes GitHub answer 401 for a PUBLIC endpoint —
-    // which would quietly turn every check into "missing". Ask again bare.
-    if (resp.status === 401 && token) resp = await ask(false);
+    // per_page=100: the default 30 would let a flood of junk attestations
+    // push the real one off page 1.
+    const resp = await githubGet(
+      apiBase,
+      `/repos/${repo}/attestations/sha256:${digest}?per_page=100`,
+      env,
+    );
     // 404 = no attestation for this digest (GitHub's answer for "none").
     if (resp.status === 404) return { bundles: [] };
     if (!resp.ok) {

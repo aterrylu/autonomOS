@@ -343,6 +343,24 @@ export async function performUpgrade(
       };
     }
 
+    // The bundle must BE the version its tag names. A writer can put tag vN
+    // on an OLD commit on main: it passes the "built from main" check, and
+    // its signed build is genuinely the old code — installed as "vN" it's a
+    // downgrade that then never updates again. Not a provenance check, so it
+    // holds even with AUTONOMOS_SKIP_PROVENANCE; a real release never differs.
+    const bundleVersion = readBundleVersion(newDir);
+    if (bundleVersion !== releaseVersion) {
+      rmSync(newDir, { recursive: true, force: true });
+      return {
+        status: "error",
+        message: `The v${releaseVersion} download contains ${
+          bundleVersion === "unknown"
+            ? "a bundle with no readable version"
+            : `v${bundleVersion}`
+        }, so it wasn't installed. A release's bundle always matches its tag; please report this.`,
+      };
+    }
+
     // The marker travels with the swap — the new bundle must describe itself.
     writeInstallJson(newDir, {
       ...opts.installInfo,
