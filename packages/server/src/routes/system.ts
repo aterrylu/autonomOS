@@ -206,39 +206,9 @@ function operatorOnly(c: Context): Response | null {
       403,
     );
   }
-  // CSRF: the cookie is SameSite=Lax, which browsers still attach to requests
-  // from OTHER PORTS of the same host (site = scheme + host, port ignored) —
-  // e.g. an agent's dev server on :5173 could POST here with the operator's
-  // cookie. The dashboard itself is always same-origin.
-  const fetchSite = c.req.header("Sec-Fetch-Site");
-  const origin = c.req.header("Origin");
-  let crossOrigin = fetchSite !== undefined && fetchSite !== "same-origin";
-  // Origin vs Host only when the browser sent no Sec-Fetch-Site (older
-  // browsers). When it did, it already vouched for same-origin — and a
-  // reverse proxy that rewrites Host (stock nginx proxy_pass) would make
-  // the comparison 403 every legitimate click.
-  if (fetchSite === undefined && origin) {
-    try {
-      crossOrigin = new URL(origin).host !== c.req.header("Host");
-    } catch {
-      crossOrigin = true;
-    }
-  }
-  // A JSON content type forces a CORS preflight on any cross-origin POST,
-  // which fails (no CORS here) — the belt to the headers' braces for clients
-  // that send neither.
-  const notJson =
-    c.req.method === "POST" &&
-    !(c.req.header("Content-Type") ?? "").includes("application/json");
-  if (crossOrigin || notJson) {
-    return c.json(
-      {
-        error: "Update requests must come from the dashboard itself.",
-        code: "CROSS_ORIGIN",
-      },
-      403,
-    );
-  }
+  // Cross-origin requests (CSRF from another port of this host) are refused
+  // before this runs, by the shared sameOriginGuard mounted in front of every
+  // mutating /api route (V1). This guard is only about WHO: dashboard, not agent.
   return null;
 }
 

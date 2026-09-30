@@ -1,0 +1,30 @@
+## ADR-122: Same-origin guard on every mutating route and WebSocket upgrade (CSRF V1)
+
+- **Date:** 2026-09-30
+- **Decided by:** SecurityFix-Auth@autonomOS (agent) implementing audit finding V1, which Terry approved for fixing. The shape came from SecurityAudit-Claude's fix sketch and TeamLead@autonomOS's brief.
+- **Context:** The session cookie is `SameSite=Lax`, and a "site" ignores the port. So a page on any other port of the dashboard's host (an agent's dev server, Jupyter, a preview server) or a sibling subdomain is same-site, and the browser attaches the operator's cookie to its requests. The audit's PoC (V1, High) ran in headless Chromium. From `127.0.0.1:4712`, a page created a template and read the `/ws/agents` fleet snapshot of a dashboard on `:4711`. The same request shape against `POST /api/agents` with `permissionMode: "bypass"` is code execution as the operator. Nothing in the server checked Origin, Sec-Fetch-Site or the body type. The only defense was a per-route copy #392 added to the update routes, and that copy had separately broken when ADR-117 renamed the cookie per port.
+- **Decision:**
+  1. **One middleware, `sameOriginGuard`** (`packages/server/src/sameOriginGuard.ts`), mounted on the PUBLIC app for `/api/*` and `/ws/*`. It is registered before every route, including `POST /api/auth` (this closes ADR-117 follow-up 4). It covers every POST/PUT/PATCH/DELETE and every WebSocket upgrade. Plain reads are untouched.
+  2. **Provenance rule.** When `Sec-Fetch-Site` is present, it must be `same-origin` or `none`. `same-site`, which is the attack, is refused. When it is absent (older browsers), `Origin`, if sent, must equal this server's `Host`, its `X-Forwarded-Host`, or `CORS_ORIGIN`. `Origin: null` is refused. A request that carries neither header isn't from a browser and passes this rule.
+  3. **JSON-only rule.** A mutating request that declares a body type must declare JSON (`application/json` or `*+json`). One that declares no type must have no body. This refuses the no-preflight "simple" shapes: `text/plain`, urlencoded and multipart, even with an empty body. A request with `Authorization: Bearer` is exempt from THIS rule only (not from rule 2), so `curl -d` scripts keep working.
+  4. **Refusal:** 403 `{code: "CROSS_ORIGIN"}`, plus one log line naming the method, path and offending header, never a credential. Logging is capped at 20 lines per process, so a hostile page retrying in a loop can't flood the log.
+  5. **#392's per-route CSRF block is retired.** `operatorOnly()` in `routes/system.ts` keeps only its WHO checks (no `X-Agent-Token`, dashboard cookie required). The WHERE-FROM check lives in the shared guard.
+  6. **Invariant: no state-changing GET/HEAD/OPTIONS.** The guard checks reads only when they are WebSocket upgrades. A route that mutates on a GET would be CSRF-able from any page (an `<img src>` is enough), so every state change stays on POST/PUT/PATCH/DELETE.
+  7. **Not mounted on the internal Unix socket** (`/mcp`, `/ws/gateway`, hook ingest). A browser cannot open it.
+- **Rationale:**
+  - **Key on the browser's own labels, not on the credential.** Every browser sends `Sec-Fetch-Site` or `Origin` on a cross-origin POST or WebSocket handshake, and no page can suppress them. Non-browser clients send neither. This was measured: Node 25 undici `fetch`/`WebSocket`, Bun `fetch`, and `ws` send no `Origin` and no `Sec-Fetch-Site`. So the CLI, the channel server, scripts and the internal socket are unaffected without any exemption list.
+  - **Why Sec-Fetch-Site wins over Origin.** Comparing Origin with Host would refuse every legitimate click behind a Host-rewriting reverse proxy, the stock nginx `proxy_pass` (#392 found this).
+  - **Why the Bearer exemption for rule 3 only.** A browser never attaches `Authorization: Bearer` by itself, and a page can't add it cross-origin without a CORS preflight the server doesn't grant. That exemption keeps `curl -d` working without loosening provenance: a Bearer header on a request labelled `same-site` is still refused.
+  - **Why before auth.** Login and unauthenticated probes are covered as well, and an attack is refused before it reaches any handler.
+  - **Why the audit's "no migration" holds.** The cookie and token are unchanged, and the dashboard is always same-origin, including the vite dev proxy, which preserves Host.
+- **Alternatives considered:**
+  - **Per-route checks (the #392 shape).** Rejected. Any new route is unprotected by default, and the copy had already drifted: it read the legacy cookie name.
+  - **Enforce only when a session cookie is present.** Rejected. It couples the guard to cookie naming, which is exactly the bug that broke #392. The header-keyed rule is strictly stronger and needs no knowledge of credentials.
+  - **A CSRF token (double-submit or synchronizer).** Rejected. It needs a dashboard change on every mutating call and a token endpoint. Fetch Metadata plus Origin is the current OWASP-recommended primary defense for a same-origin SPA, with no client change.
+  - **`SameSite=Strict`.** Doesn't help: the attacker is same-SITE, which Strict still allows.
+  - **A Host allowlist (DNS rebinding).** A separate ADR-117 follow-up (3) and a separate threat. Not folded in here.
+- **Residual risks (named):**
+  - A browser that sends neither `Sec-Fetch-Site` nor `Origin` on a cross-origin POST. No current engine does this. Rule 3 still stops its form posts, but not a body-less form POST.
+  - `CORS_ORIGIN` is trusted as an origin, so an operator who sets it to an attacker-controlled origin has opted in.
+  - The cookie still goes to every localhost port (RFC 6265), so another local user's listener receives it. That is exposure, not CSRF, and stays tracked under ADR-117's session-id follow-up.
+- **Source:** Security audit phase 1 (SecurityAudit-Claude, V1). Brief from TeamLead@autonomOS to SecurityFix-Auth@autonomOS. PR `terry/security-csrf-same-origin`. Verified with a real-Chromium e2e (`packages/dashboard/scripts/csrf-e2e.ts`): all four attacks refused on this build, and all four land on the build with the guard unwired.
