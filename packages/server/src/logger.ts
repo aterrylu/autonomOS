@@ -249,7 +249,10 @@ export function initFileLogging(): void {
     // One stamper over one rotating writer, shared by both streams — its
     // line-start state then matches the file's actual line structure.
     const writer = createTimestampingWriter(
-      createRotatingWriter(logFilePath, maxBytes, keep),
+      // 0600: the log is the one place a secret printed by accident lands, so
+      // only the owner may read it. The writer also re-applies this to a file
+      // an older build left 0644 (V8).
+      createRotatingWriter(logFilePath, maxBytes, keep, 0o600),
     );
     // The pre-tee sink, for writeUnlogged.
     rawStdoutWrite = process.stdout.write.bind(process.stdout);
