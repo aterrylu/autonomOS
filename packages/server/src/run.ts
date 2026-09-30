@@ -177,7 +177,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   // Decided BEFORE this boot creates anything in the config dir (logs/,
   // templates/, agents/): is this install new? A new install may be refused a
-  // weak token; an existing one never is (V2b, ADR-126).
+  // weak token; an existing one never is (V2b, ADR-127).
   const priorInstall = isPriorInstall(getConfigDir());
 
   // Tee stdout/stderr into a rotating $configDir/logs/autonomos.log as early as
@@ -945,7 +945,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
 /**
  * Refuse a weak token on a NEW network-bound install; warn loudly on every
- * boot otherwise (V2b, ADR-126). Never prints the token.
+ * boot otherwise (V2b, ADR-127). Never prints the token.
  */
 function enforceTokenStrength(o: {
   token: string;

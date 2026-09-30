@@ -66,7 +66,7 @@ export function isPriorInstall(configDir: string): boolean {
 }
 
 /**
- * What to do about the token at boot (V2b, ADR-126). Existing installs are
+ * What to do about the token at boot (V2b, ADR-127). Existing installs are
  * never refused: upgrades never break auth. They get a warning on every boot
  * and a dashboard banner. A NEW install that would put a weak token on a
  * network bind refuses to start, unless the operator explicitly opts in.

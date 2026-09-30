@@ -3,7 +3,7 @@
 // The operator token is the dashboard/API credential. Installs that set a short
 // AUTONOMOS_TOKEN years ago keep working after an upgrade (upgrades never break
 // auth), but a short token can be guessed over the network, so the server warns
-// on every boot until it's rotated (V2b, ADR-126). This verb is the one-step fix.
+// on every boot until it's rotated (V2b, ADR-127). This verb is the one-step fix.
 //
 // rotate:
 //   1. Writes a fresh 64-hex token to $configDir/token (0600, atomic rename).
