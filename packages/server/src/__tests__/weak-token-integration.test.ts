@@ -35,10 +35,17 @@ describe("weak operator token at boot", {
   const booted: BootedServer[] = [];
   after(() =>
     boundedTeardown("weak-token", async () => {
-      for (const s of booted) {
-        await s.kill();
-        rmSync(s.configDir, { recursive: true, force: true });
-      }
+      // Stop EVERY server first, then remove dirs with retries (a server still
+      // flushing its log as it exits makes rm race: ENOTEMPTY). One failure
+      // must never skip the rest: a skipped kill holds the runner open.
+      await Promise.all(booted.map((s) => s.kill()));
+      for (const s of booted)
+        rmSync(s.configDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 200,
+        });
     }),
   );
   const version = async (s: BootedServer, token: string) => {
