@@ -8,7 +8,7 @@
 // stop/status/upgrade commands to consume.
 
 import { timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
@@ -29,12 +29,25 @@ import {
   snapshotResumableAgents,
 } from "./agents/runtime.js";
 import { SIDECAR_EXIT_CAP_MS, stopAllSidecars } from "./agents/sidecar.js";
-import { describeTokenForLog, resolveAuthToken } from "./auth.js";
+import { reapAllOrphanSidecars } from "./agents/sidecarRecords.js";
+import {
+  describeTokenForLog,
+  isPriorInstall,
+  isWeakToken,
+  resolveAuthTokenWithSource,
+  type TokenSource,
+  weakTokenPolicy,
+} from "./auth.js";
 import {
   authCookieName,
   LEGACY_AUTH_COOKIE,
   signInLink,
 } from "./authCookie.js";
+import {
+  AuthFailureLimiter,
+  cappedLockoutWarn,
+  peerAddress,
+} from "./authRateLimit.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -52,9 +65,11 @@ import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { codexUsageRouter } from "./plugins/codex-usage/route.js";
+import { installUnhandledRejectionLogger } from "./processSafetyNet.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { initPtyInputLog } from "./ptyInputLog.js";
+import { createAgentApi, gatewayUpgradeAuth } from "./routes/agentApi.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
@@ -72,7 +87,7 @@ import { systemRouter } from "./routes/system.js";
 import { templateRouter } from "./routes/templates.js";
 import { terminalRouter } from "./routes/terminal.js";
 import { usageQueueRouter } from "./routes/usageQueue.js";
-import { sameOriginGuard } from "./sameOriginGuard.js";
+import { resolveCorsOrigins, sameOriginGuard } from "./sameOriginGuard.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
 import {
@@ -80,6 +95,7 @@ import {
   setAuthToken,
   setInternalSocketPath,
   setServerPort,
+  setTokenWarning,
 } from "./serverState.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
@@ -165,13 +181,19 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     process.exit(0);
   }
 
+  // Is this install new? Read BEFORE this boot writes anything. The markers
+  // (agents/, templates/, settings.json) are written only past the token
+  // check below, so a boot refused for a weak token leaves none behind and
+  // an identical re-run is refused again (V2b, ADR-130).
+  const priorInstall = isPriorInstall(getConfigDir());
+
+  // Owner-only modes on what older builds created loose (V8), BEFORE the log
+  // file is opened. Only removes group/other bits: never breaks auth.
+  const tightened = tightenConfigDirModes();
   // Tee stdout/stderr into a rotating $configDir/logs/autonomos.log as early as
   // possible, so everything below is captured under OS-native supervision (the
   // supervisor's own stdout goes to /dev/null — see service-templates.ts). Best
   // effort: a logging failure never blocks startup.
-  // Owner-only modes on what older builds created loose (V8), BEFORE the log
-  // file is opened. Only removes group/other bits: never breaks auth.
-  const tightened = tightenConfigDirModes();
   initFileLogging();
   if (tightened.length > 0) {
     console.warn(
@@ -182,6 +204,22 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // one-shot $configDir/pty-input-log.on exists. After file logging so its
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
+
+  // The operator token, and whether it's strong enough to start with. Decided
+  // here: after logging (so a refusal lands in the log a supervised install
+  // has) and before anything writes an install marker (templates just below).
+  const { token: AUTH_TOKEN, source: tokenSource } =
+    resolveAuthTokenWithSource();
+  enforceTokenStrength({
+    token: AUTH_TOKEN,
+    source: tokenSource,
+    priorInstall,
+    networkBind: !isLoopbackBind(
+      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+    ),
+    allowWeak:
+      cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
+  });
 
   // Seed default templates on fresh install
   seedDefaultTemplates();
@@ -304,9 +342,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // it has already loaded.
   let currentDashboardBuild = () => dashboardBuild;
 
-  const corsOrigin =
-    process.env.CORS_ORIGIN ||
-    (isProduction ? undefined : "http://localhost:5173");
+  const { cors: corsOrigin, trusted: csrfTrustedOrigins } = resolveCorsOrigins({
+    env: process.env,
+    isProduction,
+  });
   if (corsOrigin) {
     app.use("*", cors({ origin: corsOrigin }));
   }
@@ -316,12 +355,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // runs handlers in registration order, so a route added above this line
   // would skip it.
   const csrf = sameOriginGuard({
-    allowedOrigins: corsOrigin ? [corsOrigin] : [],
+    allowedOrigins: csrfTrustedOrigins,
   });
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
 
-  const AUTH_TOKEN = resolveAuthToken();
   // Publish to serverState so spawn-time code (runtime.ts, providers/*) can read
   // the in-process token without round-tripping through env or disk.
   setAuthToken(AUTH_TOKEN);
@@ -380,12 +418,45 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     });
   }
 
+  // Failed-auth throttle for the public listener (V2, authRateLimit.ts). The
+  // internal socket is same-user only and is never throttled.
+  const authLimiter = new AuthFailureLimiter();
+  const warnLockout = cappedLockoutWarn();
+
+  /** 429 before any credential is evaluated, or null to go on. */
+  function throttled(c: Context, address: string): Response | null {
+    const v = authLimiter.check(address);
+    if (v.ok) return null;
+    const secs = Math.ceil(v.retryAfterMs / 1000);
+    c.header("Retry-After", String(secs));
+    return c.json(
+      {
+        error: `Too many failed sign-in attempts. Try again in ${secs}s.`,
+        code: "RATE_LIMITED",
+        retryAfterSec: secs,
+      },
+      429,
+    );
+  }
+
+  function recordFailures(address: string, presented: readonly string[]): void {
+    for (const value of presented) {
+      const lockMs = authLimiter.recordFailure(address, value);
+      if (lockMs > 0) warnLockout(address, lockMs);
+    }
+  }
+
   const authHandler = async (c: Context) => {
+    const address = peerAddress(c);
+    const refused = throttled(c, address);
+    if (refused) return refused;
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
+      if (token) recordFailures(address, [token]);
       return c.json({ error: "Invalid token" }, 401);
     }
+    authLimiter.recordSuccess(address);
     setSessionCookie(c, token);
     return c.json({ ok: true });
   };
@@ -408,8 +479,48 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       `[auth] a request on ${path.split("/").slice(0, 3).join("/")} authenticated with ?token= on the public listener — deprecated, removed next release. Use the session cookie or "Authorization: Bearer" (the token is not logged).`,
     );
   }
+  /**
+   * THE credential check: which credential (if any) authenticates this
+   * request, and every value it presented (for the failure throttle). A
+   * second credential kind (e.g. the per-agent token, V3) is added HERE, so
+   * the throttle covers it without further wiring.
+   */
+  function verifyCredential(
+    c: Context,
+    queryToken: "allowed" | "deprecated",
+  ): {
+    match: {
+      kind: "operator";
+      source: "cookie" | "legacy-cookie" | "bearer" | "query";
+      token: string;
+    } | null;
+    presented: string[];
+  } {
+    const candidates = tokenCandidates(c);
+    const presented = candidates.map((k) => k.token);
+    const hit = candidates.find((k) => safeEqual(k.token, AUTH_TOKEN));
+    if (hit) return { match: { kind: "operator", ...hit }, presented };
+    if (candidates.length === 0) {
+      const fromQuery = c.req.query("token");
+      if (fromQuery && queryToken === "deprecated")
+        warnPublicQueryTokenOnce(c.req.path);
+      if (fromQuery) {
+        presented.push(fromQuery);
+        if (safeEqual(fromQuery, AUTH_TOKEN))
+          return {
+            match: { kind: "operator", source: "query", token: fromQuery },
+            presented,
+          };
+      }
+    }
+    return { match: null, presented };
+  }
+
   const makeRequireAuth =
-    (queryToken: "allowed" | "deprecated"): MiddlewareHandler =>
+    (
+      queryToken: "allowed" | "deprecated",
+      throttle: boolean,
+    ): MiddlewareHandler =>
     async (c, next) => {
       // NOTE: the `POST /api/hooks/*` exemption is GONE (ADR-055). Hook ingestion
       // moved to the internal socket, so nothing on the public listener needs to
@@ -430,21 +541,27 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // The login endpoint itself — a browser cannot present the cookie it is
       // asking for. Token verification happens inside the handler.
       if (c.req.method === "POST" && c.req.path === "/api/auth") return next();
-      const candidates = tokenCandidates(c);
-      const match = candidates.find((k) => safeEqual(k.token, AUTH_TOKEN));
+      const address = throttle ? peerAddress(c) : "";
+      if (throttle) {
+        const refused = throttled(c, address);
+        if (refused) return refused;
+      }
+      const { match, presented } = verifyCredential(c, queryToken);
       if (match) {
+        // No recordSuccess here: on a shared address (reverse proxy, NAT) the
+        // operator's ordinary traffic would reset an attacker's backoff on
+        // every request (SecurityAudit, #452). Only an explicit sign-in
+        // (POST /api/auth) clears the record; otherwise it decays IDLE_MS after
+        // its last failure.
         // Signed in on the legacy shared cookie: move this browser onto the
         // per-port one, so an older instance on the same host rewriting the
         // shared cookie can no longer log it out here.
         if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
         return next();
       }
-      if (candidates.length === 0) {
-        const fromQuery = c.req.query("token");
-        if (fromQuery && queryToken === "deprecated")
-          warnPublicQueryTokenOnce(c.req.path);
-        if (fromQuery && safeEqual(fromQuery, AUTH_TOKEN)) return next();
-      }
+      // A request that presented nothing (the dashboard probing before sign-in)
+      // made no guess and isn't counted.
+      if (throttle) recordFailures(address, presented);
       return c.json(
         {
           error:
@@ -454,9 +571,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       );
     };
   /** Internal socket (/mcp, /ws/gateway): ?token= stays accepted. */
-  const requireAuth = makeRequireAuth("allowed");
+  const requireAuth = makeRequireAuth("allowed", false);
   /** Public listener: ?token= still works this release, with a warning. */
-  const requireAuthPublic = makeRequireAuth("deprecated");
+  const requireAuthPublic = makeRequireAuth("deprecated", true);
 
   // DEV/PERF ONLY — perf harness mode (set by perf/run-l2.sh). Mounts
   // /api/perf AND drops auth on the PUBLIC listener so Playwright needn't
@@ -506,6 +623,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // at /api/agent-status, the feed + read-marking at /api/notifications.
 
   internalApp.route("/api/hooks", hooksIngestRouter);
+  // The channel server's MCP tools, on the per-AGENT credential (audit V3).
+  // Internal socket only: the public listener's auth stays operator-only.
+  internalApp.route("/api", createAgentApi());
   app.route("/api/agent-status", agentStatusRouter);
   app.route("/api/notifications", notificationsRouter);
 
@@ -568,7 +688,10 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // defense in depth — same posture as /mcp: the socket answers "who may
   // connect" (same-user on-box), the token still answers "prove it". Per-agent
   // identity (a later layer) will replace the client-asserted register name.
-  internalApp.use("/ws/gateway", requireAuth);
+  // Upgrade auth: the channel server presents its per-AGENT credential (audit
+  // V3); the operator token stays accepted for a channel server from before
+  // that change (upgrade window). The register frame still verifies identity.
+  internalApp.use("/ws/gateway", gatewayUpgradeAuth(requireAuth));
   internalApp.get("/ws/gateway", gatewayRouter(iUpgrade));
 
   if (isProduction && dashboardDist !== null) {
@@ -746,7 +869,23 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     // Now async (provider sidecar daemons start before each PTY). Start
     // the scheduler AFTER agents are up so agent:<name> targets resolve —
     // chain it off the resume promise rather than racing it.
-    void resumeActiveAgents(toResume)
+    //
+    // First, stop any sidecar daemon a previous server left running (it would
+    // keep its agent's thread loaded, so a resumed agent could never receive
+    // inbound). Awaited: no daemon may start beside an orphan. It covers agents
+    // that won't be resumed too. A failure is logged and never blocks resume.
+    void reapAllOrphanSidecars()
+      .then((reaped) => {
+        const stopped = reaped.filter((r) => r.outcome === "reaped");
+        if (stopped.length > 0)
+          console.warn(
+            `[startup] stopped ${stopped.length} orphaned sidecar daemon(s) from a previous server`,
+          );
+      })
+      .catch((err) =>
+        console.error("[startup] orphaned-daemon sweep failed:", err),
+      )
+      .then(() => resumeActiveAgents(toResume))
       .catch((err) =>
         console.error("[startup] resumeActiveAgents failed:", err),
       )
@@ -903,8 +1042,61 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  installUnhandledRejectionLogger();
 
   // The server is now running. Return a promise that never resolves —
   // shutdown happens via signal → process.exit() above.
   return new Promise<void>(() => {});
+}
+
+/**
+ * Refuse a weak token on a NEW network-bound install; warn loudly on every
+ * boot otherwise (V2b, ADR-130). Never prints the token.
+ */
+function enforceTokenStrength(o: {
+  token: string;
+  source: TokenSource;
+  priorInstall: boolean;
+  networkBind: boolean;
+  allowWeak: boolean;
+}): void {
+  const weak = isWeakToken(o.token);
+  const policy = weakTokenPolicy({ weak, ...o });
+  const fromEnv = o.source === "env";
+  const where = fromEnv
+    ? "the AUTONOMOS_TOKEN environment variable (e.g. a .env file)"
+    : "the token file";
+  if (policy === "refuse") {
+    const message = [
+      `✖ Refusing to start: the operator token from ${where} is only ${o.token.length} characters (or too repetitive), and this new install listens on the network.`,
+      "  Anyone who can reach the port could guess it.",
+      fromEnv
+        ? "  Remove AUTONOMOS_TOKEN to let autonomOS generate a strong token, or set a 32+ character random one."
+        : "  Delete the token file to let autonomOS generate a strong one, or write a 32+ character random token.",
+      "  To listen on this machine only, pass --host=127.0.0.1. To start anyway, pass --allow-weak-token.",
+    ].join("\n");
+    console.error(message); // → the log file (and the terminal, on a TTY)
+    // Off a TTY the logger doesn't echo stderr, so a refused start under a
+    // supervisor or a script would exit 2 in silence. Say it on the real fd 2.
+    if (!process.stderr.isTTY) writeSync(2, `${message}\n`);
+    process.exit(2);
+  }
+  if (policy === "warn") {
+    console.warn(
+      [
+        `⚠ SECURITY: the operator token from ${where} is weak (${o.token.length} characters).${o.networkBind ? " This server is reachable on the network." : ""}`,
+        "  Run `autonomos token rotate` on this machine to replace it with a strong one.",
+        ...(fromEnv
+          ? [
+              "  The environment variable wins over the token file, so rotate also takes AUTONOMOS_TOKEN out of the .env it finds. Remove it anywhere else it is set.",
+            ]
+          : []),
+      ].join("\n"),
+    );
+    setTokenWarning({
+      length: o.token.length,
+      source: fromEnv ? "env" : "file",
+      networkBind: o.networkBind,
+    });
+  }
 }

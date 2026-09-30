@@ -39,17 +39,93 @@ export function describeTokenForLog(token: string): string {
   return `(hidden, ${token.length} chars)`;
 }
 
+/** Where the operator token came from. */
+export type TokenSource = "env" | "file" | "legacy-file" | "generated";
+
+/**
+ * A token this short (or this repetitive) can be guessed online, even through
+ * the V2 throttle: 300 guesses/min globally takes a 4-char hex token in hours.
+ * Every token autonomOS generates is 64 hex chars; weak ones come only from an
+ * operator-set AUTONOMOS_TOKEN or a hand-written token file.
+ */
+export const MIN_TOKEN_LENGTH = 32;
+export function isWeakToken(token: string): boolean {
+  return token.length < MIN_TOKEN_LENGTH || new Set(token).size < 8;
+}
+
+/**
+ * Had a server fully started from this config dir before? Only markers a boot
+ * writes AFTER the token check count: `templates/` (seeded every boot),
+ * `agents/` and `settings.json`. NOT `logs/`: logging starts before the check,
+ * so a boot refused for a weak token creates it, and counting it would make
+ * the second identical attempt "existing" (SecurityAudit, V2b pre-review).
+ * Not the token file either: an operator can hand-write one before the first
+ * boot, and that is still a new install.
+ */
+export function isPriorInstall(configDir: string): boolean {
+  return ["agents", "templates", "settings.json"].some((m) =>
+    existsSync(join(configDir, m)),
+  );
+}
+
+/**
+ * What to do about the token at boot (V2b, ADR-130). Existing installs are
+ * never refused: upgrades never break auth. They get a warning on every boot
+ * and a dashboard banner. A NEW install that would put a weak token on a
+ * network bind refuses to start, unless the operator explicitly opts in.
+ */
+export function weakTokenPolicy(o: {
+  weak: boolean;
+  priorInstall: boolean;
+  networkBind: boolean;
+  allowWeak: boolean;
+}): "ok" | "warn" | "refuse" {
+  if (!o.weak) return "ok";
+  if (!o.priorInstall && o.networkBind && !o.allowWeak) return "refuse";
+  return "warn";
+}
+
 export function resolveAuthToken(): string {
+  return resolveAuthTokenWithSource().token;
+}
+
+/**
+ * The token the server would use and where from, WITHOUT generating one:
+ * null when none exists yet. For read-only callers (`autonomos token status`),
+ * which must not create a token file as a side effect.
+ */
+export function peekAuthToken(): {
+  token: string;
+  source: Exclude<TokenSource, "generated">;
+  path?: string;
+} | null {
+  const envToken = process.env.AUTONOMOS_TOKEN?.trim();
+  if (envToken) return { token: envToken, source: "env" };
+  const configToken = join(getConfigDir(), "token");
+  const candidates: Array<[string, "file" | "legacy-file"]> = [
+    [configToken, "file"],
+  ];
+  if (getConfigDir() !== DEFAULT_TOKEN_DIR)
+    candidates.push([DEFAULT_TOKEN_FILE, "legacy-file"]);
+  for (const [path, source] of candidates) {
+    try {
+      if (!existsSync(path)) continue;
+      const token = readFileSync(path, "utf-8").trim();
+      if (token) return { token, source, path };
+    } catch {
+      // unreadable: try the next
+    }
+  }
+  return null;
+}
+
+export function resolveAuthTokenWithSource(): {
+  token: string;
+  source: TokenSource;
+} {
   // 1. Env var takes precedence
   const envToken = process.env.AUTONOMOS_TOKEN?.trim();
-  if (envToken) {
-    if (envToken.length < 8) {
-      console.warn(
-        `AUTONOMOS_TOKEN is only ${envToken.length} chars — consider using a longer token.`,
-      );
-    }
-    return envToken;
-  }
+  if (envToken) return { token: envToken, source: "env" };
 
   // 2. Per-config-dir token (when CONFIG_DIR != default). Isolated
   //    profiles get isolated tokens. When CONFIG_DIR IS the default, this
@@ -60,7 +136,7 @@ export function resolveAuthToken(): string {
   try {
     if (existsSync(configToken)) {
       const fileToken = readFileSync(configToken, "utf-8").trim();
-      if (fileToken) return fileToken;
+      if (fileToken) return { token: fileToken, source: "file" };
     }
   } catch (err) {
     console.warn(
@@ -76,7 +152,7 @@ export function resolveAuthToken(): string {
   if (configDir !== DEFAULT_TOKEN_DIR && existsSync(DEFAULT_TOKEN_FILE)) {
     try {
       const fileToken = readFileSync(DEFAULT_TOKEN_FILE, "utf-8").trim();
-      if (fileToken) return fileToken;
+      if (fileToken) return { token: fileToken, source: "legacy-file" };
     } catch {
       // Ignore — fall through to generate.
     }
@@ -95,5 +171,5 @@ export function resolveAuthToken(): string {
       `Failed to write auth token to ${configToken}: ${err instanceof Error ? err.message : err}. Using ephemeral token for this session.`,
     );
   }
-  return token;
+  return { token, source: "generated" };
 }

@@ -92,7 +92,7 @@ pm2_manages_autonomos() {
 }
 
 # Only forward --host when the operator set HOST. Unset → the server's own
-# loopback default applies. Deliberately unquoted below: empty expands to no
+# default applies: ALL interfaces (run.ts resolveBindHost). Deliberately unquoted below: empty expands to no
 # argument at all, and a host is an IP/hostname (never contains spaces).
 # Plain string rather than a bash array — macOS ships bash 3.2, where an empty
 # array expansion under `set -u` is an "unbound variable" error.

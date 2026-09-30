@@ -57,6 +57,9 @@ describe("V8: an old install's token stays out of its logs", {
       homeDir: home,
       extraArgs: ["--print-url"],
       prepareConfigDir: (dir) => {
+        // An install that has run before (templates/ is seeded every boot),
+        // so its weak token is warned about, not refused (ADR-130).
+        mkdirSync(join(dir, "templates"), { recursive: true });
         mkdirSync(join(dir, "logs"), { recursive: true });
         writeFileSync(
           join(dir, "logs", "autonomos.log"),

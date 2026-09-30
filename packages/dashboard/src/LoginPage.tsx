@@ -37,6 +37,10 @@ export const LINK_LOGIN_ERROR =
 export const LINK_LOGIN_UNREACHABLE =
   "Couldn't reach the server to use the sign-in link. Open the link again, or paste the token.";
 
+/** Too many failed sign-ins from this address (the server's V2 throttle). */
+export const LINK_LOGIN_RATE_LIMITED =
+  "Too many failed sign-in attempts from this address. Wait a minute, then open the link again or paste the token.";
+
 /** The server accepted the link, but the session cookie didn't stick. */
 export const LINK_LOGIN_NO_COOKIE =
   "The sign-in link was accepted, but this browser didn't keep the session cookie. Check that cookies are allowed for this site.";
@@ -52,8 +56,8 @@ export function takeLinkLogin(): Promise<LinkLoginResult> | undefined {
  * Finish a sign-in link: wait for the exchange, then probe. The PROBE decides
  * the state, not the exchange — a refused link never clears an existing
  * session (a stale link opened while signed in just lands you in). Signed
- * out, the error says WHY: refused (400/401), unreachable (network, timeout,
- * 5xx), or accepted but the cookie didn't stick.
+ * out, the error says WHY: refused (400/401), throttled (429), unreachable
+ * (network, timeout, 5xx), or accepted but the cookie didn't stick.
  */
 export async function settleLinkLogin(
   link: Promise<LinkLoginResult>,
@@ -70,6 +74,7 @@ export async function settleLinkLogin(
     );
     return { state, error: LINK_LOGIN_NO_COOKIE };
   }
+  if (result.status === 429) return { state, error: LINK_LOGIN_RATE_LIMITED };
   const refused = result.status === 401 || result.status === 400;
   return { state, error: refused ? LINK_LOGIN_ERROR : LINK_LOGIN_UNREACHABLE };
 }
@@ -97,7 +102,10 @@ export function LoginPage({ initialError = "" }: { initialError?: string }) {
           ? "Cannot reach server — check that it is running"
           : err.status === 401
             ? "Invalid token"
-            : `Server error (HTTP ${err.status}) — check autonomos logs`,
+            : err.status === 429
+              ? // The server's own words carry the wait ("Try again in 12s").
+                err.message
+              : `Server error (HTTP ${err.status}) — check autonomos logs`,
       );
       return;
     }

@@ -12,12 +12,13 @@ import type { Context, MiddlewareHandler } from "hono";
  * #392's per-route copy on the update routes.
  *
  * Three rules:
- *  1. **Where the request came from.** A browser labels every request. If
- *     `Sec-Fetch-Site` is present it must be `same-origin` or `none` (a typed
- *     URL / bookmark). `same-site` is exactly the attack, so it's refused. An
- *     older browser without Fetch Metadata still sends `Origin` on POSTs and
- *     WS handshakes, and that must name this server (the `Host` it was
- *     reached on) or an explicitly configured origin (`CORS_ORIGIN`).
+ *  1. **Where the request came from.** An `Origin` that exactly matches an
+ *     origin the operator set EXPLICITLY in `CORS_ORIGIN` passes (ADR-125).
+ *     Otherwise, a browser labels every request: if `Sec-Fetch-Site` is
+ *     present it must be `same-origin` or `none` (a typed URL / bookmark).
+ *     `same-site` is exactly the attack, so it's refused. An older browser
+ *     without Fetch Metadata still sends `Origin` on POSTs and WS handshakes,
+ *     and that must name this server (the `Host` it was reached on).
  *  2. **No labels → not a browser.** The CLI, agents' channel server, curl,
  *     Node/Bun fetch and `ws` send neither header (measured), and a browser
  *     can't omit both on a cross-origin request. So they pass rule 1
@@ -56,7 +57,14 @@ export function sameOriginVerdict(
 ): string | null {
   const fetchSite = c.req.header("Sec-Fetch-Site");
   const origin = c.req.header("Origin");
-  if (fetchSite !== undefined) {
+  // An origin the operator configured (CORS_ORIGIN) is trusted whatever the
+  // browser's label. A modern browser on that separate origin sends
+  // `Sec-Fetch-Site: same-site` or `cross-site`, and refusing it would make
+  // the setting (and the refusal log's advice to use it) dead (nox, #447).
+  // Origin is unforgeable from a page, so this admits only that origin.
+  if (origin !== undefined && allowedOrigins.has(origin)) {
+    // provenance ok; the body rule below still applies
+  } else if (fetchSite !== undefined) {
     // The browser vouched for where this came from. Don't second-guess it
     // with Origin vs Host: a Host-rewriting reverse proxy (stock nginx
     // proxy_pass) would then refuse every legitimate click.
@@ -76,6 +84,26 @@ export function sameOriginVerdict(
     }
   }
   return null;
+}
+
+/**
+ * The CORS origin and the origins the guard TRUSTS, from one place so they
+ * can't drift. Dev mode (no dashboard build) defaults CORS to the vite port,
+ * but that implicit origin is NOT trusted to skip Fetch Metadata: any other
+ * vite dev server on :5173 (an agent's repo) could otherwise make
+ * cookie-authenticated writes (SecurityAudit, #453). Only an origin the
+ * operator set explicitly in CORS_ORIGIN is trusted. The dev dashboard doesn't
+ * need it: vite proxies /api and /ws, so its requests are same-origin.
+ */
+export function resolveCorsOrigins(o: {
+  env: NodeJS.ProcessEnv;
+  isProduction: boolean;
+}): { cors: string | undefined; trusted: string[] } {
+  const explicit = o.env.CORS_ORIGIN || undefined;
+  return {
+    cors: explicit ?? (o.isProduction ? undefined : "http://localhost:5173"),
+    trusted: explicit ? [explicit] : [],
+  };
 }
 
 /** Hono middleware. Refuses with 403 `CROSS_ORIGIN`. */

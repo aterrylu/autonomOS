@@ -44,7 +44,6 @@ function runInitialize(
         AUTONOMOS_SESSION_ID: "selfcontained-test",
         AUTONOMOS_AGENT_NAME: "selfcontained-test",
         AUTONOMOS_CONFIG_DIR: cwd,
-        AUTONOMOS_TOKEN: "selfcontained-test",
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

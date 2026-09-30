@@ -23,7 +23,6 @@ import type {
 import { getConfigDir } from "../configDir.js";
 import { withPtyInputSource } from "../ptyInputLog.js";
 import { STATUSLINE_SCRIPT } from "../scriptPaths.js";
-import { getAuthToken } from "../serverState.js";
 import { getSettings } from "../settings.js";
 import { candidateProjectCwds, cwdToDirName } from "../titleCache.js";
 import { ANSI_RE, despace } from "./ptyText.js";
@@ -277,14 +276,10 @@ export const claudeCodeProvider: AgentProvider = {
                 // CONFIG_DIR lets the channel server derive its per-agent token
                 // file path (<configDir>/agent-tokens/<sessionId>). See below.
                 AUTONOMOS_CONFIG_DIR: getConfigDir(),
-                // Forward the in-process auth token (from serverState, set at
-                // server boot in run.ts) rather than `process.env.AUTONOMOS_TOKEN`.
-                // resolveAuthToken() falls back to ~/.autonomos/token on disk,
-                // so when the server boots without the env var set, the token
-                // lives only in module state — `process.env.AUTONOMOS_TOKEN`
-                // would be undefined and the channel server would be rejected
-                // by the gateway's /ws/* auth.
-                AUTONOMOS_TOKEN: getAuthToken(),
+                // No operator token (security audit V3): it sat here in argv,
+                // readable by other local users. The channel server
+                // authenticates with its per-agent token (file below) on the
+                // internal socket instead.
                 // The per-agent token is NOT injected here (ADR-055 follow-up):
                 // the channel server reads it from the per-session file the
                 // server wrote at spawn. Uniform across providers — Gemini

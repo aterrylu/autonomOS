@@ -27,6 +27,7 @@ import { runSnapshotsCommand } from "./commands/snapshots.js";
 import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
+import { runTokenCommand } from "./commands/token.js";
 import { runUninstallServiceCommand } from "./commands/uninstall-service.js";
 import { runUpgradeCommand } from "./commands/upgrade.js";
 
@@ -34,8 +35,9 @@ const USAGE = `Usage: autonomos <command> [options]
 
 Commands:
   start [options]      Run the server in the foreground (default if no command)
-                       Options: --port=N, --host=H (default 127.0.0.1 —
-                       loopback only; --host=0.0.0.0 exposes to the network)
+                       Options: --port=N, --host=H (default: ALL interfaces,
+                       so the dashboard is reachable over the network;
+                       --host=127.0.0.1 keeps it on this machine only)
   stop                 Gracefully stop a running daemon (SIGTERM)
   restart              Restart the installed service (launchctl / systemctl)
   status               Print running daemon's state
@@ -52,6 +54,10 @@ Commands:
                        if it doesn't. Options: --version=X.Y.Z (pin/downgrade)
   rollback             Restore the version the last upgrade replaced, with its agent state
   snapshots list       List pre-update snapshots of agent state
+  token rotate         Replace the operator token with a strong random one and
+                       print a new sign-in link (--env-file=PATH: also remove
+                       AUTONOMOS_TOKEN from that .env)
+  token status         Say whether the operator token is strong
   migrate-from-pm2     Stop pm2's autonomos process and install the new
                        OS-native supervisor (one-shot migration for old users)
   version, --version   Print the installed version
@@ -112,6 +118,8 @@ async function main(): Promise<number> {
       return await runRollbackCommand(argv.slice(1));
     case "snapshots":
       return await runSnapshotsCommand(argv.slice(1));
+    case "token":
+      return await runTokenCommand(argv.slice(1));
     case "migrate-from-pm2":
       return await runMigrateFromPm2Command(argv.slice(1));
     default:

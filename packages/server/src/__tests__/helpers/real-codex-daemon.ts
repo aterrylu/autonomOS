@@ -30,7 +30,7 @@
  * unconditionally, on every `make check`, rather than behind an integration gate.
  */
 
-import { serve } from "@hono/node-server";
+import { createAdaptorServer, serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import type { WSContext } from "hono/ws";
@@ -97,8 +97,12 @@ interface JsonRpcRequest {
  *  it — hours later, pointing at nothing. */
 const CLOSE_TIMEOUT_MS = 2_000;
 
-/** Start the daemon on an OS-assigned loopback port. */
-export async function startRealCodexDaemon(): Promise<RealCodexDaemon> {
+/** Start the daemon on an OS-assigned loopback port, or, with `socketPath`,
+ *  on a unix socket the way `codex app-server --listen unix://PATH` serves
+ *  (WebSocket over the UDS, audit V4); the endpoint is then `unix://PATH`. */
+export async function startRealCodexDaemon(
+  opts: { socketPath?: string } = {},
+): Promise<RealCodexDaemon> {
   const sockets = new Set<WSContext>();
 
   // The returned handle IS the mutable state the socket handlers read and
@@ -247,11 +251,14 @@ export async function startRealCodexDaemon(): Promise<RealCodexDaemon> {
     })),
   );
 
-  const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+  const server = opts.socketPath
+    ? createAdaptorServer({ fetch: app.fetch })
+    : serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
   injectWebSocket(server);
   await new Promise<void>((resolve, reject) => {
     server.once("listening", () => resolve());
     server.once("error", reject);
+    if (opts.socketPath) server.listen(opts.socketPath);
   });
   // Re-point the error handler now that the bind promise is settled. Left as
   // it was, every later server error (EMFILE, a failure during upgrade) would
@@ -260,6 +267,10 @@ export async function startRealCodexDaemon(): Promise<RealCodexDaemon> {
   server.removeAllListeners("error");
   server.on("error", (err) => daemon.errors.push(err));
 
+  if (opts.socketPath) {
+    daemon.endpoint = `unix://${opts.socketPath}`;
+    return daemon;
+  }
   const address = server.address();
   if (!address || typeof address === "string")
     throw new Error("fake Codex daemon did not report a numeric port");
