@@ -56,7 +56,14 @@ export function sameOriginVerdict(
 ): string | null {
   const fetchSite = c.req.header("Sec-Fetch-Site");
   const origin = c.req.header("Origin");
-  if (fetchSite !== undefined) {
+  // An origin the operator configured (CORS_ORIGIN) is trusted whatever the
+  // browser's label. A modern browser on that separate origin sends
+  // `Sec-Fetch-Site: same-site` or `cross-site`, and refusing it would make
+  // the setting (and the refusal log's advice to use it) dead (nox, #447).
+  // Origin is unforgeable from a page, so this admits only that origin.
+  if (origin !== undefined && allowedOrigins.has(origin)) {
+    // provenance ok; the body rule below still applies
+  } else if (fetchSite !== undefined) {
     // The browser vouched for where this came from. Don't second-guess it
     // with Origin vs Host: a Host-rewriting reverse proxy (stock nginx
     // proxy_pass) would then refuse every legitimate click.

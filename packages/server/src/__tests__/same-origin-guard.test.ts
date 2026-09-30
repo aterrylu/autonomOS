@@ -328,6 +328,57 @@ describe("sameOriginGuard: WebSocket upgrades", () => {
 });
 
 describe("sameOriginGuard: configured origins", () => {
+  for (const site of ["same-site", "cross-site"]) {
+    it(`passes CORS_ORIGIN from a modern browser (Sec-Fetch-Site: ${site})`, async () => {
+      const { app } = makeApp(["http://localhost:5173"]);
+      assert.equal(
+        await status(app, "/api/x", {
+          method: "POST",
+          headers: {
+            ...DASHBOARD,
+            Origin: "http://localhost:5173",
+            "Sec-Fetch-Site": site,
+          },
+          body: "{}",
+        }),
+        200,
+      );
+    });
+  }
+
+  it("still refuses any OTHER origin marked same-site, even with CORS_ORIGIN set", async () => {
+    const { app } = makeApp(["http://localhost:5173"]);
+    assert.equal(
+      await status(app, "/api/x", {
+        method: "POST",
+        headers: {
+          ...DASHBOARD,
+          Origin: "http://localhost:5174",
+          "Sec-Fetch-Site": "same-site",
+        },
+        body: "{}",
+      }),
+      403,
+    );
+  });
+
+  it("CORS_ORIGIN doesn't lift the JSON-only rule", async () => {
+    const { app } = makeApp(["http://localhost:5173"]);
+    assert.equal(
+      await status(app, "/api/x", {
+        method: "POST",
+        headers: {
+          ...DASHBOARD,
+          Origin: "http://localhost:5173",
+          "Sec-Fetch-Site": "cross-site",
+          "Content-Type": "text/plain",
+        },
+        body: "{}",
+      }),
+      403,
+    );
+  });
+
   it("passes an origin named in allowedOrigins (CORS_ORIGIN)", async () => {
     const { app } = makeApp(["http://localhost:5173"]);
     const { "Sec-Fetch-Site": _, ...old } = DASHBOARD;
