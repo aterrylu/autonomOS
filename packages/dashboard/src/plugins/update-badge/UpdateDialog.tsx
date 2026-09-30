@@ -1348,6 +1348,23 @@ function UpdatingScreen({
             {rec.message}
           </div>
         )}
+        {rec?.provenance && rec.provenance.status !== "verified" && (
+          <output
+            className="flex gap-2 rounded-md px-3 py-2 text-xs"
+            style={{ border: `1px solid ${a.amber}88` }}
+            data-testid="update-provenance-warning"
+          >
+            <span style={{ color: a.amber }}>
+              <WarnIcon />
+            </span>
+            <span>
+              {rec.provenance.status === "skipped"
+                ? `Not checking v${to}'s signed build record (${rec.provenance.reason ?? "skipped"}).`
+                : `Couldn't check v${to}'s signed build record: ${rec.provenance.reason ?? "unknown reason"}.`}{" "}
+              Installing anyway: the checksum matched.
+            </span>
+          </output>
+        )}
         <Disclosure
           className="text-xs"
           label="Show details"

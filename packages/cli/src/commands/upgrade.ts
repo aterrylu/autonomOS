@@ -445,6 +445,21 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       if (p === "installing") touched = true;
       report(p);
     },
+    onProvenance: (r) => {
+      if (r.status === "verified") {
+        console.log("✓ Signed build record verified.");
+        report("verifying", { provenance: { status: "verified" } });
+      } else if (r.status !== "invalid") {
+        // Loud, never blocking (upgrade-continuity): the checksum matched,
+        // but nothing proves who built this tarball.
+        console.warn(
+          `⚠️  ${r.status === "skipped" ? "Signed build record not checked" : "Couldn't check the signed build record"}: ${r.reason}. Installing anyway: the checksum matched.`,
+        );
+        report("verifying", {
+          provenance: { status: r.status, reason: r.reason },
+        });
+      }
+    },
     beforeSwap: async () => {
       const gate = await idleGate(flags, report, GATE_CAP_BEFORE_CHANGE_MS);
       if (!gate.ok) {

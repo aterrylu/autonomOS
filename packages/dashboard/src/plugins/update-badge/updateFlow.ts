@@ -197,7 +197,7 @@ export function stepsFor(
     {
       id: "verify",
       label: "Check the download",
-      detail: "SHA-256 matched against the release",
+      detail: "SHA-256 and the signed build record",
     },
     ...wait,
     snapshot,
@@ -341,6 +341,9 @@ export interface UpdatedFlag {
   withSnapshot?: boolean;
   /** Rollback only: the job's own summary, used when withSnapshot is unknown. */
   message?: string;
+  /** Upgrade only: the release's signed build record, as the job reported it
+   *  (carried across the reload so the banner can say so straight away). */
+  provenance?: UpgradeStatusRecord["provenance"];
 }
 
 export function writeUpdatedFlag(flag: UpdatedFlag): void {
@@ -353,6 +356,15 @@ export function writeUpdatedFlag(flag: UpdatedFlag): void {
 }
 
 /** Read AND clear the flag — the banner shows once per update. */
+function parseProvenance(p: unknown): UpdatedFlag["provenance"] {
+  if (!p || typeof p !== "object") return undefined;
+  const { status, reason } = p as { status?: unknown; reason?: unknown };
+  if (status !== "verified" && status !== "missing" && status !== "skipped") {
+    return undefined;
+  }
+  return { status, ...(typeof reason === "string" && { reason }) };
+}
+
 export function takeUpdatedFlag(): UpdatedFlag | null {
   try {
     const raw = sessionStorage.getItem(FLAG_KEY);
@@ -369,6 +381,7 @@ export function takeUpdatedFlag(): UpdatedFlag | null {
       interruptedNames: Array.isArray(v.interruptedNames)
         ? v.interruptedNames.filter((n): n is string => typeof n === "string")
         : [],
+      provenance: parseProvenance(v.provenance),
     };
   } catch {
     return null;

@@ -34,6 +34,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InstallInfo, writeInstallJson } from "./installInfo.js";
+import {
+  type ProvenanceResult,
+  verifyReleaseProvenance,
+} from "./provenance.js";
 
 export const DEFAULT_RELEASE_REPO = "aterrylu/autonomOS";
 export const DEFAULT_RELEASE_API_BASE = "https://api.github.com";
@@ -141,6 +145,14 @@ export type UpgradeOptions = {
   beforeSwap?: () => Promise<
     { proceed: true } | { proceed: false; message: string }
   >;
+  /** Test seam for the provenance check. Default: the real one. */
+  verifyProvenance?: typeof verifyReleaseProvenance;
+  /**
+   * The provenance outcome, once known (after the checksum, before anything
+   * changes). "invalid" is also returned as an error; the others proceed —
+   * the caller surfaces "missing"/"skipped" loudly. Cosmetic like onPhase.
+   */
+  onProvenance?: (result: ProvenanceResult) => void;
 };
 
 function reportPhase<P>(cb: ((p: P) => void) | undefined, phase: P): void {
@@ -158,6 +170,7 @@ export type UpgradeResult =
       from: string;
       to: string;
       direction: "upgrade" | "downgrade";
+      provenance: ProvenanceResult;
     }
   | { status: "error"; message: string };
 
@@ -283,6 +296,19 @@ export async function performUpgrade(
       };
     }
 
+    // ── verify provenance: the checksum came from the same release, so it
+    // can't catch a replaced release. The signed build record can.
+    const provenance = await (opts.verifyProvenance ?? verifyReleaseProvenance)(
+      { digest: actual, version: releaseVersion, repo, apiBase },
+    );
+    reportPhase(opts.onProvenance, provenance);
+    if (provenance.status === "invalid") {
+      return {
+        status: "error",
+        message: `The v${releaseVersion} download doesn't match its signed build record, so it wasn't installed: ${provenance.reason}.`,
+      };
+    }
+
     // ── extract into a sibling directory
     const newDir = `${opts.bundleDir}.new`;
     const previousDir = `${opts.bundleDir}.previous`;
@@ -360,6 +386,7 @@ export async function performUpgrade(
       from: opts.currentVersion,
       to: releaseVersion,
       direction: cmp > 0 ? "downgrade" : "upgrade",
+      provenance,
     };
   } catch (err) {
     // Anything thrown above (asset download, fs errors) must honor the

@@ -753,6 +753,50 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     ).toEqual({ kind: "upgrade", updatedTo: "0.7.0", interruptedNames: [] });
   });
 
+  it("during the update, a signed build record that couldn't be checked shows an amber note", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record("installing", undefined, {
+              snapshotId: "0.6.1-x",
+              provenance: {
+                status: "missing",
+                reason: "couldn't reach GitHub's attestation service",
+              },
+            })
+          : null,
+        inFlight: !!posted,
+      });
+    await launch();
+    const note = await screen.findByTestId("update-provenance-warning");
+    expect(note.textContent).toContain(
+      "Couldn't check v0.7.0's signed build record: couldn't reach GitHub's attestation service.",
+    );
+    expect(note.textContent).toContain(
+      "Installing anyway: the checksum matched.",
+    );
+  });
+
+  it("a verified signed build record shows no note", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record("installing", undefined, {
+              provenance: { status: "verified" },
+            })
+          : null,
+        inFlight: !!posted,
+      });
+    await launch();
+    await screen.findByRole("heading", { name: "Updating to v0.7.0" });
+    await act(() => new Promise((r) => setTimeout(r, 60)));
+    expect(screen.queryByTestId("update-provenance-warning")).toBeNull();
+  });
+
   it("the restart overlay stays up through the new version's health check, then reloads", async () => {
     installServer();
     let phase = "downloading";

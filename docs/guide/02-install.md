@@ -78,6 +78,8 @@ Then pick one:
 
 Progress shows on the same screen: Preparing, Restarting, Reopening agents. The page reloads onto the new version and confirms your agents reopened.
 
+Every download is checked twice before anything changes: against the release's SHA-256 checksum, and against its **signed build record**. The build record proves the file was built by autonomOS's own release workflow, not just uploaded to the release. If the record doesn't match, nothing is installed. If it can't be checked (GitHub or Sigstore unreachable), the update goes ahead and says so in amber, during the update and afterwards. To skip the check on purpose (a mirror, an offline machine), set `AUTONOMOS_SKIP_PROVENANCE=1`. autonomOS still says it wasn't checked.
+
 Settings → Updates has **Check for updates** (look for a release right away), **Update…** when one is available, and **Restore v…**, which puts back the previous version together with the snapshot from before the update. If autonomOS is not running as a service, the dialog shows the terminal command instead.
 
 From a terminal, the same update:

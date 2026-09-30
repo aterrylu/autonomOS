@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { readInstallJson } from "../installInfo.js";
+import { verifyReleaseProvenance } from "../provenance.js";
 import {
   compareSemver,
   performRollback,
@@ -191,6 +192,8 @@ const baseOpts = (bundleDir: string, apiBase: string) => ({
   installInfo: { mode: "bundle" as const, prefix: join(root) },
   releaseRepo: REPO,
   releaseApiBase: apiBase,
+  // Deterministic by default; the provenance tests below swap it.
+  verifyProvenance: async () => ({ status: "verified" as const }),
 });
 
 describe("performUpgrade", () => {
@@ -208,6 +211,7 @@ describe("performUpgrade", () => {
       from: "0.5.0",
       to: "0.6.0",
       direction: "upgrade",
+      provenance: { status: "verified" },
     });
     assert.equal(readBundleVersion(bundleDir), "0.6.0");
     assert.equal(readBundleVersion(`${bundleDir}.previous`), "0.5.0");
@@ -254,6 +258,7 @@ describe("performUpgrade", () => {
       from: "0.5.0",
       to: "0.4.0",
       direction: "downgrade",
+      provenance: { status: "verified" },
     });
     assert.equal(readBundleVersion(bundleDir), "0.4.0");
   });
@@ -279,6 +284,79 @@ describe("performUpgrade", () => {
     assertError(result, /Checksum mismatch/);
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
     assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("provenance INVALID: refused after the checksum, the live bundle untouched, nothing extracted", async () => {
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    let asked: { digest: string; version: string; repo: string } | null = null;
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async (o) => {
+        asked = { digest: o.digest, version: o.version, repo: o.repo };
+        return {
+          status: "invalid",
+          reason: "it was signed by a different workflow or repository",
+        };
+      },
+    });
+    assertError(
+      result,
+      /doesn't match its signed build record, so it wasn't installed/,
+    );
+    // It checked THIS download (the tarball's sha256), as THIS release,
+    // from THIS repo.
+    const q = asked as unknown as {
+      digest: string;
+      version: string;
+      repo: string;
+    };
+    assert.match(q.digest, /^[0-9a-f]{64}$/);
+    assert.equal(q.version, "0.6.0");
+    assert.equal(q.repo, REPO);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+    assert.equal(existsSync(`${bundleDir}.new`), false);
+    assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("provenance MISSING: installs anyway, and reports it (never blocks an existing install)", async () => {
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    const seen: string[] = [];
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async () => ({
+        status: "missing",
+        reason: "couldn't reach GitHub's attestation service",
+      }),
+      onProvenance: (r) => seen.push(r.status),
+    });
+    assert.equal(result.status, "upgraded");
+    assert.deepEqual((result as { provenance: unknown }).provenance, {
+      status: "missing",
+      reason: "couldn't reach GitHub's attestation service",
+    });
+    assert.deepEqual(seen, ["missing"]);
+    assert.equal(readBundleVersion(bundleDir), "0.6.0");
+  });
+
+  it("the REAL verifier against a release with no attestation → missing, installs", async () => {
+    // The fixture API has no /attestations route (404 = none published).
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    const { verifyProvenance: _stub, ...opts } = baseOpts(bundleDir, apiBase);
+    const result = await performUpgrade({
+      ...opts,
+      currentVersion: "0.5.0",
+      verifyProvenance: (o) => verifyReleaseProvenance({ ...o, env: {} }),
+    });
+    assert.equal(result.status, "upgraded");
+    assert.equal(
+      (result as { provenance: { status: string } }).provenance.status,
+      "missing",
+    );
   });
 
   it("errors when the release lacks the platform tarball", async () => {

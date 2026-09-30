@@ -1,0 +1,34 @@
+## ADR-122: Verify release provenance before installing an update
+
+- **Date:** 2026-09-30
+- **Decided by:** Terry (the policy: refuse on invalid; warn loudly and proceed on missing for existing installs; fail closed for new installs; a loud `AUTONOMOS_SKIP_PROVENANCE=1`; don't require `gh` or `cosign`). The release engineer agent (ReleaseRollout) designed and measured the mechanics.
+- **Context:** `release.yml` has signed a Sigstore build-provenance attestation for every release tarball since v0.5.0 (`actions/attest-build-provenance`). Nothing verified it, though. The in-app update (ADR-105), `autonomos upgrade` and `install.sh` checked only SHA256SUMS, and that file comes from the same GitHub release as the tarball. Anyone who can replace a release asset, through a leaked token, a compromised account or a re-upload, can replace both and pass the checksum. Measured on 2026-09-27: every release's attestation is served by GitHub's public attestations API without authentication. The signer identity is `https://github.com/<repo>/.github/workflows/release.yml@refs/tags/v<version>`, issued by GitHub Actions OIDC.
+- **Decision:** `server/src/provenance.ts` verifies the downloaded tarball in-process with sigstore-js (`@sigstore/verify` + `@sigstore/tuf`).
+  - **What it checks:** the attestation bundles for sha256(tarball), fetched from `/repos/<repo>/attestations/sha256:<digest>`. Each is checked against Sigstore's trust root: Fulcio certificate chain, signature, and Rekor inclusion. The policy requires issuer = GitHub Actions and SAN = our `release.yml` at *that* tag. The SLSA provenance statement must name this tarball's digest. The repo follows the existing `AUTONOMOS_RELEASE_REPO` override.
+  - **Outcomes:**
+    - **verified**
+    - **invalid**: an attestation is present but fails signature, certificate, log proof, signer or digest. This is evidence of tampering.
+    - **missing**: we couldn't check. None was published, the API or Sigstore was unreachable, or the format is one this version can't evaluate. This is an availability problem, never evidence.
+    - **skipped**: `AUTONOMOS_SKIP_PROVENANCE=1` is set.
+  - **Existing installs** (in-app update and `autonomos upgrade`, bundle installs): the check runs after the checksum and before extraction or the snapshot.
+    - **invalid** refuses. Nothing on disk changes. The dialog shows #392's "v<new> wasn't installed · Nothing changed" with the reason.
+    - **missing** or **skipped** proceeds, loudly: a console warning, an amber note during the update, and an amber post-update banner ("Its signed build record couldn't be checked (<why>); the checksum matched."). This is Terry's upgrade-continuity rule.
+  - **New installs** (`install.sh`, a separate PR) fail closed, through a vendored single-file verifier that `install.sh` pins by sha256.
+  - **Trust root:** always fetched live from Sigstore's TUF repository and cached under `$configDir/sigstore-tuf`, never pinned in the binary.
+- **Rationale:** the checksum proves the download wasn't corrupted. Provenance proves *who built it*: only GitHub Actions running our `release.yml` on the tag can obtain the signing certificate, and editing a release can't forge it.
+  - **Why "invalid" refuses:** refusing can't brick anything. The running version stays, and the dialog already says nothing changed.
+  - **Why "missing" warns:** blocking on it would let a GitHub or Sigstore outage stop every update. Terry's rule is that an update path must never be bricked by our own machinery.
+  - **Why the root isn't pinned:** that would turn a routine Sigstore key rotation into "invalid", and every later update would be refused.
+  - **Classification is deliberately strict:** only a cryptographic, signer or digest failure is "invalid". A parse error or an unsupported feature (`NOT_IMPLEMENTED_ERROR`) is "missing", so a future bundle format can't block updates.
+- **Alternatives considered:**
+  - `gh attestation verify` or `cosign`: rejected (Terry). Neither is on a fresh machine or in the bundle.
+  - A pinned trusted root: rejected for the reason above.
+  - Refusing on "missing" as well: rejected. It violates the continuity rule, and an outage would block updates.
+  - Only warning on "invalid": rejected (Terry, Q1). It's tamper evidence, and refusing costs nothing.
+  - Verifying SHA256SUMS instead of the tarball: not needed. The attestation names each tarball directly.
+- **Scope and limits:**
+  - Source installs (`make prod`, a managed git clone) update from a git tag, not a release tarball, so this doesn't cover them; they rely on git.
+  - Restore/rollback downloads nothing, so it needs no check.
+  - Bundle cost: +366 KB of JS (+71 KB gzipped), measured against main bb3a5576.
+- **Supersedes:** none. Extends ADR-105.
+- **Source:** Terry's integrity ask on 2026-09-25; decisions Q1–Q3 on 2026-09-30, relayed by TeamLead; the plan at `~/.claude/plans/update-provenance-verify.md`; the provenance PRs (1: verifier and upgrader, 2: `install.sh`).
