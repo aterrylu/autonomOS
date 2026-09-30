@@ -28,7 +28,7 @@
  * anything the dashboard alone uses.
  */
 
-import type { Context, Hono as HonoApp } from "hono";
+import type { Context, Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { verifyAgentToken } from "../agentCredentials.js";
 import { getAgent } from "../agents/store.js";
@@ -198,4 +198,17 @@ export function createAgentApi(): Hono {
   }
 
   return api;
+}
+
+/**
+ * Upgrade auth for /ws/gateway on the internal app: the per-agent credential
+ * (what a channel server from this version sends), else the operator check it
+ * always had, so a channel server from before this change keeps connecting
+ * until its agent respawns. The register frame still proves the session.
+ */
+export function gatewayUpgradeAuth(
+  operatorAuth: MiddlewareHandler,
+): MiddlewareHandler {
+  return (c, next) =>
+    verifiedAgentSession(c) ? next() : operatorAuth(c, next);
 }

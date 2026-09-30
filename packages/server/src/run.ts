@@ -56,7 +56,7 @@ import { installUnhandledRejectionLogger } from "./processSafetyNet.js";
 import { writeGeminiSettings } from "./providers/gemini-cli.js";
 import { getAllProviders, isProviderInstalled } from "./providers/index.js";
 import { initPtyInputLog } from "./ptyInputLog.js";
-import { createAgentApi, verifiedAgentSession } from "./routes/agentApi.js";
+import { createAgentApi, gatewayUpgradeAuth } from "./routes/agentApi.js";
 import { agentsRouter } from "./routes/agents.js";
 import { channelsRouter } from "./routes/channels.js";
 import { envPresetRouter } from "./routes/env-presets.js";
@@ -577,9 +577,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Upgrade auth: the channel server presents its per-AGENT credential (audit
   // V3); the operator token stays accepted for a channel server from before
   // that change (upgrade window). The register frame still verifies identity.
-  internalApp.use("/ws/gateway", (c, next) =>
-    verifiedAgentSession(c) ? next() : requireAuth(c, next),
-  );
+  internalApp.use("/ws/gateway", gatewayUpgradeAuth(requireAuth));
   internalApp.get("/ws/gateway", gatewayRouter(iUpgrade));
 
   if (isProduction && dashboardDist !== null) {
