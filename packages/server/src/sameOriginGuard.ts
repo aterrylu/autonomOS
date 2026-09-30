@@ -135,16 +135,27 @@ function hasBearer(c: Context): boolean {
   return c.req.header("Authorization")?.startsWith("Bearer ") ?? false;
 }
 
-/** One line per refusal for the first 20, then silence. A hostile page that
- *  retries in a loop mustn't fill the log. */
-function cappedWarn(limit = 20): (line: string) => void {
+/** One line per refusal for the first 20, then a running count at each
+ *  power of ten (100, 1000, …). A hostile page retrying in a loop can't fill
+ *  the log, and an ongoing attack still shows up in it. */
+export function cappedWarn(
+  limit = 20,
+  sink: (line: string) => void = console.warn,
+): (line: string) => void {
   let n = 0;
+  let nextTally = 100;
   return (line) => {
     n += 1;
-    if (n <= limit) console.warn(line);
+    if (n <= limit) sink(line);
     if (n === limit)
-      console.warn(
-        "[auth] further cross-origin refusals are not logged until restart",
+      sink(
+        "[auth] further cross-origin refusals are counted, not logged one by one",
       );
+    if (n === nextTally) {
+      sink(
+        `[auth] ${n} cross-origin requests refused since start (${n - limit} not logged individually); latest: ${line}`,
+      );
+      nextTally *= 10;
+    }
   };
 }

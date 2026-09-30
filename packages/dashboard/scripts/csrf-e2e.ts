@@ -25,7 +25,13 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -130,6 +136,13 @@ async function listTemplates(port: number): Promise<string[]> {
 }
 
 async function main(): Promise<void> {
+  // The server serves the dashboard from dist/. Without a build the sign-in
+  // page never loads, and the failure would be an opaque timeout.
+  const dist = join(REPO_ROOT, "packages/dashboard/dist/index.html");
+  if (!existsSync(dist))
+    throw new Error(
+      `no dashboard build at ${dist}. Run \`bun --filter @autonomos/dashboard build\` first.`,
+    );
   const port = await bootServer();
   const target = `http://127.0.0.1:${port}`;
   console.log(`isolated server on ${target} (config ${configDir})`);
@@ -262,13 +275,30 @@ main()
   .catch((err) => {
     check("script ran", false, String(err));
   })
-  .finally(() => {
+  .finally(async () => {
     evil?.close();
-    server?.kill("SIGTERM");
+    await stopServer();
     const failed = results.filter((r) => !r.ok);
     console.log(
       `\n${results.length - failed.length}/${results.length} checks passed`,
     );
+    // After the server has EXITED: a still-running server re-creates its log
+    // under a deleted root, which is how earlier runs left /tmp/csrf-* behind.
     if (!process.env.CSRF_E2E_KEEP) rmSync(root, { recursive: true, force: true });
     process.exit(failed.length ? 1 : 0);
   });
+
+/** SIGTERM, then SIGKILL after 10s; resolves once the process has exited. */
+function stopServer(): Promise<void> {
+  const child = server;
+  if (!child || child.exitCode !== null || child.signalCode !== null)
+    return Promise.resolve();
+  return new Promise((resolve) => {
+    const force = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    child.once("exit", () => {
+      clearTimeout(force);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
+}

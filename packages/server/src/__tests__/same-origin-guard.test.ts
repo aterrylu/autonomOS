@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Hono } from "hono";
-import { sameOriginGuard } from "../sameOriginGuard.js";
+import { cappedWarn, sameOriginGuard } from "../sameOriginGuard.js";
 
 /**
  * L1: the CSRF / cross-site WebSocket guard's decision table (V1). The
@@ -339,5 +339,23 @@ describe("sameOriginGuard: configured origins", () => {
       }),
       200,
     );
+  });
+});
+
+describe("sameOriginGuard: refusal logging stays bounded", () => {
+  it("logs the first 20, then a running tally at 100, 1000, …", () => {
+    const lines: string[] = [];
+    const warn = cappedWarn(20, (l) => lines.push(l));
+    for (let i = 1; i <= 1500; i++) warn(`refusal ${i}`);
+    assert.equal(lines.filter((l) => l.startsWith("refusal")).length, 20);
+    const tallies = lines.filter((l) =>
+      /cross-origin requests refused/.test(l),
+    );
+    assert.equal(tallies.length, 2, "at 100 and 1000");
+    assert.match(
+      tallies[0],
+      /^\[auth\] 100 cross-origin requests refused .*80 not logged/,
+    );
+    assert.match(tallies[1], /latest: refusal 1000$/);
   });
 });
