@@ -184,3 +184,4 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-127](ADR-127-validate-gateway-websocket-frames-at-the-boundary-log.md) | Validate gateway WebSocket frames at the boundary; log unhandled rejections instead of exiting | 2026-09-30 | Accepted |  |  |
 | [ADR-128](ADR-128-release-tags-must-be-on-main-consumers-verify-ancestry.md) | Release tags must be on main: consumers verify ancestry, release.yml gate, tag ruleset | 2026-09-30 | Accepted |  |  |
 | [ADR-129](ADR-129-agents-never-hold-the-operator-token-channel-server-uses-a.md) | Agents never hold the operator token: channel server uses a per-agent credential on the internal socket | 2026-09-30 | Accepted |  |  |
+| [ADR-130](ADR-130-weak-operator-tokens-warn-every-boot-refuse-only-on-new.md) | Weak operator tokens: warn every boot, refuse only on new network installs, rotate in one command (V2b) | 2026-09-30 | Accepted |  |  |
