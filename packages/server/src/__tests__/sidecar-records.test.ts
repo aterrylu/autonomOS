@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn as cpSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
@@ -76,6 +76,7 @@ afterEach(() => {
   for (const p of standIns.splice(0))
     if (p.pid && alive(p.pid)) p.kill("SIGKILL");
 });
+after(() => rmSync(CFG, { recursive: true, force: true }));
 
 describe("isDaemonFor", () => {
   it("matches the recorded endpoint exactly, not a prefix", () => {
@@ -89,6 +90,30 @@ describe("isDaemonFor", () => {
       ),
       false,
     );
+  });
+});
+
+describe("isDaemonFor — spaced paths and argv", () => {
+  const ep =
+    "unix:///Users/x/Library/Application Support/autonomos/cx/a1-9f.sock";
+  it("a ps line with a spaced endpoint matches it whole, not a prefix", () => {
+    assert.equal(
+      isDaemonFor(`codex app-server --listen ${ep} -c k=v`, ep),
+      true,
+    );
+    assert.equal(isDaemonFor(`codex app-server --listen ${ep}`, ep), true);
+    assert.equal(
+      isDaemonFor(`codex app-server --listen ${ep}`, ep.replace("a1-9f", "a1")),
+      false,
+    );
+    assert.equal(isDaemonFor(`codex app-server --listen ${ep}x`, ep), false);
+  });
+  it("an argv (Linux /proc) matches exactly", () => {
+    assert.equal(
+      isDaemonFor(["codex", "app-server", "--listen", ep], ep),
+      true,
+    );
+    assert.equal(isDaemonFor(["codex", "--remote", ep], ep), false);
   });
 });
 
@@ -184,6 +209,26 @@ describe("reapOrphanSidecar", () => {
     }
   });
 
+  it("alive but unidentifiable (no ps, no /proc): NOT signaled, record KEPT", {
+    skip: existsSync("/proc/self/cmdline"),
+  }, async () => {
+    const id = randomUUID();
+    const ep = "ws://127.0.0.1:11";
+    const pid = orphan(ep);
+    await settle();
+    recordSidecar(id, { pid, endpoint: ep, startedAt: 1 });
+    const path = process.env.PATH;
+    process.env.PATH = ""; // `ps` can't be found
+    try {
+      assert.equal(await reapOrphanSidecar(id), "unverified");
+    } finally {
+      process.env.PATH = path;
+    }
+    assert.equal(alive(pid), true, "never signaled");
+    assert.equal(readSidecarRecord(id)?.pid, pid, "kept for a later try");
+    assert.equal(await reapOrphanSidecar(id), "reaped", "…which works");
+  });
+
   it("the boot sweep reaps every recorded orphan", async () => {
     const a = randomUUID();
     const b = randomUUID();
@@ -234,7 +279,10 @@ describe("spawnAgent stops the orphan BEFORE starting the new daemon", () => {
   afterEach(() => {
     for (const id of ids.splice(0)) killAttachment(id);
   });
-  after(() => _setProviderForTesting(NAME, null));
+  after(() => {
+    _setProviderForTesting(NAME, null);
+    rmSync(cwd, { recursive: true, force: true });
+  });
 
   it("a resumed agent's orphaned daemon is reaped, and the new one is recorded then forgotten on exit", async () => {
     const id = randomUUID() as UUID;

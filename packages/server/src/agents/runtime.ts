@@ -79,6 +79,7 @@ import {
 } from "./sidecar.js";
 import {
   forgetSidecar,
+  readSidecarRecord,
   reapOrphanSidecar,
   recordSidecar,
 } from "./sidecarRecords.js";
@@ -1430,10 +1431,12 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     // A daemon a previous server left running still holds this agent's thread,
     // and a new daemon can't load a held thread: stop it first (recorded pid,
     // guarded by its command line). No-op when there's no record.
-    if ((await reapOrphanSidecar(agent.id)) === "survived") {
+    const reaped = await reapOrphanSidecar(agent.id);
+    if (reaped === "survived" || reaped === "unverified") {
+      const rec = readSidecarRecord(agent.id);
       pushSystemNotification(
         agent.id,
-        `An old Codex daemon for ${agent.name} from a previous server couldn't be stopped, so the agent may not receive messages. Stop it, then restart the agent.`,
+        `An old Codex daemon for ${agent.name} from a previous server ${reaped === "survived" ? "couldn't be stopped" : "couldn't be checked, so it wasn't stopped"}${rec ? ` (pid ${rec.pid})` : ""}. While it runs, the agent may not receive messages: stop it, then restart the agent.`,
       );
     }
     const port = await pickFreePort();

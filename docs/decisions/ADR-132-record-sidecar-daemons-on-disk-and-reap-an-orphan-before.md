@@ -15,7 +15,8 @@
   - **Record every daemon.** Each started daemon is written to `$configDir/sidecars/<agentId>.json` (`{pid, endpoint, startedAt}`, 0600, in a 0700 directory, written atomically). It is removed when that daemon has actually exited, and only if the record is still that daemon's.
   - **Reap before any start.** Before any sidecar daemon starts for an agent (fresh spawn, resume, crash-net respawn, restart), a recorded daemon that is still alive is stopped the Codex way: SIGTERM, a second SIGTERM, then SIGKILL, waiting for it to be gone.
   - **Two guards:**
-    - The pid is only signaled when its command line (`ps -ww -o command=`) still carries `app-server --listen <recorded endpoint>`, matched verbatim. A recycled pid belonging to anything else is never touched, and the stale record is dropped.
+    - The pid is only signaled when its command line (`ps -ww -o command=`) still carries `app-server --listen <recorded endpoint>`, matched verbatim. A recycled pid belonging to anything else is never touched, and the stale record is dropped. On Linux the exact argv is read from `/proc/<pid>/cmdline`; `ps`'s joined line is matched on the whole endpoint, so paths with spaces work. A live pid whose command line can't be read is never signaled: its record is KEPT for a later try, and the agent gets a notice.
+    - Every removal after an await is compare-and-delete, so a concurrent reap that already started a newer daemon never loses that daemon's record. The reaper never throws into the spawn or boot path, and the boot sweep lets every reap settle.
     - A daemon this process itself runs is never reaped from here. Its own lifecycle disposes it.
   - **Boot sweep.** At boot, every recorded orphan is reaped (awaited) before `resumeActiveAgents`, including agents that won't be resumed.
   - **If a reap fails,** the agent gets a notice saying it may not receive messages.
