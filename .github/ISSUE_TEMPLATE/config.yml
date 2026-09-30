@@ -1,5 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Docs — features, decisions, vision
-    url: https://github.com/aterrylu/autonomOS/tree/main/docs
-    about: Feature specs (FEATURES.md), architectural decisions (decisions/), and where the project is headed (VISION.md).

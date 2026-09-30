@@ -1,8 +1,0 @@
-{
- "argv": [
-  "claude",
-  "--version"
- ],
- "exit": 0,
- "output": "2.1.282 (Claude Code)\n"
-}
