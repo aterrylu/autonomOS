@@ -13,7 +13,7 @@ import {
 
 /**
  * L3 integration (AUTONOMOS_INTEGRATION=1): `--host=127.0.0.1,<address>`
- * (ADR-136) on a real server. The second listener serves the SAME app, so the
+ * (ADR-139) on a real server. The second listener serves the SAME app, so the
  * CSRF guard and the new-device lock apply there unchanged; an address that
  * isn't up never blocks the start, and loopback is served at once.
  *

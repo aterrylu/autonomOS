@@ -8,7 +8,7 @@ import {
   parseBindHosts,
 } from "../bindHosts.js";
 
-/** L1: the --host list (ADR-136): parsing, and the extra listener's retry. */
+/** L1: the --host list (ADR-139): parsing, and the extra listener's retry. */
 
 describe("parseBindHosts", () => {
   it("one address, a list, quotes and blanks", () => {

@@ -972,7 +972,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Port precedence: --port CLI flag > PORT env > 3000 default.
   // --port=0 asks the OS to assign a free port.
   const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
-  // One address or a list (ADR-136): the first binds as always; each further
+  // One address or a list (ADR-139): the first binds as always; each further
   // one gets its own listener on the same port, retried in the background.
   const bindHosts = parseBindHosts(
     resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 /**
  * install.sh re-renders an existing service and must carry its --host along.
- * Since ADR-136 that can be a LIST (`127.0.0.1,100.x.y.z`): dropping the
+ * Since ADR-139 that can be a LIST (`127.0.0.1,100.x.y.z`): dropping the
  * tailnet half would silently stop serving the tailnet; dropping the loopback
  * half would break the CLI. The pattern is READ FROM install.sh, so this test
  * can't drift from the script.
