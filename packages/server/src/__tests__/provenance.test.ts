@@ -219,7 +219,7 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
     });
     assert.equal(r.status, "missing");
     assert.match((r as { reason: string }).reason, /no signed build record/);
-    // Retrying can't make a record appear (a release from before v0.5.0).
+    // Retrying can't make a record appear (v0.0.1 predates signing).
     assert.equal((r as { lasting?: boolean }).lasting, true);
   });
 
@@ -392,6 +392,33 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
     });
     assert.equal(r.status, "verified");
     assert.equal(auth, undefined);
+  });
+
+  it("a spent GitHub rate limit says so, and when it resets — not a bare 'HTTP 403'", async () => {
+    // GitHub's unauthenticated limit is 60/hour per address: easy to spend on
+    // a shared network, and "re-run in a minute" was wrong for up to an hour.
+    server = createServer((_req, res) => {
+      res.statusCode = 403;
+      res.setHeader("x-ratelimit-remaining", "0");
+      res.setHeader(
+        "x-ratelimit-reset",
+        String(Math.floor(Date.now() / 1000) + 10 * 60 - 5),
+      );
+      res.end(JSON.stringify({ message: "API rate limit exceeded" }));
+    });
+    await new Promise<void>((ok) => server?.listen(0, "127.0.0.1", ok));
+    const a = server.address() as { port: number };
+    const r = await check({
+      apiBase: `http://127.0.0.1:${a.port}`,
+      deps: { trustedRoot: async () => ROOT, commitOnMain: async () => true },
+    });
+    assert.equal(r.status, "missing");
+    assert.match(
+      (r as { reason: string }).reason,
+      /rate limit for this network is used up; it resets in about 10 minutes/,
+    );
+    // It clears on its own: worth retrying, so NOT lasting.
+    assert.equal((r as { lasting?: boolean }).lasting, undefined);
   });
 
   it("404 (none published) → missing; 5xx → missing with the status", async () => {

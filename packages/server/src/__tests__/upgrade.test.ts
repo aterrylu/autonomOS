@@ -425,7 +425,7 @@ describe("performUpgrade", () => {
       result,
       /The v0\.6\.0 update wasn't applied: .*no signed build record was found.*retrying won't change that\. Nothing changed\./,
     );
-    assertError(result, /Releases before v0\.5\.0 were never signed/);
+    assertError(result, /If you trust this release, install it anyway/);
     assertError(result, /AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade/);
     assert.doesNotMatch(
       (result as { message: string }).message,

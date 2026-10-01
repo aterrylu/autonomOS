@@ -398,6 +398,23 @@ export async function githubGet(
   return resp.status === 401 || redirected ? ask(false) : resp;
 }
 
+/** Why a GitHub API call didn't answer. A spent rate limit (60/hour per
+ *  address without a token) is named, with when it resets — "HTTP 403" read
+ *  like a refusal, and "re-run in a minute" was wrong for up to an hour. */
+function githubFailure(resp: Response): string {
+  if (
+    (resp.status === 403 || resp.status === 429) &&
+    resp.headers.get("x-ratelimit-remaining") === "0"
+  ) {
+    const reset = Number(resp.headers.get("x-ratelimit-reset"));
+    const mins = Number.isFinite(reset)
+      ? Math.max(1, Math.ceil((reset * 1000 - Date.now()) / 60_000))
+      : undefined;
+    return `GitHub's API rate limit for this network is used up${mins ? `; it resets in about ${mins} minute${mins === 1 ? "" : "s"}` : ""}`;
+  }
+  return `GitHub answered HTTP ${resp.status}`;
+}
+
 /** Is `commit` an ancestor of main? true / false, or why it couldn't tell.
  *  Only an answer from GitHub is a "false": a network error, a rate limit or
  *  an odd reply is "couldn't check" — never tamper evidence. */
@@ -418,7 +435,7 @@ async function compareWithMain(
     if (resp.status === 404) return false;
     if (!resp.ok) {
       return {
-        error: `couldn't confirm the build came from main (GitHub answered HTTP ${resp.status})`,
+        error: `couldn't confirm the build came from main (${githubFailure(resp)})`,
       };
     }
     const status = ((await resp.json()) as { status?: unknown } | null)?.status;
@@ -453,7 +470,10 @@ async function fetchFromGitHub(
     if (resp.status === 404) return { bundles: [] };
     if (!resp.ok) {
       return {
-        error: `GitHub's attestation service answered HTTP ${resp.status}`,
+        error:
+          resp.status === 403 || resp.status === 429
+            ? githubFailure(resp)
+            : `GitHub's attestation service answered HTTP ${resp.status}`,
       };
     }
     const body = (await resp.json()) as {

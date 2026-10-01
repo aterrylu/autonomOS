@@ -340,7 +340,7 @@ export async function performUpgrade(
         postponed: true,
         message: provenance.lasting
           ? // Waiting won't help (nox, #445): say so, and how to proceed.
-            `The v${releaseVersion} update wasn't applied: its signed build record couldn't be confirmed (${provenance.reason}), and retrying won't change that. Nothing changed. Releases before v0.5.0 were never signed; if you trust this one, install it with \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS. Otherwise, please report it.`
+            `The v${releaseVersion} update wasn't applied: its signed build record couldn't be confirmed (${provenance.reason}), and retrying won't change that. Nothing changed. If you trust this release, install it anyway with \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS. Otherwise, please report it.`
           : `The v${releaseVersion} update was postponed: its signed build record couldn't be confirmed (${provenance.reason}). Nothing changed. This is usually temporary (GitHub or Sigstore unreachable, or rate-limited), so try again later. To install it anyway, run \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS.`,
       };
     }
