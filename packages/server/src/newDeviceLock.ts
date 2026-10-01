@@ -9,7 +9,7 @@ import {
 import { dirname, join } from "node:path";
 
 /**
- * New-device lock for a WEAK operator token (ADR-133).
+ * New-device lock for a WEAK operator token (ADR-135).
  *
  * The per-address throttle (ADR-124) bounds the guess RATE, but a rate can't
  * make a short token safe: a 4-digit token falls in days even at 60 guesses an

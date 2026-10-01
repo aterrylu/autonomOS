@@ -269,7 +269,7 @@ function status(): number {
     `Operator token: ${weak ? "WEAK" : "strong"}, ${token.length} characters, from ${where}.`,
   );
   if (weak) {
-    // A short token is protected by the new-device lock (ADR-133): say where
+    // A short token is protected by the new-device lock (ADR-135): say where
     // it stands. Counts only, never anything about the token itself.
     const lock = loadState(newDeviceLockPath(getConfigDir()));
     console.log(
