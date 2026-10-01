@@ -36,9 +36,9 @@ const USAGE = `Usage: autonomos <command> [options]
 
 Commands:
   start [options]      Run the server in the foreground (default if no command)
-                       Options: --port=N, --host=H (default: ALL interfaces,
-                       so the dashboard is reachable over the network;
-                       --host=127.0.0.1 keeps it on this machine only)
+                       Options: --port=N, --host=H (default: ALL interfaces;
+                       --host=127.0.0.1 keeps it on this machine;
+                       --host=127.0.0.1,<tailnet-ip> adds your tailnet only)
   stop                 Gracefully stop a running daemon (SIGTERM)
   restart              Restart the installed service (launchctl / systemctl)
   status               Print running daemon's state

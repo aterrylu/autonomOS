@@ -73,7 +73,13 @@ autonomos uninstall-service  # remove the service; your data in ~/.autonomos sta
 
 ### Using it from other devices
 
-The server listens on all network interfaces by default, so put a private network in front of it rather than exposing the port: **Tailscale** (open `http://<server>:3000` from any device on your tailnet; bind to the tailnet IP with `autonomos install-service --force --host=<tailnet-ip>`, or keep it on localhost and publish it with `tailscale serve`), **Google Cloud IAP** TCP forwarding (`gcloud compute start-iap-tunnel <vm> 3000 --local-host-port=localhost:3000`), or an **SSH tunnel**. Every request needs your token. A short token is protected by a sign-in throttle and a new-device lock (`autonomos auth unlock`). Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
+Recommended for a remote server: **Tailscale**, with autonomOS listening on the machine itself and on its tailnet address only:
+
+```bash
+autonomos install-service --force --host=127.0.0.1,$(tailscale ip -4)
+```
+
+Then open `http://<server-name>:3000` from any device on your tailnet. Nothing on the local network or the internet can reach it, and restarts are safe (it keeps retrying the tailnet address until Tailscale is up). Without `--host` it listens on **every** network the machine is on, so only use that behind a firewall that allows the Tailscale interface alone. Google Cloud IAP and SSH tunnels work too. Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
 
 ## Coding-CLI support
 
