@@ -21,7 +21,10 @@ const TITLE_MARKERS = [
 
 /** Cached entry: the resolved title and the file mtime when we last parsed. */
 interface CacheEntry {
-  title: string;
+  /** null = scanned, no custom title (cached too: most sessions have none,
+   *  and re-scanning them on every Projects poll was a recurring ~150ms
+   *  event-loop block under a busy fleet). */
+  title: string | null;
   mtimeMs: number;
 }
 
@@ -265,11 +268,7 @@ async function getCachedTitle(
 
     // Parse the file using the already-open handle
     const title = await extractTitle(fh, size);
-    if (title) {
-      cache.set(sessionId, { title, mtimeMs });
-    } else {
-      cache.delete(sessionId);
-    }
+    cache.set(sessionId, { title, mtimeMs });
     return title;
   } catch {
     return null;

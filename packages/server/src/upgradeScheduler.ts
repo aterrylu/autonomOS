@@ -100,28 +100,42 @@ export type BackgroundWork = {
 
 const BACKGROUND_CACHE_MS = 2_000;
 let backgroundCache: { at: number; value: BackgroundWork[] } | null = null;
+let backgroundInFlight: Promise<BackgroundWork[]> | null = null;
 
 /**
  * Running agents with background shell work an update restart would stop —
  * a WARNING for the pre-flight, never a gate (status stays the only "busy").
  * One `ps` per call, cached briefly: the dialog polls every ~2s.
  */
-export function listBackgroundWork(now = Date.now()): BackgroundWork[] {
+export async function listBackgroundWork(
+  now = Date.now(),
+): Promise<BackgroundWork[]> {
   if (backgroundCache && now - backgroundCache.at < BACKGROUND_CACHE_MS) {
     return backgroundCache.value;
   }
-  const running = listAgents().filter((a) => a.status === "running");
-  const value: BackgroundWork[] = [];
-  if (running.length > 0) {
-    const table = listProcesses();
-    for (const a of running) {
-      const processes = findBackgroundProcs(table, getAgentProcessRoots(a.id));
-      if (processes.length > 0)
-        value.push({ id: a.id, name: a.name, processes });
+  // Single-flight: several tabs polling at once share one `ps`.
+  backgroundInFlight ??= (async () => {
+    try {
+      const running = listAgents().filter((a) => a.status === "running");
+      const value: BackgroundWork[] = [];
+      if (running.length > 0) {
+        const table = await listProcesses();
+        for (const a of running) {
+          const processes = findBackgroundProcs(
+            table,
+            getAgentProcessRoots(a.id),
+          );
+          if (processes.length > 0)
+            value.push({ id: a.id, name: a.name, processes });
+        }
+      }
+      backgroundCache = { at: now, value };
+      return value;
+    } finally {
+      backgroundInFlight = null;
     }
-  }
-  backgroundCache = { at: now, value };
-  return value;
+  })();
+  return backgroundInFlight;
 }
 
 export type ArmedState = {
