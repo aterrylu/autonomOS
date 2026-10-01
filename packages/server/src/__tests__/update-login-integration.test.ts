@@ -19,35 +19,74 @@ import {
  * the server hands back, and every update/restore/check action must get
  * past authentication with it.
  *
- * "Past authentication" = anything but 401/403. These run unsupervised, so
- * the actions themselves are refused for other reasons (409 not supervised /
- * no rollback, 502 GitHub unreachable) — that's fine and expected; the
- * symptom was the 403 in front of them. A no-cookie control proves each
- * route really is protected, so "not 403" can't pass vacuously.
+ * Each action must reach its EXACT post-auth answer — proving it got past
+ * auth AND where it stopped. A no-cookie control proves each route really
+ * is protected, so the green can't be vacuous.
+ *
+ * SAFE BY CONSTRUCTION (nox, #483): this POSTs "Update now" and "Restore",
+ * so the server must never be able to act on them, wherever the suite runs —
+ * including inside an agent under the live service:
+ *   - the release API points at a dead loopback port, so the server never
+ *     learns of a newer release: Update stops at NO_UPDATE, BEFORE the
+ *     supervisor check that could launch a job (and the suite is offline);
+ *   - INVOCATION_ID / XPC_SERVICE_NAME are removed, so the test server can
+ *     never take itself for the supervised daemon.
  */
 
-/** The dashboard's update actions, as its buttons send them. */
+/** The dashboard's update actions, as its buttons send them, and the exact
+ *  post-auth answer each must reach in this sandbox. */
 const ACTIONS: {
   name: string;
   method: string;
   path: string;
   body?: unknown;
+  status: number;
+  /** The error envelope's `code`; any of these. */
+  codes?: string[];
 }[] = [
   {
     name: "Check for updates",
     method: "POST",
     path: "/api/system/check-updates",
+    // The release API is dead: proves the server can't reach one at all.
+    status: 502,
+    codes: ["CHECK_FAILED"],
   },
-  { name: "update status", method: "GET", path: "/api/system/upgrade" },
+  {
+    name: "update status",
+    method: "GET",
+    path: "/api/system/upgrade",
+    status: 200,
+  },
   {
     name: "Update",
     method: "POST",
     path: "/api/system/upgrade",
     body: { when: "now" },
+    // Stops before the supervisor check: nothing can launch.
+    status: 409,
+    codes: ["NO_UPDATE"],
   },
-  { name: "Cancel update", method: "DELETE", path: "/api/system/upgrade" },
-  { name: "list snapshots", method: "GET", path: "/api/system/snapshots" },
-  { name: "Restore", method: "POST", path: "/api/system/rollback", body: {} },
+  {
+    name: "Cancel update",
+    method: "DELETE",
+    path: "/api/system/upgrade",
+    status: 200,
+  },
+  {
+    name: "list snapshots",
+    method: "GET",
+    path: "/api/system/snapshots",
+    status: 200,
+  },
+  {
+    name: "Restore",
+    method: "POST",
+    path: "/api/system/rollback",
+    body: {},
+    status: 409,
+    codes: ["NO_ROLLBACK", "NOT_SUPERVISED"],
+  },
 ];
 
 describe("update actions with a REAL login cookie (#442 regression guard)", {
@@ -59,7 +98,13 @@ describe("update actions with a REAL login cookie (#442 regression guard)", {
   let cookie = "";
 
   before(async () => {
-    server = await bootServer();
+    server = await bootServer({
+      env: {
+        AUTONOMOS_RELEASE_API_URL: "http://127.0.0.1:1",
+        INVOCATION_ID: undefined,
+        XPC_SERVICE_NAME: undefined,
+      },
+    });
     base = `http://127.0.0.1:${server.port}`;
     // Sign in the way the dashboard does (POST /api/auth, ADR-117), and keep
     // exactly the cookie the server sets — no name computed by the test.
@@ -72,6 +117,25 @@ describe("update actions with a REAL login cookie (#442 regression guard)", {
     const setCookie = login.headers.get("set-cookie") ?? "";
     cookie = setCookie.split(";")[0] ?? "";
     assert.match(cookie, /^[^=]+=.+/, `login set a cookie (got: ${setCookie})`);
+
+    // GATE, before ANY test sends Update/Restore: prove the server can't
+    // reach a release API. If the sandbox override were ever lost, this
+    // throws and the whole suite stops here — node:test would otherwise run
+    // the Update test right after a failed precondition test.
+    const probe = await fetch(`${base}/api/system/check-updates`, {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        "Sec-Fetch-Site": "same-origin",
+        Origin: base,
+      },
+    });
+    const probeBody = await probe.text();
+    assert.equal(
+      probe.status,
+      502,
+      `the server reached a release API (${probe.status}: ${probeBody.slice(0, 200)}) — refusing to send Update/Restore from this suite`,
+    );
   }, HOOK_TIMEOUT);
 
   after(() =>
@@ -105,10 +169,15 @@ describe("update actions with a REAL login cookie (#442 regression guard)", {
       );
       const res = await send(a, true);
       const body = await res.text();
-      assert.ok(
-        res.status !== 401 && res.status !== 403,
+      assert.equal(
+        res.status,
+        a.status,
         `${a.name} with the real login cookie got ${res.status}: ${body.slice(0, 200)}`,
       );
+      if (a.codes) {
+        const code = (JSON.parse(body) as { code?: string }).code ?? "";
+        assert.ok(a.codes.includes(code), `${a.name}: code ${code}`);
+      }
     });
   }
 });
