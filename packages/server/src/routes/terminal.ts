@@ -638,6 +638,17 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
               );
               return;
             }
+            if (frame.text === "") {
+              // A liveness probe (the dashboard checks a possibly half-open
+              // socket after its status heartbeat recovered): ack it, write
+              // nothing, and don't count it as input.
+              try {
+                ws.send(encodeAckFrame(frame.seq));
+              } catch {
+                // socket closing — the client will see the close
+              }
+              return;
+            }
             msg = frame.text;
             ackSeq = frame.seq;
           } else {

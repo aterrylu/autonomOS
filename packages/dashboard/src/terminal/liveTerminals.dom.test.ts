@@ -1232,6 +1232,39 @@ describe("acked input — per-keystroke detection", () => {
     }
   });
 
+  it("a WATCHED pane on a half-open socket recovers: after the heartbeat comes back it probes, and an unacked probe reconnects it (nox)", () => {
+    const { ws } = mount();
+    const sock = ws();
+    _setTransportHealthForTesting("reconnecting"); // not cut (no replay storm)
+    expect(sock.closed).toBe(false);
+    const f0 = frames(sock).length;
+    _setTransportHealthForTesting("connected");
+    const probe = frames(sock).slice(f0);
+    expect(probe).toHaveLength(1);
+    expect(probe[0].length).toBe(9); // header only: an empty acked frame
+    const n = FakeWebSocket.instances.length;
+    tick(2_900);
+    expect(FakeWebSocket.instances.length).toBe(n); // still waiting
+    tick(200);
+    expect(FakeWebSocket.instances.length).toBe(n + 1); // no ack → reconnect
+    expect(sock.closed).toBe(true);
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 0, exact: true });
+  });
+
+  it("a probe the server acks leaves a healthy pane alone (no reconnect, no replay)", () => {
+    const { ws } = mount();
+    const sock = ws();
+    _setTransportHealthForTesting("reconnecting");
+    _setTransportHealthForTesting("connected");
+    const probe = frames(sock).at(-1)!;
+    ack(sock, seqOf(probe));
+    const n = FakeWebSocket.instances.length;
+    tick(5_000);
+    expect(FakeWebSocket.instances.length).toBe(n);
+    expect(sock.closed).toBe(false);
+    expect(states.some((c) => c.kind === "lost")).toBe(false);
+  });
+
   it("replay-begin marker with an out-of-range size is ignored (no resize)", () => {
     const { backend } = mount({ negotiate: false });
     backend.parseOsc(7777, "autonomos-replay-begin;cols=9999;rows=61");
