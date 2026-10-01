@@ -34,6 +34,7 @@ on:
       - "website/**"
       - "docs/assets/hero.png"
       - "scripts/install.sh"
+      - "scripts/verify-provenance.mjs"
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
@@ -72,7 +73,13 @@ jobs:
         # at deploy time (never committed under website/, so it can't drift);
         # the paths trigger above includes scripts/install.sh for the same
         # reason it includes the hero.
-        run: cp scripts/install.sh website/install.sh
+        #
+        # The provenance verifier it pins by sha256 (ADR-126) ships in the SAME
+        # deploy, so the two can't go live apart. (CI's `make check` already
+        # proved the pin matches this file.)
+        run: |
+          cp scripts/install.sh website/install.sh
+          cp scripts/verify-provenance.mjs website/verify-provenance.mjs
 
       - name: Did this push touch the hero or its HTML?
         # Scopes the dimension guard below: an installer-only (or CSS-only)
@@ -118,3 +125,22 @@ jobs:
 
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+
+      - name: Smoke — the served installer's pin matches the served verifier
+        # A piped install (curl | bash) fetches the verifier from this site and
+        # refuses if its sha256 differs from install.sh's pin. Catch that here,
+        # not in a newcomer's terminal. Retries ride out the Pages CDN cache
+        # (max-age 600) serving the previous deploy's files for a while.
+        run: |
+          want=$(shasum -a 256 scripts/verify-provenance.mjs | awk '{print $1}')
+          for i in $(seq 1 30); do
+            pin=$(curl -fsSL "https://autonomos.terrylu.cloud/install.sh?smoke=$i" | sed -n 's/^readonly VERIFIER_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' || true)
+            got=$(curl -fsSL "https://autonomos.terrylu.cloud/verify-provenance.mjs?smoke=$i" | shasum -a 256 | awk '{print $1}' || true)
+            if [[ -n "$pin" && "$pin" == "$got" && "$got" == "$want" ]]; then
+              echo "✓ served install.sh pins the served verifier ($got)"; exit 0
+            fi
+            echo "attempt $i: pin=${pin:-none} served=$got want=$want — retrying in 30s"
+            sleep 30
+          done
+          echo "✗ the live site serves an install.sh whose pin doesn't match its verifier: every piped install refuses" >&2
+          exit 1
