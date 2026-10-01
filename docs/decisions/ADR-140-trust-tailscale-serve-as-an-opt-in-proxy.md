@@ -29,7 +29,7 @@
   7. **Service installs carry the mode:** `install-service --trust-proxy=tailscale` bakes it (other values are refused), and `install.sh` keeps it when re-rendering.
   8. **Serve becomes the RECOMMENDED remote setup** (README, guide, install output). The ADR-139 host list (`127.0.0.1,<tailnet address>`) remains the no-proxy alternative.
 - **Rationale:**
-  - **The headers are trustworthy only under two conditions**: the peer is loopback and nothing else reaches the port. The loopback check and the boot refusal enforce exactly those, so a forged header can only come from a program already running on this machine as a trusted local client.
+  - **The headers are trustworthy only under two conditions**: the peer is loopback and nothing else reaches the port. The loopback check and the boot refusal enforce exactly those, so a forged header can only come from a program running on this machine (of ANY local user: a TCP peer carries no uid; see Residual risks).
   - **Opt-in,** because a loopback-bound server behind a reverse proxy other than tailscaled could receive visitor-controlled `X-Forwarded-For`. Only the operator knows serve is the proxy in front.
   - **The address is the identity and the login is context**: tagged nodes send no login, and the address is what the lock and known-device list already key on.
 - **Alternatives considered:**
@@ -38,6 +38,7 @@
   - **Use `tailscale whois` on the peer**: the peer is always 127.0.0.1 behind serve, so there's nothing to look up. Querying the local API per request adds a dependency for what tailscaled already put in the request.
   - **Keep serve unsupported (ADR-139's stance)**: leaves the canonical, HTTPS, no-open-port setup without per-device protection.
 - **Residual risks:**
-  - Any program on this machine can send `X-Forwarded-For` to loopback. It can't gain anything (loopback is already trusted, and a valid token is still required), but it can spend the new-device budget and engage the lock. That's a denial-of-service lever available only to software already running as the operator.
+  - **Any local process, of any user, can send `X-Forwarded-For` to loopback.** A TCP peer carries no uid, so on a multi-user host another account can choose its apparent address. It can't sign in without the token, and it can't become a known device. What it can do is spend the global new-device budget, which locks out the operator's NEW tailnet devices (known devices and this machine keep working; `autonomos auth unlock` reopens). On a single-user server, which is the common install, that's software already running as the operator. (SecurityAudit-Claude, #488.)
+  - **Follow-up that closes it:** `tailscale serve` can proxy to a unix socket (`tailscale serve unix:/path.sock`, in the 1.102.3 CLI). If autonomOS served the proxied path on an owner-only (0600) socket and trusted the headers only there, then only tailscaled (root) and the operator could present them, and the loopback TCP path could go back to "this machine" with no header trust.
   - Serve sends the login of the person on the visiting device; it doesn't authenticate to autonomOS, which still requires the token.
 - **Source:** SecurityFix-Auth@autonomOS session (PR 3 of the remote-access stack, on #480); Terry's decisions relayed by TeamLead@autonomOS on the agent channel; header behavior measured live against tailscaled 1.102.3.
