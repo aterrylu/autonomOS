@@ -1,0 +1,41 @@
+name: CLI permission drift
+
+# Nightly: install the LATEST Claude Code, Codex and Gemini CLIs and check that
+# each still accepts exactly the permission options autonomOS offers
+# (RUNTIME_PERMISSIONS). A CLI update that drops, renames or adds an option
+# fails this job with an error naming the option, instead of surfacing later as
+# a broken spawn. No auth: the probe only parses flags, loads config and reads
+# Codex's offline app-server schema (packages/server/src/runtimeProbe.ts).
+#
+# Not on pull requests on purpose: it tracks the CLIs' releases, not our diff,
+# and the per-PR `check` job pins an older Claude Code for its integration
+# suites. The verdict logic itself is guarded per PR by cli-drift.test.ts.
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # daily, 09:17 UTC
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install the latest agent CLIs
+        run: npm i -g @anthropic-ai/claude-code@latest @openai/codex@latest @google/gemini-cli@latest
+
+      - name: Check each CLI's permission options against the table
+        run: packages/server/node_modules/.bin/tsx scripts/check-cli-drift.ts --require claude-code,codex,gemini-cli
