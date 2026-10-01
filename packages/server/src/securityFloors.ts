@@ -39,6 +39,37 @@ export const SECURITY_FLOORS: readonly SecurityFloor[] = [
       "@modelcontextprotocol/sdk",
     ],
   },
+  // Lockfile-only floors (no runtime consumer, so `seenBy` is empty and the
+  // installed-tree check has nothing to resolve): vite runs only under
+  // `make dev`, and the rest arrive with the MCP SDK's express server, which
+  // the server never starts. Pinned so a lock refresh can't quietly bring a
+  // flagged copy back. The root package.json `overrides` forces the last four
+  // onto every consumer.
+  {
+    pkg: "vite",
+    min: "6.4.3",
+    why: "dev-server arbitrary file read over its WebSocket",
+    seenBy: [],
+  },
+  {
+    pkg: "fast-uri",
+    min: "3.1.8",
+    why: "URI host confusion and path traversal",
+    seenBy: [],
+  },
+  { pkg: "qs", min: "6.16.0", why: "query-string parsing DoS", seenBy: [] },
+  {
+    pkg: "path-to-regexp",
+    min: "8.4.2",
+    why: "route-pattern ReDoS",
+    seenBy: [],
+  },
+  {
+    pkg: "body-parser",
+    min: "2.3.0",
+    why: "DoS from an invalid limit value",
+    seenBy: [],
+  },
 ];
 
 /** -1 / 0 / 1 for dotted numeric versions; a pre-release tag is ignored. */

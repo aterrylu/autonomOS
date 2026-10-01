@@ -123,7 +123,8 @@ make down                 # remove the service + free dev ports
 
 | Target | Description |
 |--------|-------------|
-| `make dev` | API server (watch, :3101) + Vite HMR (:5173) |
+| `make dev` | API server (watch, :3101) + Vite HMR (:5173), this machine only |
+| `make dev-lan` | `make dev`, but the dashboard is reachable from your network (trusted networks only) |
 | `make build` | Install deps, rebuild node-pty, build the channel server and dashboard |
 | `make prod` | Build dashboard + (re)install launchd/systemd-user daemon on :3100 |
 | `make deploy` | Rsync to remote + `make prod` (set `DEPLOY_HOST` in `.env`) |
