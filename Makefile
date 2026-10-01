@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import
+.PHONY: dev prod stop restart logs down check _check load-test fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -190,13 +190,31 @@ endif
 # needs the hook's repo location; cwd discovery still works without it.
 GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_NAMESPACE
 
+# Every full local run takes the ONE machine-wide slot (scripts/ci-gate-lock.sh),
+# whoever starts it: the pre-push gate, an agent's `make check`, an
+# AUTONOMOS_INTEGRATION=1 run, `make load-test`. Overlapping full runs saturated
+# the box (load 24-35, later 600+ with a load rig on top) and slowed the live
+# server. The lock is re-entrant, so the gate (which already holds it) passes
+# straight through. CI runs one job per runner and skips it.
 check:
+ifdef CI
+	$(MAKE) _check
+else
+	scripts/ci-gate-lock.sh $(MAKE) _check
+endif
+
+_check:
 	$(TSX) scripts/decisions.ts check
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
-	$(GIT_CLEAN_ENV) $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
+
+# N-agent statusline load guard (CI: the `Load` workflow). Locally it takes the
+# machine-wide slot, and the test aborts itself if the box's load climbs.
+load-test:
+	scripts/ci-gate-lock.sh env AUTONOMOS_LOAD_TEST=1 $(GIT_CLEAN_ENV) $(TSX) --test --test-timeout=600000 packages/server/src/__tests__/statusline-load.test.ts
 
 # ── adr: architectural decision records, one file each (docs/decisions/) ───────
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open
