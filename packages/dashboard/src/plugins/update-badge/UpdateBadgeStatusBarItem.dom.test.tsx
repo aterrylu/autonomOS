@@ -898,6 +898,87 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     );
   });
 
+  // ADR-126 D: a build that couldn't be confirmed POSTPONES the update. It
+  // is not a failure — nothing is wrong with the install — so it must never
+  // land on the red "wasn't installed" screen (CI guard, Terry's rule).
+  const postponedRecord = (lasting: boolean, reason: string) =>
+    record(
+      "failed",
+      lasting
+        ? "The v0.7.0 update wasn't applied: … retrying won't change that. Nothing changed."
+        : "The v0.7.0 update was postponed: … Nothing changed. … try again later.",
+      { postponed: { lasting, reason } },
+    );
+
+  it("a POSTPONED update gets its own calm state, never the failure screen", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? postponedRecord(
+              false,
+              "GitHub's API rate limit for this network is used up; it resets in about 12 minutes",
+            )
+          : null,
+      });
+    await launch();
+    expect(
+      await screen.findByRole("heading", {
+        name: "The update to v0.7.0 is on hold",
+      }),
+    ).toBeInTheDocument();
+    // Not the failure screen, in any form.
+    expect(screen.queryByTestId("update-failed")).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: /wasn't installed/ }),
+    ).toBeNull();
+    expect(screen.getByTestId("update-postponed-summary").textContent).toBe(
+      "Nothing changed. v0.6.1 keeps running.",
+    );
+    // Why — the verifier's own short reason, capitalized.
+    expect(screen.getByTestId("update-postponed-why").textContent).toBe(
+      "GitHub's API rate limit for this network is used up; it resets in about 12 minutes.",
+    );
+    // When — honest: nothing retries the update on its own.
+    const when = screen.getByTestId("update-postponed-when").textContent ?? "";
+    expect(when).toContain("usually temporary");
+    expect(when).toContain("won't install one without you");
+    // The skip override exists, but only behind a CLOSED Details.
+    const override = screen.getByTestId("update-postponed-override");
+    expect(override.textContent).toContain("AUTONOMOS_SKIP_PROVENANCE=1");
+    expect(override.closest("details")?.open).toBe(false);
+    // "Check again" goes back through the decision screen (fresh agent check).
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "Update autonomOS to v0.7.0",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("a postponement retrying can't fix offers no 'Check again'", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? postponedRecord(
+              true,
+              "no signed build record was found for this download",
+            )
+          : null,
+      });
+    await launch();
+    const panel = await screen.findByTestId("update-postponed");
+    expect(panel.getAttribute("data-lasting")).toBe("true");
+    expect(screen.getByTestId("update-postponed-when").textContent).toContain(
+      "Checking again won't change this",
+    );
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+  });
+
   it("a failure after the swap keeps the honest 'either version' warning", async () => {
     installServer();
     routes["GET /api/system/upgrade"] = () =>
