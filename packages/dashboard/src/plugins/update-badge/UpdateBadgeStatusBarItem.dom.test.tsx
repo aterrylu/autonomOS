@@ -750,7 +750,87 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
     expect(
       JSON.parse(sessionStorage.getItem("autonomos:updated") ?? ""),
-    ).toEqual({ kind: "upgrade", updatedTo: "0.7.0", interruptedNames: [] });
+    ).toEqual({
+      kind: "upgrade",
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+      // The run id, so a quick dismiss can still be acknowledged.
+      startedAt: "2026-09-23T10:00:00.000Z",
+    });
+  });
+
+  it("during the update, a signed build record that couldn't be checked shows an amber note", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record("installing", undefined, {
+              snapshotId: "0.6.1-x",
+              provenance: {
+                status: "missing",
+                reason: "couldn't reach GitHub's attestation service",
+              },
+            })
+          : null,
+        inFlight: !!posted,
+      });
+    await launch();
+    const note = await screen.findByTestId("update-provenance-warning");
+    expect(note.textContent).toContain(
+      "Couldn't check v0.7.0's signed build record: couldn't reach GitHub's attestation service.",
+    );
+    expect(note.textContent).toContain(
+      "Installing anyway: the checksum matched.",
+    );
+  });
+
+  it("the note stays visible on the restart overlay (the progress view is gone by then)", async () => {
+    installServer();
+    let down = false;
+    routes["GET /api/system/upgrade"] = () => {
+      if (down) throw new TypeError("Failed to fetch");
+      return json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record("restarting", undefined, {
+              snapshotId: "0.6.1-x",
+              provenance: {
+                status: "missing",
+                reason:
+                  "no signed build record was published for this download",
+              },
+            })
+          : null,
+        inFlight: !!posted,
+      });
+    };
+    await launch();
+    const overlay = await screen.findByTestId("update-reconnecting");
+    await waitFor(() =>
+      expect(overlay.textContent).toContain(
+        "Couldn't check v0.7.0's signed build record: no signed build record was published for this download. Installed anyway: the checksum matched.",
+      ),
+    );
+    down = true;
+  });
+
+  it("a verified signed build record shows no note", async () => {
+    installServer();
+    routes["GET /api/system/upgrade"] = () =>
+      json({
+        ...IDLE_UPGRADE,
+        status: posted
+          ? record("installing", undefined, {
+              provenance: { status: "verified" },
+            })
+          : null,
+        inFlight: !!posted,
+      });
+    await launch();
+    await screen.findByRole("heading", { name: "Updating to v0.7.0" });
+    await act(() => new Promise((r) => setTimeout(r, 60)));
+    expect(screen.queryByTestId("update-provenance-warning")).toBeNull();
   });
 
   it("the restart overlay stays up through the new version's health check, then reloads", async () => {
