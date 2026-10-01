@@ -12,7 +12,7 @@ import {
 
 /**
  * L3 integration (AUTONOMOS_INTEGRATION=1): `--trust-proxy=tailscale` on a
- * real server bound to loopback (ADR-137). tailscaled is simulated exactly as
+ * real server bound to loopback (ADR-140). tailscaled is simulated exactly as
  * measured on 1.102.3: it connects from 127.0.0.1 and sends X-Forwarded-For
  * (+ Tailscale-User-Login for user-owned nodes). CI has no tailscaled; the
  * live serve path was verified by hand (PR body).

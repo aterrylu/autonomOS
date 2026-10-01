@@ -281,7 +281,7 @@ async function status(): Promise<number> {
       "`autonomos token rotate` replaces the token with a strong one.",
     );
   }
-  // How the running server treats a reverse proxy (ADR-137): only it knows
+  // How the running server treats a reverse proxy (ADR-140): only it knows
   // (the mode comes from its own flags/env), so ask it over loopback.
   const pid = readPidFile();
   if (pid && isPidAlive(pid.pid)) {

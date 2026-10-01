@@ -272,7 +272,7 @@ describe("the new-device lock from the CLI (ADR-135)", () => {
   });
 });
 
-describe("token status reports the running server's trusted-proxy mode (ADR-137)", () => {
+describe("token status reports the running server's trusted-proxy mode (ADR-140)", () => {
   it("says so when the server trusts tailscale serve", async () => {
     const { writePidFile } = await import("@autonomos/server/pid-file.js");
     const { createServer } = await import("node:http");

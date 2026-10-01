@@ -79,7 +79,7 @@ describe("install-service --host threading", () => {
     assert.equal(await install(["--host="]), 64);
   });
 
-  it("bakes --trust-proxy=tailscale next to --host (ADR-137)", async () => {
+  it("bakes --trust-proxy=tailscale next to --host (ADR-140)", async () => {
     assert.equal(
       await install(["--host=127.0.0.1", "--trust-proxy=tailscale"]),
       0,

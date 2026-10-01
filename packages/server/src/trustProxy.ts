@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import type { Context, MiddlewareHandler } from "hono";
 
 /**
- * Trusted-proxy mode for `tailscale serve` (ADR-137).
+ * Trusted-proxy mode for `tailscale serve` (ADR-140).
  *
  * Behind `tailscale serve` every visitor reaches autonomOS from this machine
  * (TCP peer 127.0.0.1), so per-device protections (throttle, new-device lock,
