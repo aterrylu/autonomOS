@@ -1,13 +1,9 @@
 // @vitest-environment jsdom
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import "../../test/setup-dom";
 import { act } from "@testing-library/react";
-import codexIconUrl from "../../assets/provider-icons/codex-openai.png";
 import { useStore } from "../../store";
 import { treeLineGuidesPropsEqual } from "../Sidebar";
 import type { AgentStatus } from "./agent-status-icon";
@@ -56,7 +52,7 @@ describe("ProviderAgentIcon", () => {
       const { container } = render(
         <ProviderAgentIcon provider="codex" status={status} />,
       );
-      expect(container.querySelector('img[alt="Codex"]')).not.toBeNull();
+      expect(container.querySelector('svg[aria-label="Codex"]')).not.toBeNull();
       expect(
         container.querySelector(`svg[aria-label="${badgeLabel}"]`),
       ).not.toBeNull();
@@ -116,50 +112,37 @@ describe("render fan-out: memoized leaf visuals", () => {
   });
 });
 
-describe("provider marks render in their CANONICAL form on every theme", () => {
-  // Brand policy (NOTICE): marks are unaltered. Codex is OpenAI's own published
-  // icon (a white Blossom on a black tile), the SAME image in every theme, and
-  // never recolored, filtered, rounded or dimmed. Claude keeps its brand clay.
-  const codexImg = () => {
-    const { container, unmount } = render(<ProviderIcon provider="codex" />);
-    const img = container.querySelector('img[alt="Codex"]') as HTMLImageElement;
+describe("provider marks render unaltered, the same on every theme", () => {
+  // Codex is the cloud mark (#242, restored), ALWAYS white #f0f6fc on every
+  // theme (Terry's pick: no tile, nothing theme-dependent), never the theme's
+  // text gray and never dimmed. Claude keeps its brand clay.
+  const mark = (provider: string, label: string) => {
+    const { container, unmount } = render(<ProviderIcon provider={provider} />);
+    const svg = container.querySelector(
+      `svg[aria-label="${label}"]`,
+    ) as SVGElement;
     const seen = {
-      src: img.getAttribute("src"),
-      style: img.getAttribute("style") ?? "",
+      color: svg.style.color,
+      d: svg.querySelector("path")?.getAttribute("d") ?? "",
+      style: svg.getAttribute("style") ?? "",
     };
     unmount();
     return seen;
   };
-  const claudeColor = () => {
-    const { container, unmount } = render(
-      <ProviderIcon provider="claude-code" />,
-    );
-    const c = (
-      container.querySelector('svg[aria-label="Claude"]') as SVGElement
-    ).style.color;
-    unmount();
-    return c;
-  };
-
   for (const theme of ["daylight", "midnight", "void"] as const) {
-    it(`${theme}: Codex is OpenAI's official icon, untouched; Claude is its brand clay`, () => {
+    it(`${theme}: the Codex cloud is the same white, undimmed; Claude is its brand clay`, () => {
       act(() => useStore.setState({ theme }));
-      const codex = codexImg();
-      expect(codex.src).toBe(codexIconUrl);
-      // Layout only: nothing that could alter how the asset looks.
-      expect(codex.style).not.toMatch(
-        /color|filter|opacity|border-radius|mix-blend|background/,
-      );
-      expect(claudeColor()).toBe("rgb(217, 119, 87)");
+      const c = mark("codex", "Codex");
+      expect(c.color).toBe("rgb(240, 246, 252)");
+      expect(c.style).not.toMatch(/opacity|filter/);
+      expect(mark("claude-code", "Claude").color).toBe("rgb(217, 119, 87)");
     });
   }
 
-  it("the Codex asset is byte-identical to the one OpenAI publishes (README hash)", () => {
-    const dir = join(dirname(fileURLToPath(import.meta.url)), "../../assets");
-    const bytes = readFileSync(join(dir, "provider-icons/codex-openai.png"));
-    const readme = readFileSync(join(dir, "provider-icons/README.md"), "utf8");
-    const documented = /sha256 `([0-9a-f]{64})`/.exec(readme)?.[1];
-    expect(documented).toBeDefined();
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe(documented);
+  it("the Codex path is the cloud mark, byte-identical to @lobehub/icons-static-svg `codex` (NOTICE)", () => {
+    const { d } = mark("codex", "Codex");
+    expect(createHash("sha256").update(d).digest("hex")).toBe(
+      "667c7f51889219b60d4b67260502b52583a29c188bde0c38fe5ac0123ce30f76",
+    );
   });
 });
