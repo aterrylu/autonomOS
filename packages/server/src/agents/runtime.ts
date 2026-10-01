@@ -2315,6 +2315,16 @@ export async function restartAgent(agentId: UUID): Promise<Agent> {
       ) {
         throw err;
       }
+      // A kill landed mid-respawn AND the respawn then failed: the operator's
+      // kill is the outcome (already recorded as user_killed) — don't
+      // overwrite it with "crashed" or claim the restart failed (nox, #433).
+      if (killedDuringRestart.has(agentId)) {
+        throw new SpawnError(
+          "RESTART_IN_PROGRESS",
+          409,
+          `${record.name} was stopped while it restarted, so it wasn't started again.`,
+        );
+      }
       // Same zombie guard as restart-all: the old onExit didn't mark it exited.
       // Only when it really ended up stopped do we SAY so, where it persists
       // (the toast fades) — typed SpawnError or not (a vanished working

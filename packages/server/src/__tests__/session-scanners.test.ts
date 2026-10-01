@@ -28,6 +28,8 @@ const {
   MAX_FILES,
   parseCodexHead,
   parseGeminiHead,
+  readClaudeMeta,
+  readClaudeSessionMeta,
 } = await import("../sessionScanners.js");
 
 let home: string;
@@ -460,3 +462,74 @@ describe("findGeminiSession — three-state, where `gemini --resume` looks", () 
 
 // Unused-import guard for helpers only some platforms exercise.
 void randomUUID;
+
+describe("parseCodexHead — automated runs say what started them", () => {
+  it("a `codex exec` run is headless with startedVia codex-exec; an interactive one has neither", () => {
+    const exec = codexLines("ex1", "/w", "x").replace(
+      '"originator":"codex_cli_rs"',
+      '"originator":"codex_exec","source":"exec"',
+    );
+    const execRow = parseCodexHead(whole(exec))?.session;
+    assert.equal(execRow?.headless, true);
+    assert.equal(execRow?.startedVia, "codex-exec");
+    const tui = parseCodexHead(whole(codexLines("t1", "/w", "x")))?.session;
+    assert.equal(tui?.headless, false);
+    assert.equal(tui?.startedVia, undefined);
+  });
+});
+
+describe("readClaudeMeta — HUGE first lines (headless review sessions)", () => {
+  it("finds the cwd on a line that starts past 256KB (a 300KB queue-operation first)", async () => {
+    const f = join(home, "big.jsonl");
+    const big = "x".repeat(300 * 1024);
+    writeFileSync(
+      f,
+      `${JSON.stringify({ type: "queue-operation", content: big })}\n${JSON.stringify({ type: "queue-operation" })}\n${JSON.stringify({ type: "user", cwd: "/w/wt", entrypoint: "sdk-py", message: big })}\n`,
+    );
+    assert.deepEqual(await readClaudeMeta(f), {
+      cwd: "/w/wt",
+      entrypoint: "sdk-py",
+    });
+  });
+  it("stops at the cap (never reads a huge file whole)", async () => {
+    const f = join(home, "capped.jsonl");
+    writeFileSync(
+      f,
+      `${JSON.stringify({ type: "queue-operation", content: "y".repeat(200 * 1024) })}\n${JSON.stringify({ type: "user", cwd: "/w/late" })}\n`,
+    );
+    assert.deepEqual(await readClaudeMeta(f, 100 * 1024), {});
+  });
+  it("a last line with no trailing newline still counts (the file ended, not the cap)", async () => {
+    const f = join(home, "nonl.jsonl");
+    writeFileSync(
+      f,
+      JSON.stringify({ type: "user", cwd: "/w/x", entrypoint: "cli" }),
+    );
+    assert.deepEqual(await readClaudeMeta(f), {
+      cwd: "/w/x",
+      entrypoint: "cli",
+    });
+  });
+});
+
+describe("readClaudeSessionMeta — bounded like the other scanners", () => {
+  it(`reads only the newest MAX_FILES (${MAX_FILES}) sessions`, async () => {
+    const projects = join(home, "projects");
+    const n = MAX_FILES + 25;
+    for (let i = 0; i < n; i++) {
+      const d = join(projects, `-w-p${i % 7}`);
+      mkdirSync(d, { recursive: true });
+      const f = join(d, `s-${i}.jsonl`);
+      writeFileSync(
+        f,
+        `${JSON.stringify({ type: "user", cwd: "/w/p", entrypoint: "cli" })}\n`,
+      );
+      const t = 1_000_000_000 + i;
+      utimesSync(f, t, t);
+    }
+    const meta = await readClaudeSessionMeta(projects);
+    assert.equal(meta.size, MAX_FILES);
+    assert.ok(meta.has(`s-${n - 1}`), "the newest is read");
+    assert.ok(!meta.has("s-0"), "the oldest is past the cap");
+  });
+});

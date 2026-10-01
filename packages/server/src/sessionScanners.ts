@@ -223,7 +223,9 @@ export function codexHome(env: Env = process.env): string {
 }
 
 export function parseCodexHead(head: Head): ScannedSession | null {
-  let meta: { id?: unknown; cwd?: unknown; originator?: unknown } | undefined;
+  let meta:
+    | { id?: unknown; cwd?: unknown; originator?: unknown; source?: unknown }
+    | undefined;
   let prompt: string | undefined;
   // Two places a prompt can be, both seen on 0.154: an `event_msg`
   // `user_message` (the interactive TUI), or — for a thread driven through the
@@ -273,6 +275,9 @@ export function parseCodexHead(head: Head): ScannedSession | null {
       originator: originator?.startsWith("autonomos")
         ? "autonomos"
         : "external",
+      // `codex exec` — no person at the keyboard (measured: source "exec").
+      headless: meta.source === "exec",
+      ...(meta.source === "exec" ? { startedVia: "codex-exec" } : {}),
     },
   };
 }
@@ -508,8 +513,139 @@ export function findGeminiSession(
   return false;
 }
 
+// ── Claude Code session metadata (what the SDK listing misses) ──
+
+export interface ClaudeSessionMeta {
+  /** First `cwd` in the file — the SDK only reads the head, and a session
+   *  that opens with `queue-operation` records (no cwd) came back cwd-less:
+   *  every "Unknown" project was one of those. */
+  cwd?: string;
+  /** How it was started: "cli" is interactive; "sdk-py"/"sdk-cli" headless. */
+  entrypoint?: string;
+}
+
+const claudeMetaCache = new Map<
+  string,
+  { mtimeMs: number; size: number; meta: ClaudeSessionMeta }
+>();
+
+/** How far into a Claude Code JSONL we'll read for its cwd/entrypoint. The
+ *  first lines can be HUGE: a headless review session opens with a
+ *  queue-operation record embedding the whole prompt+diff (239KB measured),
+ *  and the line with the cwd is as big again — a fixed 256KB head tore it. */
+export const MAX_CLAUDE_META_BYTES = 2 * 1024 * 1024;
+const META_CHUNK = 64 * 1024;
+
+/**
+ * Read a Claude Code JSONL line by line, in chunks, only until its first `cwd`
+ * AND `entrypoint` are found (usually within the first few KB) — never past
+ * MAX_CLAUDE_META_BYTES. Only COMPLETE lines are parsed.
+ */
+export async function readClaudeMeta(
+  path: string,
+  maxBytes = MAX_CLAUDE_META_BYTES,
+): Promise<ClaudeSessionMeta> {
+  const meta: ClaudeSessionMeta = {};
+  const fh = await open(path, "r");
+  try {
+    let pos = 0;
+    let pending = Buffer.alloc(0);
+    while (pos < maxBytes) {
+      const chunk = Buffer.alloc(Math.min(META_CHUNK, maxBytes - pos));
+      const { bytesRead } = await fh.read(chunk, 0, chunk.length, pos);
+      if (bytesRead === 0) break;
+      pos += bytesRead;
+      pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+      let nl = pending.indexOf(0x0a);
+      while (nl !== -1) {
+        const line = pending.subarray(0, nl).toString("utf8");
+        pending = pending.subarray(nl + 1);
+        nl = pending.indexOf(0x0a);
+        if (!line.trim()) continue;
+        let o: Record<string, unknown>;
+        try {
+          o = JSON.parse(line);
+        } catch {
+          continue; // malformed line: skip
+        }
+        if (meta.cwd === undefined && typeof o.cwd === "string" && o.cwd)
+          meta.cwd = o.cwd;
+        if (meta.entrypoint === undefined && typeof o.entrypoint === "string")
+          meta.entrypoint = o.entrypoint;
+        if (meta.cwd !== undefined && meta.entrypoint !== undefined)
+          return meta;
+      }
+    }
+    // A last line without a trailing newline (the file ended, not the cap).
+    if (pos < maxBytes && pending.length > 0) {
+      try {
+        const o = JSON.parse(pending.toString("utf8"));
+        if (meta.cwd === undefined && typeof o.cwd === "string" && o.cwd)
+          meta.cwd = o.cwd;
+        if (meta.entrypoint === undefined && typeof o.entrypoint === "string")
+          meta.entrypoint = o.entrypoint;
+      } catch {
+        // torn or malformed: nothing more to learn
+      }
+    }
+    return meta;
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * sessionId → its cwd and entrypoint, for every Claude Code session JSONL
+ * under `projectsDir` (`<projectsDir>/<encoded-cwd>/<sessionId>.jsonl`).
+ * Bounded like the other scanners: only the newest MAX_FILES sessions are
+ * read (older ones simply get no meta: the SDK's own cwd still places them,
+ * and they aren't flagged headless), each read is bounded by readClaudeMeta,
+ * results are mtime-cached, and unreadable files are skipped with a one-time
+ * warning.
+ */
+export async function readClaudeSessionMeta(
+  projectsDir: string,
+): Promise<Map<string, ClaudeSessionMeta>> {
+  const out = new Map<string, ClaudeSessionMeta>();
+  const files: string[] = [];
+  for (const d of await listDir(projectsDir, { root: true })) {
+    if (!d.isDirectory()) continue;
+    for (const f of await listDir(join(projectsDir, d.name))) {
+      if (f.isFile() && f.name.endsWith(".jsonl"))
+        files.push(join(projectsDir, d.name, f.name));
+    }
+  }
+  const newest = await newestFiles(files, MAX_FILES);
+  for (let i = 0; i < newest.length; i += STAT_CONCURRENCY) {
+    await Promise.all(
+      newest.slice(i, i + STAT_CONCURRENCY).map(async (st) => {
+        const path = st.path;
+        const id = path.slice(path.lastIndexOf("/") + 1, -".jsonl".length);
+        const hit = claudeMetaCache.get(path);
+        if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+          out.set(id, hit.meta);
+          return;
+        }
+        try {
+          const meta = await readClaudeMeta(path);
+          claudeMetaCache.set(path, {
+            mtimeMs: st.mtimeMs,
+            size: st.size,
+            meta,
+          });
+          out.set(id, meta);
+        } catch (err) {
+          warnOnce(path, `can't read ${path}: ${(err as Error).message}`);
+        }
+      }),
+    );
+  }
+  return out;
+}
+
 /** For tests. */
 export function _resetSessionScannerCachesForTesting(): void {
+  claudeMetaCache.clear();
   codexCache.clear();
   geminiCache.clear();
 }
