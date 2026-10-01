@@ -192,3 +192,4 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-134](ADR-134-shutdown-survives-a-closed-stdout-and-uncaught-errors.md) | Shutdown survives a closed stdout and uncaught errors | 2026-09-30 | Accepted |  |  |
 | [ADR-136](ADR-136-statusline-resilience-last-known-good-identity-branch-from.md) | Statusline resilience: last-known-good identity, branch from HEAD | 2026-10-01 | Accepted |  |  |
 | [ADR-137](ADR-137-security-floors-every-upgrade-relinks-dependencies-checked.md) | Security floors: every upgrade relinks dependencies, checked in CI, at boot and in status | 2026-10-01 | Accepted |  |  |
+| [ADR-141](ADR-141-one-machine-wide-slot-for-heavy-local-test-runs-fleet.md) | One machine-wide slot for heavy local test runs; fleet-harness guards | 2026-10-01 | Accepted |  |  |
