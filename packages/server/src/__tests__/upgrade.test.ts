@@ -362,7 +362,9 @@ describe("performUpgrade", () => {
     assert.equal(existsSync(`${bundleDir}.previous`), false);
   });
 
-  it("provenance MISSING: installs anyway, and reports it (never blocks an existing install)", async () => {
+  it("provenance MISSING: the update is POSTPONED — nothing extracted, nothing changed (ADR-126 D)", async () => {
+    // Can't confirm the build → wait, don't install: an off-main tag carries
+    // a genuine certificate, so "GitHub unreachable" must not let it in.
     const apiBase = await startFixtureServer(["0.6.0"]);
     const bundleDir = installLiveBundle("0.5.0");
     const seen: string[] = [];
@@ -375,16 +377,39 @@ describe("performUpgrade", () => {
       }),
       onProvenance: (r) => seen.push(r.status),
     });
-    assert.equal(result.status, "upgraded");
-    assert.deepEqual((result as { provenance: unknown }).provenance, {
-      status: "missing",
-      reason: "couldn't reach GitHub's attestation service",
+    assertError(
+      result,
+      /The v0\.6\.0 update was postponed: its signed build record couldn't be confirmed \(couldn't reach GitHub's attestation service\)\. Nothing changed\./,
+    );
+    assertError(result, /try again later/);
+    assertError(result, /AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade/);
+    assert.equal((result as { postponed?: boolean }).postponed, true);
+    // Only an update that proceeds is reported as checked.
+    assert.deepEqual(seen, []);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+    assert.equal(existsSync(`${bundleDir}.new`), false);
+    assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("provenance SKIPPED by the operator: installs, and reports it", async () => {
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    const seen: string[] = [];
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async () => ({
+        status: "skipped",
+        reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+      }),
+      onProvenance: (r) => seen.push(r.status),
     });
-    assert.deepEqual(seen, ["missing"]);
+    assert.equal(result.status, "upgraded");
+    assert.deepEqual(seen, ["skipped"]);
     assert.equal(readBundleVersion(bundleDir), "0.6.0");
   });
 
-  it("the REAL verifier against a release with no attestation → missing, installs", async () => {
+  it("the REAL verifier against a release with no attestation → postponed, nothing changed", async () => {
     // The fixture API has no /attestations route (404 = none published).
     const apiBase = await startFixtureServer(["0.6.0"]);
     const bundleDir = installLiveBundle("0.5.0");
@@ -394,11 +419,11 @@ describe("performUpgrade", () => {
       currentVersion: "0.5.0",
       verifyProvenance: (o) => verifyReleaseProvenance({ ...o, env: {} }),
     });
-    assert.equal(result.status, "upgraded");
-    assert.equal(
-      (result as { provenance: { status: string } }).provenance.status,
-      "missing",
+    assertError(
+      result,
+      /update was postponed: .*no signed build record was found/,
     );
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
   });
 
   it("errors when the release lacks the platform tarball", async () => {

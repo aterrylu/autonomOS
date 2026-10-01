@@ -11,7 +11,7 @@
 // failure is logged loudly. And a job that throws still ends with a terminal
 // record (withTerminalStatus), or the dashboard would follow it forever.
 
-import type { ProvenanceResult } from "@autonomos/server/provenance.js";
+import type { ProceedingProvenance } from "@autonomos/server/upgrade.js";
 import {
   acquireUpgradeLock,
   advanceUpgradeStatus,
@@ -113,19 +113,21 @@ export async function withTerminalStatus(
  *  record's `provenance` is what the dashboard's amber note and post-update
  *  banner read, so it must land and ride through the later phases. */
 export function reportProvenance(
-  r: ProvenanceResult,
+  r: ProceedingProvenance,
   report: Reporter,
   log: { info: (m: string) => void; warn: (m: string) => void } = console,
 ): void {
   if (r.status === "verified") {
     log.info("✓ Signed build record verified.");
     report("verifying", { provenance: { status: "verified" } });
-  } else if (r.status !== "invalid") {
-    // Loud, never blocking (upgrade continuity): the checksum matched, but
-    // nothing proves who built this tarball.
+  } else {
+    // The operator's explicit choice (AUTONOMOS_SKIP_PROVENANCE): proceed,
+    // and say so loudly. "Couldn't check" never gets here — it postpones.
     log.warn(
-      `⚠️  ${r.status === "skipped" ? "Signed build record not checked" : "Couldn't check the signed build record"}: ${r.reason}. Installing anyway: the checksum matched.`,
+      `⚠️  Signed build record not checked: ${r.reason}. Installing anyway: the checksum matched.`,
     );
-    report("verifying", { provenance: { status: r.status, reason: r.reason } });
+    report("verifying", {
+      provenance: { status: "skipped", reason: r.reason },
+    });
   }
 }

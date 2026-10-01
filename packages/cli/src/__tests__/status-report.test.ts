@@ -93,14 +93,11 @@ describe("reportProvenance → the status record the dashboard reads (ADR-126)",
   const quiet = { info: () => {}, warn: () => {} };
   const read = () => JSON.parse(readFileSync(file, "utf-8"));
 
-  it("a MISSING check lands in the record and rides through installing → done", () => {
+  it("a SKIPPED check lands in the record, warns, and rides through installing → done", () => {
     const report = makeReporter(file);
     const warned: string[] = [];
     reportProvenance(
-      {
-        status: "missing",
-        reason: "couldn't reach GitHub's attestation service",
-      },
+      { status: "skipped", reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set" },
       report,
       { info: () => {}, warn: (m) => warned.push(m) },
     );
@@ -108,27 +105,15 @@ describe("reportProvenance → the status record the dashboard reads (ADR-126)",
     report("done");
     assert.equal(read().phase, "done");
     assert.deepEqual(read().provenance, {
-      status: "missing",
-      reason: "couldn't reach GitHub's attestation service",
+      status: "skipped",
+      reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
     });
-    assert.match(warned[0], /Couldn't check the signed build record/);
+    assert.match(warned[0], /Signed build record not checked/);
   });
 
-  it("VERIFIED is recorded too; INVALID writes nothing (the run fails with its own message)", () => {
+  it("VERIFIED is recorded too", () => {
     const report = makeReporter(file);
     reportProvenance({ status: "verified" }, report, quiet);
     assert.deepEqual(read().provenance, { status: "verified" });
-    writeFileSync(
-      file,
-      JSON.stringify({
-        phase: "downloading",
-        from: "0.7.0",
-        to: "0.7.99",
-        startedAt: "2026-09-30T00:00:00Z",
-        updatedAt: "2026-09-30T00:00:00Z",
-      }),
-    );
-    reportProvenance({ status: "invalid", reason: "x" }, report, quiet);
-    assert.equal(read().provenance, undefined);
   });
 });

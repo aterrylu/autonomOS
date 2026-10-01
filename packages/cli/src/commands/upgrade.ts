@@ -482,7 +482,11 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       message: result.message,
       ...((dropped || !snap.current) && { snapshotId: undefined }),
     });
-    console.error(`✗ Upgrade failed: ${result.message}`);
+    console.error(
+      result.postponed
+        ? `⏸  ${result.message}`
+        : `✗ Upgrade failed: ${result.message}`,
+    );
     return 1;
   }
   const snapshot = snap.current;
@@ -503,7 +507,7 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       // Repeat it here: the first warning scrolled away behind the idle
       // gate, snapshot and restart output.
       console.warn(
-        `⚠️  v${result.to}'s signed build record ${result.provenance.status === "skipped" ? "wasn't checked" : "couldn't be checked"}: ${result.provenance.reason}.`,
+        `⚠️  v${result.to}'s signed build record wasn't checked: ${result.provenance.reason}.`,
       );
     }
   }

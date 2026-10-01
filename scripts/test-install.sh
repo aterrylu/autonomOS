@@ -480,9 +480,32 @@ echo "==> ✓ install.json marker present"
 # (standing in for a newer version rewriting state) and expect rollback to put
 # the pre-upgrade value back alongside the old code.
 echo '{"ciSentinel":"before-upgrade"}' > "$TEST_CFG/settings.json"
+# ADR-126 D: the fixture release has no signed build record (its API has no
+# attestations route), so an existing install must POSTPONE: exit non-zero,
+# say so, and change nothing.
+echo "==> 'autonomos upgrade' with an unconfirmable build is postponed"
+assert_only_test_label "autonomos upgrade (postponed)"
+BEFORE_VERSION=$("$WRAPPER" --version)
+set +e
+POSTPONE_OUT=$(AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
+  AUTONOMOS_RELEASE_REPO="test-rel/autonomos" \
+  "$WRAPPER" upgrade 2>&1)
+POSTPONE_RC=$?
+set -e
+[[ "$POSTPONE_RC" -ne 0 ]] || { echo "✗ An unconfirmable update installed anyway"; echo "$POSTPONE_OUT"; exit 1; }
+echo "$POSTPONE_OUT" | grep -qF "update was postponed" || {
+  echo "✗ The postponement wasn't explained:"; echo "$POSTPONE_OUT" | tail -5; exit 1;
+}
+[[ "$("$WRAPPER" --version)" == "$BEFORE_VERSION" ]] || { echo "✗ A postponed update changed the installed version"; exit 1; }
+[[ ! -e "$TEST_PREFIX/share/autonomos.new" ]] || { echo "✗ A postponed update left a staged bundle"; exit 1; }
+echo "==> ✓ postponed, nothing changed"
+
 echo "==> Running 'autonomos upgrade' against the fixture release"
+# The fixture is unsigned (postponement proven above): the operator's
+# explicit override lets the upgrade → rollback cycle below run.
 assert_only_test_label "autonomos upgrade"
-AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
+AUTONOMOS_SKIP_PROVENANCE=1 \
+  AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
   AUTONOMOS_RELEASE_REPO="test-rel/autonomos" \
   "$WRAPPER" upgrade
 UPGRADED_VERSION=$("$WRAPPER" --version)

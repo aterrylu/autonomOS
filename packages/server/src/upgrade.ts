@@ -148,15 +148,22 @@ export type UpgradeOptions = {
   /** Test seam for the provenance check. Default: the real one. */
   verifyProvenance?: typeof verifyReleaseProvenance;
   /**
-   * The provenance outcome, once known (after the checksum, before anything
-   * changes). "invalid" is also returned as an error; the others proceed —
-   * the caller surfaces "missing"/"skipped" loudly. NOT cosmetic: for those
-   * two it's the only channel to the dashboard's warning. A throwing callback
-   * still can't change the upgrade's outcome, but it is logged. The same
-   * result also rides on the "upgraded" return value.
+   * The provenance outcome of an update that WILL proceed (after the
+   * checksum, before anything changes): verified, or skipped by the
+   * operator. "invalid" and "missing" never get here — both return an error
+   * and nothing is installed. NOT cosmetic: for "skipped" it's the only
+   * channel to the dashboard's warning. A throwing callback still can't
+   * change the upgrade's outcome, but it is logged. The same result also
+   * rides on the "upgraded" return value.
    */
-  onProvenance?: (result: ProvenanceResult) => void;
+  onProvenance?: (result: ProceedingProvenance) => void;
 };
+
+/** What an update that goes ahead was checked as (ADR-126). */
+export type ProceedingProvenance = Extract<
+  ProvenanceResult,
+  { status: "verified" | "skipped" }
+>;
 
 function reportPhase<P>(cb: ((p: P) => void) | undefined, phase: P): void {
   try {
@@ -177,9 +184,11 @@ export type UpgradeResult =
       from: string;
       to: string;
       direction: "upgrade" | "downgrade";
-      provenance: ProvenanceResult;
+      provenance: ProceedingProvenance;
     }
-  | { status: "error"; message: string };
+  /** `postponed`: nothing is wrong with the release as far as we know — its
+   *  build record just couldn't be confirmed right now (ADR-126 D). */
+  | { status: "error"; message: string; postponed?: true };
 
 type GitHubReleaseAsset = {
   name: string;
@@ -314,13 +323,25 @@ export async function performUpgrade(
         name: tarballName,
       },
     );
-    reportPhase(opts.onProvenance, provenance);
     if (provenance.status === "invalid") {
       return {
         status: "error",
         message: `The v${releaseVersion} download doesn't match its signed build record, so it wasn't installed: ${provenance.reason}. If you believe this is wrong, please report it. To install anyway, run \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS.`,
       };
     }
+    // Couldn't check → POSTPONE, don't install (Terry, ADR-126 option D).
+    // Nothing has changed yet, so waiting can't break the running install;
+    // installing would let through exactly what this exists to stop — a
+    // tag off main carries a genuine certificate, so "GitHub unreachable or
+    // rate-limited" must not be the moment it goes in.
+    if (provenance.status === "missing") {
+      return {
+        status: "error",
+        postponed: true,
+        message: `The v${releaseVersion} update was postponed: its signed build record couldn't be confirmed (${provenance.reason}). Nothing changed. This is usually temporary (GitHub or Sigstore unreachable, or rate-limited), so try again later. To install it anyway, run \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS.`,
+      };
+    }
+    reportPhase(opts.onProvenance, provenance);
 
     // ── extract into a sibling directory
     const newDir = `${opts.bundleDir}.new`;
