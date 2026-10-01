@@ -493,7 +493,10 @@ POSTPONE_OUT=$(AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
 POSTPONE_RC=$?
 set -e
 [[ "$POSTPONE_RC" -ne 0 ]] || { echo "✗ An unconfirmable update installed anyway"; echo "$POSTPONE_OUT"; exit 1; }
-echo "$POSTPONE_OUT" | grep -qF "update was postponed" || {
+# Both postponement wordings (a temporary "postponed… try again later" and a
+# lasting "wasn't applied… retrying won't change that" — this fixture has NO
+# record, so it's the lasting one) start with ⏸ and say nothing changed.
+echo "$POSTPONE_OUT" | grep -qF "⏸" && echo "$POSTPONE_OUT" | grep -qF "Nothing changed." || {
   echo "✗ The postponement wasn't explained:"; echo "$POSTPONE_OUT" | tail -5; exit 1;
 }
 [[ "$("$WRAPPER" --version)" == "$BEFORE_VERSION" ]] || { echo "✗ A postponed update changed the installed version"; exit 1; }
