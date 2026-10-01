@@ -19,6 +19,8 @@ import {
   isUserInput,
   PANE_OK,
   type PaneConnection,
+  parseReplayGeometry,
+  REPLAY_BEGIN_TOKEN,
   REPLAY_END_OSC,
   REPLAY_REPLY_CAP_MS,
   REPLAY_REPLY_CAP_UNCONFIRMED_MS,
@@ -323,6 +325,8 @@ export class LiveTerminal {
   private ackSeq = 0;
   /** performance.now() at this socket's onopen — the zero of sentAtMs. */
   private openedAt = 0;
+  /** Set by the replay-begin marker: re-fit to the pane once the replay ends. */
+  private refitAfterReplay = false;
   /** Acked frames in flight: seq → when sent, and what kind of key. */
   private readonly pending = new Map<
     number,
@@ -456,12 +460,35 @@ export class LiveTerminal {
     // replayed query has been answered (and dropped) by now, so live replies
     // from here on are real.
     this.terminal.parser.registerOscHandler(REPLAY_END_OSC, (data) => {
+      // Start of the replay: the PTY's size (?replayGeom=1). Full-screen TUIs
+      // draw on the alternate screen, which never reflows, so the replay must
+      // be parsed at the size it was drawn for. A fresh terminal is still at
+      // its 80x24 default here and used to show the content in an 80-column
+      // strip with the rest black. NOT the end of the replay: the reply
+      // window stays open until the end marker.
+      if (data.startsWith(REPLAY_BEGIN_TOKEN)) {
+        const geom = parseReplayGeometry(data);
+        if (geom) {
+          this.terminal.resize(geom.cols, geom.rows);
+          this.refitAfterReplay = true;
+        }
+        return true;
+      }
       serverSendsReplayMark = true;
       // Capability negotiation rides on the same marker: only a server that
       // SAYS it understands binary acked frames ever gets one. Everything
       // typed before this point went as plain text, the old way.
       if (data.includes(INPUT_ACK_TOKEN)) this.ackMode = true;
       this.endReplayWindow();
+      if (this.refitAfterReplay) {
+        // Back to the pane's size. The cache is invalidated so the fit is
+        // applied (and the PTY resized) even though the box itself didn't
+        // change: a real size change is what makes the TUI repaint.
+        this.refitAfterReplay = false;
+        this.lastFitW = 0;
+        this.lastFitH = 0;
+        this.scheduleFit();
+      }
       return true; // consumed; nothing to render
     });
 
@@ -752,9 +779,15 @@ export class LiveTerminal {
     this.connect();
   }
 
-  /** Transport went stale: this pane's socket shares the dead path. */
+  /** Transport went stale: this pane's socket MAY share the dead path.
+   *  With acked input the pane learns its own socket's health within ~1s of
+   *  the next keystroke, so it is NOT cut here: every reconnect is a full
+   *  reset + replay, and cutting every pane whenever the status heartbeat
+   *  went stale on a busy server replayed every pane over and over. Without
+   *  acks (older server) the pane has no other signal, so it still is. */
   transportLost(): void {
     if (this.disposed || this.ended || this.connection.kind === "lost") return;
+    if (this.ackMode) return;
     this.forceReconnect();
   }
 
@@ -1019,7 +1052,7 @@ export class LiveTerminal {
     // would silently drop every key on a healthy socket.
     this.openedAt = performance.now();
     const ws = new WebSocket(
-      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1`,
+      `${WS_URL}/ws/terminal/${this.sessionId}?client=${TERMINAL_CLIENT_ID}&gen=${this.gen}&replayMark=1&inputAck=1&replayGeom=1`,
     );
     // Acks arrive as binary frames; ArrayBuffer keeps decoding synchronous.
     ws.binaryType = "arraybuffer";
