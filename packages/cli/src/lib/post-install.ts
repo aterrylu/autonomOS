@@ -191,7 +191,7 @@ export async function verifyAndReportInstall(
   // The server listens on all interfaces by default: point at the private
   // ways to reach it from other devices instead of leaving that implicit.
   console.log(
-    "    Remote:     from other devices, use Tailscale, Google IAP or SSH, not an open port:",
+    "    Remote:     for other devices, Tailscale on 127.0.0.1 + your tailnet address is recommended:",
   );
   console.log(
     "                https://github.com/aterrylu/autonomOS/blob/main/docs/guide/02-install.md#using-it-from-your-other-devices",

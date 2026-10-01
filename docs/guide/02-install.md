@@ -128,52 +128,57 @@ See the next section for how to reach it from your other devices.
 
 ## Using it from your other devices
 
-By default the server listens on **all network interfaces**, on the port the installer printed (3000 unless you chose another). The `install-service --force` commands below rewrite the service file: if you installed with a custom `--port`, pass it again. Any device that can reach that port can open the dashboard, and every request needs your token. What decides who can *reach* the port is the network in front of it, so pick one of these instead of exposing it to your whole network or the internet.
+autonomOS usually lives on a server you reach from your laptop or phone, so who can reach its port matters. Every request needs your token, but the network in front of the port is the first line of defense. These are the setups, best first. Each survives restarts of the machine and of autonomOS.
 
-### Over Tailscale (most setups)
+### Recommended: Tailscale, served on this machine and your tailnet only
 
-Install [Tailscale](https://tailscale.com) on the server and on each device you'll use, signed in to the same tailnet. Then open the server by its tailnet name (with MagicDNS) or its `100.x.y.z` address:
-
-```
-http://<server-name>:3000            (or http://<server-name>.<your-tailnet>.ts.net:3000)
-```
-
-Tailscale encrypts the connection end to end, and your tailnet's access rules decide which devices can reach it. Two ways to tighten it further:
-
-- **Listen on the tailnet only.** Bind the server to the machine's tailnet address so nothing else on the local network can reach it:
-  ```bash
-  autonomos install-service --force --host=100.x.y.z     # this machine's tailnet IP (tailscale ip -4)
-  ```
-  If Tailscale isn't up yet when the machine boots, the server can't bind that address and the service retries until it is.
-- **Keep it on this machine and let Tailscale serve it over HTTPS.** Bind to localhost, then publish it to your tailnet with `tailscale serve`:
-  ```bash
-  autonomos install-service --force --host=127.0.0.1
-  tailscale serve --bg 3000          # → https://<server-name>.<your-tailnet>.ts.net
-  ```
-  Every visitor then reaches autonomOS from the machine itself, so autonomOS can't tell your devices apart: its per-device protections (the sign-in throttle, and the new-device lock for a short token) see one address. Your tailnet's access rules are the boundary. Never use `tailscale funnel` for autonomOS: that publishes it to the whole internet.
-
-### Over Google Cloud IAP (a VM without a public address)
-
-[Identity-Aware Proxy TCP forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding) lets you reach a VM's port through your Google login, with no external IP and no open firewall to the internet:
+Install [Tailscale](https://tailscale.com) on the server and on each device you use, signed in to the same tailnet. Then tell autonomOS to listen on this machine (for the `autonomos` command) **and** on the server's tailnet address, and nowhere else:
 
 ```bash
-# once: let IAP's address range reach the port (and nothing else)
-gcloud compute firewall-rules create allow-iap-autonomos \
-  --network=<vpc> --allow=tcp:3000 --source-ranges=35.235.240.0/20
-# each time: forward the VM's port to your laptop, then open http://localhost:3000
-gcloud compute start-iap-tunnel <vm-name> 3000 --local-host-port=localhost:3000 --zone=<zone>
+autonomos install-service --force --host=127.0.0.1,$(tailscale ip -4)
+# or with the MagicDNS name:  --host=127.0.0.1,<server-name>
 ```
 
-Who can open the tunnel is decided by IAM (the `IAP-secured Tunnel User` role). Keep the server on its default bind: IAP connects to the VM's internal address, not to localhost.
+Open it from any of your devices at `http://<server-name>:3000` (MagicDNS) or `http://100.x.y.z:3000`. Your office or café network and the public internet can't reach it, Tailscale encrypts every connection, and autonomOS sees each device's own tailnet address, so its protections (the sign-in throttle, and the new-device lock for a short token) work per device. **Restarts are safe:** if autonomOS starts before Tailscale has connected (a reboot), it serves this machine at once and keeps retrying the tailnet address until Tailscale is up. Put `127.0.0.1` first in the list.
 
-### Over SSH
+`install-service --force` rewrites the service file: if you installed with a custom `--port`, pass it again. Updates keep the list as it is.
 
-From any machine with SSH access: `ssh -L 3000:localhost:3000 <server>`, then open `http://localhost:3000`. This works with the server bound to `--host=127.0.0.1`.
+### The default: all network interfaces
+
+Without `--host`, autonomOS listens on **every** network the machine is on, on port 3000: your tailnet, but also the local network and, on a server with a public address, the internet. Opening `http://<server-name>:3000` over Tailscale works the same, but so does reaching the port from anything else that can route to the machine. Only use this together with a host firewall that allows the port on the Tailscale interface alone, for example on Linux with ufw:
+
+```bash
+sudo ufw allow in on tailscale0 to any port 3000 proto tcp
+sudo ufw deny 3000/tcp
+```
+
+Firewall rules persist across reboots. On macOS, use the recommended setup above instead.
+
+### `tailscale serve`: not yet
+
+`tailscale serve` would give you an HTTPS address (`https://<server-name>.<tailnet>.ts.net`) without opening any port. Today, every visitor arriving through it reaches autonomOS from this machine itself, so autonomOS can't tell your devices apart, and its per-device protections treat everyone as this machine. Support that reads Tailscale's identity for each visitor is in progress; until it ships, use the recommended setup.
+
+### Google Cloud IAP (a VM without a public address)
+
+[Identity-Aware Proxy TCP forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding) reaches a VM's port through your Google login, with no external IP. IAP connects to the VM's **internal** address, so keep the default bind (or list that address in `--host`), and let only IAP's range reach the port:
+
+```bash
+gcloud compute firewall-rules create allow-iap-autonomos \
+  --network=<vpc> --allow=tcp:3000 --source-ranges=35.235.240.0/20
+gcloud compute start-iap-tunnel <vm-name> 3000 --local-host-port=localhost:3000 --zone=<zone>
+# then open http://localhost:3000 on your laptop
+```
+
+Who can open the tunnel is decided by IAM (the `IAP-secured Tunnel User` role). Give the VM no external IP, so nothing but IAP can reach the port.
+
+### SSH
+
+`ssh -L 3000:localhost:3000 <server>`, then open `http://localhost:3000`. This works with `--host=127.0.0.1`.
 
 ### Security notes
 
-- **Don't expose the port to the internet** (no router port-forwarding, no public cloud firewall rule, no `tailscale funnel`). The token is the only lock on it.
-- **On a plain local network, `http://` sends your token unencrypted** at sign-in and in the session cookie. Tailscale encrypts it; `tailscale serve` and IAP's tunnel also give you an encrypted path.
+- **Don't open the port to the internet** (no router port-forwarding, no public firewall rule, no `tailscale funnel`). The token is the only lock on it.
+- **On a plain local network, `http://` sends your token unencrypted** at sign-in and in the session cookie. Tailscale and IAP's tunnel encrypt it.
 - **Repeated wrong tokens are throttled.** If your token is short, devices that have never signed in are locked out after 20 wrong tries in total, while devices you already use keep working. Unlock new devices with `autonomos auth unlock`. `autonomos token status` shows where things stand, and `autonomos token rotate` swaps in a long random token.
 
 ## Installing from source

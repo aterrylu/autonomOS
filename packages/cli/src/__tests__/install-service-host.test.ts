@@ -56,6 +56,14 @@ describe("install-service --host threading", () => {
     assert.match(readFileSync(serviceFile(), "utf-8"), /--host=0\.0\.0\.0/);
   });
 
+  it("bakes a --host LIST verbatim (loopback + tailnet, ADR-136)", async () => {
+    assert.equal(await install(["--host=127.0.0.1,100.70.53.56"]), 0);
+    assert.match(
+      readFileSync(serviceFile(), "utf-8"),
+      /--host=127\.0\.0\.1,100\.70\.53\.56/,
+    );
+  });
+
   it("omits --host entirely when not given, leaving the server's default", async () => {
     // Absence matters: writing --host= or --host=127.0.0.1 here would either
     // widen the bind or hard-code a default the server should own.
