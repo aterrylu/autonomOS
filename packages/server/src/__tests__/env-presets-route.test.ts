@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -83,6 +83,31 @@ describe("env-presets route — status classification + masking", () => {
       env: { NODE_OPTIONS: "--require /evil.js" },
     });
     assert.equal(status, 400);
+  });
+
+  it("PUT the dashboard's full-payload edit of a legacy preset → 200 (ADR-143)", async () => {
+    // A preset saved before the allowlist, still carrying an off-list key.
+    const dir = join(TEST_DIR, "env-presets");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "legacy-ui.json"),
+      JSON.stringify({
+        name: "legacy-ui",
+        env: { ANTHROPIC_MODEL: "kimi-k2.7-code", BASH_ENV: "/tmp/evil.sh" },
+        secretKeys: [],
+        secrets: {},
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    // Exactly what PresetsPanel's saveEdit sends: the full env and secretKeys.
+    const { status, json } = await req("PUT", "/legacy-ui", {
+      description: "edited in the Presets tab",
+      label: "Kimi",
+      env: { ANTHROPIC_MODEL: "kimi-k2.7-code", BASH_ENV: "/tmp/evil.sh" },
+      secretKeys: [],
+    });
+    assert.equal(status, 200, `expected 200, got ${status}: ${json?.error}`);
   });
 
   it("PUT missing preset → 404", async () => {

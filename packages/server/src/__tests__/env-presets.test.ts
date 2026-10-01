@@ -705,6 +705,59 @@ describe("env presets: strict key allowlist (audit V13)", () => {
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, "sk-real-key-0000");
   });
 
+  it("a dashboard edit of a legacy preset works: it re-sends the off-list key, but adds nothing", () => {
+    // PresetsPanel's saveEdit always PUTs the FULL env and secretKeys (nox on
+    // #496), so a description change on a legacy preset arrives carrying its
+    // off-list keys. Only keys the edit ADDS are validated.
+    writeLegacyPreset("legacy5", { BASH_ENV: "/tmp/evil.sh" });
+    const onDisk = getEnvPresetRaw("legacy5");
+    assert.ok(onDisk?.env.BASH_ENV, "precondition: the legacy key is on disk");
+    const dashboardPayload = {
+      description: "renamed from the Presets tab",
+      label: "Kimi",
+      provider: "claude-code" as const,
+      env: { ...onDisk.env },
+      secretKeys: [...onDisk.secretKeys],
+    };
+    updateEnvPreset("legacy5", dashboardPayload, NOW);
+    assert.equal(
+      getEnvPresetRaw("legacy5")?.description,
+      "renamed from the Presets tab",
+    );
+    // A kept off-list key is still never injected.
+    const env: Record<string, string> = {};
+    assert.deepEqual(applyPresetToEnv(env, "legacy5"), [
+      "BASH_ENV",
+      "GIT_SSH_COMMAND",
+    ]);
+    assert.equal(env.BASH_ENV, undefined);
+    // Adding a NEW off-list key in the same kind of edit is refused.
+    assert.throws(
+      () =>
+        updateEnvPreset(
+          "legacy5",
+          {
+            ...dashboardPayload,
+            env: { ...dashboardPayload.env, SHELL: "/tmp/sh" },
+          },
+          NOW,
+        ),
+      PresetKeyError,
+    );
+    assert.throws(
+      () =>
+        updateEnvPreset(
+          "legacy5",
+          {
+            ...dashboardPayload,
+            secretKeys: [...dashboardPayload.secretKeys, "BUN_OPTIONS"],
+          },
+          NOW,
+        ),
+      PresetKeyError,
+    );
+  });
+
   it("an edit can't SET a value for an off-list secret", () => {
     writeLegacyPreset("legacy4", {});
     assert.throws(

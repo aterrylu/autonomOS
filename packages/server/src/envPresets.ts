@@ -346,8 +346,25 @@ export function updateEnvPreset(
   const partial = applyWritePolicy(rawPartial, opts);
   const existing = getEnvPresetRaw(name);
   if (!existing) throw new Error(`Preset "${name}" not found`);
-  if (partial.env) validateEnvKeys(Object.keys(partial.env), "env");
-  if (partial.secretKeys) validateEnvKeys(partial.secretKeys, "secret");
+  // An edit validates only the keys it ADDS (ADR-143). The dashboard always
+  // sends the full env and secretKeys, so re-checking keys already on disk
+  // would refuse every edit of a preset saved before the allowlist, even a
+  // description change. A kept off-list key is still never injected: the
+  // spawn skips it and says so.
+  if (partial.env) {
+    const had = new Set(Object.keys(existing.env));
+    validateEnvKeys(
+      Object.keys(partial.env).filter((k) => !had.has(k)),
+      "env",
+    );
+  }
+  if (partial.secretKeys) {
+    const had = new Set(existing.secretKeys);
+    validateEnvKeys(
+      partial.secretKeys.filter((k) => !had.has(k)),
+      "secret",
+    );
+  }
   const finalSecretKeys = partial.secretKeys ?? existing.secretKeys;
   // Prune to the FINAL declared keys so removing/renaming a secretKey drops its
   // orphaned plaintext value from disk rather than leaving it invisibly (Nox).
