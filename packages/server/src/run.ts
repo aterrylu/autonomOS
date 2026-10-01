@@ -56,6 +56,7 @@ import {
   isLoopbackHost,
   isNetworkBind,
   keepListening,
+  lsofOwner,
   parseBindHosts,
 } from "./bindHosts.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
@@ -1012,7 +1013,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         const srv = createAdaptorServer({ fetch: app.fetch });
         injectWebSocket(srv);
         extraListeners.push(
-          keepListening({ server: srv, host: extra, port: actualPort }),
+          keepListening({
+            server: srv,
+            host: extra,
+            port: actualPort,
+            ownerOf: lsofOwner,
+          }),
         );
       }
       if (bindHosts && bindHosts.length > 1 && !isLoopbackHost(bindHosts[0]))

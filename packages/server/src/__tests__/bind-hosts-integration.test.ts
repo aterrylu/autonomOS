@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -160,5 +160,66 @@ describe("--host list on a real server", {
       .split("\n")
       .filter((l) => l.includes("192.0.2.1 isn't available yet"));
     assert.equal(waiting.length, 1, "one line, not one per retry");
+  });
+});
+
+describe("--host list: an address another process is SERVING (#480)", {
+  skip:
+    !RUN_INTEGRATION || !lanIp ? "needs integration + a LAN address" : false,
+  timeout: 120_000,
+}, () => {
+  const booted: BootedServer[] = [];
+  after(() =>
+    boundedTeardown("bind-hosts-squat", async () => {
+      await Promise.all(booted.map((s) => s.kill()));
+      for (const s of booted)
+        rmSync(s.configDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 200,
+        });
+    }),
+  );
+
+  it("warns loudly, naming the squatter, and takes the address over once it's freed", async () => {
+    // A free port, then a "squatter" serving a fake page on LAN:port first.
+    const probe = createServer();
+    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
+    const port = (probe.address() as { port: number }).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+    const squatter = createServer((_q, res) => res.end("fake sign-in page"));
+    await new Promise<void>((r) => squatter.listen(port, lanIp, r));
+
+    const s = await bootServer({
+      token: "0123456789abcdef".repeat(4),
+      extraArgs: [`--port=${port}`, `--host=127.0.0.1,${lanIp}`],
+    });
+    booted.push(s);
+    const log = () => {
+      const p = join(s.configDir, "logs", "autonomos.log");
+      return existsSync(p) ? readFileSync(p, "utf8") : "";
+    };
+    let warned = false;
+    for (let i = 0; i < 20 && !warned; i++) {
+      warned = /SECURITY: another process .*is serving/.test(log());
+      if (!warned) await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(warned, "the SECURITY warning was logged");
+    assert.ok(
+      log().includes(`(pid ${process.pid})`),
+      "names the squatter's pid (this test process)",
+    );
+    assert.ok(!/Tailscale still starting/.test(log()), "not 'not up yet'");
+
+    await new Promise<void>((r) => squatter.close(() => r()));
+    let back = false;
+    for (let i = 0; i < 40 && !back; i++) {
+      back = /is free again/.test(log());
+      if (!back) await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(back, "recovery logged");
+    const res = await fetch(`http://${lanIp}:${port}/api/host`);
+    assert.equal(res.status, 200, "autonomOS now answers there");
   });
 });
