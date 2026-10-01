@@ -8,7 +8,7 @@ import {
 } from "../trustProxy.js";
 
 /**
- * L1: who a request is from, under `--trust-proxy=tailscale` (ADR-137). The
+ * L1: who a request is from, under `--trust-proxy=tailscale` (ADR-140). The
  * header rules were measured against tailscaled 1.102.3: it always sends
  * X-Forwarded-For (tagged nodes too), Tailscale-User-Login for user-owned
  * nodes, and overwrites anything the visitor sent.

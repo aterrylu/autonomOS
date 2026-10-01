@@ -47,7 +47,7 @@ describe("install.sh keeps the service's --host", () => {
   });
 });
 
-describe("install.sh keeps the service's --trust-proxy (ADR-137)", () => {
+describe("install.sh keeps the service's --trust-proxy (ADR-140)", () => {
   it("survives the re-render, so an update doesn't stop trusting serve", () => {
     assert.equal(
       kept(

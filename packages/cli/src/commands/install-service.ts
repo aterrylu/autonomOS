@@ -48,7 +48,7 @@ type InstallFlags = {
   force: boolean;
   port: number | undefined;
   host: string | undefined;
-  /** `tailscale` when the server sits behind `tailscale serve` (ADR-137). */
+  /** `tailscale` when the server sits behind `tailscale serve` (ADR-140). */
   trustProxy: string | undefined;
   open: boolean;
 };
@@ -186,7 +186,7 @@ export async function runInstallServiceCommand(
     flags.port !== undefined ? [...baseArgs, `--port=${flags.port}`] : baseArgs;
   const withHost =
     flags.host !== undefined ? [...withPort, `--host=${flags.host}`] : withPort;
-  // Behind `tailscale serve` (ADR-137). The server itself refuses the flag
+  // Behind `tailscale serve` (ADR-140). The server itself refuses the flag
   // unless --host is loopback only, with a message saying why.
   const programArgs =
     flags.trustProxy !== undefined

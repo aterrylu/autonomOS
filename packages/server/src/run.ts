@@ -232,7 +232,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // loud ON line lands in autonomos.log too.
   initPtyInputLog({ configDir: getConfigDir() });
 
-  // Trusted proxy (ADR-137): `tailscale serve` in front. Only safe when this
+  // Trusted proxy (ADR-140): `tailscale serve` in front. Only safe when this
   // server listens on loopback alone, else the LAN reaches it around serve.
   const trustProxyRaw = cliArgs.trustProxy ?? process.env.AUTONOMOS_TRUST_PROXY;
   let trustProxy: ReturnType<typeof parseTrustProxy>;
@@ -269,7 +269,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     source: tokenSource,
     priorInstall,
     // Behind tailscale serve the loopback bind is reachable from the tailnet
-    // by design, so it counts as a network bind here (ADR-137).
+    // by design, so it counts as a network bind here (ADR-140).
     networkBind:
       trustProxy === "tailscale" ||
       isNetworkBind(
@@ -429,7 +429,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   });
   app.use("/api/*", csrf);
   app.use("/ws/*", csrf);
-  // A malformed proxied identity is refused before auth (ADR-137).
+  // A malformed proxied identity is refused before auth (ADR-140).
   app.use("/api/*", trustProxyGuard());
   app.use("/ws/*", trustProxyGuard());
 

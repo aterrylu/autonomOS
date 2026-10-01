@@ -210,7 +210,7 @@ function expandIPv6(addr: string): string[] | null {
  * signed-in device "known" (SecurityAudit, #475). Only `::ffff:` is unwrapped.
  */
 export function rawPeerAddress(c: Context): string {
-  // The device: the TCP peer, or (with --trust-proxy=tailscale, ADR-137) the
+  // The device: the TCP peer, or (with --trust-proxy=tailscale, ADR-140) the
   // tailnet address tailscale serve forwarded for. One source for both.
   return clientAddress(c);
 }
