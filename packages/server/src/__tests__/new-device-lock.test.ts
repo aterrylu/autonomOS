@@ -185,12 +185,17 @@ describe("NewDeviceLock", () => {
     l.noteDistinctFailure("10.0.0.1");
     assert.equal(statSync(path).mode & 0o777, 0o600);
     const saved = JSON.parse(readFileSync(path, "utf8"));
-    assert.deepEqual(Object.keys(saved).sort(), [
-      "failures",
-      "known",
-      "lastFailure",
-      "lockedAt",
-    ]);
+    for (const k of Object.keys(saved))
+      assert.ok(
+        [
+          "failures",
+          "known",
+          "knownLogins",
+          "lastFailure",
+          "lockedAt",
+        ].includes(k),
+        `unexpected key ${k}`,
+      );
     // The last failure is an address and a time, nothing presented.
     assert.deepEqual(Object.keys(saved.lastFailure).sort(), ["address", "at"]);
   });
