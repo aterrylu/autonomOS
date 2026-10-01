@@ -6,6 +6,7 @@ import "../test/setup-dom";
 import { orgTreePoll } from "../api/polls";
 import { useStore } from "../store";
 import { HierarchyPanel } from "./HierarchyPanel";
+import { ProviderAgentIcon } from "./ui/provider-icon";
 
 /**
  * The Balanced card (Terry's pick): the CLI's own icon as the avatar, name + unread
@@ -225,7 +226,7 @@ describe("Balanced card", () => {
     expect($in("I", "[data-org-pulse]")).toBeNull();
   });
 
-  it("the avatar IS the CLI's own icon — official and unaltered, at avatar size (no generated identicon)", async () => {
+  it("the avatar IS the shipped provider icon (ProviderAgentIcon at 28px) — whatever that component draws, no card-specific mark", async () => {
     batch = fleetBatch({});
     await mount(
       [node("Lead", {}, [node("Cc"), node("Cx", { provider: "codex" })])],
@@ -237,14 +238,19 @@ describe("Balanced card", () => {
         ],
       },
     );
-    const cc = $in("Cc", "[data-org-avatar]") as HTMLElement;
-    const claude = cc.querySelector('[role="img"][aria-label="Claude"]');
-    expect(claude).not.toBeNull();
-    expect(claude?.getAttribute("width")).toBe("28");
-    // Codex: OpenAI's official raster, drawn at 28px (only ever down-scaled).
-    const codex = $in("Cx", "[data-org-avatar] img") as HTMLImageElement;
-    expect(codex.alt).toBe("Codex");
-    expect(codex.getAttribute("width")).toBe("28");
+    // Compare against the shared component itself, so a change to a
+    // provider's icon (e.g. a Codex mark swap) flows to the cards untouched.
+    for (const [id, provider] of [
+      ["Cc", "claude-code"],
+      ["Cx", "codex"],
+    ] as const) {
+      const status = card(id)?.dataset.orgStatus as never;
+      const { container } = render(
+        <ProviderAgentIcon provider={provider} status={status} size={28} />,
+      );
+      expect($in(id, "[data-org-avatar]")?.innerHTML).toBe(container.innerHTML);
+      container.remove();
+    }
     expect(document.querySelector("[data-org-identicon]")).toBeNull();
   });
 
