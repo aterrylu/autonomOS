@@ -30,7 +30,14 @@ import {
   type SidebarHierarchyNode,
 } from "./mergeOrgWithSessions";
 import { projectLabels } from "./projectLabels";
-import { isShownSession, projectsView, sessionChip } from "./projectView";
+import {
+  isShownSession,
+  projectsView,
+  sessionChip,
+  startedByTag,
+  TOOL_RUNS_EXPLAINER,
+  toolRunsToggleLabel,
+} from "./projectView";
 import {
   formatAge,
   isLightBg,
@@ -1146,17 +1153,26 @@ export function Sidebar() {
           )}
 
           {view.automatedTotal > 0 && (
-            <button
-              type="button"
-              className="mx-3 mt-2 mb-1 rounded border border-dashed px-2 py-1 text-left text-[11px] cursor-pointer"
-              style={{ color: page.statusFg, borderColor: page.border }}
-              onClick={() => setShowAutomatedRuns(!showAutomatedRuns)}
-              aria-pressed={showAutomatedRuns}
-            >
-              {showAutomatedRuns
-                ? "Hide automated runs"
-                : `Show ${view.automatedTotal} automated run${view.automatedTotal === 1 ? "" : "s"}`}
-            </button>
+            <div className="mx-3 mt-2 mb-1">
+              <button
+                type="button"
+                className="rounded border border-dashed px-2 py-1 text-left text-[11px] cursor-pointer"
+                style={{ color: page.statusFg, borderColor: page.border }}
+                onClick={() => setShowAutomatedRuns(!showAutomatedRuns)}
+                aria-pressed={showAutomatedRuns}
+                title={TOOL_RUNS_EXPLAINER}
+              >
+                {toolRunsToggleLabel(view.automatedTotal, showAutomatedRuns)}
+              </button>
+              {/* Always visible, not just a tooltip: Terry asked what these
+                  are, and a tooltip doesn't answer on touch or at a glance. */}
+              <p
+                className="mt-1 text-[10px] leading-snug"
+                style={{ color: page.statusFg }}
+              >
+                {TOOL_RUNS_EXPLAINER}
+              </p>
+            </div>
           )}
         </div>
       </aside>
@@ -2540,6 +2556,7 @@ export const ProjectItem = React.memo(function ProjectItem({
               ? (agentStatuses[rec.id]?.status as AgentStatus | undefined)
               : undefined;
             const chip = sessionChip(s, project);
+            const startedBy = startedByTag(s);
             const iconStatus: AgentStatus = isLive
               ? (liveStatus ?? (rec?.status as AgentStatus) ?? "running")
               : "unknown";
@@ -2636,12 +2653,12 @@ export const ProjectItem = React.memo(function ProjectItem({
                     style={{ color: page.statusFg }}
                   >
                     {chip && <span className="min-w-0 truncate">{chip}</span>}
-                    {s.headless && (
+                    {startedBy && (
                       <span
                         className="shrink-0 pl-1.5"
-                        title="Started without a person at the keyboard (an SDK or codex exec run)"
+                        title={TOOL_RUNS_EXPLAINER}
                       >
-                        automated
+                        {startedBy}
                       </span>
                     )}
                     {state === "live" ? (

@@ -74,3 +74,34 @@ export function sessionChip(
     ? base.slice(prefix.length)
     : base;
 }
+
+/** The toggle + explainer for sessions a tool started (`headless`). Terry's
+ *  "Show automated runs… huh?": say what they are and where they come from, in
+ *  words, not "headless"/"automated". */
+export function toolRunsToggleLabel(count: number, shown: boolean): string {
+  if (shown) return "Hide runs started by tools";
+  return `Show ${count} run${count === 1 ? "" : "s"} started by tools`;
+}
+export const TOOL_RUNS_EXPLAINER =
+  "Sessions a script or bot started, not you — e.g. an automated PR review.";
+
+/** The muted per-row tag naming WHAT started a tool-run session, when the
+ *  server knows (`startedVia`, from the SDK entrypoint / codex exec); a
+ *  generic tag otherwise. Undefined for a session a person started. */
+export function startedByTag(
+  s: Pick<ProjectSession, "headless"> & { startedVia?: string },
+): string | undefined {
+  if (!s.headless) return undefined;
+  switch (s.startedVia) {
+    case "sdk-py":
+      return "via Agent SDK (Python)";
+    case "sdk-ts":
+      return "via Agent SDK (TypeScript)";
+    case "sdk-cli":
+      return "via Agent SDK (CLI)";
+    case "codex-exec":
+      return "via codex exec";
+    default:
+      return s.startedVia ? `via ${s.startedVia}` : "started by a tool";
+  }
+}

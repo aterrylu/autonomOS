@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, ProjectSession } from "../store";
-import { isShownSession, projectsView, sessionChip } from "./projectView";
+import {
+  isShownSession,
+  projectsView,
+  sessionChip,
+  startedByTag,
+  TOOL_RUNS_EXPLAINER,
+  toolRunsToggleLabel,
+} from "./projectView";
 
 const s = (id: string, extra: Partial<ProjectSession> = {}): ProjectSession =>
   ({
@@ -135,5 +142,32 @@ describe("sessionChip", () => {
       "server",
     );
     expect(sessionChip({ cwd: "/x/autonomOS-" }, proj)).toBe("autonomOS-");
+  });
+});
+
+describe("tool-run copy (Terry: 'automated runs… huh?')", () => {
+  it("the toggle names what they are, singular/plural, and hiding", () => {
+    expect(toolRunsToggleLabel(114, false)).toBe(
+      "Show 114 runs started by tools",
+    );
+    expect(toolRunsToggleLabel(1, false)).toBe("Show 1 run started by tools");
+    expect(toolRunsToggleLabel(114, true)).toBe("Hide runs started by tools");
+    expect(TOOL_RUNS_EXPLAINER).toMatch(/script or bot started, not you/);
+  });
+  it("each tool-run row names its source when known, a plain tag otherwise; none for people", () => {
+    expect(startedByTag({ headless: true, startedVia: "sdk-py" })).toBe(
+      "via Agent SDK (Python)",
+    );
+    expect(startedByTag({ headless: true, startedVia: "sdk-cli" })).toBe(
+      "via Agent SDK (CLI)",
+    );
+    expect(startedByTag({ headless: true, startedVia: "codex-exec" })).toBe(
+      "via codex exec",
+    );
+    expect(startedByTag({ headless: true, startedVia: "something-new" })).toBe(
+      "via something-new",
+    );
+    expect(startedByTag({ headless: true })).toBe("started by a tool");
+    expect(startedByTag({ headless: false })).toBeUndefined();
   });
 });
