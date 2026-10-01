@@ -45,9 +45,30 @@ export interface TerminatePtyOptions {
   signal?: SignalFn;
   /** Names the agent in log lines. */
   label?: string;
+  /** Injected for tests: schedule/cancel the escalation stages (defaults to
+   *  unref'd setTimeout/clearTimeout), so a test can fire them on cue instead
+   *  of racing the wall clock on a loaded box. */
+  timers?: EscalationTimers;
 }
 
+export interface EscalationTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const realTimers: EscalationTimers = {
+  set: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    t.unref();
+    return t;
+  },
+  clear: (t) => clearTimeout(t as NodeJS.Timeout),
+};
+
 const PS_TIMEOUT_MS = 1_000;
+/** The straggler report runs after the exit and blocks nothing, so it can wait
+ *  for a slow `ps` on a loaded box instead of silently dropping the warning. */
+const STRAGGLER_PS_TIMEOUT_MS = 10_000;
 const PGID_TABLE_TTL_MS = 500;
 
 /**
@@ -95,7 +116,7 @@ function reportStragglers(pgid: number, label: string): void {
   execFile(
     "ps",
     ["-axo", "pgid=,comm="],
-    { encoding: "utf8", timeout: PS_TIMEOUT_MS },
+    { encoding: "utf8", timeout: STRAGGLER_PS_TIMEOUT_MS },
     (err, out) => {
       if (err) return;
       const names = out
@@ -162,15 +183,16 @@ function escalate(
     killAfterMs = PTY_KILL_AFTER_MS,
     signal = (pid, sig) => process.kill(pid, sig),
     label = `pid ${pty.pid}`,
+    timers: clock = realTimers,
   } = opts;
-  const timers: NodeJS.Timeout[] = [];
+  const timers: unknown[] = [];
   // Once the group is gone (ESRCH) or the leader has exited, nothing more is
   // sent — including stages armed AFTER that (the first SIGHUP can already
   // find the group gone, before the later stages exist).
   let stopped = false;
   const cancel = () => {
     stopped = true;
-    for (const t of timers) clearTimeout(t);
+    for (const t of timers) clock.clear(t);
   };
 
   const send = (sig: NodeJS.Signals): void => {
@@ -202,9 +224,7 @@ function escalate(
     }
   };
   const sendAfter = (ms: number, sig: NodeJS.Signals): void => {
-    const t = setTimeout(() => send(sig), ms);
-    t.unref();
-    timers.push(t);
+    timers.push(clock.set(() => send(sig), ms));
   };
 
   const done = new Promise<void>((resolve) => {

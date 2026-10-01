@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -30,6 +30,7 @@ setInternalSocketPath(
   join(tmpdir(), `aos-ra-${randomUUID().slice(0, 8)}.sock`),
 );
 const {
+  getLiveAgentIds,
   spawnAgent,
   killAttachment,
   assertAdoptable,
@@ -96,11 +97,14 @@ const hung: AgentProvider = {
 };
 _setProviderForTesting("fakerestart", hung);
 
-// A daemon that takes ~800ms to report ready, so a kill can land INSIDE the
-// respawn (while spawnAgent awaits the boot, before the agent is back in
-// `live`). `killDuringBoot` schedules that kill on the respawn only.
+// A daemon that reports ready only once a GATE file exists, so a kill can land
+// INSIDE the respawn (while spawnAgent awaits the boot, before the agent is
+// back in `live`) without racing a timer: on the respawn, `killDuringBoot`
+// kills the agent first and only THEN opens the gate. (Its first boot finds the
+// gate open.) Deterministic however slow the box is.
 let killDuringBoot: string | undefined;
 let failAfterBoot = false;
+const bootGate = join(cwd, "boot-gate");
 const slowBoot: AgentProvider = {
   ...hung,
   buildArgs: (...a) => {
@@ -116,14 +120,22 @@ const slowBoot: AgentProvider = {
     const target = killDuringBoot;
     if (target) {
       killDuringBoot = undefined;
-      setTimeout(() => killAttachment(target as never), 200);
+      rmSync(bootGate, { force: true });
+      setImmediate(() => {
+        killAttachment(target as never);
+        writeFileSync(bootGate, "open");
+      });
+    } else {
+      writeFileSync(bootGate, "open");
     }
     return {
       args: [
         "-e",
-        `setTimeout(() => console.log(${JSON.stringify(READY)}), 800); setInterval(() => {}, 1000);`,
+        `const fs = require("node:fs"); const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(bootGate)})) { clearInterval(t); console.log(${JSON.stringify(READY)}); } }, 20); setInterval(() => {}, 1000);`,
       ],
       readyNeedle: READY,
+      // The default 12s boot window, generous for a loaded box.
+      readyTimeoutMs: 60_000,
     };
   },
 };
@@ -137,6 +149,21 @@ after(async () => {
   _setProviderForTesting("fakeslowboot", null);
   _resetCacheForTesting();
 });
+
+/**
+ * The restart has stopped the old agent and is WAITING for its processes to
+ * exit: it takes the agent out of `live` right before that wait, and the wait
+ * lasts until the stand-in daemon (which ignores SIGTERM) gets its SIGKILL.
+ * A readiness signal, not a sleep that a loaded box can outrun or undershoot.
+ */
+async function untilInRestartWait(id: string): Promise<void> {
+  const until = Date.now() + 20_000;
+  while (getLiveAgentIds().includes(id as never)) {
+    if (Date.now() > until)
+      throw new Error("the restart never reached its wait");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 // The suite's budget, not a per-test one: node:test applies a describe
 // timeout to the WHOLE suite, and its restarts each wait out a SIGTERM-
@@ -218,7 +245,7 @@ describe("restartAgent", { timeout: 180_000 }, () => {
     aliveAtRespawn = undefined;
 
     const restarting = restartAgent(agent.id);
-    await new Promise((r) => setTimeout(r, 100));
+    await untilInRestartWait(agent.id);
     // Mid-wait: the same agent, and restart-all, are both refused.
     await assert.rejects(
       restartAgent(agent.id),
@@ -329,7 +356,7 @@ describe("restartAgent", { timeout: 180_000 }, () => {
     daemonsBefore = runningSidecarPids();
     aliveAtRespawn = undefined;
     const restarting = restartAgent(agent.id);
-    await new Promise((r) => setTimeout(r, 100));
+    await untilInRestartWait(agent.id);
     assert.equal(
       killAttachment(agent.id),
       true,
@@ -399,7 +426,7 @@ describe("restartAgent", { timeout: 180_000 }, () => {
       name: `ra-${randomUUID().slice(0, 4)}`,
     });
     const restarting = restartAgent(agent.id);
-    await new Promise((r) => setTimeout(r, 100));
+    await untilInRestartWait(agent.id);
     await assert.rejects(
       spawnAgent({
         workingDirectory: cwd,
