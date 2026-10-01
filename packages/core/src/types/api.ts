@@ -187,6 +187,10 @@ export interface ProjectSession {
   /** Started without a person at the keyboard: a Claude Code SDK run
    *  (`entrypoint` sdk-py/sdk-cli) or `codex exec`. */
   headless?: boolean;
+  /** For an automated run, what started it, raw: Claude Code's SDK
+   *  `entrypoint` (`sdk-py`, `sdk-cli`, …) or `codex-exec`. Absent for
+   *  interactive sessions; the UI falls back to a generic tag. */
+  startedVia?: string;
 }
 
 /** "repo": a git repository (worktrees fold into their main repo); "dir": a

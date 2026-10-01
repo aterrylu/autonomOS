@@ -277,6 +277,7 @@ export function parseCodexHead(head: Head): ScannedSession | null {
         : "external",
       // `codex exec` — no person at the keyboard (measured: source "exec").
       headless: meta.source === "exec",
+      ...(meta.source === "exec" ? { startedVia: "codex-exec" } : {}),
     },
   };
 }

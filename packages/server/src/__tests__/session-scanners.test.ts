@@ -463,6 +463,21 @@ describe("findGeminiSession — three-state, where `gemini --resume` looks", () 
 // Unused-import guard for helpers only some platforms exercise.
 void randomUUID;
 
+describe("parseCodexHead — automated runs say what started them", () => {
+  it("a `codex exec` run is headless with startedVia codex-exec; an interactive one has neither", () => {
+    const exec = codexLines("ex1", "/w", "x").replace(
+      '"originator":"codex_cli_rs"',
+      '"originator":"codex_exec","source":"exec"',
+    );
+    const execRow = parseCodexHead(whole(exec))?.session;
+    assert.equal(execRow?.headless, true);
+    assert.equal(execRow?.startedVia, "codex-exec");
+    const tui = parseCodexHead(whole(codexLines("t1", "/w", "x")))?.session;
+    assert.equal(tui?.headless, false);
+    assert.equal(tui?.startedVia, undefined);
+  });
+});
+
 describe("readClaudeMeta — HUGE first lines (headless review sessions)", () => {
   it("finds the cwd on a line that starts past 256KB (a 300KB queue-operation first)", async () => {
     const f = join(home, "big.jsonl");

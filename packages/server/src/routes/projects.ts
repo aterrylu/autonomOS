@@ -162,6 +162,9 @@ projectRouter.get("/", async (c) => {
       // Only SDK runs (`sdk-py`, `sdk-ts`, `sdk-cli`, …) are headless. Other
       // interactive entrypoints (the IDE extension, the desktop app) are not.
       headless: meta?.entrypoint?.startsWith("sdk-") === true,
+      ...(meta?.entrypoint?.startsWith("sdk-")
+        ? { startedVia: meta.entrypoint }
+        : {}),
     });
   }
 

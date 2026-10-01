@@ -88,6 +88,7 @@ interface ProjectJson {
     cwd?: string;
     cwdExists?: boolean;
     headless?: boolean;
+    startedVia?: string;
     sessionId: string;
     provider: string;
     summary: string;
@@ -765,6 +766,11 @@ describe("GET /api/projects — projects by git repo (Terry: 'way too many proje
     assert.equal(headless("ide-1"), false);
     assert.equal(headless("sdk-1"), true);
     assert.equal(headless("old-1"), false);
+    // …and an automated run says what started it; interactive ones don't.
+    const via = (id: string) => all.find((s) => s.sessionId === id)?.startedVia;
+    assert.equal(via("sdk-1"), "sdk-ts");
+    assert.equal(via("ide-1"), undefined);
+    assert.equal(via("old-1"), undefined);
   });
 
   it("a DELETED worktree never seen by git folds by the naming convention into a known repo", async () => {
