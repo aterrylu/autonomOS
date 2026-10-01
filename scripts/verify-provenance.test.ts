@@ -82,7 +82,7 @@ describe("scripts/verify-provenance.mjs (the file install.sh pins)", () => {
     assert.match(r.out, /^invalid: .*different files/);
   });
 
-  it("nothing published → exit 11, missing (install.sh refuses; the updater only warns)", () => {
+  it("nothing published → exit 11, missing (install.sh refuses; the updater postpones)", () => {
     const none = join(tmp, "none.json");
     writeFileSync(none, JSON.stringify({ attestations: [] }));
     const r = run(["--digest", LINUX_X64, "--version", "0.7.0"], {
