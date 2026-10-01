@@ -51,6 +51,9 @@ interface Persisted {
   lockedAt: number | null;
   /** Addresses a valid credential has come from, most recent last. */
   known: string[];
+  /** The Tailscale login seen with a known address (tailscale serve only):
+   *  operator context, never used to decide anything. */
+  knownLogins?: Record<string, string>;
 }
 
 export type LockState = {
@@ -114,23 +117,30 @@ export class NewDeviceLock {
   }
 
   /** A credential from this address was valid: remember the address. */
-  noteSuccess(address: string): void {
-    if (isLoopbackAddress(address) || this.state.known.includes(address))
-      return;
-    this.state.known.push(address);
-    if (this.state.known.length > MAX_KNOWN_ADDRESSES) this.state.known.shift();
+  noteSuccess(address: string, login?: string): void {
+    if (isLoopbackAddress(address)) return;
+    const logins = this.state.knownLogins ?? {};
+    const newLogin = login !== undefined && logins[address] !== login;
+    if (this.state.known.includes(address) && !newLogin) return;
+    if (!this.state.known.includes(address)) this.state.known.push(address);
+    if (login !== undefined) logins[address] = login;
+    while (this.state.known.length > MAX_KNOWN_ADDRESSES) {
+      const dropped = this.state.known.shift();
+      if (dropped !== undefined) delete logins[dropped];
+    }
+    this.state.knownLogins = logins;
     this.save();
   }
 
   /** A NEW wrong value (not a repeat) came from this address. */
-  noteDistinctFailure(address: string): void {
+  noteDistinctFailure(address: string, login?: string): void {
     if (!this.opts.enabled || this.isKnown(address)) return;
     if (this.state.lockedAt !== null) return; // already locked: refused anyway
     this.state.failures += 1;
     if (this.state.failures >= this.limit) {
       this.state.lockedAt = (this.opts.now ?? Date.now)();
       (this.opts.log ?? console.warn)(
-        `[auth] ${this.state.failures} failed sign-ins from devices that have never signed in. New devices are now locked out; devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
+        `[auth] ${this.state.failures} failed sign-ins from devices that have never signed in (the last from ${address}${login ? `, Tailscale user ${login}` : ""}). New devices are now locked out; devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
       );
     }
     this.save();
@@ -190,6 +200,14 @@ export function loadStateDetailed(path: string): {
         known: Array.isArray(raw.known)
           ? raw.known.filter((a): a is string => typeof a === "string")
           : [],
+        knownLogins:
+          raw.knownLogins && typeof raw.knownLogins === "object"
+            ? Object.fromEntries(
+                Object.entries(raw.knownLogins).filter(
+                  ([, v]) => typeof v === "string",
+                ),
+              )
+            : undefined,
       },
       damaged: false,
     };

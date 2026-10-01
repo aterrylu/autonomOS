@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
-import type { IncomingMessage } from "node:http";
 import { isIPv6 } from "node:net";
 import type { Context } from "hono";
+import { clientAddress } from "./trustProxy.js";
 
 /**
  * Failed-auth throttle for the PUBLIC listener (V2, ADR-117 follow-up 5).
@@ -210,17 +210,13 @@ function expandIPv6(addr: string): string[] | null {
  * signed-in device "known" (SecurityAudit, #475). Only `::ffff:` is unwrapped.
  */
 export function rawPeerAddress(c: Context): string {
-  const env = c.env as { incoming?: IncomingMessage } | undefined;
-  const a = env?.incoming?.socket?.remoteAddress;
-  if (!a) return "unknown";
-  return a.toLowerCase().startsWith("::ffff:") && !a.slice(7).includes(":")
-    ? a.slice(7)
-    : a;
+  // The device: the TCP peer, or (with --trust-proxy=tailscale, ADR-140) the
+  // tailnet address tailscale serve forwarded for. One source for both.
+  return clientAddress(c);
 }
 
 export function peerAddress(c: Context): string {
-  const env = c.env as { incoming?: IncomingMessage } | undefined;
-  return normalizeAddress(env?.incoming?.socket?.remoteAddress);
+  return normalizeAddress(clientAddress(c));
 }
 
 /** One line per lockout, capped: an attack must not fill the log. Never

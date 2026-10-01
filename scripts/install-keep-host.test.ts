@@ -14,18 +14,18 @@ import { fileURLToPath } from "node:url";
 
 const INSTALL = fileURLToPath(new URL("./install.sh", import.meta.url));
 
-function keptHostPattern(): string {
+function keptPattern(name = "KEPT_HOST"): string {
   const line = readFileSync(INSTALL, "utf8")
     .split("\n")
-    .find((l) => l.includes("KEPT_HOST=$(grep -oE"));
-  assert.ok(line, "install.sh still extracts KEPT_HOST with grep -oE");
+    .find((l) => l.includes(`${name}=$(grep -oE`));
+  assert.ok(line, `install.sh still extracts ${name} with grep -oE`);
   const m = /grep -oE -- '([^']+)'/.exec(line);
   assert.ok(m, "pattern found");
   return m[1];
 }
 
-function kept(serviceText: string): string {
-  const res = spawnSync("grep", ["-oE", "--", keptHostPattern()], {
+function kept(serviceText: string, name = "KEPT_HOST"): string {
+  const res = spawnSync("grep", ["-oE", "--", keptPattern(name)], {
     input: serviceText,
     encoding: "utf8",
   });
@@ -43,6 +43,24 @@ describe("install.sh keeps the service's --host", () => {
     assert.equal(
       kept("ExecStart=/x/autonomos start --port=3100 --host=127.0.0.1,dev-box\n"),
       "--host=127.0.0.1,dev-box",
+    );
+  });
+});
+
+describe("install.sh keeps the service's --trust-proxy (ADR-140)", () => {
+  it("survives the re-render, so an update doesn't stop trusting serve", () => {
+    assert.equal(
+      kept(
+        "<string>--host=127.0.0.1</string><string>--trust-proxy=tailscale</string>",
+        "KEPT_TRUST",
+      ),
+      "--trust-proxy=tailscale",
+    );
+  });
+  it("and is passed to install-service", () => {
+    assert.match(
+      readFileSync(INSTALL, "utf8"),
+      /\[\[ -n "\$KEPT_TRUST" \]\] && KEEP_FLAGS\+=\("\$KEPT_TRUST"\)/,
     );
   });
 });
