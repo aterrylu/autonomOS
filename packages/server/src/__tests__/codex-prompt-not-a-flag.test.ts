@@ -44,6 +44,13 @@ function options(
     providerSessionId: "22222222-2222-4222-8222-222222222222",
     permissionMode: "ask",
     prompt: BYPASS,
+    // The rest of ResolvedSpawnOptions' required shape (as in
+    // provider-url-token.test.ts); none of it touches the prompt.
+    injectChannelServer: false,
+    channelServerScript: "/tmp/channel-server.mjs",
+    serverPort: "53917",
+    socketPath: "/tmp/aos-test/control.sock",
+    apiUrl: "http://localhost:53917",
     ...overrides,
   };
 }
