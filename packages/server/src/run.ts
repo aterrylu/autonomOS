@@ -52,6 +52,12 @@ import {
   peerAddress,
   rawPeerAddress,
 } from "./authRateLimit.js";
+import {
+  isLoopbackHost,
+  isNetworkBind,
+  keepListening,
+  parseBindHosts,
+} from "./bindHosts.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
 import { readDashboardBuild } from "./dashboardBuild.js";
@@ -222,8 +228,8 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     token: AUTH_TOKEN,
     source: tokenSource,
     priorInstall,
-    networkBind: !isLoopbackBind(
-      resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+    networkBind: isNetworkBind(
+      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
     ),
     allowWeak:
       cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
@@ -632,7 +638,9 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // token check either way — the bypass below is publicAuth, never requireAuth.
   const perfMode =
     process.env.AUTONOMOS_PERF === "1" &&
-    isLoopbackBind(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST));
+    !isNetworkBind(
+      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
+    );
   if (process.env.AUTONOMOS_PERF === "1" && !perfMode) {
     console.warn(
       "[perf] AUTONOMOS_PERF=1 ignored — bind host is not loopback; auth stays ON and /api/perf is not mounted",
@@ -963,8 +971,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // Port precedence: --port CLI flag > PORT env > 3000 default.
   // --port=0 asks the OS to assign a free port.
   const requestedPort = cliArgs.port ?? (Number(process.env.PORT) || 3000);
-  const bindHost = resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST);
-
+  // One address or a list (ADR-136): the first binds as always; each further
+  // one gets its own listener on the same port, retried in the background.
+  const bindHosts = parseBindHosts(
+    resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+  );
+  const bindHost = bindHosts?.[0];
+  const extraListeners: Array<{ stop: () => void }> = [];
   const server = serve(
     {
       fetch: app.fetch,
@@ -993,8 +1006,21 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // route here is GET /api/host; `/mcp` and hook ingestion are not served on
       // this listener at all. Stay accurate rather than implying blanket
       // coverage. Informational, not an alarm; a loopback bind is silent.
-      if (!isLoopbackBind(bindHost)) {
-        const iface = bindHost ?? "all interfaces";
+      // Further --host addresses: their own listeners for the SAME app, so
+      // every route, guard and limit applies to them unchanged.
+      for (const extra of bindHosts?.slice(1) ?? []) {
+        const srv = createAdaptorServer({ fetch: app.fetch });
+        injectWebSocket(srv);
+        extraListeners.push(
+          keepListening({ server: srv, host: extra, port: actualPort }),
+        );
+      }
+      if (bindHosts && bindHosts.length > 1 && !isLoopbackHost(bindHosts[0]))
+        console.warn(
+          `[bind] the first --host (${bindHosts[0]}) isn't loopback: the autonomos CLI on this machine talks to localhost, so put 127.0.0.1 first.`,
+        );
+      if (isNetworkBind(bindHosts)) {
+        const iface = bindHosts ? bindHosts.join(", ") : "all interfaces";
         console.log(
           `ℹ Reachable on the network (${iface}). API/WebSocket require the ` +
             `token; only GET /api/host does not (yet). /mcp and hook ingestion ` +
@@ -1076,6 +1102,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
       // start recovers via the stale-socket probe, but only after logging a
       // warning that implies an unclean shutdown. Clean up when we can.
       internalServer.close();
+      for (const l of extraListeners) l.stop();
       removeControlSocket(controlSocketPath);
     } finally {
       process.exit(0);
