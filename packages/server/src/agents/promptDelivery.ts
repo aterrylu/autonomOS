@@ -141,6 +141,10 @@ interface Tracker {
   /** Retraction ids of failure-claim notifications, so a late receipt can
    *  withdraw them. The factual "was re-delivered" note is never retracted. */
   failureNotificationIds: string[];
+  /** A startup notice already told the operator what is holding this agent
+   *  (e.g. Claude Code's Bypass Permissions consent). The no-SessionStart
+   *  give-up then names that instead of guessing at a failed boot. */
+  startupNotice: string | null;
 }
 
 /**
@@ -226,6 +230,7 @@ export function trackPromptDelivery(
     settleTimer: null,
     redelivered: false,
     failureNotificationIds: [],
+    startupNotice: null,
   };
   trackers.set(sessionId, tracker);
 
@@ -262,9 +267,30 @@ export function noteStartupSettled(sessionId: string): void {
   }
 }
 
+/**
+ * A provider startup notice fired for this session (agents/startupNotices.ts):
+ * remember it, so the no-SessionStart give-up reports that screen instead of
+ * a generic boot failure. No-op for untracked (promptless) sessions.
+ */
+export function noteStartupNotice(sessionId: string, message: string): void {
+  const t = trackers.get(sessionId);
+  if (t) t.startupNotice = message;
+}
+
 function giveUpNoSessionStart(sessionId: string): void {
   const t = trackers.get(sessionId);
   if (!t || t.phase !== "awaiting_session_start") return;
+  if (t.startupNotice) {
+    // The operator already has a notice naming the exact screen, so a second,
+    // vaguer "may have failed to boot" warning would only contradict it.
+    // Still park as given-up: a late SessionStart (the human answered)
+    // resumes tracking as usual.
+    console.warn(
+      `[prompt-delivery] ${t.label} no SessionStart yet: waiting on a startup screen the operator was told about (${t.startupNotice})`,
+    );
+    enterGivenUp(sessionId, t);
+    return;
+  }
   console.warn(
     `[prompt-delivery] ${t.label} no SessionStart within ` +
       `${t.io.sessionStartTimeoutMs ?? SESSION_START_TIMEOUT_MS}ms of startup settling — ` +

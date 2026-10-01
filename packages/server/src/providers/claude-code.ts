@@ -196,6 +196,19 @@ export const claudeCodeProvider: AgentProvider = {
     agentNaming: true,
   },
 
+  startupNotices: [
+    {
+      // Claude Code's consent screen for --dangerously-skip-permissions, shown
+      // until it has been accepted once (it then records
+      // skipDangerousModePermissionPrompt). Its default is "No, exit", and the
+      // consent is the human's to give, so nothing ever types into it: this is
+      // only a notice. Heading verbatim from a 2.1.286 render.
+      needle: "WARNING: Claude Code running in Bypass Permissions mode",
+      message:
+        'Claude Code is asking you to accept Bypass Permissions mode before this agent starts. Answer in its terminal: "Yes, I accept" lets it run, and once accepted on this machine it stops asking. autonomOS never accepts it for you.',
+    },
+  ],
+
   resolveBinary(): string {
     return resolveBinaryFromCandidates(
       "claude",
