@@ -301,6 +301,18 @@ function serverStoppingError(): SpawnError {
   );
 }
 
+/** PERF/TEST ONLY — append to an attachment's REPLAY buffer as if its PTY had
+ *  produced `data`, without sending anything to live viewers. Goes through the
+ *  real buffer path (1MB trim + sticky-mode tracking), so a rig can put a REAL
+ *  agent in the long-session state (its own startup bytes trimmed away) in
+ *  seconds instead of an hour. Only the perf router calls it. */
+export function _appendToReplayBufferForTesting(
+  managed: ManagedAttachment,
+  data: string,
+): void {
+  appendToOutputBuffer(managed, data);
+}
+
 export function getAttachment(agentId: UUID): ManagedAttachment | undefined {
   return live.get(agentId);
 }
