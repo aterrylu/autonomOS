@@ -32,7 +32,13 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./configDir.js";
 
@@ -128,8 +134,47 @@ export function revokeAgentToken(sessionId: string): void {
   credentials.delete(sessionId);
   try {
     rmSync(agentTokenFilePath(sessionId), { force: true });
+    rmSync(statuslineCachePath(sessionId), { force: true });
   } catch {
     // sessionId failed the safe-name guard, or fs error — nothing to clean up.
+  }
+}
+
+/** The statusline's per-agent last-known-good cache (written by the agent's
+ *  own statusline.mjs). Not a credential: name/manager/project/branch only. */
+function statuslineCacheDir(): string {
+  return join(getConfigDir(), "statusline-cache");
+}
+
+function statuslineCachePath(sessionId: string): string {
+  assertSafeSessionId(sessionId);
+  return join(statuslineCacheDir(), `${sessionId}.json`);
+}
+
+const STATUSLINE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Boot-time cleanup of statusline caches left by agents that crashed past
+ * their revoke. Unlike token files, live caches are KEPT across a restart:
+ * they are what lets an agent's statusline keep its identity through the
+ * server's boot stall instead of flashing "offline". Only files untouched for
+ * a day (an agent that never came back) are removed. Best-effort.
+ */
+export function sweepStaleStatuslineCaches(now = Date.now()): void {
+  let names: string[];
+  try {
+    names = readdirSync(statuslineCacheDir());
+  } catch {
+    return; // no cache dir yet
+  }
+  for (const name of names) {
+    const file = join(statuslineCacheDir(), name);
+    try {
+      if (now - statSync(file).mtimeMs > STATUSLINE_CACHE_MAX_AGE_MS)
+        rmSync(file, { force: true });
+    } catch {
+      // raced with a writer, or fs error — skip it
+    }
   }
 }
 

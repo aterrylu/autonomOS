@@ -173,7 +173,19 @@ export function UpdatedBanner() {
     verify.kind === "done" ? (verify.record.verification?.problems ?? []) : [];
   const snapshotUnreadable = problems.some((p) => p.id === "-");
   // A check that never reported back is not an "all good" either.
-  const attention = problems.length > 0 || verify.kind === "timeout";
+  // The signed build record (provenance.ts): not verified = say so, loudly.
+  const provenance =
+    (verify.kind === "done" ? verify.record.provenance : undefined) ??
+    flag?.provenance;
+  const provenanceWarning =
+    flag?.kind !== "rollback" &&
+    provenance &&
+    provenance.status !== "verified" &&
+    (provenance.status === "skipped"
+      ? `Its signed build record wasn't checked (${provenance.reason ?? "skipped"}).`
+      : `Its signed build record couldn't be checked (${provenance.reason ?? "unknown reason"}); the checksum matched.`);
+  const attention =
+    problems.length > 0 || verify.kind === "timeout" || !!provenanceWarning;
   const tone = attention ? AMBER : GREEN;
 
   let headline: string;
@@ -217,7 +229,7 @@ export function UpdatedBanner() {
       interruptedClause,
     ];
   }
-  const detailText = details.filter(Boolean).join(" ");
+  const detailText = [provenanceWarning, ...details].filter(Boolean).join(" ");
 
   return (
     <div
@@ -229,6 +241,7 @@ export function UpdatedBanner() {
       }}
       data-testid="updated-banner"
       data-tone={attention ? "attention" : "ok"}
+      data-provenance={provenance?.status ?? "unknown"}
     >
       <output className="flex min-h-8 items-center justify-between gap-3 px-4 py-1.5">
         <span className="flex items-center gap-2">
@@ -269,8 +282,14 @@ export function UpdatedBanner() {
             onClick={() => {
               // Dismissing a problem report acknowledges it for this browser;
               // otherwise it resurfaces on every load while that update runs.
-              if (verify.kind === "done" && problems.length > 0) {
-                writeUpdateAck(verify.record.startedAt);
+              // Acknowledge by run id — from the record once the agent check
+              // is in, else from a resurfaced flag (a quick dismiss).
+              const runId =
+                verify.kind === "done"
+                  ? verify.record.startedAt
+                  : flag?.startedAt;
+              if (runId && (problems.length > 0 || !!provenanceWarning)) {
+                writeUpdateAck(runId);
               }
               setFlag(null);
             }}
