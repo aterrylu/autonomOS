@@ -242,15 +242,15 @@ describe("agent API writes", () => {
       headers: { ...asAgent(), "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "agent-preset",
-        secretKeys: ["API_KEY"],
-        secrets: { API_KEY: "sk-agent-canary" },
+        secretKeys: ["ANTHROPIC_AUTH_TOKEN"],
+        secrets: { ANTHROPIC_AUTH_TOKEN: "sk-agent-canary" },
       }),
     });
     assert.equal(res.status, 201, await res.clone().text());
     const raw = getEnvPresetRaw("agent-preset");
     assert.ok(raw, "precondition: the preset was created");
-    assert.deepEqual(raw.secretKeys, ["API_KEY"]);
-    assert.equal(raw.secrets?.API_KEY, undefined);
+    assert.deepEqual(raw.secretKeys, ["ANTHROPIC_AUTH_TOKEN"]);
+    assert.equal(raw.secrets?.ANTHROPIC_AUTH_TOKEN, undefined);
   });
 
   it("an agent PUT can't set or blank a secret the human set", async () => {
@@ -260,13 +260,13 @@ describe("agent API writes", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "human-preset",
-        secretKeys: ["API_KEY"],
-        secrets: { API_KEY: "sk-human-real" },
+        secretKeys: ["ANTHROPIC_AUTH_TOKEN"],
+        secrets: { ANTHROPIC_AUTH_TOKEN: "sk-human-real" },
       }),
     });
     assert.equal(human.status, 201);
     assert.equal(
-      getEnvPresetRaw("human-preset")?.secrets?.API_KEY,
+      getEnvPresetRaw("human-preset")?.secrets?.ANTHROPIC_AUTH_TOKEN,
       "sk-human-real",
     );
 
@@ -274,11 +274,11 @@ describe("agent API writes", () => {
       const res = await app.request("/api/env-presets/human-preset", {
         method: "PUT",
         headers: { ...asAgent(), "Content-Type": "application/json" },
-        body: JSON.stringify({ secrets: { API_KEY: value } }),
+        body: JSON.stringify({ secrets: { ANTHROPIC_AUTH_TOKEN: value } }),
       });
       assert.equal(res.status, 200, await res.clone().text());
       assert.equal(
-        getEnvPresetRaw("human-preset")?.secrets?.API_KEY,
+        getEnvPresetRaw("human-preset")?.secrets?.ANTHROPIC_AUTH_TOKEN,
         "sk-human-real",
         `agent PUT with ${JSON.stringify(value)} changed the secret`,
       );

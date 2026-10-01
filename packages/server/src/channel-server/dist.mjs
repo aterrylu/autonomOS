@@ -24952,7 +24952,7 @@ var TOOL_CREATE_ENV_PRESET = {
       env: {
         type: "object",
         additionalProperties: { type: "string" },
-        description: 'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Reserved autonomOS control-plane vars are rejected.'
+        description: 'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Only model-backend keys are accepted: model, endpoint and auth variables (ANTHROPIC_*, OPENAI_*, GEMINI_*/GOOGLE_* backend keys), plus proxy and CA settings. Any other key is rejected with the full list.'
       },
       secretKeys: {
         type: "array",

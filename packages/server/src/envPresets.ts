@@ -18,7 +18,11 @@
  *   - On update, a secret value that is empty CLEARS the key, and a value that
  *     is already masked (a UI round-trip of the redacted form) is IGNORED so it
  *     can't overwrite the real stored secret with the mask.
- *   - No preset may set a RESERVED_ENV_KEY (control-plane / identity vars).
+ *   - A preset may set ONLY the keys in PRESET_ALLOWED_ENV_KEYS (security audit
+ *     V13, ADR-143): model, endpoint and auth variables, plus proxy and CA
+ *     trust. New and edited presets are refused any other key; a preset saved
+ *     before the allowlist still loads, and its other keys are skipped at
+ *     spawn with a notice naming them.
  */
 
 import {
@@ -43,29 +47,71 @@ const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Env keys that make a spawned process load/execute arbitrary code at startup.
- * Distinct from RESERVED_ENV_KEYS (control-plane identity): these don't break
- * autonomOS, they turn a "model override" into remote code execution INSIDE the
- * spawned agent's `claude`/`node` process. An agent holding the main token can
- * already curl the REST API, but it cannot otherwise run code in a SIBLING
- * agent's process — a preset `LD_PRELOAD` would grant exactly that, a genuinely
- * new vector (ADR-067). Rejected at create/update AND stripped at injection.
+ * The ONLY keys a preset may set (security audit V13, ADR-143; corrects
+ * ADR-067). A preset exists to point an agent at another model backend, so it
+ * gets the variables that choose a model, an endpoint and its credentials, and
+ * nothing else. The old denylist (LD_PRELOAD, NODE_OPTIONS, …) claimed to stop
+ * a preset from running code in another agent's process, but it let through
+ * BASH_ENV, ZDOTDIR, SHELL, CLAUDE_CODE_SHELL_PREFIX, CLAUDE_CONFIG_DIR,
+ * GIT_SSH_COMMAND, BUN_OPTIONS and more. A denylist can't be complete; an
+ * allowlist is complete by construction. Adding a backend's variable is one
+ * line here.
+ *
+ * Proxy and CA-trust variables are allowed because a corporate network needs
+ * them to reach any backend. They CAN route an agent's traffic through an
+ * interceptor (a proxy, or a CA that makes one trusted), so setting them is an
+ * explicit operator choice under ADR-067's trusted-fleet model.
  */
-const DANGEROUS_ENV_KEYS = new Set([
-  "LD_PRELOAD",
-  "LD_LIBRARY_PATH",
-  "LD_AUDIT",
-  "DYLD_INSERT_LIBRARIES",
-  "DYLD_LIBRARY_PATH",
-  "DYLD_FRAMEWORK_PATH",
-  "NODE_OPTIONS",
-  "BUN_INSPECT",
+export const PRESET_ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
+  // Claude Code, and Anthropic-compatible backends (Kimi/Moonshot, gateways)
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "API_TIMEOUT_MS",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  // Claude Code on Bedrock / Vertex
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "AWS_REGION",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "CLOUD_ML_REGION",
+  // Codex
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  // Gemini CLI
+  "GEMINI_API_KEY",
+  "GEMINI_MODEL",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GEMINI_BASE_URL",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  // Network: proxy and CA trust (see above: an explicit operator choice)
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "REQUESTS_CA_BUNDLE",
 ]);
 
-/** Keys neither a user nor an agent may put in a preset — control-plane
- *  identity (RESERVED) plus code-injection vectors (DANGEROUS). */
-function isBlockedKey(key: string): boolean {
-  return RESERVED_ENV_KEYS.has(key) || DANGEROUS_ENV_KEYS.has(key);
+/** May a preset set this key? Never a control-plane key, even if a future
+ *  edit put one on the allowlist. */
+export function isAllowedPresetKey(key: string): boolean {
+  return PRESET_ALLOWED_ENV_KEYS.has(key) && !RESERVED_ENV_KEYS.has(key);
 }
 
 function validateName(name: string): void {
@@ -81,22 +127,29 @@ function ensureDir(dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Validate an env-var key: syntactically valid AND not a reserved control key. */
+/** A key a preset may not set: the caller's input is wrong (HTTP 400), not
+ *  the server. Typed so every surface maps it without matching message text. */
+export class PresetKeyError extends Error {
+  override name = "PresetKeyError";
+}
+
+/** Validate keys for a NEW or EDITED preset: syntactically valid, not a
+ *  control-plane key, and on the allowlist. */
 function validateEnvKeys(keys: Iterable<string>, kind: "env" | "secret"): void {
   for (const key of keys) {
     if (!ENV_KEY_RE.test(key)) {
-      throw new Error(
+      throw new PresetKeyError(
         `Invalid ${kind} key "${key}": not a valid environment variable name`,
       );
     }
     if (RESERVED_ENV_KEYS.has(key)) {
-      throw new Error(
+      throw new PresetKeyError(
         `Reserved ${kind} key "${key}": presets may not override autonomOS control-plane variables`,
       );
     }
-    if (DANGEROUS_ENV_KEYS.has(key)) {
-      throw new Error(
-        `Blocked ${kind} key "${key}": presets may not set code-injection env vars (LD_PRELOAD, DYLD_*, NODE_OPTIONS, …)`,
+    if (!isAllowedPresetKey(key)) {
+      throw new PresetKeyError(
+        `Key "${key}" can't be set by a preset. Presets set only a model backend: model, endpoint and auth variables, plus proxy and CA settings. Allowed: ${[...PRESET_ALLOWED_ENV_KEYS].join(", ")}`,
       );
     }
   }
@@ -293,8 +346,25 @@ export function updateEnvPreset(
   const partial = applyWritePolicy(rawPartial, opts);
   const existing = getEnvPresetRaw(name);
   if (!existing) throw new Error(`Preset "${name}" not found`);
-  if (partial.env) validateEnvKeys(Object.keys(partial.env), "env");
-  if (partial.secretKeys) validateEnvKeys(partial.secretKeys, "secret");
+  // An edit validates only the keys it ADDS (ADR-143). The dashboard always
+  // sends the full env and secretKeys, so re-checking keys already on disk
+  // would refuse every edit of a preset saved before the allowlist, even a
+  // description change. A kept off-list key is still never injected: the
+  // spawn skips it and says so.
+  if (partial.env) {
+    const had = new Set(Object.keys(existing.env));
+    validateEnvKeys(
+      Object.keys(partial.env).filter((k) => !had.has(k)),
+      "env",
+    );
+  }
+  if (partial.secretKeys) {
+    const had = new Set(existing.secretKeys);
+    validateEnvKeys(
+      partial.secretKeys.filter((k) => !had.has(k)),
+      "secret",
+    );
+  }
   const finalSecretKeys = partial.secretKeys ?? existing.secretKeys;
   // Prune to the FINAL declared keys so removing/renaming a secretKey drops its
   // orphaned plaintext value from disk rather than leaving it invisibly (Nox).
@@ -305,7 +375,21 @@ export function updateEnvPreset(
     ),
     finalSecretKeys,
   );
-  validateEnvKeys(Object.keys(secrets), "secret");
+  // Validate only values THIS edit sets. Keys already on disk were valid when
+  // saved (a preset from before the allowlist keeps loading, ADR-143), and a
+  // masked round-trip or an empty "clear" sets nothing, so re-checking those
+  // would refuse every dashboard edit, including the one that removes them.
+  if ("secrets" in partial && partial.secrets) {
+    validateEnvKeys(
+      Object.entries(partial.secrets)
+        .filter(
+          ([, v]) =>
+            typeof v === "string" && v !== "" && !v.startsWith(SECRET_MASK),
+        )
+        .map(([k]) => k),
+      "secret",
+    );
+  }
   const updated: EnvPreset = {
     ...existing,
     description: partial.description ?? existing.description,
@@ -362,52 +446,76 @@ export function listEnvPresets(): Record<string, EnvPreset> {
 // ── Spawn resolution ────────────────────────────────────────────
 
 export interface ResolvedPresetEnv {
-  /** Injectable env (env + real secrets), with reserved keys stripped. */
+  /** Injectable env (env + real secrets), allowed keys only. */
   env: Record<string, string>;
   /** Declared secret keys that have no value set — spawn should refuse. */
   missingSecrets: string[];
+  /** Keys the preset sets that aren't on the allowlist (a preset saved before
+   *  it), skipped rather than injected. */
+  skippedKeys: string[];
 }
 
 /**
  * Resolve a preset for injection at spawn. Merges non-secret env + real secret
- * values, strips any reserved key (defense-in-depth beyond create-time
- * validation), and reports declared secret keys that are still unset so the
- * caller can refuse the spawn with a clear message. Returns null if the named
- * preset doesn't exist.
+ * values, injects ONLY allowlisted keys (a preset saved before the allowlist
+ * still loads; its other keys are skipped and reported, never injected), and
+ * reports declared secret keys that are still unset so the caller can refuse
+ * the spawn with a clear message. Returns null if the named preset doesn't
+ * exist.
  */
 export function resolvePresetEnv(name: string): ResolvedPresetEnv | null {
   const raw = getEnvPresetRaw(name);
   if (!raw) return null;
   const env: Record<string, string> = {};
+  const skipped = new Set<string>();
   for (const [k, v] of Object.entries(raw.env)) {
-    if (!isBlockedKey(k)) env[k] = v;
+    if (isAllowedPresetKey(k)) env[k] = v;
+    else skipped.add(k);
   }
   // Inject ONLY secrets whose key is currently DECLARED in secretKeys. An
   // orphaned value left on disk after a secretKey was renamed/removed must not
   // leak into the agent (it wouldn't show in the UI either) — inject-what-you-
   // declare keeps disk, UI, and process env in agreement. Also never export a
-  // masked literal that reached disk by any means, nor a blocked key.
+  // masked literal that reached disk by any means.
   const declared = new Set(raw.secretKeys);
   for (const [k, v] of Object.entries(raw.secrets)) {
-    if (declared.has(k) && !isBlockedKey(k) && !v.startsWith(SECRET_MASK)) {
-      env[k] = v;
-    }
+    if (!declared.has(k) || v.startsWith(SECRET_MASK)) continue;
+    if (isAllowedPresetKey(k)) env[k] = v;
+    else skipped.add(k);
   }
-  const missingSecrets = raw.secretKeys.filter((k) => !raw.secrets[k]);
-  return { env, missingSecrets };
+  // A declared secret that can't be injected anyway doesn't block the spawn.
+  const missingSecrets = raw.secretKeys.filter(
+    (k) => isAllowedPresetKey(k) && !raw.secrets[k],
+  );
+  for (const k of raw.secretKeys) if (!isAllowedPresetKey(k)) skipped.add(k);
+  return { env, missingSecrets, skippedKeys: [...skipped].sort() };
+}
+
+/** The operator notice for keys a pre-allowlist preset still carries. */
+export function skippedPresetKeysNotice(
+  agentName: string,
+  presetName: string,
+  keys: string[],
+): string {
+  return (
+    `${agentName}: env preset "${presetName}" sets ${keys.join(", ")}, which presets can no longer set (only model, endpoint, auth, proxy and CA variables). ` +
+    "They were NOT applied. Remove them from the preset in the Presets tab."
+  );
 }
 
 /**
  * Merge a preset's resolved env into `target` (mutating it), or THROW if the
  * preset doesn't exist or a declared API key is unset. This is the exact
  * spawn-time contract (ADR-067 decision 5), extracted from runtime.ts so the
- * two headline behaviors — "the preset's vars reach the process env" and
- * "a keyless preset refuses to spawn" — are unit-testable without a PTY.
+ * headline behaviors — "the preset's vars reach the process env", "a keyless
+ * preset refuses to spawn" and "a key off the allowlist never reaches it" —
+ * are unit-testable without a PTY. Returns the keys it skipped (ADR-143), for
+ * the caller to report.
  */
 export function applyPresetToEnv(
   target: Record<string, string>,
   presetName: string,
-): void {
+): string[] {
   const resolved = resolvePresetEnv(presetName);
   if (!resolved) throw new Error(`Env preset "${presetName}" not found`);
   if (resolved.missingSecrets.length > 0) {
@@ -417,4 +525,5 @@ export function applyPresetToEnv(
     );
   }
   for (const [k, v] of Object.entries(resolved.env)) target[k] = v;
+  return resolved.skippedKeys;
 }
