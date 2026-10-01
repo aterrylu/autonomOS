@@ -1,12 +1,23 @@
 // @vitest-environment jsdom
 import {
   act,
+  configure,
   fireEvent,
+  getConfig,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import "../../test/setup-dom";
 import type { SessionInfo } from "../../store";
 import { useStore } from "../../store";
@@ -136,6 +147,36 @@ async function startButton(): Promise<HTMLElement> {
     expect(btn).not.toBeDisabled();
   });
   return btn as unknown as HTMLElement;
+}
+
+// Load-proofing (this file flaked in pre-push gates at load averages in the
+// hundreds). These tests chain many polls, so on a starved runner a whole
+// test can outlive vitest's 5s default and a single wait can outlive
+// testing-library's 1s ceiling. Neither slows a passing run — every wait
+// resolves the moment its condition holds; they only stop a slow box from
+// reading as a broken one. File-scoped (vi.setConfig is per file; the
+// testing-library ceiling is restored after).
+vi.setConfig({ testTimeout: 30_000 });
+let savedAsyncTimeout = 1000;
+beforeAll(() => {
+  savedAsyncTimeout = getConfig().asyncUtilTimeout;
+  configure({ asyncUtilTimeout: 10_000 });
+});
+afterAll(() => configure({ asyncUtilTimeout: savedAsyncTimeout }));
+
+/** Wait until the client has made `n` MORE requests to `key` (e.g.
+ *  "GET /api/system/version"). A "nothing happened yet" assertion must rest
+ *  on real poll cycles, not wall time: a fixed 120ms sleep can cover ZERO
+ *  polls on a loaded runner, and the assertion then passes without the
+ *  code under test ever running. */
+async function pollsElapsed(key: string, n = 3) {
+  const count = () =>
+    fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        `${(init as RequestInit | undefined)?.method ?? "GET"} ${url}` === key,
+    ).length;
+  const start = count();
+  await waitFor(() => expect(count()).toBeGreaterThanOrEqual(start + n));
 }
 
 const saved = { ...updateTiming };
@@ -786,7 +827,8 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     phase = "done";
     daemonUp = true;
     routes["GET /api/system/version"] = () => json(VERSION);
-    await act(() => new Promise((r) => setTimeout(r, 120)));
+    // The OLD build answers several polls in a row — still no reload.
+    await pollsElapsed("GET /api/system/version");
     expect(reload).not.toHaveBeenCalled();
     expect(screen.getByTestId("update-reconnecting")).toBeInTheDocument();
 
@@ -831,7 +873,8 @@ describe("UpdateBadgeStatusBarItem — running the update", () => {
     await waitFor(() =>
       expect(overlay.textContent).toContain("Making sure v0.7.0 started"),
     );
-    await act(() => new Promise((r) => setTimeout(r, 80)));
+    // Several more polls while it's still unhealthy — the overlay holds.
+    await pollsElapsed("GET /api/system/upgrade");
     expect(screen.getByTestId("update-reconnecting")).toBeInTheDocument();
     expect(
       overlay.querySelector('[aria-current="step"]')?.textContent,
@@ -1420,7 +1463,8 @@ describe("UpdateBadgeStatusBarItem — race & warning campaign (ADR-105)", () =>
     await openDialog();
     fireEvent.click(await startButton());
     expect(await screen.findByTestId("update-steps")).toBeInTheDocument();
-    await act(() => new Promise((r) => setTimeout(r, 80)));
+    // Several status polls with the skewed timestamp — no false "stopped".
+    await pollsElapsed("GET /api/system/upgrade");
     expect(screen.queryByText(/stopped reporting/)).toBeNull();
   });
 });
