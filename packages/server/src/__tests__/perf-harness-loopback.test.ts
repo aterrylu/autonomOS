@@ -47,7 +47,34 @@ describe("perf harness: vite never binds beyond loopback (audit V9)", () => {
     }
   });
 
+  // `--host` given an all-interfaces address, or with no value at all (vite
+  // treats a bare --host as all interfaces). (The previous pattern ended in a
+  // word boundary, which can never follow ":", so it never caught "::"; nox
+  // on #476.)
+  const ALL_INTERFACES =
+    /--host(?:[ =](?:0\.0\.0\.0|::|\[::\])(?=\s|"|$)|(?=\s+--|\s*$))/m;
+
+  it("the all-interfaces pattern catches what it claims to", () => {
+    for (const bad of [
+      "--host ::",
+      "--host=::",
+      "--host [::]",
+      "--host 0.0.0.0 --port 1",
+      "vite --host --port 5",
+      "vite --host",
+    ]) {
+      assert.match(bad, ALL_INTERFACES, bad);
+    }
+    for (const ok of [
+      "--host 127.0.0.1 --port 5",
+      "--host=127.0.0.1",
+      "--host ::1",
+    ]) {
+      assert.doesNotMatch(ok, ALL_INTERFACES, ok);
+    }
+  });
+
   it("nothing in the harness binds all interfaces", () => {
-    assert.doesNotMatch(script, /--host[ =](0\.0\.0\.0|::)\b/);
+    assert.doesNotMatch(script, ALL_INTERFACES);
   });
 });
