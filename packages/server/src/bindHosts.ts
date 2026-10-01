@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 /**
- * Several bind addresses for the public listener (ADR-136, extends ADR-054).
+ * Several bind addresses for the public listener (ADR-139, extends ADR-054).
  *
  * `--host` / AUTONOMOS_HOST may be a comma-separated list, e.g.
  * `127.0.0.1,100.101.102.103` or `127.0.0.1,dev-box` (a MagicDNS name):

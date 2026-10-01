@@ -130,7 +130,7 @@ describe("UPGRADES NEVER BREAK EXISTING AUTH (the auth-continuity invariant)", (
     assert.ok(!migrated.includes("old-rotated-away"));
   });
 
-  it("a bind LIST migrates whole (ADR-136: loopback + tailnet)", () => {
+  it("a bind LIST migrates whole (ADR-139: loopback + tailnet)", () => {
     const { oldTree, cloneDir } = fixture(
       "AUTONOMOS_HOST=127.0.0.1,100.70.53.56\n",
     );

@@ -1,4 +1,4 @@
-## ADR-136: Bind loopback plus the tailnet address; extra listeners retry until their address is up
+## ADR-139: Bind loopback plus the tailnet address; extra listeners retry until their address is up
 
 - **Date:** 2026-10-01
 - **Decided by:** Terry (human) for the goals: "most people install it on a remote server, so they must make sure it's safe; recommend Tailscale; restarts must keep working", and keep the all-interfaces default. TeamLead@autonomOS proposed the canonical ranking and approved the host-list design. SecurityFix-Auth@autonomOS found that a tailnet-only bind breaks the CLI, then designed and implemented this.
