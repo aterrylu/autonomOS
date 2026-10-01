@@ -19,9 +19,12 @@ You'll need **Node 20+** and the `claude` binary on your PATH (autonomOS spawns 
 | Command | What it does |
 |---------|--------------|
 | `make dev` | API server (watch) + Vite HMR — the day-to-day dev loop |
+| `make dev-lan` | Same, but the dashboard is reachable from other devices on your network (see below) |
 | `make check` | Lint (Biome) + typecheck (tsc) + server, CLI & dashboard tests — **run before every push** |
 | `make fmt` | Auto-fix lint + formatting |
 | `make hero` | Regenerate the README hero screenshot (see below) |
+
+`make dev` listens on **this machine only** (127.0.0.1). To open the dev dashboard from a phone or another computer, run `make dev-lan` instead. Anyone on that network who can reach the Vite port gets the dev dashboard's files and its proxy to the API, so do it only on a network you trust. The API server itself always stays on 127.0.0.1. To reach it by a hostname rather than an IP, add the name with Vite's `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` environment variable.
 
 Run `make check` before you push — it mirrors CI exactly, so if it passes locally the PR's `check` job will too.
 
