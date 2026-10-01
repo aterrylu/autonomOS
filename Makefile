@@ -226,7 +226,7 @@ _check:
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
 	$(TSX) scripts/build-verifier.ts --check
-	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --import ./scripts/test-home-sentinel.ts --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # N-agent statusline load guard (CI: the `Load` workflow). Locally it takes the
