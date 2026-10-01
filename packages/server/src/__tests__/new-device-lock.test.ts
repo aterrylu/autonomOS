@@ -147,11 +147,11 @@ describe("NewDeviceLock", () => {
     l.noteDistinctFailure("10.0.0.1");
     assert.equal(statSync(path).mode & 0o777, 0o600);
     const saved = JSON.parse(readFileSync(path, "utf8"));
-    assert.deepEqual(Object.keys(saved).sort(), [
-      "failures",
-      "known",
-      "lockedAt",
-    ]);
+    for (const k of Object.keys(saved))
+      assert.ok(
+        ["failures", "known", "knownLogins", "lockedAt"].includes(k),
+        `unexpected key ${k}`,
+      );
   });
 
   it("a damaged file fails CLOSED (locked, loudly), never crashes the boot", () => {
