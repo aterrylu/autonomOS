@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, afterEach, beforeEach, describe, it, mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   assertFleetSlot,
@@ -57,49 +57,66 @@ describe("assertFleetSlot", () => {
 });
 
 describe("startLoadWatchdog", () => {
-  it("aborts once when load passes the limit, then stops", async () => {
+  // Virtual time: the watchdog's setInterval is mocked and advanced by hand,
+  // so these never depend on real timer scheduling (a real 5ms interval in a
+  // 60ms window flaked under a loaded pre-push gate: fewer ticks fired).
+  beforeEach(() => mock.timers.enable({ apis: ["setInterval"] }));
+  afterEach(() => mock.timers.reset());
+
+  it("aborts once when load passes the limit, then stops", () => {
     const loads = [3, 5, 50, 60];
+    let reads = 0;
     const aborts: number[] = [];
     startLoadWatchdog({
       limit: 40,
       intervalMs: 5,
-      read: () => loads.shift() ?? 0,
+      read: () => {
+        reads++;
+        return loads.shift() ?? 0;
+      },
       onAbort: (l) => aborts.push(l),
       env: {},
     });
-    await new Promise((r) => setTimeout(r, 60));
+    mock.timers.tick(5 * 10); // 10 intervals
     assert.deepEqual(aborts, [50]);
+    assert.equal(reads, 3, "stopped sampling after the abort");
   });
 
-  it("stays quiet under the limit", async () => {
+  it("stays quiet under the limit", () => {
+    let reads = 0;
     let aborted = false;
     const stop = startLoadWatchdog({
       limit: 40,
       intervalMs: 5,
-      read: () => 10,
+      read: () => {
+        reads++;
+        return 10;
+      },
       onAbort: () => {
         aborted = true;
       },
       env: {},
     });
-    await new Promise((r) => setTimeout(r, 40));
+    mock.timers.tick(5 * 8);
     stop();
+    assert.equal(reads, 8, "precondition: it really sampled");
     assert.equal(aborted, false);
   });
 
-  it("is a no-op under CI", async () => {
-    let aborted = false;
+  it("is a no-op under CI", () => {
+    let reads = 0;
     startLoadWatchdog({
       limit: 1,
       intervalMs: 5,
-      read: () => 999,
-      onAbort: () => {
-        aborted = true;
+      read: () => {
+        reads++;
+        return 999;
       },
+      onAbort: () => assert.fail("must not abort under CI"),
       env: { CI: "true" },
     });
-    await new Promise((r) => setTimeout(r, 30));
-    assert.equal(aborted, false);
+    mock.timers.tick(5 * 8);
+    assert.equal(reads, 0, "no sampling at all under CI");
   });
 
   it("default limit scales with cores", () => {
