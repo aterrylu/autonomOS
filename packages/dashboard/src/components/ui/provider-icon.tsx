@@ -1,6 +1,5 @@
 import { memo, type ReactNode, useId } from "react";
 import { THEMES, useStore } from "../../store";
-import { isLightBg } from "../recency";
 import {
   type AgentStatus,
   type StatusCategory,
@@ -34,11 +33,12 @@ const GEMINI_PATH =
 
 // Claude's mark uses its official brand clay (high-contrast on light + dark).
 const CLAUDE_CLAY = "#d97757";
-// The Codex cloud is monochrome, drawn at FULL contrast for the surface: black
-// on light, white on dark. Never the theme's text gray (Terry: "the Codex icon
-// gets grayed") and never dimmed, faded or tinted by status.
-const CODEX_ON_LIGHT = "#000000";
-const CODEX_ON_DARK = "#ffffff";
+// The Codex cloud is ALWAYS white, on every theme and surface (Terry, 2026-10-01:
+// "a white cloud on both light and dark themes… no dark tile or dark
+// background"), in the #f0f6fc of his June 2026 icon spec. Never theme-dependent,
+// never the theme's text gray ("the Codex icon gets grayed"), never dimmed. On
+// light themes it is deliberately low-contrast: his explicit choice.
+const CODEX_WHITE = "#f0f6fc";
 
 /** A single-path mark drawn in one flat color (Codex, Claude). Gemini's
  *  multi-gradient mark renders inline since it can't share this shape. */
@@ -81,8 +81,7 @@ export const ProviderIcon = memo(function ProviderIcon({
   // Strip colons from React's useId() output — they're awkward inside SVG
   // `url(#…)` fragment references.
   const uid = useId().replace(/:/g, "");
-  // Codex picks black or white by the page background; the unknown fallback
-  // follows the theme so it stays legible on both.
+  // The unknown fallback follows the theme so it stays legible on both.
   const page = THEMES[useStore((s) => s.theme)].page;
 
   if (provider === "gemini-cli") {
@@ -146,7 +145,7 @@ export const ProviderIcon = memo(function ProviderIcon({
       <MonochromeMark
         size={size}
         label="Codex"
-        color={isLightBg(page.bg) ? CODEX_ON_LIGHT : CODEX_ON_DARK}
+        color={CODEX_WHITE}
         path={CODEX_PATH}
       />
     );

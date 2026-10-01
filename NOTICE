@@ -20,9 +20,8 @@ by, or endorsement by these companies.
 
 The Codex icon (a terminal prompt in a cloud) is the `codex` mark from
 @lobehub/icons-static-svg (https://github.com/lobehub/lobe-icons, MIT
-License), used unaltered as a single-color path, drawn black on light
-themes and white on dark ones. It is a community drawing, not an asset
-published by OpenAI.
+License), used unaltered as a single-color path, always drawn white. It
+is a community drawing, not an asset published by OpenAI.
 
 autonomOS is an independent project and is not affiliated with, endorsed
 by, or sponsored by Anthropic, OpenAI, or Google. The logos are displayed

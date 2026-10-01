@@ -112,10 +112,10 @@ describe("render fan-out: memoized leaf visuals", () => {
   });
 });
 
-describe("provider marks render at full contrast, unaltered, on every theme", () => {
-  // Codex is the cloud mark (#242, restored): monochrome, black on light and
-  // white on dark, never the theme's text gray ("the Codex icon gets grayed")
-  // and never dimmed. Claude keeps its brand clay.
+describe("provider marks render unaltered, the same on every theme", () => {
+  // Codex is the cloud mark (#242, restored), ALWAYS white #f0f6fc on every
+  // theme (Terry's pick: no tile, nothing theme-dependent), never the theme's
+  // text gray and never dimmed. Claude keeps its brand clay.
   const mark = (provider: string, label: string) => {
     const { container, unmount } = render(<ProviderIcon provider={provider} />);
     const svg = container.querySelector(
@@ -129,16 +129,11 @@ describe("provider marks render at full contrast, unaltered, on every theme", ()
     unmount();
     return seen;
   };
-  const cases = [
-    ["daylight", "rgb(0, 0, 0)"],
-    ["midnight", "rgb(255, 255, 255)"],
-    ["void", "rgb(255, 255, 255)"],
-  ] as const;
-  for (const [theme, codex] of cases) {
-    it(`${theme}: the Codex cloud is ${codex === "rgb(0, 0, 0)" ? "black" : "white"}, undimmed; Claude is its brand clay`, () => {
+  for (const theme of ["daylight", "midnight", "void"] as const) {
+    it(`${theme}: the Codex cloud is the same white, undimmed; Claude is its brand clay`, () => {
       act(() => useStore.setState({ theme }));
       const c = mark("codex", "Codex");
-      expect(c.color).toBe(codex);
+      expect(c.color).toBe("rgb(240, 246, 252)");
       expect(c.style).not.toMatch(/opacity|filter/);
       expect(mark("claude-code", "Claude").color).toBe("rgb(217, 119, 87)");
     });
