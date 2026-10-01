@@ -86,13 +86,22 @@ export class AuthFailureLimiter {
   /** A credential from this address failed. `credential` is the raw value,
    *  hashed here and never stored. Returns the lockout it triggered, if any. */
   recordFailure(address: string, credential: string): number {
+    return this.recordFailureDetailed(address, credential).lockMs;
+  }
+
+  /** recordFailure, plus whether this was a NEW wrong value for the address
+   *  (a repeat is not a guess; the new-device lock counts only new ones). */
+  recordFailureDetailed(
+    address: string,
+    credential: string,
+  ): { distinct: boolean; lockMs: number } {
     const t = this.now();
     const rec = this.get(address, t) ?? this.create(address, t);
     const h = createHmac("sha256", this.hashKey)
       .update(credential)
       .digest("base64url")
       .slice(0, 16);
-    if (rec.seen.includes(h)) return 0; // a repeat, e.g. a stale tab: not a guess
+    if (rec.seen.includes(h)) return { distinct: false, lockMs: 0 }; // a repeat, e.g. a stale tab: not a guess
     rec.seen.push(h);
     if (rec.seen.length > MAX_SEEN) rec.seen.shift();
     rec.failures += 1;
@@ -101,13 +110,13 @@ export class AuthFailureLimiter {
     this.records.delete(address);
     this.records.set(address, rec);
     this.globalFailures.push(t);
-    if (rec.failures <= FREE_FAILURES) return 0;
+    if (rec.failures <= FREE_FAILURES) return { distinct: true, lockMs: 0 };
     const lock = Math.min(
       MAX_LOCK_MS,
       BASE_LOCK_MS * 2 ** Math.min(30, rec.failures - FREE_FAILURES - 1),
     );
     rec.lockedUntil = t + lock;
-    return lock;
+    return { distinct: true, lockMs: lock };
   }
 
   /** A credential from this address was valid. */
