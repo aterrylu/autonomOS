@@ -194,3 +194,4 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-136](ADR-136-statusline-resilience-last-known-good-identity-branch-from.md) | Statusline resilience: last-known-good identity, branch from HEAD | 2026-10-01 | Accepted |  |  |
 | [ADR-137](ADR-137-security-floors-every-upgrade-relinks-dependencies-checked.md) | Security floors: every upgrade relinks dependencies, checked in CI, at boot and in status | 2026-10-01 | Accepted |  |  |
 | [ADR-141](ADR-141-one-machine-wide-slot-for-heavy-local-test-runs-fleet.md) | One machine-wide slot for heavy local test runs; fleet-harness guards | 2026-10-01 | Accepted |  |  |
+| [ADR-142](ADR-142-make-dev-binds-this-machine-only-make-dev-lan-is-the-opt-in.md) | make dev binds this machine only; make dev-lan is the opt-in | 2026-10-01 | Accepted |  |  |
