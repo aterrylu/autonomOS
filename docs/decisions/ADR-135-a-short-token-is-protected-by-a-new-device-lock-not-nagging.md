@@ -28,6 +28,8 @@
 - **Residual risks (named):**
   - **Behind a reverse proxy** (`tailscale serve`, nginx) every client is loopback, so the lock never engages there. Everything relies on the network in front (the tailnet's ACLs) plus the ADR-124 per-address throttle on that one shared address.
   - **An attacker who can trigger the lock** can stop the operator from adding a NEW device until they unlock from an existing one. That is the intended trade.
-  - **Known addresses can be shared.** An attacker on the same NAT or network address as one of the operator's devices is "known".
+  - **Known addresses can be shared.** An attacker behind the same NAT (one IPv4 address) as one of the operator's devices is "known". Known devices are remembered by their EXACT address, never an IPv6 /64, so SLAAC neighbors on the same Wi-Fi are not (SecurityAudit, #475). The flip side: a device whose IPv6 privacy address rotates becomes "new" while the lock is engaged, and needs an unlock. ADR-117's session-id cookie is the real fix for device identity.
+  - **A damaged lock file fails closed:** it is treated as locked, with a loud log line, so damage never hands out a fresh cap.
+  - **A local reverse proxy is exempt.** Anything on this machine proxying requests in (`tailscale serve`, nginx) arrives as loopback and is exempt from the lock. The trusted-proxy work closes this for `tailscale serve`.
   - **The lock state lives in memory and in one 0600 file.** Deleting that file (which needs operator-level access) reopens it.
 - **Source:** TeamLead@autonomOS channel, 2026-10-01 (Terry's decisions and the hard-lockout design). Exposure math in SecurityFix-Auth's report. PR `terry/auth-global-budget`.
