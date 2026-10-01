@@ -82,7 +82,25 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
       headers: { Authorization: `Bearer ${srv.token}`, ...init.headers },
     });
 
+  const abortMessage = () =>
+    `aborted: box load ${(abortedAtLoad ?? 0).toFixed(0)} passed the limit — stopped to protect the live fleet (rerun on a quieter box, or in CI)`;
+  const throwIfAborted = () => {
+    if (abortedAtLoad !== null) throw new Error(abortMessage());
+  };
+
+  // Any error after an abort (a fetch to the server it killed, say) is
+  // reported as the abort, so the reason is never a stray "fetch failed".
   before(async () => {
+    try {
+      await setupAndRun();
+    } catch (err) {
+      if (abortedAtLoad !== null)
+        throw new Error(abortMessage(), { cause: err });
+      throw err;
+    }
+  });
+
+  async function setupAndRun() {
     // A local fleet run shares the box with the live fleet: hold the one
     // machine-wide test slot, and abort if the load climbs.
     assertFleetSlot();
@@ -197,6 +215,10 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
       },
     });
 
+    // An abort during boot couldn't kill a server that didn't exist yet:
+    // stop here before spawning the fleet (after() kills the server).
+    throwIfAborted();
+
     // Precondition: the stall injector is really mounted and really stalls,
     // or phase 2 would pass vacuously.
     const s0 = performance.now();
@@ -230,6 +252,7 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
         `spawn ${i} failed: ${JSON.stringify(body)}`,
       );
       ids.push(body.id);
+      throwIfAborted(); // never keep spawning into an overloaded box
     }
 
     // The dashboard + an always-on keep-alive /self prober.
@@ -296,11 +319,8 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     stopTraffic = true;
     await traffic;
     stopWatchdog();
-    if (abortedAtLoad !== null)
-      throw new Error(
-        `aborted: box load ${abortedAtLoad.toFixed(0)} passed the limit — stopped to protect the live fleet (rerun on a quieter box, or in CI)`,
-      );
-  });
+    throwIfAborted();
+  }
 
   after(async () => {
     stopWatchdog();

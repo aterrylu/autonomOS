@@ -35,10 +35,15 @@ function run(file: string, env: NodeJS.ProcessEnv) {
       });
       // Backstop so a regression (no timeout) fails here instead of hanging.
       const kill = setTimeout(() => {
+        if (!child.pid) return; // never kill(0): our own process group
         try {
-          process.kill(-(child.pid ?? 0), "SIGKILL");
+          process.kill(-child.pid, "SIGKILL");
         } catch {}
       }, 20_000);
+      child.on("error", (err) => {
+        clearTimeout(kill);
+        resolve({ code: -1, out: String(err), ms: Date.now() - t0 });
+      });
       child.on("close", (code) => {
         clearTimeout(kill);
         resolve({ code, out, ms: Date.now() - t0 });

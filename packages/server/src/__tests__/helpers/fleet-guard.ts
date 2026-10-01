@@ -20,7 +20,12 @@ export function assertFleetSlot(
   how = "make load-test",
 ): void {
   if (env.CI) return;
-  const lock = env.AUTONOMOS_CI_GATE_LOCK_PATH ?? DEFAULT_LOCK;
+  // `||`, like the script's `:-`: an empty path means the default.
+  const lock = env.AUTONOMOS_CI_GATE_LOCK_PATH || DEFAULT_LOCK;
+  if (env.AUTONOMOS_GATE_LOCK_HELD === "unlocked")
+    throw new Error(
+      "the machine-wide test lock is unusable here (see the [ci-gate] warning above); refusing to run a fleet test unlocked next to the live fleet",
+    );
   if (env.AUTONOMOS_GATE_LOCK_HELD !== lock)
     throw new Error(
       `this fleet test must hold the machine-wide test slot; run it via \`${how}\` (scripts/ci-gate-lock.sh), not directly`,

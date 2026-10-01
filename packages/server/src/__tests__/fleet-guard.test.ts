@@ -5,8 +5,10 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   assertFleetSlot,
@@ -32,6 +34,20 @@ describe("assertFleetSlot", () => {
     assertFleetSlot({
       AUTONOMOS_CI_GATE_LOCK_PATH: "/x/l.lock",
       AUTONOMOS_GATE_LOCK_HELD: "/x/l.lock",
+    });
+  });
+
+  it("an unusable lock refuses with the real reason (not 'run make load-test')", () => {
+    assert.throws(
+      () => assertFleetSlot({ AUTONOMOS_GATE_LOCK_HELD: "unlocked" }),
+      /lock is unusable/,
+    );
+  });
+
+  it("an empty lock-path var means the default, like the script", () => {
+    assertFleetSlot({
+      AUTONOMOS_CI_GATE_LOCK_PATH: "",
+      AUTONOMOS_GATE_LOCK_HELD: "/tmp/autonomos-ci-gate.lock",
     });
   });
 
@@ -93,24 +109,38 @@ describe("startLoadWatchdog", () => {
 
 describe("full local runs share the one machine-wide slot", () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
-  // `make -n` prints the recipe without running it.
+  // `make -n` still RUNS a recipe line containing $(MAKE) (recursive dry
+  // runs), so `check`'s lock wrapper really executes: point it at a private
+  // lock that this process "holds", so it passes straight through and never
+  // touches the real machine-wide lock.
+  const lockDir = mkdtempSync(join(tmpdir(), "slot-dry-"));
+  const lock = join(lockDir, "dry.lock");
+  after(() => rmSync(lockDir, { recursive: true, force: true }));
   const dry = (target: string, env: NodeJS.ProcessEnv) =>
-    execFileSync("make", ["-n", "-C", root, target], {
+    execFileSync("make", ["-n", "--no-print-directory", "-C", root, target], {
       encoding: "utf8",
-      env,
+      env: {
+        ...env,
+        AUTONOMOS_CI_GATE_LOCK_PATH: lock,
+        AUTONOMOS_GATE_LOCK_HELD: lock,
+      },
     });
   const { CI: _ci, ...noCi } = process.env;
 
   it("`make check` (incl. integration runs) goes through ci-gate-lock.sh", () => {
     assert.match(
-      dry("check", noCi).split("\n")[0],
+      dry("check", noCi)
+        .split("\n")
+        .find((l) => l.includes("_check")) ?? "",
       /scripts\/ci-gate-lock\.sh .*_check/,
     );
   });
 
   it("CI skips the lock (one job per runner)", () => {
     assert.doesNotMatch(
-      dry("check", { ...noCi, CI: "true" }).split("\n")[0],
+      dry("check", { ...noCi, CI: "true" })
+        .split("\n")
+        .find((l) => l.includes("_check")) ?? "",
       /ci-gate-lock/,
     );
   });
