@@ -78,6 +78,7 @@ export function readGitBranch(cwd: string, ceiling?: string): string | null;
 export function resolveBranch(
   cc: Record<string, unknown>,
   cachedBranch?: string | null,
+  onFallback?: () => void,
 ): string | null;
 export const STALE_AFTER_MS: number;
 export const OFFLINE_AFTER_MS: number;

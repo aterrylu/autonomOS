@@ -26,6 +26,9 @@ interface CacheEntry {
    *  event-loop block under a busy fleet). */
   title: string | null;
   mtimeMs: number;
+  /** Matched with mtime: on a coarse-timestamp filesystem an append can land
+   *  within the same mtime tick, but never without growing the file. */
+  size: number;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -262,13 +265,13 @@ async function getCachedTitle(
 
     // Check cache — if mtime matches, return cached title
     const cached = cache.get(sessionId);
-    if (cached && cached.mtimeMs === mtimeMs) {
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
       return cached.title;
     }
 
     // Parse the file using the already-open handle
     const title = await extractTitle(fh, size);
-    cache.set(sessionId, { title, mtimeMs });
+    cache.set(sessionId, { title, mtimeMs, size });
     return title;
   } catch {
     return null;

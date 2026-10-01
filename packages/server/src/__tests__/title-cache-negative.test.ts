@@ -28,8 +28,14 @@ describe("titleCache negative results", () => {
   let cwd: string;
   let file: string;
   const SID = "11111111-2222-3333-4444-555555555555";
-  const untitled = `${JSON.stringify({ type: "user", message: "hi" })}\n`;
-  const titled = `${untitled}${JSON.stringify({ type: "custom-title", customTitle: "Named" })}\n`;
+  // A titled session in the same project dir: proves the lookup resolves the
+  // dir at all, so an "undefined" below can only mean "no title".
+  const CONTROL = "99999999-2222-3333-4444-555555555555";
+  const head = `${JSON.stringify({ type: "user", message: "hi" })}\n`;
+  const titled = `${head}${JSON.stringify({ type: "custom-title", customTitle: "Named" })}\n`;
+  // Same byte length as `titled`, no title: swapping one for the other keeps
+  // the size, so only mtime+size caching can still answer "no title".
+  const untitled = `${head}${JSON.stringify({ type: "user", pad: "" }).padEnd(titled.length - head.length - 1, " ")}\n`;
 
   before(() => {
     home = mkdtempSync(join(tmpdir(), "title-neg-"));
@@ -40,8 +46,7 @@ describe("titleCache negative results", () => {
     mkdirSync(dir, { recursive: true });
     file = join(dir, `${SID}.jsonl`);
     writeFileSync(file, untitled);
-    // Precondition: the test resolves the project dir we just made.
-    assert.equal(process.env.HOME, home);
+    writeFileSync(join(dir, `${CONTROL}.jsonl`), titled);
   });
   after(() => {
     process.env.HOME = prevHome;
@@ -53,18 +58,33 @@ describe("titleCache negative results", () => {
     // drops the sub-millisecond part of mtimeMs).
     const pinned = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
     utimesSync(file, pinned, pinned);
-    const first = await batchGetTitles([{ sessionId: SID, cwd }]);
+    const first = await batchGetTitles([
+      { sessionId: SID, cwd },
+      { sessionId: CONTROL, cwd },
+    ]);
+    assert.equal(first.get(CONTROL), "Named", "precondition: dir resolved");
     assert.equal(first.get(SID), undefined);
 
-    // Same mtime, different bytes: only a cache hit can still say "no title".
+    // Same mtime AND size, different bytes: only a cache hit can still say
+    // "no title".
     writeFileSync(file, titled);
     utimesSync(file, pinned, pinned);
     assert.equal(statSync(file).mtimeMs, pinned.getTime()); // precondition
+    assert.equal(statSync(file).size, untitled.length); // precondition
     const second = await batchGetTitles([{ sessionId: SID, cwd }]);
     assert.equal(second.get(SID), undefined, "negative result must be cached");
   });
 
+  it("a grown file re-scans even within the same mtime tick", async () => {
+    const pinned = statSync(file).mtime;
+    writeFileSync(file, `${titled}${head}`); // appended, mtime pinned back
+    utimesSync(file, pinned, pinned);
+    const grown = await batchGetTitles([{ sessionId: SID, cwd }]);
+    assert.equal(grown.get(SID), "Named");
+  });
+
   it("a changed mtime re-scans and finds the new title", async () => {
+    writeFileSync(file, titled);
     const later = new Date(Date.now() + 5_000);
     utimesSync(file, later, later);
     const third = await batchGetTitles([{ sessionId: SID, cwd }]);

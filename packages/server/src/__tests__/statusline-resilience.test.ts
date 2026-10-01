@@ -174,31 +174,28 @@ describe("readGitBranch (no git process)", () => {
   });
 
   it("detached HEAD → null (like `git branch --show-current`)", () => {
-    const d = mkdtempSync(join(tmpdir(), "sl-det-"));
+    const d = mkdtempSync(join(root, "sl-det-"));
     mkdirSync(join(d, ".git"));
     writeFileSync(
       join(d, ".git", "HEAD"),
       "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n",
     );
     assert.equal(readGitBranch(d), null);
-    rmSync(d, { recursive: true, force: true });
   });
 
   it("not a repo → null", () => {
-    const d = mkdtempSync(join(tmpdir(), "sl-none-"));
+    const d = mkdtempSync(join(root, "sl-none-"));
     assert.equal(readGitBranch(d), null);
-    rmSync(d, { recursive: true, force: true });
   });
 
   it("an unreadable HEAD falls back to the cached branch", () => {
-    const d = mkdtempSync(join(tmpdir(), "sl-bad-"));
+    const d = mkdtempSync(join(root, "sl-bad-"));
     mkdirSync(join(d, ".git")); // a .git dir with no HEAD → read error
     assert.throws(() => readGitBranch(d));
     assert.equal(
       resolveBranch({ workspace: { current_dir: d } }, "cached/branch"),
       "cached/branch",
     );
-    rmSync(d, { recursive: true, force: true });
   });
 });
 

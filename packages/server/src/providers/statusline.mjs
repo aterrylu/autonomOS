@@ -25,6 +25,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -133,7 +134,12 @@ async function fetchSelf(sessionId, serverUrl, agentToken) {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) return { error: "http", status: res.status };
-    const me = await res.json();
+    let me;
+    try {
+      me = await res.json();
+    } catch {
+      return { error: "bad-body" }; // something else answered on the port
+    }
     if (!me || typeof me !== "object") return { error: "bad-body" };
     return {
       meta: {
@@ -203,7 +209,10 @@ function readCache(path) {
   if (!path) return null;
   try {
     const c = JSON.parse(readFileSync(path, "utf8"));
-    return c && typeof c === "object" ? c : null;
+    if (!c || typeof c !== "object") return null;
+    // A hand-edited or truncated file must not crash the renderer later.
+    if (c.meta && typeof c.meta.name !== "string") delete c.meta;
+    return c;
   } catch {
     return null;
   }
@@ -213,13 +222,16 @@ function readCache(path) {
  *  write a private temp file and rename it into place. */
 function writeCache(path, cache) {
   if (!path) return;
+  const tmp = `${path}.${process.pid}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(cache), { mode: 0o600 });
     renameSync(tmp, path);
   } catch {
-    // Read-only or sandboxed config dir: run without a cache.
+    // Read-only or sandboxed config dir (or a full disk): run without a cache.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {}
   }
 }
 
@@ -331,7 +343,8 @@ function readGitBranch(cwd, ceiling) {
       }
       const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
       const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-      return ref ? ref[1] : null;
+      // reftable repos park HEAD at "refs/heads/.invalid": no branch to show.
+      return ref && ref[1] !== ".invalid" ? ref[1] : null;
     }
     const parent = dirname(dir);
     if (parent === dir || dir === stop || !inside(parent)) return null;
@@ -345,7 +358,7 @@ function readGitBranch(cwd, ceiling) {
  * set for worktree sessions), then `.git/HEAD`. On a read error the
  * last-known branch is reused; `cachedBranch` is that fallback.
  */
-function resolveBranch(cc, cachedBranch = null) {
+function resolveBranch(cc, cachedBranch = null, onFallback = () => {}) {
   if (cc?.workspace?.git_worktree) return cc.workspace.git_worktree;
   if (cc?.worktree?.branch) return cc.worktree.branch;
 
@@ -360,6 +373,7 @@ function resolveBranch(cc, cachedBranch = null) {
   try {
     return readGitBranch(cwd, ceiling);
   } catch {
+    onFallback();
     return cachedBranch;
   }
 }
@@ -439,10 +453,20 @@ async function main() {
 
   // Start the request first; the branch read (plain file I/O) runs while it
   // is in flight.
+  const now0 = Date.now();
   const pending = fetchSelf(sessionId, serverUrl, agentToken);
   const path = cachePath(sessionId);
   const cache = readCache(path);
-  const branch = resolveBranch(cc, cache?.branch ?? null);
+  // The cached branch only stands in for a failed read briefly: a worktree
+  // that was pruned must stop showing its old branch.
+  const cachedBranch =
+    typeof cache?.branchAt === "number" && now0 - cache.branchAt < STALE_AFTER_MS
+      ? cache.branch
+      : null;
+  let fellBack = false;
+  const branch = resolveBranch(cc, cachedBranch ?? null, () => {
+    fellBack = true;
+  });
   const result = await pending;
   const now = Date.now();
   const identity = chooseIdentity(result, cache, now);
@@ -454,11 +478,20 @@ async function main() {
     next.meta = identity.meta;
     next.metaAt = now;
   }
-  if (branch) next.branch = branch;
+  const branchRead = Boolean(branch) && !fellBack;
+  if (branchRead) {
+    next.branch = branch;
+    next.branchAt = now;
+  }
+  const refreshDue = (at) => {
+    const age = now - (at ?? 0);
+    return age > CACHE_REFRESH_MS || age < 0; // < 0: the clock jumped back
+  };
   const changed =
     JSON.stringify(next.meta) !== JSON.stringify(cache?.meta) ||
     next.branch !== cache?.branch ||
-    (identity.kind === "fresh" && now - (cache?.metaAt ?? 0) > CACHE_REFRESH_MS);
+    (identity.kind === "fresh" && refreshDue(cache?.metaAt)) ||
+    (branchRead && refreshDue(cache?.branchAt));
   if (changed) writeCache(path, next);
 
   const meta = identity.kind === "offline" ? null : identity.meta;

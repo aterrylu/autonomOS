@@ -113,9 +113,11 @@ export async function listBackgroundWork(
   if (backgroundCache && now - backgroundCache.at < BACKGROUND_CACHE_MS) {
     return backgroundCache.value;
   }
-  // Single-flight: several tabs polling at once share one `ps`.
-  backgroundInFlight ??= (async () => {
-    try {
+  // Single-flight: several tabs polling at once share one `ps`. The slot is
+  // cleared AFTER it is assigned (a body with no await would otherwise run its
+  // `finally` first and leave a settled promise pinned in the slot forever).
+  if (!backgroundInFlight) {
+    const run = (async (): Promise<BackgroundWork[]> => {
       const running = listAgents().filter((a) => a.status === "running");
       const value: BackgroundWork[] = [];
       if (running.length > 0) {
@@ -131,11 +133,20 @@ export async function listBackgroundWork(
       }
       backgroundCache = { at: now, value };
       return value;
-    } finally {
-      backgroundInFlight = null;
-    }
-  })();
+    })();
+    backgroundInFlight = run;
+    const clear = () => {
+      if (backgroundInFlight === run) backgroundInFlight = null;
+    };
+    run.then(clear, clear);
+  }
   return backgroundInFlight;
+}
+
+/** Test-only: forget the cached/in-flight background-work listing. */
+export function _resetBackgroundWorkForTesting(): void {
+  backgroundCache = null;
+  backgroundInFlight = null;
 }
 
 export type ArmedState = {
