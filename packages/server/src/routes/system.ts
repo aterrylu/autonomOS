@@ -142,7 +142,7 @@ function upgradeInFlight(): boolean {
   return upgradeJobRunning();
 }
 
-systemRouter.get("/upgrade", (c) => {
+systemRouter.get("/upgrade", async (c) => {
   return c.json({
     current: getServerVersion(),
     supervised: ownSupervisor().kind !== "none",
@@ -156,7 +156,7 @@ systemRouter.get("/upgrade", (c) => {
     // and Claude Code tears down its own tracked background shells (own
     // process group and all) — forge/systemd and the dev Mac with a real
     // agent. A `nohup`/detached process (ppid 1) isn't counted: it escapes.
-    background: listBackgroundWork(),
+    background: await listBackgroundWork(),
     // Judged here, on the clock that wrote the record — a browser whose clock
     // is minutes off would otherwise declare a live job dead (or a dead one
     // live).

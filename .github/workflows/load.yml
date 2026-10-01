@@ -1,0 +1,54 @@
+name: Load
+
+# Nightly N-agent load guards (too heavy for every PR). Each fails naming the
+# user-visible symptom it protects:
+#   - statusline-load: under 20 agents + dashboard polling, the statusline
+#     never shows "[autonomos · offline]" and never drops the branch, even
+#     through injected server stalls; the server never blocks /self past 300ms.
+# Run on demand from the Actions tab (or `gh workflow run load.yml --ref <branch>`)
+# to validate a change before merging it.
+on:
+  schedule:
+    - cron: "17 9 * * *" # daily, off the hour
+  workflow_dispatch:
+  # Also on PRs that touch what it guards, so a regression is caught before
+  # merge, not the next morning.
+  pull_request:
+    branches: [main]
+    paths:
+      - packages/server/src/providers/statusline.mjs
+      - packages/server/src/backgroundProcs.ts
+      - packages/server/src/upgradeScheduler.ts
+      - packages/server/src/titleCache.ts
+      - packages/server/src/routes/perf.ts
+      - packages/server/src/__tests__/statusline-load.test.ts
+      - packages/server/perf/statusline-load/**
+      - .github/workflows/load.yml
+
+jobs:
+  statusline-load:
+    runs-on: ubuntu-latest
+    # The test itself takes ~3-4 min (boot, 20 spawns, 2 × 60s phases).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install
+
+      # No Claude Code install needed: the agents are a stub `claude`
+      # (packages/server/perf/statusline-load/fake-claude.mjs) that runs the
+      # real statusline + hook commands from the server's --settings.
+      - name: Statusline under 20-agent load
+        env:
+          AUTONOMOS_LOAD_TEST: "1"
+          LOAD_AGENTS: "20"
+        run: packages/server/node_modules/.bin/tsx --test --test-timeout=600000 packages/server/src/__tests__/statusline-load.test.ts
