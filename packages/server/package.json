@@ -17,6 +17,7 @@
     "./upgrade.js": "./src/upgrade.ts",
     "./upgradeStatus.js": "./src/upgradeStatus.ts",
     "./snapshots.js": "./src/snapshots.ts",
+    "./securityFloors.js": "./src/securityFloors.ts",
     "./version.js": "./src/version.ts"
   },
   "scripts": {

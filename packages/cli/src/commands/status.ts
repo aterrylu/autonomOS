@@ -12,11 +12,17 @@
 //   2 — daemon not running (no PID file)
 //   3 — daemon running but HTTP probe failed (process up, server stuck)
 
+import { resolve } from "node:path";
 import {
   isPidAlive,
   readPidFile,
   removePidFile,
 } from "@autonomos/server/pid-file.js";
+import {
+  checkInstalledFloors,
+  defaultServerDir,
+  formatFloorViolations,
+} from "@autonomos/server/securityFloors.js";
 
 export async function runStatusCommand(): Promise<number> {
   const pidInfo = readPidFile();
@@ -58,6 +64,7 @@ export async function runStatusCommand(): Promise<number> {
     console.log(`  hostname: ${hostname}`);
     console.log(`  uptime:   ${formatUptime(uptimeSec)}`);
     console.log(`  url:      http://127.0.0.1:${pidInfo.port}/`);
+    printStaleSecurityDeps();
     return 0;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -66,6 +73,18 @@ export async function runStatusCommand(): Promise<number> {
     );
     return 3;
   }
+}
+
+/** The installed tree's security floors (V12b). Informational: the exit codes
+ *  above are a contract for scripts and supervisors, so this never changes
+ *  them. A bundle install has nothing to check and prints nothing. */
+function printStaleSecurityDeps(): void {
+  const violations = checkInstalledFloors();
+  if (!violations?.length) return;
+  console.log("");
+  console.log(
+    formatFloorViolations(violations, resolve(defaultServerDir(), "..", "..")),
+  );
 }
 
 function formatUptime(seconds: number): string {

@@ -68,7 +68,11 @@ prod: build
 #   updater owns the restart (out-of-process, health-gated). Everything here
 #   must stay side-effect-free with respect to the running daemon.
 build:
-	@$(BUN) install
+	@# --force relinks the whole tree. A plain install keeps a nested copy the
+	@# lockfile no longer lists, so a security bump never reached the package
+	@# that loads it (measured, V12b: an upgraded clone still served ws 8.19
+	@# through @hono/node-ws). Every upgrade path runs this target. ~4s warm.
+	@$(BUN) install --force
 	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
 	@# Deps INLINED (no --packages=external): the release tarball carries no
