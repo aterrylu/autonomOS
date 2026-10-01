@@ -78,4 +78,19 @@ describe("install-service --host threading", () => {
     // The command reports usage errors as exit 64 rather than throwing.
     assert.equal(await install(["--host="]), 64);
   });
+
+  it("bakes --trust-proxy=tailscale next to --host (ADR-137)", async () => {
+    assert.equal(
+      await install(["--host=127.0.0.1", "--trust-proxy=tailscale"]),
+      0,
+    );
+    const written = readFileSync(serviceFile(), "utf-8");
+    assert.match(written, /--host=127\.0\.0\.1/);
+    assert.match(written, /--trust-proxy=tailscale/);
+  });
+
+  it("refuses an unknown --trust-proxy value rather than bake a server that won't start", async () => {
+    assert.equal(await install(["--trust-proxy=nginx"]), 64);
+    assert.equal(await install(["--trust-proxy="]), 64);
+  });
 });
