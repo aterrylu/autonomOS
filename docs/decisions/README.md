@@ -181,6 +181,7 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-123](ADR-123-operator-token-never-in-logs-owner-only-modes-re-applied-on.md) | Operator token never in logs; owner-only modes re-applied on every boot (V8) | 2026-09-30 | Accepted |  |  |
 | [ADR-124](ADR-124-throttle-failed-auth-per-address-and-globally-counting-only.md) | Throttle failed auth per address and globally, counting only distinct wrong credentials (V2a) | 2026-09-30 | Accepted |  |  |
 | [ADR-125](ADR-125-cors-origin-is-trusted-whatever-the-browser-s-sec-fetch-site.md) | CORS_ORIGIN is trusted whatever the browser's Sec-Fetch-Site label | 2026-09-30 | Accepted | ADR-122 |  |
+| [ADR-126](ADR-126-verify-release-provenance-before-installing-an-update.md) | Verify release provenance before installing an update | 2026-09-30 | Accepted |  |  |
 | [ADR-127](ADR-127-validate-gateway-websocket-frames-at-the-boundary-log.md) | Validate gateway WebSocket frames at the boundary; log unhandled rejections instead of exiting | 2026-09-30 | Accepted |  |  |
 | [ADR-128](ADR-128-release-tags-must-be-on-main-consumers-verify-ancestry.md) | Release tags must be on main: consumers verify ancestry, release.yml gate, tag ruleset | 2026-09-30 | Accepted |  |  |
 | [ADR-129](ADR-129-agents-never-hold-the-operator-token-channel-server-uses-a.md) | Agents never hold the operator token: channel server uses a per-agent credential on the internal socket | 2026-09-30 | Accepted |  |  |
