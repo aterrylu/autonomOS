@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { cwdToDirName } from "../titleCache";
+import { gitEnv } from "./helpers/git-env";
 import { type BootedServer, bootServer } from "./helpers/test-server";
 
 const ENABLED = process.env.AUTONOMOS_LOAD_TEST === "1";
@@ -120,31 +121,41 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
         // Repos for the agents, a third of them linked worktrees.
         for (let i = 0; i < 6; i++) {
           const repo = join(cfg, "repos", `r${i}`);
-          execFileSync(realGit, ["init", "-q", "-b", `feat/r${i}`, repo]);
-          execFileSync(realGit, [
-            "-C",
-            repo,
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "i",
-          ]);
-          if (i % 3 === 0)
-            execFileSync(realGit, [
+          execFileSync(realGit, ["init", "-q", "-b", `feat/r${i}`, repo], {
+            env: gitEnv(),
+          });
+          execFileSync(
+            realGit,
+            [
               "-C",
               repo,
-              "worktree",
-              "add",
+              "-c",
+              "user.email=t@t",
+              "-c",
+              "user.name=t",
+              "commit",
               "-q",
-              "-b",
-              `wt/r${i}`,
-              join(cfg, "repos", `w${i}`),
-            ]);
+              "--allow-empty",
+              "-m",
+              "i",
+            ],
+            { env: gitEnv() },
+          );
+          if (i % 3 === 0)
+            execFileSync(
+              realGit,
+              [
+                "-C",
+                repo,
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                `wt/r${i}`,
+                join(cfg, "repos", `w${i}`),
+              ],
+              { env: gitEnv() },
+            );
         }
         // Untitled transcripts for the Projects poll to scan (~600KB each, so
         // a rescan reads head, tail AND the middle).

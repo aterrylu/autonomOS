@@ -33,6 +33,7 @@ import {
   resolveBranch,
   STALE_AFTER_MS,
 } from "../providers/statusline.mjs";
+import { gitEnv } from "./helpers/git-env";
 
 const SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -125,7 +126,7 @@ describe("chooseIdentity", () => {
 describe("readGitBranch (no git process)", () => {
   let root: string;
   const git = (cwd: string, ...args: string[]) =>
-    execFileSync("git", args, { cwd, stdio: "ignore" });
+    execFileSync("git", args, { cwd, stdio: "ignore", env: gitEnv() });
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "sl-git-"));
@@ -159,6 +160,7 @@ describe("readGitBranch (no git process)", () => {
   it("agrees with `git branch --show-current` for both", () => {
     for (const d of ["repo", "wt"]) {
       const viaGit = execFileSync("git", ["branch", "--show-current"], {
+        env: gitEnv(),
         cwd: join(root, d),
         encoding: "utf8",
       }).trim();
@@ -240,7 +242,9 @@ describe("statusline process: busy server never reads as offline", () => {
     mkdirSync(join(dir, "agent-tokens"));
     writeFileSync(join(dir, "agent-tokens", SID), "tok");
     repo = join(dir, "repo");
-    execFileSync("git", ["init", "-q", "-b", "feat/e2e", repo]);
+    execFileSync("git", ["init", "-q", "-b", "feat/e2e", repo], {
+      env: gitEnv(),
+    });
     srv = createServer((_q, s) => {
       if (mode === "hang") return; // never answers: a stalled server
       s.setHeader("content-type", "application/json");
