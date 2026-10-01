@@ -73,13 +73,14 @@ autonomos uninstall-service  # remove the service; your data in ~/.autonomos sta
 
 ### Using it from other devices
 
-Recommended for a remote server: **Tailscale**, with autonomOS listening on the machine itself and on its tailnet address only:
+Recommended for a remote server: **Tailscale** with `tailscale serve`. autonomOS listens on the machine itself only, and Tailscale publishes it to your tailnet over HTTPS:
 
 ```bash
-autonomos install-service --force --host=127.0.0.1,$(tailscale ip -4)
+autonomos install-service --force --host=127.0.0.1 --trust-proxy=tailscale
+tailscale serve --bg 3000
 ```
 
-Then open `http://<server-name>:3000` from any device on your tailnet. Nothing on the local network or the internet can reach it, and restarts are safe (it keeps retrying the tailnet address until Tailscale is up). Without `--host` it listens on **every** network the machine is on, so only use that behind a firewall that allows the Tailscale interface alone. Google Cloud IAP and SSH tunnels work too. Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
+Then open `https://<server-name>.<tailnet>.ts.net` from any device on your tailnet. No port is open on any network, the traffic is HTTPS, and `--trust-proxy=tailscale` lets autonomOS tell your devices apart behind serve (a device that keeps guessing the token is locked out, and the notice names its Tailscale user). Both settings survive restarts. No `tailscale serve`? Listen on the tailnet address directly with `--host=127.0.0.1,$(tailscale ip -4)` and open `http://<server-name>:3000`. Without `--host` it listens on **every** network the machine is on, so only use that behind a firewall that allows the Tailscale interface alone. Google Cloud IAP and SSH tunnels work too. Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
 
 ## Coding-CLI support
 

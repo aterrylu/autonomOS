@@ -263,9 +263,15 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     token: AUTH_TOKEN,
     source: tokenSource,
     priorInstall,
-    networkBind: isNetworkBind(
-      parseBindHosts(resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST)),
-    ),
+    // Behind tailscale serve the loopback bind is reachable from the tailnet
+    // by design, so it counts as a network bind here (ADR-137).
+    networkBind:
+      trustProxy === "tailscale" ||
+      isNetworkBind(
+        parseBindHosts(
+          resolveBindHost(cliArgs.host, process.env.AUTONOMOS_HOST),
+        ),
+      ),
     allowWeak:
       cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
   });

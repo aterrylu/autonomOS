@@ -228,6 +228,32 @@ describe("trust-proxy=tailscale on a real server", {
     }
   });
 
+  it("a NEW install behind serve refuses a weak token, like any network bind", async () => {
+    let refused: Error | undefined;
+    try {
+      const saved = process.env.AUTONOMOS_TRUST_PROXY;
+      process.env.AUTONOMOS_TRUST_PROXY = "tailscale";
+      try {
+        // no prepareConfigDir: an empty config dir is a fresh install
+        const t = await bootServer({
+          token: WEAK,
+          extraArgs: ["--host=127.0.0.1"],
+        });
+        booted.push(t);
+      } finally {
+        if (saved === undefined) delete process.env.AUTONOMOS_TRUST_PROXY;
+        else process.env.AUTONOMOS_TRUST_PROXY = saved;
+      }
+    } catch (err) {
+      refused = err as Error;
+    }
+    assert.ok(
+      refused,
+      "a fresh install with a weak token behind serve must not start",
+    );
+    assert.match(refused.message, /exited \(code=2\)/);
+  });
+
   it("mode OFF: the headers are never read (a forwarded request is this machine)", async () => {
     const t = await boot({ AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT: "3" });
     for (let i = 0; i < 3; i++)
