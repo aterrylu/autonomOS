@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { cwdToDirName } from "../titleCache";
+import { assertFleetSlot, startLoadWatchdog } from "./helpers/fleet-guard";
 import { gitEnv } from "./helpers/git-env";
 import { type BootedServer, bootServer } from "./helpers/test-server";
 
@@ -70,6 +71,8 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
   const ids: string[] = [];
   const probes: { t: number; ms: number; status: number }[] = [];
   let stopTraffic = false;
+  let abortedAtLoad: number | null = null;
+  let stopWatchdog = () => {};
   let traffic: Promise<unknown> = Promise.resolve();
   const phases: Record<string, [number, number]> = {};
 
@@ -79,7 +82,35 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
       headers: { Authorization: `Bearer ${srv.token}`, ...init.headers },
     });
 
+  const abortMessage = () =>
+    `aborted: box load ${(abortedAtLoad ?? 0).toFixed(0)} passed the limit — stopped to protect the live fleet (rerun on a quieter box, or in CI)`;
+  const throwIfAborted = () => {
+    if (abortedAtLoad !== null) throw new Error(abortMessage());
+  };
+
+  // Any error after an abort (a fetch to the server it killed, say) is
+  // reported as the abort, so the reason is never a stray "fetch failed".
   before(async () => {
+    try {
+      await setupAndRun();
+    } catch (err) {
+      if (abortedAtLoad !== null)
+        throw new Error(abortMessage(), { cause: err });
+      throw err;
+    }
+  });
+
+  async function setupAndRun() {
+    // A local fleet run shares the box with the live fleet: hold the one
+    // machine-wide test slot, and abort if the load climbs.
+    assertFleetSlot();
+    stopWatchdog = startLoadWatchdog({
+      onAbort: (load) => {
+        abortedAtLoad = load;
+        stopTraffic = true;
+        void srv?.kill();
+      },
+    });
     const realGit = execFileSync("sh", ["-c", "command -v git"], {
       encoding: "utf8",
     }).trim();
@@ -184,6 +215,10 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
       },
     });
 
+    // An abort during boot couldn't kill a server that didn't exist yet:
+    // stop here before spawning the fleet (after() kills the server).
+    throwIfAborted();
+
     // Precondition: the stall injector is really mounted and really stalls,
     // or phase 2 would pass vacuously.
     const s0 = performance.now();
@@ -217,6 +252,7 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
         `spawn ${i} failed: ${JSON.stringify(body)}`,
       );
       ids.push(body.id);
+      throwIfAborted(); // never keep spawning into an overloaded box
     }
 
     // The dashboard + an always-on keep-alive /self prober.
@@ -259,7 +295,7 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
 
     // Warm-up: every agent renders once (its cache fills), then measure.
     const warmDeadline = Date.now() + 60_000;
-    while (Date.now() < warmDeadline) {
+    while (Date.now() < warmDeadline && !stopTraffic) {
       const rows = readRows();
       if (new Set(rows.filter((r) => r.l1).map((r) => r.agent)).size >= N)
         break;
@@ -267,12 +303,13 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     }
 
     phases.steady = [Date.now(), Date.now() + PHASE_MS];
-    await sleep(PHASE_MS);
+    for (const end = Date.now() + PHASE_MS; Date.now() < end && !stopTraffic; )
+      await sleep(500);
 
     // Phase 2: transient server stalls longer than the old 200ms budget.
     phases.stalls = [Date.now(), Date.now() + PHASE_MS];
     const stallEnd = Date.now() + PHASE_MS;
-    while (Date.now() < stallEnd) {
+    while (Date.now() < stallEnd && !stopTraffic) {
       // Stalled 60% of the time: 900ms blocks, 600ms apart. Any tick of the
       // old 200ms-budget statusline lands in one; the new one rides through.
       const r = await api("/api/perf/stall?ms=900", { method: "POST" });
@@ -281,9 +318,12 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     }
     stopTraffic = true;
     await traffic;
-  });
+    stopWatchdog();
+    throwIfAborted();
+  }
 
   after(async () => {
+    stopWatchdog();
     stopTraffic = true;
     await traffic.catch(() => {});
     await srv?.kill();
