@@ -1,4 +1,4 @@
-.PHONY: dev prod stop restart logs down check _check load-test fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import
+.PHONY: dev prod stop restart logs down check _check load-test fmt deploy doctor hero build adr adr-check adr-index adr-renumber adr-import verifier
 
 BUN := $(HOME)/.bun/bin/bun
 TSX := packages/server/node_modules/.bin/tsx
@@ -208,6 +208,7 @@ _check:
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
+	$(TSX) scripts/build-verifier.ts --check
 	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
@@ -215,6 +216,12 @@ _check:
 # machine-wide slot, and the test aborts itself if the box's load climbs.
 load-test:
 	scripts/ci-gate-lock.sh env AUTONOMOS_LOAD_TEST=1 $(GIT_CLEAN_ENV) $(TSX) --test --test-timeout=600000 packages/server/src/__tests__/statusline-load.test.ts
+
+# ── verifier: the single-file provenance verifier install.sh runs (ADR-126) ──
+# Rebuilds scripts/verify-provenance.mjs and re-pins its sha256 in install.sh.
+# `make check` fails when either is stale — commit both files together.
+verifier:
+	$(TSX) scripts/build-verifier.ts
 
 # ── adr: architectural decision records, one file each (docs/decisions/) ───────
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open
