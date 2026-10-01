@@ -433,6 +433,52 @@ describe("UpdateBadgeStatusBarItem — the decision screen", () => {
   });
 });
 
+describe("UpdateBadgeStatusBarItem — closing the dialog (#392 regression guard)", () => {
+  // Terry, copying release notes out of the dialog: a text selection that
+  // starts inside and is released over the dimmed backdrop closed the
+  // dialog. The browser sends that `click` to the nearest common ancestor of
+  // the press and the release — the backdrop itself — so a plain
+  // `e.target === e.currentTarget` check can't tell it from a real click.
+  // fireEvent reproduces the browser's exact dispatch: down, up, then click
+  // on the common ancestor.
+  async function openedBackdrop() {
+    installServer();
+    await openDialog();
+    const dialog = await screen.findByTestId("update-dialog");
+    const backdrop = dialog.parentElement as HTMLElement;
+    // Precondition: this IS the dimmed backdrop, not some wrapper — else the
+    // gestures below prove nothing.
+    expect(backdrop.style.background).toBe("rgba(0, 0, 0, 0.55)");
+    const inside = screen.getByRole("heading", {
+      name: "Update autonomOS to v0.7.0",
+    });
+    return { backdrop, inside };
+  }
+
+  it("a selection dragged from inside onto the backdrop does NOT close it, nor does the reverse", async () => {
+    const { backdrop, inside } = await openedBackdrop();
+    fireEvent.mouseDown(inside);
+    fireEvent.mouseUp(backdrop);
+    fireEvent.click(backdrop);
+    expect(screen.getByTestId("update-dialog")).toBeInTheDocument();
+
+    fireEvent.mouseDown(backdrop);
+    fireEvent.mouseUp(inside);
+    fireEvent.click(backdrop);
+    expect(screen.getByTestId("update-dialog")).toBeInTheDocument();
+  });
+
+  it("a real click on the backdrop (press and release there) closes it", async () => {
+    const { backdrop } = await openedBackdrop();
+    fireEvent.mouseDown(backdrop);
+    fireEvent.mouseUp(backdrop);
+    fireEvent.click(backdrop);
+    await waitFor(() =>
+      expect(screen.queryByTestId("update-dialog")).toBeNull(),
+    );
+  });
+});
+
 describe("UpdateBadgeStatusBarItem — busy agents and waiting for idle", () => {
   it("lists every agent, leads with 'Update when idle', names who 'Update now' interrupts, and arms into the waiting view", async () => {
     useStore.setState({
