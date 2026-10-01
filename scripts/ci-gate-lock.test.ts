@@ -22,6 +22,17 @@ const hasTool = ["flock", "lockf"].some((t) => {
   }
 });
 
+// The ancestor check needs lsof; without it the script deliberately trusts
+// the marker (see ci-gate-lock.sh), so the "only OUR holder" test can't hold.
+const hasLsof = (() => {
+  try {
+    execFileSync("sh", ["-c", "command -v lsof"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 /** Every gate still running, so after() can reap stragglers (a failed or
  *  mutated run must not leak lock holders). */
 const live = new Set<number>();
@@ -130,7 +141,9 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.doesNotMatch(r.stderr, /waiting/);
   });
 
-  it("a held-marker only passes through for OUR holder, not someone else's", async () => {
+  it("a held-marker only passes through for OUR holder, not someone else's", {
+    skip: !hasLsof && "no lsof: the script trusts the marker by design",
+  }, async () => {
     const lock = join(dir, "stale.lock");
     const releaseH = join(dir, "stale.releaseH");
     // H: an unrelated gate holding the lock (another agent's push).
