@@ -41,7 +41,9 @@ import {
 export type ProvenanceResult =
   | { status: "verified" }
   | { status: "invalid"; reason: string }
-  | { status: "missing"; reason: string }
+  /** `lasting`: retrying can't change it (no record exists for this file,
+   *  or this runtime can't check) — vs. a network/rate-limit hiccup. */
+  | { status: "missing"; reason: string; lasting?: true }
   | { status: "skipped"; reason: string };
 
 export const SKIP_PROVENANCE_ENV = "AUTONOMOS_SKIP_PROVENANCE";
@@ -134,6 +136,7 @@ export async function verifyReleaseProvenance(opts: {
     return {
       status: "missing",
       reason: "the signed build record can only be checked under Node",
+      lasting: true,
     };
   }
   const fetchAttestations =
@@ -150,6 +153,7 @@ export async function verifyReleaseProvenance(opts: {
     return {
       status: "missing",
       reason: "no signed build record was found for this download",
+      lasting: true,
     };
   }
 

@@ -409,7 +409,7 @@ describe("performUpgrade", () => {
     assert.equal(readBundleVersion(bundleDir), "0.6.0");
   });
 
-  it("the REAL verifier against a release with no attestation → postponed, nothing changed", async () => {
+  it("the REAL verifier against a release with no attestation → not applied, says retrying won't help", async () => {
     // The fixture API has no /attestations route (404 = none published).
     const apiBase = await startFixtureServer(["0.6.0"]);
     const bundleDir = installLiveBundle("0.5.0");
@@ -419,9 +419,17 @@ describe("performUpgrade", () => {
       currentVersion: "0.5.0",
       verifyProvenance: (o) => verifyReleaseProvenance({ ...o, env: {} }),
     });
+    // No record EXISTS: retrying can't help, so don't say "try again later" —
+    // say so, and name the override (nox, #445).
     assertError(
       result,
-      /update was postponed: .*no signed build record was found/,
+      /The v0\.6\.0 update wasn't applied: .*no signed build record was found.*retrying won't change that\. Nothing changed\./,
+    );
+    assertError(result, /Releases before v0\.5\.0 were never signed/);
+    assertError(result, /AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade/);
+    assert.doesNotMatch(
+      (result as { message: string }).message,
+      /try again later/,
     );
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
   });

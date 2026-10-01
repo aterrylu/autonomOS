@@ -188,6 +188,7 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
       (r as { reason: string }).reason,
       /only be checked under Node/,
     );
+    assert.equal((r as { lasting?: boolean }).lasting, true);
   });
 
   it("a fork's name is INVALID: the signer must be the configured repo", async () => {
@@ -218,6 +219,8 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
     });
     assert.equal(r.status, "missing");
     assert.match((r as { reason: string }).reason, /no signed build record/);
+    // Retrying can't make a record appear (a release from before v0.5.0).
+    assert.equal((r as { lasting?: boolean }).lasting, true);
   });
 
   it("GitHub unreachable is MISSING, with the reason", async () => {
@@ -226,6 +229,7 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
         fetchAttestations: async () => ({ error: "couldn't reach GitHub" }),
       }),
     });
+    // deepEqual: no `lasting` — a network hiccup IS worth retrying.
     assert.deepEqual(r, { status: "missing", reason: "couldn't reach GitHub" });
   });
 
@@ -239,6 +243,7 @@ describe("verifyReleaseProvenance — real v0.7.0 attestation, offline", () => {
     });
     assert.equal(r.status, "missing");
     assert.match((r as { reason: string }).reason, /trust root/);
+    assert.equal((r as { lasting?: boolean }).lasting, undefined);
   });
 
   it("an attestation this version can't read is MISSING, not tamper evidence", async () => {
@@ -396,10 +401,13 @@ describe("verifyReleaseProvenance — the GitHub attestations API", () => {
       trustedRoot: async () => ROOT,
       commitOnMain: async () => true,
     };
-    assert.equal((await check({ apiBase: base, deps })).status, "missing");
+    const none = await check({ apiBase: base, deps });
+    assert.equal(none.status, "missing");
+    assert.equal((none as { lasting?: boolean }).lasting, true, "404: lasting");
     code = 502;
     const r = await check({ apiBase: base, deps });
     assert.equal(r.status, "missing");
+    assert.equal((r as { lasting?: boolean }).lasting, undefined, "502: retry");
     assert.match((r as { reason: string }).reason, /HTTP 502/);
   });
 });
