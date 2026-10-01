@@ -85,6 +85,26 @@ describe("scripts/run-bounded.sh", () => {
     assert.ok(r.ms < 5_000, `output stayed open ${r.ms}ms`);
   });
 
+  it("a gate that is itself killed releases the caller's output at once", async () => {
+    // The gate aborted (lefthook, Ctrl-C, a parent timeout): the watchdog's
+    // sleep must not survive and hold the output open for the whole bound.
+    const marker = `aborted-${process.pid}-${Date.now()}`;
+    const t0 = Date.now();
+    const child = spawn("bash", [BOUNDED, "60", "bash", "-c", `sleep 30 # ${marker}`], {
+      detached: true,
+    });
+    child.stdout.on("data", () => {});
+    child.stderr.on("data", () => {});
+    const closed = new Promise<number | null>((res) => child.on("close", res));
+    await new Promise((res) => setTimeout(res, 500));
+    if (child.pid) process.kill(child.pid, "SIGTERM"); // the runner only
+    const code = await closed;
+    assert.ok(Date.now() - t0 < 6_000, `output stayed open ${Date.now() - t0}ms`);
+    assert.equal(code, 143);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(alive(marker), false, "the command's group was stopped too");
+  });
+
   it("stops the WHOLE process group at the bound, names the stuck test file, exits 124", async () => {
     const marker = `stuck-${process.pid}-${Date.now()}.test.ts`;
     const r = await run("bash", [
