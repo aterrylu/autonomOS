@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -166,5 +167,100 @@ describe("new-device lock on a real server", {
     for (let i = 0; i < Number(LIMIT) + 1; i++)
       assert.equal((await fromLan(t, `guess-${i}`)).status, 401);
     assert.equal((await fromLan(t, strong)).status, 200);
+  });
+});
+
+/** Two global IPv6 addresses of this machine in the same /64 (SLAAC), or
+ *  undefined. They stand in for the operator's laptop and a neighbor on the
+ *  same Wi-Fi. */
+function sameSlashSixtyFourPair(): [string, string] | undefined {
+  const v6 = Object.values(networkInterfaces())
+    .flat()
+    .filter(
+      (i) =>
+        i &&
+        i.family === "IPv6" &&
+        !i.internal &&
+        !i.address.toLowerCase().startsWith("fe80"),
+    )
+    .map((i) => i?.address as string);
+  for (const a of v6)
+    for (const b of v6)
+      if (
+        a !== b &&
+        a.split(":").slice(0, 4).join(":") ===
+          b.split(":").slice(0, 4).join(":")
+      )
+        return [a, b];
+  return undefined;
+}
+const v6pair = sameSlashSixtyFourPair();
+
+describe("new-device lock: an IPv6 neighbor isn't 'known' (#475)", {
+  skip:
+    !RUN_INTEGRATION || !v6pair
+      ? "needs integration + two global IPv6 addresses in one /64"
+      : false,
+  timeout: 120_000,
+}, () => {
+  const booted: BootedServer[] = [];
+  after(() =>
+    boundedTeardown("new-device-lock-v6", async () => {
+      await Promise.all(booted.map((s) => s.kill()));
+      for (const s of booted)
+        rmSync(s.configDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 200,
+        });
+    }),
+  );
+
+  /** GET /api/agents from a chosen SOURCE address. */
+  const fromV6 = (port: number, source: string, token: string) =>
+    new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          host: (v6pair as [string, string])[0],
+          family: 6,
+          port,
+          path: "/api/agents",
+          localAddress: source,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+  it("the operator signs in from one address; a same-/64 neighbor still gets locked out", async () => {
+    const [me, neighbor] = v6pair as [string, string];
+    const saved = process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT;
+    process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT = "3";
+    let s: BootedServer;
+    try {
+      s = await bootServer({
+        token: WEAK,
+        prepareConfigDir: (dir) => mkdirSync(join(dir, "templates")),
+      });
+    } finally {
+      if (saved === undefined)
+        delete process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT;
+      else process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT = saved;
+    }
+    booted.push(s);
+    assert.equal(await fromV6(s.port, me, WEAK), 200, "the operator's device");
+    for (let i = 0; i < 3; i++) await fromV6(s.port, neighbor, `guess-${i}`);
+    assert.equal(
+      await fromV6(s.port, neighbor, WEAK),
+      423,
+      "the neighbor is a NEW device, even with the right token",
+    );
+    assert.equal(await fromV6(s.port, me, WEAK), 200, "the operator stays in");
   });
 });

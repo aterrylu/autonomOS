@@ -85,7 +85,15 @@ export class NewDeviceLock {
       log?: (line: string) => void;
     },
   ) {
-    this.state = loadState(opts.path);
+    const { state, damaged } = loadStateDetailed(opts.path);
+    this.state = state;
+    if (damaged && opts.enabled) {
+      this.state.lockedAt = (opts.now ?? Date.now)();
+      (opts.log ?? console.warn)(
+        `[auth] the new-device lock file (${opts.path}) is damaged, so new devices are locked out to be safe. Devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
+      );
+      this.save();
+    }
   }
 
   private get limit(): number {
@@ -156,21 +164,46 @@ export class NewDeviceLock {
   }
 }
 
-/** Read the persisted state; anything unreadable or malformed is "open". */
-export function loadState(path: string): Persisted {
-  try {
-    if (!existsSync(path)) return { failures: 0, lockedAt: null, known: [] };
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Persisted>;
+/**
+ * Read the persisted state. A MISSING file is "open" (a fresh install). A file
+ * that exists but can't be read or parsed fails CLOSED: locked, because a
+ * damaged file must not hand out a fresh cap (SecurityAudit, #475). The
+ * operator unlocks as usual.
+ */
+export function loadStateDetailed(path: string): {
+  state: Persisted;
+  damaged: boolean;
+} {
+  if (!existsSync(path))
     return {
-      failures: Number.isInteger(raw.failures) ? (raw.failures as number) : 0,
-      lockedAt: typeof raw.lockedAt === "number" ? raw.lockedAt : null,
-      known: Array.isArray(raw.known)
-        ? raw.known.filter((a): a is string => typeof a === "string")
-        : [],
+      state: { failures: 0, lockedAt: null, known: [] },
+      damaged: false,
+    };
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Persisted>;
+    if (typeof raw !== "object" || raw === null)
+      throw new Error("not an object");
+    return {
+      state: {
+        failures: Number.isInteger(raw.failures) ? (raw.failures as number) : 0,
+        lockedAt: typeof raw.lockedAt === "number" ? raw.lockedAt : null,
+        known: Array.isArray(raw.known)
+          ? raw.known.filter((a): a is string => typeof a === "string")
+          : [],
+      },
+      damaged: false,
     };
   } catch {
-    return { failures: 0, lockedAt: null, known: [] };
+    return {
+      state: { failures: 0, lockedAt: 0, known: [] },
+      damaged: true,
+    };
   }
+}
+
+/** The persisted state, damaged → locked (see loadStateDetailed). */
+export function loadState(path: string): Persisted {
+  return loadStateDetailed(path).state;
 }
 
 export function saveState(path: string, state: Persisted): void {

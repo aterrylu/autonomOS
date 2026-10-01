@@ -50,6 +50,7 @@ import {
   AuthFailureLimiter,
   cappedLockoutWarn,
   peerAddress,
+  rawPeerAddress,
 } from "./authRateLimit.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
@@ -450,7 +451,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
 
   /** 423/429 before any credential is evaluated, or null to go on. */
   function throttled(c: Context, address: string): Response | null {
-    if (newDeviceLock.refuses(address))
+    if (newDeviceLock.refuses(rawPeerAddress(c)))
       return c.json(
         {
           error:
@@ -473,14 +474,20 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     );
   }
 
-  function recordFailures(address: string, presented: readonly string[]): void {
+  /** `address` keys the throttle (IPv6 /64); `device` is the exact peer, for
+   *  the new-device lock's known check. */
+  function recordFailures(
+    address: string,
+    device: string,
+    presented: readonly string[],
+  ): void {
     for (const value of presented) {
       const { distinct, lockMs } = authLimiter.recordFailureDetailed(
         address,
         value,
       );
       if (lockMs > 0) warnLockout(address, lockMs);
-      if (distinct) newDeviceLock.noteDistinctFailure(address);
+      if (distinct) newDeviceLock.noteDistinctFailure(device);
     }
   }
 
@@ -491,11 +498,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      if (token) recordFailures(address, [token]);
+      if (token) recordFailures(address, rawPeerAddress(c), [token]);
       return c.json({ error: "Invalid token" }, 401);
     }
     authLimiter.recordSuccess(address);
-    newDeviceLock.noteSuccess(address);
+    newDeviceLock.noteSuccess(rawPeerAddress(c));
     setSessionCookie(c, token);
     return c.json({ ok: true });
   };
@@ -597,12 +604,12 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // shared cookie can no longer log it out here.
         if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
         // A device a valid credential came from is never locked out.
-        if (throttle) newDeviceLock.noteSuccess(address);
+        if (throttle) newDeviceLock.noteSuccess(rawPeerAddress(c));
         return next();
       }
       // A request that presented nothing (the dashboard probing before sign-in)
       // made no guess and isn't counted.
-      if (throttle) recordFailures(address, presented);
+      if (throttle) recordFailures(address, rawPeerAddress(c), presented);
       return c.json(
         {
           error:

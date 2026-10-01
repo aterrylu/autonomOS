@@ -203,6 +203,21 @@ function expandIPv6(addr: string): string[] | null {
 }
 
 /** The TCP peer of this request (never a forwarding header). */
+/**
+ * The TCP peer exactly, for the new-device lock's KNOWN set (ADR-135). Unlike
+ * peerAddress it does NOT collapse IPv6 to its /64: a /64 is a whole Wi-Fi
+ * network under SLAAC, and remembering it would make every neighbor of a
+ * signed-in device "known" (SecurityAudit, #475). Only `::ffff:` is unwrapped.
+ */
+export function rawPeerAddress(c: Context): string {
+  const env = c.env as { incoming?: IncomingMessage } | undefined;
+  const a = env?.incoming?.socket?.remoteAddress;
+  if (!a) return "unknown";
+  return a.toLowerCase().startsWith("::ffff:") && !a.slice(7).includes(":")
+    ? a.slice(7)
+    : a;
+}
+
 export function peerAddress(c: Context): string {
   const env = c.env as { incoming?: IncomingMessage } | undefined;
   return normalizeAddress(env?.incoming?.socket?.remoteAddress);
