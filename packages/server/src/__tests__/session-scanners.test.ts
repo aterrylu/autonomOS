@@ -29,6 +29,7 @@ const {
   parseCodexHead,
   parseGeminiHead,
   readClaudeMeta,
+  readClaudeSessionMeta,
 } = await import("../sessionScanners.js");
 
 let home: string;
@@ -493,5 +494,27 @@ describe("readClaudeMeta — HUGE first lines (headless review sessions)", () =>
       cwd: "/w/x",
       entrypoint: "cli",
     });
+  });
+});
+
+describe("readClaudeSessionMeta — bounded like the other scanners", () => {
+  it(`reads only the newest MAX_FILES (${MAX_FILES}) sessions`, async () => {
+    const projects = join(home, "projects");
+    const n = MAX_FILES + 25;
+    for (let i = 0; i < n; i++) {
+      const d = join(projects, `-w-p${i % 7}`);
+      mkdirSync(d, { recursive: true });
+      const f = join(d, `s-${i}.jsonl`);
+      writeFileSync(
+        f,
+        `${JSON.stringify({ type: "user", cwd: "/w/p", entrypoint: "cli" })}\n`,
+      );
+      const t = 1_000_000_000 + i;
+      utimesSync(f, t, t);
+    }
+    const meta = await readClaudeSessionMeta(projects);
+    assert.equal(meta.size, MAX_FILES);
+    assert.ok(meta.has(`s-${n - 1}`), "the newest is read");
+    assert.ok(!meta.has("s-0"), "the oldest is past the cap");
   });
 });

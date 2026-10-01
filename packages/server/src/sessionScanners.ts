@@ -596,8 +596,11 @@ export async function readClaudeMeta(
 /**
  * sessionId → its cwd and entrypoint, for every Claude Code session JSONL
  * under `projectsDir` (`<projectsDir>/<encoded-cwd>/<sessionId>.jsonl`).
- * Bounded like the other scanners (MAX_HEAD_BYTES per file), mtime-cached,
- * and unreadable files are skipped with a one-time warning.
+ * Bounded like the other scanners: only the newest MAX_FILES sessions are
+ * read (older ones simply get no meta: the SDK's own cwd still places them,
+ * and they aren't flagged headless), each read is bounded by readClaudeMeta,
+ * results are mtime-cached, and unreadable files are skipped with a one-time
+ * warning.
  */
 export async function readClaudeSessionMeta(
   projectsDir: string,
@@ -611,15 +614,11 @@ export async function readClaudeSessionMeta(
         files.push(join(projectsDir, d.name, f.name));
     }
   }
-  for (let i = 0; i < files.length; i += STAT_CONCURRENCY) {
+  const newest = await newestFiles(files, MAX_FILES);
+  for (let i = 0; i < newest.length; i += STAT_CONCURRENCY) {
     await Promise.all(
-      files.slice(i, i + STAT_CONCURRENCY).map(async (path) => {
-        let st: { mtimeMs: number; size: number };
-        try {
-          st = await stat(path);
-        } catch {
-          return;
-        }
+      newest.slice(i, i + STAT_CONCURRENCY).map(async (st) => {
+        const path = st.path;
         const id = path.slice(path.lastIndexOf("/") + 1, -".jsonl".length);
         const hit = claudeMetaCache.get(path);
         if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {

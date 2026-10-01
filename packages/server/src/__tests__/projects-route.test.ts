@@ -739,6 +739,34 @@ describe("GET /api/projects — projects by git repo (Terry: 'way too many proje
     );
   });
 
+  it("only SDK entrypoints are headless — an IDE/desktop session is interactive", async () => {
+    _resetProjectResolverForTesting();
+    _learnForTesting(REPO, REPO);
+    _setDepsForTesting({
+      listSessions: async () =>
+        fakeSessions([
+          { sessionId: "ide-1", cwd: REPO },
+          { sessionId: "sdk-1", cwd: REPO },
+          { sessionId: "old-1", cwd: REPO },
+        ]),
+      listCodexSessions: async () => [],
+      listGeminiSessions: async () => [],
+      readClaudeSessionMeta: async () =>
+        new Map([
+          ["ide-1", { entrypoint: "claude-vscode" }],
+          ["sdk-1", { entrypoint: "sdk-ts" }],
+          // old-1: a version that records no entrypoint (or past the cap)
+        ]),
+    });
+    const ps = await get(createApp());
+    const all = ps.flatMap((p) => p.sessions);
+    const headless = (id: string) =>
+      all.find((s) => s.sessionId === id)?.headless;
+    assert.equal(headless("ide-1"), false);
+    assert.equal(headless("sdk-1"), true);
+    assert.equal(headless("old-1"), false);
+  });
+
   it("a DELETED worktree never seen by git folds by the naming convention into a known repo", async () => {
     _resetProjectResolverForTesting();
     _learnForTesting(REPO, REPO);
