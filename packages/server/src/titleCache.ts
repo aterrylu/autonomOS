@@ -21,8 +21,14 @@ const TITLE_MARKERS = [
 
 /** Cached entry: the resolved title and the file mtime when we last parsed. */
 interface CacheEntry {
-  title: string;
+  /** null = scanned, no custom title (cached too: most sessions have none,
+   *  and re-scanning them on every Projects poll was a recurring ~150ms
+   *  event-loop block under a busy fleet). */
+  title: string | null;
   mtimeMs: number;
+  /** Matched with mtime: on a coarse-timestamp filesystem an append can land
+   *  within the same mtime tick, but never without growing the file. */
+  size: number;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -259,17 +265,13 @@ async function getCachedTitle(
 
     // Check cache — if mtime matches, return cached title
     const cached = cache.get(sessionId);
-    if (cached && cached.mtimeMs === mtimeMs) {
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
       return cached.title;
     }
 
     // Parse the file using the already-open handle
     const title = await extractTitle(fh, size);
-    if (title) {
-      cache.set(sessionId, { title, mtimeMs });
-    } else {
-      cache.delete(sessionId);
-    }
+    cache.set(sessionId, { title, mtimeMs, size });
     return title;
   } catch {
     return null;

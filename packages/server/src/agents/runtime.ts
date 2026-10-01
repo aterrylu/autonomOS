@@ -75,6 +75,7 @@ import { noteFreshStart } from "./freshStarts.js";
 import {
   cancelAllPromptTracking,
   cancelPromptTracking,
+  noteStartupNotice,
   noteStartupSettled,
   supportsPromptDeliveryReceipt,
   trackPromptDelivery,
@@ -1660,6 +1661,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
       if (live.get(resolved.sessionId)?.pty !== pty) return;
       console.warn(`[runtime] ${agentName}: ${msg}`);
       pushSystemNotification(resolved.sessionId, `${agentName}: ${msg}`);
+      noteStartupNotice(resolved.sessionId, msg);
     });
     const subs: Array<{ dispose(): void }> = [];
     const stop = (): void => {

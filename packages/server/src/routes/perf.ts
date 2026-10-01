@@ -23,6 +23,18 @@ export const perfRouter = new Hono();
 
 perfRouter.get("/health", (c) => c.json({ ok: true, sessions: ptys.size }));
 
+/** Block the event loop for `ms` (capped at 5s): a deterministic stand-in for
+ *  a transient server stall (GC, boot, a spawn burst), so the statusline load
+ *  test can prove agents ride one out without reading "offline". */
+perfRouter.post("/stall", (c) => {
+  const ms = Math.min(5_000, Math.max(0, Number(c.req.query("ms")) || 0));
+  const until = performance.now() + ms;
+  while (performance.now() < until) {
+    // busy-wait on purpose: the point is to hold the loop
+  }
+  return c.json({ ok: true, ms });
+});
+
 function scaledBurst(mb: number | undefined): string[] {
   const totalBytes =
     mb !== undefined && Number.isFinite(mb) && mb > 0

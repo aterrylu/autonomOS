@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -11,6 +19,7 @@ import {
   mintAgentToken,
   revokeAgentToken,
   sweepAgentTokenFiles,
+  sweepStaleStatuslineCaches,
   verifyAgentToken,
   writeAgentTokenFile,
 } from "../agentCredentials.js";
@@ -184,5 +193,41 @@ describe("agent token file", () => {
   it("boot sweep on a never-written dir does not throw (first boot)", () => {
     isolate();
     assert.doesNotThrow(() => sweepAgentTokenFiles());
+  });
+});
+
+describe("statusline last-known-good cache lifecycle", () => {
+  afterEach(() => _resetConfigDirForTesting());
+
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "sl-cache-"));
+    _setConfigDirForTesting(dir);
+    const cacheDir = join(dir, "statusline-cache");
+    mkdirSync(cacheDir);
+    const file = (id: string) => join(cacheDir, `${id}.json`);
+    return { file };
+  };
+
+  it("revoking an agent's token removes its statusline cache", () => {
+    const { file } = setup();
+    writeAgentTokenFile("sess-cache");
+    writeFileSync(file("sess-cache"), "{}");
+    revokeAgentToken("sess-cache");
+    assert.equal(existsSync(file("sess-cache")), false);
+  });
+
+  it("the boot sweep keeps live caches, removes day-old leftovers", () => {
+    const { file } = setup();
+    writeFileSync(file("live"), "{}");
+    writeFileSync(file("dead"), "{}");
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    utimesSync(file("dead"), old, old);
+    sweepStaleStatuslineCaches();
+    assert.equal(
+      existsSync(file("live")),
+      true,
+      "a live cache survives a restart",
+    );
+    assert.equal(existsSync(file("dead")), false);
   });
 });

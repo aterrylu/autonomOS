@@ -3,9 +3,9 @@
  * worth a notice (AgentProvider.startupNotices) — e.g. Gemini's folder-trust
  * dialog, which silently holds the agent at Ask until it's answered.
  *
- * Pure and chunk-boundary safe: output arrives in arbitrary chunks, so the
- * needle is matched against the accumulated (ANSI-stripped, despaced) text,
- * bounded to a tail long enough to hold any needle across a split.
+ * Pure and chunk-boundary safe: output arrives in arbitrary chunks, which can
+ * split an escape sequence, so the needle is matched against the accumulated
+ * RAW tail after stripping ANSI and whitespace from it as a whole.
  */
 
 import { ANSI_RE, despace } from "../providers/ptyText.js";
@@ -17,7 +17,9 @@ export interface StartupNotice {
 
 /** How long a spawn is watched — startup screens render in the first seconds. */
 export const STARTUP_NOTICE_WINDOW_MS = 60_000;
-const TAIL_CHARS = 4_096;
+/** Raw bytes kept across chunks: escapes are dense in TUI output, so this is
+ *  generous enough to hold any needle plus the styling around it. */
+const RAW_TAIL_CHARS = 16_384;
 
 /**
  * Returns `feed(chunk)`, which calls `onNotice(message)` once per notice the
@@ -29,10 +31,14 @@ export function createStartupNoticeScanner(
   onNotice: (message: string) => void,
 ): (chunk: string) => boolean {
   const pending = notices.map((n) => ({ ...n, norm: despace(n.needle) }));
-  let tail = "";
+  // Keep the RAW tail and strip escapes from the joined text: a PTY read can
+  // end mid-escape (\e[1 | C), and stripping each chunk alone leaves the
+  // fragments behind, which break a needle that spans them.
+  let raw = "";
   return (chunk) => {
     if (pending.length === 0) return true;
-    tail = (tail + despace(chunk.replace(ANSI_RE, ""))).slice(-TAIL_CHARS);
+    raw = (raw + chunk).slice(-RAW_TAIL_CHARS);
+    const tail = despace(raw.replace(ANSI_RE, ""));
     for (let i = pending.length - 1; i >= 0; i--) {
       if (tail.includes(pending[i].norm)) {
         onNotice(pending[i].message);
