@@ -93,6 +93,10 @@ export interface UpgradeStatusRecord {
     status: "verified" | "missing" | "skipped";
     reason?: string;
   };
+  /** A "failed" run that was POSTPONED, not broken: the build couldn't be
+   *  confirmed, so nothing was installed (ADR-126 D). `lasting`: retrying
+   *  can't change it. */
+  postponed?: { lasting: boolean; reason: string };
 }
 
 export interface BusyAgent {
