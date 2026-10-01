@@ -23,17 +23,15 @@ const USAGE = `Usage: autonomos-server [options]
 
 Options:
   --port=N        Listen on port N (default: 3000, env PORT)
-  --host=H        Bind to interface H (env AUTONOMOS_HOST). Default: all
-                  interfaces, so the dashboard is reachable over the network
-                  (Tailscale / IAP / SSH). Every API/WebSocket route requires
-                  the auth token; only GET /api/host does not yet. /mcp and hook
-                  ingestion are not served here at all — they live on the
-                  internal control socket ($configDir/control.sock).
-                  Pass --host=127.0.0.1 to RESTRICT to loopback — e.g. a box you
-                  only reach through an SSH tunnel. Use a loopback address, not
-                  another specific IP: the post-install health check and the
-                  running-server guard probe localhost, so a loopback-excluding
-                  bind reports a false install failure.
+  --host=H        Bind to interface H (env AUTONOMOS_HOST), or a comma list
+                  like 127.0.0.1,100.x.y.z (put loopback first: the autonomos
+                  CLI talks to localhost). Each further address gets its own
+                  listener on the same port and is retried in the background
+                  until it exists, e.g. a tailnet address before Tailscale is
+                  up. Default: ALL interfaces, reachable on every network the
+                  machine is on. Every API/WebSocket route requires the auth
+                  token; only GET /api/host does not. /mcp and hook ingestion
+                  live on the internal control socket ($configDir/control.sock).
   --print-url     After startup, print a sign-in link
                   (http://host:port/#token=…) — open it to sign in to the
                   dashboard. Printed to the terminal only, never the log file.
