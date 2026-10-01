@@ -47,7 +47,7 @@ RELEASE_REPO="aterrylu/autonomOS"
 
 # sha256 of scripts/verify-provenance.mjs — maintained by `make verifier`, and
 # CI fails if it drifts from the file. The site serves both from one deploy.
-readonly VERIFIER_SHA256="379c30bd21f02d1cd6fb5412324fca852885ab0e1abe9ef9737ca6e62e84262a"
+readonly VERIFIER_SHA256="1bf534a45e6369d10e7e34a17cff78b87800e102e7915b1afe7cb00d2dc625d5"
 
 
 # ── platform detection ────────────────────────────────────────────────────
@@ -273,7 +273,7 @@ else
       10) provenance_refuse "this download doesn't match its signed build record ($PROV_WHY)." \
             "It may have been tampered with — please report it: https://github.com/$RELEASE_REPO/issues" ;;
       11) provenance_refuse "couldn't check this download's signed build record ($PROV_WHY)." \
-            "If GitHub or Sigstore was unreachable, re-run in a minute. If no record was found, this file isn't an official release build: don't install it, and please report where it came from." ;;
+            "If GitHub or Sigstore was unreachable or rate-limited, re-run later (for a rate limit, the reason above says when it resets). If no record was found, this file isn't an official build (only the very first release, v0.0.1, predates signing): don't install it, and please report where it came from." ;;
       *)  echo "$(tail -n 3 "$TMP/verifier.err" 2>/dev/null | cut -c1-300)" >&2
           provenance_refuse "the build-record verifier failed unexpectedly (exit $PROV_RC)." \
             "This is a bug in the installer, not your download: please report it at https://github.com/$RELEASE_REPO/issues" ;;
