@@ -297,8 +297,12 @@ if [[ "${SKIP_INSTALL_SERVICE:-0}" != "1" ]]; then
     KEEP_FLAGS=()
     KEPT_PORT=$(grep -oE -- '--port=[0-9]+' "$SERVICE_FILE" | head -1 || true)
     KEPT_HOST=$(grep -oE -- '--host=[^ <"]+' "$SERVICE_FILE" | head -1 || true)
+    # Behind `tailscale serve` (ADR-137): dropping it on an update would make
+    # every tailnet visitor look like this machine again.
+    KEPT_TRUST=$(grep -oE -- '--trust-proxy=[a-z]+' "$SERVICE_FILE" | head -1 || true)
     [[ -n "$KEPT_PORT" ]] && KEEP_FLAGS+=("$KEPT_PORT")
     [[ -n "$KEPT_HOST" ]] && KEEP_FLAGS+=("$KEPT_HOST")
+    [[ -n "$KEPT_TRUST" ]] && KEEP_FLAGS+=("$KEPT_TRUST")
     echo "[install] Existing service detected. Re-rendering service + restarting into the new bundle..."
     "$WRAPPER" install-service --force ${KEEP_FLAGS[@]+"${KEEP_FLAGS[@]}"} || RC=$?
     if [[ "$RC" == "0" ]]; then
