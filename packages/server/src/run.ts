@@ -435,7 +435,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   const authLimiter = new AuthFailureLimiter();
   const warnLockout = cappedLockoutWarn();
   // A weak token also gets a CAP on failures from never-seen devices
-  // (newDeviceLock.ts, ADR-133): its total exposure is then limit/keyspace.
+  // (newDeviceLock.ts, ADR-135): its total exposure is then limit/keyspace.
   const newDeviceLock = new NewDeviceLock({
     enabled: isWeakToken(AUTH_TOKEN),
     path: newDeviceLockPath(getConfigDir()),
@@ -652,7 +652,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // connect" question, the token still answers "prove it".
   internalApp.use("/mcp", requireAuth);
 
-  // The new-device lock (ADR-133): its state for the dashboard and CLI, and
+  // The new-device lock (ADR-135): its state for the dashboard and CLI, and
   // the operator's unlock. Both behind auth, so only a device holding the
   // token (which the lock never refuses) can read or clear it.
   app.get("/api/auth/lock", (c) => c.json(newDeviceLock.status()));
@@ -1136,7 +1136,7 @@ function enforceTokenStrength(o: {
   if (policy === "warn") {
     // One informational line: the operator may keep a short token on purpose
     // (Terry, 2026-10-01). The throttle (ADR-124) and the new-device lock
-    // (ADR-133) are what protect it; nothing nags.
+    // (ADR-135) are what protect it; nothing nags.
     console.log(
       `ℹ The operator token is short (${o.token.length} characters): new devices get ${newDeviceFailureLimit(process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT)} failed sign-ins in total before they're locked out. \`autonomos token rotate\` replaces it.`,
     );
