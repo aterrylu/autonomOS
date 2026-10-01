@@ -6,21 +6,28 @@ import { type MockAgent, mockApi } from "./mocks";
 
 /**
  * CI regression guard for Terry's two terminal bugs (2026-10-01), in a REAL
- * xterm in a real Chromium:
- *   A — "Codex panes freeze: I could not scroll at all" (one pane at a time).
+ * xterm in a real Chromium (rAF runs, so wheel scrolling is real):
+ *   A — "Codex panes freeze: I can't scroll" / after the first fix "the wheel
+ *       walks my prompt history instead of scrolling the transcript".
  *   B — "a Claude terminal blacked out except the part that refreshes"
  *       (CLAUDE_CODE_NO_FLICKER=1).
- * Both came from the reconnect replay: the server replayed a raw, front-trimmed
- * byte log that had lost the modes a full-screen TUI sets once at startup, and
- * a fresh pane parsed it at xterm's default size. The mocked terminal socket
- * below delivers exactly what the real server builds (the same DecModeTracker
- * preamble, the same begin/end markers), fed by a REAL captured Codex stream.
+ * Ground truth (ADR-135): xterm.js turns the wheel into ↑/↓ on ANY buffer
+ * without scrollback (it ignores ?1007), and in Codex ↑ walks prompt history.
+ * Codex 0.159 defaulted to the alternate screen, so it is now spawned inline
+ * (tui.alternate_screen="never"): its transcript is xterm scrollback, the
+ * wheel scrolls it, and NO bytes reach the agent. Claude no_flicker is an
+ * alternate screen WITH mouse tracking: the wheel must reach Claude as mouse
+ * reports. The mocked socket delivers exactly what the real server builds
+ * (the same DecModeTracker preamble, begin/end markers) from REAL captured
+ * streams.
  *
- * Mutation harness: E2E_OLD_REPLAY=1 rebuilds the pre-fix replay (no preamble,
- * no geometry marker). Both tests must FAIL under it, naming the symptom.
+ * Mutation harness (each must FAIL a test, naming the symptom):
+ *   E2E_OLD_REPLAY=1  pre-fix replay (no preamble, no geometry marker)
+ *   E2E_FORCE_ALT=1   the wrong first fix: Codex replayed onto the alt screen
  */
 
 const OLD = process.env.E2E_OLD_REPLAY === "1";
+const FORCE_ALT = process.env.E2E_FORCE_ALT === "1";
 const NOW = Date.now();
 
 const fixture = (name: string): string[] =>
@@ -53,7 +60,8 @@ function serverReplay(
   for (const c of chunks.slice(0, cut)) head.feed(c);
   const frames: string[] = [];
   if (!OLD) frames.push(BEGIN(geom.cols, geom.rows));
-  frames.push((OLD ? "" : head.preamble()) + chunks.slice(cut).join(""));
+  const forced = FORCE_ALT ? "\x1b[?1049h\x1b[?1007h" : "";
+  frames.push(forced + (OLD ? "" : head.preamble()) + chunks.slice(cut).join(""));
   frames.push(END);
   return frames;
 }
@@ -196,48 +204,128 @@ function altRows(page: Page, id: string) {
   }, id);
 }
 
-test("A: Codex pane — after a replay that lost the stream's start, the wheel still scrolls (Terry's 'frozen, can't scroll')", async ({
+/** Viewport position + buffer type of a live terminal. */
+function viewport(page: Page, id: string) {
+  return page.evaluate((agentId) => {
+    const get = (
+      window as unknown as {
+        __autonomosTerminal: (id: string) =>
+          | {
+              terminal: {
+                buffer: {
+                  active: { type: string; baseY: number; viewportY: number };
+                };
+              };
+            }
+          | undefined;
+      }
+    ).__autonomosTerminal;
+    const b = get(agentId)?.terminal.buffer.active;
+    return b ? { type: b.type, baseY: b.baseY, viewportY: b.viewportY } : null;
+  }, id);
+}
+
+const ARROW_OR_MOUSE = /\x1b\[A|\x1bOA|\x1b\[B|\x1bOB|\x1b\[<6[45];/;
+
+async function wheelUpOverTerminal(page: Page) {
+  const box = (await page.locator(".xterm").first().boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.evaluate(() => {
+    (window as unknown as { __termSent: string[] }).__termSent.length = 0;
+  });
+  for (let i = 0; i < 8; i++) {
+    await page.mouse.wheel(0, -120);
+    await page.waitForTimeout(30);
+  }
+}
+
+test("A: Codex (inline, as spawned) — after a trimmed replay the wheel scrolls the TRANSCRIPT and sends nothing to the agent (not ↑ = prompt history)", async ({
   page,
 }) => {
-  const CODEX = fixture("codex");
-  // The real 1MB trim: everything up to and including the chunk that turned
-  // on alternate scroll (?1007h) is gone.
-  const cut = CODEX.findIndex((c) => c.includes("\x1b[?1007h")) + 1;
-  expect(cut).toBeGreaterThan(0);
+  const INLINE = fixture("codex-inline");
   const id = "agent-codex-replay-01";
   await mockApi(page, { agents: [agent(id, "Codex Replay", "codex")] });
   await installTerminalSocket(page, {
-    [id]: serverReplay(CODEX, cut, { cols: 286, rows: 76 }),
+    // head-trimmed: a long session's buffer lost its start
+    [id]: serverReplay(INLINE, Math.floor(INLINE.length / 3), {
+      cols: 141,
+      rows: 49,
+    }),
   });
   await openPaneAtBoot(page, id);
   await page.goto("/");
-  const xterm = page.locator(".xterm").first();
-  await expect(xterm).toBeVisible();
-  // Replay parsed: the TUI is back on its alternate screen.
+  await expect(page.locator(".xterm").first()).toBeVisible();
   await expect
-    .poll(async () => (await altRows(page, id))?.type, {
+    .poll(async () => (await viewport(page, id))?.baseY ?? 0, {
       message:
-        "Codex freeze: the replay left the pane OFF the alternate screen (trimmed ?1049h not restored)",
+        "Codex freeze/history-walk: no scrollback, the pane is on the ALTERNATE screen (wheel → ↑ = prompt history)",
+    })
+    .toBeGreaterThan(20);
+  const before = (await viewport(page, id))!;
+  expect(
+    before.type,
+    "Codex freeze/history-walk: the replay put the pane on the ALTERNATE screen (wheel → ↑ = prompt history)",
+  ).toBe("normal");
+
+  await wheelUpOverTerminal(page);
+  await expect
+    .poll(async () => (await viewport(page, id))?.viewportY, {
+      message:
+        "Codex freeze: the wheel did not scroll the transcript (viewport didn't move)",
+    })
+    .toBeLessThan(before.viewportY);
+  const sent = await page.evaluate(
+    () => (window as unknown as { __termSent: string[] }).__termSent,
+  );
+  expect(
+    sent.filter((d) => ARROW_OR_MOUSE.test(d)),
+    "Codex history-walk: the wheel sent arrow keys / mouse reports to the agent",
+  ).toEqual([]);
+});
+
+test("C: Claude no_flicker — after a trimmed replay the wheel reaches CLAUDE as mouse reports (it scrolls itself), never as arrow keys", async ({
+  page,
+}) => {
+  const CLAUDE = fixture("claude");
+  // Trimmed past the chunk that turned mouse tracking on.
+  const cut = CLAUDE.findIndex((c) => c.includes("\x1b[?1006h")) + 1;
+  expect(cut).toBeGreaterThan(0);
+  const id = "agent-claude-mouse-01";
+  await mockApi(page, { agents: [agent(id, "Claude Mouse", "claude-code")] });
+  await installTerminalSocket(page, {
+    [id]: serverReplay(CLAUDE, cut, { cols: 141, rows: 49 }),
+  });
+  await openPaneAtBoot(page, id);
+  await page.goto("/");
+  await expect(page.locator(".xterm").first()).toBeVisible();
+  await expect
+    .poll(async () => (await viewport(page, id))?.type, {
+      message:
+        "no_flicker: the trimmed replay left the pane OFF the alternate screen (?1049h not restored)",
     })
     .toBe("alternate");
-
-  const box = (await xterm.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -600);
+  await wheelUpOverTerminal(page);
   await expect
     .poll(
       () =>
         page.evaluate(() =>
-          (window as unknown as { __termSent: string[] }).__termSent.some(
-            (d) => d.includes("\x1b[A") || d.includes("\x1bOA"),
+          (window as unknown as { __termSent: string[] }).__termSent.some((d) =>
+            /\x1b\[<64;/.test(d),
           ),
         ),
       {
         message:
-          "Codex freeze: wheel over the pane sent NO arrow keys after a trimmed replay (?1007h lost)",
+          "no_flicker: the wheel did not reach Claude as a mouse report (mouse tracking not restored)",
       },
     )
     .toBe(true);
+  const sent = await page.evaluate(
+    () => (window as unknown as { __termSent: string[] }).__termSent,
+  );
+  expect(
+    sent.filter((d) => /\x1b\[A|\x1bOA/.test(d)),
+    "no_flicker: the wheel was turned into arrow keys",
+  ).toEqual([]);
 });
 
 test("B: fresh pane — a full-screen replay is parsed at the PTY's size, not xterm's default (Terry's no_flicker 'blackout')", async ({

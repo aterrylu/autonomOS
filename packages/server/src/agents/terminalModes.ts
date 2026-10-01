@@ -2,15 +2,16 @@
  * Sticky terminal modes, tracked so a reconnect replay can restore them.
  *
  * A reconnecting pane resets its terminal and the server replays the session's
- * output buffer: the last 1MB of raw PTY bytes, trimmed from the front. Full-
- * screen TUIs set their modes ONCE at startup and then only draw. Measured on
- * real streams: Codex 0.154 sends `?1049h` (alternate screen) at byte 69 and
- * `?1007h` (alternate scroll: the wheel becomes arrow keys) at byte 89; Claude
- * Code with CLAUDE_CODE_NO_FLICKER=1 sends `?1049h` plus mouse tracking
- * (`?1000/1002/1003/1006h`). Once a session passes 1MB those bytes are trimmed
- * away, so the reset terminal never re-enters those modes. For Codex that left
- * the wheel dead: an alternate screen has no scrollback, and without `?1007h`
- * no arrow keys are sent ("the pane froze, I couldn't scroll").
+ * output buffer: the last 1MB of raw PTY bytes, trimmed from the front. A
+ * full-screen TUI sets its modes ONCE at startup and then only draws. Measured:
+ * Claude Code with CLAUDE_CODE_NO_FLICKER=1 sends `?1049h` (alternate screen)
+ * plus mouse tracking (`?1000/1002/1003/1006h`). Once a session passes 1MB
+ * those bytes are trimmed away, so the reset terminal never re-enters those
+ * modes: the pane sits on the normal screen, the wheel no longer reaches
+ * Claude, and only the cells Claude later redraws ever come back.
+ *
+ * (Codex is spawned INLINE, `tui.alternate_screen="never"`, ADR-135: it sets
+ * none of these, and its transcript is plain scrollback a replay reproduces.)
  *
  * The fix keeps the mode state AT THE HEAD of the retained buffer (fed the
  * chunks as the trim drops them). Replaying that state's preamble and then the
