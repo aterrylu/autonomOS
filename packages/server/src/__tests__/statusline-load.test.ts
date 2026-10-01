@@ -47,8 +47,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = join(HERE, "../../perf/statusline-load/fake-claude.mjs");
 
 // Bounds. The server is ~1-2% busy at this load; a request should never wait
-// on a block anywhere near the statusline's budget.
-const PROBE_MAX_MS = 300;
+// on a block anywhere near the statusline's budget. The max allows for runner
+// contention (20 agents + their statuslines share a 4-vCPU CI box with the
+// server: one 308ms outlier seen with p99 < 100ms); a real block like the old
+// synchronous `ps` shows as 600ms-3s and still fails it.
+const PROBE_MAX_MS = 500;
 const PROBE_P99_MS = 100;
 
 type SlRow = { t: number; ms: number; l1: string; l2: string; agent: string };
