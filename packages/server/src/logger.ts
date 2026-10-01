@@ -206,8 +206,31 @@ let rawStdoutWrite: ((chunk: string) => boolean) | null = null;
  * sign-in link). Before file logging starts it is a plain stdout write.
  */
 export function writeUnlogged(text: string): void {
+  if (brokenSinks.has(process.stdout)) return;
   if (rawStdoutWrite) rawStdoutWrite(text);
   else process.stdout.write(text);
+}
+
+/** Streams whose reader has gone away (EPIPE): nothing is written to them. */
+const brokenSinks = new Set<NodeJS.WriteStream>();
+
+/**
+ * Survive the terminal side of stdout/stderr going away — `server | tee` with
+ * tee killed (Ctrl-C signals the whole pipeline), a closed terminal. On macOS
+ * a pipe write fails ASYNCHRONOUSLY, as an 'error' event on the stream; with no
+ * listener that is an uncaught exception, and it killed the server mid-shutdown
+ * after the first log line, before the SIGTERM/SIGKILL stages and the daemon
+ * wait ran (leaving agent daemons behind). Stop writing to a broken sink; the
+ * rotating file keeps every line. Any other stream error still throws.
+ */
+export function tolerateBrokenSink(std: NodeJS.WriteStream): void {
+  if (std.listeners("error").includes(onSinkError)) return;
+  std.on("error", onSinkError);
+}
+
+function onSinkError(this: NodeJS.WriteStream, err: NodeJS.ErrnoException) {
+  if (err.code !== "EPIPE" && err.code !== "ERR_STREAM_DESTROYED") throw err;
+  brokenSinks.add(this);
 }
 
 function patch(
@@ -226,7 +249,8 @@ function patch(
   const echo = echoOnlyOnTty ? Boolean(std.isTTY) : true;
   std.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
     writer.write(chunk);
-    if (echo) return (original as (...a: unknown[]) => boolean)(chunk, ...rest);
+    if (echo && !brokenSinks.has(std))
+      return (original as (...a: unknown[]) => boolean)(chunk, ...rest);
     // Not echoing: honor a trailing write-callback so callers never stall.
     const cb = rest.find((a) => typeof a === "function");
     if (cb) (cb as () => void)();
@@ -242,6 +266,10 @@ function patch(
 export function initFileLogging(): void {
   if (initialized) return;
   initialized = true;
+  // Before the try: a server that couldn't start file logging still logs to
+  // stdout/stderr, and must survive their reader going away too.
+  tolerateBrokenSink(process.stdout);
+  tolerateBrokenSink(process.stderr);
   try {
     const maxBytes = envInt("AUTONOMOS_LOG_MAX_BYTES", DEFAULT_MAX_BYTES);
     const keep = envInt("AUTONOMOS_LOG_KEEP", DEFAULT_KEEP);

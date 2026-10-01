@@ -308,7 +308,12 @@ export const codexProvider: AgentProvider = {
       // daemon's -c on resume). A mode CHANGE on resume therefore can't apply —
       // see resumeCannotApplyModeChange below and the runtime's handling.
       if (options.providerThreadId) {
-        if (options.prompt) args.push(options.prompt);
+        // `--` before the prompt, on every path: codex parses a flag-shaped
+        // prompt AS A FLAG otherwise, so "--dangerously-bypass-approvals-and-
+        // sandbox" as a prompt would run an "ask" agent with no approvals
+        // (security audit V11; measured on 0.157.1: a `--help` prompt printed
+        // help). After `--` it is always the positional prompt.
+        if (options.prompt) args.push("--", options.prompt);
         return args;
       }
       // The TUI creates/owns the thread, so ITS sandbox/approval flags govern the
@@ -329,7 +334,7 @@ export const codexProvider: AgentProvider = {
           `approvals_reviewer=${JSON.stringify(values.approvals_reviewer)}`,
         );
       }
-      if (options.prompt) args.push(options.prompt);
+      if (options.prompt) args.push("--", options.prompt); // see the resume path
       return args;
     }
 
@@ -342,7 +347,7 @@ export const codexProvider: AgentProvider = {
     }
     args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
     args.push("--cd", options.cwd, ...daemonConfigArgs(options));
-    if (options.prompt) args.push(options.prompt);
+    if (options.prompt) args.push("--", options.prompt); // see the resume path
     return args;
   },
 

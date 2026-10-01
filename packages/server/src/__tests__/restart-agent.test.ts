@@ -130,7 +130,11 @@ after(async () => {
   _resetCacheForTesting();
 });
 
-describe("restartAgent", { timeout: 30_000 }, () => {
+// The suite's budget, not a per-test one: node:test applies a describe
+// timeout to the WHOLE suite, and its restarts each wait out a SIGTERM-
+// ignoring daemon's SIGKILL stage (~2s), so 11 cases ran 29-34s against a
+// 30s budget and the tail got cancelled. Bounded, but well clear of that.
+describe("restartAgent", { timeout: 180_000 }, () => {
   // ADR-064: never drop. A message queued for a transport retry must survive a
   // restart that ends with the agent running, and be dropped WITH the notice
   // by one that doesn't. (The stand-in daemons speak no protocol, so a queued

@@ -187,3 +187,5 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-130](ADR-130-weak-operator-tokens-warn-every-boot-refuse-only-on-new.md) | Weak operator tokens: warn every boot, refuse only on new network installs, rotate in one command (V2b) | 2026-09-30 | Accepted |  |  |
 | [ADR-131](ADR-131-codex-app-server-listens-on-an-owner-only-unix-socket.md) | Codex app-server listens on an owner-only unix socket; loopback TCP only as a noticed fallback | 2026-09-30 | Accepted |  |  |
 | [ADR-132](ADR-132-record-sidecar-daemons-on-disk-and-reap-an-orphan-before.md) | Record sidecar daemons on disk and reap an orphan before starting a new one | 2026-09-30 | Accepted |  |  |
+| [ADR-133](ADR-133-gateway-websocket-frame-limit-1-mib-and-per-socket-warning.md) | Gateway WebSocket frame limit (1 MiB) and per-socket warning budget | 2026-09-30 | Accepted |  |  |
+| [ADR-134](ADR-134-shutdown-survives-a-closed-stdout-and-uncaught-errors.md) | Shutdown survives a closed stdout and uncaught errors | 2026-09-30 | Accepted |  |  |

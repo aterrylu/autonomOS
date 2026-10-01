@@ -39,7 +39,7 @@
     "@sigstore/tuf": "^5.0.0",
     "@sigstore/verify": "^4.1.2",
     "croner": "^10.0.1",
-    "hono": "^4",
+    "hono": "^4.13.12",
     "impit": "^0.10.1",
     "node-pty": "1.0.0",
     "ws": "^8.18.3",

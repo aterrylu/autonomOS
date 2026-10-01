@@ -27,3 +27,13 @@ export const DELIVERY_ACK_MS = 2_000;
  *  backstop for a wedged gateway — NOT the bound that governs a normal send,
  *  which is why it must stay comfortably above `DELIVERY_ACK_MS`. */
 export const GATEWAY_REQUEST_TIMEOUT_MS = 5_000;
+
+/** The largest frame the gateway accepts from a channel server, and so the
+ *  largest `send` message (the frame is the message plus a little JSON). ws's
+ *  default is 100 MiB, which let any agent make the server buffer and parse
+ *  that much per frame (review of V6). 1 MiB leaves ample room for a long
+ *  agent message. Lives here, next to the other limits both sides of the
+ *  bundle boundary share, because the channel server checks it BEFORE
+ *  sending: an over-limit frame is closed (1009) with no reply, which would
+ *  leave the sender waiting out GATEWAY_REQUEST_TIMEOUT_MS. */
+export const MAX_GATEWAY_FRAME_BYTES = 1024 * 1024;
