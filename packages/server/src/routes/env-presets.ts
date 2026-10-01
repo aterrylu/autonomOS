@@ -16,6 +16,7 @@ import {
   deleteEnvPreset,
   getEnvPreset,
   listEnvPresets,
+  PresetKeyError,
   updateEnvPreset,
 } from "../envPresets.js";
 import {
@@ -51,9 +52,11 @@ envPresetRouter.post("/", async (c) => {
     return c.json(preset, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    const status = /already exists|Invalid|Reserved|Blocked/.test(message)
-      ? 400
-      : 500;
+    const status =
+      err instanceof PresetKeyError ||
+      /already exists|Invalid|Reserved|Blocked/.test(message)
+        ? 400
+        : 500;
     return c.json({ error: message }, status);
   }
 });
@@ -83,7 +86,11 @@ envPresetRouter.put("/:name", async (c) => {
     const message = err instanceof Error ? err.message : "Unknown error";
     let status: 400 | 404 | 500 = 500;
     if (/not found/.test(message)) status = 404;
-    else if (/Invalid|Reserved|Blocked/.test(message)) status = 400;
+    else if (
+      err instanceof PresetKeyError ||
+      /Invalid|Reserved|Blocked/.test(message)
+    )
+      status = 400;
     return c.json({ error: message }, status);
   }
 });

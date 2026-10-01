@@ -69,6 +69,15 @@ describe("env-presets route — status classification + masking", () => {
     assert.equal(status, 400, `expected 400, got ${status}: ${json?.error}`);
   });
 
+  it("POST a key off the allowlist → 400 (audit V13)", async () => {
+    const { status, json } = await req("POST", "", {
+      name: "rc",
+      env: { BASH_ENV: "/tmp/evil.sh" },
+    });
+    assert.equal(status, 400, `expected 400, got ${status}: ${json?.error}`);
+    assert.match(String(json?.error ?? ""), /can't be set by a preset/);
+  });
+
   it("PUT code-injection key → 400", async () => {
     const { status } = await req("PUT", "/kimi", {
       env: { NODE_OPTIONS: "--require /evil.js" },
