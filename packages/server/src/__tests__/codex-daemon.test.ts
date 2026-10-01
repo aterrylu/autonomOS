@@ -265,6 +265,8 @@ describe("codex daemon topology", () => {
         ENDPOINT,
         "-c",
         "check_for_update_on_startup=false",
+        "-c",
+        'tui.alternate_screen="never"',
         "--dangerously-bypass-approvals-and-sandbox",
       ]);
     });
@@ -278,6 +280,8 @@ describe("codex daemon topology", () => {
         ENDPOINT,
         "-c",
         "check_for_update_on_startup=false",
+        "-c",
+        'tui.alternate_screen="never"',
         "-s",
         "danger-full-access",
         "-c",
@@ -297,6 +301,8 @@ describe("codex daemon topology", () => {
         ENDPOINT,
         "-c",
         "check_for_update_on_startup=false",
+        "-c",
+        'tui.alternate_screen="never"',
         "-s",
         "danger-full-access",
         "-c",
@@ -327,7 +333,31 @@ describe("codex daemon topology", () => {
         ENDPOINT,
         "-c",
         "check_for_update_on_startup=false",
+        "-c",
+        'tui.alternate_screen="never"',
       ]);
+    });
+
+    it("runs the TUI INLINE on every path (fresh, resume, legacy): the transcript lives in xterm scrollback", () => {
+      // Codex 0.159 defaults to the alternate screen, where xterm turns the
+      // wheel into ↑/↓ (prompt history) and the transcript can't be scrolled.
+      for (const opts of [
+        baseOptions({ sidecarEndpoint: ENDPOINT, permissionMode: "ask" }),
+        baseOptions({
+          sidecarEndpoint: ENDPOINT,
+          permissionMode: "bypass",
+          providerThreadId: "thread-abc-123",
+        }),
+        baseOptions({ permissionMode: "ask" }),
+      ]) {
+        const args = codexProvider.buildArgs(opts);
+        const i = args.indexOf('tui.alternate_screen="never"');
+        assert.ok(i > 0 && args[i - 1] === "-c", JSON.stringify(args));
+        assert.ok(
+          !args.includes("--no-alt-screen"),
+          "a flag would break an older codex",
+        );
+      }
     });
 
     for (const mode of ["ask", "auto", "plan", "bypass"] as const) {

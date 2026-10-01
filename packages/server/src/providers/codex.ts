@@ -73,6 +73,23 @@ const binaryCache = { path: null as string | null };
  */
 const SUPPRESS_UPDATE_PROMPT_ARGS = ["-c", "check_for_update_on_startup=false"];
 
+/**
+ * Run the TUI INLINE (no alternate screen). Codex 0.159 defaults to the
+ * alternate screen (`?1049h` + `?1007h` at startup; measured). In xterm.js the
+ * alternate screen has no scrollback and the wheel is ALWAYS turned into ↑/↓
+ * arrow keys (xterm ignores ?1007), which in Codex walk the PROMPT HISTORY; so
+ * the transcript could no longer be scrolled. And a reconnect replay that had
+ * lost the startup `?1049h` left the pane on a normal screen with no scrollback
+ * ("frozen, can't scroll"). Inline, the transcript lands in xterm's own
+ * scrollback, the wheel scrolls it natively, and a byte-log replay reproduces
+ * it faithfully (ADR-135). A CONFIG key, not `--no-alt-screen`: an older codex
+ * ignores an unknown `-c` key but refuses an unknown flag. `"never"` is the
+ * value 0.159 accepts (a bool is a hard config error). Pushed on every path,
+ * including `resume --remote`, which rejects permission overrides but takes
+ * config.
+ */
+const INLINE_TUI_ARGS = ["-c", 'tui.alternate_screen="never"'];
+
 /** Axes a resumed thread keeps from its creation (Codex rejects permission
  *  overrides on a remote resume). The collaboration mode is per-turn, not locked. */
 const RESUME_LOCKED_AXES = [
@@ -299,7 +316,7 @@ export const codexProvider: AgentProvider = {
             options.sidecarEndpoint,
           ]
         : ["--remote", options.sidecarEndpoint];
-      args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
+      args.push(...SUPPRESS_UPDATE_PROMPT_ARGS, ...INLINE_TUI_ARGS);
       // RESUME: pass NO permission overrides. Codex rejects them on a remote
       // resume ("Permission overrides are not supported when resuming a remote
       // task", exit 1) — every Codex agent died on every restart. It isn't needed
@@ -340,7 +357,7 @@ export const codexProvider: AgentProvider = {
     if (isFullBypass(codexValues(options))) {
       args.push("--dangerously-bypass-approvals-and-sandbox");
     }
-    args.push(...SUPPRESS_UPDATE_PROMPT_ARGS);
+    args.push(...SUPPRESS_UPDATE_PROMPT_ARGS, ...INLINE_TUI_ARGS);
     args.push("--cd", options.cwd, ...daemonConfigArgs(options));
     if (options.prompt) args.push(options.prompt);
     return args;
