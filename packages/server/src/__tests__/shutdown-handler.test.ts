@@ -5,6 +5,7 @@
  */
 
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
 import { createShutdownHandler, type ShutdownSteps } from "../shutdown.js";
 
@@ -23,7 +24,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function rig(overrides: Partial<ShutdownSteps> = {}) {
   const calls: string[] = [];
   const daemons = deferred<number[]>();
+  // Never the real process: the guard installs uncaught-error handlers.
+  const events = new EventEmitter();
   const handler = createShutdownHandler({
+    processEvents: events,
     stopWork: () => calls.push("stopWork"),
     teardownAgents: () => {
       calls.push("teardownAgents");
@@ -36,7 +40,7 @@ function rig(overrides: Partial<ShutdownSteps> = {}) {
     ...overrides,
   });
   const exits = () => calls.filter((c) => c === "exitProcess").length;
-  return { calls, handler, daemons, exits };
+  return { calls, handler, daemons, exits, events };
 }
 
 describe("createShutdownHandler", () => {
@@ -104,6 +108,60 @@ describe("createShutdownHandler", () => {
     const { handler, daemons, exits } = rig();
     handler();
     daemons.reject(new Error("boom"));
+    await sleep(20);
+    assert.equal(exits(), 1);
+  });
+
+  it("arms no process-level handler until shutdown starts", () => {
+    const { events } = rig();
+    assert.equal(events.listenerCount("uncaughtException"), 0);
+    assert.equal(events.listenerCount("unhandledRejection"), 0);
+  });
+
+  it("an uncaught error DURING shutdown doesn't end it early: the daemon wait and exit still happen", async () => {
+    // The measured failure: a log write to a closed pipe raised an uncaught
+    // EPIPE right after the first shutdown line and killed the process before
+    // the escalation timers fired.
+    const { calls, handler, daemons, exits, events } = rig();
+    handler();
+    assert.equal(events.listenerCount("uncaughtException"), 1);
+    assert.equal(events.listenerCount("unhandledRejection"), 1);
+    const quiet = console.error;
+    console.error = () => {};
+    try {
+      events.emit(
+        "uncaughtException",
+        Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+      );
+      events.emit("unhandledRejection", new Error("late rejection"));
+    } finally {
+      console.error = quiet;
+    }
+    await sleep(20);
+    assert.ok(calls.includes("awaitDaemons"));
+    assert.equal(exits(), 0, "the uncaught error did not exit the process");
+
+    daemons.resolve([]);
+    await sleep(20);
+    assert.equal(exits(), 1);
+  });
+
+  it("a throwing first log line still tears the agents down", async () => {
+    const { calls, handler, daemons, exits } = rig();
+    const log = console.log;
+    console.log = () => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    };
+    const quiet = console.error;
+    console.error = () => {};
+    try {
+      handler();
+    } finally {
+      console.log = log;
+      console.error = quiet;
+    }
+    assert.deepEqual(calls, ["stopWork", "teardownAgents", "awaitDaemons"]);
+    daemons.resolve([]);
     await sleep(20);
     assert.equal(exits(), 1);
   });
