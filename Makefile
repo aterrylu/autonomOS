@@ -69,6 +69,13 @@ prod: build
 #   must stay side-effect-free with respect to the running daemon.
 build:
 	@$(BUN) install
+	@# Security floors (ADR-137): a plain install keeps a nested copy the new
+	@# lockfile no longer lists, so a security bump can miss the package that
+	@# loads it (measured, V12b: an upgraded clone still served ws 8.19 through
+	@# @hono/node-ws). Relinks with --force --frozen-lockfile ONLY when a floor
+	@# is unmet, then fails the build if it still is. Every upgrade path runs
+	@# this target.
+	@BUN=$(BUN) $(TSX) scripts/check-security-floors.ts
 	@bash scripts/ensure-node-pty.sh
 	@echo "Building channel server..."
 	@# Deps INLINED (no --packages=external): the release tarball carries no
