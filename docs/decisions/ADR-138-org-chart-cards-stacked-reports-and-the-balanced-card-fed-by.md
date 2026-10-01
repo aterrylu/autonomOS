@@ -1,4 +1,4 @@
-## ADR-123: Org chart cards: stacked reports and the Balanced card, fed by one batched request
+## ADR-138: Org chart cards: stacked reports and the Balanced card, fed by one batched request
 
 - **Date:** 2026-09-26
 - **Decided by:** Terry ("Stacked reports plus the recommended Balanced looks good, let's goooo", relayed by TeamLead), built by OrgChart@autonomOS.
