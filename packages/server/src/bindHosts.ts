@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 /**
  * Several bind addresses for the public listener (ADR-136, extends ADR-054).
  *
@@ -50,6 +51,24 @@ function stripQuotes(value: string): string {
   return value;
 }
 
+const IN_USE_REPEAT_MS = 60_000;
+
+/** The pid listening on host:port, via lsof (macOS/Linux); undefined if it
+ *  can't tell. Best effort only: it names the process in a warning. */
+export function lsofOwner(host: string, port: number): number | undefined {
+  try {
+    const out = execFileSync(
+      "lsof",
+      ["-nP", `-iTCP@${host}:${port}`, "-sTCP:LISTEN", "-t"],
+      { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const pid = Number(out.trim().split("\n")[0]);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Listen errors worth retrying: the address or name isn't there YET. */
 const RETRYABLE = new Set([
   "EADDRNOTAVAIL", // an IP no interface carries yet
@@ -79,6 +98,11 @@ export function keepListening(o: {
   port: number;
   intervalMs?: number;
   log?: (line: string) => void;
+  /** Where the address-in-use SECURITY warning goes (console.warn). */
+  warn?: (line: string) => void;
+  now?: () => number;
+  /** Best-effort pid of whoever holds host:port (lsof), for that warning. */
+  ownerOf?: (host: string, port: number) => number | undefined;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
 }): { stop: () => void } {
@@ -87,7 +111,11 @@ export function keepListening(o: {
   const clearTimer =
     o.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>));
   const interval = o.intervalMs ?? 5_000;
+  const warn = o.warn ?? console.warn;
+  const now = o.now ?? Date.now;
   let waitingLogged = false;
+  let inUse = false;
+  let lastInUseWarn = Number.NEGATIVE_INFINITY;
   let stopped = false;
   let timer: unknown;
 
@@ -102,7 +130,21 @@ export function keepListening(o: {
         );
         return;
       }
-      if (!waitingLogged) {
+      if (err.code === "EADDRINUSE") {
+        // NOT "not up yet": another process is SERVING this address, and a
+        // device that opens it reaches that process, possibly a fake sign-in
+        // page collecting the token (SecurityAudit, #480). Loud, repeated at
+        // most once a minute while it lasts, with the owner when known.
+        const t = now();
+        if (t - lastInUseWarn >= IN_USE_REPEAT_MS) {
+          lastInUseWarn = t;
+          inUse = true;
+          const owner = o.ownerOf?.(o.host, o.port);
+          warn(
+            `[bind] ⚠ SECURITY: another process${owner ? ` (pid ${owner})` : ""} is serving ${o.host}:${o.port}, so devices that open that address may reach IT, not autonomOS, and could be shown a fake sign-in page. Stop it; autonomOS keeps retrying every ${Math.round(interval / 1000)}s.`,
+          );
+        }
+      } else if (!waitingLogged) {
         waitingLogged = true;
         log(
           `[bind] ${o.host} isn't available yet (${err.code}; is Tailscale still starting?). Retrying every ${Math.round(interval / 1000)}s; this machine (localhost) is already served.`,
@@ -112,6 +154,10 @@ export function keepListening(o: {
     };
     const onListening = () => {
       o.server.removeListener("error", onError);
+      if (inUse)
+        warn(
+          `[bind] ${o.host}:${o.port} is free again: autonomOS is now listening there.`,
+        );
       log(`[bind] also listening on http://${o.host}:${o.port}`);
     };
     o.server.once("error", onError);

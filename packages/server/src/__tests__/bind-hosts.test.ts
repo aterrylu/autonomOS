@@ -143,4 +143,43 @@ describe("keepListening", () => {
     assert.equal(server.attempts, 1);
     assert.equal(server.closed, true);
   });
+
+  it("an address someone else is SERVING is a loud SECURITY warning, repeated at most once a minute (#480)", async () => {
+    const server = fakeServer(["EADDRINUSE", "EADDRINUSE", "EADDRINUSE"]);
+    const logs: string[] = [];
+    const warns: string[] = [];
+    let clock = 0;
+    const t = instantTimers();
+    keepListening({
+      server,
+      host: "100.70.53.56",
+      port: 3100,
+      log: (l) => logs.push(l),
+      warn: (l) => warns.push(l),
+      now: () => clock,
+      ownerOf: () => 4242,
+      setTimer: (fn) => {
+        clock += 30_000; // each retry 30s apart
+        return t.setTimer(fn);
+      },
+      clearTimer: t.clearTimer,
+    });
+    await new Promise((r) => setImmediate(r));
+    await t.drain();
+    // Failures at t=0, 30s, 60s → warnings at 0 and 60s; then it binds.
+    const security = warns.filter((w) => w.includes("SECURITY"));
+    assert.equal(security.length, 2);
+    assert.match(
+      security[0],
+      /another process \(pid 4242\) is serving 100\.70\.53\.56:3100/,
+    );
+    assert.ok(
+      warns.some((w) => /is free again/.test(w)),
+      "recovery is said",
+    );
+    assert.ok(
+      !logs.some((l) => /Tailscale still starting/.test(l)),
+      "not mistaken for 'not up yet'",
+    );
+  });
 });
