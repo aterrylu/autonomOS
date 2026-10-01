@@ -16,8 +16,9 @@
  *   - `ps` takes 600ms (shim): the old spawnSync `ps -A` behind
  *     GET /api/system/upgrade blocked the server ~1s per dashboard load.
  *   - many untitled transcripts: the Projects poll re-read every one of them.
- *   - phase 2 injects 600ms server stalls (/api/perf/stall), longer than the
- *     old 200ms statusline budget — a transient stall must not read "offline".
+ *   - phase 2 injects 900ms server stalls 600ms apart (/api/perf/stall),
+ *     far past the old 200ms statusline budget — a transient stall must not
+ *     read "offline".
  *
  * Failure messages name the symptom.
  */
@@ -95,7 +96,9 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     logDir = join(shimDir, "sl");
     mkdirSync(logDir);
     process.env.PATH = `${shimDir}:${process.env.PATH}`;
-    process.env.AUTONOMOS_PERF = "1"; // mounts /api/perf/stall (loopback only)
+    // Perf mode (→ /api/perf/stall) engages ONLY on a loopback bind.
+    process.env.AUTONOMOS_PERF = "1";
+    process.env.AUTONOMOS_HOST = "127.0.0.1";
     process.env.SL_LOG_DIR = logDir; // inherited by agents → fake-claude logs
 
     srv = await bootServer({
@@ -166,6 +169,13 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
         }
       },
     });
+
+    // Precondition: the stall injector is really mounted and really stalls,
+    // or phase 2 would pass vacuously.
+    const s0 = performance.now();
+    const stall = await api("/api/perf/stall?ms=300", { method: "POST" });
+    assert.equal(stall.status, 200, "perf-mode stall route not mounted");
+    assert.ok(performance.now() - s0 >= 300, "stall route did not block");
 
     // Precondition: the Projects listing really sees the seeded transcripts,
     // or the "Projects poll" pressure below would be imaginary.
@@ -249,8 +259,11 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     phases.stalls = [Date.now(), Date.now() + PHASE_MS];
     const stallEnd = Date.now() + PHASE_MS;
     while (Date.now() < stallEnd) {
-      await api("/api/perf/stall?ms=600", { method: "POST" }).catch(() => {});
-      await sleep(4000);
+      // Stalled 60% of the time: 900ms blocks, 600ms apart. Any tick of the
+      // old 200ms-budget statusline lands in one; the new one rides through.
+      const r = await api("/api/perf/stall?ms=900", { method: "POST" });
+      assert.equal(r.status, 200, "stall injection failed mid-phase");
+      await sleep(600);
     }
     stopTraffic = true;
     await traffic;
