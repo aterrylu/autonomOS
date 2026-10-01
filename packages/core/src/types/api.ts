@@ -127,7 +127,7 @@ export interface MaskedSettings {
    */
   runtimeDefaults: Record<Provider, RuntimePermission>;
   /** Recent changes to those defaults, newest last — through the dashboard or
-   *  out-of-band (settings.json edited directly). ADR-123. */
+   *  out-of-band (settings.json edited directly). ADR-138. */
   runtimeDefaultsLog?: Array<{
     at: number;
     runtime: Provider;

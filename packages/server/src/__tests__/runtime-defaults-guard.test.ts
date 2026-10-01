@@ -1,6 +1,6 @@
 /**
  * The operator's per-runtime default permissions decide what every
- * agent-spawned child runs, so a widening must never be silent (ADR-123):
+ * agent-spawned child runs, so a widening must never be silent (ADR-138):
  *  - a default that NEVER asks can't be saved without an explicit confirm;
  *  - every change is reported to the operator (bell) and logged — including
  *    an out-of-band edit of settings.json, noticed on the next read;

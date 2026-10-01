@@ -1,4 +1,4 @@
-## ADR-123: Runtime permission defaults: confirm never-asks, report every change, the UI in native values
+## ADR-138: Runtime permission defaults: confirm never-asks, report every change, the UI in native values
 
 - **Date:** 2026-09-30
 - **Decided by:** Terry (the scope and the design mockup, relayed by TeamLead); an agent (CodexGemini) proposed the reframing of (a), which TeamLead approved

@@ -900,7 +900,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // runtime table, off the boot path (logs any drift once).
         warmPermissionChecks();
         // Baseline (or report an out-of-band change to) the per-runtime
-        // default permissions (ADR-123).
+        // default permissions (ADR-138).
         const { noteRuntimeDefaults } = await import(
           "./runtimeDefaultsWatch.js"
         );
