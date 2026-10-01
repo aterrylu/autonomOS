@@ -41,7 +41,7 @@ You need **Node 20+** and **Claude Code installed and logged in** (`claude` on P
 curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 ```
 
-This detects your OS, checks for Node and Claude Code, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and prints your dashboard URL and access token. Pin a version with `VERSION=0.7.0 curl … | bash`.
+This detects your OS, checks for Node and Claude Code, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and prints your dashboard URL and access token. Pin a version with `curl … | VERSION=0.7.0 bash`.
 
 Manage it anytime with the `autonomos` CLI:
 
