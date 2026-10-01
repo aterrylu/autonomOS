@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { normalizeAddress, rawPeerAddress } from "../authRateLimit.js";
 import {
   isLoopbackAddress,
   NEW_DEVICE_FAILURE_LIMIT,
@@ -153,10 +154,32 @@ describe("NewDeviceLock", () => {
     ]);
   });
 
-  it("an unreadable or malformed file reads as open (never crashes the boot)", () => {
-    const path = lockFile();
-    writeFileSync(path, "{not json");
-    const l = new NewDeviceLock({ enabled: true, path, log: quiet });
+  it("a damaged file fails CLOSED (locked, loudly), never crashes the boot", () => {
+    for (const junk of ["{not json", "null", "42", '"str"']) {
+      const path = lockFile();
+      writeFileSync(path, junk);
+      const lines: string[] = [];
+      const l = new NewDeviceLock({
+        enabled: true,
+        path,
+        log: (x) => lines.push(x),
+      });
+      assert.equal(l.status().locked, true, junk);
+      assert.equal(l.refuses("10.0.0.1"), true, junk);
+      assert.equal(l.refuses("127.0.0.1"), false, "this machine still works");
+      assert.match(lines[0], /damaged.*autonomos auth unlock/);
+      // …and it rewrote a valid, locked file.
+      const again = new NewDeviceLock({ enabled: true, path, log: quiet });
+      assert.equal(again.status().locked, true);
+    }
+  });
+
+  it("a missing file is open (a fresh install)", () => {
+    const l = new NewDeviceLock({
+      enabled: true,
+      path: lockFile(),
+      log: quiet,
+    });
     assert.equal(l.status().locked, false);
   });
 
@@ -210,5 +233,35 @@ describe("helpers", () => {
         NEW_DEVICE_FAILURE_LIMIT,
         String(bad),
       );
+  });
+});
+
+describe("known devices are exact addresses, not IPv6 /64s (#475)", () => {
+  const ctx = (remoteAddress: string) =>
+    ({
+      env: { incoming: { socket: { remoteAddress } } },
+    }) as unknown as Parameters<typeof rawPeerAddress>[0];
+
+  it("a signed-in IPv6 device doesn't make its /64 neighbors known", () => {
+    const l = new NewDeviceLock({
+      enabled: true,
+      path: lockFile(),
+      limit: 1,
+      log: quiet,
+    });
+    const me = rawPeerAddress(ctx("2001:db8:1:2::aaaa"));
+    const neighbor = rawPeerAddress(ctx("2001:db8:1:2::bbbb"));
+    // Same /64: the throttle's key is shared, the device identity is not.
+    assert.equal(normalizeAddress(me), normalizeAddress(neighbor));
+    assert.notEqual(me, neighbor);
+    l.noteSuccess(me);
+    l.noteDistinctFailure(neighbor); // limit 1 → locked
+    assert.equal(l.refuses(neighbor), true, "the neighbor is a new device");
+    assert.equal(l.refuses(me), false, "the signed-in device stays in");
+  });
+
+  it("IPv4-mapped addresses are unwrapped; IPv4 is unchanged", () => {
+    assert.equal(rawPeerAddress(ctx("::ffff:10.1.2.3")), "10.1.2.3");
+    assert.equal(rawPeerAddress(ctx("10.1.2.3")), "10.1.2.3");
   });
 });
