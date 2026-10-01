@@ -108,6 +108,27 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.doesNotMatch(r.stderr, /waiting/, "no contention → no waiting notice");
   });
 
+  it("the command runs knowing which lock it holds", async () => {
+    const lock = join(dir, "held.lock");
+    const r = await runGate(lock, 'echo "$AUTONOMOS_GATE_LOCK_HELD"').done;
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout.trim(), lock);
+  });
+
+  it("re-entrant: a nested call for the SAME lock runs at once (the gate's make check)", async () => {
+    const lock = join(dir, "nested.lock");
+    // Inner gate with a 2s timeout: without re-entrancy it would wait on its
+    // own holder, give up (75) and fail.
+    const r = await runGate(
+      lock,
+      `bash '${SCRIPT}' bash -c 'echo inner-ran'`,
+      { timeout: 2 },
+    ).done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout.trim(), "inner-ran");
+    assert.doesNotMatch(r.stderr, /waiting/);
+  });
+
   it("an unusable lock file never blocks the push: it runs unlocked, with a warning", async () => {
     const r = await runGate(
       join(dir, "no-such-dir", "x.lock"),

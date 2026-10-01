@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { cwdToDirName } from "../titleCache";
+import { assertFleetSlot, startLoadWatchdog } from "./helpers/fleet-guard";
 import { gitEnv } from "./helpers/git-env";
 import { type BootedServer, bootServer } from "./helpers/test-server";
 
@@ -70,6 +71,8 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
   const ids: string[] = [];
   const probes: { t: number; ms: number; status: number }[] = [];
   let stopTraffic = false;
+  let abortedAtLoad: number | null = null;
+  let stopWatchdog = () => {};
   let traffic: Promise<unknown> = Promise.resolve();
   const phases: Record<string, [number, number]> = {};
 
@@ -80,6 +83,16 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     });
 
   before(async () => {
+    // A local fleet run shares the box with the live fleet: hold the one
+    // machine-wide test slot, and abort if the load climbs.
+    assertFleetSlot();
+    stopWatchdog = startLoadWatchdog({
+      onAbort: (load) => {
+        abortedAtLoad = load;
+        stopTraffic = true;
+        void srv?.kill();
+      },
+    });
     const realGit = execFileSync("sh", ["-c", "command -v git"], {
       encoding: "utf8",
     }).trim();
@@ -259,7 +272,7 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
 
     // Warm-up: every agent renders once (its cache fills), then measure.
     const warmDeadline = Date.now() + 60_000;
-    while (Date.now() < warmDeadline) {
+    while (Date.now() < warmDeadline && !stopTraffic) {
       const rows = readRows();
       if (new Set(rows.filter((r) => r.l1).map((r) => r.agent)).size >= N)
         break;
@@ -267,12 +280,13 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     }
 
     phases.steady = [Date.now(), Date.now() + PHASE_MS];
-    await sleep(PHASE_MS);
+    for (const end = Date.now() + PHASE_MS; Date.now() < end && !stopTraffic; )
+      await sleep(500);
 
     // Phase 2: transient server stalls longer than the old 200ms budget.
     phases.stalls = [Date.now(), Date.now() + PHASE_MS];
     const stallEnd = Date.now() + PHASE_MS;
-    while (Date.now() < stallEnd) {
+    while (Date.now() < stallEnd && !stopTraffic) {
       // Stalled 60% of the time: 900ms blocks, 600ms apart. Any tick of the
       // old 200ms-budget statusline lands in one; the new one rides through.
       const r = await api("/api/perf/stall?ms=900", { method: "POST" });
@@ -281,9 +295,15 @@ describe("statusline under N-agent load", { skip: !ENABLED }, () => {
     }
     stopTraffic = true;
     await traffic;
+    stopWatchdog();
+    if (abortedAtLoad !== null)
+      throw new Error(
+        `aborted: box load ${abortedAtLoad.toFixed(0)} passed the limit — stopped to protect the live fleet (rerun on a quieter box, or in CI)`,
+      );
   });
 
   after(async () => {
+    stopWatchdog();
     stopTraffic = true;
     await traffic.catch(() => {});
     await srv?.kill();

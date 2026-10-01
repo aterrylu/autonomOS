@@ -20,6 +20,12 @@
 #   be shared between them.
 # - With neither tool available it runs the command unlocked, with a warning.
 #   The lock is a courtesy to the box, never a reason a push can't happen.
+# - Re-entrant: the command runs with AUTONOMOS_GATE_LOCK_HELD=<this lock's
+#   path>, and a nested call for the SAME lock runs straight through instead of
+#   waiting on itself (the gate holds the lock and runs `make check`, which
+#   routes through this script too). A different lock path still queues.
+# - Used for every heavy local run, not just the push gate: `make check` (incl.
+#   AUTONOMOS_INTEGRATION=1) and `make load-test` take the same one slot.
 
 set -uo pipefail
 
@@ -32,12 +38,17 @@ if [ "$#" -eq 0 ]; then
   exit 64
 fi
 
+# Already inside this lock's holder: run, don't wait on ourselves.
+if [ "${AUTONOMOS_GATE_LOCK_HELD:-}" = "$LOCK" ]; then
+  exec "$@"
+fi
+
 if command -v flock >/dev/null 2>&1; then
   probe() { flock -n -E "$BUSY" "$LOCK" true; }
-  run_locked() { flock -w "$TIMEOUT" -E "$BUSY" "$LOCK" "$@"; }
+  run_locked() { flock -w "$TIMEOUT" -E "$BUSY" "$LOCK" env AUTONOMOS_GATE_LOCK_HELD="$LOCK" "$@"; }
 elif command -v lockf >/dev/null 2>&1; then
   probe() { lockf -k -t 0 "$LOCK" true; }
-  run_locked() { lockf -k -t "$TIMEOUT" "$LOCK" "$@"; }
+  run_locked() { lockf -k -t "$TIMEOUT" "$LOCK" env AUTONOMOS_GATE_LOCK_HELD="$LOCK" "$@"; }
 else
   echo "[ci-gate] neither flock nor lockf found; running WITHOUT the machine-wide lock" >&2
   exec "$@"
