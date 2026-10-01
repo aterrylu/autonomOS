@@ -40,7 +40,12 @@ const PROJECTS = [
         cwd: GONE,
         cwdExists: false,
       }),
-      sess("review-bot-1", { lastModified: 5, cwd: WT, headless: true }),
+      sess("review-bot-1", {
+        lastModified: 5,
+        cwd: WT,
+        headless: true,
+        startedVia: "sdk-py",
+      }),
       sess("review-bot-2", {
         lastModified: 4,
         cwd: GONE,
@@ -104,14 +109,42 @@ describe("Projects grouped by git repo", () => {
     expect(within(header).getByText("3")).toBeTruthy();
   });
 
-  it("automated runs are hidden until asked, then shown IN the repo and tagged", () => {
+  it("tool-started runs are hidden until asked, then shown IN the repo with their source", () => {
     render(<Sidebar />);
     openRepo();
     expect(screen.queryByText("review-bot-1")).toBeNull();
-    fireEvent.click(screen.getByText("Show 2 automated runs"));
-    expect(screen.getByText("review-bot-1")).toBeTruthy();
-    expect(screen.getAllByText("automated").length).toBeGreaterThan(0);
-    expect(screen.getByText("Hide automated runs")).toBeTruthy();
+    fireEvent.click(screen.getByText("Show 2 runs started by tools"));
+    const row = screen
+      .getByText("review-bot-1")
+      .closest("button") as HTMLElement;
+    expect(within(row).getByText("via Agent SDK (Python)")).toBeTruthy();
+    expect(screen.getByText("Hide runs started by tools")).toBeTruthy();
+  });
+
+  // REGRESSION GUARD (Terry: "Show automated runs… I didn't understand what
+  // they are"): the copy must say what these are and where they come from,
+  // visibly, never only the jargon.
+  it("the toggle explains itself: a visible one-liner, and no bare 'automated'/'headless' jargon", () => {
+    render(<Sidebar />);
+    openRepo();
+    const toggle = screen.getByText("Show 2 runs started by tools");
+    expect(toggle.getAttribute("title")).toMatch(
+      /script or bot started, not you/,
+    );
+    // visible text, not only a tooltip
+    expect(
+      screen.getByText(/Sessions a script or bot started, not you/),
+    ).toBeTruthy();
+    fireEvent.click(toggle);
+    const aside = document.querySelector("aside") as HTMLElement;
+    expect(aside.textContent).not.toMatch(/\bheadless\b|automated run/i);
+    // a tool run with no known source still says what it is (this one sits in
+    // a deleted dir, so it is behind that toggle)
+    fireEvent.click(screen.getByText(/^Show \d+ from removed directories$/));
+    const unknown = screen
+      .getByText("review-bot-2")
+      .closest("button") as HTMLElement;
+    expect(within(unknown).getByText("started by a tool")).toBeTruthy();
   });
 
   it("sessions from removed directories wait behind the repo's own toggle", () => {
