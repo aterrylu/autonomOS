@@ -187,8 +187,13 @@ export type UpgradeResult =
       provenance: ProceedingProvenance;
     }
   /** `postponed`: nothing is wrong with the release as far as we know — its
-   *  build record just couldn't be confirmed right now (ADR-126 D). */
-  | { status: "error"; message: string; postponed?: true };
+   *  build record just couldn't be confirmed (ADR-126 D). `lasting`: retrying
+   *  can't change that; `reason`: the short why, for the dashboard. */
+  | {
+      status: "error";
+      message: string;
+      postponed?: { lasting: boolean; reason: string };
+    };
 
 type GitHubReleaseAsset = {
   name: string;
@@ -337,7 +342,10 @@ export async function performUpgrade(
     if (provenance.status === "missing") {
       return {
         status: "error",
-        postponed: true,
+        postponed: {
+          lasting: provenance.lasting === true,
+          reason: provenance.reason,
+        },
         message: provenance.lasting
           ? // Waiting won't help (nox, #445): say so, and how to proceed.
             `The v${releaseVersion} update wasn't applied: its signed build record couldn't be confirmed (${provenance.reason}), and retrying won't change that. Nothing changed. If you trust this release, install it anyway with \`AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade\` in a terminal on the machine running autonomOS. Otherwise, please report it.`

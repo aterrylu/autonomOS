@@ -383,7 +383,10 @@ describe("performUpgrade", () => {
     );
     assertError(result, /try again later/);
     assertError(result, /AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade/);
-    assert.equal((result as { postponed?: boolean }).postponed, true);
+    assert.deepEqual((result as { postponed?: unknown }).postponed, {
+      lasting: false,
+      reason: "couldn't reach GitHub's attestation service",
+    });
     // Only an update that proceeds is reported as checked.
     assert.deepEqual(seen, []);
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
@@ -431,6 +434,10 @@ describe("performUpgrade", () => {
       (result as { message: string }).message,
       /try again later/,
     );
+    assert.deepEqual((result as { postponed?: unknown }).postponed, {
+      lasting: true,
+      reason: "no signed build record was found for this download",
+    });
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
   });
 

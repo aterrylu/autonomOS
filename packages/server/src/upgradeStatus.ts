@@ -64,6 +64,12 @@ export type UpgradeStatusRecord = {
     status: "verified" | "missing" | "skipped";
     reason?: string;
   };
+  /** Set on a "failed" record when the update was POSTPONED, not broken: its
+   *  signed build record couldn't be confirmed, so nothing was installed
+   *  (ADR-126 D). The dashboard shows its own calm state for it.
+   *  `lasting`: retrying can't change it (no record exists, or this runtime
+   *  can't check). */
+  postponed?: { lasting: boolean; reason: string };
 };
 
 export type UpgradeVerification = {

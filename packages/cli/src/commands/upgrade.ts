@@ -480,6 +480,7 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
     if (dropped && snap.current) deleteSnapshot(snap.current.id);
     report("failed", {
       message: result.message,
+      ...(result.postponed && { postponed: result.postponed }),
       ...((dropped || !snap.current) && { snapshotId: undefined }),
     });
     console.error(
