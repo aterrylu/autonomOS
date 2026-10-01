@@ -184,6 +184,10 @@ fmt:
 # NOT catch a synchronous block (the event loop is frozen); the CI job's
 # timeout-minutes is the backstop for that.
 NODE_TEST_TIMEOUT := --test-timeout=300000
+# Exit once the last test finishes, even if a test file leaked a live handle
+# (socket, server, timer). Without it a finished run can idle forever: a gate's
+# runner sat at 0% CPU for 48 min holding the machine-wide slot.
+NODE_TEST_FORCE_EXIT := --test-force-exit
 
 # Local runs cap test fan-out at half the cores. Uncapped, one run forks about
 # one process per core, and a few agents' gates at once saturated the box (load
@@ -222,7 +226,7 @@ _check:
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
 	$(TSX) scripts/build-verifier.ts --check
-	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	$(GIT_CLEAN_ENV) env -u AUTONOMOS_LOAD_TEST $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) $(NODE_TEST_FORCE_EXIT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
 	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # N-agent statusline load guard (CI: the `Load` workflow). Locally it takes the

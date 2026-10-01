@@ -163,6 +163,22 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.ok(ra.endedAt >= rh.endedAt, "A ran only after H released");
   });
 
+  it("a HUNG holder is stopped at the run bound and the next gate proceeds", async () => {
+    const lock = join(dir, "hung.lock");
+    // The holder never finishes (a runner kept alive by a leaked handle).
+    const h = runGate(lock, "sleep 600", {
+      env: { AUTONOMOS_CI_GATE_RUN_TIMEOUT: "2" },
+    });
+    await waitUntilHeld(lock);
+    const b = runGate(lock, "echo B-ran");
+    const [rh, rb] = await Promise.all([h.done, b.done]);
+    assert.equal(rh.code, 124, rh.stderr);
+    assert.match(rh.stderr, /exceeded 2s/);
+    assert.equal(rb.code, 0, rb.stderr);
+    assert.equal(rb.stdout.trim(), "B-ran");
+    assert.ok(rb.endedAt >= rh.endedAt, "B ran once the hung holder was stopped");
+  });
+
   it("an unusable lock exports an 'unlocked' marker (fleet tests refuse on it)", async () => {
     const r = await runGate(
       join(dir, "no-such-dir", "y.lock"),
