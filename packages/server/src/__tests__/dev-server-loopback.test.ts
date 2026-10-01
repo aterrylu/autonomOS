@@ -18,13 +18,20 @@ const VITE_CONFIG = join(ROOT, "packages/dashboard/vite.config.ts");
 
 /** The commands `make <target>` would run, expanded, without running them.
  *  dev-lan's recursive $(MAKE) inherits -n, so it dry-runs too. */
-function dryRun(target: string, vars: string[] = []): string[] {
+function dryRun(target: string, exported: NodeJS.ProcessEnv = {}): string[] {
   const { DEV_HOST: _drop, ...env } = process.env;
   return execFileSync(
     "make",
-    ["-n", "--no-print-directory", "-C", ROOT, target, ...vars],
-    { encoding: "utf8", env },
+    ["-n", "--no-print-directory", "-C", ROOT, target],
+    { encoding: "utf8", env: { ...env, ...exported } },
   ).split("\n");
+}
+/** Run make dev's expanded loopback-warning line for real and return what it
+ *  prints (`make -n` only shows it). */
+function devWarning(exported: NodeJS.ProcessEnv = {}): string {
+  const line = dryRun("dev", exported).find((l) => l.startsWith("case ")) ?? "";
+  assert.ok(line, "precondition: make dev has its DEV_HOST warning line");
+  return execFileSync("sh", ["-c", line], { encoding: "utf8" });
 }
 const viteLine = (lines: string[]) =>
   lines.find((l) => /\bvite --host\b/.test(l)) ?? "";
@@ -45,6 +52,20 @@ describe("make dev binds this machine only (dev server exposure)", () => {
     const lan = dryRun("dev-lan");
     assert.match(viteLine(lan), /--host 0\.0\.0\.0 /);
     assert.match(apiLine(lan), /\bAUTONOMOS_HOST=127\.0\.0\.1\b/);
+  });
+
+  it("warns loudly whenever vite isn't on loopback, however DEV_HOST was set", () => {
+    // Review of #494: `DEV_HOST ?=` honors one exported in the shell, so a
+    // plain `make dev` could go LAN silently.
+    assert.equal(devWarning(), "");
+    assert.match(
+      devWarning({ DEV_HOST: "0.0.0.0" }),
+      /⚠ DEV_HOST=0\.0\.0\.0: .*reachable by anyone on this network/,
+    );
+    assert.match(
+      viteLine(dryRun("dev", { DEV_HOST: "0.0.0.0" })),
+      /--host 0\.0\.0\.0 /,
+    );
   });
 });
 

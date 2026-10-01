@@ -51,13 +51,15 @@ dev:
 	@lsof -ti:$(DEV_API_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@lsof -ti:$(DEV_VITE_PORT) -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
 	@echo "Dev server: API=:$(DEV_API_PORT) Vite=:$(DEV_VITE_PORT) Config=$(DEV_CONFIG_DIR)"
+	@# Loud whenever vite isn't on loopback, however DEV_HOST was set (make
+	@# dev-lan, the command line, or a DEV_HOST exported in the shell).
+	@case "$(DEV_HOST)" in 127.0.0.1|localhost|::1) ;; *) echo "⚠ DEV_HOST=$(DEV_HOST): the dev dashboard (and its proxy to the API) is reachable by anyone on this network." ;; esac
 	@cd packages/server && PORT=$(DEV_API_PORT) AUTONOMOS_HOST=127.0.0.1 AUTONOMOS_CONFIG_DIR=$(DEV_CONFIG_DIR) CORS_ORIGIN=http://localhost:$(DEV_VITE_PORT) ../../$(TSX) watch --env-file=../../.env src/index.ts &
 	@sleep 2
 	@cd packages/dashboard && DEV_HOST=$(DEV_HOST) VITE_API_PORT=$(DEV_API_PORT) $(BUN) vite --host $(DEV_HOST) --port $(DEV_VITE_PORT)
 
 # The explicit opt-in for using the dev dashboard from another device.
 dev-lan:
-	@echo "⚠ make dev-lan: the dev dashboard (and its proxy to the API) is reachable by anyone on this network."
 	@$(MAKE) dev DEV_HOST=0.0.0.0
 
 # ── prod: build + OS-native daemon on :3100 ───────
