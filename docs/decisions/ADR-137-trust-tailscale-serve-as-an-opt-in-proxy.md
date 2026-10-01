@@ -29,14 +29,14 @@
   7. **Service installs carry the mode:** `install-service --trust-proxy=tailscale` bakes it (other values are refused), and `install.sh` keeps it when re-rendering.
   8. **Serve becomes the RECOMMENDED remote setup** (README, guide, install output). The ADR-136 host list (`127.0.0.1,<tailnet address>`) remains the no-proxy alternative.
 - **Rationale:**
-  - **The headers are trustworthy only under two conditions:** the peer is loopback and nothing else reaches the port. The loopback check and the boot refusal enforce exactly those, so a forged header can only come from a program already running on this machine as a trusted local client.
+  - **The headers are trustworthy only under two conditions**: the peer is loopback and nothing else reaches the port. The loopback check and the boot refusal enforce exactly those, so a forged header can only come from a program already running on this machine as a trusted local client.
   - **Opt-in,** because a loopback-bound server behind a reverse proxy other than tailscaled could receive visitor-controlled `X-Forwarded-For`. Only the operator knows serve is the proxy in front.
-  - **The address is the identity and the login is context:** tagged nodes send no login, and the address is what the lock and known-device list already key on.
+  - **The address is the identity and the login is context**: tagged nodes send no login, and the address is what the lock and known-device list already key on.
 - **Alternatives considered:**
-  - **Key identity on `Tailscale-User-Login`:** absent for tagged nodes, and shared by every device of one user, so a stolen laptop would inherit "known".
-  - **Trust the headers whenever the peer is loopback, with no flag:** unsafe behind any other local proxy, and silent.
-  - **Use `tailscale whois` on the peer:** the peer is always 127.0.0.1 behind serve, so there's nothing to look up. Querying the local API per request adds a dependency for what tailscaled already put in the request.
-  - **Keep serve unsupported (ADR-136's stance):** leaves the canonical, HTTPS, no-open-port setup without per-device protection.
+  - **Key identity on `Tailscale-User-Login`**: absent for tagged nodes, and shared by every device of one user, so a stolen laptop would inherit "known".
+  - **Trust the headers whenever the peer is loopback, with no flag**: unsafe behind any other local proxy, and silent.
+  - **Use `tailscale whois` on the peer**: the peer is always 127.0.0.1 behind serve, so there's nothing to look up. Querying the local API per request adds a dependency for what tailscaled already put in the request.
+  - **Keep serve unsupported (ADR-136's stance)**: leaves the canonical, HTTPS, no-open-port setup without per-device protection.
 - **Residual risks:**
   - Any program on this machine can send `X-Forwarded-For` to loopback. It can't gain anything (loopback is already trusted, and a valid token is still required), but it can spend the new-device budget and engage the lock. That's a denial-of-service lever available only to software already running as the operator.
   - Serve sends the login of the person on the visiting device; it doesn't authenticate to autonomOS, which still requires the token.
