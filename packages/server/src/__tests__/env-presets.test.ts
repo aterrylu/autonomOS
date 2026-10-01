@@ -758,6 +758,36 @@ describe("env presets: strict key allowlist (audit V13)", () => {
     );
   });
 
+  it("injection is the authoritative gate: an off-list key whose VALUE an edit changed is still skipped", () => {
+    // Edits validate only ADDED keys, so an edit may change an existing
+    // off-list key's value. Safety must not depend on edit validation:
+    // applyPresetToEnv filters every key at injection (SecurityAudit-Claude
+    // on #496). A refactor that trusts what edits let through goes RED here.
+    writeLegacyPreset("legacy6", { BASH_ENV: "/tmp/evil.sh" });
+    const onDisk = getEnvPresetRaw("legacy6");
+    assert.ok(onDisk, "precondition: legacy preset on disk");
+    updateEnvPreset(
+      "legacy6",
+      {
+        env: { ...onDisk.env, BASH_ENV: "/tmp/even-more-evil.sh" },
+        secretKeys: [...onDisk.secretKeys],
+      },
+      NOW,
+    );
+    assert.equal(
+      getEnvPresetRaw("legacy6")?.env.BASH_ENV,
+      "/tmp/even-more-evil.sh",
+      "precondition: the edit really changed the off-list value",
+    );
+    const env: Record<string, string> = {};
+    assert.deepEqual(applyPresetToEnv(env, "legacy6"), [
+      "BASH_ENV",
+      "GIT_SSH_COMMAND",
+    ]);
+    assert.equal(env.BASH_ENV, undefined);
+    assert.equal(env.ANTHROPIC_MODEL, "kimi-k2.7-code");
+  });
+
   it("an edit can't SET a value for an off-list secret", () => {
     writeLegacyPreset("legacy4", {});
     assert.throws(
