@@ -208,6 +208,9 @@ All research goes in `docs/RESEARCH.md` or `docs/research/` subdirectories. When
 ### Session Naming
 CC owns session names via JSONL `customTitle`. `titleCache.ts` reads them (256KB tail scan, mtime-cached). The `--name` flag sets the initial name at spawn. `/rename` updates it. The titleCache is more reliable than the SDK's `listSessions()` (which only reads 64KB).
 
+### Running tests on the shared box
+Agents share one machine with Terry's live fleet. Full runs QUEUE through one machine-wide slot (`scripts/ci-gate-lock.sh`, re-entrant): `make check` (including `AUTONOMOS_INTEGRATION=1`), the pre-push gate, and `make load-test` all take it; CI skips it. Run a single file with `scripts/test-file.sh <file>` (default `--test-timeout` + `--test-force-exit`, so a hung test fails and EXITS instead of orphaning for days; git env stripped). A fleet harness (many agents/processes) must call `assertFleetSlot()` and `startLoadWatchdog()` from `__tests__/helpers/fleet-guard.ts`: refuse outside the slot, abort if the load climbs. A test that spawns `git` passes `env: gitEnv()` (`helpers/git-env.ts`); `make check` also strips git's location vars, because a fixture `git init` under a hook's `GIT_DIR` flips the shared repo to `core.bare=true`.
+
 ### README Hero Image (keep it current)
 The README's hero screenshot (`docs/assets/hero.png`) is generated, not hand-captured. It's produced by `make hero` (→ `packages/dashboard/scripts/capture-hero.ts`), which boots an isolated demo instance (own config dir + fake HOME + ephemeral port — never touches `:3100`), stages a multi-agent scene (org chart across Claude Code / Codex / Gemini, live terminals, both usage bars), and screenshots it via headless Chrome.
 

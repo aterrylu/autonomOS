@@ -20,6 +20,12 @@
 #   be shared between them.
 # - With neither tool available it runs the command unlocked, with a warning.
 #   The lock is a courtesy to the box, never a reason a push can't happen.
+# - Re-entrant: the command runs with AUTONOMOS_GATE_LOCK_HELD=<this lock's
+#   path>, and a nested call for the SAME lock runs straight through instead of
+#   waiting on itself (the gate holds the lock and runs `make check`, which
+#   routes through this script too). A different lock path still queues.
+# - Used for every heavy local run, not just the push gate: `make check` (incl.
+#   AUTONOMOS_INTEGRATION=1) and `make load-test` take the same one slot.
 
 set -uo pipefail
 
@@ -32,15 +38,17 @@ if [ "$#" -eq 0 ]; then
   exit 64
 fi
 
+
 if command -v flock >/dev/null 2>&1; then
   probe() { flock -n -E "$BUSY" "$LOCK" true; }
-  run_locked() { flock -w "$TIMEOUT" -E "$BUSY" "$LOCK" "$@"; }
+  run_locked() { flock -w "$TIMEOUT" -E "$BUSY" "$LOCK" env AUTONOMOS_GATE_LOCK_HELD="$LOCK" "$@"; }
 elif command -v lockf >/dev/null 2>&1; then
   probe() { lockf -k -t 0 "$LOCK" true; }
-  run_locked() { lockf -k -t "$TIMEOUT" "$LOCK" "$@"; }
+  run_locked() { lockf -k -t "$TIMEOUT" "$LOCK" env AUTONOMOS_GATE_LOCK_HELD="$LOCK" "$@"; }
 else
   echo "[ci-gate] neither flock nor lockf found; running WITHOUT the machine-wide lock" >&2
-  exec "$@"
+  # Marker, so a fleet harness can refuse to run unlocked (fleet-guard.ts).
+  exec env AUTONOMOS_GATE_LOCK_HELD=unlocked "$@"
 fi
 
 holder() {
@@ -58,9 +66,34 @@ holder() {
 # acquire, we just wait without the message.
 probe
 prc=$?
+
+# Already inside this lock's holder: run, don't wait on ourselves. Only when
+# the process holding the lock is one of OUR ancestors: a marker inherited from
+# a holder that has exited, or the lock merely being held by someone else (a
+# probe, another agent's gate), must not let a run skip the lock.
+held_by_ancestor() {
+  local holders p h
+  command -v lsof >/dev/null 2>&1 || return 2 # can't tell
+  holders=$(lsof -t "$LOCK" 2>/dev/null) || return 1
+  p=$$
+  while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+    for h in $holders; do [ "$h" = "$p" ] && return 0; done
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+if [ "${AUTONOMOS_GATE_LOCK_HELD:-}" = "$LOCK" ] && [ "$prc" -eq "$BUSY" ]; then
+  held_by_ancestor
+  case $? in
+    0) exec "$@" ;;
+    # No lsof: trust the marker (waiting on our own holder would deadlock).
+    2) exec "$@" ;;
+  esac
+fi
+
 if [ "$prc" -ne 0 ] && [ "$prc" -ne "$BUSY" ]; then
   echo "[ci-gate] cannot use the lock file $LOCK (exit $prc); running WITHOUT the machine-wide lock" >&2
-  exec "$@"
+  exec env AUTONOMOS_GATE_LOCK_HELD=unlocked "$@"
 fi
 if [ "$prc" -eq "$BUSY" ]; then
   echo "[ci-gate] waiting for another CI gate on this machine (up to ${TIMEOUT}s)…" >&2

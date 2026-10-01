@@ -60,6 +60,7 @@ import { restoreStateFor } from "../lib/state-pair.js";
 import {
   makeReporter,
   type Reporter,
+  reportProvenance,
   statusFileArg,
   withTerminalStatus,
   withUpgradeLock,
@@ -445,6 +446,7 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       if (p === "installing") touched = true;
       report(p);
     },
+    onProvenance: (r) => reportProvenance(r, report),
     beforeSwap: async () => {
       const gate = await idleGate(flags, report, GATE_CAP_BEFORE_CHANGE_MS);
       if (!gate.ok) {
@@ -480,7 +482,11 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
       message: result.message,
       ...((dropped || !snap.current) && { snapshotId: undefined }),
     });
-    console.error(`✗ Upgrade failed: ${result.message}`);
+    console.error(
+      result.postponed
+        ? `⏸  ${result.message}`
+        : `✗ Upgrade failed: ${result.message}`,
+    );
     return 1;
   }
   const snapshot = snap.current;
@@ -497,6 +503,13 @@ async function upgradeCommand(argv: readonly string[]): Promise<number> {
     console.log(`⚠️  DOWNGRADED ${result.from} → ${result.to} (as requested).`);
   } else {
     console.log(`✓ Upgraded ${result.from} → ${result.to}.`);
+    if (result.provenance.status !== "verified") {
+      // Repeat it here: the first warning scrolled away behind the idle
+      // gate, snapshot and restart output.
+      console.warn(
+        `⚠️  v${result.to}'s signed build record wasn't checked: ${result.provenance.reason}.`,
+      );
+    }
   }
   report("restarting", { to: result.to });
   console.log(`  Previous version kept at: ${install.bundleDir}.previous`);

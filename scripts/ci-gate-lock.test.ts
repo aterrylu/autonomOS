@@ -22,6 +22,17 @@ const hasTool = ["flock", "lockf"].some((t) => {
   }
 });
 
+// The ancestor check needs lsof; without it the script deliberately trusts
+// the marker (see ci-gate-lock.sh), so the "only OUR holder" test can't hold.
+const hasLsof = (() => {
+  try {
+    execFileSync("sh", ["-c", "command -v lsof"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 /** Every gate still running, so after() can reap stragglers (a failed or
  *  mutated run must not leak lock holders). */
 const live = new Set<number>();
@@ -37,7 +48,7 @@ interface Run {
 function runGate(
   lock: string,
   cmd: string,
-  opts: { timeout?: number } = {},
+  opts: { timeout?: number; env?: NodeJS.ProcessEnv } = {},
 ): { done: Promise<Run>; pid: number } {
   const startedAt = Date.now();
   const child = spawn("bash", [SCRIPT, "bash", "-c", cmd], {
@@ -45,6 +56,7 @@ function runGate(
       ...process.env,
       AUTONOMOS_CI_GATE_LOCK_PATH: lock,
       AUTONOMOS_CI_GATE_LOCK_TIMEOUT: String(opts.timeout ?? 30),
+      ...opts.env,
     },
     // Own process group, so after() can reap the whole gate.
     detached: true,
@@ -106,6 +118,57 @@ describe("ci-gate-lock.sh", { skip: !hasTool && "no flock/lockf on this box" }, 
     assert.equal(r.code, 3);
     assert.equal(r.stdout.trim(), "hello");
     assert.doesNotMatch(r.stderr, /waiting/, "no contention → no waiting notice");
+  });
+
+  it("the command runs knowing which lock it holds", async () => {
+    const lock = join(dir, "held.lock");
+    const r = await runGate(lock, 'echo "$AUTONOMOS_GATE_LOCK_HELD"').done;
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout.trim(), lock);
+  });
+
+  it("re-entrant: a nested call for the SAME lock runs at once (the gate's make check)", async () => {
+    const lock = join(dir, "nested.lock");
+    // Inner gate with a 2s timeout: without re-entrancy it would wait on its
+    // own holder, give up (75) and fail.
+    const r = await runGate(
+      lock,
+      `bash '${SCRIPT}' bash -c 'echo inner-ran'`,
+      { timeout: 2 },
+    ).done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout.trim(), "inner-ran");
+    assert.doesNotMatch(r.stderr, /waiting/);
+  });
+
+  it("a held-marker only passes through for OUR holder, not someone else's", {
+    skip: !hasLsof && "no lsof: the script trusts the marker by design",
+  }, async () => {
+    const lock = join(dir, "stale.lock");
+    const releaseH = join(dir, "stale.releaseH");
+    // H: an unrelated gate holding the lock (another agent's push).
+    const h = runGate(lock, holdUntil(releaseH, "H"));
+    await waitUntilHeld(lock);
+    // A carries a marker naming this lock (inherited, stale). The lock IS
+    // busy, but not by A's ancestor: A must queue, never run alongside H.
+    const a = runGate(lock, "echo A-ran", {
+      env: { AUTONOMOS_GATE_LOCK_HELD: lock },
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    writeFileSync(releaseH, "");
+    const [rh, ra] = await Promise.all([h.done, a.done]);
+    assert.equal(rh.code, 0);
+    assert.equal(ra.code, 0, ra.stderr);
+    assert.match(ra.stderr, /waiting for another CI gate/, "A must queue");
+    assert.ok(ra.endedAt >= rh.endedAt, "A ran only after H released");
+  });
+
+  it("an unusable lock exports an 'unlocked' marker (fleet tests refuse on it)", async () => {
+    const r = await runGate(
+      join(dir, "no-such-dir", "y.lock"),
+      'echo "held=$AUTONOMOS_GATE_LOCK_HELD"',
+    ).done;
+    assert.equal(r.stdout.trim(), "held=unlocked");
   });
 
   it("an unusable lock file never blocks the push: it runs unlocked, with a warning", async () => {

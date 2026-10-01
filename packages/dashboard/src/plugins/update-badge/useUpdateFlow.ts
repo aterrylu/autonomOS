@@ -136,6 +136,8 @@ export function useUpdateFlow(enabled: boolean) {
                     kind: "upgrade",
                     updatedTo: rec.to,
                     interruptedNames: interrupted.current,
+                    provenance: rec.provenance,
+                    startedAt: rec.startedAt,
                   },
             );
             // New asset hashes: only a real reload picks up the new bundle.

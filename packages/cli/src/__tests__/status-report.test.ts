@@ -9,9 +9,8 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 const TEST_DIR = join(tmpdir(), `autonomos-status-report-${randomUUID()}`);
 process.env.AUTONOMOS_CONFIG_DIR = TEST_DIR;
 
-const { makeReporter, statusFileArg, withTerminalStatus } = await import(
-  "../lib/status-report.js"
-);
+const { makeReporter, reportProvenance, statusFileArg, withTerminalStatus } =
+  await import("../lib/status-report.js");
 
 /**
  * The out-of-band job's only channel to the dashboard is the status file. A
@@ -87,5 +86,34 @@ describe("status-report", () => {
     makeReporter(undefined)("failed", { message: "x" });
     assert.equal(await withTerminalStatus(undefined, {}, async () => 0), 0);
     assert.equal(read().phase, "downloading");
+  });
+});
+
+describe("reportProvenance → the status record the dashboard reads (ADR-126)", () => {
+  const quiet = { info: () => {}, warn: () => {} };
+  const read = () => JSON.parse(readFileSync(file, "utf-8"));
+
+  it("a SKIPPED check lands in the record, warns, and rides through installing → done", () => {
+    const report = makeReporter(file);
+    const warned: string[] = [];
+    reportProvenance(
+      { status: "skipped", reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set" },
+      report,
+      { info: () => {}, warn: (m) => warned.push(m) },
+    );
+    report("installing");
+    report("done");
+    assert.equal(read().phase, "done");
+    assert.deepEqual(read().provenance, {
+      status: "skipped",
+      reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+    });
+    assert.match(warned[0], /Signed build record not checked/);
+  });
+
+  it("VERIFIED is recorded too", () => {
+    const report = makeReporter(file);
+    reportProvenance({ status: "verified" }, report, quiet);
+    assert.deepEqual(read().provenance, { status: "verified" });
   });
 });
