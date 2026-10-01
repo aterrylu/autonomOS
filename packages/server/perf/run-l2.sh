@@ -77,7 +77,7 @@ SERVER_PID=$!
 (
   cd "$DASH_DIR"
   VITE_API_PORT="$SERVER_PORT" \
-    npx vite --port "$VITE_PORT" --strictPort >"$CONFIG_DIR/vite.log" 2>&1
+    npx vite --host 127.0.0.1 --port "$VITE_PORT" --strictPort >"$CONFIG_DIR/vite.log" 2>&1
 ) &
 VITE_PID=$!
 
