@@ -97,7 +97,7 @@ describe("ws refuses a fragment flood on the server's sockets (audit V12b)", () 
       1008,
       "the server kept buffering fragments of one unfinished message: the ws " +
         "that @hono/node-ws loads is < 8.21.1. If bun.lock is right, this tree " +
-        "kept a stale nested copy: run `bun install --force`.",
+        "kept a stale nested copy: run `bun install --force --frozen-lockfile`.",
     );
   });
 

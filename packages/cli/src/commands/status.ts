@@ -64,7 +64,7 @@ export async function runStatusCommand(): Promise<number> {
     console.log(`  hostname: ${hostname}`);
     console.log(`  uptime:   ${formatUptime(uptimeSec)}`);
     console.log(`  url:      http://127.0.0.1:${pidInfo.port}/`);
-    printStaleSecurityDeps();
+    printSecurityFloors();
     return 0;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -75,12 +75,22 @@ export async function runStatusCommand(): Promise<number> {
   }
 }
 
-/** The installed tree's security floors (V12b). Informational: the exit codes
- *  above are a contract for scripts and supervisors, so this never changes
- *  them. A bundle install has nothing to check and prints nothing. */
-function printStaleSecurityDeps(): void {
+/** The installed tree's security floors (V12b, ADR-137). Informational: the
+ *  exit codes above are a contract for scripts and supervisors, so this never
+ *  changes them. Always prints a verdict: "n/a" for a bundle install (its
+ *  dependencies were inlined from a fresh install at release time), never
+ *  silence that reads as a pass. */
+function printSecurityFloors(): void {
   const violations = checkInstalledFloors();
-  if (!violations?.length) return;
+  if (violations === null) {
+    console.log("  security floors: n/a (bundle install)");
+    return;
+  }
+  if (violations.length === 0) {
+    console.log("  security floors: ok");
+    return;
+  }
+  console.log("  security floors: NOT MET");
   console.log("");
   console.log(
     formatFloorViolations(violations, resolve(defaultServerDir(), "..", "..")),

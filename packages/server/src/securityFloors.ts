@@ -119,17 +119,25 @@ export type InstalledFloorViolation = {
   pkg: string;
   min: string;
   why: string;
-  version: string;
+  /** "below-floor": the version loaded is too old. "unverified": the package
+   *  (or the consumer that loads it) didn't resolve, so nothing proves the
+   *  version, and a check that can't see is not a pass. */
+  problem: "below-floor" | "unverified";
+  /** The version loaded, or null when unverified. */
+  version: string | null;
   seenBy: string;
 };
 
 /**
  * Check the INSTALLED tree: every floored package, as resolved from each of
- * its runtime consumers, must be at or above its floor. Returns null when
- * there's nothing to check: `serverDir` isn't the @autonomos/server package
- * (a bundle install, whose deps were inlined at release-build time from a
- * fresh install) or none of the packages is installed. A consumer that isn't
- * installed is skipped: nothing loads the dependency through it.
+ * its runtime consumers, must be at or above its floor. Returns null only
+ * when `serverDir` isn't the @autonomos/server package: a bundle install,
+ * whose deps were inlined at release-build time from a fresh install, so
+ * there is no tree to check. Inside a source tree, a consumer or package
+ * that doesn't resolve is reported as "unverified", never skipped: skipping
+ * it would turn "couldn't look" into a pass for exactly the nested copy this
+ * check exists for. `seenBy` is maintained by hand; the bun.lock one-copy
+ * guard is the backstop for a consumer it doesn't list.
  */
 export function checkInstalledFloors(
   serverDir: string = defaultServerDir(),
@@ -137,30 +145,26 @@ export function checkInstalledFloors(
 ): InstalledFloorViolation[] | null {
   if (!isServerPackage(serverDir)) return null;
   const root = realpathSync(serverDir);
-  let checkedAny = false;
   const violations: InstalledFloorViolation[] = [];
   for (const f of floors) {
     for (const consumer of f.seenBy) {
+      const seenBy = consumer === "." ? "@autonomos/server" : consumer;
+      const base = { pkg: f.pkg, min: f.min, why: f.why, seenBy };
       const from = consumer === "." ? root : resolvePackageDir(root, consumer);
-      if (!from) continue;
-      const dir = resolvePackageDir(from, f.pkg);
-      if (!dir) continue;
-      checkedAny = true;
+      const dir = from ? resolvePackageDir(from, f.pkg) : null;
+      if (!dir) {
+        violations.push({ ...base, problem: "unverified", version: null });
+        continue;
+      }
       const { version } = JSON.parse(
         readFileSync(join(dir, "package.json"), "utf8"),
       ) as { version: string };
       if (compareVersions(version, f.min) < 0) {
-        violations.push({
-          pkg: f.pkg,
-          min: f.min,
-          why: f.why,
-          version,
-          seenBy: consumer === "." ? "@autonomos/server" : consumer,
-        });
+        violations.push({ ...base, problem: "below-floor", version });
       }
     }
   }
-  return checkedAny ? violations : null;
+  return violations;
 }
 
 function isServerPackage(dir: string): boolean {
@@ -177,18 +181,54 @@ export function defaultServerDir(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-/** The operator-facing explanation, one violation per line plus the fix. */
+/** The command that relinks a tree to exactly what bun.lock says. --force
+ *  relinks nested copies a plain install keeps; --frozen-lockfile stops
+ *  --force ("always request the latest versions") from re-resolving with the
+ *  operator's bun. */
+export const RELINK_COMMAND = [
+  "bun",
+  "install",
+  "--force",
+  "--frozen-lockfile",
+] as const;
+
+/** The operator-facing explanation, one problem per line plus the fix. */
 export function formatFloorViolations(
   violations: InstalledFloorViolation[],
   repoRoot: string,
 ): string {
-  const lines = violations.map(
-    (v) =>
-      `  ${v.pkg} ${v.version} (loaded by ${v.seenBy}) is below ${v.min}: ${v.why}`,
+  const lines = violations.map((v) =>
+    v.problem === "unverified"
+      ? `  couldn't verify ${v.pkg} as loaded by ${v.seenBy} (not installed where Node would look); it must be ${v.min} or later: ${v.why}`
+      : `  ${v.pkg} ${v.version} (loaded by ${v.seenBy}) is below ${v.min}: ${v.why}`,
   );
   return [
-    "SECURITY: installed dependencies are older than this version requires:",
+    "SECURITY: installed dependencies don't meet this version's security floors:",
     ...lines,
-    `  Fix: cd ${repoRoot} && bun install --force, then restart autonomOS.`,
+    `  Fix: cd ${repoRoot} && ${RELINK_COMMAND.join(" ")}, then restart autonomOS.`,
   ].join("\n");
+}
+
+/**
+ * The build-time repair (`make build`): check the tree; only when a floor is
+ * violated or unverified, relink once and check again. Conditional on
+ * purpose: --force contacts the registry even with a warm cache (measured: a
+ * plain frozen install offline finishes in 0.3 s, --force hangs), so an
+ * unconditional --force would hang every offline build of a healthy tree.
+ * Returns the problems left after the repair (empty = OK), or null when there
+ * is no tree to check.
+ */
+export function ensureSecurityFloors(deps: {
+  check: () => InstalledFloorViolation[] | null;
+  relink: () => { ok: boolean; detail: string };
+  log: (line: string) => void;
+}): InstalledFloorViolation[] | null {
+  const before = deps.check();
+  if (!before?.length) return before;
+  deps.log(
+    `[security-floors] ${before.length} problem(s) in the installed tree; relinking with: ${RELINK_COMMAND.join(" ")}`,
+  );
+  const relink = deps.relink();
+  if (!relink.ok) deps.log(`[security-floors] relink failed: ${relink.detail}`);
+  return deps.check();
 }

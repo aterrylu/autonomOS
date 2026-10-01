@@ -14,7 +14,10 @@ import {
   checkInstalledFloors,
   checkLockfileFloors,
   compareVersions,
+  ensureSecurityFloors,
   formatFloorViolations,
+  type InstalledFloorViolation,
+  RELINK_COMMAND,
   SECURITY_FLOORS,
 } from "../securityFloors.js";
 
@@ -30,7 +33,8 @@ import {
  *    its floor;
  *  - the installed-tree check resolves each package the way Node does from
  *    each consumer (it powers the boot warning and `autonomos status`);
- *  - `make build`, which every upgrade path runs, relinks the tree.
+ *  - `make build`, which every upgrade path runs, relinks the tree when (and
+ *    only when) a floor is unmet, and fails if it still is.
  */
 
 const REPO = join(import.meta.dirname, "..", "..", "..", "..");
@@ -93,7 +97,7 @@ describe("the repo's bun.lock meets the security floors (audit V12/V12b)", () =>
 /** A packages/server with bun's isolated layout: each package's real
  *  directory lives in node_modules/.bun/<name>@<v>/node_modules/<name>, and
  *  its own dependencies are symlinks next to it. */
-function fixtureTree(nodeWsSees: string): string {
+function fixtureTree(nodeWsSees: string | null): string {
   const root = mkdtempSync(join(tmpdir(), "aos-floors-"));
   tmp.push(root);
   const store = join(root, "node_modules", ".bun");
@@ -115,11 +119,19 @@ function fixtureTree(nodeWsSees: string): string {
   const ws22 = real("ws", "8.22.0");
   const hono = real("hono", "4.13.12");
   const nodeWs = real("@hono/node-ws", "1.3.0");
-  link(
-    join(nodeWs.dir, "node_modules", "ws"),
-    nodeWsSees === "8.19.0" ? ws19.pkgDir : ws22.pkgDir,
-  );
+  if (nodeWsSees) {
+    link(
+      join(nodeWs.dir, "node_modules", "ws"),
+      nodeWsSees === "8.19.0" ? ws19.pkgDir : ws22.pkgDir,
+    );
+  }
   link(join(nodeWs.dir, "node_modules", "hono"), hono.pkgDir);
+  // The other hono consumers SECURITY_FLOORS lists, each with its own link.
+  const nodeServer = real("@hono/node-server", "1.19.17");
+  const mcp = real("@modelcontextprotocol/sdk", "1.27.1");
+  for (const c of [nodeServer, mcp]) {
+    link(join(c.dir, "node_modules", "hono"), hono.pkgDir);
+  }
 
   const server = join(root, "packages", "server");
   mkdirSync(server, { recursive: true });
@@ -130,6 +142,11 @@ function fixtureTree(nodeWsSees: string): string {
   link(join(server, "node_modules", "ws"), ws22.pkgDir);
   link(join(server, "node_modules", "hono"), hono.pkgDir);
   link(join(server, "node_modules", "@hono", "node-ws"), nodeWs.pkgDir);
+  link(join(server, "node_modules", "@hono", "node-server"), nodeServer.pkgDir);
+  link(
+    join(server, "node_modules", "@modelcontextprotocol", "sdk"),
+    mcp.pkgDir,
+  );
   return server;
 }
 
@@ -141,13 +158,32 @@ describe("the installed-tree check resolves as each consumer does (audit V12b)",
         pkg: "ws",
         min: "8.21.1",
         why: SECURITY_FLOORS[0].why,
+        problem: "below-floor",
         version: "8.19.0",
         seenBy: "@hono/node-ws",
       },
     ]);
     const text = formatFloorViolations(v ?? [], "/srv/autonomos");
     assert.match(text, /ws 8\.19\.0 \(loaded by @hono\/node-ws\)/);
-    assert.match(text, /cd \/srv\/autonomos && bun install --force/);
+    assert.match(
+      text,
+      /cd \/srv\/autonomos && bun install --force --frozen-lockfile/,
+    );
+  });
+
+  it("reports a consumer it can't resolve the package from as unverified, not a pass", () => {
+    // Reviewer's case: with the old skip, @hono/node-ws losing its ws link
+    // read as GREEN because the server's own ws still resolved.
+    const v = checkInstalledFloors(fixtureTree(null)) ?? [];
+    const ws = v.filter((x) => x.pkg === "ws");
+    assert.deepEqual(
+      ws.map((x) => [x.seenBy, x.problem, x.version]),
+      [["@hono/node-ws", "unverified", null]],
+    );
+    assert.match(
+      formatFloorViolations(ws, "/r"),
+      /couldn't verify ws as loaded by @hono\/node-ws/,
+    );
   });
 
   it("passes once the tree is relinked", () => {
@@ -162,14 +198,73 @@ describe("the installed-tree check resolves as each consumer does (audit V12b)",
   });
 });
 
+describe("the build-time repair relinks only when a floor is unmet (audit V12b)", () => {
+  const bad: InstalledFloorViolation = {
+    pkg: "ws",
+    min: "8.21.1",
+    why: "",
+    problem: "below-floor",
+    version: "8.19.0",
+    seenBy: "@hono/node-ws",
+  };
+  const run = (
+    checks: (InstalledFloorViolation[] | null)[],
+    relinkOk = true,
+  ) => {
+    let relinks = 0;
+    const left = ensureSecurityFloors({
+      check: () => checks.shift() ?? null,
+      relink: () => {
+        relinks++;
+        return { ok: relinkOk, detail: relinkOk ? "" : "exit 1" };
+      },
+      log: () => {},
+    });
+    return { left, relinks };
+  };
+
+  it("a healthy tree is never relinked (a relink needs the network)", () => {
+    assert.deepEqual(run([[]]), { left: [], relinks: 0 });
+  });
+
+  it("a stale tree is relinked once and passes", () => {
+    assert.deepEqual(run([[bad], []]), { left: [], relinks: 1 });
+  });
+
+  it("a relink that fails leaves the problem to fail the build", () => {
+    assert.deepEqual(run([[bad], [bad]], false), { left: [bad], relinks: 1 });
+  });
+
+  it("a bundle install has nothing to check or relink", () => {
+    assert.deepEqual(run([null]), { left: null, relinks: 0 });
+  });
+
+  it("relinks exactly to bun.lock: --force with --frozen-lockfile", () => {
+    // --force alone is documented as "always request the latest versions";
+    // with the operator's bun that could re-resolve away from the lockfile.
+    assert.deepEqual(
+      [...RELINK_COMMAND],
+      ["bun", "install", "--force", "--frozen-lockfile"],
+    );
+  });
+});
+
 describe("every upgrade path relinks the dependency tree (audit V12b)", () => {
   // In-app update, `autonomos upgrade`/`rollback` (sourceUpgrade.ts) and
   // install-source.sh (make prod) all run `make build`. A plain `bun install`
   // keeps a nested copy the new lockfile no longer lists (measured: a managed
   // clone upgraded to the ws 8.22 commit still served ws 8.19).
-  it("make build runs bun install --force", () => {
+  it("make build installs, then runs the floors check before anything else", () => {
     const makefile = readFileSync(join(REPO, "Makefile"), "utf8");
     const build = makefile.split(/^build:/m)[1]?.split(/^\S[^\n]*:/m)[0] ?? "";
-    assert.match(build, /\$\(BUN\) install --force\b/);
+    const steps = build
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("@#"));
+    assert.equal(steps[0], "@$(BUN) install");
+    assert.match(
+      steps[1] ?? "",
+      /\$\(TSX\) scripts\/check-security-floors\.ts$/,
+    );
   });
 });
