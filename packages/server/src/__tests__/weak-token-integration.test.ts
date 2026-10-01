@@ -70,7 +70,14 @@ describe("weak operator token at boot", {
     return { status: res.status, body: await res.json() };
   };
 
-  it("an EXISTING install starts, still authenticates, warns and reports it", async () => {
+  const lockState = async (s: BootedServer, token: string) => {
+    const res = await fetch(`http://127.0.0.1:${s.port}/api/auth/lock`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  it("an EXISTING install starts, still authenticates, and says so in ONE info line (no nagging)", async () => {
     const s = await bootServer({
       token: WEAK,
       // Used before this boot: an agents/ dir from an earlier version.
@@ -79,19 +86,23 @@ describe("weak operator token at boot", {
     booted.push(s);
     const v = await version(s, WEAK);
     assert.equal(v.status, 200, "the weak token still works");
-    assert.deepEqual(v.body.tokenWarning, {
-      length: 4,
-      source: "env",
-      networkBind: true,
-    });
-    const log = logFile(s.configDir);
-    assert.match(
-      log,
-      /SECURITY: the operator token .* is weak \(4 characters\)/,
+    assert.equal(v.body.tokenWarning, undefined, "no banner feed (dropped)");
+    const out = s.logs();
+    const info = out
+      .split("\n")
+      .filter((l) => l.includes("The operator token is short"));
+    assert.equal(info.length, 1, "exactly one line");
+    assert.match(info[0], /short \(4 characters\)/);
+    assert.ok(!/SECURITY/.test(out + logFile(s.configDir)), "no warning");
+    assert.ok(!out.includes(WEAK), "never the token on stdout");
+    assert.ok(
+      !logFile(s.configDir).includes(WEAK),
+      "never the token in the log",
     );
-    assert.match(log, /autonomos token rotate/);
-    assert.ok(!log.includes(WEAK), "never the token in the log");
-    assert.ok(!s.logs().includes(WEAK), "never the token on stdout");
+    const lock = await lockState(s, WEAK);
+    assert.equal(lock.status, 200);
+    assert.equal(lock.body.enabled, true, "a short token gets the lock");
+    assert.equal(lock.body.locked, false);
   });
 
   it("a NEW install on a network bind refuses to start, without printing the token", async () => {
@@ -125,45 +136,47 @@ describe("weak operator token at boot", {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("the warning never reaches an unauthenticated response", async () => {
+  it("the lock state and the unlock are behind auth; /api/host says nothing", async () => {
     const s = await bootServer({
       token: WEAK,
       prepareConfigDir: (dir) => mkdirSync(join(dir, "templates")),
     });
     booted.push(s);
     const base = `http://127.0.0.1:${s.port}`;
-    const v = await fetch(`${base}/api/system/version`);
-    assert.equal(v.status, 401);
-    assert.ok(!(await v.text()).includes("tokenWarning"));
-    const h = await fetch(`${base}/api/host`);
-    assert.equal(h.status, 200, "the one public route");
-    const host = await h.text();
-    assert.ok(!/tokenWarning|weak/i.test(host), host);
+    assert.equal((await fetch(`${base}/api/auth/lock`)).status, 401);
+    const unlock = await fetch(`${base}/api/auth/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(unlock.status, 401);
+    const host = await (await fetch(`${base}/api/host`)).text();
+    assert.ok(!/lock|weak|short/i.test(host), host);
   });
 
-  it("…starts with --allow-weak-token, warning", async () => {
+  it("…starts with --allow-weak-token", async () => {
     const s = await bootServer({
       token: WEAK,
       extraArgs: ["--allow-weak-token"],
     });
     booted.push(s);
-    assert.equal((await version(s, WEAK)).body.tokenWarning.networkBind, true);
+    assert.equal((await lockState(s, WEAK)).body.enabled, true);
   });
 
-  it("…starts on a loopback bind, warning", async () => {
+  it("…starts on a loopback bind", async () => {
     const s = await bootServer({
       token: WEAK,
       extraArgs: ["--host=127.0.0.1"],
     });
     booted.push(s);
-    assert.equal((await version(s, WEAK)).body.tokenWarning.networkBind, false);
+    assert.equal((await lockState(s, WEAK)).body.enabled, true);
   });
 
-  it("a strong token reports nothing", async () => {
+  it("a strong token gets no lock and no line", async () => {
     const strong = "0123456789abcdef".repeat(4);
     const s = await bootServer({ token: strong });
     booted.push(s);
-    assert.equal((await version(s, strong)).body.tokenWarning, null);
-    assert.ok(!s.logs().includes("SECURITY: the operator token"));
+    assert.equal((await lockState(s, strong)).body.enabled, false);
+    assert.ok(!s.logs().includes("The operator token is short"));
   });
 });

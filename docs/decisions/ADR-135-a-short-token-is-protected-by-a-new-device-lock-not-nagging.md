@@ -1,0 +1,35 @@
+## ADR-135: A short token is protected by a new-device lock, not nagging; the bind stays all-interfaces
+
+- **Date:** 2026-10-01
+- **Decided by:** Terry (human), relayed by TeamLead@autonomOS. Terry made the three product calls: no warning or banner, keep the all-interfaces bind and document tailnet/IAP use, and keep refusing weak tokens on new network installs. TeamLead@autonomOS set the hard-lockout design and the K=20 cap. SecurityFix-Auth@autonomOS computed the exposure, designed the details and implemented them.
+- **Supersedes:** ADR-130 (part: the dashboard banner and the every-boot SECURITY warning) and ADR-124 (part: a weak token now also has a hard cap, not only a rate)
+- **Context:** Terry keeps a short operator token **by choice** and asked that "no one can see my token for free and no one can exhaust their options trying". V8 (ADR-123) covers the first half. The second half needed numbers. With the ADR-124 throttle, ONE address gets about 64 guesses an hour, so 62^4 (about 14.8M values) takes around 13 years to half-exhaust. But the global ceiling only refused addresses that had already failed. An attacker spreading guesses over about 300 addresses, just below 300/min, got about 18k an hour, so 62^4 fell in about 17 days. And no rate can protect a 4-digit token: 10^4 / 2 at 60 an hour is about 3.5 days. Terry also declined the planned weak-token banner, and declined a loopback-only default bind ("most people use it over Tailscale, or forward the port with Google IAP").
+- **Decision:**
+  1. **New-device lock, for a weak token only** (`newDeviceLock.ts`). After **K=20** distinct wrong values from addresses that have never signed in (not loopback), every sign-in attempt from such an address is refused with **423 `NEW_DEVICES_LOCKED` before evaluation**, until the operator unlocks.
+     - **Never locked:** *known* devices (any address a valid credential came from; at most 256 remembered, persisted) and loopback (the CLI, a local dashboard, a local reverse proxy).
+     - **Counting:** the count never decays, and it persists 0600 in `$configDir/auth-lock.json` (counts and addresses only, never a credential), so neither waiting nor a restart hands out a fresh cap.
+     - **Tunable:** `AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT` (1..1000) changes K.
+     - **Strong tokens:** no lock, and nothing changes for them.
+  2. **Unlock:** `autonomos auth unlock`, which goes to the server over loopback, or edits the persisted file when the server is stopped. The dashboard also shows a "New devices locked · Unlock" status-bar pill (the update badge's amber pill style), visible only while locked, on devices that are already signed in. `autonomos token status` shows `locked` or `open (n of 20)`. `GET /api/auth/lock` and `POST /api/auth/unlock` require auth.
+  3. **No banner, no nagging.** The weak-token `tokenWarning` field is removed from `/api/system/version` (nothing reads it now), and the multi-line every-boot SECURITY warning becomes ONE info line: the token is short, new devices get N failed sign-ins in total, and `token rotate` replaces it. The token's characters and alphabet are never logged, only its length. A new install with a weak token on a network bind is **still refused** (ADR-130), and `autonomos token rotate` stays.
+  4. **Bind default unchanged (all interfaces).** The warn-first flip to loopback is dropped. Instead the README, guide and install output document using autonomOS over a tailnet (bind to the tailnet IP, or `tailscale serve`) and over Google IAP port-forwarding, with the security notes. That ships as its own docs PR.
+- **Rationale:**
+  - **A cap, not a rate, decides a short token's exposure.** The attacker's total chance becomes K/keyspace regardless of time or address count: 20/10^4 = 0.2% for 4 digits, and about 1 in 740,000 for 62^4. Under the rate alone those were days.
+  - **Why known devices stay safe.** The lock refuses only devices that have never held the token. An attacker can't become known without the token, so the operator's devices, the CLI and the local dashboard keep working during an attack. The price is that a NEW device of the operator's can't sign in while the lock is engaged; the operator unlocks from a known device or the server.
+  - **Weak tokens only, because a strong token gains nothing from a cap.** For a 64-hex token the cap would only be a lever for an attacker to lock new devices out.
+  - **Persisting the count and lock** is what makes the cap a cap: otherwise any restart, including the operator's own, would reset it.
+  - **No nagging** respects an informed choice. The protections, not the warnings, carry the safety.
+- **Alternatives considered:**
+  - **A rolling global budget (60/hour) for never-signed-in addresses.** It turns 17 days into years for 62^4, but a 4-digit token still falls in days. Superseded by the cap.
+  - **Lock everything after K failures**, known devices included. Rejected: the attacker could then lock the operator out at will.
+  - **Apply the lock to strong tokens too.** Rejected: there's no security gain, and it adds a denial-of-service lever.
+  - **A dashboard banner urging rotation.** Rejected by Terry.
+  - **A loopback-only default with warn-first.** Rejected by Terry: most installs are reached over Tailscale or IAP. Documentation replaces it.
+- **Residual risks (named):**
+  - **Behind a reverse proxy** (`tailscale serve`, nginx) every client is loopback, so the lock never engages there. Everything relies on the network in front (the tailnet's ACLs) plus the ADR-124 per-address throttle on that one shared address.
+  - **An attacker who can trigger the lock** can stop the operator from adding a NEW device until they unlock from an existing one. That is the intended trade.
+  - **Known addresses can be shared.** An attacker behind the same NAT (one IPv4 address) as one of the operator's devices is "known". Known devices are remembered by their EXACT address, never an IPv6 /64, so SLAAC neighbors on the same Wi-Fi are not (SecurityAudit, #475). The flip side: a device whose IPv6 privacy address rotates becomes "new" while the lock is engaged, and needs an unlock. ADR-117's session-id cookie is the real fix for device identity.
+  - **A damaged lock file fails closed:** it is treated as locked, with a loud log line, so damage never hands out a fresh cap.
+  - **A local reverse proxy is exempt.** Anything on this machine proxying requests in (`tailscale serve`, nginx) arrives as loopback and is exempt from the lock. The trusted-proxy work closes this for `tailscale serve`.
+  - **The lock state lives in memory and in one 0600 file.** Deleting that file (which needs operator-level access) reopens it.
+- **Source:** TeamLead@autonomOS channel, 2026-10-01 (Terry's decisions and the hard-lockout design). Exposure math in SecurityFix-Auth's report. PR `terry/auth-global-budget`.

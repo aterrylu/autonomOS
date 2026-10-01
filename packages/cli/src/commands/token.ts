@@ -36,6 +36,11 @@ import { isWeakToken, peekAuthToken } from "@autonomos/server/auth.js";
 import { signInLink } from "@autonomos/server/authCookie.js";
 import { getConfigDir } from "@autonomos/server/configDir.js";
 import { resolveInstall } from "@autonomos/server/installInfo.js";
+import {
+  loadState,
+  NEW_DEVICE_FAILURE_LIMIT,
+  newDeviceLockPath,
+} from "@autonomos/server/newDeviceLock.js";
 import { isPidAlive, readPidFile } from "@autonomos/server/pid-file.js";
 import { findInstalledService } from "../lib/service-control.js";
 
@@ -263,6 +268,18 @@ function status(): number {
   console.log(
     `Operator token: ${weak ? "WEAK" : "strong"}, ${token.length} characters, from ${where}.`,
   );
-  if (weak) console.log("Run `autonomos token rotate` to replace it.");
+  if (weak) {
+    // A short token is protected by the new-device lock (ADR-135): say where
+    // it stands. Counts only, never anything about the token itself.
+    const lock = loadState(newDeviceLockPath(getConfigDir()));
+    console.log(
+      lock.lockedAt !== null
+        ? `New devices: LOCKED OUT after ${lock.failures} failed sign-ins (since ${new Date(lock.lockedAt).toISOString()}). Devices already signed in still work. Run \`autonomos auth unlock\` to reopen.`
+        : `New devices: open (${lock.failures} of ${NEW_DEVICE_FAILURE_LIMIT} failed sign-ins before they're locked out).`,
+    );
+    console.log(
+      "`autonomos token rotate` replaces the token with a strong one.",
+    );
+  }
   return 0;
 }

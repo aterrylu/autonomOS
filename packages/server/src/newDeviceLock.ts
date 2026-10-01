@@ -1,0 +1,221 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+
+/**
+ * New-device lock for a WEAK operator token (ADR-135).
+ *
+ * The per-address throttle (ADR-124) bounds the guess RATE, but a rate can't
+ * make a short token safe: a 4-digit token falls in days even at 60 guesses an
+ * hour, from enough addresses. So for a weak token there is also a CAP: after
+ * LIMIT distinct wrong values from addresses that have never signed in, every
+ * sign-in attempt from such an address is refused, before evaluation, until
+ * the operator unlocks (`autonomos auth unlock`). An attacker's total chance
+ * is then LIMIT / keyspace, whatever the time.
+ *
+ * Never locked out:
+ *  - KNOWN addresses: any address a valid credential has come from. An
+ *    attacker can't become known without the token. Remembered on disk, so a
+ *    restart doesn't turn the operator's devices into strangers.
+ *  - loopback: the CLI, a local dashboard, and anything behind a local reverse
+ *    proxy (which can't be told apart; ADR-124 names that residual).
+ *
+ * The count and the lock persist (0600), so restarting the server doesn't hand
+ * an attacker a fresh LIMIT. The count never decays: waiting doesn't help.
+ * Nothing here ever stores or logs a credential.
+ */
+
+export const NEW_DEVICE_FAILURE_LIMIT = 20;
+/** The cap, optionally lowered or raised by AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT
+ *  (an integer 1..1000). Anything else falls back to the default. */
+export function newDeviceFailureLimit(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 1000
+    ? n
+    : NEW_DEVICE_FAILURE_LIMIT;
+}
+
+/** Bound on remembered addresses (oldest dropped). */
+export const MAX_KNOWN_ADDRESSES = 256;
+
+interface Persisted {
+  /** Distinct failures from unknown addresses since the last unlock. */
+  failures: number;
+  /** When the lock engaged (ms), or null when open. */
+  lockedAt: number | null;
+  /** Addresses a valid credential has come from, most recent last. */
+  known: string[];
+}
+
+export type LockState = {
+  enabled: boolean;
+  locked: boolean;
+  failures: number;
+  limit: number;
+  lockedAt: number | null;
+};
+
+/** Where the lock persists, inside the config dir (0600). */
+export function newDeviceLockPath(configDir: string): string {
+  return join(configDir, "auth-lock.json");
+}
+
+export function isLoopbackAddress(addr: string): boolean {
+  return addr === "::1" || addr === "localhost" || /^127\./.test(addr);
+}
+
+export class NewDeviceLock {
+  private state: Persisted;
+
+  constructor(
+    private readonly opts: {
+      /** Only a weak token gets a lock: a strong one needs no cap, and the lock
+       *  would then be nothing but a denial-of-service lever. */
+      enabled: boolean;
+      /** Where count, lock and known addresses persist (0600). */
+      path: string;
+      limit?: number;
+      now?: () => number;
+      log?: (line: string) => void;
+    },
+  ) {
+    const { state, damaged } = loadStateDetailed(opts.path);
+    this.state = state;
+    if (damaged && opts.enabled) {
+      this.state.lockedAt = (opts.now ?? Date.now)();
+      (opts.log ?? console.warn)(
+        `[auth] the new-device lock file (${opts.path}) is damaged, so new devices are locked out to be safe. Devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
+      );
+      this.save();
+    }
+  }
+
+  private get limit(): number {
+    return this.opts.limit ?? NEW_DEVICE_FAILURE_LIMIT;
+  }
+
+  isKnown(address: string): boolean {
+    return isLoopbackAddress(address) || this.state.known.includes(address);
+  }
+
+  /** Should this address's credential be refused unevaluated? */
+  refuses(address: string): boolean {
+    return (
+      this.opts.enabled &&
+      this.state.lockedAt !== null &&
+      !this.isKnown(address)
+    );
+  }
+
+  /** A credential from this address was valid: remember the address. */
+  noteSuccess(address: string): void {
+    if (isLoopbackAddress(address) || this.state.known.includes(address))
+      return;
+    this.state.known.push(address);
+    if (this.state.known.length > MAX_KNOWN_ADDRESSES) this.state.known.shift();
+    this.save();
+  }
+
+  /** A NEW wrong value (not a repeat) came from this address. */
+  noteDistinctFailure(address: string): void {
+    if (!this.opts.enabled || this.isKnown(address)) return;
+    if (this.state.lockedAt !== null) return; // already locked: refused anyway
+    this.state.failures += 1;
+    if (this.state.failures >= this.limit) {
+      this.state.lockedAt = (this.opts.now ?? Date.now)();
+      (this.opts.log ?? console.warn)(
+        `[auth] ${this.state.failures} failed sign-ins from devices that have never signed in. New devices are now locked out; devices already signed in, and this machine, keep working. Unlock with \`autonomos auth unlock\`.`,
+      );
+    }
+    this.save();
+  }
+
+  unlock(): void {
+    this.state.failures = 0;
+    this.state.lockedAt = null;
+    this.save();
+  }
+
+  status(): LockState {
+    return {
+      enabled: this.opts.enabled,
+      locked: this.opts.enabled && this.state.lockedAt !== null,
+      failures: this.state.failures,
+      limit: this.limit,
+      lockedAt: this.state.lockedAt,
+    };
+  }
+
+  private save(): void {
+    try {
+      saveState(this.opts.path, this.state);
+    } catch (err) {
+      // The in-memory lock still holds this process; only persistence failed.
+      (this.opts.log ?? console.warn)(
+        `[auth] couldn't save the new-device lock state: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+}
+
+/**
+ * Read the persisted state. A MISSING file is "open" (a fresh install). A file
+ * that exists but can't be read or parsed fails CLOSED: locked, because a
+ * damaged file must not hand out a fresh cap (SecurityAudit, #475). The
+ * operator unlocks as usual.
+ */
+export function loadStateDetailed(path: string): {
+  state: Persisted;
+  damaged: boolean;
+} {
+  if (!existsSync(path))
+    return {
+      state: { failures: 0, lockedAt: null, known: [] },
+      damaged: false,
+    };
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Persisted>;
+    if (typeof raw !== "object" || raw === null)
+      throw new Error("not an object");
+    return {
+      state: {
+        failures: Number.isInteger(raw.failures) ? (raw.failures as number) : 0,
+        lockedAt: typeof raw.lockedAt === "number" ? raw.lockedAt : null,
+        known: Array.isArray(raw.known)
+          ? raw.known.filter((a): a is string => typeof a === "string")
+          : [],
+      },
+      damaged: false,
+    };
+  } catch {
+    return {
+      state: { failures: 0, lockedAt: 0, known: [] },
+      damaged: true,
+    };
+  }
+}
+
+/** The persisted state, damaged → locked (see loadStateDetailed). */
+export function loadState(path: string): Persisted {
+  return loadStateDetailed(path).state;
+}
+
+export function saveState(path: string, state: Persisted): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, path);
+}
+
+/** Clear the lock in the persisted file (the CLI, when the server is down). */
+export function unlockOnDisk(path: string): void {
+  const s = loadState(path);
+  saveState(path, { ...s, failures: 0, lockedAt: null });
+}

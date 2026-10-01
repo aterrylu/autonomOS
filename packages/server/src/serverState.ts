@@ -17,21 +17,6 @@ let _port: number | null = null;
 let _token: string | null = null;
 let _internalSocketPath: string | null = null;
 
-/** Set at boot when the operator token is weak (V2b); read by the dashboard
- *  through GET /api/system/version. Never holds the token itself. */
-export type TokenWarning = {
-  length: number;
-  source: "env" | "file";
-  networkBind: boolean;
-};
-let _tokenWarning: TokenWarning | null = null;
-export function setTokenWarning(w: TokenWarning | null): void {
-  _tokenWarning = w;
-}
-export function getTokenWarning(): TokenWarning | null {
-  return _tokenWarning;
-}
-
 export function setServerPort(port: number): void {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`setServerPort: invalid port ${port}`);

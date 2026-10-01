@@ -50,6 +50,7 @@ import {
   AuthFailureLimiter,
   cappedLockoutWarn,
   peerAddress,
+  rawPeerAddress,
 } from "./authRateLimit.js";
 import { parseCliArgs, printUsage } from "./cli-args.js";
 import { getConfigDir, tightenConfigDirModes } from "./configDir.js";
@@ -65,6 +66,11 @@ import {
 } from "./internalSocket.js";
 import { initFileLogging, writeUnlogged } from "./logger.js";
 import { handleMcpRequest, handleMcpSessionRequest } from "./mcp.js";
+import {
+  NewDeviceLock,
+  newDeviceFailureLimit,
+  newDeviceLockPath,
+} from "./newDeviceLock.js";
 import { acquireOwnership, removePidFile } from "./pid-file.js";
 import { claudeUsageRouter } from "./plugins/claude-usage/route.js";
 import { codexUsageRouter } from "./plugins/codex-usage/route.js";
@@ -98,7 +104,6 @@ import {
   setAuthToken,
   setInternalSocketPath,
   setServerPort,
-  setTokenWarning,
 } from "./serverState.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { seedDefaultTemplates } from "./templates.js";
@@ -430,9 +435,31 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // internal socket is same-user only and is never throttled.
   const authLimiter = new AuthFailureLimiter();
   const warnLockout = cappedLockoutWarn();
+  // A weak token also gets a CAP on failures from never-seen devices
+  // (newDeviceLock.ts, ADR-135): its total exposure is then limit/keyspace.
+  const newDeviceLock = new NewDeviceLock({
+    enabled: isWeakToken(AUTH_TOKEN),
+    path: newDeviceLockPath(getConfigDir()),
+    limit: newDeviceFailureLimit(
+      process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT,
+    ),
+  });
+  if (newDeviceLock.status().locked)
+    console.warn(
+      "[auth] New devices are locked out after repeated failed sign-ins (devices already signed in, and this machine, still work). Unlock with `autonomos auth unlock`.",
+    );
 
-  /** 429 before any credential is evaluated, or null to go on. */
+  /** 423/429 before any credential is evaluated, or null to go on. */
   function throttled(c: Context, address: string): Response | null {
+    if (newDeviceLock.refuses(rawPeerAddress(c)))
+      return c.json(
+        {
+          error:
+            "New devices are locked after repeated failed sign-ins. Sign in from a device that's already signed in, or run `autonomos auth unlock` on the server.",
+          code: "NEW_DEVICES_LOCKED",
+        },
+        423,
+      );
     const v = authLimiter.check(address);
     if (v.ok) return null;
     const secs = Math.ceil(v.retryAfterMs / 1000);
@@ -447,10 +474,20 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     );
   }
 
-  function recordFailures(address: string, presented: readonly string[]): void {
+  /** `address` keys the throttle (IPv6 /64); `device` is the exact peer, for
+   *  the new-device lock's known check. */
+  function recordFailures(
+    address: string,
+    device: string,
+    presented: readonly string[],
+  ): void {
     for (const value of presented) {
-      const lockMs = authLimiter.recordFailure(address, value);
+      const { distinct, lockMs } = authLimiter.recordFailureDetailed(
+        address,
+        value,
+      );
       if (lockMs > 0) warnLockout(address, lockMs);
+      if (distinct) newDeviceLock.noteDistinctFailure(device);
     }
   }
 
@@ -461,10 +498,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     const body = await c.req.json().catch(() => null);
     const token = typeof body?.token === "string" ? body.token : null;
     if (!token || !safeEqual(token, AUTH_TOKEN)) {
-      if (token) recordFailures(address, [token]);
+      if (token) recordFailures(address, rawPeerAddress(c), [token]);
       return c.json({ error: "Invalid token" }, 401);
     }
     authLimiter.recordSuccess(address);
+    newDeviceLock.noteSuccess(rawPeerAddress(c));
     setSessionCookie(c, token);
     return c.json({ ok: true });
   };
@@ -565,11 +603,13 @@ export async function runServer(argv: readonly string[]): Promise<void> {
         // per-port one, so an older instance on the same host rewriting the
         // shared cookie can no longer log it out here.
         if (match.source === "legacy-cookie") setSessionCookie(c, match.token);
+        // A device a valid credential came from is never locked out.
+        if (throttle) newDeviceLock.noteSuccess(rawPeerAddress(c));
         return next();
       }
       // A request that presented nothing (the dashboard probing before sign-in)
       // made no guess and isn't counted.
-      if (throttle) recordFailures(address, presented);
+      if (throttle) recordFailures(address, rawPeerAddress(c), presented);
       return c.json(
         {
           error:
@@ -618,6 +658,16 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // auth check stays as defense in depth: the socket answers the "who can
   // connect" question, the token still answers "prove it".
   internalApp.use("/mcp", requireAuth);
+
+  // The new-device lock (ADR-135): its state for the dashboard and CLI, and
+  // the operator's unlock. Both behind auth, so only a device holding the
+  // token (which the lock never refuses) can read or clear it.
+  app.get("/api/auth/lock", (c) => c.json(newDeviceLock.status()));
+  app.post("/api/auth/unlock", (c) => {
+    newDeviceLock.unlock();
+    console.log("[auth] new-device lock cleared by the operator");
+    return c.json(newDeviceLock.status());
+  });
 
   app.get("/api/host", (c) =>
     c.json({
@@ -1091,21 +1141,11 @@ function enforceTokenStrength(o: {
     process.exit(2);
   }
   if (policy === "warn") {
-    console.warn(
-      [
-        `⚠ SECURITY: the operator token from ${where} is weak (${o.token.length} characters).${o.networkBind ? " This server is reachable on the network." : ""}`,
-        "  Run `autonomos token rotate` on this machine to replace it with a strong one.",
-        ...(fromEnv
-          ? [
-              "  The environment variable wins over the token file, so rotate also takes AUTONOMOS_TOKEN out of the .env it finds. Remove it anywhere else it is set.",
-            ]
-          : []),
-      ].join("\n"),
+    // One informational line: the operator may keep a short token on purpose
+    // (Terry, 2026-10-01). The throttle (ADR-124) and the new-device lock
+    // (ADR-135) are what protect it; nothing nags.
+    console.log(
+      `ℹ The operator token is short (${o.token.length} characters): new devices get ${newDeviceFailureLimit(process.env.AUTONOMOS_NEW_DEVICE_FAILURE_LIMIT)} failed sign-ins in total before they're locked out. \`autonomos token rotate\` replaces it.`,
     );
-    setTokenWarning({
-      length: o.token.length,
-      source: fromEnv ? "env" : "file",
-      networkBind: o.networkBind,
-    });
   }
 }
