@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   findBackgroundProcs,
+  listProcesses,
   MIN_AGE_S,
   type ProcRow,
   parseEtime,
+  parseProcessTable,
 } from "../backgroundProcs.js";
 
 /**
@@ -108,5 +113,42 @@ describe("parseEtime", () => {
     assert.equal(parseEtime("03:24"), 204);
     assert.equal(parseEtime("01:02:03"), 3723);
     assert.equal(parseEtime("2-01:00:00"), 2 * 86_400 + 3600);
+  });
+});
+
+describe("listProcesses never blocks the event loop", () => {
+  // GET /api/system/upgrade (every dashboard load, and every ~2s while the
+  // update dialog is open) lists processes. As a spawnSync, a slow `ps` on a
+  // busy box froze the whole server (965ms measured), timing out every
+  // agent's statusline at once.
+  it("the loop keeps ticking while a slow `ps` runs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "slow-ps-"));
+    const realPath = process.env.PATH;
+    writeFileSync(
+      join(dir, "ps"),
+      "#!/bin/sh\nsleep 0.5\necho '  1     0 01:00 /sbin/launchd'\n",
+    );
+    chmodSync(join(dir, "ps"), 0o755);
+    process.env.PATH = `${dir}:${realPath}`;
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 20);
+    try {
+      const rows = await listProcesses();
+      assert.deepEqual(rows, [
+        { pid: 1, ppid: 0, ageS: 60, args: "/sbin/launchd" },
+      ]); // precondition: the slow shim is what ran
+      assert.ok(ticks >= 10, `event loop froze during ps (${ticks} ticks)`);
+    } finally {
+      clearInterval(timer);
+      process.env.PATH = realPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parseProcessTable reads ps rows and skips junk", () => {
+    assert.deepEqual(
+      parseProcessTable("  42  1 1-02:03:04 node x.js\nnot a row\n"),
+      [{ pid: 42, ppid: 1, ageS: 93_784, args: "node x.js" }],
+    );
   });
 });

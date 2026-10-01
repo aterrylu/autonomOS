@@ -20,7 +20,10 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
-import { sweepAgentTokenFiles } from "./agentCredentials.js";
+import {
+  sweepAgentTokenFiles,
+  sweepStaleStatuslineCaches,
+} from "./agentCredentials.js";
 import { migrateIfNeeded } from "./agents/migrate.js";
 import { awaitPtyExits } from "./agents/ptyTerminate.js";
 import {
@@ -809,6 +812,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     //      outbound-dead. There is no `await` between the bind and this line, so
     //      the window is closed — the loop cannot run a handler between them.
     sweepAgentTokenFiles();
+    sweepStaleStatuslineCaches();
 
     // Snapshot the agents to resume HERE, synchronously, for the same reason
     // the token sweep sits here: POST /api/agents is live from the bind, and

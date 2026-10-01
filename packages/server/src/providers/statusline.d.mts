@@ -20,10 +20,14 @@ export interface AutonomosMeta {
   directReports: number;
 }
 
-export function formatHierarchy(ctx: HierarchyContext): string;
+export function formatHierarchy(
+  ctx: HierarchyContext,
+  opts?: { stale?: boolean },
+): string;
 export function formatActivity(
   cc: Record<string, unknown>,
   meta?: AutonomosMeta | null,
+  branch?: string | null,
 ): string;
 export function buildBar(
   pct: number | null | undefined,
@@ -40,3 +44,41 @@ export function getSelfMeta(
   serverUrl: string,
   agentToken?: string,
 ): Promise<AutonomosMeta | null>;
+
+export type SelfResult =
+  | { meta: AutonomosMeta; error?: undefined; status?: undefined }
+  | {
+      meta?: undefined;
+      error: "no-token" | "http" | "bad-body" | "refused" | "timeout" | "other";
+      status?: number;
+    };
+
+export interface StatuslineCache {
+  meta?: AutonomosMeta;
+  metaAt?: number;
+  branch?: string;
+}
+
+export type Identity =
+  | { kind: "fresh"; meta: AutonomosMeta }
+  | { kind: "cached"; meta: AutonomosMeta; stale: boolean }
+  | { kind: "offline" };
+
+export function fetchSelf(
+  sessionId: string,
+  serverUrl: string,
+  agentToken?: string,
+): Promise<SelfResult>;
+export function chooseIdentity(
+  result: { meta?: AutonomosMeta; error?: string; status?: number },
+  cache: StatuslineCache | null,
+  now: number,
+): Identity;
+export function readGitBranch(cwd: string, ceiling?: string): string | null;
+export function resolveBranch(
+  cc: Record<string, unknown>,
+  cachedBranch?: string | null,
+  onFallback?: () => void,
+): string | null;
+export const STALE_AFTER_MS: number;
+export const OFFLINE_AFTER_MS: number;

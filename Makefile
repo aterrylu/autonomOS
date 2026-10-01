@@ -175,13 +175,21 @@ NODE_TEST_CONCURRENCY := $(if $(LOCAL_TEST_CAP),--test-concurrency=$(LOCAL_TEST_
 VITEST_MAX_WORKERS := $(if $(LOCAL_TEST_CAP),--maxWorkers=$(LOCAL_TEST_CAP))
 endif
 
+# Test suites run with git's location variables STRIPPED. Inside a git hook
+# (the pre-push gate) git exports GIT_DIR (for a linked worktree, its
+# .git/worktrees/<name>), and any fixture `git init`/`config` then targets the
+# REAL repository: one fixture `git init` flipped the shared repo to
+# core.bare=true and broke every worktree (#321, again on 2026-10-01). No suite
+# needs the hook's repo location; cwd discovery still works without it.
+GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_NAMESPACE
+
 check:
 	$(TSX) scripts/decisions.ts check
 	npx biome check packages/
 	packages/dashboard/node_modules/.bin/tsc --build
 	$(TSX) scripts/check-dashboard-dist.ts
-	$(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
-	cd packages/dashboard && node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
+	$(GIT_CLEAN_ENV) $(TSX) --test $(NODE_TEST_CONCURRENCY) $(NODE_TEST_TIMEOUT) packages/server/src/__tests__/*.test.ts packages/cli/src/__tests__/*.test.ts scripts/*.test.ts
+	cd packages/dashboard && $(GIT_CLEAN_ENV) node_modules/.bin/vitest run $(VITEST_MAX_WORKERS)
 
 # ── adr: architectural decision records, one file each (docs/decisions/) ───────
 # `make adr NEW="Title"` allocates the next free number across origin/main AND open
