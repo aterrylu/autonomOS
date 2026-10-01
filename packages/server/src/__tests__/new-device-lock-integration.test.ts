@@ -106,6 +106,30 @@ describe("new-device lock on a real server", {
     assert.equal(lock.failures, Number(LIMIT));
   });
 
+  it("NO successful sign-in clears the lock: loopback, magic-link exchange, known device", async () => {
+    const locked = async () =>
+      (
+        await (
+          await fetch(`http://127.0.0.1:${s.port}/api/auth/lock`, {
+            headers: { Authorization: `Bearer ${WEAK}` },
+          })
+        ).json()
+      ).locked;
+    assert.equal(await locked(), true, "precondition: locked");
+    // A loopback API call with the right token (the operator's CLI, a curl).
+    assert.equal((await fromLoopback(s, WEAK)).status, 200);
+    assert.equal(await locked(), true, "after a loopback request");
+    // The sign-in link's exchange: POST /api/auth from this machine.
+    const login = await fetch(`http://127.0.0.1:${s.port}/api/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: WEAK }),
+    });
+    assert.equal(login.status, 200);
+    assert.equal(await locked(), true, "after a magic-link sign-in");
+    // Only an explicit unlock (CLI or the dashboard button) clears it.
+  });
+
   it("the lock survives a restart", async () => {
     await s.kill();
     s = await boot({ token: WEAK, reuseConfigDir: s.configDir });
