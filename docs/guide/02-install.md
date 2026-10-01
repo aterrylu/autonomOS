@@ -124,7 +124,57 @@ bash scripts/install-source.sh            # installs to ~/autonomos at the newes
 bash scripts/install-source.sh --ref v0.6.1 --dir /srv/autonomos   # pin a version and a location
 ```
 
-By default the server only listens on the machine it runs on. Reaching it from another computer means either an SSH tunnel to port 3000 or starting the service with `--host=0.0.0.0`, which exposes it to your network. Every request still requires the token. Remote setups are a developer topic beyond this guide; the root `README.md` covers them.
+See the next section for how to reach it from your other devices.
+
+## Using it from your other devices
+
+By default the server listens on **all network interfaces**, on the port the installer printed (3000 unless you chose another). The `install-service --force` commands below rewrite the service file: if you installed with a custom `--port`, pass it again. Any device that can reach that port can open the dashboard, and every request needs your token. What decides who can *reach* the port is the network in front of it, so pick one of these instead of exposing it to your whole network or the internet.
+
+### Over Tailscale (most setups)
+
+Install [Tailscale](https://tailscale.com) on the server and on each device you'll use, signed in to the same tailnet. Then open the server by its tailnet name (with MagicDNS) or its `100.x.y.z` address:
+
+```
+http://<server-name>:3000            (or http://<server-name>.<your-tailnet>.ts.net:3000)
+```
+
+Tailscale encrypts the connection end to end, and your tailnet's access rules decide which devices can reach it. Two ways to tighten it further:
+
+- **Listen on the tailnet only.** Bind the server to the machine's tailnet address so nothing else on the local network can reach it:
+  ```bash
+  autonomos install-service --force --host=100.x.y.z     # this machine's tailnet IP (tailscale ip -4)
+  ```
+  If Tailscale isn't up yet when the machine boots, the server can't bind that address and the service retries until it is.
+- **Keep it on this machine and let Tailscale serve it over HTTPS.** Bind to localhost, then publish it to your tailnet with `tailscale serve`:
+  ```bash
+  autonomos install-service --force --host=127.0.0.1
+  tailscale serve --bg 3000          # → https://<server-name>.<your-tailnet>.ts.net
+  ```
+  Every visitor then reaches autonomOS from the machine itself, so autonomOS can't tell your devices apart: its per-device protections (the sign-in throttle, and the new-device lock for a short token) see one address. Your tailnet's access rules are the boundary. Never use `tailscale funnel` for autonomOS: that publishes it to the whole internet.
+
+### Over Google Cloud IAP (a VM without a public address)
+
+[Identity-Aware Proxy TCP forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding) lets you reach a VM's port through your Google login, with no external IP and no open firewall to the internet:
+
+```bash
+# once: let IAP's address range reach the port (and nothing else)
+gcloud compute firewall-rules create allow-iap-autonomos \
+  --network=<vpc> --allow=tcp:3000 --source-ranges=35.235.240.0/20
+# each time: forward the VM's port to your laptop, then open http://localhost:3000
+gcloud compute start-iap-tunnel <vm-name> 3000 --local-host-port=localhost:3000 --zone=<zone>
+```
+
+Who can open the tunnel is decided by IAM (the `IAP-secured Tunnel User` role). Keep the server on its default bind: IAP connects to the VM's internal address, not to localhost.
+
+### Over SSH
+
+From any machine with SSH access: `ssh -L 3000:localhost:3000 <server>`, then open `http://localhost:3000`. This works with the server bound to `--host=127.0.0.1`.
+
+### Security notes
+
+- **Don't expose the port to the internet** (no router port-forwarding, no public cloud firewall rule, no `tailscale funnel`). The token is the only lock on it.
+- **On a plain local network, `http://` sends your token unencrypted** at sign-in and in the session cookie. Tailscale encrypts it; `tailscale serve` and IAP's tunnel also give you an encrypted path.
+- **Repeated wrong tokens are throttled.** If your token is short, devices that have never signed in are locked out after 20 wrong tries in total, while devices you already use keep working. Unlock new devices with `autonomos auth unlock`. `autonomos token status` shows where things stand, and `autonomos token rotate` swaps in a long random token.
 
 ## Installing from source
 

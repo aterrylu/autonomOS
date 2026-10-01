@@ -188,6 +188,14 @@ export async function verifyAndReportInstall(
   console.log(
     "    Manage:     autonomos status · autonomos logs -f · autonomos restart",
   );
+  // The server listens on all interfaces by default: point at the private
+  // ways to reach it from other devices instead of leaving that implicit.
+  console.log(
+    "    Remote:     from other devices, use Tailscale, Google IAP or SSH, not an open port:",
+  );
+  console.log(
+    "                https://github.com/aterrylu/autonomOS/blob/main/docs/guide/02-install.md#using-it-from-your-other-devices",
+  );
   console.log("");
 
   // Open the dashboard ROOT only — never the token-bearing link (see SECURITY

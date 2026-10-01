@@ -71,6 +71,10 @@ autonomos uninstall-service  # remove the service; your data in ~/.autonomos sta
 > still exists as a dev tool, but it rsyncs a working tree with no git history — no
 > provenance, no `autonomos upgrade`, no rollback.)
 
+### Using it from other devices
+
+The server listens on all network interfaces by default, so put a private network in front of it rather than exposing the port: **Tailscale** (open `http://<server>:3000` from any device on your tailnet; bind to the tailnet IP with `autonomos install-service --force --host=<tailnet-ip>`, or keep it on localhost and publish it with `tailscale serve`), **Google Cloud IAP** TCP forwarding (`gcloud compute start-iap-tunnel <vm> 3000 --local-host-port=localhost:3000`), or an **SSH tunnel**. Every request needs your token. A short token is protected by a sign-in throttle and a new-device lock (`autonomos auth unlock`). Full steps and security notes: [Using it from your other devices](docs/guide/02-install.md#using-it-from-your-other-devices).
+
 ## Coding-CLI support
 
 autonomOS is CLI-agnostic by design: every runtime plugs into the same message bus and the same MCP toolbelt, so coordination is written once and works across all of them. **Claude Code and Codex are fully supported.** **Gemini CLI runs as a full agent;** messages sent to it arrive in the **Incoming messages** panel, where you deliver them into the session with a click. Everything else — spawning, status, sending, permissions — works the same.
