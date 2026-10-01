@@ -20,7 +20,10 @@ import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
-import { sweepAgentTokenFiles } from "./agentCredentials.js";
+import {
+  sweepAgentTokenFiles,
+  sweepStaleStatuslineCaches,
+} from "./agentCredentials.js";
 import { migrateIfNeeded } from "./agents/migrate.js";
 import { awaitPtyExits } from "./agents/ptyTerminate.js";
 import {
@@ -90,6 +93,11 @@ import { usageQueueRouter } from "./routes/usageQueue.js";
 import { resolveCorsOrigins, sameOriginGuard } from "./sameOriginGuard.js";
 import { initScheduler, stopScheduler } from "./scheduler.js";
 import { CHANNEL_SERVER_SCRIPT, STATUSLINE_SCRIPT } from "./scriptPaths.js";
+import {
+  checkInstalledFloors,
+  defaultServerDir,
+  formatFloorViolations,
+} from "./securityFloors.js";
 import {
   getServerPort,
   setAuthToken,
@@ -220,6 +228,11 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     allowWeak:
       cliArgs.allowWeakToken || process.env.AUTONOMOS_ALLOW_WEAK_TOKEN === "1",
   });
+
+  // Dependencies with a security fix, checked as the packages that LOAD them
+  // resolve them: a plain `bun install` can leave a stale nested copy behind
+  // a bumped package.json (V12b). Warn on every boot until it's fixed.
+  warnOnStaleSecurityDeps();
 
   // Seed default templates on fresh install
   seedDefaultTemplates();
@@ -809,6 +822,7 @@ export async function runServer(argv: readonly string[]): Promise<void> {
     //      outbound-dead. There is no `await` between the bind and this line, so
     //      the window is closed — the loop cannot run a handler between them.
     sweepAgentTokenFiles();
+    sweepStaleStatuslineCaches();
 
     // Snapshot the agents to resume HERE, synchronously, for the same reason
     // the token sweep sits here: POST /api/agents is live from the bind, and
@@ -1058,6 +1072,23 @@ export async function runServer(argv: readonly string[]): Promise<void> {
   // The server is now running. Return a promise that never resolves —
   // shutdown happens via signal → process.exit() above.
   return new Promise<void>(() => {});
+}
+
+/** Boot-time half of the security floors (securityFloors.ts). Never fatal:
+ *  the server still starts, but the log and `autonomos status` say why it
+ *  shouldn't be trusted until the tree is reinstalled. */
+function warnOnStaleSecurityDeps(): void {
+  try {
+    const violations = checkInstalledFloors();
+    if (!violations?.length) return;
+    const repoRoot = resolve(defaultServerDir(), "..", "..");
+    console.error(`⚠ ${formatFloorViolations(violations, repoRoot)}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[security-floors] could not check installed dependencies: ${msg}`,
+    );
+  }
 }
 
 /**

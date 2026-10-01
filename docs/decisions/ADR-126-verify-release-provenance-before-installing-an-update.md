@@ -1,0 +1,48 @@
+## ADR-126: Verify release provenance before installing an update
+
+- **Date:** 2026-09-30
+- **Decided by:** Terry (the policy: refuse on invalid; postpone the update on missing for existing installs (option D, 2026-10-01, after SecurityAudit-Claude's review; it replaced the original warn-and-proceed); fail closed for new installs; a loud `AUTONOMOS_SKIP_PROVENANCE=1`; don't require `gh` or `cosign`). The release engineer agent (ReleaseRollout) designed and measured the mechanics.
+- **Context:** `release.yml` has signed a Sigstore build-provenance attestation for every release tarball from v0.1.0 on (`actions/attest-build-provenance`; measured 2026-10-01: only the first release, v0.0.1, has none). Nothing verified it, though. The in-app update (ADR-105), `autonomos upgrade` and `install.sh` checked only SHA256SUMS, and that file comes from the same GitHub release as the tarball. Anyone who can replace a release asset, through a leaked token, a compromised account or a re-upload, can replace both and pass the checksum. Measured on 2026-09-27: every release's attestation is served by GitHub's public attestations API without authentication. The signer identity is `https://github.com/<repo>/.github/workflows/release.yml@refs/tags/v<version>`, issued by GitHub Actions OIDC.
+- **Decision:** `server/src/provenance.ts` verifies the downloaded tarball in-process with sigstore-js (`@sigstore/verify` + `@sigstore/tuf`).
+  - **What it checks:** the attestation bundles for sha256(tarball), fetched from `/repos/<repo>/attestations/sha256:<digest>`. Each is checked against Sigstore's trust root: Fulcio certificate chain, signature, and Rekor inclusion. The policy requires issuer = GitHub Actions and SAN = our `release.yml` at *that* tag. The SLSA provenance statement must name this tarball's digest *under its asset name*, so a genuine build for another platform, swapped in with a fixed-up SHA256SUMS, isn't accepted. The repo follows the existing `AUTONOMOS_RELEASE_REPO` override.
+  - **Built from main** (added with ADR-128's release-tag rule, V5 in the security audit). A tag is only a name, and a writer can put `vN` on any commit. The workflow that tag carries then runs and signs genuinely, so a valid signature at the right tag isn't enough on its own. After a record fully verifies, the verifier reads the **source commit from the Fulcio certificate**, not from the SLSA predicate:
+    - The certificate's `SourceRepositoryDigest`, URI and ref extensions are copied from GitHub's OIDC token, which the workflow can't influence. The predicate is written by the very `release.yml` being checked, so a malicious one could name any commit there.
+    - The URI must be the release repo and the ref must be `refs/tags/v<version>`.
+    - Then GitHub's `compare/<commit>...main` must answer `ahead` or `identical`. `behind`, `diverged`, or a 404 (the commit isn't in the repo) is **invalid**. A network error, 5xx, rate limit or unexpected answer is **missing**.
+    - It uses the same token scoping and timeout as the attestation fetch. It costs one more API call per update, made only after a record verifies.
+    - Measured: every release, v0.0.1 through v0.7.0, was built from main.
+  - **The bundle must be the version its tag names.** The updater reads the extracted bundle's `package.json` before swapping, and `install.sh` reads the tarball's before extracting. Any mismatch, or a missing version, refuses. This is the one defence against tag `vN` placed on an *old* commit on main: that build passes the ancestry check, and installed as `vN` it would be a downgrade that never updates again. It isn't a provenance check, so it holds even with `AUTONOMOS_SKIP_PROVENANCE=1`. Measured: v0.5.0, v0.6.0, v0.6.1 and v0.7.0 all match. It tightens `expectedVersionAfterSwap`'s old tolerance of a mismatch, which is now unreachable for bundle upgrades.
+  - **Outcomes:**
+    - **verified**
+    - **invalid**: an attestation is present but fails signature, certificate, log proof, signer or digest. This is evidence of tampering.
+    - **missing**: we couldn't check. None was published, the API or Sigstore was unreachable, or the format is one this version can't evaluate. This is an availability problem, never evidence.
+    - **skipped**: `AUTONOMOS_SKIP_PROVENANCE=1` is set.
+  - **Existing installs** (in-app update and `autonomos upgrade`, bundle installs): the check runs after the checksum and before extraction or the snapshot.
+    - **invalid** refuses. Nothing on disk changes. The dialog shows #392's "v<new> wasn't installed · Nothing changed" with the reason.
+    - **missing** POSTPONES: the update isn't applied and nothing changes ("The vN update was postponed: its signed build record couldn't be confirmed (<why>). Nothing changed… try again later."). The CLI prints it with ⏸ and exits 1; the in-app dialog shows its usual "wasn't installed · Nothing changed" screen with that message.
+    - **skipped** (`AUTONOMOS_SKIP_PROVENANCE=1`, the operator's explicit override) proceeds, loudly: a console warning, an amber note during the update, and an amber post-update banner.
+    - The note is shown on the restart overlay as well as the progress view. On a bundle install the progress view lasts only a second or two after the check (found live).
+    - `AUTONOMOS_SKIP_PROVENANCE` is on the in-app job's env allowlist, so an operator's explicit choice reaches it.
+  - **New installs** (`install.sh`, a separate PR) fail closed, through a vendored single-file verifier that `install.sh` pins by sha256.
+  - **Trust root:** always fetched live from Sigstore's TUF repository and cached under `$configDir/sigstore-tuf`, never pinned in the binary.
+- **Rationale:** the checksum proves the download wasn't corrupted. Provenance proves *who built it*: only GitHub Actions running our `release.yml` on the tag can obtain the signing certificate, and editing a release can't forge it.
+  - **Why "invalid" refuses:** a refusal leaves the running version in place, and the dialog already says nothing changed. The one case where a refusal *persists* is signer drift: the check runs in the installed version, so renaming `release.yml` or the repo in a single release would make every existing install refuse from then on. RELEASE.md therefore requires the verifier to accept a new signer one release before it's used.
+  - **Why the signer match is exact:** `@sigstore/verify` treats a string policy as an unanchored regular expression, so the policy is an anchored, escaped pattern. Otherwise `v0.7.0` would also accept `v0.7.0-rc.1`, and `.` would match any character.
+  - **Why "missing" postpones:** "couldn't check" is exactly when an attack gets in. A release tagged off main carries a *genuine* Fulcio certificate, so under warn-and-proceed it installs whenever api.github.com is unreachable or rate-limited (60/h unauthenticated): a network blocker plus an insider tag, or plain bad luck. Postponing changes nothing on disk, so the running install and its auth are untouched. That's a wait, not a brick, so it keeps Terry's rule that an update path must never be bricked by our own machinery. The cost: updates wait out a real GitHub or Sigstore outage, with `AUTONOMOS_SKIP_PROVENANCE=1` as the explicit override. Terry chose this (option D) over warn-and-proceed (A) and refusing only an authoritative 404 (B).
+  - **Why the root isn't pinned:** that would turn a routine Sigstore key rotation into "invalid", and every later update would be refused.
+  - **Classification is deliberately strict:** only a cryptographic, signer or digest failure is "invalid". A parse error or an unsupported feature (`NOT_IMPLEMENTED_ERROR`) is "missing", so a future bundle format can't block updates.
+- **Alternatives considered:**
+  - `gh attestation verify` or `cosign`: rejected (Terry). Neither is on a fresh machine or in the bundle.
+  - A pinned trusted root: rejected for the reason above.
+  - Warn and proceed on "missing" (the original decision, A): replaced by D. It let an off-main tag through whenever GitHub couldn't be reached.
+  - Refusing only an authoritative 404 (B): narrower than D, and still lets the off-main tag through during an outage.
+  - Only warning on "invalid": rejected (Terry, Q1). It's tamper evidence, and refusing costs nothing.
+  - Verifying SHA256SUMS instead of the tarball: not needed. The attestation names each tarball directly.
+- **Scope and limits:**
+  - Source installs (`make prod`, a managed git clone) update from a git tag, not a release tarball, so this doesn't cover them; they rely on git.
+  - Restore/rollback downloads nothing, so it needs no check.
+  - **A replaced tarball with no record at all** gets a 404 from GitHub for its digest: **missing**. Existing installs postpone it and new installs refuse it, so neither installs it.
+  - Out-of-line bundles (`bundle_url`): at most 10 are fetched, in parallel, under one 15-second deadline, so a flood of attestations can't stall an update.
+  - Bundle cost: +366 KB of JS (+71 KB gzipped), measured against main bb3a5576.
+- **Supersedes:** none. Extends ADR-105.
+- **Source:** Terry's integrity ask on 2026-09-25; decisions Q1–Q3 on 2026-09-30, relayed by TeamLead; option D (postpone on missing) on 2026-10-01, relayed by TeamLead, after SecurityAudit-Claude's V5 review; the plan at `~/.claude/plans/update-provenance-verify.md`; the provenance PRs (1: verifier and upgrader, 2: `install.sh`).

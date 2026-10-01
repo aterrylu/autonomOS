@@ -94,6 +94,67 @@ describe("UpdatedBanner", () => {
     expect(screen.queryByTestId("updated-banner")).toBeNull();
   });
 
+  it("an update whose signed build record couldn't be checked is amber and says why", async () => {
+    status = doneRecord({
+      verification: { checkedAt: "x", checked: 2, problems: [] },
+      provenance: {
+        status: "missing",
+        reason: "couldn't reach GitHub's attestation service",
+      },
+    });
+    const banner = await renderWith({
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+      // Carried across the reload: shown before the agent check lands.
+      provenance: {
+        status: "missing",
+        reason: "couldn't reach GitHub's attestation service",
+      },
+    });
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+    expect(banner.getAttribute("data-provenance")).toBe("missing");
+    expect(banner.textContent).toContain(
+      "Its signed build record couldn't be checked (couldn't reach GitHub's attestation service); the checksum matched.",
+    );
+    // The agents are still reported on their own terms.
+    await vi.waitFor(() =>
+      expect(banner.textContent).toContain("All 2 agents reopened."),
+    );
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+  });
+
+  it("a skipped check (AUTONOMOS_SKIP_PROVENANCE=1) is amber too; a verified one stays green", async () => {
+    status = doneRecord({
+      verification: { checkedAt: "x", checked: 1, problems: [] },
+    });
+    const banner = await renderWith({
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+      provenance: {
+        status: "skipped",
+        reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+      },
+    });
+    expect(banner.textContent).toContain(
+      "Its signed build record wasn't checked (AUTONOMOS_SKIP_PROVENANCE=1 is set).",
+    );
+    expect(banner.getAttribute("data-tone")).toBe("attention");
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    });
+
+    const ok = await renderWith({
+      updatedTo: "0.7.0",
+      interruptedNames: [],
+      provenance: { status: "verified" },
+    });
+    await vi.waitFor(() =>
+      expect(ok.textContent).toContain("Your agent reopened."),
+    );
+    expect(ok.getAttribute("data-tone")).toBe("ok");
+    expect(ok.textContent).not.toContain("signed build record");
+  });
+
   it("an agent check that never reports back is amber, not an all-clear", async () => {
     verifyTiming.maxWaitMs = 40;
     status = doneRecord(); // snapshot taken, verification never written
@@ -132,6 +193,32 @@ describe("UpdatedBanner", () => {
       );
       expect(banner.textContent).toContain("qa-codex");
       expect(screen.getByTestId("banner-restore")).toBeTruthy();
+    });
+
+    it("an update whose build record couldn't be checked resurfaces in ANY tab — and stays dismissed once dismissed", async () => {
+      // A wait-for-idle job that fired later, or another tab / device: no
+      // sessionStorage flag here, only the server's record.
+      status = doneRecord({
+        verification: { checkedAt: "x", checked: 1, problems: [] },
+        provenance: {
+          status: "missing",
+          reason: "couldn't reach GitHub's attestation service",
+        },
+      });
+      const first = render(<UpdatedBanner />);
+      const banner = await screen.findByTestId("updated-banner");
+      await vi.waitFor(() =>
+        expect(banner.getAttribute("data-tone")).toBe("attention"),
+      );
+      expect(banner.textContent).toContain(
+        "Its signed build record couldn't be checked (couldn't reach GitHub's attestation service)",
+      );
+      fireEvent.click(screen.getByLabelText("Dismiss"));
+      first.unmount();
+      await act(async () => {
+        render(<UpdatedBanner />);
+      });
+      expect(screen.queryByTestId("updated-banner")).toBeNull();
     });
 
     it("stays dismissed in this browser once dismissed", async () => {

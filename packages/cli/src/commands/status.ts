@@ -12,11 +12,18 @@
 //   2 — daemon not running (no PID file)
 //   3 — daemon running but HTTP probe failed (process up, server stuck)
 
+import { resolve } from "node:path";
 import {
   isPidAlive,
   readPidFile,
   removePidFile,
 } from "@autonomos/server/pid-file.js";
+import {
+  checkInstalledFloors,
+  defaultServerDir,
+  formatFloorViolations,
+  type InstalledFloorViolation,
+} from "@autonomos/server/securityFloors.js";
 
 export async function runStatusCommand(): Promise<number> {
   const pidInfo = readPidFile();
@@ -58,6 +65,7 @@ export async function runStatusCommand(): Promise<number> {
     console.log(`  hostname: ${hostname}`);
     console.log(`  uptime:   ${formatUptime(uptimeSec)}`);
     console.log(`  url:      http://127.0.0.1:${pidInfo.port}/`);
+    for (const line of securityFloorsLines()) console.log(line);
     return 0;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -65,6 +73,37 @@ export async function runStatusCommand(): Promise<number> {
       `autonomOS daemon: pid ${pidInfo.pid} alive but unreachable at ${url} (${msg})`,
     );
     return 3;
+  }
+}
+
+/** The installed tree's security floors (V12b, ADR-137) as status lines.
+ *  Informational: the exit codes above are a contract for scripts and
+ *  supervisors, so this never changes them. It never throws (a corrupt
+ *  package.json or a dangling link in node_modules reads as "couldn't
+ *  check", not as an unreachable daemon), and it always gives a verdict:
+ *  "n/a" for a bundle install, never silence that reads as a pass. */
+export function securityFloorsLines(
+  check: () => InstalledFloorViolation[] | null = checkInstalledFloors,
+): string[] {
+  try {
+    const violations = check();
+    if (violations === null) {
+      return ["  security floors: n/a (bundle install)"];
+    }
+    if (violations.length === 0) return ["  security floors: ok"];
+    return [
+      "  security floors: NOT MET",
+      "",
+      formatFloorViolations(
+        violations,
+        resolve(defaultServerDir(), "..", ".."),
+      ),
+    ];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return [
+      `  security floors: couldn't check installed dependencies (${msg})`,
+    ];
   }
 }
 

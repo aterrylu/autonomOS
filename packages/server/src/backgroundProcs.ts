@@ -16,7 +16,7 @@
 // ignored: hook relays and statusline runs are direct-child shells too, but
 // they live for milliseconds.
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
 export type ProcRow = {
   pid: number;
@@ -48,15 +48,10 @@ export function parseEtime(etime: string): number {
   return Number.isFinite(total) ? total : 0;
 }
 
-/** One `ps` for the whole table (same flags on Linux and macOS). */
-export function listProcesses(): ProcRow[] {
-  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid=,etime=,args="], {
-    encoding: "utf-8",
-    timeout: 3_000,
-  });
-  if (r.status !== 0 || !r.stdout) return [];
+/** Parse `ps -A -o pid=,ppid=,etime=,args=` output. Pure; exported for tests. */
+export function parseProcessTable(stdout: string): ProcRow[] {
   const rows: ProcRow[] = [];
-  for (const line of r.stdout.split("\n")) {
+  for (const line of stdout.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
     if (!m) continue;
     rows.push({
@@ -67,6 +62,23 @@ export function listProcesses(): ProcRow[] {
     });
   }
   return rows;
+}
+
+/**
+ * One `ps` for the whole table (same flags on Linux and macOS), run OFF the
+ * event loop. It used to be spawnSync: with a few hundred processes on a busy
+ * box that blocked the server for ~1s (measured 965ms) on every dashboard
+ * load, timing out every agent's statusline request at once.
+ */
+export function listProcesses(): Promise<ProcRow[]> {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-A", "-o", "pid=,ppid=,etime=,args="],
+      { encoding: "utf-8", timeout: 3_000, maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout) => resolve(err || !stdout ? [] : parseProcessTable(stdout)),
+    );
+  });
 }
 
 /** A short, human label for a shell subtree: its first non-shell

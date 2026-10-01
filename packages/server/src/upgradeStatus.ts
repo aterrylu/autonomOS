@@ -58,6 +58,12 @@ export type UpgradeStatusRecord = {
   /** Launched by "wait for idle": the job re-checks the fleet before its
    *  irreversible step (shows as its own step in the dashboard). */
   waitIdle?: boolean;
+  /** The release's signed build record, checked after the checksum
+   *  (provenance.ts). "invalid" never gets here — the run fails instead. */
+  provenance?: {
+    status: "verified" | "missing" | "skipped";
+    reason?: string;
+  };
 };
 
 export type UpgradeVerification = {

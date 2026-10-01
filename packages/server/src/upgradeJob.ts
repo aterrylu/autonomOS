@@ -179,6 +179,9 @@ const PROPAGATED_ENV = [
   "AUTONOMOS_SERVICE_LABEL",
   "AUTONOMOS_RELEASE_API_URL",
   "AUTONOMOS_RELEASE_REPO",
+  // The operator's explicit "don't check provenance" (mirrors, air-gapped)
+  // must reach the job, or in-app updates would ignore it (ADR-126).
+  "AUTONOMOS_SKIP_PROVENANCE",
   "XDG_RUNTIME_DIR",
 ] as const;
 

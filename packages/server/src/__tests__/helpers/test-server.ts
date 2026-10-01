@@ -179,6 +179,19 @@ function seedFakeHome(fakeHome: string): string {
  * channels-warning prompt) — the hook relay, --brief,
  * --append-system-prompt and --settings argv are all still exercised.
  */
+/** `base` with `overrides` applied: undefined deletes the key. */
+function withEnvOverrides(
+  base: NodeJS.ProcessEnv,
+  overrides: Record<string, string | undefined> | undefined,
+): NodeJS.ProcessEnv {
+  const env = { ...base };
+  for (const [k, v] of Object.entries(overrides ?? {})) {
+    if (v === undefined) delete env[k];
+    else env[k] = v;
+  }
+  return env;
+}
+
 export async function bootServer(opts?: {
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
@@ -197,6 +210,9 @@ export async function bootServer(opts?: {
    *  deletes it). Needed when the config dir must NOT be an ancestor of HOME,
    *  as on a real install. */
   homeDir?: string;
+  /** Applied LAST, over everything above: a string sets a variable,
+   *  `undefined` removes an inherited one (e.g. a supervisor marker). */
+  env?: Record<string, string | undefined>;
 }): Promise<BootedServer> {
   const configDir =
     opts?.reuseConfigDir ?? mkdtempSync(join(tmpdir(), "autonomos-integ-"));
@@ -236,30 +252,33 @@ export async function bootServer(opts?: {
 
   const args = [SERVER_ENTRY, "--port=0", ...(opts?.extraArgs ?? [])];
   const child = spawn(tsxBin, args, {
-    env: {
-      ...process.env,
-      AUTONOMOS_CONFIG_DIR: configDir,
-      AUTONOMOS_TOKEN: token,
-      // Inherited by every spawned agent (providers/shared.ts buildBaseEnv).
-      HOME: fakeHome,
-      CLAUDE_CONFIG_DIR: fakeClaudeDir,
-      CODEX_HOME: join(fakeHome, ".codex"),
-      // The usage plugin's keychain read is keyed on $USER, not HOME, so the
-      // fake HOME alone does not isolate it. This makes it read no store.
-      AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
-      // No telemetry / error-report / auto-update traffic from test agents.
-      // (Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: the provider strips every
-      // CLAUDE_CODE_* var from agent envs, providers/shared.ts.)
-      DISABLE_TELEMETRY: "1",
-      DISABLE_ERROR_REPORTING: "1",
-      DISABLE_AUTOUPDATER: "1",
-      ...(opts?.anthropicBaseUrl
-        ? {
-            ANTHROPIC_BASE_URL: opts.anthropicBaseUrl,
-            ANTHROPIC_AUTH_TOKEN: opts.anthropicAuthToken ?? "sk-mock",
-          }
-        : {}),
-    },
+    env: withEnvOverrides(
+      {
+        ...process.env,
+        AUTONOMOS_CONFIG_DIR: configDir,
+        AUTONOMOS_TOKEN: token,
+        // Inherited by every spawned agent (providers/shared.ts buildBaseEnv).
+        HOME: fakeHome,
+        CLAUDE_CONFIG_DIR: fakeClaudeDir,
+        CODEX_HOME: join(fakeHome, ".codex"),
+        // The usage plugin's keychain read is keyed on $USER, not HOME, so the
+        // fake HOME alone does not isolate it. This makes it read no store.
+        AUTONOMOS_DISABLE_CREDENTIAL_READS: "1",
+        // No telemetry / error-report / auto-update traffic from test agents.
+        // (Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: the provider strips every
+        // CLAUDE_CODE_* var from agent envs, providers/shared.ts.)
+        DISABLE_TELEMETRY: "1",
+        DISABLE_ERROR_REPORTING: "1",
+        DISABLE_AUTOUPDATER: "1",
+        ...(opts?.anthropicBaseUrl
+          ? {
+              ANTHROPIC_BASE_URL: opts.anthropicBaseUrl,
+              ANTHROPIC_AUTH_TOKEN: opts.anthropicAuthToken ?? "sk-mock",
+            }
+          : {}),
+      },
+      opts?.env,
+    ),
     stdio: ["ignore", "pipe", "pipe"],
   });
 

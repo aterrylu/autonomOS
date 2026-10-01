@@ -21,12 +21,30 @@
  * error degrade to a static [autonomos] line so the terminal never goes blank.
  */
 
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
-const FETCH_TIMEOUT_MS = 200;
-const GIT_TIMEOUT_MS = 100;
+// A fresh process pays undici's cold start (25-280ms measured under a busy
+// box) before the request even leaves, so the old 200ms budget flipped
+// healthy agents to "offline". The last-known-good cache below means a slow
+// answer costs nothing visible, so the wait can be generous.
+const FETCH_TIMEOUT_MS = 1500;
+// Last-known-good identity is shown as-is for this long after the last fresh
+// answer, then dimmed, and only reads "offline" after OFFLINE_AFTER_MS (or at
+// once on a definitive answer: refused connection, 401, 404).
+const STALE_AFTER_MS = 60_000;
+const OFFLINE_AFTER_MS = 300_000;
+// How stale the cached metaAt may get before a fresh answer rewrites it.
+const CACHE_REFRESH_MS = 15_000;
+// Bound on the .git search walking up from the cwd (see readGitBranch).
+const GIT_WALK_MAX = 64;
 
 // ── ANSI colors ───────────────────────────────────────────────
 // Single place to tweak the palette. Edit values here, the next 5s
@@ -108,24 +126,112 @@ function readAgentToken(sessionId) {
  * never hold the operator token (#297 took it off the PTY, audit V3 off argv
  * and the inherited env), so this is the credential they have.
  */
-async function getSelfMeta(sessionId, serverUrl, agentToken) {
-  if (!agentToken) return null;
+async function fetchSelf(sessionId, serverUrl, agentToken) {
+  if (!agentToken) return { error: "no-token" };
   try {
     const res = await fetch(`${serverUrl}/api/agents/${sessionId}/self`, {
       headers: { "X-Agent-Token": agentToken },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
-    const me = await res.json();
-    if (!me || typeof me !== "object") return null;
+    if (!res.ok) return { error: "http", status: res.status };
+    let me;
+    try {
+      me = await res.json();
+    } catch {
+      return { error: "bad-body" }; // something else answered on the port
+    }
+    if (!me || typeof me !== "object") return { error: "bad-body" };
     return {
-      name: sanitize(me.name) ?? "Agent",
-      manager: me.manager ? sanitize(me.manager) : null,
-      project: me.project ? sanitize(me.project) : null,
-      directReports: Number(me.directReports) || 0,
+      meta: {
+        name: sanitize(me.name) ?? "Agent",
+        manager: me.manager ? sanitize(me.manager) : null,
+        project: me.project ? sanitize(me.project) : null,
+        directReports: Number(me.directReports) || 0,
+      },
     };
+  } catch (err) {
+    // undici reports a refused connection as TypeError("fetch failed") with
+    // the errno on `cause`; a timeout is an AbortSignal TimeoutError.
+    if (err?.cause?.code === "ECONNREFUSED") return { error: "refused" };
+    if (err?.name === "TimeoutError") return { error: "timeout" };
+    return { error: "other" };
+  }
+}
+
+async function getSelfMeta(sessionId, serverUrl, agentToken) {
+  return (await fetchSelf(sessionId, serverUrl, agentToken)).meta ?? null;
+}
+
+/**
+ * Decide what the identity line shows, from this tick's fetch result and the
+ * agent's last-known-good cache. Pure, so the policy is unit-tested directly.
+ *
+ * A slow or failed answer is NOT evidence the server is gone (a busy box makes
+ * a fresh process's first request slow), so the last good answer stands until
+ * it is genuinely old. Only a definitive answer ends it at once: a refused
+ * connection (nothing listening), or a 401/404 (the server no longer knows
+ * this agent).
+ *
+ * @returns {{kind: "fresh", meta: object}
+ *   | {kind: "cached", meta: object, stale: boolean}
+ *   | {kind: "offline"}}
+ */
+function chooseIdentity(result, cache, now) {
+  if (result.meta) return { kind: "fresh", meta: result.meta };
+  const definitive =
+    result.error === "refused" ||
+    (result.error === "http" &&
+      (result.status === 401 || result.status === 404));
+  if (definitive || !cache?.meta || typeof cache.metaAt !== "number")
+    return { kind: "offline" };
+  const age = now - cache.metaAt;
+  if (age < 0 || age >= OFFLINE_AFTER_MS) return { kind: "offline" };
+  return { kind: "cached", meta: cache.meta, stale: age >= STALE_AFTER_MS };
+}
+
+// ── Last-known-good cache ─────────────────────────────────────
+
+/** Per-agent cache file, beside the agent's token file (same validated
+ *  session id as the path segment). null when it can't be placed safely. */
+function cachePath(sessionId) {
+  const configDir = process.env.AUTONOMOS_CONFIG_DIR;
+  if (
+    !configDir ||
+    typeof sessionId !== "string" ||
+    !/^[A-Za-z0-9._-]+$/.test(sessionId) ||
+    sessionId.includes("..")
+  )
+    return null;
+  return join(configDir, "statusline-cache", `${sessionId}.json`);
+}
+
+function readCache(path) {
+  if (!path) return null;
+  try {
+    const c = JSON.parse(readFileSync(path, "utf8"));
+    if (!c || typeof c !== "object") return null;
+    // A hand-edited or truncated file must not crash the renderer later.
+    if (c.meta && typeof c.meta.name !== "string") delete c.meta;
+    return c;
   } catch {
     return null;
+  }
+}
+
+/** Best-effort atomic write: two ticks of the same agent can overlap, so
+ *  write a private temp file and rename it into place. */
+function writeCache(path, cache) {
+  if (!path) return;
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, JSON.stringify(cache), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // Read-only or sandboxed config dir (or a full disk): run without a cache.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {}
   }
 }
 
@@ -152,8 +258,17 @@ function colorizeName(name) {
   return `${C.agent}${role}${C.project}${project}${C.reset}`;
 }
 
-function formatHierarchy(ctx) {
+function formatHierarchy(ctx, { stale = false } = {}) {
   const reports = ctx.directReports ?? 0;
+  if (stale) {
+    // Last-known-good but old: the same text, all dim, so it reads as "as of
+    // a while ago" without pretending to be live.
+    const parts = [ctx.name];
+    if (ctx.manager) parts.push(`↑${ctx.manager}`);
+    if (reports > 0) parts.push(`↓${reports} reports`);
+    if (!ctx.manager && reports <= 0) parts.push("standalone");
+    return `${C.dim}[${parts.join(" · ")}]${C.reset}`;
+  }
   const segments = [colorizeName(ctx.name)];
   if (ctx.manager) {
     segments.push(`${C.hierarchy}↑${ctx.manager}${C.reset}`);
@@ -193,36 +308,73 @@ function ctxColor(pct) {
 }
 
 /**
- * Resolve the git branch for the current cwd.
+ * Read the checked-out branch straight from `.git/HEAD`, walking up from
+ * `cwd` but never above `ceiling` (CC's project_dir when cwd is inside it,
+ * else cwd itself), at most GIT_WALK_MAX levels.
  *
- * CC's stdin only populates branch fields for sessions inside a git
- * worktree (workspace.git_worktree) or --worktree sessions (worktree.branch).
- * For the much-more-common case of a session in a regular repo's main
- * working tree, both are absent — so we fall back to `git branch
- * --show-current` against the cwd CC tells us about. execFileSync (not
- * exec) avoids any shell so cwd can't be shell-injected.
+ * No `git` process: spawning one per agent every 5s missed its 100ms budget
+ * in 96% of ticks on a loaded box, which is what made the branch flicker. A
+ * linked worktree has a `.git` FILE (`gitdir: <path>`) pointing at its own
+ * HEAD, which is followed. Returns the branch, or null when there is no repo
+ * or HEAD is detached (matching `git branch --show-current`). Throws on an
+ * unexpected I/O error so the caller can fall back to the cached branch.
  */
-function resolveBranch(cc) {
+function readGitBranch(cwd, ceiling) {
+  let dir = resolve(cwd);
+  const stop = ceiling ? resolve(ceiling) : dir;
+  const inside = (d) => {
+    const rel = relative(stop, d);
+    return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep));
+  };
+  for (let i = 0; i < GIT_WALK_MAX; i++) {
+    const dotGit = join(dir, ".git");
+    let st = null;
+    try {
+      st = statSync(dotGit);
+    } catch (err) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+    }
+    if (st) {
+      let gitDir = dotGit;
+      if (st.isFile()) {
+        const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"));
+        if (!m) return null;
+        gitDir = resolve(dir, m[1].trim());
+      }
+      const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+      const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+      // reftable repos park HEAD at "refs/heads/.invalid": no branch to show.
+      return ref && ref[1] !== ".invalid" ? ref[1] : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir || dir === stop || !inside(parent)) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Resolve the git branch for the current cwd: CC's own fields first (only
+ * set for worktree sessions), then `.git/HEAD`. On a read error the
+ * last-known branch is reused; `cachedBranch` is that fallback.
+ */
+function resolveBranch(cc, cachedBranch = null, onFallback = () => {}) {
   if (cc?.workspace?.git_worktree) return cc.workspace.git_worktree;
   if (cc?.worktree?.branch) return cc.worktree.branch;
 
   const cwd = cc?.workspace?.current_dir ?? cc?.cwd;
   if (!cwd || typeof cwd !== "string") return null;
-
+  const projectDir = cc?.workspace?.project_dir;
+  const ceiling =
+    typeof projectDir === "string" &&
+    !relative(projectDir, cwd).startsWith("..")
+      ? projectDir
+      : cwd;
   try {
-    const out = execFileSync("git", ["branch", "--show-current"], {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: GIT_TIMEOUT_MS,
-      // Bound discovery so a misconfigured cwd (e.g. inside a network mount)
-      // can't make git stat its way up the entire ancestor chain on every
-      // 5s tick. cwd itself is the ceiling — git only checks cwd's .git.
-      env: { ...process.env, GIT_CEILING_DIRECTORIES: cwd },
-    }).trim();
-    return out || null;
+    return readGitBranch(cwd, ceiling);
   } catch {
-    return null; // not a repo, git not installed, or timeout — drop segment
+    onFallback();
+    return cachedBranch;
   }
 }
 
@@ -255,9 +407,8 @@ function resolveProject(cc, meta) {
   return null;
 }
 
-function formatActivity(cc, meta) {
+function formatActivity(cc, meta, branch = resolveBranch(cc)) {
   const project = resolveProject(cc, meta);
-  const branch = resolveBranch(cc);
   const cost = cc?.cost?.total_cost_usd ?? 0;
   const model = cc?.model?.display_name ?? "?";
   const pct = cc?.context_window?.used_percentage ?? 0;
@@ -300,18 +451,58 @@ async function main() {
     return;
   }
 
-  const meta = await getSelfMeta(sessionId, serverUrl, agentToken);
+  // Start the request first; the branch read (plain file I/O) runs while it
+  // is in flight.
+  const now0 = Date.now();
+  const pending = fetchSelf(sessionId, serverUrl, agentToken);
+  const path = cachePath(sessionId);
+  const cache = readCache(path);
+  // The cached branch only stands in for a failed read briefly: a worktree
+  // that was pruned must stop showing its old branch.
+  const cachedBranch =
+    typeof cache?.branchAt === "number" && now0 - cache.branchAt < STALE_AFTER_MS
+      ? cache.branch
+      : null;
+  let fellBack = false;
+  const branch = resolveBranch(cc, cachedBranch ?? null, () => {
+    fellBack = true;
+  });
+  const result = await pending;
+  const now = Date.now();
+  const identity = chooseIdentity(result, cache, now);
 
-  if (!meta) {
-    // Env vars present but server unreachable / session not yet persisted —
-    // surface as a diagnostic so it's distinguishable from "outside autonomOS"
-    console.log("[autonomos · offline]");
-    console.log(formatActivity(cc, meta));
-    return;
+  // Rewrite only on a change, or to refresh metaAt well inside the stale
+  // window, so a steady fleet doesn't write a file per agent per tick.
+  const next = { ...cache };
+  if (identity.kind === "fresh") {
+    next.meta = identity.meta;
+    next.metaAt = now;
   }
+  const branchRead = Boolean(branch) && !fellBack;
+  if (branchRead) {
+    next.branch = branch;
+    next.branchAt = now;
+  }
+  const refreshDue = (at) => {
+    const age = now - (at ?? 0);
+    return age > CACHE_REFRESH_MS || age < 0; // < 0: the clock jumped back
+  };
+  const changed =
+    JSON.stringify(next.meta) !== JSON.stringify(cache?.meta) ||
+    next.branch !== cache?.branch ||
+    (identity.kind === "fresh" && refreshDue(cache?.metaAt)) ||
+    (branchRead && refreshDue(cache?.branchAt));
+  if (changed) writeCache(path, next);
 
-  console.log(formatHierarchy(meta));
-  console.log(formatActivity(cc, meta));
+  const meta = identity.kind === "offline" ? null : identity.meta;
+  if (identity.kind === "offline") {
+    // Server definitively gone, or no good answer for OFFLINE_AFTER_MS —
+    // distinguishable from "outside autonomOS".
+    console.log("[autonomos · offline]");
+  } else {
+    console.log(formatHierarchy(meta, { stale: identity.kind === "cached" && identity.stale }));
+  }
+  console.log(formatActivity(cc, meta, branch));
 }
 
 // Only run main() when invoked directly (`node statusline.mjs`).
@@ -330,8 +521,14 @@ if (isDirectInvocation) {
 // Exposed for unit tests. Not part of any public contract.
 export {
   buildBar,
+  chooseIdentity,
+  fetchSelf,
   formatActivity,
   formatDuration,
   formatHierarchy,
   getSelfMeta,
+  readGitBranch,
+  resolveBranch,
+  STALE_AFTER_MS,
+  OFFLINE_AFTER_MS,
 };
