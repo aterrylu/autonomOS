@@ -480,7 +480,7 @@ export const createEnvPresetShape = {
     .record(z.string(), z.string())
     .optional()
     .describe(
-      'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Only model-backend keys are accepted: model, endpoint and auth variables (ANTHROPIC_*, OPENAI_*, GEMINI_*/GOOGLE_* backend keys), plus proxy and CA settings. Any other key is rejected with the full list.',
+      'Non-secret env vars, e.g. { "ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic", "ANTHROPIC_MODEL": "kimi-k2.7-code" }. Only model-backend keys are accepted: model, endpoint and auth variables (ANTHROPIC_*, OPENAI_*, GEMINI_*/GOOGLE_* backend keys), plus proxy and CA settings. Any other key is rejected; if a provider needs one autonomOS does not know, the operator can allow it in Settings → Env presets → Extra allowed keys (agents cannot).',
     ),
   secretKeys: z
     .array(z.string())
