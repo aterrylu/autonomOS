@@ -1964,8 +1964,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             : "") +
           ` — its session is intact; retrying the same resume in ${failure.delayMs}ms (${failure.attempt}/${resumeRetryBackoffMs.length})`,
       );
-      const prior = resumeRetryTimers.get(persisted.id);
-      if (prior) clearTimeout(prior);
       const t = setTimeout(() => {
         resumeRetryTimers.delete(persisted.id);
         // Only if the agent is still meant to be running and nothing else
