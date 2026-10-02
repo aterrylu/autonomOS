@@ -23,7 +23,7 @@ const {
   applyPresetToEnv,
   PresetKeyError,
   PRESET_ALLOWED_ENV_KEYS,
-  skippedPresetKeysNotice,
+  unknownPresetKeysError,
 } = await import("../envPresets.js");
 
 const PRESETS_DIR = join(TEST_DIR, "env-presets");
@@ -615,8 +615,7 @@ describe("env presets: strict key allowlist (audit V13)", () => {
       NOW,
     );
     const env: Record<string, string> = {};
-    const skipped = applyPresetToEnv(env, p.name);
-    assert.deepEqual(skipped, []);
+    applyPresetToEnv(env, p.name);
     assert.deepEqual(env, {
       ANTHROPIC_BASE_URL: "https://api.moonshot.ai/anthropic",
       ANTHROPIC_MODEL: "kimi-k2.7-code",
@@ -650,25 +649,31 @@ describe("env presets: strict key allowlist (audit V13)", () => {
     }
   });
 
-  it("a preset saved before the allowlist still spawns, without its off-list keys", () => {
+  it("a preset with keys off the allowlist REFUSES to spawn, naming each key and the fix (ADR-144)", () => {
+    // Refuse, never start half-configured: a preset missing one of its
+    // model-routing keys can silently run a different model.
     writeLegacyPreset("legacy", {
       BASH_ENV: "/tmp/evil.sh",
       ZDOTDIR: "/tmp/z",
     });
     const env: Record<string, string> = {};
-    const skipped = applyPresetToEnv(env, "legacy");
-    assert.deepEqual(skipped, ["BASH_ENV", "GIT_SSH_COMMAND", "ZDOTDIR"]);
-    assert.deepEqual(env, {
-      ANTHROPIC_BASE_URL: "https://api.moonshot.ai/anthropic",
-      ANTHROPIC_MODEL: "kimi-k2.7-code",
-      ANTHROPIC_AUTH_TOKEN: "sk-real-key-0000",
-    });
-    const notice = skippedPresetKeysNotice("worker", "legacy", skipped);
-    assert.match(notice, /BASH_ENV, GIT_SSH_COMMAND, ZDOTDIR/);
-    assert.match(notice, /NOT applied/);
+    assert.throws(
+      () => applyPresetToEnv(env, "legacy"),
+      (e: unknown) =>
+        e instanceof PresetKeyError &&
+        /sets BASH_ENV, GIT_SSH_COMMAND, ZDOTDIR,/.test(e.message) &&
+        /NOT started/.test(e.message) &&
+        /Settings → Env presets → "Extra allowed keys"/.test(e.message) &&
+        /remove it from the preset/.test(e.message),
+    );
+    assert.deepEqual(env, {}, "nothing injected from a refused preset");
+    assert.equal(
+      unknownPresetKeysError("p", ["X"]),
+      `Env preset "p" sets X, which presets can't set: it isn't on the model-backend allowlist. The agent was NOT started, so it can't quietly run a different model. If your provider's setup needs it, an operator can allow it in Settings → Env presets → "Extra allowed keys" (or remove it from the preset).`,
+    );
   });
 
-  it("an off-list declared secret with no value doesn't block the spawn", () => {
+  it("an off-list declared secret refuses the spawn too, even with no value", () => {
     writeFileSync(
       join(PRESETS_DIR, "legacy2.json"),
       JSON.stringify({
@@ -681,8 +686,8 @@ describe("env presets: strict key allowlist (audit V13)", () => {
       }),
     );
     const env: Record<string, string> = {};
-    assert.deepEqual(applyPresetToEnv(env, "legacy2"), ["BUN_OPTIONS"]);
-    assert.equal(env.ANTHROPIC_MODEL, "kimi-k2.7-code");
+    assert.throws(() => applyPresetToEnv(env, "legacy2"), /sets BUN_OPTIONS,/);
+    assert.deepEqual(env, {});
   });
 
   it("a legacy preset stays editable: a description change and a dashboard round-trip both work", () => {
@@ -701,7 +706,7 @@ describe("env presets: strict key allowlist (audit V13)", () => {
       NOW,
     );
     const env: Record<string, string> = {};
-    assert.deepEqual(applyPresetToEnv(env, "legacy3"), []);
+    applyPresetToEnv(env, "legacy3");
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, "sk-real-key-0000");
   });
 
@@ -724,12 +729,12 @@ describe("env presets: strict key allowlist (audit V13)", () => {
       getEnvPresetRaw("legacy5")?.description,
       "renamed from the Presets tab",
     );
-    // A kept off-list key is still never injected.
+    // A kept off-list key still keeps the preset from spawning.
     const env: Record<string, string> = {};
-    assert.deepEqual(applyPresetToEnv(env, "legacy5"), [
-      "BASH_ENV",
-      "GIT_SSH_COMMAND",
-    ]);
+    assert.throws(
+      () => applyPresetToEnv(env, "legacy5"),
+      /sets BASH_ENV, GIT_SSH_COMMAND,/,
+    );
     assert.equal(env.BASH_ENV, undefined);
     // Adding a NEW off-list key in the same kind of edit is refused.
     assert.throws(
@@ -779,13 +784,14 @@ describe("env presets: strict key allowlist (audit V13)", () => {
       "/tmp/even-more-evil.sh",
       "precondition: the edit really changed the off-list value",
     );
+    // The resolver itself never puts it in the injectable env…
+    const resolved = resolvePresetEnv("legacy6");
+    assert.equal(resolved?.env.BASH_ENV, undefined);
+    assert.ok(resolved?.skippedKeys.includes("BASH_ENV"));
+    // …and the spawn refuses.
     const env: Record<string, string> = {};
-    assert.deepEqual(applyPresetToEnv(env, "legacy6"), [
-      "BASH_ENV",
-      "GIT_SSH_COMMAND",
-    ]);
+    assert.throws(() => applyPresetToEnv(env, "legacy6"), PresetKeyError);
     assert.equal(env.BASH_ENV, undefined);
-    assert.equal(env.ANTHROPIC_MODEL, "kimi-k2.7-code");
   });
 
   it("an edit can't SET a value for an off-list secret", () => {

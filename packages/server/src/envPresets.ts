@@ -38,6 +38,7 @@ import type { EnvPreset, Provider } from "@autonomos/core";
 import { SECRET_MASK } from "@autonomos/core";
 import { getConfigDir } from "./configDir.js";
 import { RESERVED_ENV_KEYS } from "./providers/shared.js";
+import { getSettings } from "./settings.js";
 
 // Per-call (not module-load) so the configDir test-escape guard applies and
 // env-based isolation set in a before-hook is honored (#272 class).
@@ -108,10 +109,84 @@ export const PRESET_ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
   "REQUESTS_CA_BUNDLE",
 ]);
 
-/** May a preset set this key? Never a control-plane key, even if a future
- *  edit put one on the allowlist. */
+/**
+ * Keys no preset may EVER set, not even through the operator's
+ * `envPresetExtraKeys` (ADR-144): each one makes a spawned CLI run code or
+ * load its config, hooks or credentials from somewhere else. These are the
+ * keys the audit found the old denylist missed (V13), plus the loader and
+ * runtime-injection variables that list did block.
+ */
+export const NEVER_PRESET_KEYS: ReadonlySet<string> = new Set([
+  // shell startup / shell choice → runs code in the agent's shell
+  "BASH_ENV",
+  "ENV",
+  "ZDOTDIR",
+  "SHELL",
+  "PROMPT_COMMAND",
+  "CLAUDE_CODE_SHELL_PREFIX",
+  // a CLI's own config/settings/hooks directory
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "GEMINI_CLI_HOME",
+  "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+  "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+  "XDG_CONFIG_HOME",
+  // git running commands or reading another config
+  "GIT_SSH_COMMAND",
+  "GIT_SSH",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_EXEC_PATH",
+  "EDITOR",
+  "VISUAL",
+  // runtime / dynamic-loader injection
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "BUN_OPTIONS",
+  "BUN_INSPECT",
+  "PYTHONSTARTUP",
+  "PYTHONPATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "LD_AUDIT",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FRAMEWORK_PATH",
+]);
+
+/** The operator's extra preset keys (Settings → Env presets). Read per call,
+ *  so a change applies to the next spawn without a restart. */
+function operatorExtraKeys(): ReadonlySet<string> {
+  try {
+    return new Set(getSettings().envPresetExtraKeys ?? []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** May a preset set this key? The built-in allowlist plus the operator's
+ *  extra keys, and never a control-plane key or one that runs code, whatever
+ *  either list says. */
 export function isAllowedPresetKey(key: string): boolean {
-  return PRESET_ALLOWED_ENV_KEYS.has(key) && !RESERVED_ENV_KEYS.has(key);
+  if (RESERVED_ENV_KEYS.has(key) || NEVER_PRESET_KEYS.has(key)) return false;
+  return PRESET_ALLOWED_ENV_KEYS.has(key) || operatorExtraKeys().has(key);
+}
+
+/** Why the operator can't add `key` to envPresetExtraKeys, or null if they can. */
+export function extraPresetKeyProblem(key: string): string | null {
+  if (!ENV_KEY_RE.test(key)) return "not a valid environment variable name";
+  if (RESERVED_ENV_KEYS.has(key)) return "an autonomOS control-plane variable";
+  if (NEVER_PRESET_KEYS.has(key)) {
+    return "it makes a spawned CLI run code or load config from elsewhere";
+  }
+  return null;
+}
+
+/** The one-step fix, worded the same everywhere a key is refused. */
+export function allowPresetKeyHint(): string {
+  return 'If your provider\'s setup needs it, an operator can allow it in Settings → Env presets → "Extra allowed keys" (or remove it from the preset).';
 }
 
 function validateName(name: string): void {
@@ -147,9 +222,14 @@ function validateEnvKeys(keys: Iterable<string>, kind: "env" | "secret"): void {
         `Reserved ${kind} key "${key}": presets may not override autonomOS control-plane variables`,
       );
     }
+    if (NEVER_PRESET_KEYS.has(key)) {
+      throw new PresetKeyError(
+        `Key "${key}" can't be set by a preset: it makes a spawned CLI run code or load config from elsewhere.`,
+      );
+    }
     if (!isAllowedPresetKey(key)) {
       throw new PresetKeyError(
-        `Key "${key}" can't be set by a preset. Presets set only a model backend: model, endpoint and auth variables, plus proxy and CA settings. Allowed: ${[...PRESET_ALLOWED_ENV_KEYS].join(", ")}`,
+        `Key "${key}" isn't a model-backend key autonomOS knows. ${allowPresetKeyHint()} Built in: ${[...PRESET_ALLOWED_ENV_KEYS].join(", ")}`,
       );
     }
   }
@@ -491,15 +571,15 @@ export function resolvePresetEnv(name: string): ResolvedPresetEnv | null {
   return { env, missingSecrets, skippedKeys: [...skipped].sort() };
 }
 
-/** The operator notice for keys a pre-allowlist preset still carries. */
-export function skippedPresetKeysNotice(
-  agentName: string,
+/** Why a spawn with this preset is refused: it sets keys presets may not. */
+export function unknownPresetKeysError(
   presetName: string,
   keys: string[],
 ): string {
   return (
-    `${agentName}: env preset "${presetName}" sets ${keys.join(", ")}, which presets can no longer set (only model, endpoint, auth, proxy and CA variables). ` +
-    "They were NOT applied. Remove them from the preset in the Presets tab."
+    `Env preset "${presetName}" sets ${keys.join(", ")}, which presets can't set: ` +
+    `${keys.length === 1 ? "it isn't" : "they aren't"} on the model-backend allowlist. ` +
+    `The agent was NOT started, so it can't quietly run a different model. ${allowPresetKeyHint()}`
   );
 }
 
@@ -515,9 +595,16 @@ export function skippedPresetKeysNotice(
 export function applyPresetToEnv(
   target: Record<string, string>,
   presetName: string,
-): string[] {
+): void {
   const resolved = resolvePresetEnv(presetName);
   if (!resolved) throw new Error(`Env preset "${presetName}" not found`);
+  // Refuse rather than start a half-configured agent (ADR-144): a preset
+  // missing one of its model-routing keys can silently run a different model.
+  if (resolved.skippedKeys.length > 0) {
+    throw new PresetKeyError(
+      unknownPresetKeysError(presetName, resolved.skippedKeys),
+    );
+  }
   if (resolved.missingSecrets.length > 0) {
     throw new Error(
       `Env preset "${presetName}" is missing its API key (${resolved.missingSecrets.join(", ")}). ` +
@@ -525,5 +612,4 @@ export function applyPresetToEnv(
     );
   }
   for (const [k, v] of Object.entries(resolved.env)) target[k] = v;
-  return resolved.skippedKeys;
 }

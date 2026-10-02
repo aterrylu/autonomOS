@@ -257,6 +257,143 @@ function EnvVarSection({
   );
 }
 
+/**
+ * Extra env keys env presets may set (ADR-144): the operator's escape hatch
+ * for a provider whose setup needs a key the built-in allowlist doesn't know
+ * yet. Adding a key takes an explicit confirm, because every preset can then
+ * set it; removing one saves at once. The server refuses control-plane keys
+ * and keys that run code, whatever is entered here.
+ */
+function PresetExtraKeysSection({
+  settings,
+  onSaved,
+  inputStyle,
+  page,
+  labelStyle,
+}: {
+  settings: MaskedSettings | null;
+  onSaved: (s: MaskedSettings) => void;
+  inputStyle: React.CSSProperties;
+  page: PageTheme;
+  labelStyle: React.CSSProperties;
+}) {
+  const keys = settings?.envPresetExtraKeys ?? [];
+  const [draft, setDraft] = useState("");
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const save = async (next: string[]) => {
+    setBusy(true);
+    setErr("");
+    try {
+      onSaved(await settingsApi.update({ envPresetExtraKeys: next }));
+      setDraft("");
+      setConfirming(null);
+    } catch (e) {
+      setErr(
+        e instanceof ApiError && !e.unreachable
+          ? e.message
+          : "Could not reach server",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="space-y-1.5" data-testid="preset-extra-keys">
+        {keys.map((k) => (
+          <div key={k} className="flex gap-1.5 items-center">
+            <span
+              className="flex-1 rounded px-2 py-1.5 text-xs font-mono min-w-0"
+              style={inputStyle}
+            >
+              {k}
+            </span>
+            <button
+              type="button"
+              aria-label={`Stop allowing ${k}`}
+              disabled={busy}
+              onClick={() => save(keys.filter((x) => x !== k))}
+              className="rounded p-1 cursor-pointer hover:opacity-80"
+              style={{ color: page.statusFg }}
+            >
+              <Codicon name="close" size={12} />
+            </button>
+          </div>
+        ))}
+        {confirming ? (
+          <div
+            className="rounded px-2 py-1.5 space-y-1.5"
+            style={{ background: page.border }}
+          >
+            <div style={{ color: page.fg }}>
+              Allow <span className="font-mono">{confirming}</span> in every env
+              preset? Only allow keys your provider's setup documents.
+            </div>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => save([...keys, confirming])}
+                className="rounded px-2 py-1 cursor-pointer"
+                style={{ background: "#16825d", color: "#fff" }}
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setConfirming(null)}
+                className="rounded px-2 py-1 cursor-pointer"
+                style={{ color: page.statusFg }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-1.5 items-center">
+            <input
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="KEY_NAME"
+              aria-label="Extra preset key"
+              className="flex-1 rounded px-2 py-1.5 text-xs font-mono min-w-0"
+              style={inputStyle}
+            />
+            <button
+              type="button"
+              disabled={!draft.trim() || busy}
+              onClick={() => setConfirming(draft.trim())}
+              className="rounded px-2 py-1.5 text-xs cursor-pointer disabled:opacity-50"
+              style={{ color: "#16825d" }}
+            >
+              Allow…
+            </button>
+          </div>
+        )}
+        {err && (
+          <div
+            className="rounded px-2 py-1.5"
+            style={{ background: "#ea6c7315", color: "#ea6c73" }}
+          >
+            {err}
+          </div>
+        )}
+      </div>
+      <div className="text-[10px]" style={labelStyle}>
+        Env presets can set model, endpoint and auth variables. Add a key here
+        only if your provider's setup needs one autonomOS doesn't know yet. Keys
+        that run code can't be allowed.
+      </div>
+    </>
+  );
+}
+
 function RestartAllButton({ page }: { page: PageTheme }) {
   const [state, setState] = useState<
     "idle" | "confirming" | "restarting" | "done"
@@ -771,6 +908,20 @@ export function SettingsPanel({
             pendingEnvVars={pendingEnvVars}
             setPendingEnvVars={setPendingEnvVars}
             envIdCounter={envIdCounter}
+            inputStyle={inputStyle}
+            page={page}
+            labelStyle={labelStyle}
+          />
+
+          <div
+            className="text-[10px] font-medium uppercase tracking-wide mt-3"
+            style={labelStyle}
+          >
+            Env presets: extra allowed keys
+          </div>
+          <PresetExtraKeysSection
+            settings={settings}
+            onSaved={setSettings}
             inputStyle={inputStyle}
             page={page}
             labelStyle={labelStyle}

@@ -550,6 +550,8 @@ export const restUpdateSettingsSchema = z.object({
   channels: z.array(z.string()).optional(),
   statusLine: z.object({ enabled: z.boolean().optional() }).optional(),
   customEnvVars: z.record(z.string(), z.string()).optional(),
+  /** Extra env keys env presets may set (ADR-144); checked in the route. */
+  envPresetExtraKeys: z.array(z.string()).optional(),
   /**
    * Per-runtime default permission (ADR-115): runtime → its canonical value, as
    * a string (`"acceptEdits"`, `"approval_policy=never"`) or `{ axis: value }`.
