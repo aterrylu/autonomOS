@@ -2427,6 +2427,18 @@ const realRetryScheduler: ResumeRetryScheduler = {
   cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
 };
 let retryScheduler: ResumeRetryScheduler = realRetryScheduler;
+/** Test hook: what retry state an agent still holds (should be none once a
+ *  retry run is over, e.g. after a kill or delete). */
+export function _resumeRetryStateForTesting(agentId: string): {
+  count: number | undefined;
+  pending: boolean;
+} {
+  return {
+    count: resumeRetries.get(agentId),
+    pending: resumeRetryTimers.has(agentId),
+  };
+}
+
 /** Test hook: take over retry scheduling (null restores real timers). */
 export function _setResumeRetrySchedulerForTesting(
   s: ResumeRetryScheduler | null,

@@ -41,6 +41,7 @@ const {
   resumeFailureAction,
   _setResumeRetryBackoffForTesting,
   _setResumeRetrySchedulerForTesting,
+  _resumeRetryStateForTesting,
   getAttachment,
 } = await import("../agents/runtime.js");
 const { _setProviderForTesting } = await import("../providers/index.js");
@@ -234,6 +235,11 @@ describe("a resumable session is never discarded by a fast exit", () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(seen.length, 1, "no retry after the kill");
     assert.equal(getAttachment(id as UUID), undefined);
+    assert.deepEqual(
+      _resumeRetryStateForTesting(id),
+      { count: undefined, pending: false },
+      "the ended retry run leaves no state behind (no leak, no stale count)",
+    );
   });
 
   it("a kill during the backoff resets the count: the next resume gets every retry", async () => {
