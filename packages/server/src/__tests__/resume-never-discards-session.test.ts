@@ -147,7 +147,7 @@ describe("a resumable session is never discarded by a fast exit", () => {
     const rec = getAgent(id);
     assert.equal(rec?.providerSessionId, original, "record keeps the session");
     assert.equal(rec?.exitReason, "crashed");
-    const notes = getNotifications(id).map((n) => n.message);
+    const notes = getNotifications(id).map((n) => n.message ?? "");
     assert.ok(
       notes.some((m) => /session is intact and was not replaced/.test(m)),
       `got: ${JSON.stringify(notes)}`,
@@ -160,7 +160,7 @@ describe("a resumable session is never discarded by a fast exit", () => {
     const id = seed();
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
     await until(() => getAgent(id)?.status === "exited", "agent left stopped");
-    const notes = getNotifications(id).map((n) => n.message);
+    const notes = getNotifications(id).map((n) => n.message ?? "");
     assert.ok(notes.some((m) => /startup dialog was still on screen/.test(m)));
   });
 
