@@ -565,6 +565,8 @@ export const restUpdateSettingsSchema = z.object({
       z.union([z.string(), z.record(z.string(), z.string()), z.null()]),
     )
     .optional(),
+  /** Required to save a default under which agents never ask before acting. */
+  confirmNeverAsks: z.boolean().optional(),
 });
 
 // ── The parse boundary ──────────────────────────────────────────

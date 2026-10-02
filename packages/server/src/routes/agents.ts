@@ -270,6 +270,7 @@ agentsRouter.get("/tree", (c) => {
       status: a.status,
       provider: a.provider,
       permissionMode: a.permissionMode,
+      permission: a.permission,
     }),
   });
   return c.json(tree);

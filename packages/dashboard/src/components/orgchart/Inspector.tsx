@@ -2,6 +2,8 @@ import {
   type AgentAnalytics,
   type AgentMessageStats,
   type AgentTreeNode,
+  formatPermission,
+  neverAsks,
   PERMISSION_MODE_INFO,
 } from "@autonomos/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -409,6 +411,9 @@ export function OrgInspector({
     s?.createdAt ??
     0;
   const mode = node.permissionMode ?? s?.permissionMode;
+  // The canonical value (ADR-115); the legacy label only for a record from a
+  // server that predates it.
+  const permission = node.permission ?? s?.permission;
   const cwd = s?.workingDirectory;
   const exitReason = s?.exitReason?.replace("_", " ");
 
@@ -493,7 +498,38 @@ export function OrgInspector({
   const detailRows: Array<[string, React.ReactNode]> = [
     ["Runtime", runtimeName],
   ];
-  if (mode)
+  if (permission) {
+    const never = neverAsks(permission);
+    const amber = tokens.status.needsInput;
+    detailRows.push([
+      "Permissions",
+      <span
+        key="perm"
+        data-org-inspector-permission
+        className="flex min-w-0 flex-wrap items-center gap-1.5"
+      >
+        <span
+          className="break-all rounded px-1.5 py-px font-mono text-[11px]"
+          style={{
+            color: never ? amber : tokens.fg,
+            background: never ? `${amber}26` : "transparent",
+            border: `1px solid ${never ? `${amber}99` : tokens.cardBorder}`,
+          }}
+        >
+          {formatPermission(permission)}
+        </span>
+        {never && (
+          <span
+            data-never-asks
+            className="whitespace-nowrap rounded px-1.5 py-px text-[10px]"
+            style={{ color: amber, background: `${amber}26` }}
+          >
+            never asks
+          </span>
+        )}
+      </span>,
+    ]);
+  } else if (mode)
     detailRows.push(["Permissions", PERMISSION_MODE_INFO[mode]?.label ?? mode]);
   if (s?.envPreset) detailRows.push(["Model preset", s.envPreset]);
   // The tree node and the session record carry the same fields; prefer the
