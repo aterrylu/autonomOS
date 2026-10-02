@@ -25,17 +25,20 @@ shift
 fired=$(mktemp "${TMPDIR:-/tmp}/run-bounded.XXXXXX")
 cleanup() { rm -f "$fired"; }
 
+# Our own termination stops the group AND the watchdog: a killed gate never
+# leaves its test runner behind, and never leaves the watchdog's sleep holding
+# the caller's output open (the reader hang described below). Installed BEFORE
+# the command starts: a gate killed in the gap between starting the command
+# and arming the trap would otherwise die bare and leave the group running.
+# $pid/$watchdog are read when the trap FIRES; empty until set.
+pid=""
+watchdog=""
+trap '[ -n "$pid" ] && kill -TERM -- -"$pid" 2>/dev/null; [ -n "$watchdog" ] && kill "$watchdog" 2>/dev/null; cleanup; exit 143' TERM INT HUP
+
 set -m # background jobs get their own process group (pgid = their pid)
 "$@" &
 pid=$!
 set +m
-
-# Our own termination stops the group AND the watchdog: a killed gate never
-# leaves its test runner behind, and never leaves the watchdog's sleep holding
-# the caller's output open (the reader hang described below). ${watchdog:-}
-# is read when the trap FIRES, by which time it is normally set.
-watchdog=""
-trap 'kill -TERM -- -"$pid" 2>/dev/null; [ -n "$watchdog" ] && kill "$watchdog" 2>/dev/null; cleanup; exit 143' TERM INT HUP
 
 (
   # The sleep must die WITH this watchdog: left running, it would hold the
