@@ -71,6 +71,8 @@ export interface TerminalInstance {
     lineHeight?: number;
     theme?: Record<string, string>;
   };
+  /** Resize the grid (the replay-begin marker sets the PTY's size). */
+  resize(cols: number, rows: number): void;
   scrollLines(amount: number): void;
   scrollToBottom(): void;
   selectAll(): void;

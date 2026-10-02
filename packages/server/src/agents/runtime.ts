@@ -109,6 +109,7 @@ import {
   markRunning,
   resolveAgent as resolveAgentFromStore,
 } from "./store.js";
+import { DecModeTracker } from "./terminalModes.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
 
@@ -138,11 +139,17 @@ export function redactArgForLog(a: string): string {
 function appendToOutputBuffer(
   managed: Pick<
     ManagedAttachment,
-    "outputBuffer" | "outputSize" | "lastOutputAt"
+    "outputBuffer" | "outputSize" | "lastOutputAt" | "modes"
   >,
   data: string,
 ): void {
   managed.lastOutputAt = Date.now();
+  managed.modes ??= {
+    head: new DecModeTracker(),
+    live: new DecModeTracker(),
+    trimmed: false,
+  };
+  managed.modes.live.feed(data);
   managed.outputBuffer.push(data);
   managed.outputSize += data.length;
   if (managed.outputSize <= OUTPUT_BUFFER_LIMIT) return;
@@ -156,6 +163,10 @@ function appendToOutputBuffer(
     drop++;
   }
   if (drop > 0) {
+    for (let k = 0; k < drop; k++) {
+      managed.modes.head.feed(managed.outputBuffer[k]);
+    }
+    managed.modes.trimmed = true;
     managed.outputBuffer.splice(0, drop);
     managed.outputSize -= freed;
   }
@@ -212,6 +223,12 @@ export interface ManagedAttachment {
    *  "the agent is silent" (it got my keys and printed nothing). */
   lastOutputAt?: number;
   lastInputAt?: number;
+  /** Sticky terminal modes (terminalModes.ts): `live` follows every chunk;
+   *  `head` is the state at the start of the retained buffer (fed each chunk
+   *  the 1MB trim drops). A reconnect replays `head.preamble()` before the
+   *  buffer, so a trim can't lose modes a TUI set once at startup. `trimmed`
+   *  records that the buffer has lost its start. Created on first output. */
+  modes?: { head: DecModeTracker; live: DecModeTracker; trimmed: boolean };
   /**
    * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
    * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
@@ -283,6 +300,18 @@ function serverStoppingError(): SpawnError {
     503,
     "The server is shutting down — try again once it is back.",
   );
+}
+
+/** PERF/TEST ONLY — append to an attachment's REPLAY buffer as if its PTY had
+ *  produced `data`, without sending anything to live viewers. Goes through the
+ *  real buffer path (1MB trim + sticky-mode tracking), so a rig can put a REAL
+ *  agent in the long-session state (its own startup bytes trimmed away) in
+ *  seconds instead of an hour. Only the perf router calls it. */
+export function _appendToReplayBufferForTesting(
+  managed: ManagedAttachment,
+  data: string,
+): void {
+  appendToOutputBuffer(managed, data);
 }
 
 export function getAttachment(agentId: UUID): ManagedAttachment | undefined {

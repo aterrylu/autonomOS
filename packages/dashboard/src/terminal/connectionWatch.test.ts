@@ -8,6 +8,7 @@ import {
   isMouseReport,
   isTerminalReply,
   isUserInput,
+  parseReplayGeometry,
 } from "./connectionWatch";
 
 describe("isCountableInput — which keys must visibly produce output", () => {
@@ -189,5 +190,24 @@ describe("revision 2 wording + frame codec", () => {
     const wrongType = new ArrayBuffer(5);
     new DataView(wrongType).setUint8(0, 0x01);
     expect(decodeAckFrame(wrongType)).toBeNull();
+  });
+});
+
+describe("parseReplayGeometry — the PTY size sent before a replay", () => {
+  it("reads cols/rows; rejects other payloads and out-of-range sizes", () => {
+    expect(
+      parseReplayGeometry("autonomos-replay-begin;cols=203;rows=61"),
+    ).toEqual({ cols: 203, rows: 61 });
+    expect(parseReplayGeometry("autonomos-replay-end;input-ack=1")).toBeNull();
+    expect(
+      parseReplayGeometry("autonomos-replay-begin;cols=1;rows=61"),
+    ).toBeNull();
+    expect(
+      parseReplayGeometry("autonomos-replay-begin;cols=80;rows=0"),
+    ).toBeNull();
+    expect(parseReplayGeometry("autonomos-replay-begin;cols=80")).toBeNull();
+    expect(
+      parseReplayGeometry("autonomos-replay-begin;cols=80x;rows=24"),
+    ).toBeNull();
   });
 });
