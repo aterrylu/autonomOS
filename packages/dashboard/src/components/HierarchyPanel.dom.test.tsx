@@ -300,9 +300,10 @@ describe('Daylight contrast (Terry: "the words look so faint")', () => {
     });
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("Kid")).not.toBeNull());
-    expect(screen.getByText("2 unread").style.color).toBe(
-      hexToRgb(UNREAD_COLOR_LIGHT),
-    );
+    // The Balanced card shows unread as a count pill titled "N unread".
+    const pill = screen.getByTitle("2 unread");
+    expect(pill.textContent).toBe("2");
+    expect(pill.style.color).toBe(hexToRgb(UNREAD_COLOR_LIGHT));
     const ghostName = card("Lead")?.querySelector(".truncate") as HTMLElement;
     expect(Number(ghostName.style.opacity)).toBeGreaterThan(0.6);
     fireEvent.click(card("Kid") as HTMLElement);
@@ -323,7 +324,7 @@ describe("F4 + F5 — click SELECTS (Terry's pick), explicit open, right-click m
     });
     render(<HierarchyPanel />);
     await screen.findByText("A");
-    expect(screen.getByText("3 unread")).toBeInTheDocument(); // F9 parity
+    expect(screen.getByTitle("3 unread").textContent).toBe("3"); // F9 parity
     fireEvent.click(card("A") as HTMLElement);
     expect(switchPane).not.toHaveBeenCalled();
     expect(card("A")?.getAttribute("aria-pressed")).toBe("true");
@@ -535,19 +536,28 @@ describe("selection + inspector", () => {
     expect(inspector()).toBeNull();
   });
 
-  it("arrow keys walk the chart: ↑ manager, ↓ first report, → sibling", async () => {
+  it("arrow keys walk the chart: ↓ into the stacked column, ↑/↓ along it, ↑ off the top to the manager, → the next team", async () => {
     fleet();
     render(<HierarchyPanel />);
     await waitFor(() => expect(card("O1")).not.toBeNull());
+    const key = (id: string, k: string) =>
+      fireEvent.keyDown(card(id) as HTMLElement, { key: k });
+    const sel = () => inspector()?.dataset.orgInspector;
     fireEvent.click(card("Mgr") as HTMLElement);
-    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowDown" });
-    expect(inspector()?.dataset.orgInspector).toBe("R1");
-    fireEvent.keyDown(card("R1") as HTMLElement, { key: "ArrowRight" });
-    expect(inspector()?.dataset.orgInspector).toBe("R2");
-    fireEvent.keyDown(card("R2") as HTMLElement, { key: "ArrowUp" });
-    expect(inspector()?.dataset.orgInspector).toBe("Mgr");
-    fireEvent.keyDown(card("Mgr") as HTMLElement, { key: "ArrowRight" });
-    expect(inspector()?.dataset.orgInspector).toBe("Other");
+    key("Mgr", "ArrowDown");
+    expect(sel()).toBe("R1"); // the column's top
+    key("R1", "ArrowDown");
+    expect(sel()).toBe("R2"); // down the column (R1, R2 stack)
+    key("R2", "ArrowDown");
+    expect(sel()).toBe("R2"); // the column's end: stays
+    key("R2", "ArrowUp");
+    expect(sel()).toBe("R1"); // back up the column
+    key("R1", "ArrowUp");
+    expect(sel()).toBe("Mgr"); // off the top → the manager
+    key("Mgr", "ArrowRight");
+    expect(sel()).toBe("Other"); // the next team on the same row
+    key("Other", "ArrowDown");
+    expect(sel()).toBe("O1");
   });
 });
 

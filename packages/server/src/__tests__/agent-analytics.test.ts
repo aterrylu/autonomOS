@@ -7,8 +7,11 @@ import { join as __join, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   _resetAnalyticsForTesting,
+  CARD_STRIP_MAX_SEGMENTS,
+  capSegments,
   forgetAgentAnalytics,
   getAgentAnalytics,
+  getAgentsActivity,
   observeStart,
   observeStatus,
   observeTool,
@@ -264,5 +267,128 @@ describe("agent analytics — wired into the real taps", () => {
       if (saved === undefined) delete process.env.GIT_DIR;
       else process.env.GIT_DIR = saved;
     }
+  });
+});
+
+describe("batched card strip — GET /api/agents/analytics (one request for the fleet)", () => {
+  beforeEach(() => _resetAnalyticsForTesting());
+
+  it("each agent's batched strip equals its single-agent inspector strip", async () => {
+    observeStatus("a", "working", T0);
+    observeStatus("a", "tool_running", T0 + MIN);
+    observeStatus("a", "idle", T0 + 3 * MIN);
+    observeStatus("b", "needs_input", T0 + 2 * MIN);
+    const now = T0 + 10 * MIN;
+    const batch = getAgentsActivity(["a", "b"], now);
+    for (const id of ["a", "b"]) {
+      const one = await getAgentAnalytics(id, {}, now);
+      assert.deepEqual(batch.agents[id].activity, one.activity, id);
+      assert.deepEqual(batch.agents[id].status, one.status, id);
+    }
+    assert.equal(batch.maxSegments, CARD_STRIP_MAX_SEGMENTS);
+  });
+
+  it("an agent with no data yet is present with a null status and an empty strip", () => {
+    const r = getAgentsActivity(["quiet"], T0);
+    assert.deepEqual(r.agents.quiet, { status: null, activity: [] });
+  });
+
+  it("a long strip is DOWN-SAMPLED to the cap (never truncated), keeping its span", () => {
+    // 200 alternating 1-minute segments ending in idle.
+    for (let i = 0; i < 200; i++)
+      observeStatus("busy", i % 2 ? "idle" : "working", T0 + i * MIN);
+    const now = T0 + 200 * MIN;
+    const full = getAgentsActivity(["busy"], now);
+    const a = full.agents.busy.activity;
+    assert.ok(a.length <= CARD_STRIP_MAX_SEGMENTS, `${a.length} segments`);
+    assert.equal(a[0].from, T0);
+    assert.equal(a.at(-1)?.to, now);
+    for (let i = 1; i < a.length; i++)
+      assert.equal(a[i].from, a[i - 1].to, "contiguous");
+  });
+
+  it("down-sampling never hides a short wait on you (needs-input wins its bucket)", () => {
+    const segs = [];
+    let t = 0;
+    for (let i = 0; i < 100; i++) {
+      // One 1ms needs-input blip inside long working runs.
+      const st = i === 57 ? "needs_input" : i % 2 ? "idle" : "working";
+      const len = i === 57 ? 1 : 1000;
+      segs.push({ from: t, to: t + len, status: st });
+      t += len;
+    }
+    const out = capSegments(segs, 10);
+    assert.ok(out.length <= 10);
+    assert.ok(
+      out.some((x) => x.status === "needs_input"),
+      "the blip survives",
+    );
+  });
+
+  it("a strip within the cap is returned exactly as-is", () => {
+    const segs = [
+      { from: 0, to: 5, status: "working" },
+      { from: 5, to: 9, status: "idle" },
+    ];
+    assert.equal(capSegments(segs, 48), segs);
+  });
+});
+
+describe("batched card strip — the route", () => {
+  let dir: string;
+  const A = "b0b00000-0000-4000-8000-00000000000a";
+  const B = "b0b00000-0000-4000-8000-00000000000b";
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "autonomos-batch-"));
+    _setConfigDirForTesting(dir);
+    _resetCacheForTesting();
+    _resetAnalyticsForTesting();
+    for (const [id, name] of [
+      [A, "BatchA"],
+      [B, "BatchB"],
+    ] as const)
+      insertAgent(
+        buildAgent({
+          id: id as never,
+          name,
+          workingDirectory: dir,
+          provider: "claude-code",
+          providerSessionId: id,
+          permissionMode: "ask",
+        }),
+      );
+  });
+  afterEach(() => {
+    _resetConfigDirForTesting();
+    _resetCacheForTesting();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("GET /analytics is the batch route (not read as an agent id) and covers every record", async () => {
+    const { agentsRouter } = await import("../routes/agents.js");
+    const res = await agentsRouter.request("/analytics");
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(Object.keys(body.agents).sort(), [A, B].sort());
+  });
+
+  it("?ids= narrows it; unknown ids are ignored", async () => {
+    const { agentsRouter } = await import("../routes/agents.js");
+    const res = await agentsRouter.request(`/analytics?ids=${A},nope`);
+    const body = await res.json();
+    assert.deepEqual(Object.keys(body.agents), [A]);
+  });
+
+  it('an exited agent\'s strip ends in "stopped"', async () => {
+    setAgentStatus(A, "working");
+    markExited(A as never, "user_killed");
+    const { agentsRouter } = await import("../routes/agents.js");
+    const body = await (
+      await agentsRouter.request(`/analytics?ids=${A}`)
+    ).json();
+    const r = getAgentsActivity([A], Date.now() + 60_000);
+    assert.equal(r.agents[A].activity.at(-1)?.status, "stopped");
+    assert.equal(body.agents[A].status.current, "stopped");
   });
 });

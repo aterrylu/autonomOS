@@ -2,6 +2,7 @@
 
 import type {
   Agent,
+  AgentActivityBatch,
   AgentAnalytics,
   AgentMessageStats,
   AgentTreeNode,
@@ -36,6 +37,12 @@ export const agentsApi = {
    *  so an exited manager keeps its reports instead of promoting them to roots. */
   treeWithExited: (opts?: { signal?: AbortSignal; fresh?: boolean }) =>
     request<AgentTreeNode[]>("/api/agents/tree?includeExited=true", opts),
+  /** Every agent's status + 24h card strip in ONE request (Org Chart cards). */
+  activity: (opts?: { signal?: AbortSignal }) =>
+    request<AgentActivityBatch>("/api/agents/analytics", {
+      ...opts,
+      fresh: true,
+    }),
   /** One agent's analytics (counts since the server started). */
   analytics: (id: string, opts?: { signal?: AbortSignal }) =>
     request<AgentAnalytics>(`/api/agents/${encodeURIComponent(id)}/analytics`, {
