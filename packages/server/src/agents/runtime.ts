@@ -109,6 +109,7 @@ import {
   markRunning,
   resolveAgent as resolveAgentFromStore,
 } from "./store.js";
+import { DecModeTracker } from "./terminalModes.js";
 
 const OUTPUT_BUFFER_LIMIT = 1024 * 1024; // 1MB scrollback per attachment
 
@@ -138,11 +139,17 @@ export function redactArgForLog(a: string): string {
 function appendToOutputBuffer(
   managed: Pick<
     ManagedAttachment,
-    "outputBuffer" | "outputSize" | "lastOutputAt"
+    "outputBuffer" | "outputSize" | "lastOutputAt" | "modes"
   >,
   data: string,
 ): void {
   managed.lastOutputAt = Date.now();
+  managed.modes ??= {
+    head: new DecModeTracker(),
+    live: new DecModeTracker(),
+    trimmed: false,
+  };
+  managed.modes.live.feed(data);
   managed.outputBuffer.push(data);
   managed.outputSize += data.length;
   if (managed.outputSize <= OUTPUT_BUFFER_LIMIT) return;
@@ -156,6 +163,10 @@ function appendToOutputBuffer(
     drop++;
   }
   if (drop > 0) {
+    for (let k = 0; k < drop; k++) {
+      managed.modes.head.feed(managed.outputBuffer[k]);
+    }
+    managed.modes.trimmed = true;
     managed.outputBuffer.splice(0, drop);
     managed.outputSize -= freed;
   }
@@ -212,6 +223,12 @@ export interface ManagedAttachment {
    *  "the agent is silent" (it got my keys and printed nothing). */
   lastOutputAt?: number;
   lastInputAt?: number;
+  /** Sticky terminal modes (terminalModes.ts): `live` follows every chunk;
+   *  `head` is the state at the start of the retained buffer (fed each chunk
+   *  the 1MB trim drops). A reconnect replays `head.preamble()` before the
+   *  buffer, so a trim can't lose modes a TUI set once at startup. `trimmed`
+   *  records that the buffer has lost its start. Created on first output. */
+  modes?: { head: DecModeTracker; live: DecModeTracker; trimmed: boolean };
   /**
    * Provider sidecar daemon (Codex's `app-server`), if any. Lifecycle is bound
    * 1:1 to this PTY — disposed wherever the PTY is killed/exits. `endpoint` is
@@ -283,6 +300,18 @@ function serverStoppingError(): SpawnError {
     503,
     "The server is shutting down — try again once it is back.",
   );
+}
+
+/** PERF/TEST ONLY — append to an attachment's REPLAY buffer as if its PTY had
+ *  produced `data`, without sending anything to live viewers. Goes through the
+ *  real buffer path (1MB trim + sticky-mode tracking), so a rig can put a REAL
+ *  agent in the long-session state (its own startup bytes trimmed away) in
+ *  seconds instead of an hour. Only the perf router calls it. */
+export function _appendToReplayBufferForTesting(
+  managed: ManagedAttachment,
+  data: string,
+): void {
+  appendToOutputBuffer(managed, data);
 }
 
 export function getAttachment(agentId: UUID): ManagedAttachment | undefined {
@@ -1964,7 +1993,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             : "") +
           ` — its session is intact; retrying the same resume in ${failure.delayMs}ms (${failure.attempt}/${resumeRetryBackoffMs.length})`,
       );
-      const t = setTimeout(() => {
+      const t = retryScheduler.schedule(() => {
         resumeRetryTimers.delete(persisted.id);
         // Only if the agent is still meant to be running and nothing else
         // (a kill, a delete) has taken it over meanwhile. A newer spawn
@@ -2002,7 +2031,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             );
           });
       }, failure.delayMs);
-      t.unref?.();
       resumeRetryTimers.set(persisted.id, t);
       return;
     }
@@ -2411,7 +2439,41 @@ export function _setResumeRetryBackoffForTesting(
 }
 const resumeRetries = new Map<string, number>();
 /** The pending retry timer per agent, so any newer spawn can cancel it. */
-const resumeRetryTimers = new Map<string, NodeJS.Timeout>();
+const resumeRetryTimers = new Map<string, unknown>();
+
+/** How a resume retry is scheduled. Real timers in production; a test drives
+ *  retries explicitly so it never races the clock. */
+export interface ResumeRetryScheduler {
+  schedule(fire: () => void, delayMs: number): unknown;
+  cancel(handle: unknown): void;
+}
+const realRetryScheduler: ResumeRetryScheduler = {
+  schedule: (fire, delayMs) => {
+    const t = setTimeout(fire, delayMs);
+    t.unref?.();
+    return t;
+  },
+  cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
+};
+let retryScheduler: ResumeRetryScheduler = realRetryScheduler;
+/** Test hook: what retry state an agent still holds (should be none once a
+ *  retry run is over, e.g. after a kill or delete). */
+export function _resumeRetryStateForTesting(agentId: string): {
+  count: number | undefined;
+  pending: boolean;
+} {
+  return {
+    count: resumeRetries.get(agentId),
+    pending: resumeRetryTimers.has(agentId),
+  };
+}
+
+/** Test hook: take over retry scheduling (null restores real timers). */
+export function _setResumeRetrySchedulerForTesting(
+  s: ResumeRetryScheduler | null,
+): void {
+  retryScheduler = s ?? realRetryScheduler;
+}
 /** Agents whose spawn right now IS a retry (keeps the count) rather than a
  *  human start (restart/attach, which begins a fresh retry run). */
 const resumeRetrySpawning = new Set<string>();
@@ -2421,7 +2483,7 @@ const resumeRetrySpawning = new Set<string>();
 function onSpawnStarting(agentId: string): void {
   const pending = resumeRetryTimers.get(agentId);
   if (pending) {
-    clearTimeout(pending);
+    retryScheduler.cancel(pending);
     resumeRetryTimers.delete(agentId);
   }
   if (!resumeRetrySpawning.has(agentId)) resumeRetries.delete(agentId);

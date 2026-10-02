@@ -66,6 +66,8 @@ function makeFakeBackend(): TerminalBackend & {
     resets: 0,
     scrolls: 0,
     failNextWrite: false,
+    resizes: [] as [number, number][],
+    fits: 0,
   };
   const buf = { baseY: 0, viewportY: 0, getLine: () => null };
   let onScrollCb: (n: number) => void = () => {};
@@ -113,6 +115,11 @@ function makeFakeBackend(): TerminalBackend & {
       buf.viewportY = buf.baseY;
     },
     scrollLines: () => {},
+    resize: (c: number, r: number) => {
+      state.resizes.push([c, r]);
+      terminal.cols = c;
+      terminal.rows = r;
+    },
     // Honors the captured codex rebuild shape: scanning written data for the
     // ED3 wipe (\x1b[3J) drives the registered CSI handler exactly as xterm's
     // parser would, then the completion callback fires — the same ordering
@@ -136,7 +143,11 @@ function makeFakeBackend(): TerminalBackend & {
   };
   const backend = {
     terminal: terminal as unknown as TerminalBackend["terminal"],
-    fitAddon: { fit: () => {} } as TerminalBackend["fitAddon"],
+    fitAddon: {
+      fit: () => {
+        state.fits++;
+      },
+    } as TerminalBackend["fitAddon"],
     createWebglAddon: () => null,
     get disposed() {
       return state.disposed;
@@ -146,6 +157,12 @@ function makeFakeBackend(): TerminalBackend & {
     },
     get scrolls() {
       return state.scrolls;
+    },
+    get resizes() {
+      return state.resizes;
+    },
+    get fits() {
+      return state.fits;
     },
     set failNextWrite(v: boolean) {
       state.failNextWrite = v;
@@ -161,6 +178,8 @@ function makeFakeBackend(): TerminalBackend & {
     disposed: boolean;
     resets: number;
     scrolls: number;
+    resizes: [number, number][];
+    fits: number;
     buf: { baseY: number; viewportY: number };
     fireScroll: (n: number) => void;
     type: (d: string) => void;
@@ -1176,6 +1195,94 @@ describe("acked input — per-keystroke detection", () => {
     }
   });
 
+  it("replay-begin marker: sizes the terminal to the PTY BEFORE the replay, keeps the reply window open, and the end marker re-fits to the pane", () => {
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    try {
+      const { ws, backend, entry } = mount({ negotiate: false });
+      expect(ws().url).toContain("replayGeom=1");
+      Object.defineProperty(entry.host, "offsetWidth", {
+        configurable: true,
+        get: () => 1200,
+      });
+      Object.defineProperty(entry.host, "offsetHeight", {
+        configurable: true,
+        get: () => 700,
+      });
+      const fits0 = backend.fits;
+      expect(
+        backend.parseOsc(7777, "autonomos-replay-begin;cols=203;rows=61"),
+      ).toBe(true);
+      // The alternate screen never reflows: parse the replay at the PTY's size.
+      expect(backend.resizes).toEqual([[203, 61]]);
+      // Still inside the replay: a re-answered query is not typed into the agent.
+      const sent0 = ws().sent.length;
+      backend.type("\x1b[?1;2c");
+      expect(ws().sent.length).toBe(sent0);
+      expect(backend.fits).toBe(fits0);
+      // End of the replay → back to the pane's size.
+      backend.parseOsc(7777, ACK_MARK);
+      expect(backend.fits).toBeGreaterThan(fits0);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  it("a WATCHED pane on a half-open socket recovers: after the heartbeat comes back it probes, and an unacked probe reconnects it (nox)", () => {
+    const { ws } = mount();
+    const sock = ws();
+    _setTransportHealthForTesting("reconnecting"); // not cut (no replay storm)
+    expect(sock.closed).toBe(false);
+    const f0 = frames(sock).length;
+    _setTransportHealthForTesting("connected");
+    const probe = frames(sock).slice(f0);
+    expect(probe).toHaveLength(1);
+    expect(probe[0].length).toBe(9); // header only: an empty acked frame
+    const n = FakeWebSocket.instances.length;
+    tick(2_900);
+    expect(FakeWebSocket.instances.length).toBe(n); // still waiting
+    tick(200);
+    expect(FakeWebSocket.instances.length).toBe(n + 1); // no ack → reconnect
+    expect(sock.closed).toBe(true);
+    expect(last()).toEqual({ kind: "lost", droppedKeys: 0, exact: true });
+  });
+
+  it("a probe the server acks leaves a healthy pane alone (no reconnect, no replay)", () => {
+    const { ws } = mount();
+    const sock = ws();
+    _setTransportHealthForTesting("reconnecting");
+    _setTransportHealthForTesting("connected");
+    const probe = frames(sock).at(-1)!;
+    ack(sock, seqOf(probe));
+    const n = FakeWebSocket.instances.length;
+    tick(5_000);
+    expect(FakeWebSocket.instances.length).toBe(n);
+    expect(sock.closed).toBe(false);
+    expect(states.some((c) => c.kind === "lost")).toBe(false);
+  });
+
+  it("replay-begin marker with an out-of-range size is ignored (no resize)", () => {
+    const { backend } = mount({ negotiate: false });
+    backend.parseOsc(7777, "autonomos-replay-begin;cols=9999;rows=61");
+    backend.parseOsc(7777, "autonomos-replay-begin;cols=80");
+    expect(backend.resizes).toEqual([]);
+  });
+
+  it("a stale status heartbeat does NOT cut an acked pane (no reset + replay storm on a busy server)", () => {
+    const { ws } = mount();
+    const before = FakeWebSocket.instances.length;
+    const sock = ws();
+    _setTransportHealthForTesting("reconnecting");
+    _setTransportHealthForTesting("disconnected");
+    expect(FakeWebSocket.instances.length).toBe(before);
+    expect(sock.closed).toBe(false);
+    expect(states.some((c) => c.kind === "lost")).toBe(false);
+  });
+
   it("NEGOTIATED: plain text until the server advertises input-ack; binary acked frames after", () => {
     const { ws, backend } = mount({ negotiate: false });
     backend.type("a");
@@ -1314,11 +1421,14 @@ describe("acked input — per-keystroke detection", () => {
     expect(states.every((c) => c.kind === "ok")).toBe(true);
   });
 
-  it("a transport loss with YOUNG unacked keys can't claim they weren't sent (exact: false)", () => {
-    const { backend } = mount();
+  it("a socket loss with YOUNG unacked keys can't claim they weren't sent (exact: false)", () => {
+    // Through the pane's OWN socket dying: a stale status heartbeat no longer
+    // cuts an acked pane (see the no-replay-storm test above).
+    const { ws, backend } = mount();
     backend.type("h");
     vi.advanceTimersByTime(300); // well before the 3s give-up
-    _setTransportHealthForTesting("reconnecting");
+    ws().readyState = FakeWebSocket.CLOSED;
+    ws().onclose?.({ code: 1006 });
     expect(last()).toEqual({ kind: "lost", droppedKeys: 1, exact: false });
   });
 

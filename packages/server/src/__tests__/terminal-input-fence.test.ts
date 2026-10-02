@@ -459,6 +459,19 @@ describe("acked input (binary control plane)", () => {
     assert.deepEqual(acks, []);
   });
 
+  it("an EMPTY acked frame is a liveness probe: acked, nothing written to the PTY", async () => {
+    // The dashboard probes a possibly half-open socket after its status
+    // heartbeat recovered (a pane someone is only watching).
+    const id = "00000000-0000-4000-8000-0000000fe036";
+    const { writes } = session(id);
+    const { ws, acks } = await openAck(id);
+    await settle();
+    ws.send(inputFrame(11, 20, ""));
+    await settle();
+    assert.deepEqual(acks, [11]);
+    assert.deepEqual(writes, []);
+  });
+
   it("does not ack a write that failed", async () => {
     const id = "00000000-0000-4000-8000-0000000fe033";
     const { pty } = session(id);
