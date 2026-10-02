@@ -38,6 +38,7 @@ import type { EnvPreset, Provider } from "@autonomos/core";
 import { SECRET_MASK } from "@autonomos/core";
 import { getConfigDir } from "./configDir.js";
 import { RESERVED_ENV_KEYS } from "./providers/shared.js";
+import { getSettings } from "./settings.js";
 
 // Per-call (not module-load) so the configDir test-escape guard applies and
 // env-based isolation set in a before-hook is honored (#272 class).
@@ -63,40 +64,168 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * explicit operator choice under ADR-067's trusted-fleet model.
  */
 export const PRESET_ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
-  // Claude Code, and Anthropic-compatible backends (Kimi/Moonshot, gateways)
+  // ── Claude Code: endpoint and auth (code.claude.com/docs/en/env-vars) ──
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
-  "ANTHROPIC_CUSTOM_HEADERS",
-  "ANTHROPIC_MODEL",
-  "ANTHROPIC_SMALL_FAST_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "ANTHROPIC_CUSTOM_HEADERS", // plain "Name: Value" lines; runs nothing
+  "ANTHROPIC_BETAS",
+  "ANTHROPIC_PROFILE",
+  "ANTHROPIC_ORGANIZATION_ID",
+  "ANTHROPIC_WORKSPACE_ID",
+  "ANTHROPIC_FEDERATION_RULE_ID",
   "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  // ── Claude Code: which model each role uses (every provider guide sets
+  //    some of these; Kimi's official guide sets all four DEFAULT_*s,
+  //    including FABLE, which #496 missed) ──
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+  ...["FABLE", "OPUS", "SONNET", "HAIKU"].flatMap((f) => [
+    `ANTHROPIC_DEFAULT_${f}_MODEL`,
+    `ANTHROPIC_DEFAULT_${f}_MODEL_NAME`,
+    `ANTHROPIC_DEFAULT_${f}_MODEL_DESCRIPTION`,
+    `ANTHROPIC_DEFAULT_${f}_MODEL_SUPPORTED_CAPABILITIES`,
+  ]),
+  "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+  // ── Claude Code: request tuning a backend's guide sets (Kimi, GLM,
+  //    DeepSeek, MiniMax, Qwen: context window, effort, timeouts) ──
   "API_TIMEOUT_MS",
+  "API_FORCE_IDLE_TIMEOUT",
+  "CLAUDE_CODE_MAX_RETRIES",
+  "CLAUDE_STREAM_IDLE_TIMEOUT_MS",
+  "CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS",
+  "CLAUDE_ENABLE_STREAM_WATCHDOG",
+  "CLAUDE_ENABLE_BYTE_WATCHDOG",
+  "CLAUDE_ENABLE_BYTE_WATCHDOG_BEDROCK",
+  "CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS",
+  "FALLBACK_FOR_ALL_PRIMARY_MODELS",
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+  "MAX_THINKING_TOKENS",
+  "CLAUDE_CODE_EFFORT_LEVEL",
+  "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+  "CLAUDE_CODE_DISABLE_THINKING",
+  "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING",
+  "DISABLE_INTERLEAVED_THINKING",
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+  "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+  "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+  "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+  "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT",
+  "CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP",
+  "CLAUDE_CODE_DISABLE_MODEL_ACCESS_FALLBACK",
+  "CLAUDE_CODE_DISABLE_FAST_MODE",
+  "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+  "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK",
+  "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING",
+  "CLAUDE_CODE_EXTRA_BODY", // JSON merged into requests; runs nothing
+  "ENABLE_TOOL_SEARCH",
+  "DISABLE_PROMPT_CACHING",
+  "DISABLE_PROMPT_CACHING_FABLE",
+  "DISABLE_PROMPT_CACHING_HAIKU",
+  "DISABLE_PROMPT_CACHING_OPUS",
+  "DISABLE_PROMPT_CACHING_SONNET",
+  "ENABLE_PROMPT_CACHING_1H",
+  "FORCE_PROMPT_CACHING_5M",
+  "CLAUDE_CODE_PROMPT_CACHE_TTL",
+  "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+  // ── Claude Code: gateways (OpenRouter, Vercel AI Gateway, LiteLLM) ──
+  "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+  "CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS",
+  "CLAUDE_CODE_GATEWAY_HINT_HEADERS",
+  "CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK",
+  "CLAUDE_CODE_SKIP_FAST_MODE_NETWORK_ERRORS",
+  // ── Claude Code: traffic and telemetry OPT-OUTS (they send less) ──
   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-  // Claude Code on Bedrock / Vertex
+  "DISABLE_TELEMETRY",
+  "DO_NOT_TRACK",
+  "DISABLE_ERROR_REPORTING",
+  "DISABLE_COST_WARNINGS",
+  "DISABLE_AUTOUPDATER",
+  // ── Claude Code on Bedrock / Mantle / Claude Platform on AWS
+  //    (docs/en/amazon-bedrock) ──
   "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "AWS_REGION",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+  "ANTHROPIC_BEDROCK_REGION_PREFIX",
+  "ANTHROPIC_BEDROCK_SERVICE_TIER",
+  "ANTHROPIC_AWS_API_KEY",
+  "ANTHROPIC_AWS_BASE_URL",
+  "ANTHROPIC_AWS_WORKSPACE_ID",
+  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+  "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+  "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
+  "CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_DEFAULT",
+  "CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD",
+  "CLAUDE_CODE_AWS_CHAIN_RESOLVE_TIMEOUT_MS",
+  "CLAUDE_CODE_SKIP_AWS_CRED_CACHE",
+  "CLAUDE_CODE_SKIP_MODEL_ACCESS_MEMORY",
   "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  // Selects a profile in the user's OWN ~/.aws/config; it can't point at a
+  // different config (AWS_CONFIG_FILE is never allowed).
+  "AWS_PROFILE",
+  // ── Claude Code on Vertex (docs/en/google-vertex-ai); per-model region
+  //    overrides VERTEX_REGION_CLAUDE_* are allowed by prefix below ──
+  "CLAUDE_CODE_USE_VERTEX",
+  "ANTHROPIC_VERTEX_BASE_URL",
   "ANTHROPIC_VERTEX_PROJECT_ID",
   "CLOUD_ML_REGION",
-  // Codex
+  "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+  "GCLOUD_PROJECT",
+  // ── Claude Code on Microsoft Foundry (docs/en/microsoft-foundry) ──
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+  // ── Codex (Codex docs: environment variables, config-advanced). NOTE: the
+  //    built-in provider's base URL comes from config, not OPENAI_BASE_URL;
+  //    allowed because it's harmless, not because it re-routes Codex. ──
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
-  // Gemini CLI
+  "OPENAI_ORGANIZATION",
+  "OPENAI_PROJECT",
+  "OPENAI_FEDERATION_RULE_ID",
+  "OPENAI_IDENTITY_TOKEN_FILE",
+  "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
+  "CODEX_API_KEY",
+  "CODEX_ACCESS_TOKEN",
+  "CODEX_OSS_BASE_URL",
+  "CODEX_OSS_PORT",
+  "AZURE_OPENAI_API_KEY",
+  "MISTRAL_API_KEY",
+  "OPENROUTER_API_KEY",
+  // ── Gemini CLI (docs/reference/configuration.md, authentication) ──
   "GEMINI_API_KEY",
   "GEMINI_MODEL",
   "GOOGLE_API_KEY",
   "GOOGLE_GEMINI_BASE_URL",
+  "GOOGLE_VERTEX_BASE_URL",
+  "GOOGLE_GENAI_API_VERSION",
   "GOOGLE_GENAI_USE_VERTEXAI",
+  "GOOGLE_GENAI_USE_GCA",
   "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_PROJECT_ID",
   "GOOGLE_CLOUD_LOCATION",
   "GOOGLE_APPLICATION_CREDENTIALS",
-  // Network: proxy and CA trust (see above: an explicit operator choice)
+  // ── Network: proxy, CA trust and client certificates (an explicit
+  //    operator choice: see above) ──
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",
@@ -106,12 +235,131 @@ export const PRESET_ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
   "NODE_EXTRA_CA_CERTS",
   "SSL_CERT_FILE",
   "REQUESTS_CA_BUNDLE",
+  "CODEX_CA_CERTIFICATE",
+  "CLAUDE_CODE_CERT_STORE",
+  "CLAUDE_CODE_CLIENT_CERT",
+  "CLAUDE_CODE_CLIENT_KEY",
+  "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
 ]);
 
-/** May a preset set this key? Never a control-plane key, even if a future
- *  edit put one on the allowlist. */
+/** Allowed by prefix: Claude Code's per-model Vertex region overrides
+ *  (VERTEX_REGION_CLAUDE_3_5_HAIKU, …), about twenty documented names. */
+export const PRESET_ALLOWED_KEY_PREFIXES: readonly string[] = [
+  "VERTEX_REGION_CLAUDE_",
+];
+
+/**
+ * Keys no preset may EVER set, not even through the operator's
+ * `envPresetExtraKeys` (ADR-144): each one makes a spawned CLI run code or
+ * load its config, hooks or credentials from somewhere else. These are the
+ * keys the audit found the old denylist missed (V13), plus the loader and
+ * runtime-injection variables that list did block.
+ */
+export const NEVER_PRESET_KEYS: ReadonlySet<string> = new Set([
+  // Claude Code: runs a command, chooses the shell, or loads plugins/config
+  // from elsewhere (code.claude.com/docs/en/env-vars)
+  "CLAUDE_CODE_PROCESS_WRAPPER",
+  "CLAUDE_ENV_FILE",
+  "CLAUDE_CODE_SHELL",
+  "CLAUDE_CODE_GIT_BASH_PATH",
+  "CLAUDE_CODE_PROJECT_DIR_NAME",
+  "CLAUDE_CODE_PLUGIN_DIRS",
+  "CLAUDE_CODE_PLUGIN_SEED_DIR",
+  "CLAUDE_CODE_PLUGIN_CACHE_DIR",
+  "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+  "CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE",
+  "CLAUDE_CODE_IDE_HOST_OVERRIDE",
+  // AWS: a config that can hold credential_process (runs a command)
+  "AWS_CONFIG_FILE",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  // Codex / Gemini: config, trust, sandbox command, system prompt from a file
+  "CODEX_SQLITE_HOME",
+  "GEMINI_CLI_TRUSTED_FOLDERS_PATH",
+  "GEMINI_CLI_TRUST_WORKSPACE",
+  "GEMINI_SANDBOX",
+  "GEMINI_SANDBOX_IMAGE",
+  "SANDBOX_FLAGS",
+  "SANDBOX_MOUNTS",
+  "SANDBOX_SET_UID_GID",
+  "SEATBELT_PROFILE",
+  "BUILD_SANDBOX",
+  "GEMINI_SYSTEM_MD",
+  "GEMINI_WRITE_SYSTEM_MD",
+  "GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES",
+  // shell startup / shell choice → runs code in the agent's shell
+  "BASH_ENV",
+  "ENV",
+  "ZDOTDIR",
+  "SHELL",
+  "PROMPT_COMMAND",
+  "CLAUDE_CODE_SHELL_PREFIX",
+  // a CLI's own config/settings/hooks directory
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "GEMINI_CLI_HOME",
+  "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+  "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+  "XDG_CONFIG_HOME",
+  // git running commands or reading another config
+  "GIT_SSH_COMMAND",
+  "GIT_SSH",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_EXEC_PATH",
+  "EDITOR",
+  "VISUAL",
+  // runtime / dynamic-loader injection
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "BUN_OPTIONS",
+  "BUN_INSPECT",
+  "PYTHONSTARTUP",
+  "PYTHONPATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "LD_AUDIT",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FRAMEWORK_PATH",
+]);
+
+/** The operator's extra preset keys (Settings → Env presets). Read per call,
+ *  so a change applies to the next spawn without a restart. */
+function operatorExtraKeys(): ReadonlySet<string> {
+  try {
+    return new Set(getSettings().envPresetExtraKeys ?? []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** May a preset set this key? The built-in allowlist plus the operator's
+ *  extra keys, and never a control-plane key or one that runs code, whatever
+ *  either list says. */
 export function isAllowedPresetKey(key: string): boolean {
-  return PRESET_ALLOWED_ENV_KEYS.has(key) && !RESERVED_ENV_KEYS.has(key);
+  if (RESERVED_ENV_KEYS.has(key) || NEVER_PRESET_KEYS.has(key)) return false;
+  return (
+    PRESET_ALLOWED_ENV_KEYS.has(key) ||
+    PRESET_ALLOWED_KEY_PREFIXES.some((p) => key.startsWith(p)) ||
+    operatorExtraKeys().has(key)
+  );
+}
+
+/** Why the operator can't add `key` to envPresetExtraKeys, or null if they can. */
+export function extraPresetKeyProblem(key: string): string | null {
+  if (!ENV_KEY_RE.test(key)) return "not a valid environment variable name";
+  if (RESERVED_ENV_KEYS.has(key)) return "an autonomOS control-plane variable";
+  if (NEVER_PRESET_KEYS.has(key)) {
+    return "it makes a spawned CLI run code or load config from elsewhere";
+  }
+  return null;
+}
+
+/** The one-step fix, worded the same everywhere a key is refused. */
+export function allowPresetKeyHint(): string {
+  return 'If your provider\'s setup needs it, an operator can allow it in Settings → Env presets → "Extra allowed keys" (or remove it from the preset).';
 }
 
 function validateName(name: string): void {
@@ -147,9 +395,14 @@ function validateEnvKeys(keys: Iterable<string>, kind: "env" | "secret"): void {
         `Reserved ${kind} key "${key}": presets may not override autonomOS control-plane variables`,
       );
     }
+    if (NEVER_PRESET_KEYS.has(key)) {
+      throw new PresetKeyError(
+        `Key "${key}" can't be set by a preset: it makes a spawned CLI run code or load config from elsewhere.`,
+      );
+    }
     if (!isAllowedPresetKey(key)) {
       throw new PresetKeyError(
-        `Key "${key}" can't be set by a preset. Presets set only a model backend: model, endpoint and auth variables, plus proxy and CA settings. Allowed: ${[...PRESET_ALLOWED_ENV_KEYS].join(", ")}`,
+        `Key "${key}" isn't a model-backend key autonomOS knows. ${allowPresetKeyHint()}`,
       );
     }
   }
@@ -491,15 +744,15 @@ export function resolvePresetEnv(name: string): ResolvedPresetEnv | null {
   return { env, missingSecrets, skippedKeys: [...skipped].sort() };
 }
 
-/** The operator notice for keys a pre-allowlist preset still carries. */
-export function skippedPresetKeysNotice(
-  agentName: string,
+/** Why a spawn with this preset is refused: it sets keys presets may not. */
+export function unknownPresetKeysError(
   presetName: string,
   keys: string[],
 ): string {
   return (
-    `${agentName}: env preset "${presetName}" sets ${keys.join(", ")}, which presets can no longer set (only model, endpoint, auth, proxy and CA variables). ` +
-    "They were NOT applied. Remove them from the preset in the Presets tab."
+    `Env preset "${presetName}" sets ${keys.join(", ")}, which presets can't set: ` +
+    `${keys.length === 1 ? "it isn't" : "they aren't"} on the model-backend allowlist. ` +
+    `The agent was NOT started, so it can't quietly run a different model. ${allowPresetKeyHint()}`
   );
 }
 
@@ -515,9 +768,16 @@ export function skippedPresetKeysNotice(
 export function applyPresetToEnv(
   target: Record<string, string>,
   presetName: string,
-): string[] {
+): void {
   const resolved = resolvePresetEnv(presetName);
   if (!resolved) throw new Error(`Env preset "${presetName}" not found`);
+  // Refuse rather than start a half-configured agent (ADR-144): a preset
+  // missing one of its model-routing keys can silently run a different model.
+  if (resolved.skippedKeys.length > 0) {
+    throw new PresetKeyError(
+      unknownPresetKeysError(presetName, resolved.skippedKeys),
+    );
+  }
   if (resolved.missingSecrets.length > 0) {
     throw new Error(
       `Env preset "${presetName}" is missing its API key (${resolved.missingSecrets.join(", ")}). ` +
@@ -525,5 +785,4 @@ export function applyPresetToEnv(
     );
   }
   for (const [k, v] of Object.entries(resolved.env)) target[k] = v;
-  return resolved.skippedKeys;
 }

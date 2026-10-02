@@ -57,6 +57,14 @@ export interface AppSettings {
   updateCheck?: boolean;
   /** User-defined env vars injected into every spawned session */
   customEnvVars?: Record<string, string>;
+  /**
+   * Env keys an env preset may set IN ADDITION to the built-in allowlist
+   * (ADR-144), for a provider that needs a key autonomOS doesn't know yet.
+   * Operator-only: the settings route isn't on the agent API, and agents
+   * don't hold the operator token (ADR-129). A control-plane key or a key
+   * that runs code is refused here too (envPresets.ts NEVER_PRESET_KEYS).
+   */
+  envPresetExtraKeys?: string[];
   /** Scheduler settings */
   scheduler?: {
     maxConcurrentRuns?: number;

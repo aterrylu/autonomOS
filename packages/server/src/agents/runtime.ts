@@ -32,7 +32,7 @@ import {
 import type { IPty } from "node-pty";
 import { spawn } from "node-pty";
 import { writeAgentTokenFile } from "../agentCredentials.js";
-import { applyPresetToEnv, skippedPresetKeysNotice } from "../envPresets.js";
+import { applyPresetToEnv } from "../envPresets.js";
 import { emitAgentDelta } from "../events/agents.js";
 import {
   disposeCodexControl,
@@ -1224,7 +1224,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // preset that is missing or whose API key is unset THROWS here — before the
   // record is persisted or the PTY launched, so a rejected spawn leaves no
   // half-started agent.
-  const skippedPresetKeys = envPreset ? applyPresetToEnv(env, envPreset) : [];
+  if (envPreset) applyPresetToEnv(env, envPreset);
 
   // ── Resume decisions (ADR-104) — AFTER the env is final, because a preset or
   // customEnvVar can give this agent its own CODEX_HOME; probing the server's
@@ -1232,17 +1232,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
   // pushed only once the record is written, so a spawn that then fails never
   // leaves behind a notice claiming something that didn't happen.
   const pendingNotices: string[] = [];
-  // A preset saved before the allowlist (ADR-143) still spawns, but its keys
-  // off the list were NOT applied: say so loudly, naming them.
-  if (envPreset && skippedPresetKeys.length > 0) {
-    const notice = skippedPresetKeysNotice(
-      agent.name,
-      envPreset,
-      skippedPresetKeys,
-    );
-    console.warn(`[env-presets] ${notice}`);
-    pendingNotices.push(notice);
-  }
 
   // Pre-flight resume check (provider-parity, ADR-049): a resume only succeeds
   // if the provider actually has a resumable session on disk. Claude Code writes
