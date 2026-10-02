@@ -1598,6 +1598,8 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
     }
   }
 
+  onSpawnStarting(resolved.sessionId);
+
   const cols = params.cols ?? 120;
   const rows = params.rows ?? 40;
   let pty: IPty;
@@ -1962,9 +1964,13 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             : "") +
           ` — its session is intact; retrying the same resume in ${failure.delayMs}ms (${failure.attempt}/${resumeRetryBackoffMs.length})`,
       );
+      const prior = resumeRetryTimers.get(persisted.id);
+      if (prior) clearTimeout(prior);
       const t = setTimeout(() => {
+        resumeRetryTimers.delete(persisted.id);
         // Only if the agent is still meant to be running and nothing else
-        // (a kill, a restart, a delete) has taken it over meanwhile.
+        // (a kill, a delete) has taken it over meanwhile. A newer spawn
+        // (a restart) cancels this timer outright: see onSpawnStarting.
         const record = getAgent(persisted.id);
         if (
           shuttingDown ||
@@ -1977,25 +1983,29 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           resumeRetries.delete(persisted.id);
           return;
         }
-        void respawnAgent(record).catch((err) => {
-          const updated = markCrashedUnlessLive(
-            persisted.id,
-            "resume retry after a fast exit",
-          );
-          if (updated)
-            emitAgentDelta({
-              type: "agent.exited",
-              id: persisted.id,
-              exitReason: "crashed",
-              version: updated.version,
-            });
-          console.error(
-            `[runtime] ${persisted.id.slice(0, 8)} resume retry failed to spawn:`,
-            err instanceof Error ? err.message : err,
-          );
-        });
+        resumeRetrySpawning.add(persisted.id);
+        void respawnAgent(record)
+          .finally(() => resumeRetrySpawning.delete(persisted.id))
+          .catch((err) => {
+            const updated = markCrashedUnlessLive(
+              persisted.id,
+              "resume retry after a fast exit",
+            );
+            if (updated)
+              emitAgentDelta({
+                type: "agent.exited",
+                id: persisted.id,
+                exitReason: "crashed",
+                version: updated.version,
+              });
+            console.error(
+              `[runtime] ${persisted.id.slice(0, 8)} resume retry failed to spawn:`,
+              err instanceof Error ? err.message : err,
+            );
+          });
       }, failure.delayMs);
       t.unref?.();
+      resumeRetryTimers.set(persisted.id, t);
       return;
     }
     if (failure.kind === "give-up") {
@@ -2402,6 +2412,22 @@ export function _setResumeRetryBackoffForTesting(
   resumeRetryBackoffMs = ms ?? RESUME_RETRY_BACKOFF_MS;
 }
 const resumeRetries = new Map<string, number>();
+/** The pending retry timer per agent, so any newer spawn can cancel it. */
+const resumeRetryTimers = new Map<string, NodeJS.Timeout>();
+/** Agents whose spawn right now IS a retry (keeps the count) rather than a
+ *  human start (restart/attach, which begins a fresh retry run). */
+const resumeRetrySpawning = new Set<string>();
+
+/** A spawn is starting for this agent: a pending retry is now stale, and a
+ *  spawn that isn't the retry itself starts a fresh retry run. */
+function onSpawnStarting(agentId: string): void {
+  const pending = resumeRetryTimers.get(agentId);
+  if (pending) {
+    clearTimeout(pending);
+    resumeRetryTimers.delete(agentId);
+  }
+  if (!resumeRetrySpawning.has(agentId)) resumeRetries.delete(agentId);
+}
 
 export type ResumeFailureCause = "startup-dialog" | "resume";
 export type ResumeFailureAction =

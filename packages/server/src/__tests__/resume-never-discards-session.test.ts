@@ -201,6 +201,31 @@ describe("a resumable session is never discarded by a fast exit", () => {
   });
 });
 
+describe("a human restart during a retry backoff owns the agent", () => {
+  it("cancels the pending retry and gets a FULL retry run of its own", async () => {
+    _setResumeRetryBackoffForTesting([300, 300]);
+    const id = seed();
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    await until(() => seen.length === 1, "first attempt died, retry pending");
+    await new Promise((r) => setTimeout(r, 50)); // inside the 300ms backoff
+    // The operator restarts it; this run dies fast too.
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    await until(
+      () => getAgent(id)?.status === "exited",
+      "the restart's run ended",
+      5_000,
+    );
+    await new Promise((r) => setTimeout(r, 400)); // any stale timer would fire by now
+    // 1 (first) + the restart's own run: 1 resume + 2 retries. No extra
+    // attempt from the cancelled timer, and no shortened run.
+    assert.equal(seen.length, 4, `attempts: ${seen.length}`);
+    const giveUps = getNotifications(id).filter((n) =>
+      /session is intact and was not replaced/.test(n.message ?? ""),
+    );
+    assert.equal(giveUps.length, 1, "one give-up, for the restart's run");
+  });
+});
+
 describe("resumeFailureAction (pure)", () => {
   const base = {
     attemptedResume: true,
