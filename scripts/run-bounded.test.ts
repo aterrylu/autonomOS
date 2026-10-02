@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -102,15 +108,28 @@ describe("scripts/run-bounded.sh", () => {
     // signal only once the command is OBSERVED running (the trap is armed
     // before the command starts), then wait for the outcome.
     const marker = `aborted-${process.pid}-${Date.now()}`;
+    // Readiness comes from the COMMAND itself (it writes this file once it
+    // runs). The marker also sits in the bash wrapper's argv, so "a process
+    // matching the marker exists" is true before the wrapper has armed its
+    // trap; only the command's own write proves the trap is armed.
+    const ready = join(dir, `${marker}.ready`);
     const child = spawn(
       "bash",
-      [BOUNDED, "60", "node", "-e", "setInterval(() => {}, 1000)", marker],
+      [
+        BOUNDED,
+        "60",
+        "node",
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1], ''); setInterval(() => {}, 1000)",
+        ready,
+        marker,
+      ],
       { detached: true },
     );
     child.stdout.on("data", () => {});
     child.stderr.on("data", () => {});
     const closed = new Promise<number | null>((res) => child.on("close", res));
-    assert.ok(await until(() => alive(marker), 15_000), "command never started");
+    assert.ok(await until(() => existsSync(ready), 15_000), "command never started");
 
     const signalledAt = Date.now();
     if (child.pid) process.kill(child.pid, "SIGTERM"); // the runner only
@@ -119,7 +138,11 @@ describe("scripts/run-bounded.sh", () => {
     const heldMs = Date.now() - signalledAt;
     assert.ok(heldMs < 5_000, `output stayed open ${heldMs}ms after the signal`);
     assert.equal(code, 143, "the trap ran (not a bare death)");
-    assert.ok(await until(() => !alive(marker), 5_000), "the command's group was stopped too");
+    // Match the COMMAND (argv starts with node), not the wrapper.
+    assert.ok(
+      await until(() => !alive(`^node .*${marker}`), 5_000),
+      "the command's group was stopped too",
+    );
   });
 
   it("stops the WHOLE process group at the bound, names the stuck test file, exits 124", async () => {
