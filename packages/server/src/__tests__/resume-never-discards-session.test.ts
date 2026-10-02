@@ -175,6 +175,30 @@ describe("a resumable session is never discarded by a fast exit", () => {
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(seen.length, 1, "no retry after the kill");
   });
+
+  it("a kill during the backoff resets the count: the next resume gets every retry", async () => {
+    _setResumeRetryBackoffForTesting([150, 150]);
+    const id = seed();
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    await until(() => seen.length === 1, "first attempt");
+    await new Promise((r) => setTimeout(r, 30)); // inside the first backoff
+    killAttachment(id as UUID);
+    markExited(id, "user_killed");
+    await new Promise((r) => setTimeout(r, 300)); // the timer fires and bails
+    seen = [];
+    _setResumeRetryBackoffForTesting([20, 20]);
+    await spawnAgent({ workingDirectory: cwd, resumeAgentId: id }); // the operator restarts it
+    await until(
+      () => getAgent(id)?.status === "exited" && seen.length >= 3,
+      "a full retry run",
+      5_000,
+    );
+    assert.equal(
+      seen.length,
+      3,
+      "1 resume + BOTH retries, not a run shortened by the stale count",
+    );
+  });
 });
 
 describe("resumeFailureAction (pure)", () => {

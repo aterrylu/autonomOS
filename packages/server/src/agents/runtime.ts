@@ -1972,6 +1972,9 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
           record.status !== "running" ||
           live.has(persisted.id)
         ) {
+          // Someone else took over (a kill, a delete, a restart): this retry
+          // run is over, so its count must not shorten the next one or leak.
+          resumeRetries.delete(persisted.id);
           return;
         }
         void respawnAgent(record).catch((err) => {
