@@ -107,7 +107,7 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-046](ADR-046-claude-usage-tracks-account-switches-by-scanning-the-user-s.md) | Claude Usage tracks account switches by scanning the user's live Claude sessions (not env inheritance) | 2026-06-26 | Superseded by ADR-048 | ADR-041 (in part) | ADR-048 |
 | [ADR-047](ADR-047-rebuild-the-tabs-split-pane-layout-on-dockview-removing-the.md) | Rebuild the tabs + split-pane layout on dockview, removing the binary-tree model, the detached overlay, and the `groups` system | 2026-06-27 | Accepted |  |  |
 | [ADR-048](ADR-048-claude-usage-via-read-only-oauth-token-manual-session-key.md) | Claude Usage via read-only OAuth token + manual session-key override; cookie-scan/harvest removed | 2026-06-28 | Accepted | ADR-046 |  |
-| [ADR-049](ADR-049-provider-parity-resume-fallback-never-let-a-missing-un.md) | Provider-parity resume fallback — never let a missing/un-resumable session drop a Claude Code agent on restart | 2026-06-28 | Amended by ADR-111 |  | ADR-111 (in part) |
+| [ADR-049](ADR-049-provider-parity-resume-fallback-never-let-a-missing-un.md) | Provider-parity resume fallback — never let a missing/un-resumable session drop a Claude Code agent on restart | 2026-06-28 | Superseded by ADR-145 |  | ADR-145, ADR-111 (in part) |
 | [ADR-050](ADR-050-retire-pm2-from-the-operator-path-make-prod-deploy-supervise.md) | Retire pm2 from the operator path — `make prod`/`deploy` supervise via launchd/systemd-user (Option B) | 2026-06-29 | Accepted |  |  |
 | [ADR-051](ADR-051-cut-the-electron-desktop-app-remote-always-on-server-is-the.md) | Cut the Electron desktop app — remote always-on server is the canonical deployment | 2026-06-29 | Accepted |  |  |
 | [ADR-052](ADR-052-first-run-install-ux-post-install-smoke-test-surfaced.md) | First-run install UX — post-install smoke test + surfaced connect panel | 2026-06-29 | Amended by ADR-117 |  | ADR-117 (in part) |
@@ -125,7 +125,7 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-064](ADR-064-send-acks-delivery-not-routing-and-broadcast-slack-are.md) | `send()` acks DELIVERY, not routing — and `broadcast://` / `slack://` are removed | 2026-07-29 | Accepted |  |  |
 | [ADR-065](ADR-065-key-capture-boundary-cleanup-free-the-dead-ctrl-d-w.md) | Key-capture boundary cleanup — free the dead ctrl+d/w reservations, route all Escape dismissal through the registry | 2026-08-03 | Accepted |  |  |
 | [ADR-066](ADR-066-mod-digit-targets-the-sidebar-agent-list-not-open-pane.md) | mod+digit targets the SIDEBAR agent list, not open pane positions (reverses part of ADR-063's binding semantics) | 2026-08-04 | Accepted | ADR-063 (in part) |  |
-| [ADR-067](ADR-067-model-override-env-presets-agent-configured-human-keyed.md) | Model-override env presets — agent-configured, human-keyed, masked-on-read | 2026-08-03 | Accepted |  |  |
+| [ADR-067](ADR-067-model-override-env-presets-agent-configured-human-keyed.md) | Model-override env presets — agent-configured, human-keyed, masked-on-read | 2026-08-03 | Superseded by ADR-143 |  | ADR-143 |
 | [ADR-068](ADR-068-usage-queue-auto-enter-is-per-tab-and-per-runtime.md) | Usage-queue auto-Enter is per-tab AND per-runtime | 2026-08-07 | Accepted |  |  |
 | [ADR-069](ADR-069-changeset-check-is-blocking-for-production-source-prs.md) | Changeset check is BLOCKING for production-source PRs | 2026-08-08 | Accepted |  |  |
 | [ADR-070](ADR-070-sync-changelog-collapse-guard-fail-on-the-retroactive.md) | sync-changelog collapse guard — fail on the retroactive signature, native `pr:` override over a custom marker | 2026-08-08 | Accepted |  |  |
@@ -191,7 +191,11 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-132](ADR-132-record-sidecar-daemons-on-disk-and-reap-an-orphan-before.md) | Record sidecar daemons on disk and reap an orphan before starting a new one | 2026-09-30 | Accepted |  |  |
 | [ADR-133](ADR-133-gateway-websocket-frame-limit-1-mib-and-per-socket-warning.md) | Gateway WebSocket frame limit (1 MiB) and per-socket warning budget | 2026-09-30 | Accepted |  |  |
 | [ADR-134](ADR-134-shutdown-survives-a-closed-stdout-and-uncaught-errors.md) | Shutdown survives a closed stdout and uncaught errors | 2026-09-30 | Accepted |  |  |
+| [ADR-135](ADR-135-reconnect-replay-restores-terminal-state-sticky-modes-pty.md) | Reconnect replay restores terminal state: sticky modes, PTY geometry, repaint nudge | 2026-10-01 | Accepted |  |  |
 | [ADR-136](ADR-136-statusline-resilience-last-known-good-identity-branch-from.md) | Statusline resilience: last-known-good identity, branch from HEAD | 2026-10-01 | Accepted |  |  |
 | [ADR-137](ADR-137-security-floors-every-upgrade-relinks-dependencies-checked.md) | Security floors: every upgrade relinks dependencies, checked in CI, at boot and in status | 2026-10-01 | Accepted |  |  |
 | [ADR-141](ADR-141-one-machine-wide-slot-for-heavy-local-test-runs-fleet.md) | One machine-wide slot for heavy local test runs; fleet-harness guards | 2026-10-01 | Accepted |  |  |
 | [ADR-142](ADR-142-make-dev-binds-this-machine-only-make-dev-lan-is-the-opt-in.md) | make dev binds this machine only; make dev-lan is the opt-in | 2026-10-01 | Accepted |  |  |
+| [ADR-143](ADR-143-env-presets-set-only-allowlisted-keys-corrects-adr-067.md) | Env presets set only allowlisted keys (corrects ADR-067) | 2026-10-01 | Superseded by ADR-144 | ADR-067 | ADR-144 |
+| [ADR-144](ADR-144-env-preset-allowlist-covers-every-documented-provider.md) | Env-preset allowlist covers every documented provider; operator extra keys; refuse unknown keys | 2026-10-02 | Accepted | ADR-143 |  |
+| [ADR-145](ADR-145-a-resumable-session-is-never-replaced-the-trust-dialog-is.md) | A resumable session is never replaced; the trust dialog is answered only once settled | 2026-10-02 | Accepted | ADR-049 |  |
