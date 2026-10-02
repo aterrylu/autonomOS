@@ -138,6 +138,65 @@ export const REPLAY_END_MARK = "\x1b]7777;autonomos-replay-end\x07";
 export const REPLAY_END_MARK_ACK =
   "\x1b]7777;autonomos-replay-end;input-ack=1\x07";
 
+/** OSC 7777 sent BEFORE the replay to a client that asked (?replayGeom=1):
+ *  the PTY's size, so the pane takes it before parsing a byte. Full-screen
+ *  TUIs draw on the alternate screen, which a terminal never reflows. A fresh
+ *  pane (page load, or re-created after the LRU evicted it) used to receive
+ *  the replay at xterm's default 80x24: the content landed in an 80-column
+ *  strip and the rest of the pane stayed black (the Claude no_flicker
+ *  "blackout"). The client re-fits to its pane after the end marker. */
+export function replayBeginMark(cols: number, rows: number): string {
+  return `\x1b]7777;autonomos-replay-begin;cols=${cols};rows=${rows}\x07`;
+}
+
+/** Last repaint nudge per PTY (rate limit). */
+const lastRepaintNudge = new WeakMap<object, number>();
+export const REPAINT_NUDGE_RESTORE_MS = 60;
+export const REPAINT_NUDGE_MIN_INTERVAL_MS = 2_000;
+
+/**
+ * Make a full-screen TUI repaint everything: a REAL size change and back, so
+ * the kernel sends SIGWINCH twice. Re-sending the same size is a no-op to the
+ * kernel (measured on macOS: no SIGWINCH), so it can't do this. Used after a
+ * replay whose buffer lost its start while the app is on the alternate
+ * screen: cells the app painted once and never changed (a header, a prompt
+ * box) are not in the retained bytes, and a diff-drawing TUI won't paint them
+ * again until asked. Not used on focus/visibility paths (ADR-087): this runs
+ * only on a reconnect replay, where the alternate screen has no scrollback a
+ * `\x1b[3J` could wipe. A client resize arriving in between wins (no restore).
+ * Rate-limited per PTY so a reconnect storm can't spam the agent.
+ */
+export function nudgeRepaint(
+  pty: Pick<IPty, "cols" | "rows" | "resize">,
+  now = Date.now(),
+): boolean {
+  if (
+    now - (lastRepaintNudge.get(pty) ?? -Infinity) <
+    REPAINT_NUDGE_MIN_INTERVAL_MS
+  ) {
+    return false;
+  }
+  const cols = pty.cols;
+  const rows = pty.rows;
+  const [c2, r2] = rows > 2 ? [cols, rows - 1] : [cols - 1, rows];
+  if (c2 < 2 || r2 < 1) return false;
+  lastRepaintNudge.set(pty, now);
+  try {
+    pty.resize(c2, r2);
+  } catch {
+    return false;
+  }
+  setTimeout(() => {
+    if (pty.cols !== c2 || pty.rows !== r2) return; // a client resized: theirs wins
+    try {
+      pty.resize(cols, rows);
+    } catch {
+      // PTY gone — nothing to restore
+    }
+  }, REPAINT_NUDGE_RESTORE_MS);
+  return true;
+}
+
 // ── Input acknowledgement (binary control plane) ───────────────────────
 // Text frames carry terminal bytes, both ways, as they always have. BINARY
 // frames are the control plane, used only on a socket that negotiated it:
@@ -422,6 +481,7 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
   return upgradeWebSocket((c) => {
     const sessionId = c.req.param("sessionId")!;
     const wantsReplayMark = c.req.query("replayMark") === "1";
+    const wantsReplayGeom = c.req.query("replayGeom") === "1";
     const wantsAck = c.req.query("inputAck") === "1";
     const fence = parseFence(
       sessionId,
@@ -437,10 +497,24 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           return;
         }
 
+        // The PTY's size first, for clients that asked (replayBeginMark).
+        if (wantsReplayGeom) {
+          try {
+            ws.send(replayBeginMark(managed.pty.cols, managed.pty.rows));
+          } catch {
+            return;
+          }
+        }
         // Replay buffered output so reconnecting clients see scrollback —
         // packed into large frames (see buildReplayFrames) so an agent switch
-        // doesn't fan a 1MB buffer into ~19k tiny WS frames.
-        for (const frame of buildReplayFrames(managed.outputBuffer)) {
+        // doesn't fan a 1MB buffer into ~19k tiny WS frames. The sticky modes
+        // in force at the buffer's head go first (terminalModes.ts): once the
+        // buffer is trimmed, the bytes that set them are gone.
+        const preamble = managed.modes?.head.preamble() ?? "";
+        const replay = preamble
+          ? [preamble, ...managed.outputBuffer]
+          : managed.outputBuffer;
+        for (const frame of buildReplayFrames(replay)) {
           try {
             ws.send(frame);
           } catch {
@@ -462,6 +536,11 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
           } catch {
             return;
           }
+        }
+        // A trimmed buffer has lost what a diff-drawing TUI painted once on
+        // the alternate screen; ask it to repaint (nudgeRepaint).
+        if (managed.modes?.trimmed && managed.modes.live.inAltScreen()) {
+          nudgeRepaint(managed.pty);
         }
 
         const forwarder = makeStreamForwarder(ws, () => {
@@ -557,6 +636,17 @@ export function terminalRouter(upgradeWebSocket: UpgradeWebSocket) {
               console.warn(
                 `[terminal] session ${binding.sessionId.slice(0, 8)}: dropped expired input (${Math.round(age)}ms old, seq ${frame.seq})`,
               );
+              return;
+            }
+            if (frame.text === "") {
+              // A liveness probe (the dashboard checks a possibly half-open
+              // socket after its status heartbeat recovered): ack it, write
+              // nothing, and don't count it as input.
+              try {
+                ws.send(encodeAckFrame(frame.seq));
+              } catch {
+                // socket closing — the client will see the close
+              }
               return;
             }
             msg = frame.text;
