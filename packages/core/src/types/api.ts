@@ -115,6 +115,11 @@ export interface MaskedSettings {
   /** Passive release check for the update badge (#323); default on. */
   updateCheck: boolean;
   customEnvVars: Record<string, string>;
+  /**
+   * Extra env keys an env preset may set, beyond the built-in allowlist
+   * (ADR-144). Operator-only: settings aren't reachable with an agent token.
+   */
+  envPresetExtraKeys: string[];
   statusLine: { enabled: boolean };
   /**
    * Each runtime's default permission, in its own canonical values (ADR-115) —
@@ -179,13 +184,39 @@ export interface ProjectSession {
   manager?: string;
   /** Project scope. */
   project?: string;
+  /** The directory the session ran in (a worktree's own path, even when the
+   *  project is its repo). Absent only when no runtime recorded one. */
+  cwd?: string;
+  /** Whether `cwd` still exists (merged worktrees are deleted by wt-sync). */
+  cwdExists?: boolean;
+  /** Started without a person at the keyboard: a Claude Code SDK run
+   *  (`entrypoint` sdk-py/sdk-cli) or `codex exec`. */
+  headless?: boolean;
+  /** For an automated run, what started it, raw: Claude Code's SDK
+   *  `entrypoint` (`sdk-py`, `sdk-cli`, …) or `codex-exec`. Absent for
+   *  interactive sessions; the UI falls back to a generic tag. */
+  startedVia?: string;
 }
 
+/** "repo": a git repository (worktrees fold into their main repo); "dir": a
+ *  plain directory; "temp": a throwaway location (/tmp, scratchpads, a
+ *  session with no directory at all) — the UI folds these into "Other". */
+export type ProjectKind = "repo" | "dir" | "temp";
+
 export interface ProjectInfo {
+  /** The repo root for kind "repo", else the directory. The group's key. */
   path: string;
+  /** basename(path) — same-named groups are told apart by the UI, not here. */
   name: string;
+  kind: ProjectKind;
+  /** How the repo was identified: live git, a root learned while the dir
+   *  existed, or the worktree-manager naming convention (a deleted worktree). */
+  repoResolvedBy?: "git" | "learned" | "convention";
   sessions: ProjectSession[];
   lastActive: number;
+  /** visible = interactive in an existing dir; headless = automated runs;
+   *  removed = interactive in a directory that no longer exists. */
+  counts: { visible: number; headless: number; removed: number };
 }
 
 // ── Agent message log (GET /api/agents/:id/messages) ──────────────

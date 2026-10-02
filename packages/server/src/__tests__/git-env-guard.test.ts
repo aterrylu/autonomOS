@@ -40,8 +40,8 @@ describe("git environment guard", () => {
 
   it("make check strips them for every test recipe", () => {
     const mk = readFileSync(join(REPO_ROOT, "Makefile"), "utf8");
-    const recipe = mk.slice(mk.indexOf("\ncheck:"));
-    const body = recipe.split("\n").slice(2); // skip "" and "check:"
+    const recipe = mk.slice(mk.indexOf("\n_check:"));
+    const body = recipe.split("\n").slice(2); // skip "" and "_check:"
     const end = body.findIndex((l) => !l.startsWith("\t"));
     const testLines = body
       .slice(0, end === -1 ? body.length : end)

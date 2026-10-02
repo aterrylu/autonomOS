@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { readInstallJson } from "../installInfo.js";
+import { verifyReleaseProvenance } from "../provenance.js";
 import {
   compareSemver,
   performRollback,
@@ -89,6 +90,8 @@ type FixtureOptions = {
   missingTarball?: boolean;
   /** Point asset URLs at a connection-refused port (mid-download failure). */
   brokenDownloads?: boolean;
+  /** The version INSIDE every bundle, whatever its tag says (a relabel). */
+  bundleVersion?: string;
 };
 
 /**
@@ -100,7 +103,9 @@ async function startFixtureServer(
   versions: string[],
   opts: FixtureOptions = {},
 ): Promise<string> {
-  const tarballs = new Map(versions.map((v) => [v, makeTarball(v)]));
+  const tarballs = new Map(
+    versions.map((v) => [v, makeTarball(opts.bundleVersion ?? v)]),
+  );
   const latest = versions[versions.length - 1];
 
   /** The SHA256SUMS body for a version — a wrong digest when badChecksum. */
@@ -191,6 +196,8 @@ const baseOpts = (bundleDir: string, apiBase: string) => ({
   installInfo: { mode: "bundle" as const, prefix: join(root) },
   releaseRepo: REPO,
   releaseApiBase: apiBase,
+  // Deterministic by default; the provenance tests below swap it.
+  verifyProvenance: async () => ({ status: "verified" as const }),
 });
 
 describe("performUpgrade", () => {
@@ -208,6 +215,7 @@ describe("performUpgrade", () => {
       from: "0.5.0",
       to: "0.6.0",
       direction: "upgrade",
+      provenance: { status: "verified" },
     });
     assert.equal(readBundleVersion(bundleDir), "0.6.0");
     assert.equal(readBundleVersion(`${bundleDir}.previous`), "0.5.0");
@@ -254,6 +262,7 @@ describe("performUpgrade", () => {
       from: "0.5.0",
       to: "0.4.0",
       direction: "downgrade",
+      provenance: { status: "verified" },
     });
     assert.equal(readBundleVersion(bundleDir), "0.4.0");
   });
@@ -279,6 +288,157 @@ describe("performUpgrade", () => {
     assertError(result, /Checksum mismatch/);
     assert.equal(readBundleVersion(bundleDir), "0.5.0");
     assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("provenance INVALID: refused after the checksum, the live bundle untouched, nothing extracted", async () => {
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    let asked: {
+      digest: string;
+      version: string;
+      repo: string;
+      name?: string;
+    } | null = null;
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async (o) => {
+        asked = {
+          digest: o.digest,
+          version: o.version,
+          repo: o.repo,
+          name: o.name,
+        };
+        return {
+          status: "invalid",
+          reason: "it was signed by a different workflow or repository",
+        };
+      },
+    });
+    assertError(
+      result,
+      /doesn't match its signed build record, so it wasn't installed/,
+    );
+    // It checked THIS download (the tarball's sha256), as THIS release,
+    // from THIS repo.
+    const q = asked as unknown as {
+      digest: string;
+      version: string;
+      repo: string;
+      name?: string;
+    };
+    assert.match(q.digest, /^[0-9a-f]{64}$/);
+    // …under THIS asset name, so another platform's genuine build can't pass.
+    assert.match(q.name ?? "", /^autonomos-[a-z0-9]+-[a-z0-9]+\.tar\.gz$/);
+    assert.equal(q.version, "0.6.0");
+    assert.equal(q.repo, REPO);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+    assert.equal(existsSync(`${bundleDir}.new`), false);
+    assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("a bundle that isn't the version its tag names is refused — even with provenance skipped", async () => {
+    // Tag v0.6.0 put on an OLD commit on main: genuinely built, genuinely on
+    // main, but it's v0.4.0 code. Installed as "v0.6.0" it would be a
+    // downgrade that never updates again.
+    const apiBase = await startFixtureServer(["0.6.0"], {
+      bundleVersion: "0.4.0",
+    });
+    const bundleDir = installLiveBundle("0.5.0");
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async () => ({
+        status: "skipped",
+        reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+      }),
+    });
+    assertError(
+      result,
+      /The v0\.6\.0 download contains v0\.4\.0, so it wasn't installed/,
+    );
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+    assert.equal(existsSync(`${bundleDir}.new`), false);
+    assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("provenance MISSING: the update is POSTPONED — nothing extracted, nothing changed (ADR-126 D)", async () => {
+    // Can't confirm the build → wait, don't install: an off-main tag carries
+    // a genuine certificate, so "GitHub unreachable" must not let it in.
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    const seen: string[] = [];
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async () => ({
+        status: "missing",
+        reason: "couldn't reach GitHub's attestation service",
+      }),
+      onProvenance: (r) => seen.push(r.status),
+    });
+    assertError(
+      result,
+      /The v0\.6\.0 update was postponed: its signed build record couldn't be confirmed \(couldn't reach GitHub's attestation service\)\. Nothing changed\./,
+    );
+    assertError(result, /try again later/);
+    assertError(result, /AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade/);
+    assert.deepEqual((result as { postponed?: unknown }).postponed, {
+      lasting: false,
+      reason: "couldn't reach GitHub's attestation service",
+    });
+    // Only an update that proceeds is reported as checked.
+    assert.deepEqual(seen, []);
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
+    assert.equal(existsSync(`${bundleDir}.new`), false);
+    assert.equal(existsSync(`${bundleDir}.previous`), false);
+  });
+
+  it("provenance SKIPPED by the operator: installs, and reports it", async () => {
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    const seen: string[] = [];
+    const result = await performUpgrade({
+      ...baseOpts(bundleDir, apiBase),
+      currentVersion: "0.5.0",
+      verifyProvenance: async () => ({
+        status: "skipped",
+        reason: "AUTONOMOS_SKIP_PROVENANCE=1 is set",
+      }),
+      onProvenance: (r) => seen.push(r.status),
+    });
+    assert.equal(result.status, "upgraded");
+    assert.deepEqual(seen, ["skipped"]);
+    assert.equal(readBundleVersion(bundleDir), "0.6.0");
+  });
+
+  it("the REAL verifier against a release with no attestation → not applied, says retrying won't help", async () => {
+    // The fixture API has no /attestations route (404 = none published).
+    const apiBase = await startFixtureServer(["0.6.0"]);
+    const bundleDir = installLiveBundle("0.5.0");
+    const { verifyProvenance: _stub, ...opts } = baseOpts(bundleDir, apiBase);
+    const result = await performUpgrade({
+      ...opts,
+      currentVersion: "0.5.0",
+      verifyProvenance: (o) => verifyReleaseProvenance({ ...o, env: {} }),
+    });
+    // No record EXISTS: retrying can't help, so don't say "try again later" —
+    // say so, and name the override (nox, #445).
+    assertError(
+      result,
+      /The v0\.6\.0 update wasn't applied: .*no signed build record was found.*retrying won't change that\. Nothing changed\./,
+    );
+    assertError(result, /If you trust this release, install it anyway/);
+    assertError(result, /AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade/);
+    assert.doesNotMatch(
+      (result as { message: string }).message,
+      /try again later/,
+    );
+    assert.deepEqual((result as { postponed?: unknown }).postponed, {
+      lasting: true,
+      reason: "no signed build record was found for this download",
+    });
+    assert.equal(readBundleVersion(bundleDir), "0.5.0");
   });
 
   it("errors when the release lacks the platform tarball", async () => {

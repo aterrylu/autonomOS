@@ -177,10 +177,12 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-118](ADR-118-projects-lists-every-runtime-single-agent-restart-is-server.md) | Projects lists every runtime; single-agent restart is server-side; Gemini keeps its session | 2026-09-26 | Accepted |  |  |
 | [ADR-119](ADR-119-per-runtime-permissions-as-built-manual-stays-flagless-codex.md) | Per-runtime permissions as built: manual stays flagless, Codex Plan is per-turn, spawn order | 2026-09-26 | Accepted | ADR-115 |  |
 | [ADR-120](ADR-120-org-chart-canvas-pan-zoom-fit-and-a-map-with-the-view.md) | Org chart canvas: pan, zoom, fit and a map, with the view outside React state | 2026-09-26 | Accepted |  |  |
+| [ADR-121](ADR-121-projects-are-git-repositories-worktrees-fold-into-their-repo.md) | Projects are git repositories: worktrees fold into their repo, temp dirs set aside | 2026-09-27 | Accepted |  |  |
 | [ADR-122](ADR-122-same-origin-guard-on-every-mutating-route-and-websocket.md) | Same-origin guard on every mutating route and WebSocket upgrade (CSRF V1) | 2026-09-30 | Superseded by ADR-125 |  | ADR-125 |
 | [ADR-123](ADR-123-operator-token-never-in-logs-owner-only-modes-re-applied-on.md) | Operator token never in logs; owner-only modes re-applied on every boot (V8) | 2026-09-30 | Accepted |  |  |
 | [ADR-124](ADR-124-throttle-failed-auth-per-address-and-globally-counting-only.md) | Throttle failed auth per address and globally, counting only distinct wrong credentials (V2a) | 2026-09-30 | Accepted |  |  |
 | [ADR-125](ADR-125-cors-origin-is-trusted-whatever-the-browser-s-sec-fetch-site.md) | CORS_ORIGIN is trusted whatever the browser's Sec-Fetch-Site label | 2026-09-30 | Accepted | ADR-122 |  |
+| [ADR-126](ADR-126-verify-release-provenance-before-installing-an-update.md) | Verify release provenance before installing an update | 2026-09-30 | Accepted |  |  |
 | [ADR-127](ADR-127-validate-gateway-websocket-frames-at-the-boundary-log.md) | Validate gateway WebSocket frames at the boundary; log unhandled rejections instead of exiting | 2026-09-30 | Accepted |  |  |
 | [ADR-128](ADR-128-release-tags-must-be-on-main-consumers-verify-ancestry.md) | Release tags must be on main: consumers verify ancestry, release.yml gate, tag ruleset | 2026-09-30 | Accepted |  |  |
 | [ADR-129](ADR-129-agents-never-hold-the-operator-token-channel-server-uses-a.md) | Agents never hold the operator token: channel server uses a per-agent credential on the internal socket | 2026-09-30 | Accepted |  |  |
@@ -190,3 +192,6 @@ rather than dropped. Already committed the merge? Use `REF=HEAD^1`.
 | [ADR-133](ADR-133-gateway-websocket-frame-limit-1-mib-and-per-socket-warning.md) | Gateway WebSocket frame limit (1 MiB) and per-socket warning budget | 2026-09-30 | Accepted |  |  |
 | [ADR-134](ADR-134-shutdown-survives-a-closed-stdout-and-uncaught-errors.md) | Shutdown survives a closed stdout and uncaught errors | 2026-09-30 | Accepted |  |  |
 | [ADR-136](ADR-136-statusline-resilience-last-known-good-identity-branch-from.md) | Statusline resilience: last-known-good identity, branch from HEAD | 2026-10-01 | Accepted |  |  |
+| [ADR-137](ADR-137-security-floors-every-upgrade-relinks-dependencies-checked.md) | Security floors: every upgrade relinks dependencies, checked in CI, at boot and in status | 2026-10-01 | Accepted |  |  |
+| [ADR-141](ADR-141-one-machine-wide-slot-for-heavy-local-test-runs-fleet.md) | One machine-wide slot for heavy local test runs; fleet-harness guards | 2026-10-01 | Accepted |  |  |
+| [ADR-142](ADR-142-make-dev-binds-this-machine-only-make-dev-lan-is-the-opt-in.md) | make dev binds this machine only; make dev-lan is the opt-in | 2026-10-01 | Accepted |  |  |

@@ -41,7 +41,7 @@ You need **Node 20+** and **Claude Code installed and logged in** (`claude` on P
 curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
 ```
 
-This detects your OS, checks for Node and Claude Code, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and prints your dashboard URL and access token. Pin a version with `VERSION=0.7.0 curl … | bash`.
+This detects your OS, checks for Node and Claude Code, drops a pre-built server bundle in `~/.local/share/autonomos/`, registers a launchd (macOS) or systemd-user (Linux) service, runs a smoke test, and prints your dashboard URL and access token. Pin a version with `curl … | VERSION=0.7.0 bash`.
 
 Manage it anytime with the `autonomos` CLI:
 
@@ -123,7 +123,8 @@ make down                 # remove the service + free dev ports
 
 | Target | Description |
 |--------|-------------|
-| `make dev` | API server (watch, :3101) + Vite HMR (:5173) |
+| `make dev` | API server (watch, :3101) + Vite HMR (:5173), this machine only |
+| `make dev-lan` | `make dev`, but the dashboard is reachable from your network (trusted networks only) |
 | `make build` | Install deps, rebuild node-pty, build the channel server and dashboard |
 | `make prod` | Build dashboard + (re)install launchd/systemd-user daemon on :3100 |
 | `make deploy` | Rsync to remote + `make prod` (set `DEPLOY_HOST` in `.env`) |

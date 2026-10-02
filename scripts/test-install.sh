@@ -276,11 +276,51 @@ echo "==> ✓ claude pre-flight refuses clearly; skip hatch works"
 
 # ── install ──────────────────────────────────────────────────────────────
 
+# ── provenance: a new install fails closed (ADR-126) ──────────────────────
+# This harness installs a LOCAL build, which no release workflow ever signed —
+# so without the skip hatch install.sh must refuse, name the hatch, and leave
+# nothing behind. (It asks GitHub about the local digest: a 404, or a rate
+# limit on a shared runner, are both "couldn't check" — refused either way.)
+echo "==> provenance: an unsigned bundle is refused"
+set +e
+PROV_OUT=$(INSTALL_PREFIX="$TEST_PREFIX-prov" BUNDLE_URL="file://$DIST" SKIP_INSTALL_SERVICE=1 \
+  bash "$ROOT/scripts/install.sh" 2>&1)
+PROV_RC=$?
+set -e
+[[ "$PROV_RC" -ne 0 ]] || { echo "✗ install.sh installed a bundle with no signed build record"; exit 1; }
+for want in "signed build record" "Nothing was installed" "AUTONOMOS_SKIP_PROVENANCE=1"; do
+  echo "$PROV_OUT" | grep -qF "$want" || { echo "✗ refusal doesn't say '$want':"; echo "$PROV_OUT" | tail -8; exit 1; }
+done
+[[ ! -e "$TEST_PREFIX-prov/share/autonomos" ]] || { echo "✗ a refused install left files behind"; exit 1; }
+
+echo "==> provenance: a verifier that doesn't match the pin is refused"
+TAMPERED="$(mktemp -d)/verify-provenance.mjs"
+{ cat "$ROOT/scripts/verify-provenance.mjs"; echo 'process.exit(0)'; } > "$TAMPERED"
+set +e
+PROV_OUT=$(INSTALL_PREFIX="$TEST_PREFIX-prov" BUNDLE_URL="file://$DIST" SKIP_INSTALL_SERVICE=1 \
+  VERIFIER_URL="file://$TAMPERED" bash "$ROOT/scripts/install.sh" 2>&1)
+PROV_RC=$?
+set -e
+[[ "$PROV_RC" -ne 0 ]] || { echo "✗ install.sh ran a verifier that doesn't match its pin"; exit 1; }
+echo "$PROV_OUT" | grep -qF "doesn't match the checksum pinned" || {
+  echo "✗ pin-mismatch refusal not explained:"; echo "$PROV_OUT" | tail -8; exit 1;
+}
+[[ ! -e "$TEST_PREFIX-prov/share/autonomos" ]] || { echo "✗ a refused install left files behind"; exit 1; }
+rm -rf "$TEST_PREFIX-prov" "$(dirname "$TAMPERED")"
+echo "==> ✓ new installs fail closed on provenance"
+
 echo "==> Running install.sh hermetically"
-INSTALL_PREFIX="$TEST_PREFIX" \
+# AUTONOMOS_SKIP_PROVENANCE: the local build is unsigned (refusal proven
+# above); the hatch must still install — and say so, loudly.
+INSTALL_OUT=$(INSTALL_PREFIX="$TEST_PREFIX" \
   BUNDLE_URL="file://$DIST" \
   SKIP_INSTALL_SERVICE=1 \
-  bash "$ROOT/scripts/install.sh"
+  AUTONOMOS_SKIP_PROVENANCE=1 \
+  bash "$ROOT/scripts/install.sh" 2>&1) || { echo "$INSTALL_OUT"; echo "✗ install.sh failed"; exit 1; }
+echo "$INSTALL_OUT"
+echo "$INSTALL_OUT" | grep -qF "NOT checking this release's signed" || {
+  echo "✗ AUTONOMOS_SKIP_PROVENANCE=1 installed without the loud warning"; exit 1;
+}
 
 WRAPPER="$TEST_PREFIX/bin/autonomos"
 [[ -x "$WRAPPER" ]] || { echo "✗ Wrapper not found at $WRAPPER"; exit 1; }
@@ -480,9 +520,35 @@ echo "==> ✓ install.json marker present"
 # (standing in for a newer version rewriting state) and expect rollback to put
 # the pre-upgrade value back alongside the old code.
 echo '{"ciSentinel":"before-upgrade"}' > "$TEST_CFG/settings.json"
+# ADR-126 D: the fixture release has no signed build record (its API has no
+# attestations route), so an existing install must POSTPONE: exit non-zero,
+# say so, and change nothing.
+echo "==> 'autonomos upgrade' with an unconfirmable build is postponed"
+assert_only_test_label "autonomos upgrade (postponed)"
+BEFORE_VERSION=$("$WRAPPER" --version)
+set +e
+POSTPONE_OUT=$(AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
+  AUTONOMOS_RELEASE_REPO="test-rel/autonomos" \
+  "$WRAPPER" upgrade 2>&1)
+POSTPONE_RC=$?
+set -e
+[[ "$POSTPONE_RC" -ne 0 ]] || { echo "✗ An unconfirmable update installed anyway"; echo "$POSTPONE_OUT"; exit 1; }
+# Both postponement wordings (a temporary "postponed… try again later" and a
+# lasting "wasn't applied… retrying won't change that" — this fixture has NO
+# record, so it's the lasting one) start with ⏸ and say nothing changed.
+echo "$POSTPONE_OUT" | grep -qF "⏸" && echo "$POSTPONE_OUT" | grep -qF "Nothing changed." || {
+  echo "✗ The postponement wasn't explained:"; echo "$POSTPONE_OUT" | tail -5; exit 1;
+}
+[[ "$("$WRAPPER" --version)" == "$BEFORE_VERSION" ]] || { echo "✗ A postponed update changed the installed version"; exit 1; }
+[[ ! -e "$TEST_PREFIX/share/autonomos.new" ]] || { echo "✗ A postponed update left a staged bundle"; exit 1; }
+echo "==> ✓ postponed, nothing changed"
+
 echo "==> Running 'autonomos upgrade' against the fixture release"
+# The fixture is unsigned (postponement proven above): the operator's
+# explicit override lets the upgrade → rollback cycle below run.
 assert_only_test_label "autonomos upgrade"
-AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
+AUTONOMOS_SKIP_PROVENANCE=1 \
+  AUTONOMOS_RELEASE_API_URL="http://127.0.0.1:$FIXTURE_PORT" \
   AUTONOMOS_RELEASE_REPO="test-rel/autonomos" \
   "$WRAPPER" upgrade
 UPGRADED_VERSION=$("$WRAPPER" --version)

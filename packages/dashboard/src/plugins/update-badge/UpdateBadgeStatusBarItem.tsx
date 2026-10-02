@@ -157,6 +157,7 @@ export function UpdateBadgeStatusBarItem() {
       }
       phase={flow.record?.phase}
       rollback={flow.record?.kind === "rollback"}
+      provenance={flow.record?.provenance}
       elapsedMs={flow.elapsedMs}
       gaveUp={flow.gaveUp}
     />

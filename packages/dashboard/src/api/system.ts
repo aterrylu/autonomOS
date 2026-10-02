@@ -87,6 +87,16 @@ export interface UpgradeStatusRecord {
   verification?: UpgradeVerification;
   /** Launched by "wait for idle": re-checks the fleet before the swap. */
   waitIdle?: boolean;
+  /** The release's signed build record ("invalid" fails the run instead).
+   *  Absent on older servers and source installs. */
+  provenance?: {
+    status: "verified" | "missing" | "skipped";
+    reason?: string;
+  };
+  /** A "failed" run that was POSTPONED, not broken: the build couldn't be
+   *  confirmed, so nothing was installed (ADR-126 D). `lasting`: retrying
+   *  can't change it. */
+  postponed?: { lasting: boolean; reason: string };
 }
 
 export interface BusyAgent {

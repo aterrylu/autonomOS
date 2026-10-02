@@ -49,6 +49,7 @@ export type FlowView =
   | "notSupervised"
   | "updating"
   | "failed"
+  | "postponed"
   | "authRejected"
   | "restoreConfirm";
 
@@ -136,6 +137,8 @@ export function useUpdateFlow(enabled: boolean) {
                     kind: "upgrade",
                     updatedTo: rec.to,
                     interruptedNames: interrupted.current,
+                    provenance: rec.provenance,
+                    startedAt: rec.startedAt,
                   },
             );
             // New asset hashes: only a real reload picks up the new bundle.
@@ -150,7 +153,11 @@ export function useUpdateFlow(enabled: boolean) {
         case "failed":
           setTracking("none");
           setReconnectStart(null);
-          setView("failed");
+          // A postponement isn't a failure: nothing is wrong with the
+          // install, the build just couldn't be confirmed (ADR-126 D).
+          setView(
+            rec.phase === "failed" && rec.postponed ? "postponed" : "failed",
+          );
           return;
         case "up_to_date":
           setTracking("none");

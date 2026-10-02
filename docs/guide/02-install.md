@@ -40,7 +40,7 @@ If you see "⚠️ ~/.local/bin is not on your PATH", your shell cannot find the
 To install a specific release instead of the latest:
 
 ```bash
-VERSION=0.6.1 curl -fsSL https://autonomos.terrylu.cloud/install.sh | bash
+curl -fsSL https://autonomos.terrylu.cloud/install.sh | VERSION=0.6.1 bash
 ```
 
 ## The `autonomos` command
@@ -77,6 +77,8 @@ Then pick one:
 - **Update now** when an agent is busy and you'd rather not wait. The button names who it interrupts.
 
 Progress shows on the same screen: Preparing, Restarting, Reopening agents. The page reloads onto the new version and confirms your agents reopened.
+
+For release installs (the one-line installer), every download is checked twice before anything changes: against the release's SHA-256 checksum, and against its **signed build record**. The build record proves the file was built by autonomOS's own release workflow, not just uploaded to the release. If the record doesn't match, nothing is installed. If it can't be checked (GitHub or Sigstore unreachable, or rate-limited), an **update** is postponed: nothing changes, and you can try again later. A **first install** stops and asks you to re-run, so a new machine never starts from an unchecked download. To skip the check on purpose (a mirror, an offline machine), set `AUTONOMOS_SKIP_PROVENANCE=1`. For in-app updates, set it in the service's environment, not just your shell. autonomOS installs anyway and says, in amber, that it wasn't checked. Installs built from source (`make prod`) update from git and aren't covered by this check.
 
 Settings → Updates has **Check for updates** (look for a release right away), **Update…** when one is available, and **Restore v…**, which puts back the previous version together with the snapshot from before the update. If autonomOS is not running as a service, the dialog shows the terminal command instead.
 

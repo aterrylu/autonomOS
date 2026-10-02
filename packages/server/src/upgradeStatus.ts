@@ -58,6 +58,18 @@ export type UpgradeStatusRecord = {
   /** Launched by "wait for idle": the job re-checks the fleet before its
    *  irreversible step (shows as its own step in the dashboard). */
   waitIdle?: boolean;
+  /** The release's signed build record, checked after the checksum
+   *  (provenance.ts). "invalid" never gets here — the run fails instead. */
+  provenance?: {
+    status: "verified" | "missing" | "skipped";
+    reason?: string;
+  };
+  /** Set on a "failed" record when the update was POSTPONED, not broken: its
+   *  signed build record couldn't be confirmed, so nothing was installed
+   *  (ADR-126 D). The dashboard shows its own calm state for it.
+   *  `lasting`: retrying can't change it (no record exists, or this runtime
+   *  can't check). */
+  postponed?: { lasting: boolean; reason: string };
 };
 
 export type UpgradeVerification = {

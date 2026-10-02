@@ -1348,6 +1348,7 @@ function UpdatingScreen({
             {rec.message}
           </div>
         )}
+        <ProvenanceNote provenance={rec?.provenance} to={to} />
         <Disclosure
           className="text-xs"
           label="Show details"
@@ -1498,6 +1499,102 @@ function detailsText(rec: UpgradeStatusRecord): string {
     rec.message ?? "(no message recorded)",
     `started ${rec.startedAt} · last update ${rec.updatedAt}`,
   ].join("\n");
+}
+
+/** The update was POSTPONED, not broken (ADR-126 D): its signed build record
+ *  couldn't be confirmed, so nothing was installed and the running version
+ *  carries on. Deliberately calm — no red, no warning glyph — and honest
+ *  about retrying: nothing re-attempts the update on its own; it stays
+ *  offered, and availability is re-checked about once a day. The skip
+ *  override lives only behind Details. */
+function PostponedScreen({ flow }: { flow: UpdateFlow }) {
+  const page = usePage();
+  const a = useAccents();
+  const [copied, copy] = useCopy();
+  const rec = flow.record;
+  if (!rec?.postponed) return null;
+  const { lasting, reason } = rec.postponed;
+  return (
+    <>
+      <Header
+        icon={
+          <span className="pt-0.5" style={{ color: a.blue }}>
+            <InfoIcon size={20} />
+          </span>
+        }
+        title={`The update to v${rec.to} is on hold`}
+        subtitle={
+          <span data-testid="update-postponed-summary">
+            Nothing changed. v{rec.from} keeps running.
+          </span>
+        }
+      />
+      <div
+        className="px-4 pb-4 sm:px-5 flex flex-col gap-3 text-sm"
+        data-testid="update-postponed"
+        data-lasting={lasting ? "true" : "false"}
+      >
+        <p>
+          autonomOS couldn't confirm that this download was built by autonomOS's
+          own release process, so it didn't install it.
+        </p>
+        <p style={{ color: page.statusFg }} data-testid="update-postponed-why">
+          {reason.charAt(0).toUpperCase() + reason.slice(1)}.
+        </p>
+        <p data-testid="update-postponed-when">
+          {lasting
+            ? "Checking again won't change this: this release has no signed build record to confirm."
+            : "This is usually temporary. v" +
+              rec.to +
+              " stays available: check again whenever you like. autonomOS also looks for updates about once a day, but it won't install one without you."}
+        </p>
+        <Disclosure
+          className="text-xs"
+          label="Show details"
+          openLabel="Hide details"
+          summaryStyle={{ color: a.blue }}
+        >
+          <div className="flex flex-col gap-2 pt-2">
+            <pre
+              className="whitespace-pre-wrap rounded px-3 py-2 font-mono text-xs"
+              style={{ border: `1px solid ${page.border}` }}
+              data-testid="update-postponed-message"
+            >
+              {rec.message?.replace(/`/g, "") ?? "No details were recorded."}
+            </pre>
+            <p data-testid="update-postponed-override">
+              Only if you trust this release: install it without this check by
+              running{" "}
+              <code className="font-mono">
+                AUTONOMOS_SKIP_PROVENANCE=1 autonomos upgrade
+              </code>{" "}
+              in a terminal on the machine running autonomOS.
+            </p>
+          </div>
+        </Disclosure>
+      </div>
+      <Footer
+        left={
+          <Button onClick={() => copy(detailsText(rec))}>
+            {copied ? "Copied" : "Copy details"}
+          </Button>
+        }
+      >
+        {lasting ? (
+          <Button kind="primary" onClick={flow.close}>
+            Close
+          </Button>
+        ) : (
+          <>
+            <Button onClick={flow.close}>Close</Button>
+            <Button kind="primary" onClick={flow.review}>
+              Check again
+            </Button>
+          </>
+        )}
+      </Footer>
+    </>
+  );
 }
 
 function FailedScreen({ flow }: { flow: UpdateFlow }) {
@@ -1829,9 +1926,44 @@ export function UpdateDialog({
         <UpdatingScreen info={info} flow={flow} notes={notes} />
       )}
       {flow.view === "failed" && <FailedScreen flow={flow} />}
+      {flow.view === "postponed" && <PostponedScreen flow={flow} />}
       {flow.view === "authRejected" && <AuthRejectedScreen flow={flow} />}
       {flow.view === "restoreConfirm" && <RestoreConfirmScreen flow={flow} />}
     </DialogShell>
+  );
+}
+
+/** The signed build record couldn't be checked (or was skipped): say so,
+ *  loudly but without blocking (ADR-126). Shown in the progress view AND the
+ *  restart overlay — on a bundle install the progress view is on screen for
+ *  only a second or two after the check (found live). */
+function ProvenanceNote({
+  provenance,
+  to,
+  installed = false,
+}: {
+  provenance?: UpgradeStatusRecord["provenance"];
+  to: string;
+  installed?: boolean;
+}) {
+  const a = useAccents();
+  if (!provenance || provenance.status === "verified") return null;
+  return (
+    <output
+      className="flex gap-2 rounded-md px-3 py-2 text-left text-xs"
+      style={{ border: `1px solid ${a.amber}88` }}
+      data-testid="update-provenance-warning"
+    >
+      <span style={{ color: a.amber }}>
+        <WarnIcon />
+      </span>
+      <span>
+        {provenance.status === "skipped"
+          ? `Not checking v${to}'s signed build record (${provenance.reason ?? "skipped"}).`
+          : `Couldn't check v${to}'s signed build record: ${provenance.reason ?? "unknown reason"}.`}{" "}
+        {installed ? "Installed" : "Installing"} anyway: the checksum matched.
+      </span>
+    </output>
   );
 }
 
@@ -1844,12 +1976,14 @@ export function ReconnectingOverlay({
   to,
   phase,
   rollback,
+  provenance,
   elapsedMs,
   gaveUp,
 }: {
   to: string;
   phase?: UpgradePhase;
   rollback?: boolean;
+  provenance?: UpgradeStatusRecord["provenance"];
   elapsedMs: number;
   gaveUp: boolean;
 }) {
@@ -1891,6 +2025,9 @@ export function ReconnectingOverlay({
           detail={detail}
           hints={stageHints(rollback ? "rollback" : null)}
         />
+        {!rollback && (
+          <ProvenanceNote provenance={provenance} to={to} installed />
+        )}
         <output aria-live="polite" className="sr-only">
           {`${STAGE_NAMES[stage]}: ${detail}`}
         </output>
