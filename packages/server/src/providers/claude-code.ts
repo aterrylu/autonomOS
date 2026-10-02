@@ -526,6 +526,11 @@ export function preTrustWorkdir(
   // Idempotent: any existing value (a deliberate decline included) is kept.
   if ("hasTrustDialogAccepted" in entry) {
     if (entry.hasTrustDialogAccepted === true) return "trusted";
+    // Usually a human's "No", but NOT for the home directory: Claude Code
+    // writes `false` for $HOME even after the trust dialog is ACCEPTED
+    // (measured, 2.1.287), so an agent whose cwd is the home directory sees
+    // the dialog on every start. Kept either way (we don't override CC's own
+    // choice not to persist home trust); the watcher answers it.
     if (entry.hasTrustDialogAccepted === false) return "declined";
     return "unknown";
   }
