@@ -889,9 +889,14 @@ export function attachStartupWatcherCore(
         fn();
         return;
       }
+      // Floored at 1ms: a non-positive delay would re-arm a 0ms timer from
+      // inside a timer, a busy loop.
       quietTimer = setTimeout(
         check,
-        Math.min(settleQuietMs - quietFor, settleMaxMs - (now - startedAt)),
+        Math.max(
+          1,
+          Math.min(settleQuietMs - quietFor, settleMaxMs - (now - startedAt)),
+        ),
       );
     };
     quietTimer = setTimeout(check, settleQuietMs);
