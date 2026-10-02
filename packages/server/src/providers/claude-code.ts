@@ -570,6 +570,19 @@ export interface StartupWatcherConfig {
   minDismissEvidenceChars?: number;
   /** Hard deadline for the whole watcher. */
   timeoutMs?: number;
+  /** The trust dialog is only engaged once the PTY has been QUIET this long
+   *  after it rendered. A key
+   *  that arrives while Claude Code is still settling its first frame (it is
+   *  awaiting answers to its terminal queries) makes it reset the selection
+   *  to "No, exit" AFTER drawing our move to Yes. 0 = engage at once. */
+  settleQuietMs?: number;
+  /** Cap on the quiet wait, so a screen that never goes quiet still gets an
+   *  answer (through the same verified path). */
+  settleMaxMs?: number;
+  /** After the Down, "❯ Yes" must stay the newest selection this long before
+   *  the confirming Enter. A frame showing Yes is not proof the selection
+   *  holds: the reset above lands after it. 0 = confirm at once. */
+  confirmStableMs?: number;
   /** Fired exactly once: one tick after attach when no dialog is required
    *  (pre-trusted, no channels), otherwise when the
    *  watcher reaches ANY terminal state (all dialogs handled, gave up, hard
@@ -621,6 +634,9 @@ export function attachStartupWatcherCore(
   const retryDelayMs = config.retryDelayMs ?? 500;
   const maxAttempts = config.maxAttempts ?? 5;
   const interKeyDelayMs = config.interKeyDelayMs ?? 150;
+  const settleQuietMs = config.settleQuietMs ?? 750;
+  const settleMaxMs = config.settleMaxMs ?? 4_000;
+  const confirmStableMs = config.confirmStableMs ?? 300;
   const minDismissEvidenceChars = config.minDismissEvidenceChars ?? 24;
   const timeoutMs = config.timeoutMs ?? DEFAULT_STARTUP_WATCHER_TIMEOUT_MS;
   const label = `${options.agentName} (${options.sessionId.slice(0, 8)})`;
@@ -663,6 +679,11 @@ export function attachStartupWatcherCore(
   let buf = "";
   const MAX_BUF = 8192;
   let disposed = false;
+  /** When the PTY last produced output: the settle gate's clock. */
+  let lastOutputAt = Date.now();
+  /** The one pending quiet-gated action (engage or a post-reset retry). */
+  let quietTimer: NodeJS.Timeout | null = null;
+  let trustEngagePending = false;
   let settledFired = false;
   // Nothing required (pre-trusted, no channels): settle right away — but on
   // the next tick, never synchronously: the runtime registers the agent as
@@ -782,6 +803,7 @@ export function attachStartupWatcherCore(
       // live, 0.7s after spawn). "Latest highlight" means the ❯Yes render
       // must be NEWER than any ❯No render in the post-Down output.
       const started = Date.now();
+      let yesHeldSince = 0;
       const awaitYesThenEnter = () => {
         d.checkTimer = setTimeout(() => {
           d.checkTimer = null;
@@ -789,7 +811,16 @@ export function attachStartupWatcherCore(
           const norm = despace(d.freshBuf);
           const lastYes = norm.lastIndexOf(TRUST_YES_SELECTED_NORM);
           const lastNo = norm.lastIndexOf(TRUST_NO_SELECTED_NORM);
-          if (lastYes >= 0 && lastYes > lastNo) {
+          if (lastYes >= 0 && lastYes > lastNo && !yesHeldSince) {
+            // Yes is showing: now it must HOLD (confirmStableMs) before Enter.
+            yesHeldSince = Date.now();
+          }
+          if (
+            lastYes >= 0 &&
+            lastYes > lastNo &&
+            yesHeldSince &&
+            Date.now() - yesHeldSince >= confirmStableMs
+          ) {
             if (!writeKey("\r")) {
               cleanup();
               return;
@@ -802,6 +833,10 @@ export function attachStartupWatcherCore(
             return;
           }
           const remounted = lastNo >= 0 && lastNo > lastYes;
+          if (lastYes >= 0 && lastYes > lastNo) {
+            awaitYesThenEnter(); // Yes showing, still proving it holds
+            return;
+          }
           if (!remounted && Date.now() - started < retryDelayMs * 2) {
             awaitYesThenEnter(); // still waiting for the Down's re-render
             return;
@@ -834,6 +869,34 @@ export function attachStartupWatcherCore(
     }
   }
 
+  /** Run `fn` once the PTY has been quiet for settleQuietMs, or once
+   *  settleMaxMs has passed since the call, whichever comes first. One
+   *  pending action at a time; a newer call replaces it. */
+  function whenQuiet(fn: () => void): void {
+    if (quietTimer) clearTimeout(quietTimer);
+    quietTimer = null;
+    if (settleQuietMs <= 0) {
+      fn();
+      return;
+    }
+    const startedAt = Date.now();
+    const check = (): void => {
+      quietTimer = null;
+      if (disposed) return;
+      const now = Date.now();
+      const quietFor = now - lastOutputAt;
+      if (quietFor >= settleQuietMs || now - startedAt >= settleMaxMs) {
+        fn();
+        return;
+      }
+      quietTimer = setTimeout(
+        check,
+        Math.min(settleQuietMs - quietFor, settleMaxMs - (now - startedAt)),
+      );
+    };
+    quietTimer = setTimeout(check, settleQuietMs);
+  }
+
   function engage(id: string): void {
     const d = dialogs.get(id);
     if (!d || d.engaged || d.settled) return;
@@ -851,6 +914,7 @@ export function attachStartupWatcherCore(
 
   const disposable = pty.onData((data: string) => {
     if (disposed) return;
+    lastOutputAt = Date.now();
     const clean = data.replace(ANSI_RE, "");
     buf += clean;
     if (buf.length > MAX_BUF) buf = buf.slice(-MAX_BUF);
@@ -859,7 +923,12 @@ export function attachStartupWatcherCore(
     }
 
     const trust = dialogs.get("trust");
-    if (trust && !trust.engaged && TRUST_NEEDLES.some((n) => buf.includes(n))) {
+    if (
+      trust &&
+      !trust.engaged &&
+      !trust.settled &&
+      TRUST_NEEDLES.some((n) => buf.includes(n))
+    ) {
       // Engage on the needle alone — the paint-order problem (option text a
       // frame before the ❯ highlight) is handled by ONE policy downstream:
       // trustKeysFor returns null until a highlight actually matches, and a
@@ -870,7 +939,11 @@ export function attachStartupWatcherCore(
       // a log grep instead of silent fleet deaths. (An earlier one-shot
       // grace timer gave the marker only 500ms and could re-warn on every
       // subsequent frame; collapsed here on review.)
-      engage("trust");
+      // ...but only once the dialog has settled: see settleQuietMs.
+      if (!trustEngagePending) {
+        trustEngagePending = true;
+        whenQuiet(() => engage("trust"));
+      }
     }
 
     const ch = dialogs.get("channels");
@@ -879,6 +952,10 @@ export function attachStartupWatcherCore(
       if (trust && !trust.engaged) {
         trust.settled = true;
         if (trust.checkTimer) clearTimeout(trust.checkTimer);
+        if (trustEngagePending && quietTimer) {
+          clearTimeout(quietTimer);
+          quietTimer = null;
+        }
       }
       engage("channels");
     }
@@ -918,6 +995,7 @@ export function attachStartupWatcherCore(
       if (d.checkTimer) clearTimeout(d.checkTimer);
     }
     if (settleNoneRequiredTimer) clearTimeout(settleNoneRequiredTimer);
+    if (quietTimer) clearTimeout(quietTimer);
     disposable.dispose();
     // cleanup() is the watcher's single terminal point (all-settled, hard
     // timeout, PTY death): settle has happened by now at the latest.

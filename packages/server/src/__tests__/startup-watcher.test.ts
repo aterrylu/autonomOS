@@ -88,6 +88,10 @@ const FAST: Omit<StartupWatcherConfig, "expectChannels"> = {
   maxAttempts: 5,
   interKeyDelayMs: 5,
   timeoutMs: 500,
+  // The suites above the settle-gate block test the key/verify loop itself,
+  // so they engage at once; the settle gate has its own tests below.
+  settleQuietMs: 0,
+  confirmStableMs: 0,
 };
 
 /**
@@ -817,5 +821,125 @@ describe("startup watcher — optional trust (pre-trusted workdir)", () => {
     const w = neverDismissed();
     assert.equal(w.length, 1);
     assert.match(w[0], /never dismissed: trust$/);
+  });
+});
+
+/**
+ * A home-directory cwd shows the default-No trust dialog on EVERY start
+ * (Claude Code records `false` for $HOME even after an accept). Measured on
+ * real CC 2.1.287: a key that arrives in the first ~150ms after the dialog
+ * renders, while CC still awaits answers to its terminal queries, is applied
+ * (the selection is drawn on Yes) and THEN CC resets the selection to
+ * "No, exit" on its own. An Enter after that confirms "No, exit" and the
+ * agent exits (7 of 12 starts died with the old watcher). This fake models
+ * exactly that, and the watcher runs with its PRODUCTION timing.
+ */
+class FakeClaudeTrust extends FakePty {
+  selection: "no" | "yes" = "no";
+  exited = false;
+  dismissed = false;
+  private readonly bornAt = Date.now();
+  constructor(private readonly readyAfterMs = 150) {
+    super();
+    this.onWrite = (key) => this.react(key);
+    setTimeout(() => this.render(), 120); // first paint
+  }
+  private render(): void {
+    if (this.exited || this.dismissed) return;
+    this.emit(
+      this.selection === "no"
+        ? TRUST_DIALOG_DEFAULT_NO
+        : TRUST_DIALOG_DEFAULT_NO.replace("❯ No, exit", "  No, exit").replace(
+            "Yes, I trust this folder",
+            "❯ Yes, I trust this folder",
+          ),
+    );
+  }
+  private react(key: string): void {
+    if (this.exited || this.dismissed) return;
+    const early = Date.now() - this.bornAt < 120 + this.readyAfterMs;
+    if (key === DOWN) {
+      this.selection = "yes";
+      setTimeout(() => this.render(), 5);
+      if (early) {
+        // ...and then CC resets under us: its STATE first, the frame showing
+        // it later (in the real bytes the Enter landed on "No" while the last
+        // frame still showed "❯ Yes").
+        setTimeout(() => {
+          this.selection = "no";
+          setTimeout(() => this.render(), 250);
+        }, 100);
+      }
+    } else if (key === "\r") {
+      if (this.selection === "no") this.exited = true;
+      else {
+        this.dismissed = true;
+        setTimeout(() => this.emit(WELCOME), 5);
+      }
+    }
+  }
+}
+
+describe("startup watcher — home-dir trust: never key a dialog that hasn't settled", () => {
+  it("PRODUCTION timing: the agent is never exited, and the dialog is accepted", async () => {
+    const pty = new FakeClaudeTrust();
+    attachStartupWatcherCore(pty, OPTS, { expectChannels: false });
+    await waitFor(() => pty.dismissed || pty.exited, "dialog answered", 15_000);
+    assert.equal(pty.exited, false, 'never confirmed "No, exit"');
+    assert.equal(pty.dismissed, true, "trust accepted");
+    assert.equal(
+      pty.written.filter((k) => k === "\r").length,
+      1,
+      "exactly one confirming Enter",
+    );
+  });
+
+  it("the first key waits for quiet: nothing is written in the early window", async () => {
+    const pty = new FakeClaudeTrust();
+    attachStartupWatcherCore(pty, OPTS, { expectChannels: false });
+    await sleep(120 + 150 + 300); // first paint + the reset window + margin
+    assert.equal(pty.writeCalls, 0);
+  });
+
+  it("a reset is never confirmed: Yes must hold before the Enter", async () => {
+    // Engage at once (as the old watcher did) but keep the stability window:
+    // the early Down triggers the reset, and the Enter must not follow it.
+    const pty = new FakeClaudeTrust();
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      settleQuietMs: 0,
+    });
+    await waitFor(() => pty.dismissed || pty.exited, "dialog answered", 15_000);
+    assert.equal(pty.exited, false);
+    assert.equal(pty.dismissed, true, "recovered by retrying after the reset");
+  });
+
+  it("the old timing (no quiet gate, no stability window) reproduces the death", async () => {
+    // Pins that the fake models the bug: without both gates it DIES.
+    const pty = new FakeClaudeTrust();
+    attachStartupWatcherCore(pty, OPTS, {
+      expectChannels: false,
+      settleQuietMs: 0,
+      confirmStableMs: 0,
+    });
+    await waitFor(() => pty.dismissed || pty.exited, "dialog answered", 15_000);
+    assert.equal(pty.exited, true, "precondition: the old behavior kills it");
+  });
+
+  it("a screen that never goes quiet still gets answered (settleMaxMs cap)", async () => {
+    const pty = new FakeClaudeTrust();
+    const noise = setInterval(() => pty.emit("\x1b[?25l"), 100); // e.g. a spinner
+    try {
+      attachStartupWatcherCore(pty, OPTS, { expectChannels: false });
+      await waitFor(
+        () => pty.dismissed || pty.exited,
+        "dialog answered",
+        15_000,
+      );
+    } finally {
+      clearInterval(noise); // else a failure leaves it running and the file hangs
+    }
+    assert.equal(pty.exited, false);
+    assert.equal(pty.dismissed, true);
   });
 });
