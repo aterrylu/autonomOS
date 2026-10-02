@@ -40,6 +40,8 @@ const {
   killAttachment,
   resumeFailureAction,
   _setResumeRetryBackoffForTesting,
+  _setResumeRetrySchedulerForTesting,
+  getAttachment,
 } = await import("../agents/runtime.js");
 const { _setProviderForTesting } = await import("../providers/index.js");
 const { claudeCodeProvider } = await import("../providers/claude-code.js");
@@ -56,6 +58,7 @@ const { getNotifications, clearNotifications } = await import(
 );
 
 const NAME = "fakeclaude-rnd";
+const STUB_EXIT_DELAY = process.env.AOS_STUB_EXIT_DELAY ?? "0.15";
 const cwd = mkdtempSync(join(tmpdir(), "aos-rnd-"));
 let seen: ResolvedSpawnOptions[] = [];
 /** "settle" = a watcher that reports its dialogs out of the way at once;
@@ -69,7 +72,11 @@ const fake: AgentProvider = {
   resolveBinary: () => "/bin/sh",
   buildArgs: (r: ResolvedSpawnOptions) => {
     seen.push({ ...r });
-    return ["-c", "exit 1"]; // dies in milliseconds, like the dialog death
+    // Dies fast (well inside the 5s window), like the dialog death, but not
+    // instantly: the attempt is still exiting while the test moves on, which
+    // is the gate's loaded-box condition made the normal case. Raise it with
+    // AOS_STUB_EXIT_DELAY to prove the waits are on state, not time.
+    return ["-c", `sleep ${STUB_EXIT_DELAY}; exit 1`];
   },
   get attachStartupWatcher() {
     if (watcher === "none") return undefined;
@@ -112,9 +119,54 @@ async function until(
   }
 }
 
+/** Retries are queued here and fired by the test, never by a clock. */
+interface QueuedRetry {
+  fire: () => void;
+  cancelled: boolean;
+  fired: boolean;
+}
+let queue: QueuedRetry[] = [];
+const scheduler = {
+  schedule: (fire: () => void): QueuedRetry => {
+    const q = { fire, cancelled: false, fired: false };
+    queue.push(q);
+    return q;
+  },
+  cancel: (h: unknown) => {
+    (h as QueuedRetry).cancelled = true;
+  },
+};
+
+/** Wait until attempt `n` has fully exited and queued its retry. */
+async function retryQueued(id: string, n: number): Promise<void> {
+  await until(
+    () => queue.length >= n && !getAttachment(id as UUID),
+    `retry #${n} queued after the attempt exited`,
+    15_000,
+  );
+}
+/** Fire retry #n (1-based) the way its timer would. */
+function fireRetry(n: number): void {
+  const q = queue[n - 1];
+  assert.ok(q, `retry #${n} exists`);
+  if (q.cancelled) return;
+  q.fired = true;
+  q.fire();
+}
+/** Wait until the agent ended stopped (all attempts exited). */
+async function ended(id: string): Promise<void> {
+  await until(
+    () =>
+      getAgent(id as UUID)?.status === "exited" && !getAttachment(id as UUID),
+    "the agent ended stopped",
+    15_000,
+  );
+}
+
 beforeEach(() => {
   _setProviderForTesting(NAME, fake);
-  _setResumeRetryBackoffForTesting([30, 60]);
+  _setResumeRetrySchedulerForTesting(scheduler);
+  queue = [];
   seen = [];
   watcher = "none";
 });
@@ -123,6 +175,7 @@ afterEach(() => {
     killAttachment(id as UUID);
     clearNotifications(id);
   }
+  _setResumeRetrySchedulerForTesting(null);
   _setResumeRetryBackoffForTesting(null);
 });
 after(() => {
@@ -137,8 +190,11 @@ describe("a resumable session is never discarded by a fast exit", () => {
     const id = seed();
     const original = getAgent(id)?.providerSessionId;
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    // 1 resume + 2 retries, all with the original session.
-    await until(() => getAgent(id)?.status === "exited", "agent left stopped");
+    await retryQueued(id, 1);
+    fireRetry(1);
+    await retryQueued(id, 2);
+    fireRetry(2);
+    await ended(id);
     assert.equal(seen.length, 3, "one resume and two retries");
     for (const r of seen) {
       assert.equal(r.providerSessionId, original, "never a new session id");
@@ -159,40 +215,41 @@ describe("a resumable session is never discarded by a fast exit", () => {
     watcher = "never";
     const id = seed();
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    await until(() => getAgent(id)?.status === "exited", "agent left stopped");
+    await retryQueued(id, 1);
+    fireRetry(1);
+    await retryQueued(id, 2);
+    fireRetry(2);
+    await ended(id);
     const notes = getNotifications(id).map((n) => n.message ?? "");
     assert.ok(notes.some((m) => /startup dialog was still on screen/.test(m)));
   });
 
   it("a kill during the retry backoff wins: no respawn behind the operator's back", async () => {
-    _setResumeRetryBackoffForTesting([300, 300]);
     const id = seed();
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    await until(() => seen.length === 1, "first attempt");
-    await new Promise((r) => setTimeout(r, 50)); // inside the backoff
+    await retryQueued(id, 1);
     killAttachment(id as UUID);
     markExited(id, "user_killed");
-    await new Promise((r) => setTimeout(r, 700));
+    fireRetry(1); // the timer fires after the kill: it must stand down
+    await new Promise((r) => setImmediate(r));
     assert.equal(seen.length, 1, "no retry after the kill");
+    assert.equal(getAttachment(id as UUID), undefined);
   });
 
   it("a kill during the backoff resets the count: the next resume gets every retry", async () => {
-    _setResumeRetryBackoffForTesting([150, 150]);
     const id = seed();
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    await until(() => seen.length === 1, "first attempt");
-    await new Promise((r) => setTimeout(r, 30)); // inside the first backoff
+    await retryQueued(id, 1);
     killAttachment(id as UUID);
     markExited(id, "user_killed");
-    await new Promise((r) => setTimeout(r, 300)); // the timer fires and bails
+    fireRetry(1); // stands down and resets the count
     seen = [];
-    _setResumeRetryBackoffForTesting([20, 20]);
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id }); // the operator restarts it
-    await until(
-      () => getAgent(id)?.status === "exited" && seen.length >= 3,
-      "a full retry run",
-      5_000,
-    );
+    await retryQueued(id, 2);
+    fireRetry(2);
+    await retryQueued(id, 3);
+    fireRetry(3);
+    await ended(id);
     assert.equal(
       seen.length,
       3,
@@ -203,26 +260,25 @@ describe("a resumable session is never discarded by a fast exit", () => {
 
 describe("a human restart during a retry backoff owns the agent", () => {
   it("cancels the pending retry and gets a FULL retry run of its own", async () => {
-    _setResumeRetryBackoffForTesting([300, 300]);
     const id = seed();
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    await until(() => seen.length === 1, "first attempt died, retry pending");
-    await new Promise((r) => setTimeout(r, 50)); // inside the 300ms backoff
-    // The operator restarts it; this run dies fast too. Its OWN first retry
-    // waits 1.5s, so any attempt sooner than that is the stale timer firing.
-    _setResumeRetryBackoffForTesting([1_500, 20]);
+    await retryQueued(id, 1); // first attempt exited; its retry is pending
+    // The operator restarts it; this run dies fast too.
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
-    await until(() => seen.length === 2, "the restart's attempt");
-    await new Promise((r) => setTimeout(r, 600)); // the stale 300ms timer would fire here
-    assert.equal(seen.length, 2, "no attempt from the cancelled retry timer");
-    await until(
-      () => getAgent(id)?.status === "exited",
-      "the restart's run ended",
-      5_000,
+    assert.equal(
+      queue[0].cancelled,
+      true,
+      "the restart cancelled the pending retry",
     );
-    await new Promise((r) => setTimeout(r, 400)); // any stale timer would fire by now
-    // 1 (first) + the restart's own run: 1 resume + 2 retries. No extra
-    // attempt from the cancelled timer, and no shortened run.
+    await retryQueued(id, 2);
+    fireRetry(1); // the stale timer's moment: cancelled, so nothing happens
+    await new Promise((r) => setImmediate(r));
+    assert.equal(seen.length, 2, "no attempt from the cancelled retry");
+    fireRetry(2);
+    await retryQueued(id, 3);
+    fireRetry(3);
+    await ended(id);
+    // 1 (first) + the restart's own run: 1 resume + 2 retries.
     assert.equal(seen.length, 4, `attempts: ${seen.length}`);
     const giveUps = getNotifications(id).filter((n) =>
       /session is intact and was not replaced/.test(n.message ?? ""),

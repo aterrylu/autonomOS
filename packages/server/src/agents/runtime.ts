@@ -1964,7 +1964,7 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             : "") +
           ` — its session is intact; retrying the same resume in ${failure.delayMs}ms (${failure.attempt}/${resumeRetryBackoffMs.length})`,
       );
-      const t = setTimeout(() => {
+      const t = retryScheduler.schedule(() => {
         resumeRetryTimers.delete(persisted.id);
         // Only if the agent is still meant to be running and nothing else
         // (a kill, a delete) has taken it over meanwhile. A newer spawn
@@ -2002,7 +2002,6 @@ export async function spawnAgent(params: SpawnParams): Promise<SpawnResult> {
             );
           });
       }, failure.delayMs);
-      t.unref?.();
       resumeRetryTimers.set(persisted.id, t);
       return;
     }
@@ -2411,7 +2410,29 @@ export function _setResumeRetryBackoffForTesting(
 }
 const resumeRetries = new Map<string, number>();
 /** The pending retry timer per agent, so any newer spawn can cancel it. */
-const resumeRetryTimers = new Map<string, NodeJS.Timeout>();
+const resumeRetryTimers = new Map<string, unknown>();
+
+/** How a resume retry is scheduled. Real timers in production; a test drives
+ *  retries explicitly so it never races the clock. */
+export interface ResumeRetryScheduler {
+  schedule(fire: () => void, delayMs: number): unknown;
+  cancel(handle: unknown): void;
+}
+const realRetryScheduler: ResumeRetryScheduler = {
+  schedule: (fire, delayMs) => {
+    const t = setTimeout(fire, delayMs);
+    t.unref?.();
+    return t;
+  },
+  cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
+};
+let retryScheduler: ResumeRetryScheduler = realRetryScheduler;
+/** Test hook: take over retry scheduling (null restores real timers). */
+export function _setResumeRetrySchedulerForTesting(
+  s: ResumeRetryScheduler | null,
+): void {
+  retryScheduler = s ?? realRetryScheduler;
+}
 /** Agents whose spawn right now IS a retry (keeps the count) rather than a
  *  human start (restart/attach, which begins a fresh retry run). */
 const resumeRetrySpawning = new Set<string>();
@@ -2421,7 +2442,7 @@ const resumeRetrySpawning = new Set<string>();
 function onSpawnStarting(agentId: string): void {
   const pending = resumeRetryTimers.get(agentId);
   if (pending) {
-    clearTimeout(pending);
+    retryScheduler.cancel(pending);
     resumeRetryTimers.delete(agentId);
   }
   if (!resumeRetrySpawning.has(agentId)) resumeRetries.delete(agentId);
