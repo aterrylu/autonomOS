@@ -208,8 +208,13 @@ describe("a human restart during a retry backoff owns the agent", () => {
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
     await until(() => seen.length === 1, "first attempt died, retry pending");
     await new Promise((r) => setTimeout(r, 50)); // inside the 300ms backoff
-    // The operator restarts it; this run dies fast too.
+    // The operator restarts it; this run dies fast too. Its OWN first retry
+    // waits 1.5s, so any attempt sooner than that is the stale timer firing.
+    _setResumeRetryBackoffForTesting([1_500, 20]);
     await spawnAgent({ workingDirectory: cwd, resumeAgentId: id });
+    await until(() => seen.length === 2, "the restart's attempt");
+    await new Promise((r) => setTimeout(r, 600)); // the stale 300ms timer would fire here
+    assert.equal(seen.length, 2, "no attempt from the cancelled retry timer");
     await until(
       () => getAgent(id)?.status === "exited",
       "the restart's run ended",
